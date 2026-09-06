@@ -1,7 +1,7 @@
 /**
  * cancel.test.ts — events:cancel dual-path result (GAP 5).
  *
- * Deps mocked (cancelAwait / ackDelivery / resolveAgentIdentity). Asserts the
+ * Deps mocked (cancelAwaitDetailed / ackDelivery / resolveAgentIdentity). Asserts the
  * await_id-only / delivery_id-only / both result rules, and the asymmetric
  * ok-flip rule: an ack-miss only flips ok=false when await_id == null (so an
  * ack-miss riding alongside a successful cancel never poisons the result).
@@ -17,13 +17,13 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-canceller', ownerLabel: 'c', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
 vi.mock('../../events/await/store', () => ({
-  cancelAwait: vi.fn(),
+  cancelAwaitDetailed: vi.fn(),
   ackDelivery: vi.fn(),
   retireAnnouncement: vi.fn(),
 }));
 
 import cancel from './cancel';
-import { cancelAwait, ackDelivery, retireAnnouncement } from '../../events/await/store';
+import { cancelAwaitDetailed, ackDelivery, retireAnnouncement } from '../../events/await/store';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof cancel.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -33,20 +33,54 @@ const call = async (args: Record<string, unknown>) => {
 
 beforeEach(() => vi.clearAllMocks());
 
+const cancelledAwait = (overrides: Record<string, unknown> = {}) => ({
+  awaitId: 7,
+  cancelled: true,
+  eventKey: 'work-item:claimable',
+  once: true,
+  expiresTs: '2026-09-06T05:00:00.000Z',
+  droppedDeliveries: 0,
+  inFlightDeliveries: 0,
+  ...overrides,
+});
+
 describe('events:cancel dual-path result', () => {
   it('cancel-only success → ok:true, cancelled:true, no reason', async () => {
-    vi.mocked(cancelAwait).mockResolvedValue(true);
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
     const out = await call({ await_id: 7 });
     // WI-3575: cancelAwait no longer takes workspaceId (events:await is
     // single-workspace by design — see store.ts).
-    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 7, subscriberId: 'su-canceller', source: 'operator' });
+    expect(cancelAwaitDetailed).toHaveBeenCalledWith({
+      awaitId: 7,
+      subscriberId: 'su-canceller',
+      source: 'operator',
+      confirmStanding: undefined,
+    });
     expect(ackDelivery).not.toHaveBeenCalled();
-    expect(out).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, await_id: 7, cancelled: true }] });
+    expect(out).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{
+        ok: true,
+        await_id: 7,
+        cancelled: true,
+        event: 'work-item:claimable',
+        once: true,
+        expires_ts: '2026-09-06T05:00:00.000Z',
+        dropped_deliveries: 0,
+        in_flight_deliveries: 0,
+      }],
+    });
     expect(out.results[0].error).toBeUndefined();
   });
 
   it('cancel-only miss → ok:false + the not_found reason', async () => {
-    vi.mocked(cancelAwait).mockResolvedValue(false);
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue({
+      awaitId: 7,
+      cancelled: false,
+      droppedDeliveries: 0,
+      inFlightDeliveries: 0,
+    });
     const out = await call({ await_id: 7 });
     expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, await_id: 7, cancelled: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
@@ -55,7 +89,7 @@ describe('events:cancel dual-path result', () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ delivery_id: 3 });
     expect(ackDelivery).toHaveBeenCalledWith({ deliveryId: 3, subscriberId: 'su-canceller' });
-    expect(cancelAwait).not.toHaveBeenCalled();
+    expect(cancelAwaitDetailed).not.toHaveBeenCalled();
     expect(out).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, delivery_id: 3, acked: true }] });
     expect(out.results[0].error).toBeUndefined();
   });
@@ -79,7 +113,7 @@ describe('events:cancel dual-path result', () => {
   });
 
   it('both success → ok:true with both halves reported', async () => {
-    vi.mocked(cancelAwait).mockResolvedValue(true);
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
     vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: true, await_id: 7, cancelled: true, delivery_id: 3, acked: true });
@@ -87,7 +121,7 @@ describe('events:cancel dual-path result', () => {
   });
 
   it('asymmetric: ack-miss + cancel-success → ok STAYS true (the miss does not flip when await_id != null)', async () => {
-    vi.mocked(cancelAwait).mockResolvedValue(true);
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, acked: false });
@@ -95,19 +129,80 @@ describe('events:cancel dual-path result', () => {
   });
 
   it('symmetric counter-case: cancel-miss + ack-success → ok flips false (cancel always flips)', async () => {
-    vi.mocked(cancelAwait).mockResolvedValue(false);
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue({
+      awaitId: 7,
+      cancelled: false,
+      droppedDeliveries: 0,
+      inFlightDeliveries: 0,
+    });
     vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: false, cancelled: false, acked: true, error: 'not_found_or_not_yours_or_already_settled' });
   });
 
+  it('refuses a standing watch without explicit confirmation', async () => {
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue({
+      awaitId: 7,
+      cancelled: false,
+      eventKey: 'work-item:claimable',
+      once: false,
+      expiresTs: null,
+      droppedDeliveries: 0,
+      inFlightDeliveries: 0,
+      error: 'standing_watch_requires_confirmation',
+    });
+    const out = await call({ await_id: 7 });
+    expect(out).toMatchObject({
+      counts: { ok: 0, failed: 1 },
+      results: [{
+        ok: false,
+        await_id: 7,
+        cancelled: false,
+        event: 'work-item:claimable',
+        once: false,
+        expires_ts: null,
+        error: 'standing_watch_requires_confirmation',
+      }],
+    });
+  });
+
+  it('reports queued drops and in-flight deliveries for an explicitly confirmed standing watch', async () => {
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue({
+      awaitId: 7,
+      cancelled: true,
+      eventKey: 'work-item:claimable',
+      once: false,
+      expiresTs: null,
+      droppedDeliveries: 16,
+      inFlightDeliveries: 1,
+    });
+    const out = await call({ await_id: 7, confirm_standing: true });
+    expect(cancelAwaitDetailed).toHaveBeenCalledWith({
+      awaitId: 7,
+      subscriberId: 'su-canceller',
+      source: 'operator',
+      confirmStanding: true,
+    });
+    expect(out).toMatchObject({
+      counts: { ok: 1, failed: 0 },
+      results: [{
+        ok: true,
+        await_id: 7,
+        cancelled: true,
+        dropped_deliveries: 16,
+        in_flight_deliveries: 1,
+      }],
+    });
+    expect(out.results[0].warning).toMatch(/already in flight/);
+  });
+
   it('await_ids + delivery_ids are handled as one keyed batch', async () => {
-    vi.mocked(cancelAwait).mockResolvedValue(true);
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
     vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ await_ids: [7, 8], delivery_ids: [3] });
     expect(out.counts).toEqual({ ok: 3, failed: 0 });
     expect(out.results.map((r: any) => r.await_id ?? r.delivery_id)).toEqual([7, 8, 3]);
-    expect(cancelAwait).toHaveBeenCalledTimes(2);
+    expect(cancelAwaitDetailed).toHaveBeenCalledTimes(2);
     expect(ackDelivery).toHaveBeenCalledTimes(1);
   });
 
@@ -145,7 +240,7 @@ describe('events:cancel dual-path result', () => {
       reason: 'generation_mismatch',
     });
     const out = await call({ announcement_id: 41, expected_generation: 2 });
-    expect(cancelAwait).not.toHaveBeenCalled();
+    expect(cancelAwaitDetailed).not.toHaveBeenCalled();
     expect(out).toMatchObject({
       counts: { ok: 0, failed: 1 },
       results: [{ ok: false, announcement_id: 41, retired: false, error: 'generation_mismatch' }],

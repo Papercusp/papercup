@@ -43,6 +43,10 @@ const CODEX_GUIDANCE = [
   // shell/heredoc quoting
   "quote the opening delimiter",
   'closing delimiter must be at column 0',
+  // nested exec session-handle preservation
+  'preserve the **whole returned envelope**',
+  'every returned `session_id`',
+  'Never map a nested response to `output` alone',
 ] as const;
 
 describe('codex overlay reaches live launch context (P-010)', () => {
@@ -58,6 +62,14 @@ describe('codex overlay reaches live launch context (P-010)', () => {
   it.each(CODEX_GUIDANCE)('a launched Codex session receives: %s', async (phrase) => {
     const { text } = await render('codex');
     expect(text).toContain(phrase);
+  });
+
+  it('drains a nested exec session through every yielded poll', async () => {
+    const { text } = await render('codex');
+    expect(text).toContain('while ("session_id" in result && !("exit_code" in result))');
+    expect(text).toContain('result = await tools.write_stdin');
+    expect(text).toContain('continue until an');
+    expect(text).toContain('`exit_code` is present');
   });
 
   it('CONTROL: the same phrases are absent from the claude render (overlay-scoped, not base)', async () => {
