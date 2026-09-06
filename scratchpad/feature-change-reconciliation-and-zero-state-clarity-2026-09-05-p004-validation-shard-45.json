@@ -1,10 +1,11 @@
 {
-  "schemaVersion": "p004-validation-shard-result-v1",
+  "schemaVersion": "feature-change-p004-validation-shard-v1",
   "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
   "parentWorkItem": "WI-2146348",
   "workItem": "WI-2146838",
-  "shard": "45/50",
+  "shard": 45,
   "shardCount": 50,
+  "readOnlyValidation": true,
   "validationTimestamp": "2026-09-06T18:52:57.959418Z",
   "admission": {
     "claimSpecRevision": 18,
@@ -20,9 +21,8 @@
     "EI-22051446416634591",
     "EI-22053138026369921"
   ],
-  "assignedIdHashAlgorithm": "sha256(UTF-8 canonical JSON array; separators=(",
-  ", ": "))",
-  "assignedIdsSha256": "9eddfe3aaf25abdc3244b57666ab5cbc296428adaed60419c07f89300ed6eed0",
+  "assignedIdListSerialization": "JSON.stringify(assignedIds)",
+  "assignedIdListSha256": "9eddfe3aaf25abdc3244b57666ab5cbc296428adaed60419c07f89300ed6eed0",
   "summary": {
     "assigned": 4,
     "validated": 4,
