@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 3cdc5e7e5729c34daccaed96a81dd6acfb4d5b76048a7c592b5badd30d46355b
+ * Migration digest: 86f292f05e636072d7a54e5a6841aeb587c36cf812124f943aa364a3523636c8
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "3cdc5e7e5729c34daccaed96a81dd6acfb4d5b76048a7c592b5badd30d46355b";
+  "86f292f05e636072d7a54e5a6841aeb587c36cf812124f943aa364a3523636c8";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -28,6 +28,7 @@ export const GENERATED_TABLES = [
   "prepaid_credit_reservations",
   "publish_rate_limit",
   "reports",
+  "usage_receipts",
   "wallet_binding_challenges",
   "wallet_bindings",
 ] as const;
@@ -311,6 +312,31 @@ export interface ReportsRow {
   resolved_at: number | null;
   resolved_by_operator_note: string | null;
   created_at: number;
+}
+
+export interface UsageReceiptsRow {
+  channel_id: string;
+  usage_nonce: string;
+  principal_id: string;
+  offer_id: string;
+  payer: string;
+  seller: string;
+  release_ref: string;
+  meter_unit: string;
+  meter_quantity: number;
+  unit_price_micros: number;
+  price_version: string;
+  split_manifest_hash: string;
+  reserved_micros: number;
+  amount_micros: number | null;
+  cumulative_claim_micros: number;
+  expires_at_ms: number;
+  voucher_digest: string;
+  voucher_signature: string;
+  receipt_signature: string | null;
+  state: string;
+  reserved_at_ms: number;
+  settled_at_ms: number | null;
 }
 
 export interface WalletBindingChallengesRow {

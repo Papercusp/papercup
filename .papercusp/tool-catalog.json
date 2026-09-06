@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 864,
+  "count": 865,
   "tools": [
     {
       "name": "ablation:report",
@@ -7626,6 +7626,24 @@
         "when": "Installing a result from cupboard:search { kind:'theme' } so it can be selected locally.",
         "notWhen": "Selecting an already installed theme or editing a local theme.",
         "chaining": "cupboard:search { kind:'theme' } → cupboard:install-theme { listingId } → select the returned activeThemeId in the ordinary UI."
+      }
+    },
+    {
+      "name": "cupboard:meter-invocation",
+      "http": {
+        "path": "/api/agent-tools/cupboard/meter-invocation",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Meter one billable unit of a per-use Cupboard item against a funded microcharge channel. op=reserve BEFORE executing the unit (refuses a duplicate nonce, an exhausted escrow cap, a regressed cumulative claim, or terms that do not match the published offer), op=settle AFTER it with the units actually served, op=usage to read the channel ledger. Refuses locally before any network call.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Serving or paying for a unit of a per-use Cupboard offer, after cupboard:checkout returned a microcharge preflight and the channel was funded.",
+        "notWhen": "A one-time or subscription offer (cupboard:checkout alone settles those). Funding the channel itself. Reading what an org bought (cupboard:commerce-dashboards).",
+        "chaining": "reserve → execute the unit → settle with actualQuantity. Reserve FIRST: settling a nonce that was never reserved is refused rather than billed, and a unit executed before reserving may turn out to be uncoverable. Reuse the SAME usageNonce across the pair; a fresh one on retry double-bills."
       }
     },
     {

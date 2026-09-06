@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { AcceptanceBarContractSnapshot } from '../acceptance-bar-contract-snapshot';
+import { evidenceCurrentInputSchema } from '../agent-tools/plans/spec-evidence-store';
 
 /**
  * P-011 — the READ surface for a plan's ACCEPTANCE GATE verdict.
@@ -48,6 +49,11 @@ export const planAcceptanceGateArgsSchema = z.object({
   // registry consistency and to key the subscription rather than being threaded in.
   workspaceId: z.string().default('default'),
   planSlug: z.string().min(1),
+  current: z
+    .array(evidenceCurrentInputSchema)
+    .max(2000)
+    .optional()
+    .describe('Fresh evidence fingerprints for a current-aware read of the exact ship gate.'),
 });
 
 export type PlanAcceptanceGateArgs = z.infer<typeof planAcceptanceGateArgsSchema>;
@@ -103,9 +109,12 @@ export async function resolvePlanAcceptanceGateVerdict(args: PlanAcceptanceGateA
       import('../acceptance-bar-contract-snapshot'),
     ]);
     const [v, snapshotResult] = await Promise.all([
-      mod.evaluatePlanAcceptanceGate(planSlug),
-      snapshotMod
-        .readAcceptanceBarContractSnapshot(planSlug)
+      args.current
+        ? mod.evaluatePlanAcceptanceGate(planSlug, { current: args.current })
+        : mod.evaluatePlanAcceptanceGate(planSlug),
+      (args.current
+        ? snapshotMod.readAcceptanceBarContractSnapshot(planSlug, {}, { current: args.current })
+        : snapshotMod.readAcceptanceBarContractSnapshot(planSlug))
         .then((snapshot) => ({ snapshot, error: null as string | null }))
         .catch((error) => ({
           snapshot: null,

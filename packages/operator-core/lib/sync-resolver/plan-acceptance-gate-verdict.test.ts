@@ -57,7 +57,9 @@ type Row = {
   acceptanceBarContractSnapshotUnavailableReason: string | null;
 };
 
-const run = async (): Promise<Row> => (await resolvePlanAcceptanceGateVerdict(ARGS))[0] as Row;
+const run = async (
+  args: Parameters<typeof resolvePlanAcceptanceGateVerdict>[0] = ARGS,
+): Promise<Row> => (await resolvePlanAcceptanceGateVerdict(args))[0] as Row;
 
 beforeEach(() => {
   gateSpy.mockReset();
@@ -76,6 +78,23 @@ describe('P-011 acceptance-gate read — never flatten a non-check into a pass',
     await run();
     expect(gateSpy).toHaveBeenCalledWith('p-1');
     expect(snapshotSpy).toHaveBeenCalledWith('p-1');
+  });
+
+  it('threads one current proof cohort to both the verdict and explainability snapshot', async () => {
+    const current = [
+      {
+        evidenceKind: 'test' as const,
+        evidenceRef: 'testing-run:current#R-1',
+        sourceFingerprint: 'source-current',
+        testFingerprint: 'test-current',
+      },
+    ];
+    gateSpy.mockResolvedValue({ satisfied: true });
+
+    await run({ ...ARGS, current });
+
+    expect(gateSpy).toHaveBeenCalledWith('p-1', { current });
+    expect(snapshotSpy).toHaveBeenCalledWith('p-1', {}, { current });
   });
 
   it('carries the shared BAR snapshot without re-deriving or summarizing it', async () => {
