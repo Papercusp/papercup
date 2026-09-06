@@ -25,6 +25,7 @@ import {
   type AdmissionRunOutcome,
   type PromoterLlmCall,
 } from './work-items-admission-promoter';
+import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import type { OrgSql } from './work-items';
 
 export const WORK_ITEM_ADMISSION_DELTA_SWEEP = 'work-item-admission-delta-sweep';
@@ -309,6 +310,7 @@ export async function readDeltaSweepContext(
   const end = new Date(input.nowMs).toISOString();
   const recentStart = new Date(input.nowMs - input.recentWindowMinutes * 60_000).toISOString();
   const titleStart = new Date(input.nowMs - input.titleWindowHours * 60 * 60_000).toISOString();
+  const terminalStatuses = [...ALL_TERMINAL_STATUSES];
   const recentRows = await sql<DeltaItemRow[]>`
     SELECT wi.feature_id AS id, wi.title, wi.summary, wi.status, wi.item_kind,
            wi.condition_key, wi.admitted_at
@@ -316,6 +318,7 @@ export async function readDeltaSweepContext(
      WHERE wi.workspace_id = ${input.workspaceId}
        AND wi.harness_slug = ${input.harnessSlug}
        AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
+       AND (wi.status IS NULL OR NOT (wi.status = ANY(${terminalStatuses}::text[])))
        AND wi.admitted_at >= ${recentStart}::timestamptz
        AND wi.admitted_at < ${end}::timestamptz
      ORDER BY wi.admitted_at, wi.feature_id`;
@@ -325,6 +328,7 @@ export async function readDeltaSweepContext(
      WHERE wi.workspace_id = ${input.workspaceId}
        AND wi.harness_slug = ${input.harnessSlug}
        AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
+       AND (wi.status IS NULL OR NOT (wi.status = ANY(${terminalStatuses}::text[])))
        AND wi.admitted_at >= ${titleStart}::timestamptz
        AND wi.admitted_at < ${end}::timestamptz
      ORDER BY wi.admitted_at, wi.feature_id`;
