@@ -36,6 +36,7 @@ import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 import {
   readFleetParkResumePathForOwner,
+  readFleetWindDownLoopEndRequirement,
   readFleetWindDownLoopEndAuthorization,
 } from '../coordination/tools/continuation-gate';
 import { describeParkResumePath } from '../../fleet-park-resume-path';
@@ -329,25 +330,35 @@ export default defineTool({
     // deactivateLoop; the explicit acknowledgement is the escape hatch. Keep
     // this after the existing goal/output gates so their error precedence and
     // ordinary no-op paths remain unchanged.
+    let deliberateParkedAwait: boolean | null = null;
     const wakeLessAutonomy =
       workspaceId && statusBefore?.active === true
         ? await Promise.all([getModes(workspaceId, ownerId), listParkedAwaitsForSubscribers([ownerId])])
             .then(([modes, parkedAwaits]) => {
+              deliberateParkedAwait = parkedAwaits.length > 0;
               const autonomyModes = modes.map((row) => row.mode).filter((mode) => modeImpliesAutonomy(mode));
               return autonomyModes.length > 0 && parkedAwaits.length === 0 ? { autonomyModes } : null;
             })
             .catch(() => null)
         : null;
+    const fleetMemberWindDown =
+      deliberateParkedAwait === false &&
+      !args.acknowledgeWakeLessAutonomy &&
+      workspaceId &&
+      statusBefore?.active === true
+        ? await readFleetWindDownLoopEndRequirement({ ownerId, workspaceId }).catch(() => null)
+        : null;
+    const wakeLessStopRequiresGuard = wakeLessAutonomy !== null || fleetMemberWindDown === true;
     // A typed fleet wind-down is the one deliberate, fail-closed exception to
     // the wake-less autonomy guard. The fleet cue is only authoritative after
     // the member has released its claim; the helper independently verifies the
     // claimless/current-fleet/winding-down/typed-cue tuple. A read failure stays
     // denied here, while the explicit acknowledgement remains the escape hatch.
     const fleetWindDownLoopEndAuthorized =
-      wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy && workspaceId
+      wakeLessStopRequiresGuard && !args.acknowledgeWakeLessAutonomy && workspaceId
         ? await readFleetWindDownLoopEndAuthorization({ ownerId, workspaceId }).catch(() => null)
         : null;
-    if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy && fleetWindDownLoopEndAuthorized !== true) {
+    if (wakeLessStopRequiresGuard && !args.acknowledgeWakeLessAutonomy && fleetWindDownLoopEndAuthorized !== true) {
       const recoveryArgs = {
         ...args,
         acknowledgeWakeLessAutonomy: true,
@@ -371,12 +382,14 @@ export default defineTool({
               ok: false,
               error: 'wake_less_autonomy_refused',
               message:
-                `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
-                `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. ` +
+                (wakeLessAutonomy
+                  ? `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
+                    `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. `
+                  : `REFUSED — loop:end would leave fleet member ${ownerId} in a winding-down fleet with no deliberate independent event await. `) +
                 'Action required: keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry loop:end with the exact arguments in recovery.args to consciously create a wake-less autonomy state.' +
                 parkGuidance,
               ownerId,
-              autonomyModes: wakeLessAutonomy.autonomyModes,
+              autonomyModes: wakeLessAutonomy?.autonomyModes ?? [],
               requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
               ...(parkedUnder
                 ? {
