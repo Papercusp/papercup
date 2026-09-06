@@ -26,6 +26,7 @@
  * observed as a `refund`/`reversal` event, not asked about.
  */
 import type { CommerceEvent } from '../p2p/commerce-events';
+import type { Entitlement, LedgerState } from './commerce-ledger';
 import {
   resolveDistributionSources,
   yankOutcome,
@@ -86,6 +87,28 @@ export interface EntitlementProjection {
 }
 
 /**
+ * The two product decisions required to cross the commerce/delivery boundary.
+ *
+ * The ledger deliberately knows only the catalog product and buyer identities;
+ * delivery deliberately knows only immutable release refs and install subjects.
+ * Keeping both resolvers explicit prevents a tempting but unsafe convention
+ * (`productId === releaseRef` or `buyerId === subject`) from silently granting
+ * the wrong bytes, especially when a buyer is an organization.
+ */
+export interface LedgerEntitlementBridge {
+  readonly releaseRefForProduct: (
+    productId: string,
+    entitlement: Entitlement,
+  ) => string | null;
+  readonly subjectForBuyer: (buyerId: string, entitlement: Entitlement) => string | null;
+}
+
+export type LedgerEntitlementSource =
+  | Pick<LedgerState, 'entitlements'>
+  | ReadonlyMap<string, Entitlement>
+  | readonly Entitlement[];
+
+/**
  * Composite map key. A newline separator is deliberate: a subject or release ref
  * containing the separator would otherwise let two distinct pairs collide onto
  * one key, and both fields are opaque strings this module does not constrain.
@@ -103,6 +126,159 @@ function readNumber(payload: Readonly<Record<string, unknown>>, field: string): 
   const value = payload[field];
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
+
+function bridgeString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function bridgeEntries(source: LedgerEntitlementSource): readonly Entitlement[] {
+  if (Array.isArray(source)) return source;
+  if ('entitlements' in source) return [...source.entitlements.values()];
+  return [...source.values()];
+}
+
+function addBridgeIssue(
+  unusable: Array<{ eventId: string; reason: string }>,
+  eventId: string,
+  reason: string,
+): void {
+  if (!unusable.some((entry) => entry.eventId === eventId)) unusable.push({ eventId, reason });
+}
+
+/**
+ * Bridge the authoritative ledger entitlement view into the projection the
+ * delivery gate consumes.
+ *
+ * This is an adapter, not a second ledger reducer: callers must pass the
+ * `entitlements` map from `reduceLedger`, and this function carries its
+ * active/revoked state across without inventing a signed P2P event. The
+ * product→release and buyer→subject mappings are required inputs because D-048
+ * leaves those product decisions explicit. Missing or contradictory mappings
+ * are surfaced in `unusable` and produce no grant (fail closed).
+ */
+export function projectLedgerEntitlements(
+  source: LedgerEntitlementSource,
+  bridge: LedgerEntitlementBridge,
+): EntitlementProjection {
+  const grants = new Map<string, EntitlementGrant>();
+  const unusable: { eventId: string; reason: string }[] = [];
+  const conflictedKeys = new Set<string>();
+
+  for (const entitlement of [...bridgeEntries(source)].sort((a, b) =>
+    a.entitlementId.localeCompare(b.entitlementId),
+  )) {
+    const entitlementId = bridgeString(entitlement.entitlementId);
+    const productId = bridgeString(entitlement.productId);
+    const buyerId = bridgeString(entitlement.buyerId);
+    if (!entitlementId || !productId || !buyerId) {
+      addBridgeIssue(
+        unusable,
+        entitlementId ?? '(unknown entitlement)',
+        'ledger entitlement needs entitlementId, productId and buyerId',
+      );
+      continue;
+    }
+    if (!Number.isFinite(entitlement.grantedAtMs)) {
+      addBridgeIssue(
+        unusable,
+        entitlementId,
+        `ledger entitlement ${entitlementId} has an invalid grantedAtMs`,
+      );
+      continue;
+    }
+
+    const ref = bridgeString(bridge.releaseRefForProduct(productId, entitlement));
+    if (!ref) {
+      addBridgeIssue(
+        unusable,
+        entitlementId,
+        `no release mapping exists for product ${productId}`,
+      );
+      continue;
+    }
+    const subject = bridgeString(bridge.subjectForBuyer(buyerId, entitlement));
+    if (!subject) {
+      addBridgeIssue(
+        unusable,
+        entitlementId,
+        `no delivery subject mapping exists for buyer ${buyerId}`,
+      );
+      continue;
+    }
+
+    let revokedAtMs: number | null;
+    if (entitlement.state === 'active') {
+      if (entitlement.revokedAtMs !== null) {
+        addBridgeIssue(
+          unusable,
+          entitlementId,
+          `active ledger entitlement ${entitlementId} carries a revokedAtMs`,
+        );
+        continue;
+      }
+      revokedAtMs = null;
+    } else if (entitlement.state === 'revoked') {
+      if (!Number.isFinite(entitlement.revokedAtMs)) {
+        addBridgeIssue(
+          unusable,
+          entitlementId,
+          `revoked ledger entitlement ${entitlementId} has no valid revokedAtMs`,
+        );
+        continue;
+      }
+      revokedAtMs = entitlement.revokedAtMs;
+    } else {
+      addBridgeIssue(
+        unusable,
+        entitlementId,
+        `ledger entitlement ${entitlementId} has unsupported state ${String(entitlement.state)}`,
+      );
+      continue;
+    }
+
+    const key = grantKey(subject, ref);
+    if (conflictedKeys.has(key)) {
+      addBridgeIssue(
+        unusable,
+        entitlementId,
+        `ledger entitlements collide on delivery key ${subject} + ${ref}`,
+      );
+      continue;
+    }
+    const existing = grants.get(key);
+    if (existing) {
+      grants.delete(key);
+      conflictedKeys.add(key);
+      addBridgeIssue(
+        unusable,
+        existing.entitlementId,
+        `ledger entitlements collide on delivery key ${subject} + ${ref}`,
+      );
+      addBridgeIssue(
+        unusable,
+        entitlementId,
+        `ledger entitlements collide on delivery key ${subject} + ${ref}`,
+      );
+      continue;
+    }
+
+    grants.set(key, {
+      entitlementId,
+      subject,
+      releaseRef: ref,
+      grantedAtMs: entitlement.grantedAtMs,
+      expiresAtMs: null,
+      keyVersion: null,
+      revokedAtMs,
+      revokedReason: entitlement.revokeReason,
+    });
+  }
+
+  return { grants, unusable };
+}
+
+/** Alias named for callers that think in terms of the cross-layer bridge. */
+export const bridgeLedgerEntitlements = projectLedgerEntitlements;
 
 /**
  * Fold signed commerce events into the entitlement view delivery gates on.
