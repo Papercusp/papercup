@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
@@ -530,6 +533,145 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
         }),
       ),
     ).toThrow(/command must be a non-empty string/);
+  });
+});
+
+describe('bundle extraction storage preflight', () => {
+  function probe(availableBytes: string, availableInodes = '1000000', corrupt = false) {
+    const root = mkdtempSync(join(tmpdir(), 'workspace-bundle-capacity-'));
+    try {
+      const runtime = join(root, 'runtime');
+      const release = join(runtime, 'releases', 'current-release');
+      const archiveRoot = join(root, 'archive');
+      mkdirSync(release, { recursive: true });
+      mkdirSync(archiveRoot);
+      writeFileSync(join(release, 'preserved'), 'current runtime');
+      symlinkSync(release, join(runtime, 'current'));
+      writeFileSync(join(archiveRoot, 'payload with spaces'), Buffer.alloc(4097));
+      symlinkSync('payload with spaces', join(archiveRoot, 'link'));
+      const bundle = join(root, 'bundle.tgz');
+      const packed = spawnSync('tar', ['-czf', bundle, '-C', archiveRoot, '.']);
+      expect(packed.status, packed.stderr?.toString()).toBe(0);
+      if (corrupt) writeFileSync(bundle, 'invalid archive');
+      const script = buildWorkspaceHostBootstrap(input());
+      const start = script.indexOf('bundle_storage_diagnostics() {');
+      const end = script.indexOf('\nbundle_storage_diagnostics\n', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'log() { printf "%s\\n" "$1"; }',
+        'die() { printf "%s\\n" "$1" >&2; exit 1; }',
+        'df() { printf "Filesystem Blocks Used Available Capacity Mounted\\n"; if [[ "$1" == -Pi ]]; then printf "fixture 1000000 0 %s 0%% /\\n" "$TEST_INODES"; else printf "fixture 10000000000 0 %s 0%% /\\n" "$TEST_BYTES"; fi; }',
+        script.slice(start, end),
+        'check_bundle_storage',
+        'printf "EXTRACTION_ADMITTED\\n"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: { ...process.env, RUNTIME_ROOT: runtime, STATE_ROOT: join(root, 'state'), WORKSPACE_ROOT: join(root, 'workspace'), BUNDLE_PATH: bundle, TEST_BYTES: availableBytes, TEST_INODES: availableInodes },
+      });
+      expect(readFileSync(join(release, 'preserved'), 'utf8')).toBe('current runtime');
+      return result;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('rejects capacity that fits the compressed file but cannot fit block-rounded contents and reserve', () => {
+    const result = probe(String(536870912 + 8192));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('insufficient release storage');
+    expect(result.stdout).not.toContain('EXTRACTION_ADMITTED');
+    expect(result.stdout).toContain('storage:current=');
+  });
+
+  it('admits sufficient blocks and inodes for a real archive with spaces and symlinks', () => {
+    const result = probe('10000000000');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('EXTRACTION_ADMITTED');
+  });
+
+  it('refuses inode exhaustion independently of free bytes', () => {
+    const result = probe('10000000000', '2');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('insufficient release storage');
+  });
+
+  it('fails closed when filesystem capacity cannot be measured or the archive is invalid', () => {
+    expect(probe('unavailable').stderr).toContain('cannot measure release storage capacity');
+    expect(probe('10000000000', '1000000', true).stderr).toContain('cannot measure verified release archive');
+  });
+
+  it('checks verified contents before creating a stage directory', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    const check = script.indexOf('\n  check_bundle_storage\n');
+    expect(check).toBeGreaterThan(script.indexOf('minisign -Vm'));
+    expect(check).toBeLessThan(script.indexOf('STAGE_DIR="$(mktemp'));
+  });
+
+  function retention(currentKind: 'managed' | 'outside' | 'absent' = 'managed', contend = false) {
+    const root = mkdtempSync(join(tmpdir(), 'workspace-bundle-retention-'));
+    try {
+      const runtime = join(root, 'runtime');
+      const releases = join(runtime, 'releases');
+      const outside = join(root, 'outside');
+      mkdirSync(releases, { recursive: true });
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'preserved'), 'workspace data');
+      const names = ['old-1', 'old-2', 'current-release', 'fallback-release', 'requested-release', 'unowned-release'];
+      for (const [index, name] of names.entries()) {
+        const path = join(releases, name);
+        mkdirSync(path);
+        writeFileSync(join(path, 'install'), 'installer', { mode: 0o755 });
+        writeFileSync(join(path, 'node'), 'runtime', { mode: 0o755 });
+        utimesSync(path, 1000 + index, 1000 + index);
+      }
+      mkdirSync(join(releases, 'unknown-data'));
+      symlinkSync(outside, join(releases, 'external-link'));
+      if (currentKind !== 'absent') {
+        symlinkSync(currentKind === 'outside' ? outside : join(releases, 'current-release'), join(runtime, 'current'));
+      }
+      const script = buildWorkspaceHostBootstrap(input());
+      const start = script.indexOf('bundle_storage_diagnostics() {');
+      const end = script.indexOf('\nbundle_storage_diagnostics\n', start);
+      const program = [
+        'set -euo pipefail',
+        'log() { printf "%s\\n" "$1"; }',
+        'die() { printf "%s\\n" "$1" >&2; exit 1; }',
+        // Ownership is the only mocked filesystem property; the suite runs without root.
+        'stat() { if [[ "$1" == -c && "$2" == %u ]]; then if [[ "$3" == */unowned-release ]]; then printf "1001\\n"; else printf "0\\n"; fi; else command stat "$@"; fi; }',
+        script.slice(start, end),
+        'prune_bundle_releases',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', contend
+        ? 'exec 8>"$RUNTIME_ROOT/.bootstrap.lock"; flock -n 8; (exec 8>&-; bash -c "$TEST_PROGRAM")'
+        : program], {
+        encoding: 'utf8',
+        env: { ...process.env, RUNTIME_ROOT: runtime, RELEASE_DIR: join(releases, 'requested-release'), INSTALL_ENTRYPOINT: 'install', NODE_ENTRYPOINT: 'node', TEST_PROGRAM: program },
+      });
+      const present = [...names, 'unknown-data', 'external-link'].filter((name) => existsSync(join(releases, name)));
+      expect(readFileSync(join(outside, 'preserved'), 'utf8')).toBe('workspace data');
+      return { result, present };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('reclaims old complete releases while preserving current, fallback, requested target and unknown paths', () => {
+    const { result, present } = retention();
+    expect(result.status, result.stderr).toBe(0);
+    expect(present).toEqual(['current-release', 'fallback-release', 'requested-release', 'unowned-release', 'unknown-data', 'external-link']);
+    expect(result.stdout).toContain('storage:pruning-release=');
+  });
+
+  it('does not prune without a managed current runtime or when another bootstrap owns the lock', () => {
+    for (const [kind, contend] of [['outside', false], ['absent', false], ['managed', true]] as const) {
+      const { result, present } = retention(kind, contend);
+      expect(present).toContain('old-1');
+      expect(present).toContain('old-2');
+      expect(result.status).toBe(kind === 'absent' ? 0 : 1);
+      expect(result.stdout).not.toContain('storage:pruning-release=');
+    }
   });
 });
 
