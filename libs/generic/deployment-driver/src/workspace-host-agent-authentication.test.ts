@@ -401,9 +401,10 @@ describe("workspace-host agent verification probes", () => {
   it("starts the agent in its home instead of the controller's inherited working directory", async () => {
     // Exercise the actual child cwd without requiring root for this unit suite.
     // The separate argv test covers runuser; only that privilege hop is removed.
-    const withoutPrivilegeHop: typeof nodeSpawn = ((command, args, options) => {
+    const withoutPrivilegeHop: typeof nodeSpawn = ((...input: Parameters<typeof nodeSpawn>) => {
+      const [command, args, options] = input;
       expect(command).toBe("/usr/sbin/runuser");
-      return nodeSpawn("/usr/bin/env", (args as string[]).slice(4), options);
+      return nodeSpawn("/usr/bin/env", args.slice(4), options);
     }) as typeof nodeSpawn;
     const outcome = await new NodeWorkspaceHostAgentProbeRunner(withoutPrivilegeHop).run({
       command: process.execPath,
