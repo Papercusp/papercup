@@ -48,6 +48,12 @@ import '../../../../apps/operator/app/harness/harness.css';
 // loading it once here — like harness.css above — costs nothing on the other
 // surfaces and keeps the `dev` entry a zero-prop mount (portal-parity D-007).
 import '../../../../apps/operator/app/dev/dev.css';
+// `tasks-roster` imports TasksRosterPanel directly, bypassing both operator
+// wrappers that normally carry this sheet (TasksRunningPill and
+// TasksRosterEmbedRoute). Keep the panel's canonical rules on this host facade
+// so every native OperatorSurface mount is styled without cloning them into the
+// portal (portal design iteration P-008 / EI-22547277654420042).
+import '../../../../apps/operator-vite/src/components/adv/adv-header-pills.css';
 // The shared primitives (.pc-card/.pc-input/.pc-btn* and the element baselines) and
 // the Settings/Support surface stylesheets, on the same reasoning: the operator
 // loads them through globals.css / its route layouts, which a host never renders,
