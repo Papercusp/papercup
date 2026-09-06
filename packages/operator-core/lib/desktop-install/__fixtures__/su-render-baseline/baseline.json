@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-05T21:43:39.924Z",
+  "generatedAt": "2026-09-06T12:44:43.019Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
-      "bytes": 75559,
-      "sha256": "74e4a4a2ac7a38d198bcde692fae827a9b76795867a7ba0bfa183a1f75d6be94"
+      "bytes": 75765,
+      "sha256": "5dbc6eb9337dbd4d8a021fecf903187118c6097153115ed929f374f43cbbfef2"
     },
     "overlay": {
       "path": "papercusp-su.claude.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 116503,
-      "sha256": "c0d5bd480d0304a6cacdf7ac18dbc307fcb2bc06a0d903c4411c1d5d1f65979b",
+      "totalBytes": 116709,
+      "sha256": "ec33a726db4ebc4667aa6b967759806b7f1c5b6b66424251d13bfd0ff25f0e42",
       "sections": [
         {
           "heading": "(preamble)",
@@ -61,8 +61,8 @@
         {
           "heading": "## Working as a fleet MEMBER — the member operating loop",
           "origin": "base",
-          "bytes": 4475,
-          "sha256": "c05d0988c381b9451fcff14c9303cd7eb0444c22a32eecdd595ca7d1d8885c6e"
+          "bytes": 4681,
+          "sha256": "56f1977e9d8851f255b4a6cc9a7d851677ec3822b192f0d9514e25fcde6bdcce"
         },
         {
           "heading": "## Git — a background routine owns commit + push",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 116503,
-      "sha256": "c0d5bd480d0304a6cacdf7ac18dbc307fcb2bc06a0d903c4411c1d5d1f65979b",
+      "totalBytes": 116709,
+      "sha256": "ec33a726db4ebc4667aa6b967759806b7f1c5b6b66424251d13bfd0ff25f0e42",
       "sections": [
         {
           "heading": "(preamble)",
@@ -205,8 +205,8 @@
         {
           "heading": "## Working as a fleet MEMBER — the member operating loop",
           "origin": "base",
-          "bytes": 4475,
-          "sha256": "c05d0988c381b9451fcff14c9303cd7eb0444c22a32eecdd595ca7d1d8885c6e"
+          "bytes": 4681,
+          "sha256": "56f1977e9d8851f255b4a6cc9a7d851677ec3822b192f0d9514e25fcde6bdcce"
         },
         {
           "heading": "## Git — a background routine owns commit + push",
