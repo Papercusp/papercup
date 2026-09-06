@@ -76,6 +76,12 @@
  * seeing whether the exit succeeded. ToolCallEvent.responseIndex preserves the
  * response batch: an exit unlocks mutation only in a later response index (or
  * later outer turn), never later in the same batch.
+ *
+ * VERSION 7 — MIRROR THE LIVE PLANS-LIST LIFECYCLE CONTRACT (P-035). The v6
+ * world invented `status:'all'` and hid shipped/superseded rows by default,
+ * while production plans:list hides only archives and exposes the real switch
+ * as `includeArchived:true`. The mismatch made a correct full census
+ * impossible through the curated catalog and provoked fabricated archive rows.
  */
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { DeterministicAssert, Scenario } from '@papercusp/testing-shell/llm';
@@ -153,7 +159,7 @@ const NO_MUTATION_WHILE_AUDIT_ACTIVE: Extract<DeterministicAssert, { kind: 'cust
 
 export const SU_S32_AUDIT_MODE_WHOLE_PICTURE: Scenario = {
   id: 'su-S32-audit-mode-whole-picture',
-  version: 6,
+  version: 7,
   target: 'su',
   transport: 'in-process',
   toolOverride: AUDIT_WORLD,

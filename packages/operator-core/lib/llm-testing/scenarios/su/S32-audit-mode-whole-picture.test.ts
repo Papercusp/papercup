@@ -101,9 +101,9 @@ const RECORDED_DRIVE_BY_TURN = mkTurn({
   ),
 });
 
-describe('SU-S32 v6 — audit mode is read-only while active (WI-2140596, WI-2146629)', () => {
-  it('is version 6 and still runs against the populated world', () => {
-    expect(SU_S32_AUDIT_MODE_WHOLE_PICTURE.version).toBe(6);
+describe('SU-S32 v7 — audit mode is read-only while active (WI-2140596, WI-2146629)', () => {
+  it('is version 7 and still runs against the populated world', () => {
+    expect(SU_S32_AUDIT_MODE_WHOLE_PICTURE.version).toBe(7);
     expect(SU_S32_AUDIT_MODE_WHOLE_PICTURE.toolOverride).toBeDefined();
   });
 

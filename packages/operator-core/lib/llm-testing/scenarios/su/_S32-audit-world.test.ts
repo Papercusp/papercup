@@ -17,17 +17,21 @@ async function call(name: string, args: unknown = {}): Promise<Record<string, an
 }
 
 describe('SU-S32 audit world', () => {
-  it('plans:list defaults to draft+active and SAYS what it omitted; status:all returns the full lifecycle', async () => {
+  it('plans:list mirrors production: default hides only archives; includeArchived returns the full lifecycle', async () => {
     const dflt = await call('plans:list', { harness: 'p2p' });
     const shown = new Set(dflt.plans.map((p: any) => p.status));
-    expect([...shown].sort()).toEqual(['active', 'draft']);
-    expect(dflt.note).toMatch(/shipped\/superseded\/archived omitted/);
+    expect([...shown].sort()).toEqual(['active', 'draft', 'shipped', 'superseded']);
+    expect(dflt.note).toMatch(/archived plan\(s\) omitted/);
     expect(dflt.statusCounts).toEqual({ draft: 1, active: 2, shipped: 2, superseded: 1, archived: 1 });
 
-    const all = await call('plans:list', { harness: 'p2p', status: 'all' });
+    const all = await call('plans:list', { harness: 'p2p', includeArchived: true });
     expect(all.plans).toHaveLength(AUDIT_WORLD_PLANS.length);
     expect(all.note).toBeUndefined();
     expect(new Set(all.plans.map((p: any) => p.status)).size).toBe(5);
+
+    const invalid = await call('plans:list', { harness: 'p2p', status: 'all' });
+    expect(invalid).toMatchObject({ ok: false, code: 'invalid_args' });
+    expect(invalid.error).toMatch(/includeArchived:true/);
   });
 
   it('the stale ## Now contradicts the ledger: NAT P-008/P-009 are blocked on a DONE item', async () => {

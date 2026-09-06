@@ -16,10 +16,10 @@
  * question turns on, none of them visible from an open-items read:
  *
  *   - LIFECYCLE: 7 plans across draft / active / shipped / superseded / archived.
- *     `plans:list` DEFAULTS to draft+active (as list tools do) and SAYS what it
- *     omitted, so an agent that censuses the full lifecycle re-asks with
- *     `status:'all'`; one that walks the default list restricts the census to
- *     open plans — the exact failure the scenario names.
+ *     Like the production writer, `plans:list` returns every non-archived
+ *     lifecycle by default and SAYS that archive rows were omitted. A complete
+ *     census re-asks with `includeArchived:true`; `status:'all'` is deliberately
+ *     rejected because that value is not in the live schema.
  *   - STALE ## Now: p2p-nat-traversal's ## Now (2026-07-03) claims "all remaining
  *     items in flight" while its ledger shows two items blocked on a phantom (P-004
  *     shipped 2026-06-20) and nothing touched since.
@@ -211,7 +211,12 @@ export const AUDIT_WORLD_PLANS: readonly WorldPlan[] = [
   },
 ];
 
-const OPEN_PLAN_STATUSES: readonly WorldPlanStatus[] = ['draft', 'active'];
+const DEFAULT_PLAN_STATUSES: readonly WorldPlanStatus[] = [
+  'draft',
+  'active',
+  'shipped',
+  'superseded',
+];
 
 function planSummary(p: WorldPlan) {
   const counts: Record<string, number> = {};
@@ -237,10 +242,10 @@ function planStatusCounts(): Record<WorldPlanStatus, number> {
 
 function requestedStatuses(a: Args): readonly WorldPlanStatus[] | 'all' {
   const s = a.status ?? a.statuses;
-  if (s === 'all' || a.includeTerminal === true || a.all === true) return 'all';
+  if (a.includeArchived === true) return 'all';
   if (typeof s === 'string') return [s as WorldPlanStatus];
   if (Array.isArray(s)) return s.filter((x): x is WorldPlanStatus => typeof x === 'string');
-  return OPEN_PLAN_STATUSES;
+  return DEFAULT_PLAN_STATUSES;
 }
 
 // --- work items --------------------------------------------------------------
@@ -444,7 +449,7 @@ const PRESENCE = [
 
 const ACTIVE_AUDIT_CONTRACT =
   'AUDIT (overlay, single-shot): read the WHOLE program — full plan lifecycle including ' +
-  'shipped/superseded/archived, each ## Now against the ledger, flow and churn markers, ' +
+  'shipped/superseded/archived (plans:list includeArchived:true), each ## Now against the ledger, flow and churn markers, ' +
   'holder liveness, mechanisms with citations. Read-only toward the subject. Deliver verdict + ' +
   'report + coverage, then ROUTE remediation. Delivery does not clear the durable mode row: ' +
   "explicitly call mode:set { mode:'audit', enabled:false, reason:'audit report delivered' } " +
@@ -488,6 +493,13 @@ export const AUDIT_WORLD: ToolDispatchOverride = {
       }
 
       case 'plans:list': {
+        if (a.status === 'all') {
+          return json({
+            ok: false,
+            code: 'invalid_args',
+            error: "plans:list status has no 'all' member; omit status and pass includeArchived:true",
+          }, true);
+        }
         const want = requestedStatuses(a);
         const rows = AUDIT_WORLD_PLANS.filter((p) => want === 'all' || want.includes(p.status));
         const omitted = AUDIT_WORLD_PLANS.length - rows.length;
@@ -497,7 +509,7 @@ export const AUDIT_WORLD: ToolDispatchOverride = {
           plans: rows.map(planSummary),
           statusCounts: planStatusCounts(),
           ...(omitted > 0
-            ? { note: `${omitted} plan(s) in shipped/superseded/archived omitted by the default status filter — pass status:'all' for the full lifecycle` }
+            ? { note: `${omitted} archived plan(s) omitted by default — pass includeArchived:true for the full lifecycle` }
             : {}),
         });
       }
@@ -511,7 +523,7 @@ export const AUDIT_WORLD: ToolDispatchOverride = {
       case 'plans:get': {
         const slug = typeof a.slug === 'string' ? a.slug : '';
         const p = AUDIT_WORLD_PLANS.find((x) => x.slug === slug);
-        if (!p) return json({ ok: false, error: 'not_found', slug, hint: 'plans:list { status:\'all\' } lists every slug' }, true);
+        if (!p) return json({ ok: false, error: 'not_found', slug, hint: 'plans:list { includeArchived:true } lists every slug' }, true);
         return json({ ok: true, plan: { ...planSummary(p), now: p.now, items: p.items, decisions: p.decisions } });
       }
 
