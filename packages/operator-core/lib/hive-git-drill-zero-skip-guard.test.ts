@@ -1636,8 +1636,8 @@ esac
         'environmentSuppliedCommand',
       ]),
       productionSurfaces: expect.arrayContaining([
-        'publishHandoffToken',
-        'deriveIntegratorGrant',
+        'nextHivePublicationTerm',
+        'requireHiveEffectAuthority',
         'acceptStagingAdvanceFF',
         'runWorktreeBridgeTick',
         'decideWorktreeBridgePersistence',
@@ -1650,6 +1650,7 @@ esac
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_G_CMD');
     expect(physicalScenario).toContain('phase-g-run');
     expect(physicalScenario).toContain('phase-g-verify');
+    expect(physicalScenario).toContain(PHASE_G_INPUT_SCHEMA);
     expect(physicalScenario).toContain('assemble_unsigned_evidence');
   });
 
@@ -1826,17 +1827,25 @@ esac
     expect(verdict.errors).toContain('legG: Phase G retryable unknown-sha must hold the fed-event cursor');
   });
 
-  it('rejects a Leg G takeover without a strictly higher authority epoch', () => {
+  it('rejects a Leg G publication without the next owner term', () => {
     const fixture = physicalFixture();
-    fixture.legG.result.authorityFence.grant.epoch = 7;
+    fixture.legG.result.authorityFence.publication.epoch = 7;
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain('legG: Phase G successor grant must advance to epoch 8 at a fresh sequence');
+    expect(verdict.errors).toContain('legG: Phase G owner publication must advance to term 8 at a fresh sequence');
+  });
+
+  it('rejects a Leg G claimed pass without the owning hive countersignature', () => {
+    const fixture = physicalFixture();
+    delete fixture.legG.result.authorityFence.successorAdvance.hive_sig;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legG: Phase G successor must verify the owning hive countersignature and signed context');
   });
 
   it('rejects a Leg G result that relabels an ephemeral authority as a physical host', () => {
     const fixture = physicalFixture();
-    fixture.legG.result.protocolIdentities.oldAuthority = fixture.legG.identities.towerDeviceKey;
+    fixture.legG.result.protocolIdentities.owningHive = fixture.legG.identities.towerDeviceKey;
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain(

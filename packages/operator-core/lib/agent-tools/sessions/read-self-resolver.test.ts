@@ -183,9 +183,19 @@ function makeTx() {
     const text = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
     if (!text.includes('FROM harness_shared.session_turns')) return [];
 
-    const querySessionId = (values[2] ?? null) as string | null;
-    const owners = (values[4] ?? null) as string[] | null;
-    const sourceKind = (values[6] ?? null) as string | null;
+    // Resolve each bound parameter by the placeholder that follows its column
+    // in the SQL text, not by a fixed position: read.ts binds the text-window
+    // params (offset/limit) ahead of the predicates, and a positional mock
+    // silently read a number as the session id (0 turns, no error).
+    const paramAfter = (marker: string): unknown => {
+      const at = text.indexOf(marker);
+      if (at < 0) return null;
+      const placeholdersBefore = (text.slice(0, at).match(/\?/g) ?? []).length;
+      return values[placeholdersBefore] ?? null;
+    };
+    const querySessionId = paramAfter('session_id = ') as string | null;
+    const owners = paramAfter('owner = ANY(') as string[] | null;
+    const sourceKind = paramAfter('source_kind = ') as string | null;
     const limit = Number(values[values.length - 1]);
     return indexedTurns
       .filter((row) => (!querySessionId || row.session_id === querySessionId))

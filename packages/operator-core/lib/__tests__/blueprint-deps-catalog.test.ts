@@ -103,6 +103,25 @@ const BLUEPRINT_IDS = readdirSync(BLUEPRINTS_ROOT).filter((id) =>
 // chokepoint P-014). Children of either ship their own deps — extends-merge REPLACES
 // arrays, so a parent block would be wiped by every child anyway.
 const ABSTRACT_PARENTS = new Set(['base', 'single-agent']);
+/**
+ * IDENTITY LAYERS (identities-v1-2026-08-30, P-021 / D-008): a built-in that
+ * claims a `slots:` block is a facet stacked onto a kernel by `su-stack.ts` /
+ * `mode:set` — "abstract — a layer, never runnable alone" in its own words. It
+ * carries no spine/workItem and declares no tool dependencies of its own, so
+ * neither the standalone schema-load nor the dependencies-block ratchet applies
+ * to it. Detected STRUCTURALLY (the raw `slots` key), never by id list, so a
+ * new layer needs no edit here and a layer that grows a spine is re-admitted to
+ * both checks automatically.
+ */
+const IDENTITY_LAYERS = new Set(
+  BLUEPRINT_IDS.filter((id) => {
+    const raw = parseYaml(readFileSync(join(BLUEPRINTS_ROOT, id, 'blueprint.yaml'), 'utf8')) as
+      | Record<string, unknown>
+      | null;
+    return raw?.slots !== undefined && raw?.spine === undefined;
+  }),
+);
+const NOT_STANDALONE = (id: string) => ABSTRACT_PARENTS.has(id) || IDENTITY_LAYERS.has(id);
 
 // ─── assertions ──────────────────────────────────────────────────────────────
 
@@ -126,7 +145,17 @@ describe('blueprint dependencies vs the static tool catalog', () => {
     expect(BLUEPRINT_IDS.length).toBeGreaterThanOrEqual(14);
   });
 
-  it('every built-in (except the abstract parents) declares or inherits a dependencies block', () => {
+  it('CALIBRATION: the identity-layer detector resolved the known layers, and only layers', () => {
+    // A detector that silently matches nothing would re-admit every layer to the
+    // standalone checks (loud); one that matched everything would make them
+    // vacuous (silent) — pin both edges against real built-ins.
+    expect(IDENTITY_LAYERS).toContain('su.mode-auto');
+    expect(IDENTITY_LAYERS).not.toContain('implement');
+    expect(IDENTITY_LAYERS).not.toContain('single-agent');
+    expect(IDENTITY_LAYERS.size).toBeLessThan(BLUEPRINT_IDS.length / 2);
+  });
+
+  it('every built-in (except the abstract parents and identity layers) declares or inherits a dependencies block', () => {
     // The end-state guard for official-blueprints-cupboard-publish P-002: every
     // concrete built-in has a resolvable deps surface — either declared in its own
     // `blueprint.yaml` (`audit` may be explicit-empty) OR inherited wholesale through
@@ -138,7 +167,7 @@ describe('blueprint dependencies vs the static tool catalog', () => {
     // coding's full deps without re-declaring them. A NEW concrete built-in must still
     // ship its dependencies — declared, or inherited via an extends chain that has them.
     const undeclared = BLUEPRINT_IDS.filter((id) => {
-      if (ABSTRACT_PARENTS.has(id)) return false;
+      if (NOT_STANDALONE(id)) return false;
       const raw = parseYaml(readFileSync(join(BLUEPRINTS_ROOT, id, 'blueprint.yaml'), 'utf8')) as
         | Record<string, unknown>
         | null;
@@ -192,8 +221,8 @@ describe('blueprint dependencies vs the static tool catalog', () => {
         deps = (raw?.dependencies ?? undefined) as typeof deps;
       }
 
-      it('loads through the extends-merge loader (the abstract parents may not load standalone)', () => {
-        if (!ABSTRACT_PARENTS.has(id)) {
+      it('loads through the extends-merge loader (the abstract parents and identity layers may not load standalone)', () => {
+        if (!NOT_STANDALONE(id)) {
           expect(loadError, `built-in "${id}" failed to load: ${String(loadError)}`).toBeUndefined();
         }
       });

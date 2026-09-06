@@ -126,7 +126,7 @@ import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 import { listFacts } from '../../agent-facts/store';
-import { getModes } from '../../modes/store';
+import { getModes, getModeSubject } from '../../modes/store';
 import { modeInstructionsFactKey } from '../mode/set';
 import {
   composeModelSpec,
@@ -150,17 +150,46 @@ import {
   resolveGoalLaunch,
   readGoalLaunchSettingsForLauncher,
   resolveGoalPotPlacementAuthority,
+  type LaunchProfile,
 } from '../../goal-launch-settings';
 import { GOAL_LAUNCH_ROLES, isGoalLaunchRole, type GoalLaunchRole } from '../../goal-launch-settings-shared';
 import {
   applyGoalLaunchOverlay,
+  goalFleetLeaderProfile,
   goalFleetLaunchOverlay,
   goalFleetWideFoldSlot,
   goalPairedTypeNote,
+  resolveGoalFleetLeadership,
 } from './goal-fleet-launch-options';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
+
+/**
+ * Apply one already-resolved GOAL launch profile to command defaults.
+ *
+ * Kept pure because a profile that reads as applied while its `model` never
+ * reaches argv is otherwise invisible until a real fleet boots on the wrong
+ * model. Every supported profile key is copied here, including false
+ * `headless` and the zero-free numeric compaction limit.
+ */
+export function applyGoalLaunchProfileToDefaults(
+  base: FleetMemberDefaults,
+  profile: LaunchProfile | null | undefined,
+): FleetMemberDefaults {
+  if (!profile) return { ...base };
+  return {
+    ...base,
+    agent: (profile.agent as FleetMemberDefaults['agent'] | undefined) ?? base.agent,
+    model: profile.model ?? base.model,
+    effort: profile.effort ?? base.effort,
+    account: profile.account ?? base.account,
+    carry: profile.carry ?? base.carry,
+    contextSize: profile.contextSize ?? base.contextSize,
+    compactionLimit: profile.compactionLimit ?? base.compactionLimit,
+    headless: profile.headless ?? base.headless,
+  };
+}
 
 /**
  * Resolve the launch overlay from the caller's durable mode row and standing
@@ -1805,7 +1834,7 @@ export default defineTool({
       .enum(['caller', 'spawn'])
       .optional()
       .describe(
-        "WHO LEADS the fleet (default 'caller' — you become leader, the historical behavior). 'spawn' launches a FRESH agent to lead it and leaves you out of the fleet entirely: use it when you must NOT be the leader — a GOAL-mode portfolio manager delegating a plan, where leading a plan fleet yourself is the same mistake as implementing it. Replaces the two-hop relay (launch an agent, brief it to call this tool itself) with one call. The spawned leader's coord identity is PRE-PINNED, so the fleet row names its real leader from the first write and there is never a window where you are recorded as leading. It is opened BEFORE any member, and if it fails to open the whole launch ABORTS with zero members — members draining a queue with no leader watching is worse than no fleet. The leader gets the same agent/model/account/carry/headless treatment as the members unless you say otherwise, plus the standing leader brief.",
+        "WHO LEADS the fleet (generic default 'caller' — you become leader, the historical behavior). Under GOAL context omission defaults to 'spawn' and explicit 'caller' is refused: a GOAL portfolio steward must never lead its plan fleet. 'spawn' launches a FRESH agent to lead it and leaves you out of the fleet entirely. Replaces the two-hop relay (launch an agent, brief it to call this tool itself) with one call. The spawned leader's coord identity is PRE-PINNED, so the fleet row names its real leader from the first write and there is never a window where you are recorded as leading. It is opened BEFORE any member, and if it fails to open the whole launch ABORTS with zero members — members draining a queue with no leader watching is worse than no fleet. Goal-context leaders and members bind their distinct launch-role profiles; explicit top-level/per-member choices still win.",
       ),
     confirmRouteSwitch: z
       .boolean()
@@ -2052,6 +2081,28 @@ export default defineTool({
       drainFleetSlug: goalSettings.drainFleetSlug,
       callerType: args.type,
     });
+    // Goal provenance is inherited by execution agents. Only the caller's OWN
+    // GOAL mode marks the portfolio steward; using goalSettings.goalId here
+    // prevents delegated leaders from launching or topping up their own fleet.
+    let goalHolderSubject: string | null = null;
+    if (goalSettings.goalId) {
+      try {
+        goalHolderSubject = await getModeSubject(workspaceId, ownerId, 'goal');
+      } catch (error) {
+        return err(`goal_holder_role_unreadable: could not resolve launcher role before fleet mutation: ${String(error)}`);
+      }
+    }
+    const goalLeadership = resolveGoalFleetLeadership({
+      goalHolderSubject,
+      requested: args.leader,
+      callerOwnerId: ownerId,
+      existingLeaderOwnerId: existingFleet?.leaderOwnerId ?? null,
+    });
+    if (!goalLeadership.ok) return err(goalLeadership.message);
+    // The generic fleet door remains caller-led by default. GOAL context is the
+    // deliberate exception: the portfolio steward delegates leadership even
+    // when it omitted the easily-missed `leader` argument.
+    args.leader = goalLeadership.leader;
 
     // D-009 / P-011: branch the option shape on the declared type BEFORE any
     // other work. A shape mismatch is a caller error that costs nothing to
@@ -2089,6 +2140,12 @@ export default defineTool({
         `⚠ goal ${goalOverlay.goalId} pins \`${u.knob}\` on slot \`${u.slot}\`, which this paired ` +
         `launch cannot bind: ${u.why}.`,
     );
+    if (goalLeadership.defaultedToSpawn) {
+      goalLaunchNotes.push(
+        `goal ${goalOverlay.goalId} plan-fleet leadership defaulted to \`leader:'spawn'\` — ` +
+          'the GOAL holder remains outside the fleet as portfolio steward',
+      );
+    }
     if (goalOverlay.goalId && goalOverlay.pinned) {
       goalLaunchNotes.push(
         goalOverlay.slots.type === 'paired'
@@ -4024,6 +4081,20 @@ export default defineTool({
     // point of D-005's two composing ceilings. `openCount` (post-capacity-clamp)
     // is passed whole so an over-large fleet is refused once, here, rather than
     // part-way through spawning.
+    const requestedGoalProfile = {
+      // Only an authored/saved/seat-pinned choice outranks goal settings. The
+      // backend/model inherited from the CALLER is a system fallback, not a
+      // contextual decision by the GOAL holder; treating it as requested made
+      // every goal role profile lose silently.
+      ...(args.agent || seatsRequested ? { agent: effAgent as 'claude' | 'codex' | 'omp' } : {}),
+      ...(args.account || seatsRequested ? { account: effAccount } : {}),
+      ...(args.model || seatsRequested ? { model: effModel } : {}),
+      ...(args.effort ? { effort: args.effort } : {}),
+      ...(args.carry ? { carry: args.carry } : {}),
+      ...(args.contextSize ? { contextSize: args.contextSize } : {}),
+      ...(args.compactionLimit ? { compactionLimit: args.compactionLimit } : {}),
+      ...(args.headless !== undefined ? { headless: args.headless } : {}),
+    };
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: ownerId,
@@ -4053,24 +4124,17 @@ export default defineTool({
       goalRole: goalFleetWideFoldSlot(goalOverlay.family, launchFleetType),
       fleetSlug,
       count: openCount,
-      requested: {
-        ...(effAgent ? { agent: effAgent as 'claude' | 'codex' | 'omp' } : {}),
-        ...(effAccount ? { account: effAccount } : {}),
-        ...(effModel ? { model: effModel } : {}),
-        ...(args.effort ? { effort: args.effort } : {}),
-        ...(args.carry ? { carry: args.carry } : {}),
-        ...(args.contextSize ? { contextSize: args.contextSize } : {}),
-      },
+      requested: requestedGoalProfile,
     });
     if (goalLaunch.refusal) {
       return err(goalLaunch.refusal.message);
     }
 
-    const fleetDefaults: FleetMemberDefaults = {
-      agent: (goalLaunch.effective.agent as typeof effAgent) ?? effAgent,
-      headless: args.headless || undefined,
-      account: goalLaunch.effective.account ?? effAccount,
-      effort: goalLaunch.effective.effort ?? args.effort,
+    const launchFallbackDefaults: FleetMemberDefaults = {
+      agent: effAgent,
+      headless: args.headless ?? undefined,
+      account: effAccount,
+      effort: args.effort,
       launchMode,
       // The caller's request scope is already resolved above. Always stamp that
       // authoritative workspace onto the psu command: omitting the flag makes a
@@ -4092,6 +4156,26 @@ export default defineTool({
       allowSubagents: args.allowSubagents || undefined,
       extraArgs: args.extraArgs,
     };
+    // WI-2146552: `resolveGoalLaunch` already folded defaults + the member
+    // slot + the caller's contextual choice. Apply the WHOLE profile to the
+    // actual member command defaults; the previous inline mapping dropped its
+    // `model` while claiming the goal profile was applied.
+    const fleetDefaults = applyGoalLaunchProfileToDefaults(
+      launchFallbackDefaults,
+      goalLaunch.effective,
+    );
+    // The spawned leader is a distinct launch slot. It inherits goal defaults,
+    // then the plan/drain leader profile, then this launch's explicit choices;
+    // member role settings must never leak upward into the leader command.
+    const leaderProfile = goalFleetLeaderProfile({
+      settings: goalSettings.settings,
+      family: goalOverlay.family,
+      requested: requestedGoalProfile,
+    });
+    const leaderDefaults = applyGoalLaunchProfileToDefaults(
+      launchFallbackDefaults,
+      leaderProfile,
+    );
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
     /** The folded, fully-resolved config for member `i` (0-indexed). */
     const resolvedMemberConfig = (i: number): FleetMemberDefaults => foldMemberSpec(fleetDefaults, memberSpecs[i]);
@@ -4483,8 +4567,11 @@ export default defineTool({
           `You are the LEADER of fleet \`${fleetSlug}\`${planSlug ? ` on plan \`${planSlug}\`` : ''}.`,
           '',
           'You were LAUNCHED to lead it. The agent that called fleet:launch-on-plan delegated this to',
-          'you and is deliberately NOT in this fleet — it is a portfolio manager, not your supervisor,',
-          'so do not wait on it for permission or direction.',
+          'you and retains responsibility for portfolio priorities and resource allocation.',
+          `Your assigned target is ${count} member seats. Execute the plan within the supplied fleet size and model configuration.`,
+          'The GOAL steward chooses the plans, fleet size and role models using the whole portfolio.',
+          'Request allocation changes from that steward; do not unilaterally widen the fleet or replace its model choices.',
+          'Proceed with execution and member supervision under this assignment.',
           ...leaderRegistryNote,
           ...(delegatedSpawnReplacement
             ? []
@@ -4505,7 +4592,7 @@ export default defineTool({
       }
       const leaderCommand = injectLaunchedByArg(
         memberLaunchCommand({
-          ...fleetDefaults,
+          ...leaderDefaults,
           fleetSlug,
           harness,
           plan: planSlug ?? undefined,
@@ -4607,7 +4694,7 @@ export default defineTool({
           fleetSlug,
           harnessSlug: harness,
           planSlug,
-          carry: args.carry ?? 'warm',
+          carry: leaderDefaults.carry ?? 'warm',
         });
       }
       spawnedLeader = {

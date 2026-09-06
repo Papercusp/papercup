@@ -45,12 +45,15 @@ describe('fixed physical Phase G chaos adapter', () => {
       result: { phase: 'G', planItem: PHASE_G_PLAN_ITEM, status: 'complete', complete: true },
     });
     expect(input.result.authorityFence.staleAcceptance).toEqual({ ok: false, reason: 'stale-epoch-seq' });
+    expect(input.result.authorityFence.deviceOnlyAcceptance).toEqual({ ok: false, reason: 'missing-hive-authority' });
+    expect(input.result.authorityFence.successorAdvance).toMatchObject({ v: 3, epoch: 8, seq: 1 });
+    expect(input.result.authorityFence.receiverRefAfterDeviceOnly).toBe(input.result.authorityFence.receiverRefBeforeDeviceOnly);
     expect(input.result.retryPersistence).toMatchObject({
       beforeRetry: 41,
       duringUnknownSha: 41,
       unknownShaReason: 'unknown-sha',
-      duringUngrantedEpoch: 41,
-      ungrantedEpochReason: 'ungranted-epoch',
+      duringUnknownGeneration: 41,
+      unknownGenerationReason: 'unknown-generation',
       afterAccept: 42,
       acceptedCount: 1,
     });
@@ -64,15 +67,16 @@ describe('fixed physical Phase G chaos adapter', () => {
     expect(input.result.physicalExecutionBinding.provenance).toBe('outer-manifest-host-receipts');
     expect(input.result.protocolIdentities.provenance).toBe('ephemeral-adapter-keypairs');
     expect([
-      input.result.protocolIdentities.oldAuthority,
-      input.result.protocolIdentities.survivor,
+      input.result.protocolIdentities.owningHive,
+      input.result.protocolIdentities.priorPublisher,
+      input.result.protocolIdentities.publisher,
       input.result.protocolIdentities.stableRestartIdentity,
     ].every((key) => !physical.has(key))).toBe(true);
   });
 
   it('rejects rebinding an ephemeral authority signature to a physical host', () => {
     const input = validInput();
-    input.result.protocolIdentities.oldAuthority = input.identities.towerDeviceKey;
+    input.result.protocolIdentities.owningHive = input.identities.towerDeviceKey;
     const verdict = validatePhysicalPhaseG(input);
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain('Phase G ephemeral protocol signers must not be represented as physical hosts');
@@ -84,6 +88,55 @@ describe('fixed physical Phase G chaos adapter', () => {
     const verdict = validatePhysicalPhaseG(input);
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain('Phase G retryable unknown-sha must hold the fed-event cursor');
+  });
+
+  it('rejects old epoch-failover evidence versions', () => {
+    const input = validInput();
+    Object.assign(input, { schemaVersion: 'hive-git-physical-phase-g-input/v1' });
+    Object.assign(input.result, { schemaVersion: 'hive-git-physical-phase-g-result/v1' });
+    expect(validatePhysicalPhaseG(input).ok).toBe(false);
+  });
+
+  it('verifies the owner countersignature even when the acceptance record claims success', () => {
+    const input = validInput();
+    delete input.result.authorityFence.successorAdvance.hive_sig;
+    expect(validatePhysicalPhaseG(input).errors).toContain(
+      'Phase G successor must verify the owning hive countersignature and signed context',
+    );
+  });
+
+  it('rejects a countersigned publication from another repository', () => {
+    const input = validInput();
+    input.result.authorityFence.successorAdvance.repo_key = 'phase-g:another-run';
+    expect(validatePhysicalPhaseG(input).errors).toContain(
+      'Phase G successor must verify the owning hive countersignature and signed context',
+    );
+  });
+
+  it('rejects admitting a device-only higher term or moving its protected ref', () => {
+    const input = validInput();
+    input.result.authorityFence.deviceOnlyAcceptance = { ok: true, reason: null };
+    input.result.authorityFence.receiverRefAfterDeviceOnly = input.result.authorityFence.deviceOnlyAdvance.staging_sha;
+    expect(validatePhysicalPhaseG(input).errors).toEqual(expect.arrayContaining([
+      'Phase G device-only advance must be rejected without owning hive authority',
+      'Phase G device-only attempt must not move the receiver ref',
+    ]));
+  });
+
+  it('requires genuine old owner proof for the stale-publication negative control', () => {
+    const input = validInput();
+    delete input.result.authorityFence.staleAdvance.hive_sig;
+    expect(validatePhysicalPhaseG(input).errors).toContain(
+      'Phase G stale record must carry valid owner proof before failing the publication fence',
+    );
+  });
+
+  it('holds the cursor until the signed publisher generation is accepted', () => {
+    const input = validInput();
+    input.result.retryPersistence.duringUnknownGeneration = 42;
+    expect(validatePhysicalPhaseG(input).errors).toContain(
+      'Phase G retryable unknown-generation must hold the fed-event cursor',
+    );
   });
 
   it('rejects a recovery record that used a force push', () => {

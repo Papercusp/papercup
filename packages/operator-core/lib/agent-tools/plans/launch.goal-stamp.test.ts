@@ -195,10 +195,41 @@ describe('no tool argument can name a goal (D-005 self-report immunity)', () => 
     ['plans:new', (newTool as { args: z.ZodObject<z.ZodRawShape> }).args],
   ];
 
-  it.each(schemas)('%s declares no goal-shaped argument', (_name, schema) => {
+  // tool-contract-repair-2026-09-05 P-006 added `goal` to plans:new as a
+  // compatibility ALIAS of `rationale` — the one-line "why this plan exists"
+  // stored as the first revision's rationale (D-009). It names a purpose
+  // statement, never a goal row, and the stamp still comes from RESOLVED
+  // context (`stampPlanGoalProvenance` is called after `resolveGoalContext`,
+  // never with an argument). The lexical proxy below exempts exactly that one
+  // documented alias and pins its description, so a `goal` re-purposed to feed
+  // the stamp — or one that stops describing itself as the rationale alias —
+  // reds this file and forces the deliberate revisit D-005 asks for.
+  const RATIONALE_ALIASES: Record<string, readonly string[]> = { 'plans:new': ['goal'] };
+
+  it.each(schemas)('%s declares no goal-shaped argument', (name, schema) => {
     expect(schema).toBeDefined();
-    const goalish = Object.keys(schema.shape).filter((k) => /goal/i.test(k));
+    const allowed = RATIONALE_ALIASES[name] ?? [];
+    const goalish = Object.keys(schema.shape).filter((k) => /goal/i.test(k) && !allowed.includes(k));
     expect(goalish).toEqual([]);
+    for (const alias of allowed) {
+      const field = schema.shape[alias] as { description?: string } | undefined;
+      expect(field, `${name}: allow-listed alias "${alias}" is no longer declared — drop it from RATIONALE_ALIASES`).toBeDefined();
+      expect(field?.description ?? '').toMatch(/alias for `rationale`/i);
+    }
+  });
+
+  it('plans:new: the `goal` rationale alias never reaches the goal stamp', async () => {
+    resolveGoalM.mockRejectedValue(new Error('goal holder superseded'));
+    await expect(
+      (newTool as { handler: (a: never, c: never) => Promise<Out> }).handler(
+        { harness: 'member-harness', slug: 'demo-plan', title: 'Demo', force: true, goal: 'goal-evil' } as never,
+        { emit: vi.fn(), metadata: vi.fn() } as never,
+      ),
+    ).rejects.toThrow('goal holder superseded');
+    // The argument is a rationale string; goal attribution is resolved context
+    // only, so a refused resolution means NO stamp — with or without the alias.
+    expect(stampM).not.toHaveBeenCalled();
+    expect(withPlanLockM).not.toHaveBeenCalled();
   });
 
   it('the schema REJECTS a smuggled goal key outright (strict — not even stripped)', () => {

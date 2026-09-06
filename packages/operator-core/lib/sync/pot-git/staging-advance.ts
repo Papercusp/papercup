@@ -2,25 +2,17 @@
  * pot-git/staging-advance.ts — signed, epoch-fenced staging advances (Phase 7
  * G-5d, cross-machine-coord-parity-and-trust-2026-07-01 / P-038; D-011 hole 2).
  *
- * THE HOLE THIS CLOSES (integrator fencing): the lock-authority lease is a
- * deterministic argmin over live presence (authority/lock-authority.ts) — a
- * presence flap can briefly give TWO machines the integrator role without a
- * network partition. If both publish staging, receivers need a total order to
- * fence the stale ex-authority's late advance. The fix is the classic fencing
- * token: the lease carries a monotonic `epoch` (bumped on every authority
- * change, carried by the G-0 handoff token), the integrator stamps each staging
- * advance with `(epoch, seq)` and SIGNS it with its device key, and a receiver
- * accepts an advance ONLY when:
+ * F6/D-022: canonical authority is the single owning hive, not the locally
+ * selected integrator or a membership epoch. V3 carries both the device's
+ * scoped signature and the hive owner's countersignature. Receivers pin the
+ * hive/repository identity, require that owner proof, then enforce accepted
+ * store generation, publication term/sequence and fast-forward ancestry.
  *
- *   1. the signature verifies for the embedded integrator device (and that
- *      device passes the caller's membership/authority gate),
- *   2. `(epoch, seq)` is STRICTLY greater than the last accepted pair, and
- *   3. the new staging sha is a FAST-FORWARD of the last accepted staging
- *      (staging never rewinds — same invariant as G-7c on worktrees).
- *
- * A stale ex-authority still holds an older epoch, so its late advance fails
- * (2); a replayed or duplicated announcement fails (2); a forged one fails (1);
- * an equivocating authority that tries to move staging sideways fails (3).
+ * The owner persists publication term/sequence in existing routine metadata.
+ * Peers cannot authorize an advance by electing themselves at the same roster
+ * epoch, inventing a higher term or replaying a device-only legacy envelope.
+ * Legacy decoding remains explicit for migration tests; production disables it.
+ * No partition-safe automatic ownership failover is claimed.
  *
  * This module is the PAYLOAD + ACCEPTANCE layer: `integrateMemberHeads` (G-5)
  * computes the sha, the announcement rail (G-3, leader-held) carries the signed
@@ -33,6 +25,7 @@
 
 import { verifyEd25519 } from '../../identity/ed25519';
 import { type RunGit, defaultRunGit } from './storage';
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
 import {
   SIGNED_PROTOCOL_SCHEMA_VERSION,
   isSignedProtocolContext,
@@ -45,6 +38,8 @@ import {
 /** Wire schema version for the staging-advance envelope. */
 export const STAGING_ADVANCE_SCHEMA_VERSION = 1;
 export const STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT = SIGNED_PROTOCOL_SCHEMA_VERSION;
+/** F6: device signature plus the single owning hive's countersignature. */
+export const STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY = 3;
 
 /**
  * Domain-separation tag mixed into the signed bytes (the hive-policy idiom,
@@ -60,9 +55,9 @@ export const STAGING_ADVANCE_SIG_DOMAIN = 'papercusp-pot-git-staging-advance-v1'
  *  (worktree-bridge.ts, P-204) holds an events:await on the same key. */
 export const STAGING_ADVANCE_EVENT_KEY = 'pot-git:staging-advance';
 
-/** A fencing pair: the authority lease epoch + the per-epoch advance sequence. */
+/** A publication fence: owner term + per-term advance sequence (not roster epoch). */
 export interface EpochSeq {
-  /** Monotonic lease epoch — bumps on every authority change (G-0 handoff). */
+  /** Monotonic owner publication term; persisted separately from membership. */
   epoch: number;
   /** Monotonic per-epoch advance counter — bumps on every staging publish. */
   seq: number;
@@ -87,6 +82,8 @@ export interface StagingAdvancePayload extends EpochSeq {
 export interface SignedStagingAdvance extends StagingAdvancePayload {
   /** base64 Ed25519 signature over stagingAdvanceSigningBytes(payload). */
   sig: string;
+  /** Required for v3, verified against the receiver's pinned hive identity. */
+  hive_sig?: string;
 }
 
 function isNonNegInt(x: unknown): x is number {
@@ -106,10 +103,11 @@ function isStagingAdvancePayload(x: unknown): x is StagingAdvancePayload {
     typeof s.staging_sha === 'string' &&
     SHA_RE.test(s.staging_sha) &&
     typeof s.ts === 'number' &&
-    (s.v === STAGING_ADVANCE_SCHEMA_VERSION || s.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT)
+    (s.v === STAGING_ADVANCE_SCHEMA_VERSION || s.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT ||
+      s.v === STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY)
   );
   if (!baseOk) return false;
-  return s.v !== STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT || isSignedProtocolContext(s);
+  return s.v === STAGING_ADVANCE_SCHEMA_VERSION || isSignedProtocolContext(s);
 }
 
 export function isSignedStagingAdvance(x: unknown): x is SignedStagingAdvance {
@@ -130,7 +128,7 @@ export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buff
     staging_sha: payload.staging_sha,
     ts: payload.ts,
   };
-  if (payload.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT) {
+  if (payload.v >= STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT) {
     ordered.hive_id = payload.hive_id;
     ordered.repo_key = payload.repo_key;
     ordered.store_generation = payload.store_generation;
@@ -144,11 +142,11 @@ export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buff
  * tests: `bytes => signWithPrivateKeyDer(der, bytes)`).
  */
 export async function signStagingAdvance(
-  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number; context?: SignedProtocolContext },
+  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number; context?: SignedProtocolContext; authority?: HiveEffectAuthority },
   sign: (bytes: Buffer) => Promise<Buffer>,
 ): Promise<SignedStagingAdvance> {
   const payload: StagingAdvancePayload = {
-    v: fields.context ? STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT : STAGING_ADVANCE_SCHEMA_VERSION,
+    v: fields.authority ? STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY : fields.context ? STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT : STAGING_ADVANCE_SCHEMA_VERSION,
     device_pubkey: fields.devicePubkeyBase64,
     epoch: fields.epoch,
     seq: fields.seq,
@@ -160,7 +158,29 @@ export async function signStagingAdvance(
     throw new Error('pot-git: signStagingAdvance called with a malformed payload');
   }
   const sig = (await sign(stagingAdvanceSigningBytes(payload))).toString('base64');
+  if (fields.authority) {
+    if (!fields.context) throw new Error('pot-git: owner authorization requires signed context');
+    await requireHiveEffectAuthority(fields.authority, fields.context, ['staging-announce', fields.stagingSha]);
+    const signed = { ...payload, sig };
+    const hive_sig = (await fields.authority.sign(stagingAuthoritySigningBytes(signed))).toString('base64');
+    if (!verifyStagingAuthority({ ...signed, hive_sig }, fields.context.hive_id)) {
+      throw new Error('pot-git: invalid owning hive countersignature');
+    }
+    return { ...signed, hive_sig };
+  }
   return { ...payload, sig };
+}
+
+function stagingAuthoritySigningBytes(signed: SignedStagingAdvance): Buffer {
+  return Buffer.concat([Buffer.from('papercusp-hive-staging-authority-v1\n'),
+    stagingAdvanceSigningBytes(signed), Buffer.from('\n' + signed.sig)]);
+}
+
+function verifyStagingAuthority(signed: SignedStagingAdvance, hiveId: string): boolean {
+  try {
+    return signed.v === STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY && typeof signed.hive_sig === 'string' &&
+      verifyEd25519(stagingAuthoritySigningBytes(signed), hiveId, Buffer.from(signed.hive_sig, 'base64'));
+  } catch { return false; }
 }
 
 /**
@@ -200,6 +220,7 @@ export type StagingAdvanceAcceptance =
         | 'malformed'
         | 'wrong-device'
         | 'bad-signature'
+        | 'missing-hive-authority'
         | 'ungranted-epoch'
         | 'stale-epoch-seq'
         | 'non-fast-forward'
@@ -239,7 +260,7 @@ export interface AcceptStagingAdvanceOpts {
    * authority) it is optional — only that authority can sign at all.
    */
   maxGrantedEpoch?: number;
-  /** Expected v2 context. V1 is accepted only when allowLegacy is true. */
+  /** Expected context pins the owner key as well as the repository. */
   expectedContext?: ExpectedSignedProtocolContext;
   allowLegacy?: boolean;
   /** Generations already accepted through this device's signed snapshots. */
@@ -265,7 +286,7 @@ export function acceptStagingAdvance(
       (opts.allowLegacy !== true || opts.knownStoreGenerations?.[incoming.device_pubkey])) {
     return { ok: false, reason: 'legacy-version' };
   }
-  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT &&
+  if (incoming.v >= STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT &&
       (!opts.expectedContext || !signedProtocolContextMatches(incoming, opts.expectedContext))) {
     return { ok: false, reason: 'context-mismatch' };
   }
@@ -275,7 +296,13 @@ export function acceptStagingAdvance(
     return { ok: false, reason: 'wrong-device' };
   }
   if (!verifyStagingAdvance(incoming)) return { ok: false, reason: 'bad-signature' };
-  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && opts.knownStoreGenerations) {
+  // Legacy negotiation is explicit. Production never enables it; membership
+  // alone cannot authorize canonical advances, even at a newer local epoch.
+  if ((incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY || opts.allowLegacy !== true) &&
+      (!opts.expectedContext || !verifyStagingAuthority(incoming, opts.expectedContext.hive_id))) {
+    return { ok: false, reason: 'missing-hive-authority' };
+  }
+  if (incoming.v >= STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && opts.knownStoreGenerations) {
     const known = opts.knownStoreGenerations[incoming.device_pubkey];
     if (known !== incoming.store_generation) {
       const oldOrdinal = storeGenerationOrdinal(known);

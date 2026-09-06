@@ -145,21 +145,31 @@ describe('installed (non-built-in) parents', () => {
 // array; an object override (spine.edges) DEEP-MERGES with it. Re-validating the
 // returned YAML via {source} resolves it through the real engine.
 describe('blueprint:extend — merge semantics (deep-merge objects, replace arrays)', () => {
-  it('an array override (roles) REPLACES the parent array — resolved has ONLY the override', async () => {
+  it('a keyed-array override (roles) OVERLAYS by id — resolved keeps the parent roles AND gains the override', async () => {
     const r = await run(extendTool, { id: 'c', parent: 'coding-factory', overrides: { roles: [{ id: 'solo' }] } });
     expect(r.ok).toBe(true);
     // The returned child YAML carries the override verbatim (one role) …
     const child = parseYaml(r.yaml);
     expect(child.roles).toEqual([{ id: 'solo' }]);
-    // … and re-resolving it through the engine confirms the parent's many roles
-    // were REPLACED, not appended: exactly the one override role survives.
+    // … and re-resolving it through the engine applies the P-019 merge algebra
+    // (orchestrator merge-rules.ts: `roles` is a keyed overlay by role id — a
+    // child restating a role overrides the fields it names and inherits the
+    // rest; a NEW id is added). The parent's roles survive and `solo` joins them.
     const resolved = await run(validateTool, { source: r.yaml });
-    expect(resolved.summary.roles).toEqual(['solo']);
-    // Fault-injection guard: this assertion is NON-VACUOUS only because the array
-    // was replaced. coding declares >1 role; if extend.ts had deep-merged the
-    // array (concat) the resolved set would contain the parent roles too.
-    expect(resolved.summary.roles).not.toContain('worker');
-    expect(resolved.summary.roles.length).toBe(1);
+    expect(resolved.summary.roles).toContain('solo');
+    expect(resolved.summary.roles).toContain('worker');
+    // Fault-injection guard: NON-VACUOUS in both directions. A replace algebra
+    // would drop `worker`; a blind concat would duplicate a restated id. Restate
+    // an existing parent role and confirm it is overlaid, not appended twice.
+    const restated = await run(extendTool, {
+      id: 'c3',
+      parent: 'coding-factory',
+      overrides: { roles: [{ id: 'worker', description: 'restated worker' }] },
+    });
+    expect(restated.ok).toBe(true);
+    const restatedResolved = await run(validateTool, { source: restated.yaml });
+    expect(restatedResolved.summary.roles.filter((id: string) => id === 'worker')).toHaveLength(1);
+    expect(restatedResolved.summary.roles.length).toBe(resolved.summary.roles.length - 1);
   });
 
   it('an object override (spine.edges) DEEP-MERGES — resolved retains parent edges AND adds the new one', async () => {

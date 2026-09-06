@@ -54,7 +54,13 @@ import {
 } from './grader-eligibility';
 import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
-import { GRADING_INTEGRITY_RUBRIC_REF, gradingAuditGateEnabled, needsGradingAudit } from '../../grading-integrity';
+import {
+  dispatchPendingGradingAudits,
+  GRADING_INTEGRITY_RUBRIC_REF,
+  gradingAuditGateEnabled,
+  needsGradingAudit,
+  type GradingAuditLaunchContext,
+} from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
@@ -456,6 +462,8 @@ export async function emitScorecard(
     ctxHarness?: string;
     role?: string;
     workspaceId?: string;
+    /** Full request context used by the bounded post-write audit-dispatch repair. */
+    launchContext?: GradingAuditLaunchContext;
     /** P-011 (D-006): the tree tests-check files resolve + run against — the handler
      *  passes its ctx-resolved root; omitted ⇒ the resolver's ctx-less fallback. */
     checkRoot?: string;
@@ -481,6 +489,8 @@ export async function emitScorecard(
     /** EI-21917534129987791: liveness probe backing the author-rebind recovery
      *  hint on the "acceptance must be recorded by the author" refusal. */
     resolveAuthorSessionState?: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>;
+    /** Test seam for the bounded post-write pending-audit dispatcher. */
+    dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -1093,10 +1103,28 @@ export async function emitScorecard(
         };
       }
       if (gradedObservation.gradingAudit.state !== 'pending') {
-        return {
-          ok: false as const,
-          error: `audit subject '${args.subject.ref}' is already audited (${gradedObservation.gradingAudit.state}) — supersede the AUDIT card instead of re-auditing (D-004: one level, no regress)`,
-        };
+        // A settled graded subject may still need a factual/body correction to
+        // its AUDIT card. Allow that narrow same-subject correction through;
+        // the generic supersedes validation below still enforces that the
+        // referenced card is an actual same-rubric scorecard.
+        const supersededAudit = args.supersedes ? await getIssue(args.supersedes) : null;
+        const supersededAuditRaw =
+          supersededAudit?.payload &&
+          typeof supersededAudit.payload === 'object' &&
+          !Array.isArray(supersededAudit.payload)
+            ? (supersededAudit.payload as { observation?: unknown }).observation
+            : undefined;
+        const supersededAuditObservation = asStructuredObservation(supersededAuditRaw);
+        const isAuditCorrection =
+          supersededAuditObservation?.rubricRef === GRADING_INTEGRITY_RUBRIC_REF &&
+          supersededAuditObservation.subject?.kind === 'scorecard' &&
+          supersededAuditObservation.subject.ref === args.subject.ref;
+        if (!isAuditCorrection) {
+          return {
+            ok: false as const,
+            error: `audit subject '${args.subject.ref}' is already audited (${gradedObservation.gradingAudit.state}) — supersede the AUDIT card instead of re-auditing (D-004: one level, no regress)`,
+          };
+        }
       }
       const gradedAuthor = graded?.createdBy ?? null;
       // Unattributable identity on EITHER side refuses — strict toward auditing again.
@@ -1144,8 +1172,8 @@ export async function emitScorecard(
           card.gradingAudit?.state === 'pending' &&
           card.subject?.ref === args.subject?.ref &&
           (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
-          card.createdBy != null &&
-          card.createdBy !== input.createdBy,
+          card.supersededBy == null &&
+          card.issueId !== args.supersedes,
       );
       if (pendingSubject) {
         return {
@@ -1569,6 +1597,27 @@ export async function emitScorecard(
         input.workspaceId ? { workspaceId: input.workspaceId } : {},
       );
     }
+    // P-013 backlog repair: every newly filed non-audit scorecard is a cheap,
+    // durable trigger for the bounded oldest-first pending-audit dispatcher.
+    // Do not trigger from the audit card itself: its own emit would recursively
+    // fan out the same backlog while the original dispatch is still in flight.
+    // The dispatcher is detached so a historical backlog cannot stretch the
+    // scorecards:emit latency or fail a card that was already written.
+    if (
+      result.created &&
+      result.issue?.id &&
+      input.launchContext &&
+      args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF
+    ) {
+      const dispatchAudits = deps.dispatchPendingGradingAudits ?? dispatchPendingGradingAudits;
+      void trackDetached(
+        dispatchAudits({
+          targetIds: [],
+          ctx: input.launchContext,
+          harness: input.ctxHarness,
+        }).then(() => undefined),
+      ).catch(() => {});
+    }
     // unified-responder-selection-critique-and-grading-2026-08-30 D-003 [owner]:
     // grading is a CASCADE of up to two graders, and grader 2 is woken holding
     // grader 1's card. Filing the card is the act that discharges a grading, so
@@ -1695,6 +1744,7 @@ export default defineTool({
           ctxHarness,
           role: ctx.role,
           workspaceId: identity.workspaceId ?? undefined,
+          launchContext: ctx,
           // P-011: tests-checks resolve + run against the tree the AGENT edits.
           checkRoot: resolveAgentWorkspaceRoot(ctx),
         },

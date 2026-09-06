@@ -21,13 +21,15 @@ import { listScorecards, type ScorecardRow } from './scorecards';
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
 
 /**
- * Keep a completion-triggered repair bounded. A pending card is already a
- * durable queue entry; the completion refusal must not turn one caller into an
+ * Keep every trigger bounded. A pending card is already a durable queue entry;
+ * a scorecard emit or completion refusal must not turn one caller into an
  * unbounded fan-out when a historical backlog is present.
  */
 export const GRADING_AUDIT_DISPATCH_LIMIT = 50;
+/** Maximum scorecard history scanned when selecting an oldest-first backlog batch. */
+export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
 
-type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
+export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
 type GradingAuditLaunchHandler = typeof launchAgentTool.handler;
 
 export type PendingGradingAuditDispatchState = 'launched' | 'deduped' | 'skipped' | 'failed';
@@ -47,8 +49,12 @@ export interface PendingGradingAuditDispatchResult {
 }
 
 export interface DispatchPendingGradingAuditsInput {
-  /** Pending target issue ids surfaced by the completion gate. */
-  targetIds: readonly string[];
+  /**
+   * Pending target issue ids surfaced by the completion gate. Omit or pass an
+   * empty list to select the oldest current pending cards from scorecard
+   * history; this is the scorecards:emit repair trigger.
+   */
+  targetIds?: readonly string[];
   /** The completion caller's context, forwarded to capability:launch-agent. */
   ctx: GradingAuditLaunchContext;
   /** Keep the auditor in the completed item's harness when available. */
@@ -70,6 +76,10 @@ function currentPendingScorecard(card: ScorecardRow): boolean {
   );
 }
 
+function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
+  return a.createdAt.localeCompare(b.createdAt) || a.issueId.localeCompare(b.issueId);
+}
+
 function gradingAuditBrief(card: ScorecardRow): string {
   return [
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
@@ -82,36 +92,40 @@ function gradingAuditBrief(card: ScorecardRow): string {
 
 /**
  * Launch one independent auditor for each currently pending target surfaced by
- * the completion gate. The scorecard read deliberately includes historical
- * rows, then applies the current/superseded/retracted filter locally: this
- * prevents a read-side default change from accidentally re-dispatching a
+ * the completion gate, or for an oldest-first bounded backlog batch when no
+ * explicit targets were supplied. The scorecard read deliberately includes
+ * historical rows, then applies the current/superseded/retracted filter locally:
+ * this prevents a read-side default change from accidentally re-dispatching a
  * retired target. capability:launch-agent's stable idempotency key makes a
- * retry of the same completion safe.
+ * retry of the same completion or emit safe.
  */
 export async function dispatchPendingGradingAudits(
   input: DispatchPendingGradingAuditsInput,
   deps: DispatchPendingGradingAuditsDeps = {},
 ): Promise<PendingGradingAuditDispatchResult> {
-  const requestedTargetIds = [...new Set(input.targetIds.map((id) => id.trim()).filter(Boolean))].slice(
+  const explicitTargetIds = [...new Set((input.targetIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(
     0,
     GRADING_AUDIT_DISPATCH_LIMIT,
   );
-  if (requestedTargetIds.length === 0) return { requestedTargetIds, receipts: [] };
 
   const readCards = deps.listScorecards ?? listScorecards;
   const resolveRubric = deps.getRubric ?? getRubric;
   const launch = deps.launch ?? launchAgentTool.handler;
-  const targetSet = new Set(requestedTargetIds);
   const cards = await readCards({
     includeSuperseded: true,
     includeRetracted: true,
-    limit: GRADING_AUDIT_DISPATCH_LIMIT,
+    limit: explicitTargetIds.length > 0 ? GRADING_AUDIT_DISPATCH_LIMIT : GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   });
-  const pendingById = new Map(
-    cards
-      .filter((card) => targetSet.has(card.issueId) && currentPendingScorecard(card))
-      .map((card) => [card.issueId, card] as const),
-  );
+  const pendingCards = cards.filter(currentPendingScorecard);
+  const pendingById = new Map(pendingCards.map((card) => [card.issueId, card] as const));
+  const requestedTargetIds =
+    explicitTargetIds.length > 0
+      ? explicitTargetIds
+      : pendingCards
+          .slice()
+          .sort(oldestFirst)
+          .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)
+          .map((card) => card.issueId);
 
   const receipts: PendingGradingAuditDispatchReceipt[] = [];
   for (const issueId of requestedTargetIds) {

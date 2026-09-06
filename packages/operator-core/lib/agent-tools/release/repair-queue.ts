@@ -241,10 +241,51 @@ export function assessFrozenRepairFixerAuthorization(
   );
 }
 
+/**
+ * P-027 (D-014): before the door decides anything, make the row agree with the lineage ref.
+ * A row that fell BEHIND the ref (a pre-D-014 run write-back dropped an admission the ref kept)
+ * would otherwise refuse every admit with `lineage-ref-moved` until a human reset the ref by
+ * hand. The rebuild is derived from the commits and persisted through the CAS transition, so a
+ * concurrent writer is carried, not overwritten; a refusal (`ref-behind-row`, foreign commit,
+ * git fault) leaves the row untouched and is reported on the inspect. Never fatal: an inspect
+ * that cannot reconcile still answers with the row as stored.
+ */
+async function reconcileQueueRowWithLineage(
+  queueTarget: ReturnType<typeof target>,
+  queue: FrozenCandidateRepairQueue,
+): Promise<{ queue: FrozenCandidateRepairQueue; ledger: { status: string; reconciled: number; detail: string } | null }> {
+  try {
+    const { reconcileFrozenRepairQueueWithLineageRef } = await import('../../release/frozen-lineage-ledger-reconcile');
+    const { applyFrozenCandidateRepairQueueTransition } = await import('../../harness/routines/release-actions');
+    const root = integrationRoot();
+    const probe = reconcileFrozenRepairQueueWithLineageRef(queue, { root });
+    if (probe.status === 'in-sync') return { queue, ledger: null };
+    if (probe.status !== 'reconciled') {
+      return { queue, ledger: { status: probe.status, reconciled: 0, detail: probe.detail } };
+    }
+    let last = probe;
+    const outcome = await applyFrozenCandidateRepairQueueTransition(queueTarget, (fresh) => {
+      last = reconcileFrozenRepairQueueWithLineageRef(fresh, { root });
+      return last.queue;
+    });
+    return {
+      queue: outcome.queue ?? last.queue,
+      ledger: { status: last.status, reconciled: last.reconciled.length, detail: last.detail },
+    };
+  } catch (err) {
+    return {
+      queue,
+      ledger: { status: 'reconcile-failed', reconciled: 0, detail: err instanceof Error ? err.message : String(err) },
+    };
+  }
+}
+
 async function inspectQueue() {
   const queueTarget = target();
   const read = await readFrozenCandidateRepairQueueState(queueTarget);
-  const queue = read.status === 'value' ? read.queue : null;
+  let queue = read.status === 'value' ? read.queue : null;
+  let ledger: { status: string; reconciled: number; detail: string } | null = null;
+  if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue));
   let fixerAlive: boolean | null | undefined;
   if (queue?.fixerSpawnId) {
     fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
@@ -254,6 +295,8 @@ async function inspectQueue() {
     read,
     queue,
     fixerAlive,
+    /** P-027: null when the row already agreed with the lineage ref; otherwise what the reconcile did or refused. */
+    ledger,
     diagnostic: diagnoseFrozenCandidateRepairQueue(queue, { nowMs: Date.now(), fixerAlive }),
   };
 }
@@ -313,7 +356,7 @@ export default defineTool({
     chaining:
       'Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
     returns:
-      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | admission-incomplete (P-004: an admitted TS/JS file imports a relative path that resolves to nothing at the proved commit — missing[] names each {from, specifier, wanted, tried, atProbeRef}, admitCommand is the same admit widened by exactly those paths; the tip is never widened for you) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
+      "{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, dryRun?, judgedSha?, nextAction? }. get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | admission-incomplete (P-004: an admitted TS/JS file imports a relative path that resolves to nothing at the proved commit — missing[] names each {from, specifier, wanted, tried, atProbeRef}, admitCommand is the same admit widened by exactly those paths; the tip is never widened for you) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -387,6 +430,10 @@ export default defineTool({
         repairQueue: renderedQueue,
         repairQueueRead: compactRead,
         callerAuthorization,
+        // P-027 (D-014): ledger/ref agreement. Absent ⇒ in sync on this read; `reconciled` ⇒ the
+        // row was rebuilt from the lineage ref just now; any other status ⇒ a disagreement this
+        // read refused to repair, with the reason.
+        ...(inspected.ledger ? { lineageLedger: inspected.ledger } : {}),
       });
     }
     if (inspected.read.status === 'unreadable') {

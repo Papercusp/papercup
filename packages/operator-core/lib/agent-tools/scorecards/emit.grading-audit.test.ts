@@ -13,6 +13,7 @@ const captureImprovement = vi.fn();
 const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
 const gateEnabled = vi.fn();
+const dispatchPendingGradingAudits = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -55,6 +56,9 @@ vi.mock('../../scout/generation-watermark', () => ({
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
   areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  // grader-eligibility resolves the plan's principal implementers before the
+  // author/lineage rails; these cards have no subject plan, so the seat is empty.
+  resolvePlanImplementerIdentities: vi.fn(async () => []),
 }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();
@@ -62,7 +66,11 @@ vi.mock('../../issues-engineer', async (importOriginal) => {
 });
 vi.mock('../../grading-integrity', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../grading-integrity')>();
-  return { ...real, gradingAuditGateEnabled: (...a: unknown[]) => gateEnabled(...a) };
+  return {
+    ...real,
+    dispatchPendingGradingAudits: (...a: unknown[]) => dispatchPendingGradingAudits(...a),
+    gradingAuditGateEnabled: (...a: unknown[]) => gateEnabled(...a),
+  };
 });
 
 import { emitScorecard } from './emit';
@@ -118,9 +126,26 @@ beforeEach(() => {
     gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
   });
   gateEnabled.mockReset().mockResolvedValue(true);
+  dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
+  it('triggers bounded pending-audit dispatch after a newly filed non-audit scorecard', async () => {
+    const launchContext = { workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+    const res = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp', launchContext: launchContext as never },
+    );
+
+    expect(res.ok).toBe(true);
+    await vi.waitFor(() => expect(dispatchPendingGradingAudits).toHaveBeenCalledOnce());
+    expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
+      targetIds: [],
+      ctx: launchContext,
+      harness: 'papercusp',
+    });
+  });
+
   it('a terminal standard-rubric card is stamped pending and says so in the result', async () => {
     const res = await emitScorecard(
       { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
@@ -280,6 +305,49 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  it('refuses a same-author re-emit while the subject still has a live pending audit', async () => {
+    getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+    getIssue.mockResolvedValue(null);
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-PENDING-SAME-AUTHOR',
+        createdAt: '2026-08-27T14:00:00.000Z',
+        createdBy: 'su-subject-author',
+        subject: { kind: 'plan', ref: 'plan-x' },
+        rubricRef: 'goal-mode-e2e',
+        ratings: RATINGS,
+        nKeys: 1,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-27T14:00:00.000Z',
+        },
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+
+    const res = await emitScorecard(
+      {
+        rubricRef: 'goal-mode-e2e',
+        ratings: RATINGS,
+        terminal: true,
+        force: true,
+        subject: { kind: 'plan', ref: 'plan-x' },
+      },
+      { createdBy: 'su-subject-author', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_required' });
+    expect((res as { error?: string }).error).toContain('EI-PENDING-SAME-AUTHOR');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('control (THE mirror rule): a SELF-audit is refused and nothing is filed or settled', async () => {
     const res = await emitScorecard(auditArgs, {
       createdBy: 'su-grader-author', // the graded card's own author
@@ -316,6 +384,58 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     const already = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(already.ok).toBe(false);
     expect((already as { error?: string }).error).toContain('already audited');
+  });
+
+  it('allows a correction to supersede the existing audit card after the subject is settled', async () => {
+    const settledGradedCard = {
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
+          gradingAudit: {
+            state: 'passed',
+            metaRubricRef: 'grading-integrity',
+            auditIssueId: 'EI-AUDIT-OLD',
+            auditor: 'su-old-auditor',
+            stampedAt: '2026-08-17T12:00:00.000Z',
+          },
+        },
+      },
+    };
+    const priorAudit = {
+      id: 'EI-AUDIT-OLD',
+      createdBy: 'su-old-auditor',
+      payload: {
+        observation: {
+          rubricRef: 'grading-integrity',
+          ratings: RATINGS,
+          subject: { kind: 'scorecard', ref: 'EI-CARD' },
+        },
+      },
+    };
+    // The settled-subject exception and the generic supersedes validator both
+    // read the referenced audit card; keep both reads on the same prior card.
+    getIssue.mockResolvedValueOnce(settledGradedCard).mockResolvedValueOnce(priorAudit).mockResolvedValueOnce(priorAudit);
+
+    const res = await emitScorecard(
+      { ...auditArgs, supersedes: 'EI-AUDIT-OLD' },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({ ok: true, created: true, supersedes: 'EI-AUDIT-OLD' });
+    expect(recordGradingAudit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ auditIssueId: 'EI-AUDIT-1', verdict: 'passed' }),
+    );
+    expect(captureImprovement.mock.calls[0]?.[0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          rubricRef: 'grading-integrity',
+          supersedes: 'EI-AUDIT-OLD',
+          subject: { kind: 'scorecard', ref: 'EI-CARD' },
+        },
+      },
+    });
   });
 });
 

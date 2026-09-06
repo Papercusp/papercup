@@ -24,6 +24,37 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { ENCRYPTED_TABLES, getDbEncryptionKey } from './db-encryption';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { isRetriablePgConnectError, withPgRetry, type PgRetryOpts } from './pg-transient-retry';
+
+/**
+ * Read-only retry classifier for the operator-state SELECTs below. A SELECT that never
+ * reached the server is safe to re-issue, so on top of the connect-phase timeout the
+ * default `isRetriablePgConnectError` admits, this ALSO retries the two pgbouncer
+ * pool-starvation shapes that killed a 60-minute green-checkpoint run at its decision
+ * stage on 2026-09-05 (`readOperatorState` threw `PostgresError: query_wait_timeout`,
+ * SQLSTATE 08P01 — the pooler gave up waiting for a server slot, so nothing executed)
+ * and the closed-mid-flight `CONNECTION_CLOSED` that follows it. Mutating call sites
+ * keep the narrow default: a CONNECTION_CLOSED write may have partially run (see the
+ * module header of pg-transient-retry.ts).
+ */
+export function isRetriablePgReadError(e: unknown): boolean {
+  if (isRetriablePgConnectError(e)) return true;
+  const x = e as { code?: string; message?: string } | null;
+  if (!x) return false;
+  const msg = x.message ?? '';
+  return (
+    /\bquery_wait_timeout\b/.test(msg) ||
+    x.code === 'CONNECTION_CLOSED' ||
+    /\bCONNECTION_CLOSED\b/.test(msg)
+  );
+}
+
+const READ_RETRY: PgRetryOpts = {
+  retries: 2,
+  backoffMs: 500,
+  classifier: isRetriablePgReadError,
+  label: 'readOperatorState',
+};
 
 // (operator_last_scan / operator_idle_snapshot / operator_scanner_session were
 // removed with the scanner teardown — unify-agent-launches D-005, migration 167.)
@@ -320,7 +351,9 @@ export async function readOperatorState<T>(
   let result: T | null;
   if (ENCRYPTED_TABLES.has(table)) {
     const key = getDbEncryptionKey();
-    const rows = await sql<{ plaintext: T | null }[]>`
+    // Read-only SELECT — re-issued on pool starvation (see READ_RETRY / isRetriablePgReadError).
+    const rows = await withPgRetry(
+      () => sql<{ plaintext: T | null }[]>`
       SELECT
         CASE
           WHEN payload_ct IS NOT NULL
@@ -329,13 +362,18 @@ export async function readOperatorState<T>(
         END AS plaintext
       FROM ${sql(`harness_shared.${table}`)}
        WHERE workspace_id = ${ws}
-    `;
+    `,
+      READ_RETRY,
+    );
     result = rows.length > 0 ? (rows[0].plaintext ?? null) : null;
   } else {
-    const rows = await sql<{ payload: T }[]>`
+    const rows = await withPgRetry(
+      () => sql<{ payload: T }[]>`
       SELECT payload FROM ${sql(`harness_shared.${table}`)}
        WHERE workspace_id = ${ws}
-    `;
+    `,
+      READ_RETRY,
+    );
     result = rows.length > 0 ? rows[0].payload : null;
   }
 

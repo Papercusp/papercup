@@ -1589,6 +1589,56 @@ export function buildUnusedCteAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * Flag SQL shapes whose zero-row result cannot establish that the underlying
+ * population is empty (EI-22433765987075358).
+ *
+ * `HAVING` filters GROUP BY output, so `HAVING count(*) = 1` returning no rows
+ * means only that no group matched that predicate — groups with two or more
+ * rows may still exist. A caller-provided LIMIT below dev:pg_query's `maxRows`
+ * similarly makes the query a bounded sample rather than a census; LIMIT 0 is
+ * the sharpest version of that trap because it manufactures an empty result.
+ *
+ * This is a pure, conservative shape check. String literals and comments are
+ * stripped before matching, and dynamic/`ALL` limits are left alone because
+ * this builder cannot prove their effective bound without executing SQL.
+ */
+export function buildPopulationNarrowingAdvisory(
+  rawSql: string,
+  maxRows: number = PG_READ_QUERY_DEFAULT_MAX_ROWS,
+): string | null {
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  const hasHaving = /\bhaving\b/i.test(stripped);
+  const configuredMaxRows = Number.isFinite(maxRows)
+    ? Math.max(1, Math.trunc(maxRows))
+    : PG_READ_QUERY_DEFAULT_MAX_ROWS;
+
+  let hasNarrowLimit = false;
+  const limitRe = /\blimit\s*(?:\(\s*)?(\d+)\b/gi;
+  for (let match = limitRe.exec(stripped); match; match = limitRe.exec(stripped)) {
+    const limit = Number(match[1]);
+    if (Number.isSafeInteger(limit) && limit < configuredMaxRows) {
+      hasNarrowLimit = true;
+      break;
+    }
+  }
+
+  if (!hasHaving && !hasNarrowLimit) return null;
+
+  const clauses = [hasHaving ? 'HAVING' : null, hasNarrowLimit ? 'LIMIT' : null].filter(
+    (clause): clause is string => clause !== null,
+  );
+  const clauseLabel = clauses.join('/');
+  const details = hasHaving
+    ? 'zero rows means no group matched the HAVING predicate, not that the underlying population is empty'
+    : 'zero rows from the bounded query do not establish that the underlying population is empty';
+  return (
+    `⚠ population-narrowing query shape: this SQL uses ${clauseLabel}; ${details}. ` +
+    'Re-run without the narrowing clause before making an absence claim, or report the result as a bounded ' +
+    'subset rather than a census. (EI-22433765987075358).'
+  );
+}
+
+/**
  * Flag a negated comparison on `jsonb_typeof(...)`.
  *
  * PostgreSQL's `jsonb_typeof` returns SQL NULL when its input is absent/NULL.

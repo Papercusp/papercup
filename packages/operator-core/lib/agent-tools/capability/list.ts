@@ -78,6 +78,8 @@ export default defineTool({
       matched: z.unknown().optional(),
       total: z.unknown().optional(),
       truncated: z.unknown().optional(),
+      hiddenExcluded: z.unknown().optional(),
+      symlinkedDirs: z.unknown().optional(),
     })
     .passthrough(),
   async handler(args, ctx) {

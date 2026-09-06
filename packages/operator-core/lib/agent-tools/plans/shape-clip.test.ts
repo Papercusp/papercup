@@ -55,7 +55,29 @@ function decisionLedger(count = DECISION_COUNT): string {
   }).join("\n");
 }
 
-function shapeHeadingRead(body: string, tier: "trimmed" | "standard") {
+/**
+ * A section body on a result that did NOT explicitly narrow to a heading (no
+ * result-level `heading` marker). Since 2026-09-04 an EXPLICIT heading read
+ * (`plans:get { heading }`, which stamps `heading` beside `section`) is exempt
+ * from this clip — the narrow read must be able to recover the very body it
+ * selected, and an oversized one is spilled by the result door with a durable
+ * cursor (get-shape.test.ts "preserves the complete body for a heading-narrowed
+ * read"). The record-boundary clip under test here is the path that still
+ * serves an UNMARKED section body ("still caps an unmarked section body").
+ */
+function shapeSectionRead(body: string, tier: "trimmed" | "standard") {
+  const out = shapePlansGet(
+    {
+      ok: true,
+      results: [{ ok: true, slug: "p", section: { heading: "Decisions", level: 2, body } }],
+    },
+    tier,
+  ) as { results: Array<Record<string, unknown>> };
+  return out.results[0]!.section as Record<string, unknown>;
+}
+
+/** The same ledger read the way `plans:get { heading:'Decisions' }` returns it. */
+function shapeHeadingNarrowedRead(body: string, tier: "trimmed" | "standard") {
   const out = shapePlansGet(
     {
       ok: true,
@@ -73,7 +95,7 @@ const pickBodyOnly = (section: Record<string, unknown>): string => section.body 
 
 describe("EI-20038981829684213 — a clipped section body announces itself IN BAND", () => {
   it("THE BUG: a 30-decision ledger read at the default tier is not mistakable for a complete one", () => {
-    const section = shapeHeadingRead(decisionLedger(), "trimmed");
+    const section = shapeSectionRead(decisionLedger(), "trimmed");
     const bodyAlone = pickBodyOnly(section);
 
     // Precondition: this fixture really is truncated. Without it the assertions
@@ -101,7 +123,7 @@ describe("EI-20038981829684213 — a clipped section body announces itself IN BA
 
   it("CALIBRATION: a body that FITS is returned untouched and unmarked", () => {
     const small = decisionLedger(1);
-    const section = shapeHeadingRead(small, "standard");
+    const section = shapeSectionRead(small, "standard");
     // Under the cap → shapeResult leaves `section` alone entirely.
     expect(section.body).toBe(small);
     expect(section.body_truncated).toBeUndefined();
@@ -109,7 +131,7 @@ describe("EI-20038981829684213 — a clipped section body announces itself IN BA
   });
 
   it("cuts at a RECORD boundary — never mid-decision", () => {
-    const section = shapeHeadingRead(decisionLedger(), "trimmed");
+    const section = shapeSectionRead(decisionLedger(), "trimmed");
     const shown = section.body_records_shown as number;
     const body = section.body as string;
 
@@ -123,15 +145,26 @@ describe("EI-20038981829684213 — a clipped section body announces itself IN BA
   });
 
   it("respects the tier budget while carrying the marker", () => {
-    expect((shapeHeadingRead(decisionLedger(), "trimmed").body as string).length).toBeLessThanOrEqual(6_000);
-    expect((shapeHeadingRead(decisionLedger(), "standard").body as string).length).toBeLessThanOrEqual(20_000);
+    expect((shapeSectionRead(decisionLedger(), "trimmed").body as string).length).toBeLessThanOrEqual(6_000);
+    expect((shapeSectionRead(decisionLedger(), "standard").body as string).length).toBeLessThanOrEqual(20_000);
   });
 
   it("a standard-tier read shows MORE records than trimmed, and both say so", () => {
-    const t = shapeHeadingRead(decisionLedger(), "trimmed");
-    const s = shapeHeadingRead(decisionLedger(), "standard");
+    const t = shapeSectionRead(decisionLedger(), "trimmed");
+    const s = shapeSectionRead(decisionLedger(), "standard");
     expect(s.body_records_shown as number).toBeGreaterThan(t.body_records_shown as number);
     expect(s.body_records_total).toBe(DECISION_COUNT);
+  });
+
+  it("an EXPLICIT heading read is exempt: the selected ledger comes back whole, unmarked", () => {
+    // The narrow read exists to fetch exactly this body; clipping it again would
+    // make the recovery pointer above unrecoverable. Oversize is the result
+    // door's job there (durable cursor), not this shaper's.
+    const ledger = decisionLedger();
+    const section = shapeHeadingNarrowedRead(ledger, "trimmed");
+    expect(section.body).toBe(ledger);
+    expect(section.body_truncated).toBeUndefined();
+    expect(section.body_records_shown).toBeUndefined();
   });
 });
 

@@ -1480,7 +1480,14 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     });
   });
 
-  it('uses current quiet-cut when a ready repair patch is not observable on staging', async () => {
+  // P-007 / D-004: this case USED to assert a fall back to a current quiet-cut when the
+  // repair patch was not observable on canonical staging. That fallback was deliberately
+  // removed (see resolveRunnableCandidate's `verify-repair` branch): falling back to a cut
+  // at the moving tip inverted the freeze precisely on a lineage that is deliberately not
+  // yet folded into staging. A repair head is judged AT ITS OWN SHA, and P-008 folds a
+  // PROMOTED lineage back into staging afterwards. The scenario is still pinned here — only
+  // the expected candidate moved, from the quiet cut to the frozen repair head.
+  it('judges a ready repair head at its OWN sha even when its patch is not observable on staging (P-007/D-004)', async () => {
     mockQueue({
       phase: 'ready-to-verify',
       candidate: 'ed20de6dcb05c0c780437990f7f1070c3a92c853',
@@ -1492,7 +1499,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       ok: false,
       reason: 'not-ancestor' as const,
       requiredAncestor: REQUIRED,
-      candidate: CURRENT,
+      candidate: QUEUE_HEAD,
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),
@@ -1511,18 +1518,20 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const b = parse((await tool.handler({ requiredAncestorSha: REQUIRED, force: true }, MAKE_CTX())) as never);
 
     expect(launchSpy).not.toHaveBeenCalled();
-    expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, CURRENT, expect.any(Function));
+    expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, QUEUE_HEAD, expect.any(Function));
     expect(b).toMatchObject({
       ok: false,
       launched: false,
       reason: 'required_ancestor_missing',
       required_ancestor: REQUIRED,
-      candidate: CURRENT,
-      candidate_source: 'current-quiet-cut',
+      candidate: QUEUE_HEAD,
+      candidate_source: 'frozen-repair-queue',
       repair_queue: { phase: 'ready-to-verify', repairHead: QUEUE_HEAD },
     });
     expect(String(b.note)).toMatch(/NOT launched/);
-    expect(String(b.note)).toMatch(/fresh current-quiet-cut candidate/i);
+    // The note no longer advertises a quiet-cut candidate on this path (P-007/D-004);
+    // assert the frozen-lineage wording instead so the note stays pinned to the contract.
+    expect(String(b.note)).not.toMatch(/fresh current-quiet-cut candidate/i);
   });
 
   it('attempts=3 + owner gone recovers the dead fixer before reapplying exhaustion and refuses without checking a fresh tip', async () => {

@@ -209,14 +209,33 @@ function propertyValue(object: ts.ObjectLiteralExpression, key: string): ts.Expr
   return undefined;
 }
 
-function literalString(expression: ts.Expression | undefined): string | undefined {
-  return expression && (ts.isStringLiteralLike(expression) || ts.isNoSubstitutionTemplateLiteral(expression))
-    ? expression.text
-    : undefined;
+function sameFileStringConstants(sourceFile: ts.SourceFile): ReadonlyMap<string, string> {
+  const constants = new Map<string, string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      const value = declaration.initializer;
+      if (value && (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value))) {
+        constants.set(declaration.name.text, value.text);
+      }
+    }
+  }
+  return constants;
+}
+
+function literalString(
+  expression: ts.Expression | undefined,
+  constants: ReadonlyMap<string, string>,
+): string | undefined {
+  if (!expression) return undefined;
+  if (ts.isStringLiteralLike(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) return expression.text;
+  return ts.isIdentifier(expression) ? constants.get(expression.text) : undefined;
 }
 
 function toolNamesIn(sourceFile: ts.SourceFile): string[] {
   const names: string[] = [];
+  const constants = sameFileStringConstants(sourceFile);
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
@@ -228,8 +247,10 @@ function toolNamesIn(sourceFile: ts.SourceFile): string[] {
         const expose = propertyValue(input, 'expose');
         const mcp = expose && ts.isObjectLiteralExpression(expose) ? propertyValue(expose, 'mcp') : undefined;
         const projected =
-          mcp && ts.isObjectLiteralExpression(mcp) ? literalString(propertyValue(mcp, 'name')) : undefined;
-        const name = projected ?? literalString(propertyValue(input, 'name'));
+          mcp && ts.isObjectLiteralExpression(mcp)
+            ? literalString(propertyValue(mcp, 'name'), constants)
+            : undefined;
+        const name = projected ?? literalString(propertyValue(input, 'name'), constants);
         if (name) names.push(name);
       }
     }

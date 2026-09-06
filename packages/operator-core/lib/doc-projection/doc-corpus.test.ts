@@ -288,6 +288,48 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the repo-qualify-cross-harness-paths guidance post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    // 2026-09-04 → 2026-09-05: six more parts authored directly into harness_doc_parts
+    // post-load while the manifest stayed frozen at 253. Measured 2026-09-05T21:45Z
+    // (WI-212675 gate-red triage, su-d424f): corpus-blocks 262 -> 268 with corpus-parts
+    // 302 -> 311; the extra parts beyond six are `#evidence` rows, which the composer
+    // seams onto their rule block with no separator and so add no block. Each key below
+    // was confirmed absent from claude-md-part-manifest.json and present in the corpus.
+    {
+      when: '2026-09-04',
+      plan: 'none — part authored directly into harness_doc_parts',
+      why: 'added the P-022 fleet-leader project-guide part post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
+    {
+      when: '2026-09-05',
+      plan: 'none — part authored directly into harness_doc_parts',
+      why: 'added the typecheck-cannot-see-a-collapsed-fixture warning post-load (new rule/evidence block)',
+      blocksRemoved: -1,
+    },
+    {
+      when: '2026-09-05',
+      plan: 'none — part authored directly into harness_doc_parts',
+      why: 'added the pg_stat_activity self-match warning post-load (new rule/evidence block)',
+      blocksRemoved: -1,
+    },
+    {
+      when: '2026-09-05',
+      plan: 'none — part authored directly into harness_doc_parts',
+      why: 'added the scratch-probes-name-the-file-.mts guidance post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
+    {
+      when: '2026-09-05',
+      plan: 'none — part authored directly into harness_doc_parts',
+      why: 'added the behavioural-sibling call-count strands guidance post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
+    {
+      when: '2026-09-05',
+      plan: 'none — part authored directly into harness_doc_parts',
+      why: 'added the your-own-MCP-calls-execute-:3070 warning post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {

@@ -33,6 +33,7 @@ import {
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
   buildUnusedCteAdvisory,
+  buildPopulationNarrowingAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -186,6 +187,29 @@ function postgresRegexRepetitionHint(
     `the query contains {${lower},${upper}}. For a larger excerpt, use ` +
     '`left(text_expression, n)` or `substring(text_expression from start for n)`; ' +
     'use `.{m,n}` only when both bounds are at most 255.'
+  );
+}
+
+/**
+ * EI-22394295144242470: PostgreSQL's 42601 diagnostic for a UNION arity
+ * mismatch names the structural failure but not the correction. This is a
+ * caller-written query error, so point directly at the SELECT-list contract
+ * instead of sending the caller through another trial-and-error query.
+ */
+function unionColumnCountHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | undefined {
+  if (info.code !== '42601' || !/\bunion\b/i.test(sql)) return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  if (!/each\s+union\s+query\s+must\s+have\s+the\s+same\s+number\s+of\s+columns/i.test(errorText)) {
+    return undefined;
+  }
+  return (
+    'PostgreSQL UNION branches must project the same number of columns. Count every expression in ' +
+    'each SELECT list (including `NULL` placeholders and function expressions), then add or remove ' +
+    'the extra expression—or add a matching placeholder—so every branch has the same arity; keep ' +
+    'corresponding positions type-compatible.'
   );
 }
 
@@ -441,6 +465,13 @@ export default defineTool({
     // rows from the WRONG population, so nothing in the result distinguishes it
     // from a correctly-scoped answer.
     const unusedCteAdvisory = advisoryOf(() => buildUnusedCteAdvisory(sql));
+    // EI-22433765987075358: GROUP BY/HAVING and a caller LIMIT below maxRows
+    // narrow the population a zero-row result can speak for. Keep this pure
+    // SQL-shape advisory in the shared success/error list so a failed query
+    // cannot lose the same absence warning.
+    const populationNarrowingAdvisory = advisoryOf(() =>
+      buildPopulationNarrowingAdvisory(sql, args.maxRows ?? PG_READ_QUERY_DEFAULT_MAX_ROWS),
+    );
     // A read that answers the WRONG QUESTION correctly: status='open' (or the
     // candidate view) treated as "what can be claimed". Distinct again from
     // both above — the row set is right for the question asked, and wrong for
@@ -524,6 +555,7 @@ export default defineTool({
       nullPathAdvisory,
       jsonbTypeofAdvisory,
       unusedCteAdvisory,
+      populationNarrowingAdvisory,
       splitEvidenceAdvisory,
       nativeToolAdvisory,
       agentActivityAdvisory,
@@ -670,6 +702,8 @@ export default defineTool({
       if (regprocedureHint && !payload.hint) payload.hint = regprocedureHint;
       const regexRepetitionHint = postgresRegexRepetitionHint(sql, info);
       if (regexRepetitionHint && !payload.hint) payload.hint = regexRepetitionHint;
+      const unionColumnCountCorrection = unionColumnCountHint(sql, info);
+      if (unionColumnCountCorrection && !payload.hint) payload.hint = unionColumnCountCorrection;
       // The SAME sql-derived advisories the success payload composes, in the
       // same order — a query's SHAPE is no less true for having failed to run.
       // Placed AFTER the precise correction (PG's own hint names the column)
