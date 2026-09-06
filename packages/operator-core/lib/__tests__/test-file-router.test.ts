@@ -28,7 +28,9 @@ import {
   perGroupVitestArgs,
   runCapturedTestProcess,
   defaultTestFileRunTimeoutMs,
+  resolveTestChildLauncher,
   testFileRunTimeoutMs,
+  userBusReachable,
   vitestRunFailed,
   warnIfInstallInFlight,
   withoutOutputFileArg,
@@ -50,7 +52,7 @@ import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 describe('test-files router', () => {
   it('supports a bounded CLI watchdog override for slow-but-progressing files', () => {
-    expect(testFileRunTimeoutMs({})).toBe(300_000);
+    expect(testFileRunTimeoutMs({})).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
     expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '0' })).toThrow(/between 1 and/);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
@@ -60,9 +62,14 @@ describe('test-files router', () => {
   });
 
   it('scales the default whole-run budget with the requested file count (gate --related lists)', () => {
-    // A handful of files keeps the flat five-minute floor.
+    // A handful of files keeps the flat floor.
     expect(defaultTestFileRunTimeoutMs(1)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
     expect(testFileRunTimeoutMs({}, 3)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // The floor is also the gate's single-file flake-retry budget, and the slowest legitimate
+    // single file (apps/operator/scripts/hooks/cc/__tests__/pc-heavy.test.ts, 153 process-spawning
+    // tests) took 325s under gate load on 2026-09-06 — a 300s floor reaped it NOT MEASURED. Keep
+    // the floor at ten minutes or more unless that file has been made faster.
+    expect(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(600_000);
     // 235 files — the @papercusp/web `--related` list that a flat 300s budget reaped with two
     // files completed on every gate run from 2026-09-04 to 2026-09-06 — gets a proportional
     // ceiling instead of a guaranteed TEST_FILE_NOT_MEASURED exit.
@@ -456,6 +463,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           progressIntervalMs: 10,
           killGraceMs: 20,
           maxBuffer: 1024,
+          // A user bus is reachable from this env, so systemd-run is the launcher.
+          env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
           systemdRunPath: '/usr/bin/systemd-run',
           setsidPath: '/usr/bin/setsid',
           spawnImpl,
@@ -500,6 +509,85 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('resolves the launcher against the env the child actually gets', () => {
+    const base = { command: 'npx', args: ['vitest', 'run', 'a.test.ts'] };
+    // systemd-run --user needs a user bus: XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS.
+    expect(userBusReachable({ PATH: '/usr/bin' })).toBe(false);
+    expect(userBusReachable({ XDG_RUNTIME_DIR: '/run/user/1000' })).toBe(true);
+    expect(userBusReachable({ DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' })).toBe(true);
+    expect(
+      resolveTestChildLauncher({
+        ...base,
+        env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+        systemdRunPath: '/usr/bin/systemd-run',
+        setsidPath: '/usr/bin/setsid',
+      }),
+    ).toEqual({
+      launcher: 'systemd-run',
+      ownsProcessGroup: true,
+      spawnCommand: '/usr/bin/systemd-run',
+      spawnArgs: ['--user', '--scope', '--collect', 'npx', 'vitest', 'run', 'a.test.ts'],
+    });
+    // A stripped env (a fixture, a cron job) must not be handed to systemd-run: it would exit 1
+    // before the command ran, with no output — a silent red. setsid keeps the process-group
+    // boundary the watchdog relies on.
+    expect(
+      resolveTestChildLauncher({
+        ...base,
+        env: { PATH: '/usr/bin' },
+        systemdRunPath: '/usr/bin/systemd-run',
+        setsidPath: '/usr/bin/setsid',
+      }),
+    ).toEqual({
+      launcher: 'setsid',
+      ownsProcessGroup: true,
+      spawnCommand: '/usr/bin/setsid',
+      spawnArgs: ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+    });
+    expect(
+      resolveTestChildLauncher({ ...base, env: { PATH: '/usr/bin' }, systemdRunPath: null, setsidPath: null }),
+    ).toEqual({ launcher: 'direct', ownsProcessGroup: false, spawnCommand: 'npx', spawnArgs: base.args });
+  });
+
+  it('falls back to setsid --wait when the child env cannot reach a user bus', async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4344;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const spawnImpl = vi.fn((..._args: unknown[]) => child);
+
+    const resultPromise = runCapturedTestProcess(
+      'npx',
+      ['vitest', 'run', 'a.test.ts'],
+      {
+        cwd: '/repo',
+        files: ['a.test.ts'],
+        // The pc-heavy.test.ts fixtures spawn this router with exactly this shape of env.
+        env: { PATH: '/usr/bin' },
+        systemdRunPath: '/usr/bin/systemd-run',
+        setsidPath: '/usr/bin/setsid',
+        spawnImpl,
+        onProgress: () => null,
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      },
+    );
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      '/usr/bin/setsid',
+      ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+      expect.objectContaining({ env: { PATH: '/usr/bin' }, stdio: ['ignore', 'pipe', 'pipe'] }),
+    );
+    child.emit('close', 0, null);
+    await expect(resultPromise).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });
   });
 
   it('falls back to setsid --wait when systemd-run is unavailable', async () => {

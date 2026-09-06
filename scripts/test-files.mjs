@@ -1811,7 +1811,14 @@ function run(command, args, options) {
 // held `main` on, with no test-failure verdict behind it. The budget is a CEILING, not a duration:
 // a wedged run is still caught by the caller's stall watchdog (the gate reaps on stalledForSec)
 // and by pc-heavy, so a generous ceiling costs nothing on a healthy run.
-export const DEFAULT_TEST_FILE_RUN_TIMEOUT_MS = 300_000;
+//
+// The FLOOR is ten minutes, not five: it is also the budget of the gate's single-file flake retry,
+// and one legitimate file already exceeds five minutes under gate load —
+// apps/operator/scripts/hooks/cc/__tests__/pc-heavy.test.ts (153 process-spawning tests) runs
+// ~170–215s on a quiet box and took 325s in the 2026-09-06 gate retry (run 245728d3), where the
+// 300s floor reaped it and turned a 3-test failure verdict into TEST_FILE_NOT_MEASURED. A single
+// file that genuinely hangs is still reaped inside ten minutes.
+export const DEFAULT_TEST_FILE_RUN_TIMEOUT_MS = 600_000;
 export const TEST_FILE_RUN_TIMEOUT_PER_FILE_MS = 20_000;
 export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 120 * 60_000;
 
@@ -1909,6 +1916,39 @@ function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
 }
 
 /**
+ * Can `systemd-run --user` reach the caller's user manager from this child env? It connects over
+ * the session bus, which systemd locates through XDG_RUNTIME_DIR (`$XDG_RUNTIME_DIR/bus`) or an
+ * explicit DBUS_SESSION_BUS_ADDRESS. With neither present it exits 1 BEFORE the command runs —
+ * indistinguishable from the test file failing, and with no output at all.
+ */
+export function userBusReachable(env = process.env) {
+  return Boolean(env && (env.XDG_RUNTIME_DIR || env.DBUS_SESSION_BUS_ADDRESS));
+}
+
+/**
+ * Choose how one captured test child is launched, against the env that child will actually get.
+ *
+ * Measured 2026-09-06 (pc-heavy.test.ts, WI-42293 fixtures): a fixture that spawns this router
+ * with a deliberately minimal env (PATH only) had every nested child exit 1 in ~200ms once the
+ * systemd-run launcher landed, because `systemd-run --user` could not find a bus — the fixtures'
+ * finalization marker was never published and the whole file went red on the gate. A stripped
+ * env (a fixture, a cron job, a container without a user session) therefore falls back to the
+ * `setsid --wait` process-group boundary instead of manufacturing a silent red.
+ */
+export function resolveTestChildLauncher({ command, args, env, systemdRunPath, setsidPath }) {
+  const systemd = systemdRunPath && userBusReachable(env ?? process.env) ? systemdRunPath : null;
+  const ownsProcessGroup = Boolean(systemd || setsidPath);
+  const spawnCommand = systemd ?? setsidPath ?? command;
+  const spawnArgs = systemd
+    ? ['--user', '--scope', '--collect', command, ...args]
+    : setsidPath
+      ? ['--wait', command, ...args]
+      : args;
+  const launcher = systemd ? 'systemd-run' : setsidPath ? 'setsid' : 'direct';
+  return { launcher, ownsProcessGroup, spawnCommand, spawnArgs };
+}
+
+/**
  * Run one captured test child without blocking this router's event loop.
  *
  * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
@@ -1939,13 +1979,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // the canonical bridge in place.
     governedProcessImpl = runGovernedTestProcess,
   } = options;
-  const ownsProcessGroup = Boolean(systemdRunPath || setsidPath);
-  const spawnCommand = systemdRunPath ?? setsidPath ?? command;
-  const spawnArgs = systemdRunPath
-    ? ['--user', '--scope', '--collect', command, ...args]
-    : setsidPath
-      ? ['--wait', command, ...args]
-      : args;
+  // The launcher is resolved per spawn, inside runChild, against the env the child actually
+  // gets (the governed env when admission supplies one) — see resolveTestChildLauncher.
   const plannedDemand = buildGovernedProcessDemand({
     fileCount: files.length,
     diskBytes: maxBuffer,
@@ -1976,6 +2011,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // sharing the same pc-heavy admission.
     const freezeMsAtStart = readPcHeavyFrozenTotalMs();
     const sampler = createGovernedProcessDemandSampler(plannedDemand);
+    const { ownsProcessGroup, spawnCommand, spawnArgs } = resolveTestChildLauncher({
+      command,
+      args,
+      env: governedEnv ?? env,
+      systemdRunPath,
+      setsidPath,
+    });
     const child = spawnImpl(spawnCommand, spawnArgs, {
       cwd,
       env: governedEnv ?? env,
