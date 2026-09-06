@@ -50,16 +50,17 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE));
     expect(p.get('sessionId')).toBe('s-live');
     expect(p.get('owner')).toBe('su-a');
+    expect(p.get('historyOwner')).toBe('su-a');
   });
 
   it('uses the native Codex and OMP stream keys instead of the Claude key', () => {
     const codex = { ...LIVE, source_kind: 'codex', session_id: 'rollout-1', stream_key: 'codexRolloutId' as const };
     const omp = { ...LIVE, source_kind: 'omp', session_id: 'thread-1', stream_key: 'ompThreadId' as const };
     expect(buildSessionStreamUrl('su-codex', codex)).toBe(
-      '/api/adv/session/thinking?codexRolloutId=rollout-1',
+      '/api/adv/session/thinking?codexRolloutId=rollout-1&historyOwner=su-codex',
     );
     expect(buildSessionStreamUrl('su-omp', omp)).toBe(
-      '/api/adv/session/thinking?ompThreadId=thread-1',
+      '/api/adv/session/thinking?ompThreadId=thread-1&historyOwner=su-omp',
     );
   });
 
@@ -78,7 +79,7 @@ describe('buildSessionStreamUrl', () => {
       },
     });
     expect(buildSessionStreamUrl('su-codex', target)).toBe(
-      '/api/adv/session/thinking?codexSessionKey=9444',
+      '/api/adv/session/thinking?codexSessionKey=9444&historyOwner=su-codex',
     );
   });
 
@@ -115,6 +116,7 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE, { focusSessionId: 's-older' }));
     expect(p.get('sessionId')).toBe('s-older');
     expect(p.get('ended')).toBe('1');
+    expect(p.get('historyOwner')).toBeNull();
   });
 
   /* popup-agent-state-coverage-2026-08-18 P-012 — the THIRD route to the same

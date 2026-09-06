@@ -1022,6 +1022,56 @@ export async function backfillFromSessionParts(
 }
 
 /**
+ * The ordinary HUD conversation is an OWNER conversation, not one native
+ * transcript file. A carry-respawn keeps the coord owner id and creates a new
+ * native session id, so session-keyed backfill above necessarily drops every
+ * predecessor epoch. Read the same faithful parts store through its stable
+ * owner attribution, taking one bounded newest window and returning it in
+ * chronological order. The live follower remains session/file-keyed below.
+ */
+export async function backfillFromOwnerSessionParts(
+  owner: string,
+  opts: { cap?: number } = {},
+): Promise<Backfill | null> {
+  const cap = Math.max(1, opts.cap ?? 200);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const textCap = THINKING_ENTRY_TEXT_CAP + 200;
+  const rows = await sql<Array<{
+    ts: string | null; speaker: string | null; part_kind: string | null;
+    tool_name: string | null; text: string | null; store_truncated: boolean | null;
+  }>>`
+    SELECT ts::text AS ts, speaker, part_kind, tool_name, left(text, ${textCap}) AS text,
+           (text ~ ${TRUNCATION_MARKER_POSIX_RE} AND length(text) < ${TRANSCRIPT_RENDER_TEXT_CAP})
+             AS store_truncated
+      FROM (
+        SELECT ts, ingested_at, speaker, part_kind, tool_name, text,
+               source_kind, session_id, part_idx
+          FROM harness_shared.session_turn_parts
+         WHERE owner = ${owner}
+         ORDER BY COALESCE(ts, ingested_at) DESC,
+                  source_kind DESC, session_id DESC, part_idx DESC
+         LIMIT ${cap}
+      ) recent
+     ORDER BY COALESCE(ts, ingested_at) ASC,
+              source_kind ASC, session_id ASC, part_idx ASC
+  `;
+  if (rows.length === 0) return null;
+  const storeTruncated = rows.some((r) => r.store_truncated === true);
+  const entries: AgentTimelineEntry[] = rows.map((r) => {
+    const kind = sessionPartEntryKind(r.part_kind, r.speaker);
+    const body = r.text ?? '';
+    const ts = r.ts ?? undefined;
+    if (r.part_kind === 'tool_use') {
+      return { kind, toolName: r.tool_name ?? undefined, toolInput: body || undefined, ts };
+    }
+    if (r.part_kind === 'thinking') return capEntryText({ kind, text: `[thinking] ${body}`, ts });
+    return capEntryText({ kind, text: body, ts });
+  });
+  return { entries, anchorIndex: null, storeTruncated };
+}
+
+/**
  * P-009: how many of the session's TRAILING rows the positional scan needs.
  *
  * The old query was `ORDER BY turn_idx ASC` with NO LIMIT — a row per turn of
@@ -1115,9 +1165,13 @@ export function preferHigherFidelityBackfill(
  */
 export function shouldServeDbBackfill(
   backfill: Backfill | null,
-  opts: { fileAvailable: boolean; fromParts: Backfill | null },
+  opts: { fileAvailable: boolean; fromParts: Backfill | null; ownerWide?: boolean },
 ): backfill is Backfill {
   if (!backfill || backfill.entries.length === 0) return false;
+  // A single native transcript file can never replace the owner's predecessor
+  // epochs. Even a text-only or store-truncated owner window is the only
+  // complete identity-scoped view available, so serve it when requested.
+  if (opts.ownerWide) return true;
   if (!opts.fileAvailable) return true;
   if (backfill !== opts.fromParts) return false;
   return !backfill.storeTruncated;
@@ -1170,6 +1224,43 @@ export async function backfillFromSessionTurns(
   );
   const anchorIndex = anchorPos !== null && anchorPos >= start && anchorPos < end ? anchorPos - start : null;
   return { entries, anchorIndex };
+}
+
+/** Text-turn fallback for an owner's whole carry-respawn chain. It has the
+ * same bounded newest-window contract as the parts reader above, but reaches
+ * the longer-lived text store when faithful parts have expired or are absent. */
+export async function backfillFromOwnerSessionTurns(
+  owner: string,
+  opts: { cap?: number } = {},
+): Promise<Backfill | null> {
+  const cap = Math.max(1, opts.cap ?? 200);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const textCap = THINKING_ENTRY_TEXT_CAP + 200;
+  const rows = await sql<Array<{
+    ts: string | null; speaker: string | null; text: string | null;
+  }>>`
+    SELECT ts::text AS ts, speaker, left(text, ${textCap}) AS text
+      FROM (
+        SELECT ts, ingested_at, speaker, text, source_kind, session_id, turn_idx
+          FROM harness_shared.session_turns
+         WHERE owner = ${owner}
+         ORDER BY COALESCE(ts, ingested_at) DESC,
+                  source_kind DESC, session_id DESC, turn_idx DESC
+         LIMIT ${cap}
+      ) recent
+     ORDER BY COALESCE(ts, ingested_at) ASC,
+              source_kind ASC, session_id ASC, turn_idx ASC
+  `;
+  if (rows.length === 0) return null;
+  return {
+    entries: rows.map((r) => capEntryText({
+      kind: sessionTurnEntryKind(r.speaker),
+      text: r.text ?? '',
+      ts: r.ts ?? undefined,
+    })),
+    anchorIndex: null,
+  };
 }
 
 /**
@@ -1287,6 +1378,11 @@ const sessionThinkingStream = defineTool({
     // (1 readdir, plus the global root) instead of sweeping every isolation
     // root. Sanitized; absent ⇒ the full-scan fallback still resolves it.
     const owner = (url.searchParams.get('owner') ?? '').replace(/[^A-Za-z0-9_.-]/g, '') || undefined;
+    // Stable owner identity for an ordinary HUD conversation's HISTORY. This
+    // is deliberately distinct from `owner`, whose pre-existing job is only to
+    // narrow Claude's on-disk transcript resolver. Search deep-links omit this
+    // parameter and therefore keep their exact native-session anchor window.
+    const historyOwner = (url.searchParams.get('historyOwner') ?? '').replace(/[^A-Za-z0-9_.-]/g, '') || undefined;
     // Non-claude backends ("every roster agent has a history"): a codex session
     // streams its rollout jsonl (CODEX_HOME keyed by the adv-session row id),
     // an omp session its ~/.omp/agent/sessions jsonl (keyed by thread id). Same
@@ -1555,16 +1651,24 @@ const sessionThinkingStream = defineTool({
          * appended records with neither a gap nor a duplicate.
          */
         const backfillFromDb = async (opts: { fileAvailable: boolean }): Promise<boolean> => {
-          if (!corpusKey) return false;
+          if (!corpusKey && !historyOwner) return false;
           try {
             // These are bounded fallback reads, not a latency-critical primary
             // path. Keep them serial so a single pane cannot reserve two org DB
             // operations at once and both helpers observe the same initialized
             // client/module seam.
-            const fromParts = await backfillFromSessionParts(corpusKey, { anchorTs });
-            const fromTurns = await backfillFromSessionTurns(corpusKey, { anchorTs });
+            const fromParts = historyOwner
+              ? await backfillFromOwnerSessionParts(historyOwner)
+              : await backfillFromSessionParts(corpusKey!, { anchorTs });
+            const fromTurns = historyOwner
+              ? await backfillFromOwnerSessionTurns(historyOwner)
+              : await backfillFromSessionTurns(corpusKey!, { anchorTs });
             const backfill = preferHigherFidelityBackfill(fromParts, fromTurns);
-            if (!shouldServeDbBackfill(backfill, { fileAvailable: opts.fileAvailable, fromParts })) {
+            if (!shouldServeDbBackfill(backfill, {
+              fileAvailable: opts.fileAvailable,
+              fromParts,
+              ownerWide: Boolean(historyOwner),
+            })) {
               return false;
             }
             sink.event('backfill', backfill.entries);

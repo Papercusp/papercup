@@ -320,6 +320,14 @@ export function buildSessionStreamUrl(
     : (resolved.stream_key ?? streamKeyForSource(resolved.source_kind));
   const p = new URLSearchParams({ [streamKey]: streamSessionId });
   if (streamKey === 'sessionId') p.set('owner', ownerId);
+  /* Ordinary conversation opens are keyed by the stable coordination owner,
+     not by one native transcript epoch. The server uses this explicit scope
+     only for the bounded HISTORY backfill; it still follows `streamSessionId`
+     for live appends. Keep search deep-links session-scoped: their whole point
+     is to open the exact native transcript that owns the match, and widening
+     that anchored window back to the owner chain would make its entry index
+     address a different list. */
+  if (!focus.focusSessionId) p.set('historyOwner', ownerId);
   /* WI-41496: an omp thread id names the transcript FILE; the adv-session id
      names the HOME it lives in (`su-omp-homes/session-<id>/agent/sessions`).
      Send it whenever we have it — the route's per-session-home sweep is the

@@ -18,6 +18,22 @@ const resolverProbe = vi.hoisted(() => ({
 }));
 const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   const query = strings.join('');
+  if (query.includes('session_turn_parts') && query.includes('WHERE owner =')) {
+    return Promise.resolve([
+      { ts: '2026-08-24T03:40:40.424Z', speaker: 'user', part_kind: 'text', tool_name: null, text: 'prior epoch prompt', store_truncated: false },
+      { ts: '2026-08-24T03:40:42.267Z', speaker: 'assistant', part_kind: 'text', tool_name: null, text: 'prior epoch answer', store_truncated: false },
+      { ts: '2026-08-25T03:40:40.424Z', speaker: 'user', part_kind: 'text', tool_name: null, text: 'current epoch prompt', store_truncated: false },
+      { ts: '2026-08-25T03:40:42.267Z', speaker: 'assistant', part_kind: 'text', tool_name: null, text: 'current epoch answer', store_truncated: false },
+    ]);
+  }
+  if (query.includes('session_turns') && query.includes('WHERE owner =')) {
+    return Promise.resolve([
+      { ts: '2026-08-24T03:40:40.424Z', speaker: 'user', text: 'prior epoch prompt' },
+      { ts: '2026-08-24T03:40:42.267Z', speaker: 'assistant', text: 'prior epoch answer' },
+      { ts: '2026-08-25T03:40:40.424Z', speaker: 'user', text: 'current epoch prompt' },
+      { ts: '2026-08-25T03:40:42.267Z', speaker: 'assistant', text: 'current epoch answer' },
+    ]);
+  }
   if (query.includes('session_turn_parts')) return Promise.resolve([]);
   if (query.includes('session_turns') && query.includes('left(text')) {
     return Promise.resolve([
@@ -562,5 +578,28 @@ describe('live session DB fallback (WI-41527)', () => {
       ],
     });
     expect(routeProbe.events).toContainEqual({ name: 'thinking', data: { active: false } });
+  });
+
+  it('backfills predecessor and current epochs through the stable HUD owner id', async () => {
+    const route = streamRoutes.find((r) => r.path === '/adv/session/thinking');
+    expect(route).toBeDefined();
+
+    const response = await route!.handler(
+      new Request('http://localhost/api/adv/session/thinking?codexRolloutId=current-rollout&historyOwner=su-stable'),
+      {} as never,
+    );
+    expect(response.status).toBe(200);
+    await routeProbe.setup!();
+
+    expect(routeProbe.events).toContainEqual({
+      name: 'backfill',
+      data: [
+        { kind: 'prompt', text: 'prior epoch prompt', ts: '2026-08-24T03:40:40.424Z' },
+        { kind: 'text', text: 'prior epoch answer', ts: '2026-08-24T03:40:42.267Z' },
+        { kind: 'prompt', text: 'current epoch prompt', ts: '2026-08-25T03:40:40.424Z' },
+        { kind: 'text', text: 'current epoch answer', ts: '2026-08-25T03:40:42.267Z' },
+      ],
+    });
+    expect(dbSql.mock.calls.some(([strings]) => strings.join('').includes('WHERE owner ='))).toBe(true);
   });
 });
