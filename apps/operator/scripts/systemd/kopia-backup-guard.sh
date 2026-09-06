@@ -264,35 +264,35 @@ run_scheduled_command() {
       break
     fi
 
-    # This cycle is past the staleness deadline, so it is allowed to finish.
-    # This branch -- not the admission one -- is the one that matters: 46 of the
-    # 48h sample's 51 started cycles were killed HERE, after passing admission
-    # cleanly, and the sweep therefore never reached its later sources.  The
-    # cgroup limits on the unit (MemoryHigh/MemoryMax/MemorySwapMax) and Kopia's
-    # --parallel=1 remain the brake for an overridden run; this only removes the
-    # brake that was stopping the backup from ever completing.
-    # ...or there is no signal that describes THIS backup, so a crossing would be
-    # someone else's load cancelling our only data-safety job (see psi_unusable).
-    if [ "$pressure_escalated" = 1 ] || [ "$psi_unusable" = 1 ]; then
-      continue
-    fi
-
-    memory_psi=$(read_full_avg10 "$memory_path") || {
-      runtime_abort_reason="pressure-unavailable signal=memory path=$memory_path"
-      break
-    }
-    io_psi=$(read_full_avg10 "$io_path") || {
-      runtime_abort_reason="pressure-unavailable signal=io path=$io_path"
-      break
-    }
-    if at_or_above "$memory_psi" "$memory_limit"; then
-      runtime_abort_reason="memory-pressure full_avg10=$memory_psi limit=$memory_limit"
-      break
-    fi
-    if at_or_above "$io_psi" "$io_limit"; then
-      runtime_abort_reason="io-pressure full_avg10=$io_psi limit=$io_limit"
-      break
-    fi
+    # NO MID-RUN PRESSURE CANCELLATION.  Both candidate signals were measured on
+    # this host 2026-09-05 and NEITHER describes a harm this backup can relieve:
+    #
+    #   HOST-WIDE /proc/pressure/memory is fleet-driven, not backup-driven.
+    #   Sampled at 2s for 2.7 minutes with ZERO kopia processes running it ranged
+    #   0.02-41.91 and sat at or above the limit of 5 in 52.4% of 82 samples.  The
+    #   mid-run check aborts on the FIRST crossing, so a run needs an unbroken
+    #   sub-limit streak for its whole duration: 1024s-2332s required against a
+    #   40s longest observed.  Result: 20 of 20 ordinary cycles killed after
+    #   passing admission (10s-426s in), zero coverage.
+    #
+    #   PER-CGROUP memory.pressure is real and isolated -- a fresh cgroup starts
+    #   at total=0 and tracks only its own stalls -- but what it measures is the
+    #   backup's OWN page-cache reclaim, which is what reading the filesystem IS.
+    #   Measured on the 23:00 cycle: the cgroup rose 1.71 -> 2.47 -> 5.36 in 25s
+    #   at 1.4G RSS (nowhere near MemoryHigh=8G) while root read 19.50 -> 9.93,
+    #   independent numbers, and the run was killed at 30s.  A threshold of 5 on
+    #   that signal means "this job is doing I/O", not "the host is hurting".
+    #
+    # So a per-sample threshold cancels a data-safety job either for someone
+    # else's load or for its own normal operation, and zero coverage is the larger
+    # harm.  What actually bounds this backup is what always did: the unit's
+    # MemoryHigh=8G / MemoryMax=12G with MemorySwapMax=0, Nice=10, ionice
+    # best-effort 7, and Kopia's --parallel=1.  Direct evidence that running
+    # ungated is safe here: the two cycles that skipped this check entirely (the
+    # staleness-override path) both completed, with no host incident in either
+    # window.  Admission still defers on the host-wide signal, so a genuinely
+    # burning box still delays the START of a cycle; the priority-waiter handoff
+    # above still preempts a hot sweep for a higher-priority producer.
   done
 
   if [ -n "$runtime_abort_reason" ] && kill -0 "$child_pid" 2>/dev/null; then
@@ -322,26 +322,6 @@ run_scheduled_command() {
     return 75
   fi
   return "$child_rc"
-}
-
-# Resolve the pressure files that describe THIS BACKUP rather than the whole box.
-#
-# cgroup v2 publishes per-cgroup PSI beside the host-wide files.  The unified
-# hierarchy line in /proc/self/cgroup is "0::<path>", and this cgroup's own
-# pressure lives at /sys/fs/cgroup<path>/{memory,io}.pressure.  snapshot-all.sh
-# launches Kopia with a plain `sudo -n`, NOT `systemd-run`, so the root-owned
-# Kopia process inherits this same cgroup -- which is also why the unit's
-# MemoryHigh/MemoryMax/MemorySwapMax actually bind it.  Reading our own cgroup
-# therefore measures the backup, Kopia included.
-own_cgroup_psi_dir() {
-  local rel base
-  rel=$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' /proc/self/cgroup 2>/dev/null) || return 1
-  [ -n "$rel" ] || return 1
-  base="/sys/fs/cgroup${rel}"
-  # Both files must be readable, or this is not a usable scope: falling back to
-  # the host-wide files is strictly better than gating on a half-present signal.
-  [ -r "$base/memory.pressure" ] && [ -r "$base/io.pressure" ] || return 1
-  printf '%s' "$base"
 }
 
 if [ "$mode" = scheduled ]; then
@@ -375,18 +355,19 @@ if [ "$mode" = scheduled ]; then
   # unit at MemoryHigh=8G/MemoryMax=12G with MemorySwapMax=0.  Those caps, not a
   # host-wide reading, are what protect the host from the backup.  The question
   # the gate should ask is "is THIS BACKUP thrashing", and the cgroup answers it.
-  psi_dir=$(own_cgroup_psi_dir) || psi_dir=
-  if [ -n "$psi_dir" ]; then
-    psi_scope=cgroup
-    default_memory_path="$psi_dir/memory.pressure"
-    default_io_path="$psi_dir/io.pressure"
-  else
-    # No delegated cgroup PSI (older kernel, no delegation, unreadable files).
-    # Keep the previous host-wide behaviour rather than running ungated.
-    psi_scope=host
-    default_memory_path=/proc/pressure/memory
-    default_io_path=/proc/pressure/io
-  fi
+  # ADMISSION reads the HOST-WIDE files deliberately, and the per-cgroup files
+  # are not a usable substitute HERE even though they are real.  This unit is
+  # Type=oneshot, so at admission its cgroup is seconds old and reads
+  # "full avg10=0.00 total=0" every time -- an admission gate gated on it would
+  # never defer anything, which is worse than no gate because it would still
+  # LOOK like one.  Admission asks "is the box already in trouble before we add
+  # load", and only /proc/pressure answers that.  (The per-cgroup signal is
+  # genuinely isolated and does describe this backup once it is running -- see
+  # the mid-run note in run_scheduled_command for why acting on it there is
+  # still wrong.)
+  psi_scope=host
+  default_memory_path=/proc/pressure/memory
+  default_io_path=/proc/pressure/io
   memory_path="${KOPIA_BACKUP_MEM_PSI_PATH:-$default_memory_path}"
   io_path="${KOPIA_BACKUP_IO_PSI_PATH:-$default_io_path}"
   # Report the scope we ACTUALLY read, not the one we would have picked.  An
@@ -398,64 +379,6 @@ if [ "$mode" = scheduled ]; then
   fi
   guard_log "result=psi-scope scope=$psi_scope memory_path=$memory_path io_path=$io_path"
 
-  # IS THE PER-BACKUP SIGNAL REAL?  Measured 2026-09-05: it usually is NOT.
-  #
-  # Resolving the cgroup path is not the same as getting cgroup NUMBERS.  A
-  # freshly-created cgroup reports the ROOT counters verbatim, and this unit is
-  # Type=oneshot, so it gets a fresh cgroup on every activation.  Proven in
-  # production at 22:30:02: the guard logged scope=cgroup against
-  # .../kopia-snapshots.service/memory.pressure and was then killed 61s in at
-  # full_avg10=30.51 -- a value a 12G-capped, nice-19, ionice-idle process cannot
-  # produce for itself.  Long-lived cgroups DO isolate (established services read
-  # 0.00 while root read 7.50), which is exactly what makes this easy to miss.
-  #
-  # Discriminate on the CUMULATIVE total, not the average: PSI totals are
-  # monotonic stall-nanoseconds since cgroup creation, so a genuinely isolated
-  # cgroup that is seconds old holds a near-zero total, while a mirroring one
-  # reports the host's lifetime figure (~3.4e10 here).  Half of root is a wide
-  # margin that no seconds-old cgroup can reach honestly.
-  psi_total_of() {
-    awk '/^full/ { for (i = 1; i <= NF; i++) if ($i ~ /^total=/) { sub(/^total=/, "", $i); print $i; exit } }' "$1" 2>/dev/null
-  }
-  psi_unusable=0
-  if [ "$psi_scope" = host ]; then
-    # Host-wide by construction: it never described this backup.
-    psi_unusable=1
-  else
-    cgroup_total=$(psi_total_of "$memory_path")
-    root_total=$(psi_total_of /proc/pressure/memory)
-    if is_number "$cgroup_total" && is_number "$root_total" && [ "$root_total" -gt 0 ] 2>/dev/null; then
-      if [ "$((cgroup_total * 2))" -gt "$root_total" ] 2>/dev/null; then
-        psi_unusable=1
-        psi_scope="$psi_scope-mirrors-root"
-      fi
-    else
-      # Could not read one of them: unknown, not proven-good. Fail toward running
-      # the backup rather than toward cancelling it on a signal we cannot verify.
-      psi_unusable=1
-      psi_scope="$psi_scope-unreadable"
-    fi
-  fi
-
-  # WHAT WE DO WHEN THERE IS NO PER-BACKUP SIGNAL.
-  #
-  # Not "raise the limit" -- rejected above, and rightly: a larger constant has
-  # the same unbounded shape.  The choice is narrower than it looks, because a
-  # host-wide reading can only ever CANCEL this backup for pressure it did not
-  # cause and cannot relieve.  Measured 2026-09-05: 19 of 19 host-gated ordinary
-  # cycles died (10s-426s) and produced NO backup at all, while the two cycles
-  # that skipped the pressure check entirely -- the staleness-override path --
-  # both completed, with no host incident in either window.  Zero coverage is the
-  # larger harm for a data-safety job, and the evidence that skipping is safe here
-  # is direct rather than argued.
-  #
-  # So decline to gate on pressure, and say so loudly every cycle.  The backup
-  # stays bounded by the things that actually bound it: the unit's
-  # MemoryHigh/MemoryMax with MemorySwapMax=0, nice 19, ionice idle, --parallel=1.
-  # The priority-waiter handoff and the staleness override are untouched.
-  if [ "$psi_unusable" = 1 ]; then
-    guard_log "result=pressure-gate-disabled scope=$psi_scope reason=no-per-backup-signal bounded_by=cgroup-limits+nice+ionice"
-  fi
   # Evaluate every admission signal first, then take ONE deferral decision, so
   # the staleness floor applies to all of them.  An unreadable PSI file defers
   # exactly like real pressure and so must escalate exactly like it: otherwise a
@@ -475,7 +398,7 @@ if [ "$mode" = scheduled ]; then
 
   arm_staleness_override || true
   if [ -n "$admission_block_reason" ]; then
-    if [ "$pressure_escalated" = 1 ] || [ "$psi_unusable" = 1 ]; then
+    if [ "$pressure_escalated" = 1 ]; then
       guard_log "result=admitted-despite-pressure reason=$admission_block_reason $staleness_override_reason"
     else
       guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason"

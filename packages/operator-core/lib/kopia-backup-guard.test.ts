@@ -124,7 +124,18 @@ describe('Kopia global backup guard', () => {
   // completed, against a longest observed sub-limit window of 40 SECONDS. 19 of 19
   // ordinary cycles died that day; the only successes were staleness-override-armed.
   // The host-wide files do not measure this backup, so they must not cancel it.
-  it("gates on this backup's own cgroup pressure rather than the whole host", () => {
+  it('admits on the HOST-wide signal, because a fresh oneshot cgroup cannot answer the admission question', () => {
+    // This asserts the OPPOSITE of what it did before 2026-09-05, deliberately.
+    // The per-cgroup PSI files are real and isolated -- verified directly: inside
+    // a fresh `systemd-run --user -p MemoryAccounting=yes` unit its own
+    // memory.pressure reads `full avg10=0.00 total=0` at the same instant
+    // /proc/pressure/memory reads `full avg10=9.72 total=33935905616`. That
+    // isolation is exactly why they are USELESS at admission: kopia-snapshots is
+    // Type=oneshot, so its cgroup is seconds old when this check runs and reads
+    // 0.00 every single time. A cgroup-scoped admission gate would therefore
+    // never defer anything while still LOOKING like a gate, which is worse than
+    // having none. Admission asks "is the box already in trouble before we add
+    // load"; only /proc/pressure answers that.
     const { dir, env } = fixture();
     const { KOPIA_BACKUP_MEM_PSI_PATH: _memory, KOPIA_BACKUP_IO_PSI_PATH: _io, ...noOverride } = env;
     const result = run(['--mode', 'scheduled', '--label', 'scope', '--', 'touch', join(dir, 'ran')], noOverride);
@@ -134,19 +145,9 @@ describe('Kopia global backup guard', () => {
     const line = result.stdout.split('\n').find((entry) => entry.includes('result=psi-scope'));
     expect(line, result.stdout).toBeDefined();
 
-    const scope = /scope=(\S+)/.exec(line!)?.[1];
-    const memoryPath = /memory_path=(\S+)/.exec(line!)?.[1];
-    expect(scope).not.toBe('override');
-
-    if (scope === 'cgroup') {
-      expect(memoryPath).toMatch(/^\/sys\/fs\/cgroup\//);
-      expect(existsSync(memoryPath!)).toBe(true);
-    } else {
-      // The documented fallback, and the ONLY acceptable alternative: a kernel or
-      // delegation that exposes no readable per-cgroup PSI. Never silently ungated.
-      expect(scope).toBe('host');
-      expect(memoryPath).toBe('/proc/pressure/memory');
-    }
+    expect(/scope=(\S+)/.exec(line!)?.[1]).toBe('host');
+    expect(/memory_path=(\S+)/.exec(line!)?.[1]).toBe('/proc/pressure/memory');
+    expect(/io_path=(\S+)/.exec(line!)?.[1]).toBe('/proc/pressure/io');
   });
 
   it('lets an explicit pressure-path override win, and reports the scope it actually read', () => {
@@ -251,7 +252,23 @@ describe('Kopia global backup guard', () => {
     expect(spawnSync('test', ['-e', marker], { timeout: 5_000, killSignal: 'SIGKILL' }).status).not.toBe(0);
   });
 
-  it('stops only the scheduled child when memory pressure rises during the run', async () => {
+  it('does NOT cancel a running backup when memory pressure rises mid-run', async () => {
+    // Inverted 2026-09-05 after measuring what the mid-run signal actually says.
+    // Neither candidate reading describes a harm this backup can relieve:
+    //   HOST-wide is fleet-driven -- 0.02-41.91 sampled at 2s with ZERO kopia
+    //   processes running, at or above the limit of 5 in 52.4% of 82 samples. The
+    //   check aborts on the FIRST crossing, so a run needs an unbroken sub-limit
+    //   streak for its whole duration: 1024-2332s required vs 40s longest
+    //   observed => 20 of 20 ordinary cycles killed, zero coverage.
+    //   PER-CGROUP is real and isolated but measures the backup's OWN page-cache
+    //   reclaim, which is what reading the filesystem IS. Live on the 23:00 cycle
+    //   it went full avg10 1.71 -> 2.47 -> 5.36 in 25s at 1.4G RSS (cap 8G) while
+    //   the host fell 19.50 -> 9.93. A threshold of 5 there fires on "this job is
+    //   doing I/O".
+    // The backup stays bounded by what actually bounds it (MemoryHigh=8G /
+    // MemoryMax=12G / MemorySwapMax=0, Nice=10, ionice best-effort 7,
+    // --parallel=1); admission still defers on the host-wide signal, and the
+    // priority-waiter handoff below still preempts a hot sweep.
     const { dir, env } = fixture();
     const ready = join(dir, 'ready');
     const stopped = join(dir, 'stopped');
@@ -266,7 +283,9 @@ describe('Kopia global backup guard', () => {
         '--',
         'bash',
         '-c',
-        'trap \'touch "$2"; exit 143\' TERM; touch "$1"; while :; do sleep 0.1; done',
+        // Records a TERM it must never receive, then exits on its own well after
+        // several 0.05s monitor iterations have observed the raised pressure.
+        'trap \'touch "$2"; exit 143\' TERM; touch "$1"; sleep 1; exit 0',
         '_',
         ready,
         stopped,
@@ -288,10 +307,12 @@ describe('Kopia global backup guard', () => {
 
     await expect(closed).resolves.toBe(0);
     expect(stderr).toBe('');
-    expect(existsSync(stopped)).toBe(true);
-    expect(stdout).toContain('result=stopping-during-run reason=memory-pressure');
-    expect(stdout).toContain('result=deferred-during-run reason=memory-pressure');
-    expect(stdout).not.toContain('result=finished mode=scheduled');
+    // The child was never signalled: it ran to its own completion under pressure
+    // that would previously have retired it 0.05s in.
+    expect(existsSync(stopped)).toBe(false);
+    expect(stdout).not.toContain('stopping-during-run');
+    expect(stdout).not.toContain('deferred-during-run');
+    expect(stdout).toContain('result=finished mode=scheduled rc=0');
     // The grace must actually be HONOURED, not just configured. Asserting the absence of the
     // escalation is what pins that: the guard computed its stop deadline with a bare awk
     // `print`, whose default OFMT (%.6g) truncated the epoch to 1.78836e+09 — ~3700s in the
@@ -764,15 +785,21 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(finished)).toBe(true);
   });
 
-  it('still retires a mid-run pressure crossing when coverage is NOT stale', async () => {
-    // The override must not become an always-on bypass: with a fresh baseline
-    // the original protection has to behave exactly as before.
+  it('lets a FRESH-baseline cycle finish under mid-run pressure too, without arming the override', async () => {
+    // Was 'still retires a mid-run pressure crossing when coverage is NOT stale',
+    // guarding the staleness override against becoming an always-on bypass. The
+    // override is not what changed: mid-run pressure cancellation was removed
+    // outright (see the run-mid-pressure test above), so a fresh baseline now
+    // completes for the same reason a stale one does. The half still worth
+    // pinning is that finishing here is NOT the override firing -- the override
+    // must stay reachable only past the staleness deadline, so its absence in a
+    // fresh-baseline run is the assertion that matters.
     const { dir, env } = fixture();
     seedDeadlineBase(dir, 'fresh', 0);
     const ready = join(dir, 'ready');
     const child = spawn(
       'bash',
-      [guard, '--mode', 'scheduled', '--label', 'fresh', '--', 'bash', '-c', `touch "$1"; while :; do sleep 0.1; done`, '_', ready],
+      [guard, '--mode', 'scheduled', '--label', 'fresh', '--', 'bash', '-c', `touch "$1"; sleep 1; exit 0`, '_', ready],
       { env, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stdout = '';
@@ -785,6 +812,7 @@ describe('Kopia managed entrypoint contract', () => {
     await new Promise((resolve) => child.on('close', resolve));
 
     expect(stdout).not.toContain('result=staleness-override-armed');
-    expect(stdout).toContain('deferred-during-run reason=memory-pressure');
+    expect(stdout).not.toContain('deferred-during-run');
+    expect(stdout).toContain('result=finished mode=scheduled rc=0');
   });
 });
