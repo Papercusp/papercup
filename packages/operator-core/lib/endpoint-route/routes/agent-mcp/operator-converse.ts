@@ -16,6 +16,7 @@ import '../../../agent-tools/index';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget, shouldBypassOperatorBudget } from '../../../operator-budget';
 import { getConversationById } from '../../../operator-conversations';
+import { UI_CONTEXT_MAX_CHARS } from '../../../chat-context-sections';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface ConverseRequestBody {
@@ -42,6 +43,21 @@ interface ConverseRequestBody {
    *  Defaults to 'operator' (backward-compatible). 'sentinel' resolves the
    *  `papercup:converse` tool alias (same handler, loads the Herald persona). */
   role?: string;
+  /** Host trust (papercup-chat-one-component-one-contract-2026-09-06 P-005,
+   *  D-007 §2). This route is loopback-only, so the CALLER is a trusted host
+   *  process: the desktop / TUI omit it (⇒ 'owner', byte-identical legacy);
+   *  the portal host proxy asserts 'public' for a turn it forwards from
+   *  behind its per-user boundary. Asserting 'public' only ever REMOVES
+   *  privilege (no superuser mount, no workspace-internal prompt sections). */
+  hostTrust?: 'owner' | 'public';
+  /** The per-user boundary's bearer for a public turn — the ONLY credential
+   *  a public brain's MCP mount may carry (never the disk superuser token).
+   *  Without it a public turn runs tool-less. */
+  principalToken?: string;
+  /** The hosting surface's current UI context (orientation data, never
+   *  authority) — the agent-chats seam's `body.context`. Capped at
+   *  UI_CONTEXT_MAX_CHARS; longer is a 400. */
+  uiContext?: string;
 }
 
 export default defineTool({
@@ -73,6 +89,27 @@ export default defineTool({
     } catch {
       return new Response('invalid JSON body', { status: 400 });
     }
+
+    // P-005 (D-007 §2): host trust + the public boundary's bearer + the
+    // surface's UI context. Validated here, applied by operator:converse
+    // (toolset + MCP mount) and buildOperatorPrompt (which sections render).
+    if (body.hostTrust !== undefined && body.hostTrust !== 'owner' && body.hostTrust !== 'public') {
+      return Response.json({ error: "hostTrust must be 'owner' or 'public'" }, { status: 400 });
+    }
+    const hostTrust: 'owner' | 'public' = body.hostTrust === 'public' ? 'public' : 'owner';
+    if (body.uiContext !== undefined && typeof body.uiContext !== 'string') {
+      return Response.json({ error: 'uiContext must be a string' }, { status: 400 });
+    }
+    if (typeof body.uiContext === 'string' && body.uiContext.length > UI_CONTEXT_MAX_CHARS) {
+      return Response.json(
+        { error: `uiContext exceeds ${UI_CONTEXT_MAX_CHARS} chars` },
+        { status: 400 },
+      );
+    }
+    const principalToken =
+      typeof body.principalToken === 'string' && body.principalToken.trim()
+        ? body.principalToken.trim()
+        : undefined;
 
     const budget = shouldBypassOperatorBudget(body.uiClientId) ? null : await checkBudget();
     if (budget?.state && budget.exceeded) {
@@ -234,6 +271,10 @@ export default defineTool({
               // prompt builder loads the matching persona set ('operator' default).
               role,
               sessionUser,
+              // P-005 (D-007 §2): trust-keyed toolset / mount / prompt sections.
+              hostTrust,
+              principalToken,
+              uiContext: body.uiContext,
             },
             ctxBase,
             {},

@@ -171,11 +171,23 @@ export async function buildOperatorPrompt(
   // it runs concurrently with the summary / memory / sentinel gathers; every
   // leg is best-effort and budgeted, so a miss degrades the sections, never
   // the turn.
+  //
+  // ONE dynamic import of the conversations module, shared by this leg and the
+  // rolling-summary read below. Two CONCURRENT `import()`s of the same
+  // vi.mock'd module race inside vitest's mocker and the loser is handed the
+  // REAL module (measured 2026-09-06: the summary read opened a live PG pool
+  // under converse-prompt-compaction.test.ts while this leg got the mock).
+  // Created only when a consumer below will await it (so a rejected import is
+  // always caught by that consumer, never an unhandled rejection).
+  const conversationsModule =
+    input.conversationId && (hostTrust === 'owner' || contextMode === 'compaction')
+      ? import('../../operator-conversations')
+      : null;
   const boundItemContextPromise: Promise<{ dossier: string[]; plan: string | null }> =
-    input.conversationId && hostTrust === 'owner'
+    conversationsModule && hostTrust === 'owner'
       ? (async () => {
           try {
-            const { getConversationById } = await import('../../operator-conversations');
+            const { getConversationById } = await conversationsModule;
             const ws = activeWorkspaceId();
             const conv = await getConversationById(input.conversationId!, ws);
             if (!conv || conv.subjectKind !== 'work-item' || !conv.harnessSlug || !conv.subjectRef) {
@@ -196,9 +208,9 @@ export async function buildOperatorPrompt(
         })()
       : Promise.resolve({ dossier: [], plan: null });
   let compactedSummary: string | null = null;
-  if (contextMode === 'compaction' && input.conversationId) {
+  if (contextMode === 'compaction' && input.conversationId && conversationsModule) {
     try {
-      const { readConversationSummary } = await import('../../operator-conversations');
+      const { readConversationSummary } = await conversationsModule;
       const s = await readConversationSummary(input.conversationId);
       if (s?.summaryText && s.summaryText.trim()) compactedSummary = s.summaryText.trim();
     } catch (err) {

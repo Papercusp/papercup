@@ -16,7 +16,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../agent-chat-stream', () => ({ runAgentChat: vi.fn() }));
+vi.mock('../../../agent-chat-stream', () => ({
+  runAgentChat: vi.fn(),
+  // The real resolver honours an explicit per-call backend first (P-005: the
+  // papercup pin carries its backend); everything else in this suite runs the
+  // default claude-code brain.
+  resolveBackend: vi.fn((o: { backend?: string | null }) => o?.backend ?? 'claude-code'),
+}));
 const { getMemoryBackendMock, rememberConversationMock } = vi.hoisted(() => {
   const rememberConversationMock = vi.fn(async () => ({ ids: [], storedEvents: 0 }));
   return {
@@ -385,7 +391,8 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     });
     await handler({ messages: [], sessionUser: null }, ctx);
     expect(runAgentChat).toHaveBeenCalledTimes(1);
-    expect(ctx.emit).toHaveBeenCalledWith('delta', { text: 'hi there' });
+    // Chat-protocol frame (papercup-chat P-004): the wire event carries its type.
+    expect(ctx.emit).toHaveBeenCalledWith('delta', { type: 'delta', text: 'hi there' });
   });
 
   it('a <spawn> tag in the turn dispatches through the nursery spawn engine', async () => {
@@ -512,7 +519,8 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig; allowedTools?: string[] };
     const url = mcpUrlOf(call.mcpConfig)!;
     expect(url).not.toContain('superuser');
-    expect(url).toContain('&workspace=ws-real');
+    // workspace= LEADS the query on the public mount (nothing precedes it).
+    expect(url).toContain('/api/mcp?workspace=ws-real');
     expect(call.mcpConfig?.mcpServers.agentmcp.headers.Authorization).toBe('Bearer portal-user-bearer');
     const tools = new URL(url).searchParams.get('tools') ?? '';
     expect(tools.split(',')).toEqual(['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep']);

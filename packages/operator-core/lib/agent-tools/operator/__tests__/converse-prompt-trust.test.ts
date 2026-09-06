@@ -16,7 +16,8 @@ vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__agent_tools:list'],
 }));
 const { memMock, sentinelGatherMock, dossierMock, planMock, convMock } = vi.hoisted(() => ({
-  memMock: vi.fn(async (): Promise<string | null> => null),
+  // Typed with the injection input so `.mock.calls[n][0]` is addressable.
+  memMock: vi.fn(async (_input?: Record<string, unknown>): Promise<string | null> => null),
   sentinelGatherMock: vi.fn(async () => ({})),
   dossierMock: vi.fn(async (): Promise<string[]> => ['## WI-9 — the bound item\n\nbody', '## In-flight checkpoint for WI-9\n\ncarry']),
   planMock: vi.fn(async (): Promise<string | null> => '## Plan context\n\nP-005 lane'),
@@ -132,8 +133,12 @@ describe('buildOperatorPrompt — host trust', () => {
     );
     expect(p.userPromptText).not.toContain('## WI-9');
     expect(p.userPromptText).not.toContain('Current UI context');
-    expect(p.systemPromptText).toContain('agent_tools_list');
+    // The CATALOG entry (the playbook prose may name tools freely — only the
+    // "## Available tools" section advertises what this turn can call).
+    expect(p.systemPromptText).toContain('## Available tools');
+    expect(p.systemPromptText).toContain('- `agent_tools_list`');
     const none = await buildOperatorPrompt({ messages: msgs, trigger: 'user_message', toolNames: [] }, null);
-    expect(none.systemPromptText).not.toContain('agent_tools_list');
+    expect(none.systemPromptText).not.toContain('## Available tools');
+    expect(none.systemPromptText).not.toContain('- `agent_tools_list`');
   });
 });
