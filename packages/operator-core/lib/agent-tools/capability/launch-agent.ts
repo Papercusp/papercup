@@ -1118,8 +1118,7 @@ export default defineTool({
         // remains a real profile override and therefore still fails closed
         // against a non-empty canonical profile.
         const requestedProfileExtraArgs =
-          requestedExtraArgs !== undefined &&
-          (requestedExtraArgs.length === 0 || profileArgs.length > 0)
+          requestedExtraArgs !== undefined && (requestedExtraArgs.length === 0 || profileArgs.length > 0)
             ? profileArgs
             : undefined;
         const savedLaunchSpec = await resolveSavedFleetLaunchSpec({

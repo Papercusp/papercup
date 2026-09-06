@@ -219,9 +219,7 @@ export async function readGoalKickoffEvidence(args: ReadGoalKickoffEvidenceArgs)
        LIMIT 256
     `) as unknown as Array<Record<string, unknown>>;
 
-    const reportRow = reportRows.find((row) =>
-      envelopeHasCompleteGoalOwnerReport(row.body, out.goalId!),
-    );
+    const reportRow = reportRows.find((row) => envelopeHasCompleteGoalOwnerReport(row.body, out.goalId!));
     out.ownerReportAt = reportRow ? iso(reportRow.ts) : null;
     if (!out.ownerReportAt) {
       out.missing = ['owner-report'];

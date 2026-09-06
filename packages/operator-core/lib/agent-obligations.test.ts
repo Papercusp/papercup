@@ -445,12 +445,7 @@ describe('provider recovery operation boundary', () => {
   });
 
   it('refuses a wrong plan, fleet, leadership shape, or visibility choice', () => {
-    for (const mismatch of [
-      { plan: 'plan-b' },
-      { name: 'other-fleet' },
-      { leader: 'caller' },
-      { headless: false },
-    ]) {
+    for (const mismatch of [{ plan: 'plan-b' }, { name: 'other-fleet' }, { leader: 'caller' }, { headless: false }]) {
       expect(
         evaluateAgentObligationRecoveryBoundary({
           obligation: placement(),
@@ -468,9 +463,10 @@ describe('provider recovery operation boundary', () => {
         status,
         action: undefined,
         reason: 'the worklist is covered or empty',
-        evidence: status === 'satisfied'
-          ? [{ ref: 'placement:receipt', observedAt: NOW, freshness: 'current', effect: 'independent fleet live' }]
-          : [],
+        evidence:
+          status === 'satisfied'
+            ? [{ ref: 'placement:receipt', observedAt: NOW, freshness: 'current', effect: 'independent fleet live' }]
+            : [],
       });
       expect(
         evaluateAgentObligationRecoveryBoundary({

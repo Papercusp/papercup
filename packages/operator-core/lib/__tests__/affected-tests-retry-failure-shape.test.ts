@@ -18,6 +18,7 @@ import {
   formatRetryDecisionLine,
   formatRetryPoolLine,
   matchRetryFlakeClasses,
+  vitestFailureEntries,
   vitestFailureReport,
 } from '../../../../scripts/lib/retry-failure-shape.mjs';
 
@@ -100,7 +101,7 @@ describe('decideRetry', () => {
     expect(d.reason).toBe('broad-deterministic-red(36>15)');
     expect(formatRetryDecisionLine('@papercusp/operator-core', d)).toBe(
       'AFFECTED_RETRY_SKIPPED ws=@papercusp/operator-core retry=0 mode=none failedFiles=36 flakeClasses=none ' +
-        'flakeScope=failure-report reason=broad-deterministic-red(36>15)',
+        'flakeScope=failure-report flakeFiles=0 retryFiles=0 reason=broad-deterministic-red(36>15)',
     );
   });
 
@@ -153,7 +154,57 @@ describe('decideRetry', () => {
       maxFiles: MAX,
     });
     expect(d).toMatchObject({ retry: true, mode: 'fresh-files', flakeClasses: ['test-timeout'] });
-    expect(formatRetryDecisionLine('ws', d)).toMatch(/^AFFECTED_RETRY_DECISION ws=ws retry=1 mode=fresh-files failedFiles=8 flakeClasses=test-timeout flakeScope=failure-report reason=flake-class:test-timeout$/);
+    expect(formatRetryDecisionLine('ws', d)).toMatch(/^AFFECTED_RETRY_DECISION ws=ws retry=1 mode=fresh-files failedFiles=8 flakeClasses=test-timeout flakeScope=failure-report flakeFiles=1 retryFiles=8 reason=flake-class:test-timeout$/);
+    expect(d.retryFiles).toEqual(files(8));
+  });
+
+  it('P-006: a BROAD red whose signatures pin to a few files re-runs ONLY those files fresh (e70cd139: one 180s timeout beside 15 assertion diffs)', () => {
+    const output = [
+      '⎯⎯⎯⎯⎯⎯ Failed Tests 128 ⎯⎯⎯⎯⎯⎯',
+      ...files(15).flatMap((f, i) => [`FAIL ${f} > renders`, 'AssertionError: expected "a" to deeply equal "b"', `⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[${i + 1}/16]⎯`]),
+      'FAIL lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts > keeps open',
+      'Error: Test timed out in 180000ms.',
+      '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/16]⎯',
+      'close timed out after 10000ms',
+      'Tests closed successfully but something prevents Vite server from exiting',
+    ].join('\n');
+    const failedFiles = [...files(15), 'lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts'];
+    const d = decideRetry({ failedFiles, output, maxFiles: MAX });
+    expect(d).toMatchObject({
+      retry: true,
+      mode: 'fresh-files',
+      flakeClasses: ['test-timeout'],
+      flakeFiles: ['lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts'],
+      retryFiles: ['lib/agent-tools/fleet_registry/__tests__/launch-on-plan.test.ts'],
+      reason: 'flake-class:test-timeout(1 of 16 files)',
+    });
+    expect(formatRetryDecisionLine('ws', d)).toBe(
+      'AFFECTED_RETRY_DECISION ws=ws retry=1 mode=fresh-files failedFiles=16 flakeClasses=test-timeout ' +
+        'flakeScope=failure-report flakeFiles=1 retryFiles=1 reason=flake-class:test-timeout(1 of 16 files)',
+    );
+    // The teardown note alone is not a signature: without the timeout entry this is a skip.
+    const noTimeout = output.replace('Error: Test timed out in 180000ms.', 'AssertionError: nope');
+    expect(decideRetry({ failedFiles, output: noTimeout, maxFiles: MAX })).toMatchObject({ retry: false, flakeClasses: [] });
+    // A signature nobody can pin to a file (an unhandled worker crash outside every entry)
+    // keeps the whole-workspace retry — it may have taken any file down with it.
+    const crash = `${output}\n⎯⎯ Unhandled Errors ⎯⎯\nError: Worker exited unexpectedly`;
+    expect(decideRetry({ failedFiles, output: crash, maxFiles: MAX })).toMatchObject({
+      retry: true,
+      mode: 'whole-workspace',
+      reason: 'flake-class:test-timeout+worker-crash(broad)',
+    });
+  });
+
+  it('vitestFailureEntries: one entry per FAIL header, closed by the [k/N] rule; the rest is unattributed', () => {
+    const { entries, unattributed } = vitestFailureEntries(
+      '⎯⎯ Failed Suites 1 ⎯⎯\nFAIL lib/a.test.ts [ lib/a.test.ts ]\nError: no export\n  at x\n⎯⎯⎯⎯⎯[1/2]⎯\n\n⎯⎯ Failed Tests 1 ⎯⎯\nFAIL lib/b.test.ts > s > t\nAssertionError: nope\n⎯⎯⎯⎯⎯[2/2]⎯\nclose timed out after 10000ms',
+    );
+    expect(entries.map((e) => e.file)).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    expect(entries[0].text).toContain('Error: no export');
+    expect(entries[1].text).not.toContain('no export');
+    expect(unattributed).toContain('Failed Suites 1');
+    expect(unattributed).toContain('close timed out after 10000ms');
+    expect(unattributed).not.toContain('AssertionError');
   });
 
   it('retries the WHOLE workspace when a flake class is present but the set exceeds the cap (unchanged behaviour)', () => {

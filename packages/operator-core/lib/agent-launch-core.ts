@@ -1391,16 +1391,19 @@ export function modelEffortFromSpec(spec: string | null): string | null {
 /**
  * Canonicalize the model value before comparing a requested launch with the
  * value recorded by psu after bootstrap. Claude appends its private `[1m]`
- * context-window marker to default 1M families, so
- * `claude-sonnet-5:xhigh` and `claude-sonnet-5[1m]:xhigh` are the same launch
- * contract. Keep the raw values in any reported diff, but compare through the
- * same normalizer the launcher uses.
+ * context-window marker to default 1M families, while Codex expands the
+ * user-facing `sol`/`terra`/`luna` aliases to explicit GPT-5.6 model ids.
+ * Keep the raw values in any reported diff, but compare through the same
+ * normalizers the launchers use.
  */
 export function normalizeLaunchAttestationModelSpec(
   spec: string | null,
   agent: string | null,
 ): string | null {
-  return spec == null || agent !== 'claude' ? spec : normalizeModelSpec(spec);
+  if (spec == null) return null;
+  if (agent === 'claude') return normalizeModelSpec(spec);
+  if (agent === 'codex') return resolveCodexModel(spec);
+  return spec;
 }
 
 /** Resolve the actual launch attestation from the durable adv_sessions ledger. */

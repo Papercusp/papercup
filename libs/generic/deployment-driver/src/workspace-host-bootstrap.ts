@@ -2403,7 +2403,14 @@ export function buildWorkspaceHostBootstrap(
     `    runuser -u "$SERVICE_USER" -- "$NODE_BIN" -e 'try{require(process.argv[1]);console.error("ADDON LOADED OK")}catch(e){console.error("ADDON LOAD FAILED:",e&&e.message);if(e&&e.cause)console.error("CAUSE:",String(e.cause))}' "$ADDON_PATH" 2>&1 | head -20 >&2 || true`,
     "  fi",
     "}",
-    'systemctl enable --now "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
+    // `enable --now` is not a restart. On repair/upgrade the previous release's unit can already
+    // be active (or inside its restart loop), in which case `enable --now` returns successfully
+    // without ever execing the release just installed at `current`. The r7 P-018 repair proved the
+    // consequence live: r25 reached configure-service, health checked the still-running r24
+    // process, and the failure trap rolled the symlink back. Enable persistence separately, then
+    // unconditionally restart so first install and every release switch share one execution gate.
+    'systemctl enable "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to enable"; }',
+    'systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[6]}'`,
     'systemctl is-active --quiet "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service is not active after start"; }',

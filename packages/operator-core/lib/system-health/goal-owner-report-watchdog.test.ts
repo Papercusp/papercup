@@ -189,14 +189,10 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
       return [];
     }) as unknown as Sql;
 
-    await readGoalOwnerReportObligation(
-      sqlFn,
-      { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' },
-      NOW,
-    );
+    await readGoalOwnerReportObligation(sqlFn, { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' }, NOW);
 
     const query = queryTexts.find((text) => text.includes('FROM harness_shared.agent_modes')) ?? '';
-    expect(query).toContain("NULLIF(BTRIM(e.body ->");
+    expect(query).toContain('NULLIF(BTRIM(e.body ->');
     expect(query).toContain("->> 'moved'), '') IS NOT NULL");
     expect(query).toContain("->> 'cost'), '') IS NOT NULL");
     expect(query).toContain("->> 'ownerWalled'), '') IS NOT NULL");

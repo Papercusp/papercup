@@ -343,16 +343,19 @@ describe('launch-tool routing guidance', () => {
 describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
   it('classifies only a fresh plan+fleet launch by the current GOAL holder', () => {
     const modes = [{ mode: 'goal', subject: 'goal-1' }];
-    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: 'fleet-a', modeRows: modes }))
-      .toEqual({ goalId: 'goal-1' });
-    expect(goalHolderPlanFleetBypass({ sourceAction: true, plan: 'plan-a', fleet: 'fleet-a', modeRows: modes }))
-      .toBeNull();
-    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: null, modeRows: modes }))
-      .toBeNull();
-    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: null, fleet: 'fleet-a', modeRows: modes }))
-      .toBeNull();
-    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: 'fleet-a', modeRows: [] }))
-      .toBeNull();
+    expect(
+      goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: 'fleet-a', modeRows: modes }),
+    ).toEqual({ goalId: 'goal-1' });
+    expect(
+      goalHolderPlanFleetBypass({ sourceAction: true, plan: 'plan-a', fleet: 'fleet-a', modeRows: modes }),
+    ).toBeNull();
+    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: null, modeRows: modes })).toBeNull();
+    expect(
+      goalHolderPlanFleetBypass({ sourceAction: false, plan: null, fleet: 'fleet-a', modeRows: modes }),
+    ).toBeNull();
+    expect(
+      goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: 'fleet-a', modeRows: [] }),
+    ).toBeNull();
   });
 
   it('refuses the alternate fresh plan+fleet path before fleet creation or spawn', async () => {

@@ -2572,9 +2572,7 @@ export default defineTool({
           fleetSlug,
           launchCount: count,
         });
-        const placement = read.agenda.evaluations.find(
-          (entry) => entry.family === 'plan-placement',
-        );
+        const placement = read.agenda.evaluations.find((entry) => entry.family === 'plan-placement');
         const readAgeMs = Date.now() - Date.parse(read.observedAt);
         const scopeMatches =
           read.goalId === goalHolderSubject &&
@@ -2631,8 +2629,7 @@ export default defineTool({
               // For paired launches the expanded member list is the effective
               // visibility source; any visible seat makes the operation differ.
               headless:
-                args.headless ??
-                !(args.members ?? []).slice(0, count).some((member) => member?.headless === false),
+                args.headless ?? !(args.members ?? []).slice(0, count).some((member) => member?.headless === false),
               count,
             },
           },

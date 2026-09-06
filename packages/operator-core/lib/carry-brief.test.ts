@@ -63,6 +63,7 @@ function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBrief
         body: 'One function assembles the carry brief.',
         harness: 'papercusp',
         checkpoint: 'wired request-compaction; watchdog next',
+        holderProof: { ownerId: 'su-abc', workspaceId: 'ws-test' },
       },
     ],
     listOwnerFactsFn: async () => [
@@ -164,6 +165,7 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
     );
     expect(brief).toEqual({
       ownerId: 'su-abc',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [],
       directives: [],

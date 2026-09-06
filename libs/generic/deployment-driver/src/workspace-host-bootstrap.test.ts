@@ -899,6 +899,30 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(rollback).toContain('"$RELEASE_DIR/$ROLLBACK_ENTRYPOINT"');
   });
 
+  /**
+   * Live P-018 r7 repair, 2026-09-06. The refreshed r25 bootstrap installed and selected r25,
+   * but the r24 service was already active in its restart loop. `systemctl enable --now` returned
+   * without restarting that process, so attest-health observed r24 failing its old migration 389
+   * and the bootstrap correctly rolled the symlink back. Starting an inactive unit is not enough:
+   * every release switch must exec the newly selected release even when an old unit is active.
+   */
+  it('restarts the workspace service after the release switch even when an old unit is active', () => {
+    // Lifecycle `repair` deliberately renders the release bootstrap's supported `upgrade` action.
+    const repair = buildWorkspaceHostBootstrap(input({ action: 'upgrade' }));
+    const lines = repair.split('\n');
+    const switchAt = lines.indexOf('mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"');
+    const reloadAt = lines.indexOf('systemctl daemon-reload');
+    const enableAt = lines.indexOf('systemctl enable "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to enable"; }');
+    const restartAt = lines.indexOf('systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }');
+
+    // Calibration: no missing command may pass the ordering assertions through a -1 index.
+    expect(switchAt).toBeGreaterThanOrEqual(0);
+    expect(reloadAt).toBeGreaterThan(switchAt);
+    expect(enableAt).toBeGreaterThan(reloadAt);
+    expect(restartAt).toBeGreaterThan(enableAt);
+    expect(repair).not.toContain('systemctl enable --now "$SERVICE_NAME.service"');
+  });
+
   it('supports explicit distinct identities and rejects privileged or shared identities', () => {
     const script = buildWorkspaceHostBootstrap(
       input({

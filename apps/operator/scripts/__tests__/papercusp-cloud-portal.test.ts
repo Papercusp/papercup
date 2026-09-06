@@ -157,6 +157,15 @@ function run(files: Fixture, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
 }
 
 describe("Cloud Portal systemd deployment contract", () => {
+  it("ships the documented handoff entrypoint as a directly executable script", () => {
+    const result = spawnSync(SCRIPT, ["--help"], { encoding: "utf8" });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      "Usage: deploy-cloud-portal.sh [--render-only|--install-only|--handoff]",
+    );
+  });
+
   it("renders machine-specific paths with systemd escaping and keeps the source template neutral", () => {
     const files = fixture();
     try {

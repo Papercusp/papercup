@@ -6669,8 +6669,8 @@ const isWatchdogTimedOutResult = (r) =>
 const retryInvocationFor = (t, decision, failedFiles) =>
   decision.mode === "fresh-files"
     ? hasLaneSplit(t.ws)
-      ? { extraArgs: failedFiles, scriptOverride: "test" }
-      : { extraArgs: failedFiles, scriptOverride: null }
+      ? { extraArgs: decision.retryFiles ?? failedFiles, scriptOverride: "test" }
+      : { extraArgs: decision.retryFiles ?? failedFiles, scriptOverride: null }
     : { extraArgs: [], scriptOverride: null };
 
 /** Per initial-pool index: everything the reporting loop needs to know about the retry. */
@@ -6899,9 +6899,12 @@ for (const scheduled of initialPool.results) {
       // the surviving failure as a confident red rather than load-suspect residue.
     } else {
       errSync(formatRetryBudgetLine(t.ws.name, budget));
+      // P-006: a broad red re-runs only the files whose own failure entries carry a flake
+      // signature (decision.retryFiles); the rest are deterministic and never re-run.
+      const retryFiles = retryDecision.retryFiles ?? failedFiles;
       errSync(
         retryDecision.mode === "fresh-files"
-          ? `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(", ")}`
+          ? `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${retryFiles.length} of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${retryFiles.join(", ")}`
           : `\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`,
       );
       const retried = retryResults.get(scheduled.index);
@@ -6957,9 +6960,33 @@ for (const scheduled of initialPool.results) {
           const rerunFailedFiles = parseFailedFiles(
             `${r.stdout ?? ""}${r.stderr ?? ""}`,
           );
-          residualFiles =
-            rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
-          if (r.status === 0 && retryProvenance?.classification === "flake")
+          // P-006: a subset retry (broad red, signatures pinned to a few files) leaves the
+          // OTHER failed files un-run. They are deterministic by the classifier's reading and
+          // stay in the residue; and since the retry's exit code speaks only for the subset,
+          // a passing subset must not turn the task green — the first pass's status stands.
+          const retriedSet = new Set(retryFiles);
+          const notRetried = failedFiles.filter((f) => !retriedSet.has(f));
+          const rerunResidue =
+            rerunFailedFiles.length > 0
+              ? rerunFailedFiles
+              : r.status === 0
+                ? []
+                : failedFiles.filter((f) => retriedSet.has(f));
+          residualFiles = [...new Set([...notRetried, ...rerunResidue])];
+          if (notRetried.length > 0 && r.status === 0) {
+            errSync(
+              `>>> ${t.ws.name} re-run subset passed in a fresh process — ${retryFiles.length} file(s) ` +
+                `${retryProvenance?.classification === "flake" ? "counted as FLAKES" : "not counted (tree moved)"}; ` +
+                `${notRetried.length} deterministic file(s) were NOT re-run, so the failure stands: ${notRetried.join(", ")}`,
+            );
+            r = {
+              ...r,
+              status:
+                typeof scheduled.value.status === "number" && scheduled.value.status !== 0
+                  ? scheduled.value.status
+                  : 1,
+            };
+          } else if (r.status === 0 && retryProvenance?.classification === "flake")
             errSync(
               `>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`,
             );

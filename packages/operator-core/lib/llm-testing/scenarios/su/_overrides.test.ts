@@ -82,7 +82,15 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(evidence).toContain('window.__TSR_ROUTER__?.navigate');
     expect(textOf(search)).not.toContain('verify-ui-via-staging-3170');
     expect(textOf(stagingPage)).toContain('only for a dedicated staging/:3170 webview');
-    expect(SU_S02_TAURI_ONLY.version).toBe(6);
+    const commandBans = SU_S02_TAURI_ONLY.asserts
+      .filter((assertion): assertion is Extract<typeof assertion, { kind: 'text_excludes' }> => (
+        assertion.kind === 'text_excludes'
+      ))
+      .map((assertion) => assertion.pattern);
+    expect(commandBans.some((pattern) => pattern.test('I can give you a visual verdict after the check.'))).toBe(false);
+    expect(commandBans.some((pattern) => pattern.test('Run verdict open http://localhost:3070.'))).toBe(true);
+    expect(commandBans.some((pattern) => pattern.test('Run xdg-open http://localhost:3070.'))).toBe(true);
+    expect(SU_S02_TAURI_ONLY.version).toBe(7);
   });
 
   it('gives S02 a truthful capability check and enforces docs scope', () => {
@@ -107,9 +115,10 @@ describe('SU S01/S02 populated scenario worlds', () => {
     });
 
     expect(textOf(find)).toContain('"count":0');
-    expect(textOf(find)).toContain('Do not offer or claim');
+    expect(textOf(find)).toContain('must run the sourced tauri-agent-tools commands locally');
+    expect(textOf(find)).toContain('Do not propose another execution route');
     expect(textOf(catalog)).toContain('"tools"');
-    expect(textOf(catalog)).toContain('no process launcher');
+    expect(textOf(catalog)).toContain('no tool here can launch or control a desktop UI');
     expect(textOf(catalog)).toContain('code:run');
     expect(textOf(unscopedDocs)).toContain('harness_required');
     expect(textOf(orient)).toContain('papercusp-workspace');

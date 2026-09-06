@@ -479,7 +479,7 @@ export default defineTool({
           text: JSON.stringify({
             ...(coalesced
               ? {
-                  notice: 'COALESCED: existing escalation retained; this call\'s summary/body/options were discarded.',
+                  notice: "COALESCED: existing escalation retained; this call's summary/body/options were discarded.",
                   coalesced: true,
                   existingMsgId: rec.existingMsgId ?? rec.msg_id,
                   bodyDiscarded: rec.bodyDiscarded ?? true,
@@ -491,9 +491,7 @@ export default defineTool({
             interest_watch: interestWatch,
             ...(predicateValidation ? { predicate_validation: predicateValidation } : {}),
             ...(evidenceValidation ? { evidence_validation: evidenceValidation } : {}),
-            ...(goalOwnerReport
-              ? { goal_owner_report: { status: 'stamped', goalId: goalOwnerReport.goalId } }
-              : {}),
+            ...(goalOwnerReport ? { goal_owner_report: { status: 'stamped', goalId: goalOwnerReport.goalId } } : {}),
             ...(goalOwnerReportWarning ? { goal_owner_report_warning: goalOwnerReportWarning } : {}),
           }),
         },

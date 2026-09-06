@@ -220,8 +220,11 @@ export function classifyRetryFlakes(output) {
  *   reason: string,
  *   flakeClasses: string[],
  *   flakeScope: 'failure-report' | 'whole-output',
+ *   flakeFiles: string[],
+ *   retryFiles: string[] | null,
  *   failedFileCount: number,
- * }}
+ * }} `retryFiles` is the file list a `fresh-files` retry re-runs (null for the other modes) —
+ *   every failed file when the red is small, only the signature-bearing files when it is broad.
  */
 export function decideRetry({
   failedFiles,
@@ -230,10 +233,9 @@ export function decideRetry({
   smallRedFiles = RETRY_SMALL_RED_FILES,
 }) {
   const files = Array.isArray(failedFiles) ? failedFiles : [];
-  const { report, scope: flakeScope } = vitestFailureReport(output);
-  const flakeClasses = flakeClassesIn(report);
+  const { flakeClasses, flakeFiles, unattributedClasses, scope: flakeScope } = classifyRetryFlakes(output);
   const failedFileCount = files.length;
-  const base = { flakeClasses, flakeScope, failedFileCount };
+  const base = { flakeClasses, flakeScope, flakeFiles, retryFiles: null, failedFileCount };
 
   if (failedFileCount === 0) {
     // Nothing parsed: a non-vitest failure mode (spawn error, collection crash, a guard).
@@ -246,17 +248,35 @@ export function decideRetry({
     };
   }
   if (flakeClasses.length > 0) {
-    return failedFileCount <= maxFiles
-      ? { ...base, retry: true, mode: "fresh-files", reason: `flake-class:${flakeClasses.join("+")}` }
-      : {
-          ...base,
-          retry: true,
-          mode: "whole-workspace",
-          reason: `flake-class:${flakeClasses.join("+")}(broad)`,
-        };
+    const cls = flakeClasses.join("+");
+    if (failedFileCount <= maxFiles) {
+      return { ...base, retry: true, mode: "fresh-files", retryFiles: files, reason: `flake-class:${cls}` };
+    }
+    // A BROAD red with a signature. Re-running everything re-runs the assertion diffs too —
+    // the 34 minutes P-003 exists to save — so when every signature is pinned to a file, and
+    // those files fit the fresh-process cap, re-run just them; the rest is deterministic and
+    // is reported as such. A signature nobody can pin (an unhandled worker crash) keeps the
+    // whole-workspace retry: it may have taken any file down with it.
+    const retryFiles = flakeFiles.filter((f) => files.includes(f));
+    if (unattributedClasses.length === 0 && retryFiles.length > 0 && retryFiles.length <= maxFiles) {
+      return {
+        ...base,
+        retry: true,
+        mode: "fresh-files",
+        retryFiles,
+        reason: `flake-class:${cls}(${retryFiles.length} of ${failedFileCount} files)`,
+      };
+    }
+    return { ...base, retry: true, mode: "whole-workspace", reason: `flake-class:${cls}(broad)` };
   }
   if (failedFileCount <= smallRedFiles) {
-    return { ...base, retry: true, mode: "fresh-files", reason: `small-red(${failedFileCount}<=${smallRedFiles})` };
+    return {
+      ...base,
+      retry: true,
+      mode: "fresh-files",
+      retryFiles: files,
+      reason: `small-red(${failedFileCount}<=${smallRedFiles})`,
+    };
   }
   return {
     ...base,
@@ -280,7 +300,8 @@ export function formatRetryDecisionLine(workspace, decision) {
   return (
     `${tag} ws=${workspace} retry=${decision.retry ? 1 : 0} mode=${decision.mode} ` +
     `failedFiles=${decision.failedFileCount} flakeClasses=${decision.flakeClasses.join(",") || "none"} ` +
-    `flakeScope=${decision.flakeScope} reason=${decision.reason}`
+    `flakeScope=${decision.flakeScope} flakeFiles=${decision.flakeFiles.length} ` +
+    `retryFiles=${decision.retryFiles ? decision.retryFiles.length : 0} reason=${decision.reason}`
   );
 }
 

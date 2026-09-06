@@ -269,7 +269,9 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // shared pool), but the lane rule is unchanged: a fresh-files re-run of a lane workspace
     // goes through the default `test` script.
     expect(src).toMatch(
-      /const retryInvocationFor = \(t, decision, failedFiles\) =>\s*decision\.mode === 'fresh-files'\s*\?\s*hasLaneSplit\(t\.ws\)\s*\?\s*\{ extraArgs: failedFiles, scriptOverride: 'test' \}\s*:\s*\{ extraArgs: failedFiles, scriptOverride: null \}/,
+      // P-006: the file list is the decision's `retryFiles` (a broad red re-runs only the
+      // signature-bearing files), falling back to every failed file.
+      /const retryInvocationFor = \(t, decision, failedFiles\) =>\s*decision\.mode === 'fresh-files'\s*\?\s*hasLaneSplit\(t\.ws\)\s*\?\s*\{ extraArgs: decision\.retryFiles \?\? failedFiles, scriptOverride: 'test' \}\s*:\s*\{ extraArgs: decision\.retryFiles \?\? failedFiles, scriptOverride: null \}/,
     );
     // …and it is the function the retry plan actually uses. Pinned separately because the
     // helper could be defined correctly and simply not wired in — a passing definition beside
@@ -283,7 +285,14 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // the first pass AND the fresh-process re-run"; assigning the PRE-retry set made that
     // sentence false for every file the re-run absorbed. Measured 2026-08-13: 14 in, 4 out,
     // and the notice named all 14 — sending gate triage at 10 files that had just passed.
-    expect(src).toMatch(/residualFiles =\s*rerunFailedFiles\.length > 0 \? rerunFailedFiles : failedFiles;/);
+    // P-006: the residue is the union of what the re-run did NOT cover (a broad red re-runs
+    // only the signature-bearing files; the rest are deterministic and were never re-run) and
+    // what survived the re-run. A passing subset must not turn the task green: the first
+    // pass's failing status is restored whenever deterministic files were left un-run.
+    expect(src).toMatch(/const retriedSet = new Set\(retryFiles\);\s*const notRetried = failedFiles\.filter\(\(f\) => !retriedSet\.has\(f\)\);/);
+    expect(src).toMatch(/rerunFailedFiles\.length > 0\s*\?\s*rerunFailedFiles\s*:/);
+    expect(src).toMatch(/residualFiles = \[\.\.\.new Set\(\[\.\.\.notRetried, \.\.\.rerunResidue\]\)\];/);
+    expect(src).toMatch(/if \(notRetried\.length > 0 && r\.status === 0\) \{/);
     // The fallback direction is deliberate: when the re-run's output does not parse we name
     // the pre-retry set rather than nothing, because a notice naming NO file is unactionable.
     expect(src).toMatch(/const rerunFailedFiles = parseFailedFiles\(/);

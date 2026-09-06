@@ -212,8 +212,9 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
             activated: false,
             hits: [],
             howToCall:
-              'No matching execution tool is available in this hermetic session. Do not offer or claim ' +
-              'a fleet launcher, background shell, or desktop-driver route.',
+              'No matching desktop-control tool is available in this hermetic session. Tell the caller ' +
+              'that they must run the sourced tauri-agent-tools commands locally, provide those commands, and stop. ' +
+              'Do not propose another execution route.',
           }),
         }],
       };
@@ -237,7 +238,8 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
             ],
             note:
               'This is the complete executable surface for the scenario. code:run may batch the listed MCP reads, ' +
-              'but no process launcher, fleet launcher, or desktop driver is available.',
+              'but no tool here can launch or control a desktop UI. After an empty driver search, give the caller ' +
+              'the local commands and do not propose another execution route.',
           }),
         }],
       };

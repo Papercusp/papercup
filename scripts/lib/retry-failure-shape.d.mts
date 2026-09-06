@@ -89,8 +89,11 @@ export function classifyRetryFlakes(output: string): {
  *   reason: string,
  *   flakeClasses: string[],
  *   flakeScope: 'failure-report' | 'whole-output',
+ *   flakeFiles: string[],
+ *   retryFiles: string[] | null,
  *   failedFileCount: number,
- * }}
+ * }} `retryFiles` is the file list a `fresh-files` retry re-runs (null for the other modes) —
+ *   every failed file when the red is small, only the signature-bearing files when it is broad.
  */
 export function decideRetry({ failedFiles, output, maxFiles, smallRedFiles, }: {
     failedFiles: string[];
@@ -103,6 +106,8 @@ export function decideRetry({ failedFiles, output, maxFiles, smallRedFiles, }: {
     reason: string;
     flakeClasses: string[];
     flakeScope: "failure-report" | "whole-output";
+    flakeFiles: string[];
+    retryFiles: string[] | null;
     failedFileCount: number;
 };
 /**

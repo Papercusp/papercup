@@ -3,7 +3,11 @@ import {
   type CapPreservingOperativeTruncation,
 } from '../../operative-clause';
 import { workItemFetchHint } from '../../work-item-fetch-hint';
-import type { CarryBriefHeldItem } from '../../carry-brief';
+import {
+  assessHeldItemOwnership,
+  renderHeldItemOwnershipWarning,
+  type CarryBriefHeldItem,
+} from '../../carry-brief';
 
 export const AUTOMATIC_COMPACTION_RECOVERY_SCHEMA = 'post-compaction-recovery-v1' as const;
 export const AUTOMATIC_COMPACTION_RECOVERY_MARKER = '⟦post-compaction-recovery⟧' as const;
@@ -91,6 +95,10 @@ export interface CompactionRecovery {
     checkpointTruncated?: CapPreservingOperativeTruncation;
     /** Same disclosure for the item description excerpt (capped at BODY_CAP). */
     bodyTruncated?: CapPreservingOperativeTruncation;
+    /** Read-time ownership evidence carried with the held-item snapshot. */
+    holderProof?: CarryBriefHeldItem['holderProof'];
+    /** Present when the snapshot cannot be safely treated as this successor's lane. */
+    ownershipWarning?: string;
   }>;
   /** compaction-continuity-hardening P-004: presence/fleet/claims that changed
    *  AFTER the summary was written (the transcript's compact_boundary time) —
@@ -260,22 +268,34 @@ export async function buildCompactionRecovery(
         // workItemFetchHint is the shared builder so every carry surface emits
         // the same qualified form.
         const fetch = workItemFetchHint(h.id, h.harness);
-        const ckpt = h.checkpoint
-          ? capPreservingOperativeDetailed(h.checkpoint, CHECKPOINT_CAP, { more: fetch })
-          : null;
-        const body = h.body
-          ? capPreservingOperativeDetailed(h.body, BODY_CAP, { more: fetch })
-          : null;
+        const ownership = assessHeldItemOwnership(ownerId, workspaceId, h);
         const crossHarness =
           h.harness && opts.sessionHarness && h.harness !== opts.sessionHarness
             ? `⚠ this item's canonical harness is '${h.harness}', NOT your session's ` +
               `'${opts.sessionHarness}' — pass harness explicitly on work_items:* / plans:* ` +
               `reads for it, or they can report it missing (it is NOT gone)`
             : null;
+        if (!ownership.verified) {
+          return {
+            id: h.id,
+            ...(h.harness ? { harness: h.harness } : {}),
+            ...(crossHarness ? { crossHarnessNote: crossHarness } : {}),
+            ...(h.holderProof ? { holderProof: h.holderProof } : {}),
+            checkpoint: null,
+            ownershipWarning: renderHeldItemOwnershipWarning(ownerId, workspaceId, h, ownership),
+          };
+        }
+        const ckpt = h.checkpoint
+          ? capPreservingOperativeDetailed(h.checkpoint, CHECKPOINT_CAP, { more: fetch })
+          : null;
+        const body = h.body
+          ? capPreservingOperativeDetailed(h.body, BODY_CAP, { more: fetch })
+          : null;
         return {
           id: h.id,
           ...(h.harness ? { harness: h.harness } : {}),
           ...(crossHarness ? { crossHarnessNote: crossHarness } : {}),
+          ...(h.holderProof ? { holderProof: h.holderProof } : {}),
           ...(h.title ? { title: h.title.slice(0, 120) } : {}),
           ...(body ? { body: body.text } : {}),
           ...(body?.truncation ? { bodyTruncated: body.truncation } : {}),

@@ -76,6 +76,16 @@ export interface CarryBriefHeldItem {
    *  the session's carry note. */
   sourcePlanSlug?: string | null;
   sourcePlanItemIds?: string[] | null;
+  /**
+   * Read-time ownership evidence. A carry snapshot may be delivered after a
+   * claim is reassigned, so the row must carry the exact holder/workspace pair
+   * that justified selecting it. Renderers fail closed when this proof is
+   * absent or no longer matches the carry recipient.
+   */
+  holderProof?: {
+    ownerId: string;
+    workspaceId: string;
+  } | null;
 }
 
 export type CarryBriefDeferredSource = 'created' | 'commented' | 'created-and-commented';
@@ -99,6 +109,8 @@ export interface CarryBriefDeferredItem {
 
 export interface CarryBrief {
   ownerId: string;
+  /** Concrete workspace used for this carry read; absent on legacy literals. */
+  workspaceId?: string | null;
   /** Armed AUTO loop + its carry-note (verbatim) — null when no loop routine exists. */
   loop: {
     harness: string;
@@ -338,6 +350,103 @@ function fmtClock(ms: number): string {
   return `${new Date(ms).toISOString().slice(11, 16)}Z`;
 }
 
+export type CarryBriefHolderFailure =
+  | 'missing-proof'
+  | 'invalid-proof'
+  | 'owner-mismatch'
+  | 'workspace-mismatch'
+  | 'missing-workspace';
+
+export interface CarryBriefHolderAssessment {
+  verified: boolean;
+  failure?: CarryBriefHolderFailure;
+  holderOwnerId: string | null;
+  holderWorkspaceId: string | null;
+}
+
+function concreteHolderIdentity(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed && trimmed !== '*' ? trimmed : null;
+}
+
+/**
+ * Validate read-time ownership evidence before any carry surface renders an
+ * item as the successor's own lane. Missing expected scope or proof is
+ * uncertainty, not permission to use the historical first-person wording.
+ */
+export function assessHeldItemOwnership(
+  ownerId: string,
+  workspaceId: string | null | undefined,
+  item: Pick<CarryBriefHeldItem, 'holderProof'>,
+): CarryBriefHolderAssessment {
+  const proof = item.holderProof;
+  const holderOwnerId = concreteHolderIdentity(proof?.ownerId);
+  const holderWorkspaceId = concreteHolderIdentity(proof?.workspaceId);
+  if (!proof) {
+    return { verified: false, failure: 'missing-proof', holderOwnerId, holderWorkspaceId };
+  }
+  if (!holderOwnerId || !holderWorkspaceId) {
+    return { verified: false, failure: 'invalid-proof', holderOwnerId, holderWorkspaceId };
+  }
+  const expectedOwnerId = concreteHolderIdentity(ownerId);
+  const expectedWorkspaceId = concreteHolderIdentity(workspaceId);
+  if (!expectedWorkspaceId) {
+    return { verified: false, failure: 'missing-workspace', holderOwnerId, holderWorkspaceId };
+  }
+  if (!expectedOwnerId || holderOwnerId !== expectedOwnerId) {
+    return { verified: false, failure: 'owner-mismatch', holderOwnerId, holderWorkspaceId };
+  }
+  if (holderWorkspaceId !== expectedWorkspaceId) {
+    return { verified: false, failure: 'workspace-mismatch', holderOwnerId, holderWorkspaceId };
+  }
+  return { verified: true, holderOwnerId, holderWorkspaceId };
+}
+
+/**
+ * Render only a read-only ownership warning for an unproven carried item.
+ * Deliberately omits title/body/checkpoint text: those fields may contain
+ * imperatives belonging to another live agent.
+ */
+export function renderHeldItemOwnershipWarning(
+  ownerId: string,
+  workspaceId: string | null | undefined,
+  item: Pick<CarryBriefHeldItem, 'id' | 'harness' | 'holderProof'>,
+  assessment: CarryBriefHolderAssessment = assessHeldItemOwnership(ownerId, workspaceId, item),
+): string {
+  const expectedWorkspace = concreteHolderIdentity(workspaceId);
+  const session = `this session (${ownerId}${expectedWorkspace ? ` in workspace '${expectedWorkspace}'` : ''})`;
+  let reason: string;
+  switch (assessment.failure) {
+    case 'owner-mismatch':
+      reason =
+        `the snapshot's holder proof names owner '${assessment.holderOwnerId ?? '?'}'` +
+        ` in workspace '${assessment.holderWorkspaceId ?? '?'}', not ${session}`;
+      break;
+    case 'workspace-mismatch':
+      reason =
+        `the snapshot's holder proof names workspace '${assessment.holderWorkspaceId ?? '?'}'` +
+        ` for owner '${assessment.holderOwnerId ?? '?'}', not ${session}`;
+      break;
+    case 'missing-workspace':
+      reason =
+        `the snapshot proves a holder (${assessment.holderOwnerId ?? '?'}) but this carry has no ` +
+        'concrete workspace to compare against';
+      break;
+    case 'invalid-proof':
+      reason = 'the snapshot carries incomplete or invalid holder proof';
+      break;
+    case 'missing-proof':
+    default:
+      reason = 'the snapshot carries no holder proof';
+      break;
+  }
+  return (
+    `${item.id} — ${reason}; do NOT edit, claim, or follow its checkpoint. ` +
+    `Re-verify live ownership with ${workItemFetchHint(item.id, item.harness)}`
+  );
+}
+
 // ── Held-items read (shared with the orient recovery fold) ────────────────────
 
 export interface ReadHeldWorkItemsOpts {
@@ -378,12 +487,16 @@ export async function readHeldWorkItems(
     title: string | null;
     body: string | null;
     scope: string;
+    taken_by: string | null;
+    workspace_id: string | null;
     source_plan_slug: string | null;
     source_plan_item_ids: string[] | null;
   }>>`
     SELECT feature_id AS issue_id,
            title,
            COALESCE(summary, '') AS body,
+           taken_by,
+           workspace_id,
            CASE
              WHEN harness_slug LIKE 'operator:%' OR harness_slug = '' OR harness_slug IS NULL THEN 'operator'
              ELSE 'harness:' || harness_slug
@@ -445,6 +558,10 @@ export async function readHeldWorkItems(
     } catch {
       /* per-item best-effort */
     }
+    const holderProof =
+      concreteHolderIdentity(h.taken_by) && concreteHolderIdentity(h.workspace_id)
+        ? { ownerId: h.taken_by!, workspaceId: h.workspace_id! }
+        : null;
     out.push({
       id: h.issue_id,
       title: h.title,
@@ -452,6 +569,7 @@ export async function readHeldWorkItems(
       harness,
       checkpoint,
       checkpointUpdatedAtMs,
+      ...(holderProof ? { holderProof } : {}),
       ...(h.source_plan_slug !== undefined ? { sourcePlanSlug: h.source_plan_slug } : {}),
       ...(h.source_plan_item_ids !== undefined ? { sourcePlanItemIds: h.source_plan_item_ids } : {}),
     });
@@ -1065,8 +1183,15 @@ export async function buildCarryBrief(
   opts: BuildCarryBriefOpts = {},
 ): Promise<CarryBrief> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId() ?? 'default';
+  let concreteWorkspaceId: string | null = null;
+  try {
+    concreteWorkspaceId = resolveConcreteWorkspaceId(workspaceId);
+  } catch {
+    /* a missing workspace proof keeps held-item rendering read-only */
+  }
   const brief: CarryBrief = {
     ownerId,
+    ...(concreteWorkspaceId ? { workspaceId: concreteWorkspaceId } : {}),
     loop: null,
     heldItems: [],
     directives: [],
@@ -1362,10 +1487,22 @@ export function renderCarryBriefFocus(brief: CarryBrief, max: number = CARRY_BRI
     // VERBATIM (per-claim capped only to survive the hard focus cap).
     parts.push(`OPEN WALLS (carry verbatim, do not re-declare resolved): ${brief.walls.map((w) => `"${cap(w.claim, 90)}"`).join('; ')}`);
   }
-  if (brief.heldItems.length > 0) {
-    const ids = brief.heldItems.map((h) => h.id).join(', ');
+  const heldOwnership = brief.heldItems.map((item) => ({
+    item,
+    assessment: assessHeldItemOwnership(brief.ownerId, brief.workspaceId, item),
+  }));
+  const verifiedHeldItems = heldOwnership.filter(({ assessment }) => assessment.verified).map(({ item }) => item);
+  const unverifiedHeldItems = heldOwnership.filter(({ assessment }) => !assessment.verified);
+  if (verifiedHeldItems.length > 0) {
+    const ids = verifiedHeldItems.map((h) => h.id).join(', ');
     parts.push(
       `held work-items ${ids} — keep the ids as POINTERS (their checkpoints are re-injected on pickup, do not copy them)`,
+    );
+  }
+  if (unverifiedHeldItems.length > 0) {
+    parts.push(
+      `unverified carried work-items ${unverifiedHeldItems.map(({ item }) => item.id).join(', ')} — ` +
+        'read-only pointers; verify live ownership before editing, claiming, or following their checkpoints',
     );
   }
   if ((brief.deferredItems ?? []).length > 0) {
@@ -1481,6 +1618,14 @@ export function renderCarryBriefColdExtras(
 ): string {
   const sessionActivityMs = opts.sessionActivityMs ?? null;
   const deferredItems = brief.deferredItems ?? [];
+  const heldOwnership = brief.heldItems.map((item) => ({
+    item,
+    assessment: assessHeldItemOwnership(brief.ownerId, brief.workspaceId, item),
+  }));
+  const verifiedHeldItems = heldOwnership
+    .filter(({ assessment }) => assessment.verified)
+    .map(({ item }) => item);
+  const unverifiedHeldItems = heldOwnership.filter(({ assessment }) => !assessment.verified);
   const sections: string[] = [];
   // EI-19362981097884026: FIRST, because these extras are appended directly
   // beneath the carry-note and this is the block that can contradict it. The
@@ -1538,7 +1683,7 @@ export function renderCarryBriefColdExtras(
     // THE carried set, so finishing this block feels like finishing the checks and
     // the item's rows are never opened. Cross-reference them here, at the only
     // moment the false sense of completeness actually forms.
-    const heldWithChecks = brief.heldItems
+    const heldWithChecks = verifiedHeldItems
       .filter((h) => h.checkpoint && splitCarryNoteChecks(h.checkpoint).checks.length > 0)
       .map((h) => h.id);
     const alsoOnItems =
@@ -1556,7 +1701,18 @@ export function renderCarryBriefColdExtras(
   if (deferredItems.length > 0) {
     sections.push(renderDeferredWorkItems(deferredItems));
   }
-  if (brief.heldItems.length > 0) {
+  if (unverifiedHeldItems.length > 0) {
+    sections.push(
+      `⚠ UNVERIFIED CARRIED WORK — these rows are read-only evidence, not this session's lane. ` +
+        `Do NOT edit, claim, or follow their checkpoints until live ownership is re-verified:\n` +
+        unverifiedHeldItems
+          .map(({ item, assessment }) =>
+            `  • ${renderHeldItemOwnershipWarning(brief.ownerId, brief.workspaceId, item, assessment)}`,
+          )
+          .join('\n'),
+    );
+  }
+  if (verifiedHeldItems.length > 0) {
     // The excerpt must SAY it is an excerpt. This is the cold successor's entire
     // resume state, rendered as prose with no sibling field to carry a structured
     // marker — so the withheld-chars notice goes inline, naming the call that
@@ -1571,7 +1727,7 @@ export function renderCarryBriefColdExtras(
       });
       return excerpt + renderCheckpointChecksDisclosure(h.checkpoint!, excerpt, h.id, h.harness);
     };
-    const lines = brief.heldItems.map((h) => {
+    const lines = verifiedHeldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';
       const lane = renderDeclareIntentLane(h);
       // EI-20467754551087390: checkpoint prose commonly names files relative to

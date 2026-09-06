@@ -7,8 +7,9 @@
  *
  * Load-bearing asserts (ERROR): the engineer consults the docs in the first
  * assistant turn and the reply points at the Tauri/desktop flow. Secondary
- * (warn): it doesn't reach for `verdict` / `xdg-open` (the wrong tools for
- * Papercusp UI — verdict is for non-Papercusp pages).
+ * (warn): it doesn't propose a `verdict <command>` / `xdg-open <url>` command
+ * (the wrong execution paths for Papercusp UI). A neutral use of the noun
+ * "verdict" is not a tool proposal and must not trip this signal.
  */
 
 import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
@@ -20,7 +21,7 @@ import { TAURI_APP_VERIFICATION_CONTEXT } from './_overrides';
 
 export const SU_S02_TAURI_ONLY: Scenario = {
   id: 'su-S02-tauri-only',
-  version: 6,
+  version: 7,
   target: 'su',
   transport: 'in-process',
   description:
@@ -62,8 +63,8 @@ export const SU_S02_TAURI_ONLY: Scenario = {
       suggestion: "Playbook: Papercusp is the Tauri desktop app; the standalone webapp is RETIRED.",
     }),
     // Soft signals: the wrong tools for a Papercusp UI check.
-    { kind: 'text_excludes', pattern: /\bverdict\b/i },
-    { kind: 'text_excludes', pattern: /\bxdg-open\b/i },
+    { kind: 'text_excludes', pattern: /\bverdict\s+(?:open|snapshot|click|js|status)\b/i },
+    { kind: 'text_excludes', pattern: /\bxdg-open\s+\S+/i },
   ],
   rubric: SU_RUBRIC,
 };

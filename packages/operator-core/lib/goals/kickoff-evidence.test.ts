@@ -102,18 +102,16 @@ function mockSql(fixture: Fixture): Sql {
           ? [
               {
                 ts: reportAt,
-                body:
-                  fixture.reportEnvelope ??
-                  {
-                    goalOwnerReport: {
-                      schemaVersion: 'goal-owner-report-v1',
-                      goalId: reportGoal,
-                      moved: 'P-001 advanced',
-                      cost: 'unknown (goal-pots source unavailable)',
-                      ownerWalled: 'none',
-                      killed: 'none',
-                    },
+                body: fixture.reportEnvelope ?? {
+                  goalOwnerReport: {
+                    schemaVersion: 'goal-owner-report-v1',
+                    goalId: reportGoal,
+                    moved: 'P-001 advanced',
+                    cost: 'unknown (goal-pots source unavailable)',
+                    ownerWalled: 'none',
+                    killed: 'none',
                   },
+                },
               },
             ]
           : [],
@@ -200,9 +198,7 @@ describe('GOAL kickoff required-leg gate', () => {
       reads: completeReads(),
       reportAt: '2026-08-29T21:42:00.000Z',
       reportEnvelope: {
-        body:
-          `Goal ${GOAL}\nMOVED: P-001 advanced\nCOST: unknown (legacy)\n` +
-          'OWNER-WALLED: none\nKILLED: none',
+        body: `Goal ${GOAL}\nMOVED: P-001 advanced\nCOST: unknown (legacy)\n` + 'OWNER-WALLED: none\nKILLED: none',
       },
     });
     expect(evidence).toMatchObject({ complete: true, ownerReportAt: '2026-08-29T21:42:00.000Z' });

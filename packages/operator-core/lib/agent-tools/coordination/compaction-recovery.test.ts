@@ -80,7 +80,14 @@ const CHECKPOINT = `${OLDER_PLAN}\n\n${SUPERSEDING_BLOCK}`;
 
 vi.mock('../../carry-brief', () => ({
   readHeldWorkItems: vi.fn(async () => [
-    { id: 'WI-37110', title: 'republish the report', body: null, harness: 'h', checkpoint: CHECKPOINT },
+    {
+      id: 'WI-37110',
+      title: 'republish the report',
+      body: null,
+      harness: 'h',
+      checkpoint: CHECKPOINT,
+      holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' },
+    },
   ]),
 }));
 
@@ -174,6 +181,7 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
         harness: 'h',
         checkpoint: 'P-017 in progress',
         checkpointUpdatedAtMs: Date.parse('2026-08-25T00:00:00.000Z'),
+        holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' },
       },
     ];
     const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
