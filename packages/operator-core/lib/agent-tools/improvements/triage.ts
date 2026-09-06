@@ -256,7 +256,7 @@ export default defineTool({
       missing: scopedIds ? missingIds.length : null,
       missingIds: scopedIds ? missingIds.slice(0, 20) : null,
       corpusTotal: corpusTotal ?? null,
-      windowed: digest.windowed,
+      windowed: digest.window.windowed,
     };
 
     // Summary mode: just show the breakdown
@@ -270,9 +270,8 @@ export default defineTool({
               ok: true,
               mode: 'summary',
               digest: {
-                total: digest.total,
-                open: digest.open,
-                byKind: digest.byKind,
+                census: digest.census,
+                window: digest.window,
                 autoEligible: digest.autoEligible.length,
                 humanQueue: digest.humanQueue.length,
               },
