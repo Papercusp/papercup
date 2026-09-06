@@ -10,11 +10,14 @@
  * rigid (`flex: 0 0 auto`) and only the list flexed, so the column's entire
  * vertical shortfall landed on the rows.
  *
- * The fixture is the WORST realistic chrome load for the list column: the bulk
- * strip flag ON, three tier chips, eight kind facets (enough to wrap), and a
- * load-more window strip (a `_meta.hasMore` page). At 1280×720 the list must
- * still hold its floor (≥ 2 whole rows visible) with the foot still inside the
- * column — and it is the CONTROLS block, not the list, that scrolls.
+ * The fixture is the WORST realistic chrome load for the pane: the bulk strip
+ * flag ON, three tier chips, eight kind facets (enough to wrap), and a
+ * load-more window strip (a `_meta.hasMore` page). P-002/P-003 moved the
+ * scopes, facets, masthead and bulk card into the rail; P-004 moved the window
+ * strip and the foot into the aside's unselected state — so the list column's
+ * only chrome is the CONTROLS block (search + sort), and at 1280×720 the list
+ * must hold its floor (≥ 2 whole rows visible) with the controls, not the
+ * rows, absorbing any squeeze.
  */
 import { test, expect, assertMounted, type Page } from "./_egress";
 import { stubSyncQueries } from "./_sync-stub";
@@ -156,8 +159,10 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
     mounted,
     "split /inbox: `.op-inbox--split .op-inbox__list` never attached.",
   );
-  // The chrome the floor has to beat must actually be on screen — otherwise a
-  // pass here says nothing about the collapse this spec exists to catch.
+  // The fixture's chrome must actually be on screen — otherwise a pass here
+  // says nothing about the collapse this spec exists to catch. The window strip
+  // and the facets are now in the aside / rail (P-004 / P-002): their
+  // visibility proves the paged fixture rendered, not that they load the column.
   await expect(page.getByTestId("inbox-attention-window")).toBeVisible();
   await expect(page.getByTestId("inbox-facet-smoke-fail")).toBeVisible();
   await expect(page.getByTestId("inbox-row-floor-00")).toBeVisible();
@@ -176,9 +181,12 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
       const controls = q(".op-inbox__controls");
       const listEl = q(".op-inbox__list");
       const foot = q(".op-inbox__foot");
+      const aside = q(".op-inbox--split .op-inbox__aside");
+      const windowStrip = q('[data-testid="inbox-attention-window"]');
       const listRect = rect(listEl);
       const railRect = rect(rail);
       const columnRect = rect(column);
+      const asideRect = rect(aside);
       const floor = parseFloat(
         getComputedStyle(pane).getPropertyValue("--op-inbox-list-floor"),
       );
@@ -198,7 +206,14 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
         rowsInside,
         controlsScrolls: controls.scrollHeight > controls.clientHeight + 1,
         controlsHeight: rect(controls).height,
-        footInsideColumn: rect(foot).bottom <= columnRect.bottom + 0.5,
+        // P-004: the window strip + foot left the list column for the aside's
+        // unselected state; beneath the rows the column carries nothing.
+        columnHoldsWindow: column.contains(windowStrip),
+        columnHoldsFoot: column.contains(foot),
+        asideHoldsWindow: aside.contains(windowStrip),
+        asideHoldsFoot: aside.contains(foot),
+        footInsideAside: rect(foot).bottom <= asideRect.bottom + 0.5,
+        listIsColumnLast: listEl.parentElement?.lastElementChild === listEl,
         // P-002: the rail is the FIRST grid column, 210px wide, and holds the
         // scopes + facets; the masthead is gone from the list column.
         railWidth: railRect.width,
@@ -224,7 +239,14 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   // taller — the floor is a height guarantee, and this count is the fixture's
   // reading of it, not a promise about every title.)
   expect(at720.rowsInside).toBeGreaterThanOrEqual(2);
-  expect(at720.footInsideColumn).toBe(true);
+  // ── The window strip + foot (P-004): in the aside, out of the column, and
+  // the aside still shows the whole feed block without scrolling at 720.
+  expect(at720.columnHoldsWindow).toBe(false);
+  expect(at720.columnHoldsFoot).toBe(false);
+  expect(at720.asideHoldsWindow).toBe(true);
+  expect(at720.asideHoldsFoot).toBe(true);
+  expect(at720.footInsideAside).toBe(true);
+  expect(at720.listIsColumnLast).toBe(true);
   // ── The rail (P-002): the chrome that used to starve the list now has its
   // own 210px column, first in the grid, and the masthead left the column.
   expect(at720.railWidth).toBeCloseTo(210, 0);
@@ -234,10 +256,10 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
 
   // ── Squeezed: a viewport 16px too short for chrome + floor, so the
   // shortfall must land on the chrome cap (the controls block scrolls), never
-  // the rows and never past the foot. The height is DERIVED from the 720
-  // reading rather than pinned, because the chrome it squeezes is whatever the
-  // list column currently carries (P-002 moved the scopes + facets + masthead
-  // out of it, and P-004 moves the window strip + foot): at 720 nothing is
+  // the rows. The height is DERIVED from the 720 reading rather than pinned,
+  // because the chrome it squeezes is whatever the list column currently
+  // carries (P-002 moved the scopes + facets + masthead out of it, P-004 the
+  // window strip + foot — only the controls block remains): at 720 nothing is
   // squeezed, so `720 - listHeight + floor` is exactly the height at which the
   // list would sit ON its floor, and 16px less forces the cap to engage.
   const squeezed = Math.round(720 - at720.listHeight + at720.floor - 16);
@@ -249,7 +271,9 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   expect(atSqueezed.paneBottom).toBeLessThanOrEqual(squeezed + 0.5);
   expect(atSqueezed.listHeight).toBeGreaterThanOrEqual(atSqueezed.floor);
   expect(atSqueezed.rowsInside).toBeGreaterThanOrEqual(2);
-  expect(atSqueezed.footInsideColumn).toBe(true);
+  expect(atSqueezed.columnHoldsWindow).toBe(false);
+  expect(atSqueezed.columnHoldsFoot).toBe(false);
+  expect(atSqueezed.asideHoldsFoot).toBe(true);
   expect(atSqueezed.controlsScrolls).toBe(true);
   expect(atSqueezed.controlsHeight).toBeGreaterThanOrEqual(62);
   expect(atSqueezed.railHoldsScopes).toBe(true);
