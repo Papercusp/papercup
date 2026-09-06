@@ -2206,9 +2206,23 @@ export function canaryBin(): string {
   return process.env.PAPERCUSP_GITNEXUS_BIN ?? path.join(os.homedir(), '.papercusp', 'vendor', 'gitnexus', 'node_modules', '.bin', 'gitnexus');
 }
 
-function cypherScalar(bin: string, root: string, query: string, timeoutMs: number): Promise<number | null> {
+/**
+ * The argv for one canary probe. ⚠ ALWAYS names the repo. `gitnexus cypher` resolves its
+ * target from the GLOBAL registry (~/.gitnexus/registry.json), not from cwd, and with a
+ * second registered repo it refuses outright — `Multiple repositories indexed. Specify
+ * which one with the "repo" parameter` — which cypherScalar maps to null, i.e. UNREADABLE.
+ * Measured 2026-09-06T07:13Z: a leftover cost-measurement registration
+ * (`papercusp-wi39394` → /tmp) failed 4/6 canary probes on a perfectly healthy index
+ * (221,202 embeddings) and recorded a tick failure. The name is the same one the spawn
+ * passes as `--name`, so the probe and the index it verifies cannot drift apart.
+ */
+export function canaryCypherArgv(repoName: string, query: string): string[] {
+  return ['cypher', '--repo', repoName, query];
+}
+
+function cypherScalar(bin: string, root: string, repoName: string, query: string, timeoutMs: number): Promise<number | null> {
   return new Promise((resolvePromise) => {
-    execFile(bin, ['cypher', query], { cwd: root, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    execFile(bin, canaryCypherArgv(repoName, query), { cwd: root, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       // A CRASH (segfault) arrives here as an error with no usable stdout — which is
       // exactly the condition the canary exists to catch, so it must map to null
       // ("unreadable"), never to 0 ("empty"). Conflating those two is what made the
@@ -2220,9 +2234,9 @@ function cypherScalar(bin: string, root: string, query: string, timeoutMs: numbe
   });
 }
 
-function cypherFirstString(bin: string, root: string, query: string, timeoutMs: number): Promise<string | null> {
+function cypherFirstString(bin: string, root: string, repoName: string, query: string, timeoutMs: number): Promise<string | null> {
   return new Promise((resolvePromise) => {
-    execFile(bin, ['cypher', query], { cwd: root, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    execFile(bin, canaryCypherArgv(repoName, query), { cwd: root, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       if (err) return resolvePromise(null);
       // Rows render as a markdown table; take the first data cell after the separator.
       const rows = String(stdout).split('\\n');
@@ -2252,6 +2266,8 @@ export async function runCanary(
   // Derived from the SAME argv builder the spawn uses, so the expectation cannot drift
   // from what was actually asked of gitnexus.
   embeddingsExpected: boolean = analyzeEmbeddingsExpected(buildAnalyzeArgs(root, GITNEXUS_REPO_NAME)),
+  // The registry name the probes target — the same one the spawn passes as `--name`.
+  repoName: string = GITNEXUS_REPO_NAME,
 ): Promise<CanaryVerdict> {
   const bin = canaryBin();
   if (!existsSync(bin)) {
@@ -2266,8 +2282,8 @@ export async function runCanary(
     });
   }
   const t = CANARY_PROBE_TIMEOUT_MS;
-  const fileCount = await cypherScalar(bin, root, 'MATCH (f:File) RETURN count(f) AS n', t);
-  const symbolCount = await cypherScalar(bin, root, 'MATCH (f:Function) RETURN count(f) AS n', t);
+  const fileCount = await cypherScalar(bin, root, repoName, 'MATCH (f:File) RETURN count(f) AS n', t);
+  const symbolCount = await cypherScalar(bin, root, repoName, 'MATCH (f:Function) RETURN count(f) AS n', t);
   // ⚠ THE EDGE TYPE IS A PROPERTY, NOT A TABLE. This graph has exactly ONE relationship
   // table — `CodeRelation` — and the kind lives in `r.type` ('CALLS', 'DEFINES',
   // 'IMPORTS', ...). The natural-looking `MATCH ()-[r:CALLS]->()` does NOT return zero;
@@ -2276,16 +2292,16 @@ export async function runCanary(
   // every single healthy index, forever. Caught only by running it against the live
   // graph; the pure judge cannot see a wrong query. Verify with:
   //   MATCH ()-[r:CodeRelation]->() RETURN r.type AS t, count(r) AS n ORDER BY n DESC
-  const callEdgeCount = await cypherScalar(bin, root, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS' RETURN count(r) AS n", t);
-  const defEdgeCount = await cypherScalar(bin, root, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DEFINES' RETURN count(r) AS n", t);
+  const callEdgeCount = await cypherScalar(bin, root, repoName, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS' RETURN count(r) AS n", t);
+  const defEdgeCount = await cypherScalar(bin, root, repoName, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DEFINES' RETURN count(r) AS n", t);
 
   // The round trip: sample a name OUT of the graph, then assert the graph can find that
   // same name again. No hardcoded symbol, so a rename can never false-alarm it.
   let roundTripOk: boolean | null = null;
-  const sampled = await cypherFirstString(bin, root, 'MATCH (f:Function) WHERE f.name IS NOT NULL RETURN f.name AS name LIMIT 1', t);
+  const sampled = await cypherFirstString(bin, root, repoName, 'MATCH (f:Function) WHERE f.name IS NOT NULL RETURN f.name AS name LIMIT 1', t);
   if (sampled) {
     const safe = sampled.replace(/'/g, '');
-    const found = await cypherScalar(bin, root, `MATCH (f:Function) WHERE f.name = '${safe}' RETURN count(f) AS n`, t);
+    const found = await cypherScalar(bin, root, repoName, `MATCH (f:Function) WHERE f.name = '${safe}' RETURN count(f) AS n`, t);
     roundTripOk = found != null && found > 0;
   }
   return judgeCanary({
@@ -2522,7 +2538,7 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
       const after = readIndexStatsForHealth(root, repoName);
       const embeddingsAfter = after.embeddings;
       const embeddingsExpected = analyzeEmbeddingsExpected(buildAnalyzeArgs(root, repoName));
-      canary = await runCanary(root, after.files, embeddingsAfter, embeddingsExpected);
+      canary = await runCanary(root, after.files, embeddingsAfter, embeddingsExpected, repoName);
       vectorSearch = { embeddings: embeddingsAfter, expected: embeddingsExpected, degraded: canary.degraded, checkedAt: Date.now() };
       console.log(`[gitnexus-reindex] ${canary.healthy ? 'canary OK' : 'CANARY FAILED'} — ${canary.summary}`);
       if (canary.degraded) {

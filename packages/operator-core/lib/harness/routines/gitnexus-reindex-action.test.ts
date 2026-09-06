@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildAnalyzeArgs,
+  canaryCypherArgv,
   buildAnalyzeInvocation,
   analyzeEnv,
   analyzeNodeArgs,
@@ -2279,6 +2280,33 @@ describe('canary edge queries target the REAL graph schema', () => {
     expect(CODE.length).toBeGreaterThan(1000);
     expect(CODE).toContain('CodeRelation');
     expect(CODE).toContain('export async function runCanary');
+  });
+
+  // 2026-09-06T07:13Z: `gitnexus cypher` resolves its target from the GLOBAL registry, and
+  // with a second registered repo (a leftover cost-measurement checkout) it refused every
+  // probe — "Multiple repositories indexed" — which cypherScalar maps to null. The canary
+  // then failed 4/6 on a healthy 221k-embedding index and recorded a tick failure. Every
+  // probe must therefore name the repo it verifies, with the same name the spawn used.
+  describe('every canary probe names its repo (--repo), so a second registration cannot fail it', () => {
+    it('canaryCypherArgv carries --repo <name> and the query last', () => {
+      expect(canaryCypherArgv('papercusp', 'MATCH (f:File) RETURN count(f) AS n')).toEqual([
+        'cypher', '--repo', 'papercusp', 'MATCH (f:File) RETURN count(f) AS n',
+      ]);
+      // The name is a parameter, never a constant baked into the probe.
+      expect(canaryCypherArgv('other-repo', 'RETURN 1')).toEqual(['cypher', '--repo', 'other-repo', 'RETURN 1']);
+    });
+
+    it('no execFile in the source builds a bare [cypher, query] argv any more', () => {
+      expect(CODE).not.toMatch(/\[\s*'cypher',\s*query\s*\]/);
+      // Both cypher helpers route through the builder (positive control: the builder is
+      // referenced at least twice — once per helper — outside its own definition).
+      const uses = CODE.match(/canaryCypherArgv\(repoName, query\)/g) ?? [];
+      expect(uses.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('the tick passes the routine repoName into runCanary (not the module default)', () => {
+      expect(CODE).toMatch(/runCanary\(root, after\.files, embeddingsAfter, embeddingsExpected, repoName\)/);
+    });
   });
 });
 
