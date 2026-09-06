@@ -604,12 +604,45 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description:
       'FILE a papercusp improvement you found (friction / gap / idea). For an IDEATE pass use ' +
       "kind:'feature' and TAG the lens you ran via ideation.lens (+ a bet + cheapExperiment when it is a " +
-      'real bet) so the row is attributable to the lens that produced it. No quality gate, no quota.',
+      'real bet) so the row is attributable to the lens that produced it. Use body for the repro/context; ' +
+      'toolFailure is the structured shorthand that can derive bounded title/body text. No quality gate, no quota.',
     input: obj(
       {
         kind: { type: 'string', enum: ['bug', 'change', 'feature'], description: "feature = a proposal worth designing; bug/change = a concrete defect/tweak." },
-        title: { type: 'string' },
-        summary: { type: 'string', description: 'the body — what/why/how.' },
+        title: {
+          type: 'string',
+          description: 'one-line summary; required unless toolFailure is supplied.',
+        },
+        body: { type: 'string', description: 'repro / context / the correct-state, especially for a bug.' },
+        toolFailure: {
+          type: 'object',
+          description: 'Structured tool-call failure shorthand; title/body may be derived when omitted.',
+          properties: {
+            toolName: { type: 'string' },
+            errorCode: { type: 'string' },
+            status: { type: 'string' },
+            message: { type: 'string' },
+            schemaRevision: { type: 'string' },
+            fieldPath: { type: 'string' },
+            runtimeVersion: { type: 'string' },
+            reproduced: { type: 'boolean' },
+            clearServerMismatch: { type: 'boolean' },
+            hardInternal: { type: 'boolean' },
+            directEvidence: {
+              type: 'object',
+              properties: {
+                kind: {
+                  type: 'string',
+                  enum: ['valid-input-reproduction', 'server-contract-mismatch', 'hard-internal'],
+                },
+                expected: { type: 'string' },
+                actual: { type: 'string' },
+              },
+              required: ['kind', 'expected', 'actual'],
+            },
+          },
+          required: ['toolName', 'message'],
+        },
         lane: { type: 'string', enum: ['improvement', 'observation'], description: "'observation' = a raw signal to mine later; default = improvement." },
         ideation: {
           type: 'object',
@@ -634,7 +667,6 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
           },
         },
       },
-      ['kind', 'title', 'summary'],
     ),
   },
   {
