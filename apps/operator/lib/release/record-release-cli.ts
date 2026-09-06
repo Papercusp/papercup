@@ -965,14 +965,16 @@ export async function generateSite(
     hydratedAll.push({ row, items, plans, internalCount });
   }
 
-  const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS };
+  // All pages in this publication use one identity snapshot. Resolving it per
+  // work-item page spawns thousands of redundant git-config subprocesses.
+  const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact: identityLiterals() };
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'changes'), { recursive: true });
   await buildReleaseHistoryAssets(outDir);
   for (const release of hydratedAll) {
     const stem = releaseHistoryStem(release.row.version, release.row.channel);
-    fs.writeFileSync(path.join(outDir, 'changes', `${stem}.json`), JSON.stringify(releaseProjectHistory(release, scope)));
+    fs.writeFileSync(path.join(outDir, 'changes', `${stem}.json`), JSON.stringify(releaseProjectHistory(release, scope, opts.redact)));
     fs.writeFileSync(path.join(outDir, 'changes', `${stem}.html`), renderProjectHistoryPage(release, opts));
   }
   // ── The hold swaps ONLY index.html. ────────────────────────────────────────
