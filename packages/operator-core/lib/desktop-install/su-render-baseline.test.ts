@@ -30,6 +30,7 @@ import {
   REQUIRED_SPLICE_MARKERS_BY_ARTIFACT,
   SPLICE_MARKERS,
   SU_PLAYBOOK_MARKER_IDS,
+  WIRE_SCHEMAS_MARKER,
 } from './splice-tooling-overlay';
 import {
   formatScoreTable,
@@ -72,15 +73,29 @@ const inputRecord = (p: string) => {
   return { path: p.slice(FIXTURE_DIR.length + 1), bytes: Buffer.byteLength(text, 'utf8'), sha256: sha256(text) };
 };
 
-async function renderPinned(tier: (typeof TIERS)[number]): Promise<string> {
-  const out = await renderSuPlaybook({
+/**
+ * The pinned render input. `renderWireSchemas: () => ''` is load-bearing: the default legend
+ * renderer reads the PROCESS-GLOBAL projected-tool registry (empty in a fresh process, populated
+ * by any co-resident file that loads a tool catalog), so an ambient render is order-dependent
+ * under the shared-fork pure lane — measured 2026-09-06 as a +1,032 B "## Wire schemas #2"
+ * section that held the release gate while the same file passed in isolation. The registry is
+ * not a pinned input, so the pinned render excludes it; '' collapses the marker exactly as an
+ * empty registry does, which is what `baseline.json` has always recorded.
+ */
+function pinnedInput(tier: (typeof TIERS)[number]): Parameters<typeof renderSuPlaybook>[0] {
+  return {
     agent: 'claude',
     profile: 'engineer',
     baseSource: INPUTS.base,
     overlayDir: FIXTURE_DIR,
     projectGuideSource: INPUTS.projectGuide,
     tier,
-  });
+    renderWireSchemas: () => '',
+  };
+}
+
+async function renderPinned(tier: (typeof TIERS)[number]): Promise<string> {
+  const out = await renderSuPlaybook(pinnedInput(tier));
   return out.text;
 }
 
@@ -155,6 +170,33 @@ describe('su render baseline — pinned fixture inputs (P-018)', () => {
       }
       expect(text).not.toContain('PAPERCUSP-SU:FULL-ONLY');
     }
+  });
+
+  it('the pinned render takes its wire legend from the injected seam, never from the process-global tool registry', async () => {
+    // The seam is what makes this file safe in a shared fork: if `renderSuPlaybook` ever
+    // stops honouring `renderWireSchemas`, the pinned render silently re-couples to whatever
+    // tools a co-resident test registered and the byte table above becomes order-dependent.
+    const sentinel = '<!-- WIRE-LEGEND-SEAM-SENTINEL -->';
+    const seen: Array<((name: string) => boolean) | undefined> = [];
+    const out = await renderSuPlaybook({
+      ...pinnedInput('fleet'),
+      renderWireSchemas: (filter) => {
+        seen.push(filter);
+        return sentinel;
+      },
+    });
+    expect(out.text).toContain(sentinel);
+    expect(out.text).not.toContain(WIRE_SCHEMAS_MARKER);
+    // The tier's entry filter still flows through the seam (fleet keeps only the spine families).
+    expect(seen).toHaveLength(1);
+    expect(typeof seen[0]).toBe('function');
+    expect(seen[0]?.('coord:send')).toBe(true);
+    expect(seen[0]?.('dev:pg_query')).toBe(false);
+    // And the pinned render itself carries no legend entry at all.
+    const pinned = await renderPinned('full');
+    expect(pinned).not.toContain(sentinel);
+    expect(pinned).not.toContain('\n  read →');
+    expect(pinned).not.toContain('\n  write ←');
   });
 
   it('fleet tier never renders MORE bytes than full (FULL-ONLY sections stripped, wire legend filtered)', async () => {
