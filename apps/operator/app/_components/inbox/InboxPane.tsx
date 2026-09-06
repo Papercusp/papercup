@@ -1120,11 +1120,19 @@ export default function InboxPane({
         >
           <div className="op-inbox__controls-head">
             <span className="op-inbox__controls-label">Find and focus</span>
+            {/* P-009 (inbox-three-column-resolver-states-2026-09-06): in split
+                the list column carries ONE total — the rows in the current
+                scope — because "N need you / N still open / N assessed / N
+                tracked" were four different populations stacked with nothing
+                saying so (the 31 Aug board's note); those live in the briefing
+                and the rail. Stack keeps its "N of M shown". */}
             <span
               className="op-inbox__controls-scope"
               data-testid="inbox-visible-scope"
             >
-              {visible.length} of {counts.all} shown
+              {split
+                ? `${visible.length} ${visible.length === 1 ? "item" : "items"}`
+                : `${visible.length} of ${counts.all} shown`}
             </span>
           </div>
           {/* Search + kind-facet filter (mimics the Queue's QueueFilterBar). */}
