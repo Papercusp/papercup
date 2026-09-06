@@ -99,6 +99,9 @@ function snapshot(extra: readonly LedgerEvent[] = []): CommerceSnapshot {
     seatPolicies: new Map<string, SeatPolicy>(),
     installations: [] as readonly Installation[],
     creatorProfiles: new Map<string, CreatorProfile>(),
+    // These fixtures predate the P2P bridge and exercise the ledger-only
+    // doors; null is the honest value for "no P2P commerce source is wired".
+    perUse: null,
   };
 }
 

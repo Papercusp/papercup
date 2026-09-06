@@ -1274,6 +1274,7 @@ export default function InboxPane({
               tracked={totalItemCount}
               run={bulkEnabled ? bulk.run : null}
               runItems={bulkEnabled ? bulk.items : []}
+              unreached={bulkEnabled ? bulk.unreached : undefined}
               isRunning={bulkEnabled ? bulk.isRunning : false}
               onReview={(runId) => void setBulkRunId(runId)}
               // P-006: the live view's "Keep working the list" hands focus to

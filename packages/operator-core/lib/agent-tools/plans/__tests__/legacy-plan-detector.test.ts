@@ -59,9 +59,13 @@ describe('parsePlan — legacyReason (EI-18793956567250851)', () => {
     const p = parsePlan(source, { filePath: 'displaced-plan.md' });
     expect(p.isLegacy).toBe(true);
     expect(p.legacyReason).toBe('frontmatter_displaced');
-    expect(p.parseNotices).toHaveLength(1);
-    expect(p.parseNotices[0]).toMatch(/well-formed frontmatter block/i);
-    expect(p.parseNotices[0]).toMatch(/position 0/i);
+    // Exactly ONE displaced-frontmatter notice. Other, unrelated notices may ride alongside
+    // (the parser also reports mid-word hard line breaks in body text, and a displaced
+    // frontmatter block IS body text to the parser), so select the notice by its shape
+    // instead of asserting it is the only one.
+    const displaced = p.parseNotices.filter((n) => /well-formed frontmatter block/i.test(n));
+    expect(displaced, `notices: ${JSON.stringify(p.parseNotices)}`).toHaveLength(1);
+    expect(displaced[0]).toMatch(/position 0/i);
   });
 
   it('does NOT false-positive on an unrelated markdown horizontal rule pair', () => {

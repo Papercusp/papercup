@@ -20,6 +20,27 @@ export function validateRevenueSplit(manifest: RevenueSplitManifest): { ok: true
   return { ok: true };
 }
 
+/**
+ * Derive the canonical `sha256:<64 hex>` manifest hash for a split.
+ *
+ * The hash is what a per-use offer's terms commit to (`splitManifestHash` on
+ * the voucher, verified in `metered-invocation.ts`), so a settlement can only
+ * apply a split the payer actually signed for if BOTH sides derive the hash the
+ * same way. That is why it is computed here rather than configured alongside
+ * the shares: a hand-written hash could disagree with its own body.
+ */
+export function revenueSplitManifest(input: {
+  readonly version: string;
+  readonly sharesBps: Readonly<Record<RevenueShare, number>>;
+}): RevenueSplitManifest {
+  const body: Record<string, unknown> = { version: input.version };
+  const shares: Record<string, number> = {};
+  for (const share of REVENUE_SHARES) shares[share] = input.sharesBps[share];
+  body.sharesBps = shares;
+  const digest = createHash('sha256').update(canonicalJson(body)).digest('hex');
+  return { version: input.version, manifestHash: `sha256:${digest}`, sharesBps: input.sharesBps };
+}
+
 export interface SettlementReceipt {
   readonly settlementId: string;
   readonly currency: 'stablecoin-micros';

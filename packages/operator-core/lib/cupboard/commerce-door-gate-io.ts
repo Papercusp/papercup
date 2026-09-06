@@ -41,13 +41,28 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { resolveCupboardBaseUrl } from './base-url';
 import type { Installation, Organization, SeatPolicy, CreatorProfile } from './commerce-accounts';
+import { reduceCommerceEvents, type CommerceEvent } from '../p2p/commerce-events';
+
 import {
   reduceLedger,
   type LedgerEvent,
+  type LedgerState,
   type Money,
   type PerUseOfferTerms,
   type PricingModel,
 } from './commerce-ledger';
+import {
+  projectEntitlements,
+  projectLedgerEntitlements,
+  type EntitlementProjection,
+} from './entitled-delivery';
+import {
+  bridgeCommerceEventsToLedger,
+  bridgeFromCommerceEntitlements,
+  mergeEntitlementProjections,
+  perUseRollup,
+  type PerUseRollup,
+} from './ledger-p2p-bridge';
 import {
   gateCheckout,
   gateCommerceDashboards,
@@ -77,12 +92,37 @@ export async function loadCommerceLedgerEvents(): Promise<readonly LedgerEvent[]
   return [];
 }
 
+/**
+ * The signed P-016 commerce stream this process can see, if any (P-035).
+ *
+ * Null and an empty array are DIFFERENT answers and both are honest: null means
+ * no P2P commerce source is wired here, `[]` means one is and it is quiet. The
+ * production default is null, because inventing a stream would make the bridge
+ * look exercised while nothing publishes to it.
+ */
+export async function loadP2pCommerceEvents(): Promise<readonly CommerceEvent[] | null> {
+  return null;
+}
+
 /** Where a door's commerce snapshot comes from. See `configureCommerceIo`. */
 export type CommerceStateLoader = () => Promise<CommerceSnapshot> | CommerceSnapshot;
+
+/** Supplies the signed P-016 stream `loadCommerceState` bridges into the ledger. */
+export type CommerceEventLoader = () =>
+  | Promise<readonly CommerceEvent[] | null>
+  | readonly CommerceEvent[]
+  | null;
 
 export interface CommerceIoSources {
   /** Supplies the snapshot every commerce door gates against. */
   readonly loadState?: CommerceStateLoader;
+  /**
+   * Supplies the signed P-016 commerce stream (P-035). Used only when
+   * `loadState` is absent: a loader that builds the whole snapshot already owns
+   * its own per-use view, and folding a second stream underneath it would let
+   * the two disagree about the same channel.
+   */
+  readonly loadCommerceEvents?: CommerceEventLoader;
   /** Transport for the hosted checkout leg — merged UNDER any per-call deps. */
   readonly transport?: CheckoutTransportDeps;
 }
@@ -116,17 +156,78 @@ export function commerceIoSources(): CommerceIoSources | null {
   return ioState.sources;
 }
 
+/**
+ * Fold the local ledger events and the signed P2P commerce stream into ONE
+ * ledger state (P-035, D-048).
+ *
+ * The two streams are reduced TOGETHER rather than merged afterwards, because
+ * `reduceLedger` owns every ordering and transition rule — a per-use refund
+ * bridged from the P2P rail has to meet the same `refund-exceeds-order` check
+ * as a Stripe one, and folding the P2P facts into a second state and unioning
+ * the maps would skip exactly those checks.
+ *
+ * `reduceCommerceEvents` runs first and unconditionally: it owns signature
+ * shape, idempotency and conflict quarantine, and only its `accepted` list may
+ * reach the bridge. A conflicting or unsigned P2P fact therefore never becomes
+ * a ledger event at all.
+ */
+export async function foldCommerceLedger(
+  ledgerEvents: readonly LedgerEvent[],
+  commerceEvents: readonly CommerceEvent[] | null,
+): Promise<{ ledger: LedgerState; perUse: PerUseRollup | null }> {
+  if (!commerceEvents) {
+    return { ledger: reduceLedger(ledgerEvents), perUse: null };
+  }
+  const reduction = reduceCommerceEvents(commerceEvents);
+  const bridged = bridgeCommerceEventsToLedger(reduction.accepted);
+  return {
+    ledger: reduceLedger([...ledgerEvents, ...bridged.ledgerEvents]),
+    perUse: perUseRollup(reduction.accepted),
+  };
+}
+
 export async function loadCommerceState(): Promise<CommerceSnapshot> {
   const configured = ioState.sources?.loadState;
   if (configured) return await configured();
   const events = await loadCommerceLedgerEvents();
+  const commerceEvents = await (ioState.sources?.loadCommerceEvents ?? loadP2pCommerceEvents)();
+  const folded = await foldCommerceLedger(events, commerceEvents);
   return {
-    ledger: reduceLedger(events),
+    ledger: folded.ledger,
     orgs: new Map<string, Organization>(),
     seatPolicies: new Map<string, SeatPolicy>(),
     installations: [] as readonly Installation[],
     creatorProfiles: new Map<string, CreatorProfile>(),
+    perUse: folded.perUse,
   };
+}
+
+/**
+ * The entitlement view a delivery gate should read (P-035).
+ *
+ * Combines the LEDGER's entitlements — which is where a Stripe purchase and a
+ * bridged P2P order both land — with the P2P `entitlement` events that name the
+ * release and subject the ledger deliberately does not know. Revocation from
+ * either side wins (`mergeEntitlementProjections`), which is what makes a
+ * refund settled on the P2P rail propagate to delivery rather than stopping at
+ * the dashboard.
+ */
+export async function loadDeliveryEntitlements(): Promise<EntitlementProjection> {
+  const events = await loadCommerceLedgerEvents();
+  const commerceEvents = await (ioState.sources?.loadCommerceEvents ?? loadP2pCommerceEvents)();
+  if (!commerceEvents) {
+    // No P2P stream means no product→release / buyer→subject mapping exists,
+    // and D-048 forbids guessing one. An empty projection is fail-closed: the
+    // install door refuses `not-entitled` rather than delivering unmapped bytes.
+    return { grants: new Map(), unusable: [] };
+  }
+  const reduction = reduceCommerceEvents(commerceEvents);
+  const bridged = bridgeCommerceEventsToLedger(reduction.accepted);
+  const ledger = reduceLedger([...events, ...bridged.ledgerEvents]);
+  return mergeEntitlementProjections(
+    projectEntitlements(reduction.accepted),
+    projectLedgerEntitlements(ledger, bridgeFromCommerceEntitlements(reduction.accepted)),
+  );
 }
 
 // ---------------------------------------------------------------------------

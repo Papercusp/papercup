@@ -12,7 +12,9 @@ import { walletBindingRoute } from './wallet-binding.ts';
 import { prepaidCreditsRoute } from './prepaid-credits.ts';
 import { paymentChannelsRoute } from './payment-channels.ts';
 import { meteredUsageRoute } from './metered-usage.ts';
+import { settlementsRoute } from './settlements.ts';
 import type { PaymentChannelFundingAdapter } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
+import type { EvmSettlementFacilitator } from '@papercusp/operator-core/lib/p2p/evm-settlement.ts';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
 import { prepaidCreditCatalogEvents } from '@papercusp/operator-core/lib/cupboard/prepaid-credits.ts';
 import { appendLedgerEvents, projectLedger } from '../commerce-store.ts';
@@ -32,6 +34,7 @@ export function buildApi(
     fetchImpl?: typeof fetch;
     loadOrgs?: (db: D1Database) => Promise<ReadonlyMap<string, Organization>>;
     paymentChannelAdapter?: PaymentChannelFundingAdapter;
+    settlementFacilitator?: EvmSettlementFacilitator;
   } = {},
 ): Hono<{ Bindings: Env }> {
   const api = new Hono<{ Bindings: Env }>();
@@ -74,6 +77,11 @@ export function buildApi(
   // /commerce/payment-channels/:channelId/usage sits under the same prefix on
   // purpose — the receipts ARE that channel's committed history.
   api.route('/', meteredUsageRoute());
+  // P-033 batch settlement execution. Mounted LAST of the commerce chain
+  // because it consumes what the two routes above produce: a funded channel and
+  // the settled usage receipts drawn against it. Its POST returns a payment
+  // CLAIM; only its /finality transition can report payment finality.
+  api.route('/', settlementsRoute({ facilitator: options.settlementFacilitator }));
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

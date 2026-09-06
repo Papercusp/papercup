@@ -259,10 +259,38 @@ function ancestors(path: string): string[] {
 }
 
 /**
+ * ONE `git ls-tree -d` over the named directories at `commit`: which of them are GITLINKS
+ * (mode 160000, a submodule pin). `-d` lists each named entry itself rather than its children,
+ * and `--full-tree` keeps every path repo-relative regardless of cwd. Reading the tree entry is
+ * the only probe that can see a gitlink — see the caller for why `cat-file` cannot.
+ */
+function batchGitlinks(
+  git: AdmissionGitRunner,
+  root: string,
+  commit: string,
+  dirs: readonly string[],
+): { ok: true; dirs: Set<string> } | { ok: false; step: string; detail: string } {
+  const found = new Set<string>();
+  if (dirs.length === 0) return { ok: true, dirs: found };
+  const r = git(['ls-tree', '-d', '-z', '--full-tree', commit, '--', ...dirs], { cwd: root });
+  if (r.status !== 0) {
+    return { ok: false, step: 'ls-tree -d', detail: `exited ${r.status}: ${(r.stderr || r.stdout).trim().slice(0, 400)}` };
+  }
+  for (const entry of r.stdout.split('\0')) {
+    // `<mode> <type> <oid>\t<path>` per entry; a gitlink is `160000 commit <sha>`.
+    const tab = entry.indexOf('\t');
+    if (tab < 0) continue;
+    const mode = entry.slice(0, tab).split(' ')[0];
+    if (mode === '160000') found.add(entry.slice(tab + 1));
+  }
+  return { ok: true, dirs: found };
+}
+
+/**
  * Resolve every relative import of every admitted TS/JS blob at `commit`. Synchronous and
- * bounded: one `cat-file blob` per admitted file, one batch-check for all candidates, one more
- * for the ancestors of anything unresolved (to tell a submodule path from a missing file), and
- * one against `probeRef` for the missing set.
+ * bounded: one `cat-file blob` per admitted file, one batch-check for all candidates, one
+ * `ls-tree -d` over the ancestors of anything unresolved (to tell a submodule path from a
+ * missing file), and one batch-check against `probeRef` for the missing set.
  */
 export function checkAdmissionImportCompleteness(input: ImportCompletenessInput): ImportCompletenessOutcome {
   const git = input.git ?? realAdmissionGit;
@@ -307,12 +335,21 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
 
   // A path under a SUBMODULE cannot be read through the superproject's tree: the candidate
   // pins a gitlink there. That is not a missing sibling, so it is skipped, not refused.
-  const ancestorQuestions = unresolved.flatMap((a) => ancestors(a.candidates[0]!).map((d) => at(input.commit, d)));
-  const second = batchKinds(git, input.root, ancestorQuestions);
-  if (!second.ok) return { ok: false, code: 'git-failed', step: second.step, detail: second.detail };
+  //
+  // ⚠ This MUST be an `ls-tree` question, never a `cat-file --batch-check` one. For
+  // `<commit>:<gitlink dir>` git resolves the path to the SUBMODULE's commit oid and then looks
+  // that oid up in the SUPERPROJECT's object store — where it is correctly absent — so the
+  // answer is `<oid> missing`, byte-for-byte the answer a deleted path gives. Measured
+  // 2026-09-06: `apps/operator/bin/host-spa.ts` → `libs/generic/desktop-ipc/src/csp-policy`
+  // was refused `admission-incomplete` ("does not exist on the shared tip either") while the
+  // pinned desktop-ipc commit carried the file in both the candidate and the tip. `ls-tree -d`
+  // reads the tree ENTRY (mode 160000) and needs no object lookup, so it cannot be fooled.
+  const ancestorDirs = [...new Set(unresolved.flatMap((a) => ancestors(a.candidates[0]!)))];
+  const gitlinks = batchGitlinks(git, input.root, input.commit, ancestorDirs);
+  if (!gitlinks.ok) return { ok: false, code: 'git-failed', step: gitlinks.step, detail: gitlinks.detail };
   const reallyMissing: Ask[] = [];
   for (const ask of unresolved) {
-    const underGitlink = ancestors(ask.candidates[0]!).some((d) => second.kinds.get(at(input.commit, d)) === 'commit');
+    const underGitlink = ancestors(ask.candidates[0]!).some((d) => gitlinks.dirs.has(d));
     if (underGitlink) skipped.push({ path: ask.from, reason: 'inside-submodule', specifier: ask.specifier });
     else reallyMissing.push(ask);
   }

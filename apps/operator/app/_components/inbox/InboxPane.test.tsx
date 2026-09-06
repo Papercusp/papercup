@@ -230,6 +230,11 @@ import {
   scopeInboxItems,
 } from "./use-inbox-pending";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
+import {
+  deriveRunCounts,
+  type BulkRun,
+  type BulkRunItem,
+} from "./use-inbox-bulk-run";
 
 function mkItem(id: string, over: Partial<AttentionItem> = {}): AttentionItem {
   return {
@@ -939,6 +944,158 @@ describe("<InboxPane>", () => {
     renderPane("");
     expect(screen.queryByTestId("inbox-briefing")).toBeNull();
     expect(screen.queryByTestId("inbox-briefing-headline")).toBeNull();
+  });
+
+  /* ── The live run in the aside (inbox-three-column-resolver-states-2026-09-06 P-006 / D-002) ── */
+  const mkBulkRow = (
+    itemId: string,
+    outcome: BulkRunItem["outcome"],
+  ): BulkRunItem => ({
+    runId: "run-live",
+    itemId,
+    position: 0,
+    kind: "coord-message",
+    title: itemId,
+    ref: {},
+    ownerAgentId: null,
+    outcome,
+    actionId: null,
+    rationale: null,
+    draftAnswer: null,
+    confidence: null,
+    consulted: false,
+    consultReply: null,
+    error: null,
+    decidedAt: null,
+  });
+  function seedBulkRun(phase: BulkRun["phase"], items: BulkRunItem[]) {
+    const run: BulkRun = {
+      runId: "run-live",
+      phase,
+      totalItems: items.length,
+      autoResolved: 0,
+      recommended: 0,
+      skipped: 0,
+      failed: 0,
+      error: null,
+      createdAt: "2026-09-06T00:00:00.000Z",
+      startedAt: "2026-09-06T00:00:00.000Z",
+      finishedAt: null,
+      launchSnapshot: { model: "sonnet", effort: "high", account: "auto" },
+    };
+    H.results["plans.attentionBulkRun"] = {
+      data: [{ run, items }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    return run;
+  }
+
+  it("split during a live run: the aside shows the run in progress, the rail card keeps its summary, and the rows carry their badges (P-006)", () => {
+    seedAttention([mkItem("d1"), mkItem("d2"), mkItem("d3")]);
+    seedBulkRun("running", [
+      mkBulkRow("d1", "auto_resolved"),
+      mkBulkRow("d2", "recommended"),
+      mkBulkRow("d3", "pending"),
+    ]);
+    renderPane("", { layout: "split" });
+    const aside = screen.getByTestId("inbox-aside");
+    const running = screen.getByTestId("inbox-briefing-running");
+    expect(aside.contains(running)).toBe(true);
+    expect(screen.getByTestId("inbox-briefing-headline").textContent).toBe(
+      "Papercup is resolving…",
+    );
+    // Counts from the item ROWS: 2 of 3 decided, 1 resolved, 1 for review, 1 left.
+    expect(
+      screen.getByTestId("inbox-briefing-running-decided").textContent,
+    ).toBe("2 / 3");
+    expect(screen.getByTestId("inbox-briefing-tile-resolved").textContent).toBe(
+      "1Resolved",
+    );
+    expect(
+      screen.getByTestId("inbox-briefing-tile-for-review").textContent,
+    ).toBe("1For review");
+    expect(screen.getByTestId("inbox-briefing-tile-left").textContent).toBe(
+      "1Left",
+    );
+    // The glance grid and the last-run readout yield to the live view; the
+    // feed block still rides last.
+    expect(screen.queryByTestId("inbox-briefing-grid")).toBeNull();
+    expect(screen.queryByTestId("inbox-briefing-run")).toBeNull();
+    expect(screen.getByTestId("inbox-briefing").lastElementChild).toBe(
+      screen.getByTestId("inbox-aside-feed"),
+    );
+    // Same run, two surfaces (D-002): the rail card's compact running state
+    // stays beside the aside's full one.
+    expect(
+      screen
+        .getByTestId("inbox-rail-bulk")
+        .contains(screen.getByTestId("inbox-bulk-running")),
+    ).toBe(true);
+    // Per-row disposition badges DURING the run: decided rows carry theirs,
+    // the row the resolver has not reached yet carries none.
+    expect(screen.getByTestId("inbox-bulk-state-d1").textContent).toBe(
+      "resolved",
+    );
+    expect(screen.getByTestId("inbox-bulk-state-d2").textContent).toBe(
+      "for review",
+    );
+    expect(screen.queryByTestId("inbox-bulk-state-d3")).toBeNull();
+    // "Keep working the list" hands focus to the first row.
+    fireEvent.click(screen.getByTestId("inbox-briefing-keep-working"));
+    expect(document.activeElement).toBe(screen.getByTestId("inbox-row-d1"));
+  });
+
+  it("split: a persisted review-phase run lands the aside on the review state with no deep link — grouped rows, Review, and Continue N retryable stating its scope (P-007)", () => {
+    seedAttention([mkItem("d1"), mkItem("d2"), mkItem("d3")]);
+    // d3 failed → the one continuable row; d2 waits on the owner.
+    const rows = [
+      mkBulkRow("d1", "auto_resolved"),
+      mkBulkRow("d2", "recommended"),
+      mkBulkRow("d3", "failed"),
+    ];
+    const run = seedBulkRun("review", rows);
+    const counts = deriveRunCounts(rows, run);
+    renderPane("", { layout: "split" });
+    const briefing = screen.getByTestId("inbox-briefing");
+    expect(screen.getByTestId("inbox-aside").contains(briefing)).toBe(true);
+    expect(briefing.getAttribute("data-briefing-state")).toBe("last-run");
+    expect(screen.getByTestId("inbox-briefing-headline").textContent).toBe(
+      "Review the run",
+    );
+    expect(screen.queryByTestId("inbox-briefing-running")).toBeNull();
+    expect(screen.getByTestId("inbox-briefing-run-line").textContent).toBe(
+      `3 assessed · 1 auto-resolved · ${counts.unresolved} still open`,
+    );
+    const rowIds = Array.from(
+      screen.getByTestId("inbox-briefing-rows").children,
+    ).map((li) => li.getAttribute("data-testid"));
+    expect(rowIds).toEqual([
+      "inbox-briefing-row-recommendations",
+      "inbox-briefing-row-failed",
+    ]);
+    expect(screen.getByTestId("inbox-briefing-review").textContent).toContain(
+      `Review ${counts.unresolved} unresolved`,
+    );
+    // The resume control, from the pane's own `bulk.unreached` (D-002).
+    expect(screen.getByTestId("inbox-briefing-continue").textContent).toContain(
+      "Continue 1 retryable",
+    );
+    expect(
+      screen.getByTestId("inbox-briefing-resume-scope").textContent,
+    ).toContain("1 row was never reached");
+    // Same run, two surfaces: the rail card is in ITS review state too.
+    expect(
+      screen
+        .getByTestId("inbox-rail-bulk")
+        .contains(screen.getByTestId("inbox-bulk-review")),
+    ).toBe(true);
+    // The feed block still rides last.
+    expect(briefing.lastElementChild).toBe(
+      screen.getByTestId("inbox-aside-feed"),
+    );
   });
 
   /* ── The bulk card (inbox-three-column-resolver-states-2026-09-06 P-003 / D-002) ── */

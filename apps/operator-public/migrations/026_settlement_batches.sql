@@ -70,9 +70,17 @@ CREATE TABLE IF NOT EXISTS settlement_batches (
   CHECK ((refund_tx_hash IS NULL) = (refund_block_number IS NULL))
 );
 
--- Claim idempotency: one batch per channel per request hash.
-CREATE UNIQUE INDEX IF NOT EXISTS settlement_batches_request_idx
-  ON settlement_batches (channel_id, request_hash);
+-- Claim idempotency: one LIVE batch per channel per request hash.
+--
+-- The index is PARTIAL on purpose. A reorged or refunded batch is void, and the
+-- vouchers it held are released for a legitimate re-claim — which reproduces
+-- the same deterministic request hash, because it is the same channel state and
+-- the same voucher set. A total unique index would therefore make the recovery
+-- path unreachable: the retry would collide with the very row that recorded the
+-- claim the chain threw away.
+CREATE UNIQUE INDEX IF NOT EXISTS settlement_batches_live_request_idx
+  ON settlement_batches (channel_id, request_hash)
+  WHERE state IN ('claimed', 'final', 'disputed');
 
 CREATE INDEX IF NOT EXISTS settlement_batches_channel_idx
   ON settlement_batches (channel_id, created_at_ms DESC);
@@ -101,3 +109,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS settlement_batch_vouchers_claim_idx
 
 CREATE INDEX IF NOT EXISTS settlement_batch_vouchers_batch_idx
   ON settlement_batch_vouchers (batch_id);
+
+-- The durable P2P commerce event log (P-016).
+--
+-- P-016 defined the signed event contract; nothing persisted it. P-033 needs a
+-- home for its `settlement-proof` facts, so the log lands here as the general
+-- append-only surface rather than as a settlement-only side table — P-035
+-- bridges these rows outward, and should EXTEND this table rather than fork a
+-- second log.
+--
+-- The two unique indexes are `reduceCommerceEvents`' conflict rules made
+-- durable: one fact per (stream, sequence), one per idempotency key. A replayed
+-- append collides instead of inflating the stream.
+CREATE TABLE IF NOT EXISTS commerce_event_log (
+  event_id TEXT PRIMARY KEY NOT NULL,
+  stream_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  issuer TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  occurred_at_ms INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  -- Canonical JSON of the signed payload.
+  payload TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  CHECK (version = 1),
+  CHECK (sequence >= 0),
+  CHECK (occurred_at_ms >= 0)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS commerce_event_log_sequence_idx
+  ON commerce_event_log (stream_id, sequence);
+
+CREATE UNIQUE INDEX IF NOT EXISTS commerce_event_log_idempotency_idx
+  ON commerce_event_log (idempotency_key);
+
+CREATE INDEX IF NOT EXISTS commerce_event_log_kind_idx
+  ON commerce_event_log (kind, recorded_at_ms DESC);

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 865,
+  "count": 866,
   "tools": [
     {
       "name": "ablation:report",
@@ -7456,7 +7456,7 @@
           "POST"
         ]
       },
-      "description": "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
+      "description": "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally), and `per-use` (settled, claimed and reversed microcharge revenue per channel, in MICROS — a per-use unit is often worth under a cent, so these never convert to the ledger's minor units). Read-only. Revoked entitlements are reported, never hidden.",
       "capabilities": [
         "harness:read"
       ],
@@ -14440,6 +14440,33 @@
       "guidance": {
         "when": "An acked condition needs attention again before it recovers, or the ack reason no longer holds.",
         "notWhen": "The panel already recovered — the sweep cleared the ack automatically."
+      }
+    },
+    {
+      "name": "hive:store_breakdown",
+      "http": {
+        "path": "/api/agent-tools/hive/store_breakdown",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "What the hive peer-log store actually holds: on-disk bytes per harness store (split by RocksDB file class — .sst vs .blob), op counts per admitted log, and per-federated-kind append volume over a window joined to each kind's RETENTION CLASS. `amplification.versionMultiplier` (appends ÷ distinct keys) is the real growth driver — an append-only log stores every VERSION while PG stores the current one — and `appendsPerKey` names which kinds pay it. Read `storeBytesPerWindowWireByte` WITH its caveat: the store spans every admitted peer since creation, the wire figure is this peer over the window, so it is a scale check and never an amplification factor.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Asking where a hyperbee/peer-log store's bytes went, whether a federated kind's volume is growing, whether a new op kind landed without a retention class (`unclassifiedProducers`), or sizing what an epoch-rotation pass would reclaim (the `rotating` rows). Also the before/after instrument for any retention change.",
+        "notWhen": "Postgres table sizes — dev:pg_table_sizes. Replay cost / op counts alone — dogfood:substrate_status. Whether federation is FLOWING (drain stalls, admitted-set health) — dogfood:substrate_status."
       }
     },
     {

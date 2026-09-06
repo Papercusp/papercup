@@ -25,6 +25,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { createProviderRegistry } from '../p2p/artifact-package';
 import { memoryArtifactStore } from './artifact-store';
+import { loadDeliveryEntitlements } from './commerce-door-gate-io';
 import {
   gateCupboardInstall,
   type DoorListingFacts,
@@ -34,6 +35,7 @@ import {
   type InstallDoorOperation,
 } from './install-door-gate';
 import { createOpenArtifactSeam, type PrivateArtifactAccess } from './install-open-artifact';
+import { mergeEntitlementProjections } from './ledger-p2p-bridge';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 import type { ListingKind } from './types';
 
@@ -59,6 +61,20 @@ export interface InstallDoorSources {
   ) => Promise<DoorListingFactsResult> | DoorListingFactsResult;
   /** Builds the gate's collaborators. Defaults to `installDoorGateDeps`. */
   readonly gateDeps?: (context: InstallDoorContext) => InstallDoorGateDeps;
+  /**
+   * Where a published release chain arrives from (P-035).
+   *
+   * Registering THIS rather than `gateDeps` is what keeps the entitlement
+   * decision in production code: the chain a caller supplies carries
+   * distribution facts (graph, signed package, installed set), and
+   * `installDoorGateDeps` overlays the entitlement projection built by
+   * `loadDeliveryEntitlements` on top of whatever `entitlements` it names. A
+   * caller that replaces `gateDeps` wholesale owns that decision itself.
+   */
+  readonly loadReleaseChain?: (
+    listing: DoorListingFacts,
+    context: { readonly subject: string; readonly operation: InstallDoorOperation },
+  ) => Promise<DoorReleaseChain | null> | DoorReleaseChain | null;
 }
 
 const installIoState = pinModuleState('@papercusp/operator-core.cupboard.install-door-io', () => ({
@@ -139,9 +155,37 @@ export const loadReleaseChain = async (
  * door. Every default here is fail-closed — an empty provider registry serves no
  * bytes, and an unresolvable publisher key verifies nothing.
  */
+/**
+ * Resolve a release chain and give it the PRODUCTION entitlement view (P-035).
+ *
+ * The chain's own `entitlements` is folded from whatever commerce events its
+ * publisher happened to see; `loadDeliveryEntitlements` folds the ledger and
+ * the signed P2P stream this process sees. They are MERGED rather than one
+ * replacing the other, because either side may hold a revocation the other has
+ * not caught up on — and `mergeEntitlementProjections` makes revocation
+ * terminal across sources, so the merge can only ever narrow delivery, never
+ * widen it. That direction is the whole safety property: a refunded buyer
+ * cannot regain the bytes because one of the two views is stale.
+ */
+export async function resolveReleaseChainWithEntitlements(
+  listing: DoorListingFacts,
+  context: { readonly subject: string; readonly operation: InstallDoorOperation },
+): Promise<DoorReleaseChain | null> {
+  const load = installIoState.sources?.loadReleaseChain ?? loadReleaseChain;
+  const chain = await load(listing, context);
+  if (!chain) return null;
+  return {
+    ...chain,
+    entitlements: mergeEntitlementProjections(
+      chain.entitlements,
+      await loadDeliveryEntitlements(),
+    ),
+  };
+}
+
 export function installDoorGateDeps(context: InstallDoorContext): InstallDoorGateDeps {
   return {
-    loadReleaseChain,
+    loadReleaseChain: resolveReleaseChainWithEntitlements,
     runner: {
       resolveDistribution: () => null,
       registry: createProviderRegistry(),

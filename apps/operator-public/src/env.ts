@@ -52,6 +52,22 @@ export interface Env {
   PAYMENT_CHANNEL_STABLECOIN?: string;
 
   // Vars
+  /** Confirmation depth before a P-033 batch claim counts as FINAL. Unset takes
+   *  the module default; a set-but-unparseable value is an error, never a
+   *  silent fallback — settling at depth 1 when the operator meant 12 is the
+   *  claim-vs-finality mistake acceptance line 14 exists to prevent. */
+  SETTLEMENT_REQUIRED_CONFIRMATIONS?: string;
+  /** DAO revenue split for P-033 settlement accounting, as JSON:
+   *  `{"version":"v1","sharesBps":{"creator":...,"host":...,...}}`. Its
+   *  canonical `sha256:` hash is DERIVED (never configured) and must equal the
+   *  `splitManifestHash` the payer signed into each voucher, so a settlement
+   *  can only apply a split the buyer actually agreed to. */
+  REVENUE_SPLIT_MANIFEST?: string;
+  /** Destination recorded in the settlement receipt for the DAO share. A var,
+   *  not a secret: a treasury address is public by construction. Recording is
+   *  all that happens here — routing funds to the Safe/Zodiac treasury is
+   *  P-034, which is blocked on P-033. */
+  DAO_TREASURY_ADDRESS?: string;
   ENVIRONMENT: string;
   CUPBOARD_HOST: string;
   /** Comma-separated GitHub user ids allowed to use /admin operator surfaces

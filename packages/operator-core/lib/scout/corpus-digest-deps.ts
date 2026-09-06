@@ -98,6 +98,55 @@ async function fetchReverts(): Promise<RevertRecord[]> {
 /** Spend buckets: agent_usage_samples rolled up by (harness, role) — where
  *  time/tokens went. Keep the current-state read tenant-scoped and bounded to
  *  the trailing seven days. */
+/**
+ * Minimum reports before a canonical counts as RECURRING. Matches
+ * RECURRENCE_ESCALATION_THRESHOLD (3) so "recurring" means the same thing on both
+ * recurrence paths rather than drifting into two different definitions.
+ */
+const RECURRING_FLOW_MIN = 3;
+/**
+ * Bound on the ledger-keyed read, taken count-DESC so the strongest evidence is what
+ * survives the bound. Sized against the measured population (618 canonicals at >=3 on
+ * the observation lane, 840 on the improvement topic), and comparable to the two
+ * `limit ?? 500` reads it rides beside — this widens the mining set by roughly a
+ * third, it does not multiply it.
+ *
+ * ⚠ THIS BOUND IS LOAD-BEARING FOR A BOUND IT DOES NOT OWN. The mining set feeds
+ * `findLikelyDuplicates`, whose near-dup leg is O(n²) and — measured in
+ * EI-19393516222436864 — SILENTLY SKIPS itself above 4,000 candidates while still
+ * reporting full coverage. Raising this cap therefore does not merely cost CPU: past
+ * that threshold it would turn the near-dup leg off with no error, degrading the very
+ * clustering this read exists to feed. Measured after this change: 1,482 mined
+ * (~1,000 window + ~482 ledger), so the headroom is real but finite. If you raise this,
+ * check the TOTAL against that 4,000 gate first — do not reason about this number alone.
+ */
+const RECURRING_FLOW_MAX_IDS = 500;
+
+/**
+ * Canonical ids that RECUR according to the occurrence ledger, newest-agnostic.
+ *
+ * Deliberately id-only: it answers "which rows are worth mining" without loading a
+ * single row, so the expensive candidate read stays bounded by the id set rather than
+ * scanning the corpus. Never throws into the digest — an unavailable ledger degrades
+ * to the recency window alone, which is exactly today's behaviour.
+ */
+async function fetchRecurringCanonicalIds(workspaceId: string): Promise<string[]> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ id: string }[]>`
+      SELECT canonical_work_item_id AS id
+        FROM harness_shared.work_item_occurrences
+       WHERE workspace_id = ${workspaceId}
+       GROUP BY 1
+      HAVING count(*) >= ${RECURRING_FLOW_MIN}
+       ORDER BY count(*) DESC
+       LIMIT ${RECURRING_FLOW_MAX_IDS}`;
+    return rows.map((r) => r.id);
+  } catch {
+    return [];
+  }
+}
+
 async function fetchSpend(opts: { workspaceId?: string; nowMs?: number } = {}): Promise<SpendRecord[]> {
   const { sql } = getOrgPg();
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
@@ -282,11 +331,39 @@ export function buildStateOfHiveReaders(opts: BuildStateOfHiveReadersOptions = {
       // promoted to a real idea — the only path from observation → work. The pure
       // digest filters rubric-graded scorecards out of free-text friction mining;
       // those have the dedicated rubricRatings lane.
-      const [improvements, observations] = await Promise.all([
-        readImprovementItems(),
-        readObservationItems(),
-      ]);
-      return [...improvements, ...observations];
+      // Both default reads are `limit ?? 500` — the NEWEST 500 of each, which is a
+      // RECENCY WINDOW, not a set (the defect class WI-1216687 named for the sibling
+      // recurrence path: "a caller that wants a SET and reads the newest N gets a
+      // recency window"). Recurrence is precisely what that window cannot show,
+      // because a row accrues repeats over TIME and ages out of the newest-N before it
+      // becomes interesting. Measured 2026-09-06: inside the window the largest flow is
+      // 4, while the corpus holds 618 canonicals at >=3 and one at 364.
+      //
+      // So union a third read keyed on the OCCURRENCE LEDGER — the rows that actually
+      // recur, fetched by id regardless of age. Without this, flow-counting is nearly a
+      // no-op in production: it would re-rank 36 low-flow rows and still never see the
+      // 79x/63x/61x agent friction this exists to surface (EI-20587312505064997).
+      const recurringIds = await fetchRecurringCanonicalIds(workspaceId);
+      const byId = recurringIds.length
+        ? { issueIds: recurringIds, limit: recurringIds.length }
+        : undefined;
+      const [improvements, observations, recurringImprovements, recurringObservations] =
+        await Promise.all([
+          readImprovementItems(),
+          readObservationItems(),
+          byId ? readImprovementItems(byId) : Promise.resolve([]),
+          byId ? readObservationItems(byId) : Promise.resolve([]),
+        ]);
+      // Dedupe: a recurring row already inside the recency window would otherwise be
+      // mined twice and double its own apparent stock count.
+      const seen = new Set<string>();
+      const out: ImprovementCandidate[] = [];
+      for (const c of [...improvements, ...observations, ...recurringImprovements, ...recurringObservations]) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        out.push(c);
+      }
+      return out;
     },
     async spend() {
       return fetchSpend({ workspaceId, nowMs });

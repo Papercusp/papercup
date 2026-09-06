@@ -2,16 +2,17 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 86f292f05e636072d7a54e5a6841aeb587c36cf812124f943aa364a3523636c8
+ * Migration digest: 3892e3e1a5b43f7bb634272107fd62d0fed5d0c1feb5b1ee9278f4d3f0b47d4a
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "86f292f05e636072d7a54e5a6841aeb587c36cf812124f943aa364a3523636c8";
+  "3892e3e1a5b43f7bb634272107fd62d0fed5d0c1feb5b1ee9278f4d3f0b47d4a";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
   "commerce_entitlements",
+  "commerce_event_log",
   "commerce_ledger_events",
   "commerce_offers",
   "commerce_orders",
@@ -28,6 +29,8 @@ export const GENERATED_TABLES = [
   "prepaid_credit_reservations",
   "publish_rate_limit",
   "reports",
+  "settlement_batch_vouchers",
+  "settlement_batches",
   "usage_receipts",
   "wallet_binding_challenges",
   "wallet_bindings",
@@ -57,6 +60,20 @@ export interface CommerceEntitlementsRow {
   granted_at_ms: number;
   revoked_at_ms: number | null;
   revoke_reason: string | null;
+}
+
+export interface CommerceEventLogRow {
+  event_id: string;
+  stream_id: string;
+  kind: string;
+  version: number;
+  issuer: string;
+  sequence: number;
+  occurred_at_ms: number;
+  idempotency_key: string;
+  payload: string;
+  signature: string;
+  recorded_at_ms: number;
 }
 
 export interface CommerceLedgerEventsRow {
@@ -312,6 +329,47 @@ export interface ReportsRow {
   resolved_at: number | null;
   resolved_by_operator_note: string | null;
   created_at: number;
+}
+
+export interface SettlementBatchVouchersRow {
+  batch_id: string;
+  channel_id: string;
+  usage_nonce: string;
+  voucher_digest: string;
+  cumulative_claim_micros: number;
+}
+
+export interface SettlementBatchesRow {
+  batch_id: string;
+  channel_id: string;
+  principal_id: string;
+  request_hash: string;
+  chain_id: number;
+  settlement_contract_address: string;
+  stablecoin_address: string;
+  claim_micros: number;
+  prior_cumulative_micros: number;
+  cumulative_claim_micros: number;
+  voucher_digests: string;
+  settlement_id: string;
+  split_manifest_hash: string;
+  allocations_micros: string;
+  provider_cost_micros: number;
+  distributable_micros: number;
+  dao_treasury: string;
+  receipt_hash: string;
+  state: string;
+  required_confirmations: number;
+  confirmations: number;
+  claim_tx_hash: string;
+  claim_block_number: string;
+  claim_block_hash: string;
+  refund_tx_hash: string | null;
+  refund_block_number: string | null;
+  freeze_reason: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  finalized_at_ms: number | null;
 }
 
 export interface UsageReceiptsRow {

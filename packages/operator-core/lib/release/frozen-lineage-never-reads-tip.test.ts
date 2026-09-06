@@ -176,7 +176,12 @@ describe('the ready-to-verify path verifies the repair head at its own sha, neve
     expect(branch).not.toMatch(/resolveTip|integrationBranch|transportedCandidate|stagingContainsFrozenRepair/);
     // A red re-queues from the repair head that was just tested; nothing on this path retires
     // the queue (`writeFrozenRepairQueue(null)`) or steps the candidate anywhere else.
-    expect(branch).toContain('markFrozenRepairVerificationRed(repairQueue');
+    // P-027 / D-014: the red is recorded through `commitFrozenRepairQueueTransition` +
+    // `verdictTransitionAtHead`, which hands the marker a FRESH re-read of the row (`fresh`)
+    // so a concurrent admission is never overwritten (the 2026-09-05 17:41Z lost update);
+    // either spelling names the queue row, never the tip.
+    expect(branch).toMatch(/markFrozenRepairVerificationRed\((?:repairQueue|fresh),/);
+    expect(branch).toContain('verdictTransitionAtHead(');
     expect(branch).not.toContain('writeFrozenRepairQueue?.(null)');
   });
 

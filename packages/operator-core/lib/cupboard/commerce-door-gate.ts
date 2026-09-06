@@ -67,6 +67,7 @@ import {
 import type { CreatorProfile } from './commerce-accounts';
 import type { LedgerState, Money } from './commerce-ledger';
 import type { DeliveryIntent } from './entitled-delivery';
+import { perUseDashboard, type PerUseDashboard, type PerUseRollup } from './ledger-p2p-bridge';
 
 /**
  * Everything the four doors read, loaded once through the single persistence
@@ -83,6 +84,16 @@ export interface CommerceSnapshot {
   readonly seatPolicies: ReadonlyMap<string, SeatPolicy>;
   readonly installations: readonly Installation[];
   readonly creatorProfiles: ReadonlyMap<string, CreatorProfile>;
+  /**
+   * Per-use positions bridged from the P-016 commerce stream (P-035).
+   *
+   * REQUIRED and explicitly nullable, so every loader states which it means:
+   * `null` is "no P2P commerce source is configured for this process" and an
+   * empty rollup is "a source is configured and there is no per-use activity".
+   * Collapsing those two into one optional field is how a dashboard reports a
+   * mis-wired loader as a quiet month.
+   */
+  readonly perUse: PerUseRollup | null;
 }
 
 export type CommerceDoorRefusalCode =
@@ -363,7 +374,7 @@ export function gateSupportRequest(
 // §4 — dashboards read
 // ---------------------------------------------------------------------------
 
-export const COMMERCE_DASHBOARDS = ['catalog', 'checkout', 'refunds', 'audit'] as const;
+export const COMMERCE_DASHBOARDS = ['catalog', 'checkout', 'refunds', 'audit', 'per-use'] as const;
 export type CommerceDashboardName = (typeof COMMERCE_DASHBOARDS)[number];
 
 export interface DashboardsDoorInput {
@@ -380,6 +391,13 @@ export interface DashboardsDoorResult {
   readonly checkout?: CheckoutDashboard;
   readonly refunds?: readonly RefundPosition[];
   readonly audit?: AuditExport;
+  /**
+   * Per-use revenue and reversals (P-035). Reported in MICROS as decimal
+   * strings rather than in the ledger's minor units: a per-use unit is
+   * routinely worth a fraction of one cent, so converting here would round most
+   * of this dashboard's rows to zero.
+   */
+  readonly perUse?: PerUseDashboard;
 }
 
 export type DashboardsDoorDecision =
@@ -409,6 +427,7 @@ export function gateCommerceDashboards(
     checkout?: CheckoutDashboard;
     refunds?: readonly RefundPosition[];
     audit?: AuditExport;
+    perUse?: PerUseDashboard;
   } = {};
 
   if (wanted.has('catalog')) {
@@ -438,6 +457,13 @@ export function gateCommerceDashboards(
       orgs: snapshot.orgs,
       creatorProfiles: snapshot.creatorProfiles,
     });
+  }
+  if (wanted.has('per-use')) {
+    // Scoped to the acting org by `perUseDashboard`, for the same reason
+    // `refundDashboard` takes a buyerId: a per-use channel names a payer and a
+    // seller, and showing a stranger's settled revenue on a read surface is a
+    // leak whether or not it was meant as one.
+    result.perUse = perUseDashboard(snapshot.perUse, input.buyerOrgId);
   }
 
   return { ok: true, result };

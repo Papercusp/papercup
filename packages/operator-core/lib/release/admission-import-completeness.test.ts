@@ -275,31 +275,59 @@ describe('checkAdmissionImportCompleteness — real git', () => {
 
 describe('injected runner — the branches a plain repo cannot produce cheaply', () => {
   const fake =
-    (answers: { blob: string; batch: (input: string) => string | null }): AdmissionGitRunner =>
+    (answers: {
+      blob: string;
+      batch: (input: string) => string | null;
+      /** `ls-tree -d -z --full-tree <commit> -- <dirs>`: the NUL-terminated entries for the named dirs. */
+      lsTree?: (dirs: string[]) => string;
+    }): AdmissionGitRunner =>
     (argv, opts) => {
       if (argv[0] === 'cat-file' && argv[1] === 'blob') return { status: 0, stdout: answers.blob, stderr: '' };
       if (argv[0] === 'cat-file' && typeof argv[1] === 'string' && argv[1].startsWith('--batch-check')) {
         const out = answers.batch(opts.input ?? '');
         return out === null ? { status: 128, stdout: '', stderr: 'boom' } : { status: 0, stdout: out, stderr: '' };
       }
+      if (argv[0] === 'ls-tree') {
+        const dirs = argv.slice(argv.indexOf('--') + 1);
+        return { status: 0, stdout: answers.lsTree ? answers.lsTree(dirs) : '', stderr: '' };
+      }
       throw new Error(`unexpected git ${argv.join(' ')}`);
     };
 
+  const gitlinkEntry = (path: string) => `160000 commit ${'d'.repeat(40)}\t${path}\0`;
+  const treeEntry = (path: string) => `040000 tree ${'e'.repeat(40)}\t${path}\0`;
+
   it('an import that resolves under a gitlink is skipped as inside-submodule, never reported missing', () => {
+    // Faithful to real git (measured 2026-09-06 on libs/generic/desktop-ipc): `cat-file
+    // --batch-check` on `<commit>:lib/sub` resolves the gitlink to the SUBMODULE's commit oid,
+    // which the superproject's object store does not hold, so it answers `<oid> missing` —
+    // byte-identical to a deleted path. Only the tree ENTRY (`ls-tree -d`, mode 160000) tells
+    // the two apart, and that is the probe the checker must ask.
     const git = fake({
       blob: "import { s } from './sub/x';\n",
-      batch: (input) =>
-        input
-          .trim()
-          .split('\n')
-          .map((q) => (q.endsWith(':lib/sub') ? 'commit' : `${q} missing`))
-          .join('\n') + '\n',
+      batch: (input) => input.trim().split('\n').map((q) => `${q} missing`).join('\n') + '\n',
+      lsTree: (dirs) => dirs.map((d) => (d === 'lib/sub' ? gitlinkEntry(d) : d === 'lib' ? treeEntry(d) : '')).join(''),
     });
     expect(checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git })).toMatchObject({
       ok: true,
       checked: ['lib/a.ts'],
       imports: 1,
       skipped: [{ path: 'lib/a.ts', reason: 'inside-submodule', specifier: './sub/x' }],
+    });
+  });
+
+  it('an import under a plain (non-gitlink) ancestor that resolves to nothing is still reported missing', () => {
+    // The dual of the case above: the same `missing` answers from cat-file, but ls-tree says the
+    // ancestors are ordinary trees — so this IS a missing sibling and must be refused.
+    const git = fake({
+      blob: "import { s } from './sub/x';\n",
+      batch: (input) => input.trim().split('\n').map((q) => `${q} missing`).join('\n') + '\n',
+      lsTree: (dirs) => dirs.map((d) => (d === 'lib/sub' || d === 'lib' ? treeEntry(d) : '')).join(''),
+    });
+    expect(checkAdmissionImportCompleteness({ root: '/repo', commit: 'c'.repeat(40), paths: ['lib/a.ts'], git })).toMatchObject({
+      ok: false,
+      code: 'admission-incomplete',
+      missing: [expect.objectContaining({ from: 'lib/a.ts', specifier: './sub/x', wanted: 'lib/sub/x.ts' })],
     });
   });
 

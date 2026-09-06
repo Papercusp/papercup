@@ -126,11 +126,21 @@ export interface EvmSettlementFacilitator {
   readonly chainId: number;
   readonly settlementContract: string;
   readonly stablecoin: string;
+  /** The address that submits claims — also the settlement proof's issuer. */
+  readonly signerAddress: string;
   /** Confirmations required before a claim is treated as final. */
   readonly requiredConfirmations: number;
   submitBatchClaim(request: EvmBatchSettlementRequest): Promise<EvmTransactionReceipt>;
   submitRefund(input: { channelId: string; amountMicros: bigint; refundAddress: string }): Promise<EvmTransactionReceipt>;
   observeTransaction(transactionHash: string): Promise<EvmTransactionObservation>;
+  /**
+   * Sign `commerceEventSigningBytes` for a settlement proof.
+   *
+   * The signer that submitted the claim is the party attesting to it, so the
+   * proof is verifiable against the same address that appears on chain. This
+   * module never holds the key; the facilitator does.
+   */
+  signSettlementProof(bytes: Uint8Array): Promise<string>;
 }
 
 export interface BatchSettlementPlan {

@@ -363,6 +363,8 @@ function snapshotOf(ledger: LedgerState): CommerceSnapshot {
     seatPolicies: new Map<string, SeatPolicy>([[OFFER_ID, { offerId: OFFER_ID, seats: 2 }]]),
     installations: [] as readonly Installation[],
     creatorProfiles: new Map<string, CreatorProfile>(),
+    // Ledger-only journeys: no P2P commerce source is wired for them.
+    perUse: null,
   };
 }
 
