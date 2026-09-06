@@ -26559,9 +26559,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; legacy single-rubric callers may pass `id`.",
+        "when": "You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; for revision-pinned grading, add the exact positive `revision`; legacy single-rubric callers may pass `id`.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
-        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
+        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. For a frozen audit, use `rubrics:get { rubricRef, revision }` and retain the returned `rubric.revision` + `rubric.criteriaHash`. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
       }
     },
     {
