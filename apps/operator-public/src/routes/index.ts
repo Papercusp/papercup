@@ -10,6 +10,7 @@ import { commerceRoute } from './commerce.ts';
 import { walletBindingRoute } from './wallet-binding.ts';
 import { prepaidCreditsRoute } from './prepaid-credits.ts';
 import { paymentChannelsRoute } from './payment-channels.ts';
+import { meteredUsageRoute } from './metered-usage.ts';
 import type { PaymentChannelFundingAdapter } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
 import { prepaidCreditCatalogEvents } from '@papercusp/operator-core/lib/cupboard/prepaid-credits.ts';
@@ -62,6 +63,12 @@ export function buildApi(
   api.route('/', walletBindingRoute());
   api.route('/', prepaidCreditsRoute());
   api.route('/', paymentChannelsRoute({ adapter: options.paymentChannelAdapter }));
+  // P-031 metering interception. Mounted AFTER paymentChannelsRoute because it
+  // draws against the durable channel that route funds: a reservation is only
+  // meaningful once an escrow exists to exhaust. Its GET
+  // /commerce/payment-channels/:channelId/usage sits under the same prefix on
+  // purpose — the receipts ARE that channel's committed history.
+  api.route('/', meteredUsageRoute());
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

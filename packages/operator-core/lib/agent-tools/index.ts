@@ -1477,6 +1477,10 @@ import './cupboard/refund-request';
 import './cupboard/support-request';
 import './cupboard/commerce-dashboards';
 import './cupboard/bind-wallet';
+// P-031 — the per-unit half of the same commerce surface. A per-use offer has no
+// single purchase to authorize, so checkout only opens the channel and EVERY
+// billable unit is metered through this door.
+import './cupboard/meter-invocation';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';

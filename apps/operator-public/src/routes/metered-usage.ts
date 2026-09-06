@@ -18,6 +18,7 @@
  * only party that can settle it. Neither is taken from the request body.
  */
 import { Hono } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
   acceptMeteredVoucher,
   closeMeteredInvocation,
@@ -40,9 +41,11 @@ import {
   type StoredUsageReceipt,
 } from '../usage-receipt-store.ts';
 
-type ContentfulStatusCode = Parameters<Parameters<Hono<{ Bindings: Env }>['get']>[1]> extends never
-  ? never
-  : 400 | 401 | 402 | 403 | 404 | 409 | 422;
+/**
+ * Hono owns this type; deriving it from the router's own overloads resolved to
+ * `never` and made every refusal status below unassignable.
+ */
+type RefusalStatusCode = Extract<ContentfulStatusCode, 400 | 401 | 402 | 403 | 404 | 409 | 422>;
 
 async function authenticate(
   request: Request,
@@ -71,7 +74,7 @@ async function jsonObject(request: Request): Promise<Record<string, unknown> | n
  * `cap-exhausted` is 402 rather than 409 on purpose: it is the one refusal a
  * buyer clears by funding the channel, not by retrying differently.
  */
-function statusFor(code: MeteredRefusalCode): ContentfulStatusCode {
+function statusFor(code: MeteredRefusalCode): RefusalStatusCode {
   if (code === 'cap-exhausted') return 402;
   if (code === 'duplicate-nonce' || code === 'cumulative-regression') return 409;
   return 422;
@@ -89,7 +92,16 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-/** Rebuild the exact voucher the payer signed from its persisted reservation. */
+/**
+ * Rebuild the exact voucher the payer signed from its persisted reservation.
+ *
+ * `expiresAtMs` is read back from the row rather than substituted, because it is
+ * one of the canonical fields `paymentVoucherDigest` hashes: fabricate it here
+ * and the settled receipt binds to a voucher the payer never signed, while still
+ * looking perfectly well-formed. Expiry is not re-checked at settlement — the
+ * unit was already admitted — so the stored value is used for the DIGEST, not as
+ * a second deadline.
+ */
 function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVoucher {
   return {
     channelId: receipt.channelId,
@@ -101,7 +113,7 @@ function voucherFromReceipt(receipt: StoredUsageReceipt): CumulativePaymentVouch
     pricePerUnitMicros: BigInt(receipt.unitPriceMicros),
     priceVersion: receipt.priceVersion,
     splitManifestHash: receipt.splitManifestHash,
-    expiresAtMs: Number.MAX_SAFE_INTEGER,
+    expiresAtMs: receipt.expiresAtMs,
     cumulativeClaimMicros: BigInt(receipt.cumulativeClaimMicros),
     signature: receipt.voucherSignature,
   };
@@ -123,7 +135,14 @@ function receiptJson(receipt: StoredUsageReceipt) {
     reservedMicros: String(receipt.reservedMicros),
     amountMicros: receipt.amountMicros == null ? null : String(receipt.amountMicros),
     cumulativeClaimMicros: String(receipt.cumulativeClaimMicros),
+    // Both are exposed so the SELLER can re-derive the exact bytes the payer
+    // signed and settle against them. The voucher signature is the payer's
+    // payment instrument, not a secret: a seller that cannot present it cannot
+    // claim the money. The read is already restricted to the funding principal
+    // and the sellers named on the channel's own receipts.
+    expiresAtMs: receipt.expiresAtMs,
     voucherDigest: receipt.voucherDigest,
+    voucherSignature: receipt.voucherSignature,
     receiptSignature: receipt.receiptSignature,
     state: receipt.state,
     reservedAtMs: receipt.reservedAtMs,
@@ -239,6 +258,7 @@ export function meteredUsageRoute(): Hono<{ Bindings: Env }> {
       splitManifestHash: voucher.splitManifestHash,
       reservedMicros: accepted.reservedMicros,
       cumulativeClaimMicros: voucher.cumulativeClaimMicros,
+      expiresAtMs: voucher.expiresAtMs,
       voucherDigest: paymentVoucherDigest(unsignedVoucher(voucher)),
       voucherSignature: voucher.signature,
       nowMs: Date.now(),

@@ -97,7 +97,16 @@ export function reserveMicrocharge(channel: MicrochargeChannel, voucher: Cumulat
   if (voucher.usageNonce in channel.receipts || voucher.usageNonce in channel.reservations) return { ok: false, code: 'duplicate-nonce', detail: `usage nonce '${voucher.usageNonce}' was already observed` };
   if (voucher.cumulativeClaimMicros <= channel.lastCumulativeMicros) return { ok: false, code: 'cumulative-regression', detail: 'cumulative claim must advance monotonically' };
   const deltaMicros = voucher.cumulativeClaimMicros - channel.lastCumulativeMicros;
-  if (channel.committedMicros + deltaMicros > channel.escrowMicros) return { ok: false, code: 'cap-exhausted', detail: 'cumulative claim exceeds escrow/channel cap' };
+  // OUTSTANDING RESERVATIONS COUNT AGAINST THE CAP. Checking `committedMicros`
+  // alone only sees units that already SETTLED, so units reserved-but-not-yet-
+  // settled were invisible and several of them could each pass while together
+  // exceeding the escrow. That defeats the purpose of reserving first: the
+  // overdraft then surfaced at settlement — after the seller had already served
+  // the unit — against `payment_channels`' committed + refunded <= escrow CHECK,
+  // as a database error rather than a refusal anyone could act on.
+  let heldMicros = 0n;
+  for (const reserved of Object.values(channel.reservations)) heldMicros += reserved;
+  if (channel.committedMicros + heldMicros + deltaMicros > channel.escrowMicros) return { ok: false, code: 'cap-exhausted', detail: 'cumulative claim exceeds escrow/channel cap' };
   return { ok: true, deltaMicros, channel: { ...channel, lastCumulativeMicros: voucher.cumulativeClaimMicros, reservations: { ...channel.reservations, [voucher.usageNonce]: deltaMicros } } };
 }
 
