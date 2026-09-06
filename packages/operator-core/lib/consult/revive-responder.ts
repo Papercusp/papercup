@@ -61,6 +61,9 @@ export interface ConsultReviveResult {
   spawned: boolean;
   verified: boolean | null;
   detail: string;
+  /** The target was already live, so refusing an in-place resume is a
+   * successful liveness observation rather than a failed revival attempt. */
+  reason?: 'live-collision';
 }
 
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
@@ -117,6 +120,7 @@ export async function reviveConsultResponder(
       return {
         spawned: false,
         verified: null,
+        reason: 'live-collision',
         detail:
           `${target.ownerId ?? opts.ownerId} reads LIVE at the pty host — an in-place resume would collide ` +
           `with the running session (WI-3882), so revival was refused. If they are a false-parked zombie, ` +

@@ -206,7 +206,7 @@ export interface GetFeedbackDeps {
     ownerId: string;
     conversationId: string;
     brief: string;
-  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+  }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string; reason?: 'live-collision' }>;
   now?: () => Date;
 }
 
@@ -279,6 +279,7 @@ export interface GetFeedbackResult {
     spawned: boolean;
     verified: boolean | null;
     detail: string;
+    reason?: 'live-collision';
   };
   /** P-006 archive-serve provenance — present only on served_from_archive. */
   archive?: {
@@ -1116,6 +1117,7 @@ export async function getFeedbackCore(
       spawned: r.spawned,
       verified: r.verified,
       detail: r.detail,
+      ...(r.reason ? { reason: r.reason } : {}),
     };
     if (r.spawned) {
       // The provisional row already has the revived responder as its head.
@@ -1150,6 +1152,36 @@ export async function getFeedbackCore(
         current &&
           (current.responder_id !== revivalCandidate!.ownerId || current.state !== 'awaiting_responder'),
       );
+    } else if (r.reason === 'live-collision') {
+      // WI-3882 refuses an in-place resume when the stale route snapshot says
+      // DEAD but the target is already LIVE. That is not a failed revival:
+      // the candidate is now reachable and must become the normal responder,
+      // otherwise an all-dead route is falsely returned as no_live_responder.
+      const liveCollisionCandidate = { ...revivalCandidate!, liveness: 'live' as const };
+      finalSelected = [
+        { candidate: liveCollisionCandidate, via: 'floor' as SelectionVia },
+        ...selected.filter((s) => s.candidate.ownerId !== liveCollisionCandidate.ownerId),
+      ].slice(0, maxResponders);
+      finalChosen = liveCollisionCandidate;
+      finalChosenVia = 'floor';
+      route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, finalSelected);
+      const fallbackExpiresAt = new Date(
+        now.getTime() + (latency === 'hard-blocked' ? HARD_BLOCKED_EXPIRY_MS : PROCEED_EXPIRY_MS),
+      ).toISOString();
+      await sql`
+        UPDATE harness_shared.consult_state
+           SET responder_id = ${finalChosen.ownerId},
+               state = 'awaiting_responder',
+               routing = ${sql.json(route.snapshot as never)},
+               expires_at = ${fallbackExpiresAt},
+               wakes_used = 1,
+               updated_at = ${now.toISOString()}::timestamptz
+         WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+           AND responder_id = ${revivalCandidate!.ownerId}
+           AND state = 'awaiting_responder'
+           AND cascade_cursor = 0
+           AND closed_at IS NULL
+      `;
     } else {
       // No first turn can be produced by a spawn that returned false. Restore
       // the exact pre-revival route and participant gate before waking the
@@ -1366,6 +1398,8 @@ export async function getFeedbackCore(
   const revivalNote = revival
     ? revival.spawned
       ? ` 🧭 REVIVED ${revival.ownerId} (${revival.trigger}: carry-respawn ${revival.verified === true ? 'verified live' : revival.verified === null ? 'still booting — the cascade expiry guards the reply' : 'spawned'}); the consult brief is their first turn.`
+      : revival.reason === 'live-collision'
+        ? ` 🧭 ${revival.ownerId} was already LIVE when revival was attempted; the stale DEAD snapshot was corrected and the consult was routed directly.`
       : ` ⚠ Revival of ${revival.ownerId} was attempted (${revival.trigger}) but FAILED to spawn — fell back to the pre-revival selection. Detail: ${revival.detail}`
     : '';
   const wakeNote = pickupConfirmed
