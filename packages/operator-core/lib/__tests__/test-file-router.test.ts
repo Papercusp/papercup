@@ -27,10 +27,14 @@ import {
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
+  defaultTestFileRunTimeoutMs,
   testFileRunTimeoutMs,
   vitestRunFailed,
   warnIfInstallInFlight,
   withoutOutputFileArg,
+  DEFAULT_TEST_FILE_RUN_TIMEOUT_MS,
+  MAX_TEST_FILE_RUN_TIMEOUT_MS,
+  TEST_FILE_RUN_TIMEOUT_PER_FILE_MS,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive itself must
@@ -50,7 +54,27 @@ describe('test-files router', () => {
     expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '0' })).toThrow(/between 1 and/);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
-    expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '1800001' })).toThrow(/between 1 and/);
+    expect(() =>
+      testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(MAX_TEST_FILE_RUN_TIMEOUT_MS + 1) }),
+    ).toThrow(/between 1 and/);
+  });
+
+  it('scales the default whole-run budget with the requested file count (gate --related lists)', () => {
+    // A handful of files keeps the flat five-minute floor.
+    expect(defaultTestFileRunTimeoutMs(1)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    expect(testFileRunTimeoutMs({}, 3)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // 235 files — the @papercusp/web `--related` list that a flat 300s budget reaped with two
+    // files completed on every gate run from 2026-09-04 to 2026-09-06 — gets a proportional
+    // ceiling instead of a guaranteed TEST_FILE_NOT_MEASURED exit.
+    expect(testFileRunTimeoutMs({}, 235)).toBe(235 * TEST_FILE_RUN_TIMEOUT_PER_FILE_MS);
+    expect(testFileRunTimeoutMs({}, 235)).toBeGreaterThan(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // The router maximum still caps it.
+    expect(defaultTestFileRunTimeoutMs(100_000)).toBe(MAX_TEST_FILE_RUN_TIMEOUT_MS);
+    // A count that is not a positive integer falls back to the single-file floor.
+    expect(defaultTestFileRunTimeoutMs(0)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    expect(defaultTestFileRunTimeoutMs(Number.NaN)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // An explicit override always wins, whatever the count.
+    expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' }, 235)).toBe(540_000);
   });
 
   it('publishes and cleans the pc-heavy after-ready marker at the execution boundary', () => {
@@ -404,7 +428,7 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
-  it('keeps the parent timer live, attributes completed/pending files, and reaps only its owned group', async () => {
+  it('prefers a detached systemd user scope while keeping the owned process-group watchdog', async () => {
     vi.useFakeTimers();
     try {
       const child = new EventEmitter() as EventEmitter & {
@@ -432,6 +456,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           progressIntervalMs: 10,
           killGraceMs: 20,
           maxBuffer: 1024,
+          systemdRunPath: '/usr/bin/systemd-run',
           setsidPath: '/usr/bin/setsid',
           spawnImpl,
           killProcessImpl,
@@ -442,8 +467,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       );
 
       expect(spawnImpl).toHaveBeenCalledWith(
-        '/usr/bin/setsid',
-        ['--wait', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
+        '/usr/bin/systemd-run',
+        ['--user', '--scope', '--collect', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
         expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
       );
       const spawnOptions = spawnImpl.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
@@ -475,6 +500,48 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('falls back to setsid --wait when systemd-run is unavailable', async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4343;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const spawnImpl = vi.fn((..._args: unknown[]) => child);
+    const onProgress = vi.fn();
+
+    const resultPromise = runCapturedTestProcess(
+      'npx',
+      ['vitest', 'run', 'a.test.ts'],
+      {
+        cwd: '/repo',
+        files: ['a.test.ts'],
+        systemdRunPath: null,
+        setsidPath: '/usr/bin/setsid',
+        spawnImpl,
+        onProgress,
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      },
+    );
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      '/usr/bin/setsid',
+      ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+      expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+    );
+    child.emit('close', 0, null);
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 0,
+      signal: null,
+      timedOut: false,
+    });
   });
 
   it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {

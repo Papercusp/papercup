@@ -1798,18 +1798,42 @@ function run(command, args, options) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
 
-// The supported testing:run surface uses the same five-minute whole-run budget. Keep the direct
-// test:file CLI bounded too: unlike Vitest's per-test timeout, this parent timer can still fire when
-// a fork worker is synchronously spinning and its own event loop cannot run timers.
+// The supported testing:run surface uses the same five-minute whole-run budget for a SHORT list.
+// Keep the direct test:file CLI bounded too: unlike Vitest's per-test timeout, this parent timer
+// can still fire when a fork worker is synchronously spinning and its own event loop cannot run
+// timers.
+//
+// The DEFAULT SCALES WITH THE REQUESTED FILE COUNT. A flat five-minute budget was calibrated for
+// a handful of files, but the green-checkpoint's `--related` narrowing hands this router ONE
+// positional list of a few hundred files per workspace (235 for @papercusp/web on 2026-09-06)
+// under a one-worker allocation. The flat budget reaped that run at 300s with two files completed
+// on EVERY gate run from 2026-09-04 on — a `TEST_FILE_NOT_MEASURED` exit 2 that the gate then
+// held `main` on, with no test-failure verdict behind it. The budget is a CEILING, not a duration:
+// a wedged run is still caught by the caller's stall watchdog (the gate reaps on stalledForSec)
+// and by pc-heavy, so a generous ceiling costs nothing on a healthy run.
 export const DEFAULT_TEST_FILE_RUN_TIMEOUT_MS = 300_000;
-export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 30 * 60_000;
+export const TEST_FILE_RUN_TIMEOUT_PER_FILE_MS = 20_000;
+export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 120 * 60_000;
+
+/** Default whole-run budget for a positional list of `fileCount` files: the flat five-minute
+ * floor, widened by a per-file allowance, capped at the router maximum. A count that is not a
+ * positive integer falls back to the single-file floor. */
+export function defaultTestFileRunTimeoutMs(fileCount = 1) {
+  const count = Number.isSafeInteger(fileCount) && fileCount > 0 ? fileCount : 1;
+  return Math.min(
+    MAX_TEST_FILE_RUN_TIMEOUT_MS,
+    Math.max(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS, count * TEST_FILE_RUN_TIMEOUT_PER_FILE_MS),
+  );
+}
 
 /** Resolve the whole-file watchdog from the CLI environment. Unlike an outer
  * task timeout, this is the deadline that owns and reaps the Vitest process
- * tree, so slow-but-progressing files need a supported way to widen it. */
-export function testFileRunTimeoutMs(env = process.env) {
+ * tree, so slow-but-progressing files need a supported way to widen it. An
+ * explicit PAPERCUSP_TEST_FILE_TIMEOUT_MS always wins; otherwise the budget is
+ * derived from `fileCount` (see defaultTestFileRunTimeoutMs). */
+export function testFileRunTimeoutMs(env = process.env, fileCount = 1) {
   const raw = env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
-  if (raw == null || raw.trim() === '') return DEFAULT_TEST_FILE_RUN_TIMEOUT_MS;
+  if (raw == null || raw.trim() === '') return defaultTestFileRunTimeoutMs(fileCount);
   if (!/^\d+$/.test(raw.trim())) {
     throw new Error('PAPERCUSP_TEST_FILE_TIMEOUT_MS must be a positive integer number of milliseconds');
   }
@@ -1826,6 +1850,9 @@ export const TEST_FILE_RUN_TIMEOUT_MS = testFileRunTimeoutMs();
 export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
 const TEST_FILE_KILL_GRACE_MS = 2_000;
 const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
+const SYSTEMD_RUN_PATH = process.platform === 'linux'
+  ? ['/usr/bin/systemd-run', '/bin/systemd-run'].find((candidate) => existsSync(candidate)) ?? null
+  : null;
 const SETSID_PATH = process.platform === 'linux'
   ? ['/usr/bin/setsid', '/bin/setsid'].find((candidate) => existsSync(candidate)) ?? null
   : null;
@@ -1884,11 +1911,11 @@ function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
 /**
  * Run one captured test child without blocking this router's event loop.
  *
- * On Linux, `setsid --wait` gives the short-lived child tree its own process group without using
- * Node's `detached:true` (which is reserved for task-manager-enrolled lifetimes). The watchdog can
- * therefore reap npx -> Vitest -> fork workers by the owned group id, never by a name/pattern. Other
- * platforms retain ordinary inherited-cgroup spawning and fall back to signaling the owned direct
- * child only.
+ * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
+ * a sibling user scope instead of remaining in the caller's cgroup. The process-group watchdog
+ * still targets the scope's owned group id, never a name/pattern. Hosts without systemd-run retain
+ * the `setsid --wait` process-group boundary; other platforms fall back to signaling the owned
+ * direct child only.
  *
  * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
  */
@@ -1902,6 +1929,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
     killGraceMs = TEST_FILE_KILL_GRACE_MS,
     maxBuffer = TEST_FILE_MAX_CAPTURE_BYTES,
+    systemdRunPath = SYSTEMD_RUN_PATH,
     setsidPath = SETSID_PATH,
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
@@ -1911,9 +1939,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // the canonical bridge in place.
     governedProcessImpl = runGovernedTestProcess,
   } = options;
-  const ownsProcessGroup = Boolean(setsidPath);
-  const spawnCommand = setsidPath ?? command;
-  const spawnArgs = setsidPath ? ['--wait', command, ...args] : args;
+  const ownsProcessGroup = Boolean(systemdRunPath || setsidPath);
+  const spawnCommand = systemdRunPath ?? setsidPath ?? command;
+  const spawnArgs = systemdRunPath
+    ? ['--user', '--scope', '--collect', command, ...args]
+    : setsidPath
+      ? ['--wait', command, ...args]
+      : args;
   const plannedDemand = buildGovernedProcessDemand({
     fileCount: files.length,
     diskBytes: maxBuffer,
@@ -2001,12 +2033,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
       for (const [signal, handler] of signalForwarders) process.removeListener(signal, handler);
       signalForwarders.clear();
     };
-    // `setsid` deliberately makes the Vitest tree a nested process group so this watchdog can
-    // target it without touching a caller's shell/agent group. Preserve pc-heavy/testing:run's
-    // no-escape contract too: if THEY terminate this router, synchronously reap the nested group
-    // before restoring the signal's default disposition on the router itself. SIGKILL is used for
-    // this cleanup-only path because the parent is already terminating and cannot stay alive for a
-    // grace timer; the normal watchdog path above still performs TERM -> bounded grace -> KILL.
+    // The Linux launcher deliberately makes the Vitest tree a nested process group so this
+    // watchdog can target it without touching a caller's shell/agent group. Preserve
+    // pc-heavy/testing:run's no-escape contract too: if THEY terminate this router, synchronously
+    // reap the nested group before restoring the signal's default disposition on the router itself.
+    // SIGKILL is used for this cleanup-only path because the parent is already terminating and
+    // cannot stay alive for a grace timer; the normal watchdog path above still performs TERM ->
+    // bounded grace -> KILL.
     if (ownsProcessGroup) {
       for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
         const handler = () => {
@@ -2303,7 +2336,7 @@ export async function main(
         owner: `test-files:${cwdLabel}:${process.pid}`,
         idempotencyKey: governedProcessIdempotencyKey('test-files-node', nodeIdentity),
         payloadRef: `test-files:${cwdLabel}`,
-        timeoutMs: TEST_FILE_RUN_TIMEOUT_MS,
+        timeoutMs: testFileRunTimeoutMs(process.env, exact.length),
         demand: nodeDemand,
         metadata: { processKind: 'test-files-node-child', cwd: cwdLabel, fileCount: exact.length },
         env: process.env,
@@ -2481,17 +2514,27 @@ export async function main(
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
     if (!ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
+    // The whole-run budget scales with the positional list (see testFileRunTimeoutMs): a
+    // gate `--related` list of a few hundred files must not inherit the single-file floor.
+    const runTimeoutMs = testFileRunTimeoutMs(process.env, exact.length);
     const result = await runCapturedTestProcessImpl(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
-      { cwd: group.cwd, env: process.env, files: exact, cwdLabel, ...finalizationCallbacks() },
+      {
+        cwd: group.cwd,
+        env: process.env,
+        files: exact,
+        cwdLabel,
+        timeoutMs: runTimeoutMs,
+        ...finalizationCallbacks(),
+      },
     );
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.timedOut) {
       console.error(
         `TEST_FILE_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(exact)} ` +
-          `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped; ` +
+          `timeoutMs=${runTimeoutMs} status=timed-out — owned child tree reaped; ` +
           'NOT MEASURED — no test-failure verdict was produced. Widen with ' +
           'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same npm run test:file command.',
       );
