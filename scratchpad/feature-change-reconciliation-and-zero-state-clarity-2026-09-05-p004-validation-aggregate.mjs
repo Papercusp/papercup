@@ -72,6 +72,7 @@ function matchAssignedHash(ids, stored) {
   const encodings = [
     ['json', JSON.stringify(ids)],
     ['newline', ids.join('\n') + '\n'],
+    ['newline-no-final', ids.join('\n')],
   ];
   for (const [encoding, serialized] of encodings) {
     if (sha256(serialized) === stored) return { exact: true, encoding };
