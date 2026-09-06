@@ -114,6 +114,11 @@ test.use({ viewport: { width: 1280, height: 720 } });
 test("split /inbox keeps the row list above its floor at 1280×720", async ({
   page,
 }) => {
+  // A freshly spawned dev server pays Vite's dependency optimizer on its FIRST
+  // navigation (measured 2026-09-06: > 30s while "bundling dependencies"), and
+  // this spec is small enough to be that first navigation. The budget below is
+  // for that cold start only — the assertions themselves are instantaneous.
+  test.setTimeout(180_000);
   await stubFlags(page);
   const sync = await stubSyncQueries(page, (name, args) => {
     if (name === "plans.attention") {
@@ -134,10 +139,13 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   // below would be vacuous. This is the exact location the 0px was measured in.
   const response = await page.goto(
     baseURL + "/inbox?portalEmbed=1&portalTheme=dark",
-    { waitUntil: "domcontentloaded" },
+    { waitUntil: "domcontentloaded", timeout: 120_000 },
   );
   expect([200, 304]).toContain(response?.status() ?? 0);
-  await sync.waitForServed(["plans.attention", "plans.attentionCounts"]);
+  // Only the feed: `plans.attentionCounts` feeds the shell's header badge, not
+  // this pane (measured 2026-09-06 — the embed never requests it), and the
+  // stub's falsifier fails a wait on a query the page never issues.
+  await sync.waitForServed(["plans.attention"]);
 
   const list = page.locator(".op-inbox--split .op-inbox__list");
   const mounted = await list
@@ -154,54 +162,70 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   await expect(page.getByTestId("inbox-facet-smoke-fail")).toBeVisible();
   await expect(page.getByTestId("inbox-row-floor-00")).toBeVisible();
 
-  const g = await page.evaluate(() => {
-    const q = (sel: string) => {
-      const el = document.querySelector(sel);
-      if (!(el instanceof HTMLElement)) throw new Error("missing " + sel);
-      return el;
-    };
-    const rect = (el: Element) => el.getBoundingClientRect();
-    const pane = q(".op-inbox--split");
-    const column = q(".op-inbox--split .op-inbox__column");
-    const controls = q(".op-inbox__controls");
-    const listEl = q(".op-inbox__list");
-    const foot = q(".op-inbox__foot");
-    const listRect = rect(listEl);
-    const floor = parseFloat(
-      getComputedStyle(pane).getPropertyValue("--op-inbox-list-floor"),
-    );
-    const rowsInside = Array.from(
-      document.querySelectorAll(".op-inbox__rowbtn"),
-    )
-      .map(rect)
-      .filter(
-        (r) => r.top >= listRect.top - 0.5 && r.bottom <= listRect.bottom + 0.5,
-      ).length;
-    return {
-      viewport: { w: window.innerWidth, h: window.innerHeight },
-      paneBottom: rect(pane).bottom,
-      floor,
-      listHeight: listRect.height,
-      rowsInside,
-      controlsScrolls: controls.scrollHeight > controls.clientHeight + 1,
-      controlsHeight: rect(controls).height,
-      footInsideColumn: rect(foot).bottom <= rect(column).bottom + 0.5,
-    };
-  });
+  const measure = () =>
+    page.evaluate(() => {
+      const q = (sel: string) => {
+        const el = document.querySelector(sel);
+        if (!(el instanceof HTMLElement)) throw new Error("missing " + sel);
+        return el;
+      };
+      const rect = (el: Element) => el.getBoundingClientRect();
+      const pane = q(".op-inbox--split");
+      const column = q(".op-inbox--split .op-inbox__column");
+      const controls = q(".op-inbox__controls");
+      const listEl = q(".op-inbox__list");
+      const foot = q(".op-inbox__foot");
+      const listRect = rect(listEl);
+      const floor = parseFloat(
+        getComputedStyle(pane).getPropertyValue("--op-inbox-list-floor"),
+      );
+      const rowsInside = Array.from(
+        document.querySelectorAll(".op-inbox__rowbtn"),
+      )
+        .map(rect)
+        .filter(
+          (r) =>
+            r.top >= listRect.top - 0.5 && r.bottom <= listRect.bottom + 0.5,
+        ).length;
+      return {
+        viewport: { w: window.innerWidth, h: window.innerHeight },
+        paneBottom: rect(pane).bottom,
+        floor,
+        listHeight: listRect.height,
+        rowsInside,
+        controlsScrolls: controls.scrollHeight > controls.clientHeight + 1,
+        controlsHeight: rect(controls).height,
+        footInsideColumn: rect(foot).bottom <= rect(column).bottom + 0.5,
+      };
+    });
 
+  // ── 1280×720: the contract the collapse violated ─────────────────────────
+  const at720 = await measure();
   // Preconditions — the geometry only means something if the page is bounded
   // by the viewport (no document scroll hiding the shortfall) and the token
   // resolved. A pass on an unbounded page would be vacuous.
-  expect(g.viewport).toEqual({ w: 1280, h: 720 });
-  expect(g.paneBottom).toBeLessThanOrEqual(720 + 0.5);
-  expect(g.floor).toBeGreaterThan(0);
+  expect(at720.viewport).toEqual({ w: 1280, h: 720 });
+  expect(at720.paneBottom).toBeLessThanOrEqual(720 + 0.5);
+  expect(at720.floor).toBeGreaterThan(0);
+  expect(at720.listHeight).toBeGreaterThanOrEqual(at720.floor);
+  // Two WHOLE rows: the fixture's titles are single-line, so a row is ~98px of
+  // pitch here and the 200px floor holds two. (A wrapped title makes a row
+  // taller — the floor is a height guarantee, and this count is the fixture's
+  // reading of it, not a promise about every title.)
+  expect(at720.rowsInside).toBeGreaterThanOrEqual(2);
+  expect(at720.footInsideColumn).toBe(true);
 
-  // The contract.
-  expect(g.listHeight).toBeGreaterThanOrEqual(g.floor);
-  expect(g.rowsInside).toBeGreaterThanOrEqual(2);
-  expect(g.footInsideColumn).toBe(true);
-  // …and the shortfall landed on the chrome cap, not the rows: the controls
-  // block is the one that scrolls.
-  expect(g.controlsScrolls).toBe(true);
-  expect(g.controlsHeight).toBeGreaterThanOrEqual(62);
+  // ── 1280×600: shorter still, so chrome + floor cannot fit — the shortfall
+  // must land on the chrome cap (the controls block scrolls), never the rows
+  // and never past the foot. At 720 the fixture's chrome happens to fit beside
+  // the floor, which is why the cap is asserted here and not above.
+  await page.setViewportSize({ width: 1280, height: 600 });
+  const at600 = await measure();
+  expect(at600.viewport).toEqual({ w: 1280, h: 600 });
+  expect(at600.paneBottom).toBeLessThanOrEqual(600 + 0.5);
+  expect(at600.listHeight).toBeGreaterThanOrEqual(at600.floor);
+  expect(at600.rowsInside).toBeGreaterThanOrEqual(2);
+  expect(at600.footInsideColumn).toBe(true);
+  expect(at600.controlsScrolls).toBe(true);
+  expect(at600.controlsHeight).toBeGreaterThanOrEqual(62);
 });

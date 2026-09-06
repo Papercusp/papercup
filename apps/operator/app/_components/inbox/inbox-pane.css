@@ -13,6 +13,18 @@
      bottom while only the row list scrolls. */
   overflow: hidden;
   padding: 12px;
+  /* LIST FLOOR (inbox-three-column-resolver-states-2026-09-06 P-001 / D-001).
+     Measured 2026-09-05 (EI-22478177553828828): at 1280×720 the split page
+     rendered the list at 0px — zero of 77 rows — because every chrome sibling
+     in `.op-inbox__master` is rigid and only the list flexes, so the column's
+     whole vertical shortfall lands on the rows. The floor is two single-line
+     rows: a rendered row is ~98px of pitch at 1280 wide (the 82px
+     `.op-inbox__rowbtn` minimum plus border, the 4px inter-row gap and real
+     content — measured in e2e/inbox-list-floor.spec.ts 2026-09-06, where 176px
+     fit only one whole row). Declared ONCE here so stack (chat sidebar) and
+     split (portal /inbox) share it. `.op-inbox__list` holds it;
+     `.op-inbox__controls` is the chrome that yields instead. */
+  --op-inbox-list-floor: 200px;
   background:
     radial-gradient(
       circle at 50% -10%,
@@ -129,7 +141,16 @@
 }
 .op-inbox__controls {
   display: flex;
-  flex: 0 0 auto;
+  /* CHROME CAP (P-001): the one chrome block allowed to shrink. When the
+     column is shorter than chrome + the list floor, the shortfall lands HERE
+     — this block scrolls internally — never on the rows. The masthead, window
+     strip and foot stay rigid (`flex: 0 0 auto`): they are one to three lines
+     and clipping them reads as breakage, whereas a scrolling filter block
+     reads as a filter block. 62px = its own padding + the 44px search field,
+     so the search box is always reachable. */
+  flex: 0 1 auto;
+  min-height: 62px;
+  overflow-y: auto;
   flex-direction: column;
   gap: 8px;
   padding: 9px;
@@ -415,8 +436,14 @@
   margin: 0;
   padding: 0;
   min-width: 0;
-  flex: 1 1 auto;
-  min-height: 0;
+  /* `flex-basis: 0`, not `auto`, is load-bearing for the floor guard: with
+     `auto` the virtualizer's TOTAL height (thousands of px) is the basis, and
+     the flex algorithm shrinks siblings in proportion to basis — so the
+     controls block would collapse on any long list, tall viewport or not.
+     From zero, chrome is measured first and the list takes what remains,
+     never less than the floor (see `--op-inbox-list-floor` on `.op-inbox`). */
+  flex: 1 1 0;
+  min-height: var(--op-inbox-list-floor, 176px);
   overflow-y: auto;
 }
 /* WI-5365: rows carry a tier-colored left accent so "does this need me?" is
