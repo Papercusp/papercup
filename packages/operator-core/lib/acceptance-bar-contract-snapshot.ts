@@ -785,20 +785,17 @@ export function projectAcceptanceBarContractSnapshot(
     );
     const staleEvidence = evidence.filter((row) => !currentEvidence.includes(row));
     const requiredTestLayers = normalized(criterion.requiredTestLayers);
-    const planeOf = (row: AcceptanceBarEvidenceSource): string | undefined => {
-      const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
-      return typeof plane === 'string' ? plane.trim().toLowerCase() : undefined;
-    };
-    // Only current proof on the promised plane can establish adequacy. Keep all
-    // historical rows for inspection; do not let a stale live row lend its plane
-    // to a current unit test. Unknown fingerprints remain unknown to the evaluator.
-    const proofCandidates = currentEvidence.filter((row) =>
-      criterion.evidencePlane === 'tree' || planeOf(row) === criterion.evidencePlane);
+    // The declared evidence plane is a separate lifecycle obligation. Adequacy
+    // must inspect every current exact-cohort row because a BAR can require
+    // mixed test layers (for example, tree/unit plus live/e2e). Filtering here
+    // would drop the tree row before the evaluator can satisfy the full layer
+    // contract; the ship-phase plane check below still requires current proof
+    // on the BAR's declared plane.
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
     const adequacyChecks = requiredTestLayers.length === 0 ? [] : clauses.map((clause) => {
       const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers },
-        evidence: proofCandidates, classRef });
+        evidence: currentEvidence, classRef });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
     });
