@@ -459,6 +459,9 @@ function treasury(): SafeTreasuryConfig {
     safeAddress: `0x${'3'.repeat(40)}`,
     owners: [`0x${'4'.repeat(40)}`, `0x${'5'.repeat(40)}`, `0x${'6'.repeat(40)}`],
     threshold: 2,
+    // Deliberately outside `owners`: the automation may spend within its role
+    // bounds and may NOT contribute to the owner threshold (P-034).
+    automationSigner: `0x${'7'.repeat(40)}`,
     roles: { settlement: role, 'host-payout': role, 'reserve-transfer': role, 'emergency-pause': role },
   };
 }

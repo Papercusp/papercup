@@ -100,3 +100,142 @@ export function settleRevenue(input: {
   };
   return { ok: true, receipt: { ...base, receiptHash: receiptDigest(base) } };
 }
+
+export type ReconciliationRefusalCode =
+  | 'split-manifest-mismatch'
+  | 'distributable-mismatch'
+  | 'allocation-mismatch'
+  | 'negative-allocation'
+  | 'receipt-hash-mismatch'
+  | 'invalid-split';
+
+/**
+ * What a reconciled settlement authorizes to move (P-034).
+ *
+ * Only the fields a treasury router is entitled to act on: the shares, the
+ * receipt they are bound to, and the manifest hash that binds the receipt to
+ * the split the payer signed. Deliberately NOT the whole receipt — a router
+ * must not be able to reach a number this function did not re-derive.
+ */
+export interface SettlementReconciliation {
+  readonly settlementId: string;
+  readonly receiptHash: string;
+  readonly splitManifestHash: string;
+  readonly grossMicros: bigint;
+  readonly providerCostMicros: bigint;
+  readonly distributableMicros: bigint;
+  readonly allocationsMicros: Readonly<Record<RevenueShare, bigint>>;
+  readonly daoTreasury: string;
+}
+
+export type ReconciliationResult =
+  | { readonly ok: true; readonly reconciliation: SettlementReconciliation }
+  | { readonly ok: false; readonly code: ReconciliationRefusalCode; readonly detail: string };
+
+/**
+ * Re-derive a RECORDED settlement receipt from the immutable split manifest
+ * (P-034, acceptance line 13).
+ *
+ * `settleRevenue` computes allocations at claim time; this verifies them again
+ * at ROUTING time, against the manifest the deployment holds rather than
+ * against whatever the stored row says. The distinction is the whole point: the
+ * allocations live in a D1 row (mig 026 `allocations_micros`) between the two
+ * moments, so routing money on the strength of that row alone would trust a
+ * value nothing re-checked. Every field is recomputed here — the per-share
+ * floor, the DAO remainder, the distributable, and the receipt digest — so a
+ * single tampered or drifted number refuses instead of moving funds.
+ *
+ * A tampered allocation set that still SUMS correctly is caught by the
+ * per-share check: summing to the right total is not the same as each share
+ * being what the manifest says it is, and a router that only checked the sum
+ * would happily pay the DAO's share to the host.
+ */
+export function reconcileSettlement(input: {
+  receipt: SettlementReceipt;
+  splitManifest: RevenueSplitManifest;
+}): ReconciliationResult {
+  const { receipt, splitManifest } = input;
+  const split = validateRevenueSplit(splitManifest);
+  if (!split.ok) return { ok: false, code: 'invalid-split', detail: split.detail };
+  if (receipt.splitManifestHash !== splitManifest.manifestHash) {
+    return {
+      ok: false,
+      code: 'split-manifest-mismatch',
+      detail: `receipt commits to split ${receipt.splitManifestHash}, deployment holds ${splitManifest.manifestHash}`,
+    };
+  }
+  if (receipt.grossMicros < 0n || receipt.providerCostMicros < 0n || receipt.distributableMicros < 0n) {
+    return { ok: false, code: 'negative-allocation', detail: 'receipt amounts must be non-negative' };
+  }
+  const expectedDistributable = receipt.grossMicros - receipt.providerCostMicros;
+  if (expectedDistributable !== receipt.distributableMicros) {
+    return {
+      ok: false,
+      code: 'distributable-mismatch',
+      detail: `gross minus provider cost is ${expectedDistributable}, receipt records ${receipt.distributableMicros}`,
+    };
+  }
+
+  // Recompute the split exactly as settleRevenue does, then compare share by
+  // share. Reusing the same arithmetic is intentional: a second, independent
+  // formula here would drift from the one that actually allocates.
+  const expected = {} as Record<RevenueShare, bigint>;
+  let allocated = 0n;
+  for (const share of REVENUE_SHARES) {
+    const amount = (receipt.distributableMicros * BigInt(splitManifest.sharesBps[share])) / 10_000n;
+    expected[share] = amount;
+    allocated += amount;
+  }
+  expected.dao += receipt.distributableMicros - allocated;
+
+  let recordedTotal = 0n;
+  for (const share of REVENUE_SHARES) {
+    const recorded = receipt.allocationsMicros[share];
+    if (typeof recorded !== 'bigint' || recorded < 0n) {
+      return { ok: false, code: 'negative-allocation', detail: `${share} allocation is missing or negative` };
+    }
+    if (recorded !== expected[share]) {
+      return {
+        ok: false,
+        code: 'allocation-mismatch',
+        detail: `${share} allocation is ${recorded}, manifest yields ${expected[share]}`,
+      };
+    }
+    recordedTotal += recorded;
+  }
+  if (recordedTotal !== receipt.distributableMicros) {
+    return {
+      ok: false,
+      code: 'allocation-mismatch',
+      detail: `allocations sum to ${recordedTotal}, distributable is ${receipt.distributableMicros}`,
+    };
+  }
+
+  // The digest last, because it is the cheapest way to catch a field this
+  // function does not otherwise re-derive (the settlement id, the treasury
+  // address, the currency) having been edited under the row.
+  const { receiptHash: _recorded, ...base } = receipt;
+  void _recorded;
+  const recomputed = receiptDigest(base);
+  if (recomputed !== receipt.receiptHash) {
+    return {
+      ok: false,
+      code: 'receipt-hash-mismatch',
+      detail: `receipt hash is ${receipt.receiptHash}, recomputes to ${recomputed}`,
+    };
+  }
+
+  return {
+    ok: true,
+    reconciliation: {
+      settlementId: receipt.settlementId,
+      receiptHash: receipt.receiptHash,
+      splitManifestHash: receipt.splitManifestHash,
+      grossMicros: receipt.grossMicros,
+      providerCostMicros: receipt.providerCostMicros,
+      distributableMicros: receipt.distributableMicros,
+      allocationsMicros: receipt.allocationsMicros,
+      daoTreasury: receipt.daoTreasury,
+    },
+  };
+}

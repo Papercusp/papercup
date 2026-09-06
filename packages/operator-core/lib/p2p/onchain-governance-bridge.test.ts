@@ -32,6 +32,7 @@ const treasury: SafeTreasuryConfig = {
   safeAddress: '0x3333333333333333333333333333333333333333',
   owners: ['0x4444444444444444444444444444444444444444', '0x5555555555555555555555555555555555555555'],
   threshold: 2,
+  automationSigner: '0x7777777777777777777777777777777777777777',
   roles: {
     settlement: { enabled: true, maxAmountMicros: 1_000n, allowedRecipients: [recipient], allowedTokens: [token] },
     'host-payout': { enabled: false, maxAmountMicros: 100n, allowedRecipients: [recipient], allowedTokens: [token] },

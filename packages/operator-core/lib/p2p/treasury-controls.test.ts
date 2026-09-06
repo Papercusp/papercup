@@ -3,7 +3,8 @@ import { authorizeTreasuryTransfer, validateTreasuryConfig, type SafeTreasuryCon
 
 const token = '0x1111111111111111111111111111111111111111';
 const recipient = '0x2222222222222222222222222222222222222222';
-const config: SafeTreasuryConfig = { chainId: 42161, safeAddress: '0x3333333333333333333333333333333333333333', owners: ['0x4444444444444444444444444444444444444444', '0x5555555555555555555555555555555555555555'], threshold: 2, roles: {
+const AUTOMATION = '0x7777777777777777777777777777777777777777';
+const config: SafeTreasuryConfig = { chainId: 42161, safeAddress: '0x3333333333333333333333333333333333333333', owners: ['0x4444444444444444444444444444444444444444', '0x5555555555555555555555555555555555555555'], threshold: 2, automationSigner: AUTOMATION, roles: {
   settlement: { enabled: true, maxAmountMicros: 1_000n, allowedRecipients: [recipient], allowedTokens: [token] },
   'host-payout': { enabled: false, maxAmountMicros: 100n, allowedRecipients: [recipient], allowedTokens: [token] },
   'reserve-transfer': { enabled: false, maxAmountMicros: 100n, allowedRecipients: [recipient], allowedTokens: [token] },
