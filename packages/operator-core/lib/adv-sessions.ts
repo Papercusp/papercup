@@ -1346,6 +1346,7 @@ async function transitionAdvSessionResume(
   id: number,
   resumeClaimKey: string,
   transition: AdvSessionResumeTransition,
+  launchArgv?: string[] | null,
 ): Promise<boolean> {
   const key = resumeClaimKey.trim();
   if (!key) return false;
@@ -1384,7 +1385,11 @@ async function transitionAdvSessionResume(
           UPDATE harness_shared.adv_sessions
              SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
                  started_at = now(), shutdown_accepted_at = NULL,
-                 resume_claim_key = NULL, resume_claimed_at = NULL
+                 resume_claim_key = NULL, resume_claimed_at = NULL,
+                 launch_argv = COALESCE(
+                   ${launchArgv == null ? null : JSON.stringify(launchArgv)}::text::jsonb,
+                   launch_argv
+                 )
            WHERE id = ${id} AND resume_claim_key = ${key}
           RETURNING id
         `
@@ -1408,8 +1413,12 @@ async function transitionAdvSessionResume(
 
 /** Assert liveness for a reservation after the managed host/direct child has
  * actually spawned. The key match is the one-writer proof. */
-export async function finalizeAdvSessionResume(id: number, resumeClaimKey: string): Promise<boolean> {
-  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize');
+export async function finalizeAdvSessionResume(
+  id: number,
+  resumeClaimKey: string,
+  launchArgv?: string[] | null,
+): Promise<boolean> {
+  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize', launchArgv);
 }
 
 /** Release a pre-spawn/failed reservation while preserving terminal evidence. */

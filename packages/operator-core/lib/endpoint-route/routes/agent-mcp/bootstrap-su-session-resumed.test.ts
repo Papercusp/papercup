@@ -242,9 +242,11 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
 
 describe('POST bootstrap-su/session-resume-finalized — spawn evidence transition', () => {
   it('finalizes only the matching reservation key', async () => {
+    const launchArgv = ['psu', '--resume=42', '--agent=claude', '--account=auto'];
     const res = await postTransition('session-resume-finalized', {
       advSessionId: 42,
       resumeClaimKey: 'resume-claim-1',
+      launchArgv,
     });
 
     expect(res.status).toBe(200);
@@ -253,7 +255,7 @@ describe('POST bootstrap-su/session-resume-finalized — spawn evidence transiti
       finalized: true,
       resumeClaimKey: 'resume-claim-1',
     });
-    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1');
+    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1', launchArgv);
   });
 
   it('returns the false key-match verdict and surfaces datastore faults', async () => {
@@ -300,6 +302,9 @@ describe('POST bootstrap-su/session-resume-released — setup failure transition
       { advSessionId: 42, resumeClaimKey: '' },
       { advSessionId: 42, resumeClaimKey: 7 },
       { advSessionId: 42, resumeClaimKey: 'x'.repeat(201) },
+      { advSessionId: 42, resumeClaimKey: 'key', launchArgv: [] },
+      { advSessionId: 42, resumeClaimKey: 'key', launchArgv: ['psu', 7] },
+      { advSessionId: 42, resumeClaimKey: 'key', launchArgv: [''] },
     ]) {
       const res = await postTransition('session-resume-released', body);
       expect(res.status).toBe(400);

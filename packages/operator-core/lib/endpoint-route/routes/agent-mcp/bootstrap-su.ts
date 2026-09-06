@@ -3312,17 +3312,42 @@ const sessionResumed = defineTool({
 
 async function parseResumeTransitionBody(
   req: Request,
-): Promise<{ advSessionId: number; resumeClaimKey: string } | Response> {
+): Promise<{ advSessionId: number; resumeClaimKey: string; launchArgv?: string[] } | Response> {
   let advSessionId: number | null = null;
   let resumeClaimKey: string | null = null;
+  let launchArgv: string[] | undefined;
   try {
-    const body = (await req.json()) as { advSessionId?: unknown; resumeClaimKey?: unknown };
+    const body = (await req.json()) as {
+      advSessionId?: unknown;
+      resumeClaimKey?: unknown;
+      launchArgv?: unknown;
+    };
     if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
       advSessionId = body.advSessionId;
     }
     if (typeof body.resumeClaimKey === 'string') {
       const candidate = body.resumeClaimKey.trim();
       if (candidate && candidate.length <= 200) resumeClaimKey = candidate;
+    }
+    if (body.launchArgv !== undefined) {
+      if (
+        !Array.isArray(body.launchArgv) ||
+        body.launchArgv.length === 0 ||
+        body.launchArgv.length > 256 ||
+        !body.launchArgv.every(
+          (arg): arg is string =>
+            typeof arg === 'string' && arg.length > 0 && arg.length <= 4096,
+        )
+      ) {
+        return jsonRes(
+          {
+            error:
+              'launchArgv must be a non-empty array of strings (at most 256 entries, each at most 4096 characters)',
+          },
+          400,
+        );
+      }
+      launchArgv = body.launchArgv;
     }
   } catch {
     /* return the shared validation response below */
@@ -3333,7 +3358,7 @@ async function parseResumeTransitionBody(
   if (!resumeClaimKey) {
     return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
   }
-  return { advSessionId, resumeClaimKey };
+  return { advSessionId, resumeClaimKey, ...(launchArgv ? { launchArgv } : {}) };
 }
 
 /** Finalize a keyed resume reservation from concrete child/host spawn evidence. */
@@ -3347,7 +3372,11 @@ const sessionResumeFinalized = defineTool({
     const parsed = await parseResumeTransitionBody(req);
     if (parsed instanceof Response) return parsed;
     try {
-      const finalized = await finalizeAdvSessionResume(parsed.advSessionId, parsed.resumeClaimKey);
+      const finalized = await finalizeAdvSessionResume(
+        parsed.advSessionId,
+        parsed.resumeClaimKey,
+        parsed.launchArgv,
+      );
       return jsonRes({ ok: true, finalized, resumeClaimKey: parsed.resumeClaimKey });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);

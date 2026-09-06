@@ -132,6 +132,7 @@ function makeLifecycleFetch(faults: {
       launchFailed?: boolean;
       endAttemptKey?: string;
       resumeClaimKey?: string;
+      launchArgv?: string[];
     };
 
     if (path.endsWith("/session-ended")) {
@@ -181,6 +182,7 @@ function makeLifecycleFetch(faults: {
       const finalized = await finalizeAdvSessionResume(
         body.advSessionId,
         body.resumeClaimKey ?? "",
+        body.launchArgv,
       );
       if (faults.finalizeTimeoutAfterCommit && calls.finalized === 1) {
         throw timeoutAfterCommit("finalize response lost after commit");
@@ -223,10 +225,11 @@ async function readLifecycleRow(id: number) {
       resume_claimed_at: Date | null;
       session_id: string;
       cwd: string;
+      launch_argv: string[] | null;
     }>
   >`
     SELECT ended_at, exit_code, ended_by, resume_claim_key, resume_claimed_at,
-           session_id, cwd
+           session_id, cwd, launch_argv
       FROM harness_shared.adv_sessions
      WHERE id = ${id}`;
   return row;
@@ -281,8 +284,19 @@ describe("psu resume lifecycle lossless handoff (real launcher reporters + real 
       });
       expect(transport.calls.acquired).toBe(2);
 
+      const launchArgv = [
+        "psu",
+        "--no-picker",
+        `--resume=${seeded.id}`,
+        `--agent=${agent}`,
+        "--account=auto",
+        "--model=resume-regression:max",
+      ];
       await expect(
-        reportSessionResumeFinalized(seeded.id, resumeClaimKey, resilience),
+        reportSessionResumeFinalized(seeded.id, resumeClaimKey, {
+          ...resilience,
+          launchArgv,
+        }),
       ).resolves.toEqual({ finalized: true, resumeClaimKey });
       expect(transport.calls.finalized).toBe(2);
 
@@ -294,6 +308,7 @@ describe("psu resume lifecycle lossless handoff (real launcher reporters + real 
         resume_claimed_at: null,
         session_id: seeded.sessionId,
         cwd: seeded.cwd,
+        launch_argv: launchArgv,
       });
       expect(readFileSync(seeded.marker, "utf8")).toBe(
         `UNCHANGED:${agent}:${seeded.sessionId}\n`,
