@@ -6,6 +6,7 @@ import { bindingRoute } from './binding.ts';
 import { adminRoute } from './admin.ts';
 import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
+import { releaseMirrorRoute } from './release-mirror.ts';
 import { commerceRoute } from './commerce.ts';
 import { walletBindingRoute } from './wallet-binding.ts';
 import { prepaidCreditsRoute } from './prepaid-credits.ts';
@@ -43,6 +44,10 @@ export function buildApi(
   api.route('/', adminRoute());
   api.route('/', workspaceHostArtifactsRoute());
   api.route('/', creatorDraftsRoute());
+  // Public mirror publication (P-045). Shares `fetchImpl` with the commerce
+  // route for the same reason: its only outbound call is to a third party, and
+  // an unexercised credential path is the one that rots.
+  api.route('/', releaseMirrorRoute({ fetchImpl: options.fetchImpl }));
   // The top-up SKU is a fixed idempotent catalog fact. Install it immediately
   // before the existing Checkout handler reads the commerce ledger, without
   // modifying that shared route while parallel commerce work is in flight.

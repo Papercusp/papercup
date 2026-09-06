@@ -28,6 +28,19 @@ export interface Env {
    *  attempting an unauthenticated call to Stripe. Installing it in a deployment
    *  is an OWNER credential action, deliberately outside any agent's scope. */
   STRIPE_SECRET_KEY?: string;
+  /** Repo-scoped GitHub token used ONLY to publish public Cupboard release
+   *  assets to the mirror repo (P-045 / D-056), installed via
+   *  `wrangler secret put GITHUB_RELEASE_MIRROR_TOKEN`. OPTIONAL for the same
+   *  fail-closed reason as the Stripe secrets above: a deployment that has not
+   *  configured it answers 503 on the mirror route rather than attempting an
+   *  unauthenticated write. Installing it is an OWNER credential action,
+   *  deliberately outside any agent's scope. Reads of mirrored bytes are
+   *  tokenless, so this credential is never spent on delivery. */
+  GITHUB_RELEASE_MIRROR_TOKEN?: string;
+  /** `owner/repo` receiving the public release assets. A var, not a secret:
+   *  the mirror repo is public by construction (its whole purpose is public
+   *  availability), so its name confers nothing. */
+  GITHUB_RELEASE_MIRROR_REPO?: string;
   /** Base-compatible RPC URL for the buyer-side P-032 payment-channel rail. */
   PAYMENT_CHANNEL_RPC_URL?: string;
   /** 32-byte EVM private key. The bound-wallet funding path additionally
