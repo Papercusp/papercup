@@ -42,6 +42,7 @@ import {
 } from './agent-tools/coordination/cue-authority';
 import {
   hasSelfReportedConfidence,
+  hoistUnverifiedRelay,
   readEvidence,
   readRelayProvenance,
   renderEvidenceTag,
@@ -49,6 +50,7 @@ import {
   SELF_REPORTED_CONFIDENCE_TAG,
   UNVERIFIED_CLAIM_TAG,
   unverifiedAuthorityClaim,
+  UNVERIFIED_RELAY_TAG,
 } from './agent-tools/coordination/relay-provenance';
 import {
   detectEntryBodyRefs,
@@ -425,6 +427,15 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // into a sender told one thing and a reader shown another.
     const claim = unverifiedAuthorityClaim(raw, relay, stamp);
     const claimFlag = claim ? `${UNVERIFIED_CLAIM_TAG} ` : '';
+    // EI-21333924556090958: the residue the twin fix left. `claimFlag` only
+    // reaches the front of the line for phrasings `detectAuthorityClaim`
+    // enumerates, so a failed relay check under any other wording still rendered
+    // as a bare trailing `↪ UNVERIFIED relay` AFTER a headline the sender wrote.
+    // Hoisting is structural rather than a wider pattern — see
+    // `hoistUnverifiedRelay` for why widening the regex is the losing move and
+    // for the live measurement that sized this. Mutually exclusive with
+    // `claimFlag`, which is strictly more specific.
+    const relayHoistFlag = hoistUnverifiedRelay(relay, claim) ? `${UNVERIFIED_RELAY_TAG} ` : '';
     // coord-authority-hardening P-005: a reply / escalation resolution quotes the
     // message it answers — the delivery seam resolved related_msg_id into a
     // verbatim hydration (relatedQuotes); render it as an inline `⤷ re` suffix so
@@ -526,7 +537,7 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // byte-identical to before.
     const ageSuffix = renderMessageAgeSuffix(e.ts, nowMs);
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${terminalSubjectSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${relayHoistFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${terminalSubjectSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
     );
   }
   return lines.join('\n');
