@@ -1049,6 +1049,85 @@
   opacity: 0.55;
   cursor: default;
 }
+/* P-006: the live run in the aside — a spinner in the run head, the three-tile
+   run grid in place of the four-tile glance, the launch receipt with Restart,
+   and the danger Stop beneath. The bar, the spinner and the ghost buttons
+   reuse the bulk strip's grammar (inbox-bulk.css) so the aside and the rail
+   card read as the same run. */
+.op-inbox__briefing-run--live {
+  border-color: color-mix(in srgb, var(--accent, #38bdf8) 40%, transparent);
+}
+.op-inbox__briefing-run-head .op-inbox__bulk-spin {
+  align-self: center;
+}
+.op-inbox__briefing-grid--run {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.op-inbox__briefing-tile.is-good strong {
+  color: var(--good, #34d399);
+}
+.op-inbox__briefing-launch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding-top: 10px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--border, rgba(255, 255, 255, 0.1)) 72%, transparent);
+  font-size: 11px;
+}
+.op-inbox__briefing-launch-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__briefing-launch-receipt {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.op-inbox__briefing-launch-fixed,
+.op-inbox__briefing-launch-hint {
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__briefing-launch-hint {
+  flex: 1 0 100%;
+  font-size: 10px;
+}
+.op-inbox__briefing-launch-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 0 100%;
+  color: var(--warn, #fbbf24);
+  font-weight: 600;
+}
+.op-inbox__briefing-restart {
+  margin-left: auto;
+}
+.op-inbox__briefing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.op-inbox__briefing-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--bad, #f87171) 55%, transparent);
+  border-radius: 8px;
+  color: var(--bad, #f87171);
+  background: color-mix(in srgb, var(--bad, #f87171) 12%, transparent);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.op-inbox__briefing-stop:hover {
+  background: color-mix(in srgb, var(--bad, #f87171) 20%, transparent);
+}
 /* P-004: the feed's window strip + foot, in the aside's unselected state
    instead of the list column; the strip and foot keep their own styling. */
 .op-inbox__aside-feed {

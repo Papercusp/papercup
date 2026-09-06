@@ -1276,6 +1276,16 @@ export default function InboxPane({
               runItems={bulkEnabled ? bulk.items : []}
               isRunning={bulkEnabled ? bulk.isRunning : false}
               onReview={(runId) => void setBulkRunId(runId)}
+              // P-006: the live view's "Keep working the list" hands focus to
+              // the first row — the aside is not a takeover, the list is right
+              // there — so a keyboard owner has a way back out of it.
+              onKeepWorking={() => {
+                const first =
+                  listRef.current?.querySelector<HTMLElement>(
+                    ".op-inbox__rowbtn",
+                  ) ?? null;
+                (first ?? listRef.current)?.focus();
+              }}
               feed={
                 <div
                   className="op-inbox__aside-feed"

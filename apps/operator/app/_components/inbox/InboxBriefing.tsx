@@ -1,28 +1,45 @@
 /**
  * The aside's BRIEFING — what the split-mode `/inbox` page shows when nothing
- * is selected (inbox-three-column-resolver-states-2026-09-06 P-005). The
- * 31 Aug board left this pane empty until selection; the merged spec fills it
- * with the headline count, four tiles, the last resolver run's readout with
- * its grouped disposition rows, and the primary action.
+ * is selected (inbox-three-column-resolver-states-2026-09-06 P-005 / P-006).
+ * The 31 Aug board left this pane empty until selection; the merged spec fills
+ * it with the headline count, four tiles, the last resolver run's readout with
+ * its grouped disposition rows and the primary action — and, while a run is
+ * LIVE, with the run itself: progress, the three counts, the launch snapshot
+ * with Restart, and Stop (P-006). The REVIEW/RESUME view is P-007's.
  *
  * Composed ONLY from state the pane already holds (D-002: no new reads):
  *  - the feed's scope counts (`needs`) and the server total (`tracked`);
  *  - the persisted bulk run `useInboxBulkRun` already loads for the rail card —
  *    its item ROWS drive the run-derived tiles, the readout and the grouped
  *    rows through the same `deriveRunCounts` the strips read;
+ *  - the run's gestures through the same `useBulkRunActions` the strip fires,
+ *    so Stop and Restart here ARE the rail card's Stop and Restart;
  *  - the P-004 feed block (window strip + foot), mounted last.
- * The RUNNING view is P-006's and the REVIEW/RESUME view is P-007's: while a
- * run is live this briefing shows the tiles and the feed only.
+ *
+ * The launch receipt is rendered from `run.launchSnapshot` with the control's
+ * own `formatResolverLaunchReceipt` rather than by mounting
+ * `BulkResolverSettingsControl`: in receipt mode that control still drags the
+ * editable-settings hooks (profile load, launch-option catalog) in for a
+ * read-only line the rail card is already paying for once.
  */
 import type { ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import {
+  AlertCircle,
+  ChevronRight,
+  Loader2,
+  RotateCw,
+  Square,
+} from "lucide-react";
 import {
   deriveRunCounts,
+  useBulkRunActions,
   type BulkRun,
   type BulkRunItem,
 } from "./use-inbox-bulk-run";
 import { formatRunElapsed } from "../review-report/bulk-run-time";
+import { formatResolverLaunchReceipt } from "../bulk-resolver/BulkResolverSettingsControl";
 import { PERF_INTERACTIONS, beginInteraction } from "../perf/perf-marks";
+import "./inbox-bulk.css";
 
 export interface InboxBriefingProps {
   /** Decision-tier rows in the current scope — the "N need you" count. */
@@ -32,10 +49,15 @@ export interface InboxBriefingProps {
   /** The persisted bulk run the pane already loads (null when none / flag off). */
   run: BulkRun | null;
   runItems: BulkRunItem[];
-  /** A live run: the readout is P-006's, so the briefing omits it. */
+  /** A live run: the briefing shows the run in progress instead of the glance. */
   isRunning: boolean;
   /** Opens the grouped report for the run — the strip's `onReview` op. */
   onReview: (runId: string) => void;
+  /**
+   * The live view's secondary action: hand focus back to the list so the
+   * owner keeps reading while the resolver works. Omitted → no button.
+   */
+  onKeepWorking?: () => void;
   /** The P-004 feed block (window strip + foot); rendered last. */
   feed?: ReactNode;
 }
@@ -127,20 +149,25 @@ export function briefingHeadline(needs: number): string {
   return `${needs} ${needs === 1 ? "item is" : "items are"} waiting on you`;
 }
 
+/** The live view's headline — the same slot, so the aside never re-flows. */
+export const RUNNING_HEADLINE = "Papercup is resolving…";
+
 function Tile({
   id,
   value,
   label,
-  em = false,
+  tone,
 }: {
   id: string;
   value: number | null;
   label: string;
-  em?: boolean;
+  /** `review` renders in the warn colour, `good` in the good colour. */
+  tone?: "good" | "review";
 }) {
+  const toneClass = tone === "good" ? " is-good" : tone === "review" ? " is-em" : "";
   return (
     <div
-      className={`op-inbox__briefing-tile${em ? " is-em" : ""}`}
+      className={`op-inbox__briefing-tile${toneClass}`}
       data-testid={`inbox-briefing-tile-${id}`}
     >
       <strong>{value === null ? "—" : value}</strong>
@@ -156,12 +183,18 @@ export default function InboxBriefing({
   runItems,
   isRunning,
   onReview,
+  onKeepWorking,
   feed,
 }: InboxBriefingProps) {
   const counts = run ? deriveRunCounts(runItems, run) : null;
+  const live = isRunning && run !== null && counts !== null;
   const showRun = run !== null && counts !== null && !isRunning;
   const rows = counts ? deriveRunDispositionRows(counts) : [];
   const elapsed = run ? formatRunElapsed(run.startedAt, run.finishedAt) : null;
+  // Same ops as the rail card (D-002). `unreached` is P-007's — the live view
+  // never resumes — so the default empty set is right here.
+  const { stop, restart, restarting, notice } = useBulkRunActions(run);
+  const stale = run?.liveness?.state === "stale" ? run.liveness : null;
   const openReview = () => {
     if (!run) return;
     // Same gesture boundary as the strip's Review: the report ends it after
@@ -171,41 +204,199 @@ export default function InboxBriefing({
   };
 
   return (
-    <div className="op-inbox__briefing" data-testid="inbox-briefing">
+    <div
+      className="op-inbox__briefing"
+      data-testid="inbox-briefing"
+      data-briefing-state={live ? "running" : showRun ? "last-run" : "quiet"}
+    >
       <div className="op-inbox__briefing-head">
         <h2
           className="op-inbox__briefing-title"
           data-testid="inbox-briefing-headline"
         >
-          {briefingHeadline(needs)}
+          {live ? RUNNING_HEADLINE : briefingHeadline(needs)}
         </h2>
         <p className="op-inbox__briefing-lead">
-          Nothing is selected. This is where an item opens — until then,{" "}
-          {showRun
-            ? "what the last resolver run left behind."
-            : "the queue at a glance."}
+          {live ? (
+            <>
+              Every row keeps its own badge in the list, so you can carry on
+              reading while this runs. Nothing is applied without your final
+              gesture.
+            </>
+          ) : (
+            <>
+              Nothing is selected. This is where an item opens — until then,{" "}
+              {showRun
+                ? "what the last resolver run left behind."
+                : "the queue at a glance."}
+            </>
+          )}
         </p>
       </div>
-      <div
-        className="op-inbox__briefing-grid"
-        role="group"
-        aria-label="Inbox at a glance"
-        data-testid="inbox-briefing-grid"
-      >
-        <Tile id="need-you" value={needs} label="Need you" />
-        <Tile
-          id="still-open"
-          value={counts ? counts.unresolved : null}
-          label="Still open"
-          em
-        />
-        <Tile
-          id="auto-resolved"
-          value={counts ? counts.resolved : null}
-          label="Auto-resolved"
-        />
-        <Tile id="tracked" value={tracked} label="Tracked" />
-      </div>
+      {live && run && counts ? (
+        <>
+          {/* P-006: the run in progress — the aside has the room the 210px
+              rail card lacks, so the launch snapshot and Restart live here
+              beside the progress and the three counts. */}
+          <section
+            className="op-inbox__briefing-run op-inbox__briefing-run--live"
+            aria-label="Resolver run in progress"
+            aria-busy="true"
+            data-testid="inbox-briefing-running"
+          >
+            <p className="op-inbox__briefing-run-head">
+              <span className="op-inbox__bulk-spin" aria-hidden="true">
+                <Loader2 size={12} />
+              </span>
+              <em>Run in progress</em>
+              {elapsed ? (
+                <span className="op-inbox__briefing-run-phase">
+                  running {elapsed}
+                </span>
+              ) : null}
+              <span
+                className="op-inbox__briefing-run-elapsed"
+                data-testid="inbox-briefing-running-decided"
+              >
+                {counts.decided} / {counts.total}
+              </span>
+            </p>
+            <div
+              className="op-inbox__bulk-track"
+              role="progressbar"
+              aria-valuenow={counts.percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Bulk resolve progress: ${counts.decided} of ${counts.total} decided`}
+            >
+              <div
+                className="op-inbox__bulk-fill"
+                style={{ width: `${counts.percent}%` }}
+              />
+            </div>
+            <div
+              className="op-inbox__briefing-grid op-inbox__briefing-grid--run"
+              role="group"
+              aria-label="Run so far"
+              data-testid="inbox-briefing-running-counts"
+            >
+              <Tile
+                id="resolved"
+                value={counts.resolved}
+                label="Resolved"
+                tone="good"
+              />
+              <Tile
+                id="for-review"
+                value={counts.forReview}
+                label="For review"
+                tone="review"
+              />
+              <Tile id="left" value={counts.left} label="Left" />
+            </div>
+            <div
+              className="op-inbox__briefing-launch"
+              data-testid="inbox-briefing-launch"
+            >
+              <span className="op-inbox__briefing-launch-label">
+                Launch settings
+              </span>
+              <span
+                className="op-inbox__briefing-launch-receipt"
+                data-testid="inbox-briefing-launch-receipt"
+              >
+                {formatResolverLaunchReceipt(run.launchSnapshot ?? {})}
+              </span>
+              <span className="op-inbox__briefing-launch-fixed">
+                fresh · headless · su
+              </span>
+              {stale ? (
+                <span
+                  className="op-inbox__briefing-launch-stale"
+                  role="alert"
+                  data-testid="inbox-briefing-resolver-stale"
+                >
+                  <AlertCircle size={12} aria-hidden="true" />
+                  {stale.measuredFrom === "start"
+                    ? "Resolver never reported after launch"
+                    : "Resolver stopped reporting"}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide op-inbox__briefing-restart"
+                data-testid="inbox-briefing-restart"
+                disabled={restarting}
+                onClick={() => void restart()}
+              >
+                {restarting ? (
+                  <span className="op-inbox__bulk-spin" aria-hidden="true">
+                    <Loader2 size={13} />
+                  </span>
+                ) : (
+                  <RotateCw size={13} aria-hidden="true" />
+                )}
+                {restarting ? "Restarting…" : "Restart resolver"}
+              </button>
+              <span className="op-inbox__briefing-launch-hint">
+                Relaunches with these same settings · completed outcomes are
+                kept
+              </span>
+            </div>
+            {notice ? (
+              <p
+                className="op-inbox__bulk-notice"
+                role="status"
+                data-testid="inbox-briefing-notice"
+              >
+                {notice}
+              </p>
+            ) : null}
+          </section>
+          <div className="op-inbox__briefing-actions">
+            <button
+              type="button"
+              className="op-inbox__briefing-stop"
+              data-testid="inbox-briefing-stop"
+              onClick={stop}
+            >
+              <Square size={12} aria-hidden="true" />
+              Stop the run
+            </button>
+            {onKeepWorking ? (
+              <button
+                type="button"
+                className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
+                data-testid="inbox-briefing-keep-working"
+                onClick={onKeepWorking}
+              >
+                Keep working the list
+              </button>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <div
+          className="op-inbox__briefing-grid"
+          role="group"
+          aria-label="Inbox at a glance"
+          data-testid="inbox-briefing-grid"
+        >
+          <Tile id="need-you" value={needs} label="Need you" />
+          <Tile
+            id="still-open"
+            value={counts ? counts.unresolved : null}
+            label="Still open"
+            tone="review"
+          />
+          <Tile
+            id="auto-resolved"
+            value={counts ? counts.resolved : null}
+            label="Auto-resolved"
+          />
+          <Tile id="tracked" value={tracked} label="Tracked" />
+        </div>
+      )}
       {showRun && run && counts ? (
         <section
           className="op-inbox__briefing-run"
