@@ -211,6 +211,12 @@ export interface AgentObligationBoundaryVerdict {
   evidenceRefs: string[];
 }
 
+export interface AgentObligationOperation {
+  tool: string;
+  /** Already normalized by the operation door after resolving defaults/scope. */
+  args: Record<string, unknown>;
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -561,5 +567,74 @@ export function evaluateAgentObligationBoundary(input: {
         : input.obligation.reason,
     recovery: input.obligation.action,
     evidenceRefs,
+  };
+}
+
+/**
+ * Operation-bound variant for obligations whose action is itself the one safe
+ * way to clear the prerequisite (for example a GOAL steward launching the
+ * provider-selected independently led plan fleet).
+ *
+ * A plain required-boundary verdict correctly refuses a due obligation, but it
+ * cannot distinguish the exact recovery operation from a competing mutation.
+ * This comparator admits only the provider-authored tool + argument subset;
+ * extra resource choices such as count/model remain the steward's judgment.
+ * Satisfied/not-applicable means there is no placement operation to perform,
+ * so it refuses an extra launch instead of treating "nothing due" as authority
+ * to create more work. Unknown preserves the policy's existing fail-open/fail-
+ * closed stance unchanged.
+ */
+export function evaluateAgentObligationRecoveryBoundary(input: {
+  obligation: AgentObligation;
+  boundary: string;
+  phase: 'admission' | 'operation';
+  operation: AgentObligationOperation;
+}): AgentObligationBoundaryVerdict {
+  const base = evaluateAgentObligationBoundary(input);
+  const policy = input.obligation.boundary;
+  if (!policy || policy.boundary !== input.boundary || policy.enforcement === 'advisory') {
+    return base;
+  }
+  if (input.obligation.status === 'unknown') return base;
+
+  const recovery = input.obligation.action;
+  const expectedArgs = recovery?.args ?? {};
+  const exactRecovery =
+    (input.obligation.status === 'due' || input.obligation.status === 'in-progress') &&
+    recovery?.tool === input.operation.tool &&
+    Object.entries(expectedArgs).every(
+      ([key, expected]) =>
+        Object.prototype.hasOwnProperty.call(input.operation.args, key) &&
+        stableJson(input.operation.args[key]) === stableJson(expected),
+    );
+  if (exactRecovery) {
+    return {
+      phase: input.phase,
+      boundary: input.boundary,
+      allowed: true,
+      warning: false,
+      reason: `operation matches the provider recovery action: ${recovery.summary}`,
+      recovery,
+      evidenceRefs: input.obligation.evidence.map((entry) => entry.ref),
+    };
+  }
+
+  const expected = recovery?.tool
+    ? `${recovery.tool} ${stableJson(expectedArgs)}`
+    : 'no executable recovery operation';
+  const requested = `${input.operation.tool} ${stableJson(input.operation.args)}`;
+  const noDemand =
+    input.obligation.status === 'satisfied' || input.obligation.status === 'not-applicable';
+  return {
+    phase: input.phase,
+    boundary: input.boundary,
+    allowed: false,
+    warning: false,
+    code: policy.refusalCode,
+    reason: noDemand
+      ? `no canonical recovery operation is currently eligible: ${input.obligation.reason}`
+      : `requested operation does not match the provider recovery action; requested ${requested}; expected ${expected}. ${input.obligation.reason}`,
+    ...(recovery ? { recovery } : {}),
+    evidenceRefs: input.obligation.evidence.map((entry) => entry.ref),
   };
 }

@@ -749,6 +749,14 @@ describe('fleet:launch-on-plan GOAL pot sovereignty fence (EI-22180799091614070)
 
 describe('fleet:launch-on-plan GOAL provider placement boundary (P-006 / A-04)', () => {
   beforeEach(() => {
+    spawnConsoleMock.mockReset().mockImplementation(() => ({
+      status: 'ok', terminal: 'term-goal-boundary', pid: 901,
+    }));
+    spawnHeadlessMock.mockReset().mockImplementation(() => ({
+      status: 'ok', terminal: 'headless-goal-boundary', pid: 902,
+      taskId: 'task-goal-boundary', logPath: '/tmp/goal-boundary.log',
+    }));
+    fetchGatewayHeadroomMock.mockReset().mockResolvedValue({ reachable: false });
     goalLaunchReadMock.mockResolvedValue({
       goalId: 'goal-1', settings: null, drainFleetSlug: null,
       degraded: false, degradedReasons: [],

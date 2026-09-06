@@ -152,6 +152,7 @@ import {
   resolveGoalPotPlacementAuthority,
   type LaunchProfile,
 } from '../../goal-launch-settings';
+import { evaluateAgentObligationRecoveryBoundary } from '../../agent-obligations';
 import { GOAL_LAUNCH_ROLES, isGoalLaunchRole, type GoalLaunchRole } from '../../goal-launch-settings-shared';
 import {
   applyGoalLaunchOverlay,
@@ -2547,6 +2548,124 @@ export default defineTool({
         return err(
           `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +
             (gate.refusal.missing.length > 0 ? ` (missing: ${gate.refusal.missing.join(', ')})` : ''),
+        );
+      }
+    }
+
+    // shared-agent-obligations P-006 / A-04: this is the normalized GOAL
+    // placement mutation boundary. The generic launch policy above establishes
+    // that this caller is the actual GOAL holder and has delegated leadership;
+    // now re-read the provider that chose WHICH plan/fleet operation is due.
+    // This sits after omitted plan/harness/leader values have resolved, but
+    // before role preflight, promotion, fleet registry writes, launch-slot
+    // mutation, or terminal spawn. A stale turn brief is never authority.
+    if (goalSettings.goalId && goalHolderSubject) {
+      try {
+        const { readAgentObligationAgenda } = await import('../../agent-obligation-reader');
+        const read = await readAgentObligationAgenda({
+          workspaceId,
+          ownerId,
+          goalId: goalHolderSubject,
+          // Placement is the only boundary being checked here. Avoid unrelated
+          // acceptance reads while retaining the same provider/source assembly.
+          planSlugs: [],
+          fleetSlug,
+          launchCount: count,
+        });
+        const placement = read.agenda.evaluations.find(
+          (entry) => entry.family === 'plan-placement',
+        );
+        const readAgeMs = Date.now() - Date.parse(read.observedAt);
+        const scopeMatches =
+          read.goalId === goalHolderSubject &&
+          placement?.scope.workspaceId === workspaceId &&
+          placement.scope.ownerId === ownerId &&
+          placement.scope.goalId === goalHolderSubject &&
+          placement.responsibleOwnerId === ownerId;
+        const currentProviderEvidence =
+          placement?.status === 'unknown' ||
+          (Boolean(placement?.sourceGeneration?.trim()) &&
+            placement!.evidence.every((item) => item.freshness === 'current'));
+        if (
+          !placement ||
+          !scopeMatches ||
+          !Number.isFinite(readAgeMs) ||
+          readAgeMs < 0 ||
+          readAgeMs > 30_000 ||
+          !currentProviderEvidence
+        ) {
+          return json(
+            {
+              ok: false,
+              error: 'goal-plan-placement-prerequisite',
+              goalId: goalHolderSubject,
+              message:
+                `The live GOAL plan-placement provider returned stale, missing, or wrong-scope evidence for ` +
+                `\`${goalHolderSubject}\`; no fleet was created and no terminals were opened. ` +
+                'Refresh the canonical goal portfolio/placement cohort and retry the provider-selected recovery action.',
+              observed: {
+                readGoalId: read.goalId,
+                readAt: read.observedAt,
+                sourceGeneration: placement?.sourceGeneration ?? null,
+                obligationScope: placement?.scope ?? null,
+                responsibleOwnerId: placement?.responsibleOwnerId ?? null,
+                evidenceFreshness: placement?.evidence.map((item) => item.freshness) ?? [],
+              },
+            },
+            true,
+          );
+        }
+
+        const verdict = evaluateAgentObligationRecoveryBoundary({
+          obligation: placement,
+          boundary: 'fleet:launch-on-plan',
+          phase: 'operation',
+          operation: {
+            tool: 'fleet:launch-on-plan',
+            args: {
+              name: fleetSlug,
+              plan: planSlug,
+              harness: planHarnessSlug,
+              leader: args.leader,
+              // The plan-placement provider's canonical recovery is headless.
+              // For paired launches the expanded member list is the effective
+              // visibility source; any visible seat makes the operation differ.
+              headless:
+                args.headless ??
+                !(args.members ?? []).slice(0, count).some((member) => member?.headless === false),
+              count,
+            },
+          },
+        });
+        if (!verdict.allowed) {
+          return json(
+            {
+              ok: false,
+              error: verdict.code ?? 'goal-plan-placement-prerequisite',
+              goalId: goalHolderSubject,
+              sourceGeneration: placement.sourceGeneration,
+              reason: verdict.reason,
+              evidenceRefs: verdict.evidenceRefs,
+              recovery: verdict.recovery ?? null,
+              message:
+                `${verdict.reason} No fleet was created and no terminals were opened. ` +
+                'Run the returned provider recovery action exactly; count/model/account remain your resource decision.',
+            },
+            true,
+          );
+        }
+        if (verdict.warning) {
+          goalLaunchNotes.push(
+            `⚠ GOAL plan-placement evidence is unknown; the provider policy allows launch with warning: ${verdict.reason}`,
+          );
+        }
+      } catch (error) {
+        // The provider's declared unknown policy is allow-with-warning, matching
+        // resolveGoalLaunch's existing measurement stance. Preserve repair and
+        // diagnostic availability; the later post-capacity ceiling check still
+        // runs before a terminal opens.
+        goalLaunchNotes.push(
+          `⚠ GOAL plan-placement prerequisite could not be re-read; proceeding under its allow-with-warning policy (${error instanceof Error ? error.message : String(error)}).`,
         );
       }
     }

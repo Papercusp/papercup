@@ -251,7 +251,9 @@ vi.mock('../../agent-launch-core', async (orig) => ({
   releaseAgentLaunchClaim: (o: unknown) => releaseAgentLaunchClaimMock(o),
 }));
 
-const launchAgent = (await import('./launch-agent')).default;
+const launchAgentModule = await import('./launch-agent');
+const launchAgent = launchAgentModule.default;
+const { goalHolderPlanFleetBypass } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -335,6 +337,65 @@ describe('launch-tool routing guidance', () => {
     expect(Array.isArray(seeAlso) ? seeAlso.join('\n') : '').toContain(
       'processes:list / processes:kill (returned tasks[].taskId handles; not tasks:get)',
     );
+  });
+});
+
+describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
+  it('classifies only a fresh plan+fleet launch by the current GOAL holder', () => {
+    const modes = [{ mode: 'goal', subject: 'goal-1' }];
+    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: 'fleet-a', modeRows: modes }))
+      .toEqual({ goalId: 'goal-1' });
+    expect(goalHolderPlanFleetBypass({ sourceAction: true, plan: 'plan-a', fleet: 'fleet-a', modeRows: modes }))
+      .toBeNull();
+    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: null, modeRows: modes }))
+      .toBeNull();
+    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: null, fleet: 'fleet-a', modeRows: modes }))
+      .toBeNull();
+    expect(goalHolderPlanFleetBypass({ sourceAction: false, plan: 'plan-a', fleet: 'fleet-a', modeRows: [] }))
+      .toBeNull();
+  });
+
+  it('refuses the alternate fresh plan+fleet path before fleet creation or spawn', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'goal', subject: 'goal-1', ownerDirected: true }]);
+    const res = await launchAgent.handler(
+      { brief: 'work plan-a', plan: 'plan-a', fleet: 'plan-a-fleet', harness: 'papercusp' },
+      ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('goal_plan_placement_bypass_refused');
+    expect(textOf(res)).toContain('fleet:launch-on-plan');
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on unreadable authority only for the bypass-capable shape', async () => {
+    getModesMock.mockRejectedValue(new Error('mode store unavailable'));
+    const res = await launchAgent.handler(
+      { brief: 'work plan-a', plan: 'plan-a', fleet: 'plan-a-fleet', harness: 'papercusp' },
+      ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('goal_plan_placement_authority_unreadable');
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a plan-bound independent grader outside a fleet available', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'goal', subject: 'goal-1', ownerDirected: true }]);
+    const res = await launchAgent.handler(
+      {
+        brief: 'independently grade plan-a',
+        plan: 'plan-a',
+        independent: true,
+        harness: 'papercusp',
+        headless: false,
+      },
+      ctx,
+    );
+    expect(isError(res)).toBe(false);
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(dataOf(res)?.launch).toMatchObject({ fleet: null, independent: true, mode: 'fresh' });
   });
 });
 

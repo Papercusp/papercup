@@ -253,6 +253,30 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string | null)
 }
 
 /**
+ * capability:launch-agent is intentionally broad, but a fresh plan+fleet launch
+ * duplicates fleet:launch-on-plan's authoritative placement mutation. An
+ * active GOAL steward must use that canonical door so spawned leadership,
+ * eligibility, claim-spec admission, canary proof, and the shared obligation
+ * provider are all evaluated together.
+ *
+ * Resume/fork/successor recovery has no plan argument by contract and remains
+ * available. A fresh plan-bound independent grader with no fleet also remains
+ * available: it is verification/remediation, not fleet placement.
+ */
+export function goalHolderPlanFleetBypass(opts: {
+  sourceAction: boolean;
+  plan?: string | null;
+  fleet?: string | null;
+  modeRows: ReadonlyArray<{ mode?: unknown; subject?: unknown }>;
+}): { goalId: string } | null {
+  if (opts.sourceAction || !opts.plan?.trim() || !opts.fleet?.trim()) return null;
+  const goal = opts.modeRows.find(
+    (row) => row.mode === 'goal' && typeof row.subject === 'string' && row.subject.trim(),
+  );
+  return goal ? { goalId: String(goal.subject).trim() } : null;
+}
+
+/**
  * `extraArgs` is also the capability's escape hatch for psu's durable launch
  * posture flags. Those flags are not part of a fleet's boot-baked profile:
  * comparing them against the saved profile turns a redundant `--auto` on
@@ -637,6 +661,40 @@ export default defineTool({
       callerOwnerId = resolveAgentIdentity(ctx).ownerId;
     } catch {
       callerOwnerId = null;
+    }
+    // P-006 / A-04 alternate-entry guard. Pay the fresh authority read ONLY for
+    // the ambiguous shape that can bypass canonical plan-fleet placement; all
+    // diagnostic/ad-hoc and source-recovery launches retain their existing
+    // availability. Unreadable authority fails closed for this one mutation —
+    // otherwise a mode-store outage would itself become the bypass.
+    if (!sourceAction && args.plan?.trim() && args.fleet?.trim() && callerOwnerId) {
+      let modeRows: Awaited<ReturnType<typeof getModes>>;
+      try {
+        modeRows = await getModes(workspaceId, callerOwnerId);
+      } catch (error) {
+        return err(
+          `goal_plan_placement_authority_unreadable: could not determine whether ${callerOwnerId} is the active ` +
+            `GOAL holder before a fresh plan+fleet launch (${error instanceof Error ? error.message : String(error)}). ` +
+            'No fleet was created and no agent was spawned. Retry when mode state is readable, or use an ordinary ' +
+            'resume/fork/remediation launch that does not create a plan fleet.',
+        );
+      }
+      const bypass = goalHolderPlanFleetBypass({
+        sourceAction,
+        plan: args.plan,
+        fleet: args.fleet,
+        modeRows,
+      });
+      if (bypass) {
+        return err(
+          `goal_plan_placement_bypass_refused: active GOAL holder for '${bypass.goalId}' cannot create a fresh ` +
+            `plan+fleet placement through capability:launch-agent. No fleet was created and no agent was spawned. ` +
+            `Use fleet:launch-on-plan { name:${JSON.stringify(args.fleet.trim())}, plan:${JSON.stringify(args.plan.trim())}, ` +
+            `harness:${JSON.stringify(slug)}, leader:'spawn', headless:true, ...resourceChoices } so the live shared ` +
+            'placement provider, eligibility/admission, canary, and independent-leadership policy run at one boundary. ' +
+            'For independent grading/remediation, omit fleet and pass independent:true; resume/fork paths remain available.',
+        );
+      }
     }
     // DRAIN is a durable caller overlay. Resolve it before composing either a
     // fresh command or a resume/fork command so every capability launch path

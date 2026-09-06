@@ -6,6 +6,7 @@ import {
   authorityFromTurnOrigin,
   defineAgentObligation,
   evaluateAgentObligationBoundary,
+  evaluateAgentObligationRecoveryBoundary,
   evaluateAgentObligations,
   goalPlanPlacementChangedKey,
   planAcceptanceChangedKey,
@@ -385,5 +386,116 @@ describe('operation/admission parity', () => {
     expect(
       evaluateAgentObligationBoundary({ obligation, boundary: 'activity:report', phase: 'operation' }),
     ).toMatchObject({ allowed: true, warning: true, reason: 'native activity is not measured' });
+  });
+});
+
+describe('provider recovery operation boundary', () => {
+  const placement = (overrides: Partial<AgentObligationInput> = {}) =>
+    defineAgentObligation(
+      input({
+        ruleId: 'goal-plan-placement',
+        family: 'plan-placement',
+        status: 'due',
+        reason: 'plan-a is the highest-priority eligible placement',
+        action: {
+          kind: 'delegate',
+          summary: 'launch the provider-selected plan fleet',
+          tool: 'fleet:launch-on-plan',
+          args: {
+            name: 'plan-a-fleet',
+            plan: 'plan-a',
+            harness: 'papercusp',
+            leader: 'spawn',
+            headless: true,
+          },
+        },
+        boundary: {
+          boundary: 'fleet:launch-on-plan',
+          refusalCode: 'goal-plan-placement-prerequisite',
+          enforcement: 'required',
+          unknown: 'allow-with-warning',
+        },
+        ...overrides,
+      }),
+    );
+
+  const operation = (overrides: Record<string, unknown> = {}) => ({
+    tool: 'fleet:launch-on-plan',
+    args: {
+      name: 'plan-a-fleet',
+      plan: 'plan-a',
+      harness: 'papercusp',
+      leader: 'spawn',
+      headless: true,
+      count: 3,
+      model: 'gpt-5.6-sol:high',
+      ...overrides,
+    },
+  });
+
+  it('admits the exact provider action while preserving additional resource choices', () => {
+    expect(
+      evaluateAgentObligationRecoveryBoundary({
+        obligation: placement(),
+        boundary: 'fleet:launch-on-plan',
+        phase: 'operation',
+        operation: operation(),
+      }),
+    ).toMatchObject({ allowed: true, warning: false, recovery: { kind: 'delegate' } });
+  });
+
+  it('refuses a wrong plan, fleet, leadership shape, or visibility choice', () => {
+    for (const mismatch of [
+      { plan: 'plan-b' },
+      { name: 'other-fleet' },
+      { leader: 'caller' },
+      { headless: false },
+    ]) {
+      expect(
+        evaluateAgentObligationRecoveryBoundary({
+          obligation: placement(),
+          boundary: 'fleet:launch-on-plan',
+          phase: 'operation',
+          operation: operation(mismatch),
+        }),
+      ).toMatchObject({ allowed: false, code: 'goal-plan-placement-prerequisite' });
+    }
+  });
+
+  it('refuses an extra launch when no placement demand is eligible', () => {
+    for (const status of ['satisfied', 'not-applicable'] as const) {
+      const obligation = placement({
+        status,
+        action: undefined,
+        reason: 'the worklist is covered or empty',
+        evidence: status === 'satisfied'
+          ? [{ ref: 'placement:receipt', observedAt: NOW, freshness: 'current', effect: 'independent fleet live' }]
+          : [],
+      });
+      expect(
+        evaluateAgentObligationRecoveryBoundary({
+          obligation,
+          boundary: 'fleet:launch-on-plan',
+          phase: 'operation',
+          operation: operation(),
+        }),
+      ).toMatchObject({ allowed: false, reason: expect.stringContaining('no canonical recovery operation') });
+    }
+  });
+
+  it('preserves the provider policy for unreadable evidence', () => {
+    const obligation = placement({
+      status: 'unknown',
+      action: { kind: 'inspect', summary: 'refresh placement evidence' },
+      measurementFailure: { code: 'read-failed', detail: 'portfolio read unavailable', retry: 'retry' },
+    });
+    expect(
+      evaluateAgentObligationRecoveryBoundary({
+        obligation,
+        boundary: 'fleet:launch-on-plan',
+        phase: 'operation',
+        operation: operation(),
+      }),
+    ).toMatchObject({ allowed: true, warning: true, reason: 'portfolio read unavailable' });
   });
 });
