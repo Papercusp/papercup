@@ -69,8 +69,8 @@
  *                          (git-only) cut instead of re-snapshotting the live store. No operator quiesce
  *                          needed (git bundles from the checkout, not the store) — the safe way to re-cut
  *                          FULL-HISTORY git while keeping an earlier corestore snapshot. Same-dir (reuse ==
- *                          --out) is the normal case: the corestore is moved aside across the outDir wipe
- *                          and moved back. Requires the git half (not --no-git); epoch must match.
+ *                          --out) is the normal case: the prior seed stays intact until the replacement
+ *                          passes every release check. Requires the git half (not --no-git); epoch must match.
  *   --emit-epoch-key       WI-3232 (owner "Full pot, plaintext seed", alpha): also write epoch-keys.json
  *                          into the seed so a FRESH packaged install decrypts the pot OFFLINE (no
  *                          admission). WI-3297: bundles the CURRENT epoch key plus every HISTORICAL
@@ -82,7 +82,7 @@
 
 import { resolve, join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
@@ -94,7 +94,7 @@ import {
   buildNeutralizedChildEnv,
 } from './seed-hostname-neutralization.js';
 import { assertStagedSeedCarriesNoIdentity, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
-import { rm, readFile, writeFile, rename, cp, readdir } from 'node:fs/promises';
+import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp } from 'node:fs/promises';
 import Corestore from 'corestore';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -1085,14 +1085,45 @@ export async function waitForOperatorDrain(inp: {
   }
 }
 
-/** Move a dir, falling back to copy+remove across filesystems (EXDEV). */
-async function moveDir(src: string, dst: string): Promise<void> {
+/** Build and verify off to the side; a failed cut must preserve the entire prior
+ * seed, including its manifest and epoch keys. The sibling transaction directory
+ * keeps publication on one filesystem and retains the backup if rollback fails. */
+export async function withSeedOutput<T>(
+  outDir: string,
+  build: (stagingDir: string) => Promise<T>,
+  renameDir: typeof rename = rename,
+): Promise<T> {
+  await mkdir(dirname(outDir), { recursive: true });
+  const transactionDir = await mkdtemp(join(dirname(outDir), `.${basename(outDir)}-cut-`));
+  const stagingDir = join(transactionDir, 'next');
+  const backupDir = join(transactionDir, 'previous');
+  let displaced = false;
+  let published = false;
   try {
-    await rename(src, dst);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
-    await cp(src, dst, { recursive: true });
-    await rm(src, { recursive: true, force: true });
+    const result = await build(stagingDir);
+    try {
+      await renameDir(outDir, backupDir);
+      displaced = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    try {
+      await renameDir(stagingDir, outDir);
+      published = true;
+    } catch (error) {
+      if (displaced) {
+        try {
+          await renameDir(backupDir, outDir);
+          displaced = false;
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], `Seed publication and rollback failed; prior seed preserved at ${backupDir}`);
+        }
+      }
+      throw error;
+    }
+    return result;
+  } finally {
+    if (!displaced || published) await rm(transactionDir, { recursive: true, force: true });
   }
 }
 
@@ -1292,7 +1323,7 @@ async function main(): Promise<void> {
     console.warn('[cut-seed] no --workspace-id/--epoch — defaulting cutAtEpoch=0 (canonical dogfood hive).');
   }
 
-  // WI-3232: read the reusable corestore entry BEFORE any outDir wipe. Refuse an epoch
+  // WI-3232: read the reusable corestore entry before staging the replacement. Refuse an epoch
   // mismatch — a corestore cut at a different epoch would ship inconsistent hive state.
   let reused: { entry: SeedStoreEntry; cutAtEpoch: number } | undefined;
   if (reuseCorestoreDir) {
@@ -1420,113 +1451,103 @@ async function main(): Promise<void> {
     };
   }
 
-  // WI-3232 --reuse-corestore: preserve the existing corestore across the outDir wipe
-  // so the git-only cut can graft it back (no live-store re-snapshot ⇒ no quiesce). The
-  // normal case is same-dir (reuse == --out): move the corestore aside then back (instant
-  // on one fs). Different-dir: copy from the source AFTER the cut (leaves the source seed
-  // intact). The pre-read (readReusableCorestore, above) already validated both exist.
-  const sameReuseDir = reuseCorestoreDir !== undefined && resolve(reuseCorestoreDir) === resolve(outDir);
-  let stashDir: string | undefined;
-  if (reuseCorestoreDir && sameReuseDir) {
-    stashDir = join(dirname(outDir), `.seed-corestore-reuse-${cutTs}`);
-    await moveDir(join(outDir, CORESTORE_SUBDIR), stashDir);
-  }
-
-  // Fresh output dir (providers write into subdirs; a stale seed would poison the hash).
-  await rm(outDir, { recursive: true, force: true });
-
   try {
-    const res = await cutHiveSeed({ potId: hive, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore });
+    const publishedDir = outDir;
+    const { res, finalManifest } = await withSeedOutput(publishedDir, async (outDir) => {
+      const res = await cutHiveSeed({ potId: hive, cutAtEpoch, cutHlc, cutTs, outDir, git, corestore });
 
-    // WI-3232: graft the reused corestore back in + merge its manifest entry.
-    let finalManifest = res.manifest;
-    if (reuseCorestoreDir && reused) {
-      const dst = join(outDir, CORESTORE_SUBDIR);
-      if (stashDir) await moveDir(stashDir, dst);
-      else await cp(join(reuseCorestoreDir, CORESTORE_SUBDIR), dst, { recursive: true });
-      finalManifest = graftCorestoreEntry(res.manifest, reused.entry);
-      await writeFile(res.manifestPath, encodeManifest(finalManifest));
-      console.warn(
-        `[cut-seed] reused corestore from ${reuseCorestoreDir} (${formatBytes(reused.entry.sizeBytes)}, no live-store snapshot).`,
-      );
-    }
-
-    // P-015 (D-009 recurrence guard). Judge the FINAL manifest — the bytes on disk, after any
-    // graft — never `res.manifest`, which on the reuse path carries no corestore at all and so
-    // can never see the degradation (D-023: the reuse branch is the one that actually ships).
-    // This single call therefore covers both branches by construction.
-    assertSeedNotDegraded(finalManifest, { origin: reuseCorestoreDir ? 'reuse' : 'fresh' });
-
-    // RocksDB's info log (exactly `LOG`, rotated `LOG.old.<ts>`) records the build
-    // box's hostname and absolute paths on EVERY store open — it redded the 0.0.11
-    // release identity gate (WI-4736 AppDir scan). Purely diagnostic and regenerated
-    // on next open; the numbered `<NNN>.log` WALs are data and must stay.
-    const seedDbDir = join(outDir, CORESTORE_SUBDIR, 'db');
-    if (existsSync(seedDbDir)) {
-      for (const f of await readdir(seedDbDir)) {
-        if (f === 'LOG' || f.startsWith('LOG.old')) await rm(join(seedDbDir, f), { force: true });
+      // Copy on write where supported; never move or modify the reusable source.
+      let finalManifest = res.manifest;
+      if (reuseCorestoreDir && reused) {
+        const dst = join(outDir, CORESTORE_SUBDIR);
+        await cp(join(reuseCorestoreDir, CORESTORE_SUBDIR), dst, { recursive: true, mode: constants.COPYFILE_FICLONE });
+        finalManifest = graftCorestoreEntry(res.manifest, reused.entry);
+        await writeFile(res.manifestPath, encodeManifest(finalManifest));
+        console.warn(
+          `[cut-seed] reused corestore from ${reuseCorestoreDir} (${formatBytes(reused.entry.sizeBytes)}, no live-store snapshot).`,
+        );
       }
-    }
 
-    // WI-39447. Judge the manifest AGAINST THE BYTES — after the graft and after the LOG
-    // sweep, i.e. exactly what the installer will hash. The two guards above judge the
-    // manifest's claims about ITSELF (an honest sparse label, a sane size); neither can see a
-    // manifest whose hash describes a payload that is not on disk. That is what the default
-    // --reuse-corestore path produces: the grafted entry's hash/sizeBytes are inherited from
-    // the PRIOR manifest and re-measured by nothing. The installer runs precisely this check
-    // (restoreSeed → provider.verify) and, on a mismatch, SKIPS the store and restores an
-    // empty hive without failing the install — so it has to be caught here or not at all.
-    await assertSeedPayloadMatchesManifest({
-      manifest: finalManifest,
-      dir: outDir,
-      origin: reuseCorestoreDir ? 'reuse' : 'fresh',
-    });
+      // P-015 (D-009 recurrence guard). Judge the FINAL manifest — the bytes on disk, after any
+      // graft — never `res.manifest`, which on the reuse path carries no corestore at all and so
+      // can never see the degradation (D-023: the reuse branch is the one that actually ships).
+      // This single call therefore covers both branches by construction.
+      assertSeedNotDegraded(finalManifest, { origin: reuseCorestoreDir ? 'reuse' : 'fresh' });
 
-    // EI-20108164746219771 step 4. Judge the STAGED BYTES for the build box's identity —
-    // after the graft and after the LOG sweep, i.e. exactly what the installer will carry.
-    // Mechanism-agnostic on purpose: the two known leaks (presence ROWS, RocksDB's
-    // host.identity SST property) arrived by unrelated routes and each fix is blind to the
-    // other, so this asks the bytes rather than trusting any one filter. See
-    // ./seed-identity-guard.ts for why it does NOT shell out to audit-release-bundle.py.
-    // EI-22086776666843792: ALSO hunt the release literal set the projection scrubbed with —
-    // the same list audit-release-bundle.py will hunt at the build gate — so an owner handle /
-    // name / email that survived the projection reds HERE, not 3h40m later at the build.
-    await assertStagedSeedCarriesNoIdentity({
-      dir: outDir,
-      neutralHostname: process.env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME,
-      extraLiterals: corestore?.redactValues ?? [],
-    });
-
-    // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.
-    if (emitEpochKey) {
-      let key = epochKeyForEmit;
-      if (!key) {
-        if (!workspaceId && str(args, 'epoch') === undefined) {
-          throw new Error('--emit-epoch-key needs an epoch context — pass --workspace-id (or --epoch).');
+      // RocksDB's info log (exactly `LOG`, rotated `LOG.old.<ts>`) records the build
+      // box's hostname and absolute paths on EVERY store open — it redded the 0.0.11
+      // release identity gate (WI-4736 AppDir scan). Purely diagnostic and regenerated
+      // on next open; the numbered `<NNN>.log` WALs are data and must stay.
+      const seedDbDir = join(outDir, CORESTORE_SUBDIR, 'db');
+      if (existsSync(seedDbDir)) {
+        for (const f of await readdir(seedDbDir)) {
+          if (f === 'LOG' || f.startsWith('LOG.old')) await rm(join(seedDbDir, f), { force: true });
         }
-        if (workspaceId) {
-          await assertEpochSealIdentityPresent({ workspaceId, hive, allowMint: args['allow-mint-epoch-key'] === true });
-        }
-        key = Uint8Array.from(await (await resolveHiveEpochCrypto(true)).deriveEpochKey(hive, cutAtEpoch));
       }
-      // WI-3297: bundle every keychain-present historical epoch key too — seed logs
-      // carry ops sealed under past epochs, and a current-epoch-only file leaves them
-      // permanently DROPped (epoch_decrypt_fail) on every fresh install.
-      const epochKeys = await collectSeedEpochKeys({ hive, cutAtEpoch, currentKey: key });
-      await writeFile(join(outDir, EPOCH_KEYS_FILE), encodeEpochKeysFile(hive, epochKeys));
-      console.warn(
-        `[cut-seed] ⚠ WI-3232: wrote ${EPOCH_KEYS_FILE} (hive '${hive}', epochs ${[...epochKeys.keys()]
-          .sort((a, b) => a - b)
-          .join(',')}) — the seed is now OFFLINE-DECRYPTABLE (owner-authorised for alpha; the pot ships READABLE).`,
-      );
-    }
+
+      // WI-39447. Judge the manifest AGAINST THE BYTES — after the graft and after the LOG
+      // sweep, i.e. exactly what the installer will hash. The two guards above judge the
+      // manifest's claims about ITSELF (an honest sparse label, a sane size); neither can see a
+      // manifest whose hash describes a payload that is not on disk. That is what the default
+      // --reuse-corestore path produces: the grafted entry's hash/sizeBytes are inherited from
+      // the PRIOR manifest and re-measured by nothing. The installer runs precisely this check
+      // (restoreSeed → provider.verify) and, on a mismatch, SKIPS the store and restores an
+      // empty hive without failing the install — so it has to be caught here or not at all.
+      await assertSeedPayloadMatchesManifest({
+        manifest: finalManifest,
+        dir: outDir,
+        origin: reuseCorestoreDir ? 'reuse' : 'fresh',
+      });
+
+      // EI-20108164746219771 step 4. Judge the STAGED BYTES for the build box's identity —
+      // after the graft and after the LOG sweep, i.e. exactly what the installer will carry.
+      // Mechanism-agnostic on purpose: the two known leaks (presence ROWS, RocksDB's
+      // host.identity SST property) arrived by unrelated routes and each fix is blind to the
+      // other, so this asks the bytes rather than trusting any one filter. See
+      // ./seed-identity-guard.ts for why it does NOT shell out to audit-release-bundle.py.
+      // EI-22086776666843792: ALSO hunt the release literal set the projection scrubbed with —
+      // the same list audit-release-bundle.py will hunt at the build gate — so an owner handle /
+      // name / email that survived the projection reds HERE, not 3h40m later at the build.
+      await assertStagedSeedCarriesNoIdentity({
+        dir: outDir,
+        neutralHostname: process.env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME,
+        extraLiterals: corestore?.redactValues ?? [],
+      });
+
+      // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.
+      if (emitEpochKey) {
+        let key = epochKeyForEmit;
+        if (!key) {
+          if (!workspaceId && str(args, 'epoch') === undefined) {
+            throw new Error('--emit-epoch-key needs an epoch context — pass --workspace-id (or --epoch).');
+          }
+          if (workspaceId) {
+            await assertEpochSealIdentityPresent({ workspaceId, hive, allowMint: args['allow-mint-epoch-key'] === true });
+          }
+          key = Uint8Array.from(await (await resolveHiveEpochCrypto(true)).deriveEpochKey(hive, cutAtEpoch));
+        }
+        // WI-3297: bundle every keychain-present historical epoch key too — seed logs
+        // carry ops sealed under past epochs, and a current-epoch-only file leaves them
+        // permanently DROPped (epoch_decrypt_fail) on every fresh install.
+        const epochKeys = await collectSeedEpochKeys({ hive, cutAtEpoch, currentKey: key });
+        await writeFile(join(outDir, EPOCH_KEYS_FILE), encodeEpochKeysFile(hive, epochKeys));
+        console.warn(
+          `[cut-seed] ⚠ WI-3232: wrote ${EPOCH_KEYS_FILE} (hive '${hive}', epochs ${[...epochKeys.keys()]
+            .sort((a, b) => a - b)
+            .join(',')}) — the seed is now OFFLINE-DECRYPTABLE (owner-authorised for alpha; the pot ships READABLE).`,
+        );
+      }
+
+      return { res, finalManifest };
+    });
+    const manifestPath = join(publishedDir, SEED_MANIFEST_FILE);
 
     if (asJson) {
       // `finalManifest`, not `res.manifest`: on the reuse path the latter has no corestore
       // entry, so `--json` used to report a manifest with no coreSparseFrom while the manifest
       // ON DISK carried the degraded one — a measurement of the reuse path read as "no sparse
       // data at all" rather than as the defect it is.
-      console.log(JSON.stringify({ manifest: finalManifest, sizeReport: res.sizeReport, manifestPath: res.manifestPath }, null, 2));
+      console.log(JSON.stringify({ manifest: finalManifest, sizeReport: res.sizeReport, manifestPath }, null, 2));
     } else {
       console.log(`\n=== Hive seed cut → ${outDir} ===`);
       console.log(`hive=${hive} epoch=${cutAtEpoch} hlc=${cutHlc} ts=${cutTs}`);
@@ -1535,7 +1556,7 @@ async function main(): Promise<void> {
       }
       console.log(`  • ${'manifest'.padEnd(10)} ${formatBytes(res.sizeReport.manifestBytes).padStart(12)}`);
       console.log(`  = ${'TOTAL'.padEnd(10)} ${formatBytes(res.sizeReport.totalBytes).padStart(12)}  ← installer growth`);
-      console.log(`\nmanifest: ${res.manifestPath}\n`);
+      console.log(`\nmanifest: ${manifestPath}\n`);
     }
   } finally {
     if (store) await store.close();

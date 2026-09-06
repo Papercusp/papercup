@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, cp, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -30,6 +30,7 @@ import {
   mergeReleaseSeedRedactionValues,
   deriveSourceStoreDirs,
   createFilteredSeedProgressReporter,
+  withSeedOutput,
 } from "./cut-seed-cli";
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
@@ -44,6 +45,83 @@ const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
 const FIXTURE_BUILD_HOST = 'papercusp-build';
 const FIXTURE_BUILD_USER = 'fixture-builduser';
 const FIXTURE_REAL_HOST = 'fixture-host-0000';
+
+describe('transactional seed output', () => {
+  async function fixture() {
+    const root = await mkdtemp(join(tmpdir(), 'cut-seed-publish-'));
+    const out = join(root, 'seed');
+    await mkdir(join(out, 'corestore'), { recursive: true });
+    await writeFile(join(out, 'manifest.json'), 'prior manifest');
+    await writeFile(join(out, 'epoch-keys.json'), 'prior keys');
+    await writeFile(join(out, 'corestore', 'data'), 'prior corestore');
+    return { root, out };
+  }
+
+  async function expectPrior(out: string) {
+    expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior manifest');
+    expect(await readFile(join(out, 'epoch-keys.json'), 'utf8')).toBe('prior keys');
+    expect(await readFile(join(out, 'corestore', 'data'), 'utf8')).toBe('prior corestore');
+  }
+
+  it('preserves all prior seed bytes when the staged cut or verification rejects', async () => {
+    const { root, out } = await fixture();
+    try {
+      await expect(withSeedOutput(out, async (staged) => {
+        await cp(out, staged, { recursive: true });
+        await writeFile(join(staged, 'manifest.json'), 'partial new manifest');
+        await writeFile(join(staged, 'corestore', 'data'), 'partial new corestore');
+        await expectPrior(out);
+        throw new Error('staged seed rejected');
+      })).rejects.toThrow('staged seed rejected');
+      await expectPrior(out);
+      expect(await readdir(root)).toEqual(['seed']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('publishes the verified whole seed together, then removes the prior generation', async () => {
+    const { root, out } = await fixture();
+    try {
+      const result = await withSeedOutput(out, async (staged) => {
+        await cp(out, staged, { recursive: true });
+        await writeFile(join(staged, 'manifest.json'), 'new manifest');
+        await writeFile(join(staged, 'epoch-keys.json'), 'new keys');
+        await expectPrior(out);
+        return 'verified';
+      });
+      expect(result).toBe('verified');
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('new manifest');
+      expect(await readFile(join(out, 'epoch-keys.json'), 'utf8')).toBe('new keys');
+      expect(await readFile(join(out, 'corestore', 'data'), 'utf8')).toBe('prior corestore');
+      expect(await readdir(root)).toEqual(['seed']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rolls back a failed publication rename, leaving the prior seed reusable', async () => {
+    const { root, out } = await fixture();
+    try {
+      const renameDir: typeof rename = async (from, to) => {
+        if (String(from).endsWith('/next')) throw new Error('publish EIO');
+        await rename(from, to);
+      };
+      await expect(withSeedOutput(out, (staged) => cp(out, staged, { recursive: true }), renameDir)).rejects.toThrow('publish EIO');
+      await expectPrior(out);
+      expect(await readdir(root)).toEqual(['seed']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('retains the entire backup if both publication and rollback fail', async () => {
+    const { root, out } = await fixture();
+    try {
+      const renameDir: typeof rename = async (from, to) => {
+        if (String(to) === out) throw new Error('destination unavailable');
+        await rename(from, to);
+      };
+      await expect(withSeedOutput(out, (staged) => cp(out, staged, { recursive: true }), renameDir)).rejects.toThrow('prior seed preserved at');
+      const [transaction] = await readdir(root);
+      await expectPrior(join(root, transaction, 'previous'));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 describe("createFilteredSeedProgressReporter", () => {
   it("logs the first window, meaningful percentage/time progress, and completion without window spam", () => {

@@ -77,7 +77,7 @@ export interface GitCutContext {
    *  `rev` with `depth: 1`; the provider creates an offline-cloneable synthetic
    *  one-commit bundle. */
   readonly rev?: string;
-  /** `1` cuts a synthetic one-commit snapshot of `rev` (and checked-out
+  /** `1` cuts a synthetic one-commit snapshot of `rev` (and its pinned
    *  submodules) instead of the full reachable history. Other depths are refused:
    *  native git shallow/prerequisite bundles cannot be cloned offline. */
   readonly depth?: number;
@@ -109,6 +109,8 @@ interface GitSeedIndex {
   readonly submodules: GitSeedSubmodule[];
   /** True ⇒ every bundle file is encrypted at rest (decrypt before clone). */
   readonly encrypted: boolean;
+  /** Advertised ref for a pinned full-history bundle (not necessarily HEAD). */
+  readonly branch?: string;
   /** Present when bundles contain synthetic one-commit snapshots. */
   readonly snapshot?: { readonly depth: 1; readonly branch: string };
 }
@@ -139,18 +141,24 @@ async function dirSize(root: string): Promise<number> {
   return total;
 }
 
-/** Enumerate submodules from `.gitmodules` (path + url pairs).
+/** Enumerate submodules from the selected commit's `.gitmodules` and gitlinks.
  *  SKIPS any submodule whose working tree is not checked out (no `<path>/.git`):
  *  `.gitmodules` can declare a submodule the source tree never initialized — e.g. a
  *  RETIRED one (`libs/zero-harness`) — and blindly `git bundle`-ing in a nonexistent
  *  cwd throws `spawn git ENOENT`, aborting the whole cut. An uninitialized submodule
  *  simply isn't seeded (a fresh member cold-clones it); data-safe by construction. */
-async function readSubmodules(repoDir: string): Promise<Array<{ name: string; path: string; url: string }>> {
-  if (!existsSync(join(repoDir, '.gitmodules'))) return [];
-  const pathLines = await git(repoDir, ['config', '-f', '.gitmodules', '--get-regexp', 'path']).catch(() => '');
-  const out: Array<{ name: string; path: string; url: string }> = [];
-  for (const line of pathLines.split('\n').filter(Boolean)) {
-    const [key, p] = line.split(/\s+/);
+async function readSubmodules(repoDir: string, rev: string): Promise<Array<{ name: string; path: string; url: string; commit: string }>> {
+  if (!(await git(repoDir, ['ls-tree', rev, '--', '.gitmodules']))) return [];
+  const config = ['config', '--blob', `${rev}:.gitmodules`];
+  const pathLines = await git(repoDir, [...config, '-z', '--get-regexp', '^submodule[.].*[.]path$']).catch((error) => {
+    if (error.code === 1) return ''; // a valid config with no submodule paths
+    throw error;
+  });
+  const out: Array<{ name: string; path: string; url: string; commit: string }> = [];
+  for (const line of pathLines.split('\0').filter(Boolean)) {
+    const split = line.indexOf('\n');
+    const key = line.slice(0, split);
+    const p = line.slice(split + 1);
     const name = key.slice('submodule.'.length, -'.path'.length);
     // A checked-out submodule has a `.git` gitlink (file) or dir at its path; an
     // uninitialized/retired one has a missing or empty dir → skip it (with a warning)
@@ -159,8 +167,11 @@ async function readSubmodules(repoDir: string): Promise<Array<{ name: string; pa
       console.warn(`[seed:git] skipping submodule '${name}' (${p}) — not checked out in ${repoDir}; a fresh member will cold-clone it.`);
       continue;
     }
-    const url = await git(repoDir, ['config', '-f', '.gitmodules', `submodule.${name}.url`]).catch(() => '');
-    out.push({ name, path: p, url });
+    const url = await git(repoDir, [...config, `submodule.${name}.url`]);
+    const gitlink = await git(repoDir, ['ls-tree', '-z', rev, '--', `:(literal)${p}`]);
+    const match = /^160000 commit ([0-9a-f]+)\t/.exec(gitlink);
+    if (!match) throw new Error(`git seed submodule '${p}' has no gitlink at ${rev}`);
+    out.push({ name, path: p, url, commit: match[1] });
   }
   return out;
 }
@@ -222,26 +233,34 @@ export function createGitSeedProvider(): SeedProvider {
         throw new Error('git seed depth requires a single commit-ish --rev; --all cannot be depth-limited');
       }
       const snapshotBranch = depth ? `papercusp-seed-snapshot-${randomUUID()}` : undefined;
+      // Resolve once so moving refs cannot produce a mixed-revision seed. A
+      // parent's SHA has no meaning in a child's independent object database.
+      const selectedCommit = await git(sourceRepoDir, ['rev-parse', '--verify', `${revSel === '--all' ? 'HEAD' : revSel}^{commit}`]);
+      const bundleBranch = snapshotBranch ?? `papercusp-seed-${randomUUID()}`;
 
       const submodules: GitSeedSubmodule[] = [];
       const submoduleCommits = new Map<string, string>();
-      for (const sub of await readSubmodules(sourceRepoDir)) {
+      for (const sub of await readSubmodules(sourceRepoDir, selectedCommit)) {
         const bundleRel = join('submodules', sub.name.replace(/[/\\]/g, '__') + '.bundle');
         const subRepo = join(sourceRepoDir, sub.path);
         if (depth) {
-          const commit = await snapshotCommit(subRepo, revSel, stagingDir);
+          const commit = await snapshotCommit(subRepo, sub.commit, stagingDir);
           await bundleCommit(subRepo, join(stagingDir, bundleRel), commit, snapshotBranch!);
           submoduleCommits.set(sub.path, commit);
-        } else {
+        } else if (revSel === '--all') {
           await git(subRepo, ['bundle', 'create', join(stagingDir, bundleRel), revSel]);
+        } else {
+          await bundleCommit(subRepo, join(stagingDir, bundleRel), sub.commit, bundleBranch);
         }
         submodules.push({ path: sub.path, url: sub.url, bundle: bundleRel });
       }
       if (depth) {
-        const commit = await snapshotCommit(sourceRepoDir, revSel, stagingDir, submoduleCommits);
+        const commit = await snapshotCommit(sourceRepoDir, selectedCommit, stagingDir, submoduleCommits);
         await bundleCommit(sourceRepoDir, join(stagingDir, 'super.bundle'), commit, snapshotBranch!);
-      } else {
+      } else if (revSel === '--all') {
         await git(sourceRepoDir, ['bundle', 'create', join(stagingDir, 'super.bundle'), revSel]);
+      } else {
+        await bundleCommit(sourceRepoDir, join(stagingDir, 'super.bundle'), selectedCommit, bundleBranch);
       }
 
       // Encrypt every bundle file in place (the CODE is the secret). index.json
@@ -259,6 +278,7 @@ export function createGitSeedProvider(): SeedProvider {
         originUrl,
         submodules,
         encrypted: Boolean(encryption),
+        ...(!depth && revSel !== '--all' ? { branch: bundleBranch } : {}),
         ...(depth ? { snapshot: { depth, branch: snapshotBranch! } } : {}),
       };
       await writeFile(join(stagingDir, 'index.json'), JSON.stringify(index, null, 2));
@@ -294,6 +314,7 @@ export function createGitSeedProvider(): SeedProvider {
       const seedPath = (payload as { path: string }).path;
       const index = JSON.parse(await readFile(join(seedPath, 'index.json'), 'utf8')) as GitSeedIndex;
       const origin = originOverride ?? index.originUrl;
+      const checkoutBranch = index.snapshot?.branch ?? index.branch;
 
       if (index.encrypted && !decryptionKey) {
         throw new Error('git seed is encrypted but no decryption key was provided (resolve it post-admission)');
@@ -318,19 +339,19 @@ export function createGitSeedProvider(): SeedProvider {
 
       try {
         // Clone the superproject from its bundle (offline), then re-point origin.
-        await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(index.super), targetRepoDir], {
+        await execFileP('git', [...ALLOW_FILE, 'clone', ...(checkoutBranch ? ['--branch', checkoutBranch] : []), await materialize(index.super), targetRepoDir], {
           maxBuffer: GIT_MAX_BUFFER,
         });
-        if (index.snapshot) await git(targetRepoDir, ['branch', '-M', 'main']);
+        if (checkoutBranch) await git(targetRepoDir, ['branch', '-M', 'main']);
         if (origin) await git(targetRepoDir, ['remote', 'set-url', 'origin', origin]);
 
         // Restore each submodule from its bundle into the submodule working path.
         for (const sub of index.submodules) {
           const subTarget = join(targetRepoDir, sub.path);
-          await execFileP('git', [...ALLOW_FILE, 'clone', ...(index.snapshot ? ['--branch', index.snapshot.branch] : []), await materialize(sub.bundle), subTarget], {
+          await execFileP('git', [...ALLOW_FILE, 'clone', ...(checkoutBranch ? ['--branch', checkoutBranch] : []), await materialize(sub.bundle), subTarget], {
             maxBuffer: GIT_MAX_BUFFER,
           });
-          if (index.snapshot) await git(subTarget, ['branch', '-M', 'main']);
+          if (checkoutBranch) await git(subTarget, ['branch', '-M', 'main']);
           if (sub.url) await git(subTarget, ['remote', 'set-url', 'origin', sub.url]);
         }
       } finally {

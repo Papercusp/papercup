@@ -182,6 +182,57 @@ describe('git seed provider', () => {
     expect(syncLogs.filter((m) => m.includes('converted installer seed snapshot'))).toHaveLength(2);
   });
 
+  it.each([undefined, 1])('cuts an explicit parent SHA with its pinned child and historical metadata (depth=%s)', async (depth) => {
+    const subSrc = tmpDir('gseed-pinned-sub-');
+    await initRepo(subSrc);
+    writeFileSync(join(subSrc, 'lib.txt'), 'pinned child');
+    await g(subSrc, ['add', '.']);
+    await g(subSrc, ['commit', '-qm', 'child v1']);
+    const childSha = await g(subSrc, ['rev-parse', 'HEAD']);
+
+    const src = tmpDir('gseed-pinned-super-');
+    await initRepo(src);
+    writeFileSync(join(src, 'top.txt'), 'pinned parent');
+    await g(src, ['add', '.']);
+    await g(src, ['commit', '-qm', 'parent v1']);
+    await g(src, ['-c', 'protocol.file.allow=always', 'submodule', 'add', subSrc, 'vendor/sub']);
+    await g(src, ['commit', '-qm', 'pin child']);
+    const parentSha = await g(src, ['rev-parse', 'HEAD']);
+    expect(parentSha).not.toBe(childSha);
+
+    // Both worktrees and the current .gitmodules advance beyond the selected
+    // parent. A cut must read the selected tree, never the checked-out child HEAD.
+    const child = join(src, 'vendor/sub');
+    await g(child, ['config', 'user.email', 'seed@test']);
+    await g(child, ['config', 'user.name', 'Seed Test']);
+    await g(child, ['config', 'commit.gpgsign', 'false']);
+    writeFileSync(join(child, 'lib.txt'), 'newer child');
+    await g(child, ['commit', '-aqm', 'child v2']);
+    writeFileSync(join(src, 'top.txt'), 'newer parent');
+    await g(src, ['config', '-f', '.gitmodules', 'submodule.vendor/sub.url', 'https://example/newer-child']);
+    await g(src, ['add', '.']);
+    await g(src, ['commit', '-qm', 'parent v2']);
+    const sourceHead = await g(src, ['rev-parse', 'HEAD']);
+
+    const provider = createGitSeedProvider();
+    const { entry, payload } = await provider.cut({
+      sourceRepoDir: src, stagingDir: tmpDir('gseed-pinned-stage-'),
+      originUrl: 'https://example/parent', rev: parentSha, depth,
+    });
+    const target = join(tmpDir('gseed-pinned-target-'), 'checkout');
+    await provider.restore(entry, payload, { targetRepoDir: target });
+    expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('pinned parent');
+    expect(readFileSync(join(target, 'vendor/sub/lib.txt'), 'utf8')).toBe('pinned child');
+    expect(await g(join(target, 'vendor/sub'), ['remote', 'get-url', 'origin'])).toBe(subSrc);
+    expect(await g(target, ['status', '--short'])).toBe('');
+    if (!depth) {
+      expect(await g(target, ['rev-parse', 'HEAD'])).toBe(parentSha);
+      expect(await g(join(target, 'vendor/sub'), ['rev-parse', 'HEAD'])).toBe(childSha);
+    }
+    expect(await g(src, ['rev-parse', 'HEAD'])).toBe(sourceHead);
+    expect(await g(src, ['status', '--short'])).toBe('');
+  });
+
   it('encrypts the seed at rest; restores with the key; fails without/with a wrong key', async () => {
     const src = tmpDir('gseed-enc-src-');
     await initRepo(src);
