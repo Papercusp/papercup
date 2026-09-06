@@ -57,7 +57,17 @@ set -uo pipefail
 # defaults are pinned together by host-dump-coverage-defaults.test.ts — if they
 # drift, the hook simply never finds a receipt and keeps dumping, so the failure
 # is a silent return of the redundancy rather than a broken backup.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
+# The FALLBACK moved to /mnt/backup/db-dumps on 2026-09-05 (WI-2146225).
+# WI-2145150 relocated the dumps by setting Environment= on two units and left
+# every fallback here naming /mnt/data/Backup/db-dumps. WI-2145397 made each
+# unit carry the variable, which fixes the units — but a fallback is what runs
+# when there is NO unit: a manual invocation, a new timer someone forgets to
+# annotate, a test. Those silently wrote ~100G back onto the 96%-full volume
+# the relocation existed to escape, re-creating the split rather than erroring.
+# A default should name the volume that actually has room; the env var stays
+# the override. Pinned to host-dump-coverage.ts by
+# host-dump-coverage-defaults.test.ts — change both or that test goes red.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
 BACKUP_USER="${USER:-$(id -un)}"
@@ -133,6 +143,47 @@ EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template)
 
 mkdir -p "$DUMP" "$(dirname "$LOCK")"
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
+
+# ── The dump directory OWNS its .kopiaignore ────────────────────────────────
+# This script writes each dump to <db>.tmp (mode 0700 postgres) and renames it
+# into place only after chown+validate. A kopia sweep that walks a .tmp catches
+# a half-written dump — never the backup of record, and on a ~90G database that
+# is a large pointless upload into a repo living on a 96%-full volume.
+#
+# The rule existed. It lived ONLY as an untracked .kopiaignore sitting in the
+# dump directory, owned by nobody — so when WI-2145150 relocated the dumps to
+# /mnt/backup/db-dumps the file did not travel, and the protection silently
+# ceased to exist. That is the SAME failure shape as this work-item's other two
+# defects: state kept outside the tree does not survive a move, and its absence
+# raises no error anywhere. The durable answer is not to re-place the file by
+# hand at the new path — it is to make the producer provision it, so the rule
+# arrives wherever the dumps do, including the next relocation.
+#
+# Idempotent and non-clobbering: create it when absent, otherwise only ensure
+# each REQUIRED rule is present. Operators legitimately add their own
+# exclusions here, and this must never eat them — we only ever append.
+#
+# ensure_kopiaignore_rule <rule> <why>
+# Appends <rule> only when that exact line is absent. Never rewrites, never
+# reorders, never removes. Safe to call repeatedly and in any order.
+ensure_kopiaignore_rule() {
+  local rule="$1" why="${2:-}"
+  if [ ! -f "$DUMP/.kopiaignore" ]; then
+    printf '%s\n' \
+      '# Provisioned by papercusp-db-backup.sh (WI-2146225) so the rules travel' \
+      '# with the dump dir — including across the next relocation.' \
+      '' > "$DUMP/.kopiaignore"
+    log ".kopiaignore provisioned at $DUMP (was missing)"
+  fi
+  if ! grep -qxF "$rule" "$DUMP/.kopiaignore"; then
+    [ -n "$why" ] && printf '%s\n' "" "# $why" >> "$DUMP/.kopiaignore"
+    printf '%s\n' "$rule" >> "$DUMP/.kopiaignore"
+    log ".kopiaignore at $DUMP was missing '$rule' — appended"
+  fi
+}
+
+ensure_kopiaignore_rule '*.tmp' \
+  'In-progress dumps: <db>.tmp is mode 0700 postgres and is renamed into place only after validation. Never the backup of record.'
 
 # Single instance. A backup still running when the next timer fires must not be
 # joined by a second one (that is WI-3550's overlap failure, on a bigger job).
@@ -287,8 +338,25 @@ rm_tmp() {
   }
 }
 
-for db in $DBS; do
-  out="$PGOUT/$db"
+# dump_one <db> <label> [extra pg_dump args...]
+#
+# WHY A FUNCTION (WI-2146225). This body carries every safety property the
+# EI-10733 family cost us to learn: the space precondition, the postgres->service
+# chown/chmod that keeps the artifact readable by BOTH the archiver and
+# pg_restore, the pg_restore -l validation that refuses to trust an exit code,
+# the atomic swap that leaves last-known-good intact on failure, and the stderr
+# capture that makes a failure diagnosable. The tiered dumps below need ALL of
+# them. Copying the body would have produced a second dump path that silently
+# drifts out of those guarantees — which is the exact shape of every bug in the
+# header comment.
+#
+# Returns 0 dumped, 1 failed, 2 skipped for space. The CALLER records the
+# outcome, because different callers must account for failure differently (see
+# the tier pass: a tier failure must not redden a healthy authoritative dump).
+dump_one() {
+  local db="$1" label="$2"; shift 2
+  local out="$PGOUT/$label"
+  local prev_gb prev_kb need_gb avail_gb dumperr rc sz detail
   rm_tmp "$out.tmp"
 
   # Per-database precondition. The previous successful dump of THIS database is
@@ -309,15 +377,14 @@ for db in $DBS; do
   need_gb=$(( prev_gb * PC_BACKUP_SPACE_SAFETY / 100 ))
   avail_gb=$(fs_avail_gb)
   if [ "$prev_gb" -gt 0 ] && [ "$avail_gb" -lt $(( need_gb + PC_BACKUP_MIN_FREE_GB )) ]; then
-    FAILED+=("$db")
-    log "$db SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
-    continue
+    log "$label SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
+    return 2
   fi
 
-  dumperr=$(mktemp -t "pcbackup-$db-XXXXXX.err")
+  dumperr=$(mktemp -t "pcbackup-$label-XXXXXX.err")
   if run_bounded_watched "$TIMEOUT_SEC" timeout --kill-after=20s "$TIMEOUT_SEC" \
         sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
-        pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none -f "$out.tmp" "$db" 2>"$dumperr"; then
+        pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none "$@" -f "$out.tmp" "$db" 2>"$dumperr"; then
 
     # pg_dump chmods its -Fd output to 0700 postgres:postgres. Left that way the
     # dump is UNREADABLE BY KOPIA (which runs as the backup service user), so it would never
@@ -348,10 +415,10 @@ for db in $DBS; do
     # family is "reported success while producing nothing usable", so a dump is
     # only 'ok' if pg_restore can actually read its table of contents.
     if ! pg_restore -l "$out.tmp" >/dev/null 2>&1; then
-      rm_tmp "$out.tmp"; FAILED+=("$db")
-      log "$db FAIL — dump completed but is NOT a valid archive (pg_restore -l could not read it); previous dump left intact"
+      rm_tmp "$out.tmp"
+      log "$label FAIL — dump completed but is NOT a valid archive (pg_restore -l could not read it); previous dump left intact"
       rm -f "$dumperr"
-      continue
+      return 1
     fi
 
     # Atomic swap, NO local ".prev". A previous version of this kept "$out.prev"
@@ -366,12 +433,12 @@ for db in $DBS; do
     rm -rf "$out"
     mv -f "$out.tmp" "$out"
     sz=$(du -sb "$out" 2>/dev/null | cut -f1)
-    DUMPED+=("$db")
-    log "$db ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
+    log "$label ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
+    rm -f "$dumperr"
+    return 0
   else
     rc=$?
     rm_tmp "$out.tmp"
-    FAILED+=("$db")
     # Say WHY. The old line logged "timeout ${TIMEOUT_SEC}s or dump error" and
     # discarded pg_dump's stderr entirely, so a failure was undiagnosable after
     # the fact — the same detector gap that let EI-10733 rot silently for 30
@@ -379,13 +446,175 @@ for db in $DBS; do
     # actual error text.
     detail=$(tr '\n' ' ' <"$dumperr" 2>/dev/null | tail -c 400)
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-      log "$db FAIL — TIMEOUT after ${TIMEOUT_SEC}s (exit $rc); previous dump left intact${detail:+ — stderr: $detail}"
+      log "$label FAIL — TIMEOUT after ${TIMEOUT_SEC}s (exit $rc); previous dump left intact${detail:+ — stderr: $detail}"
     else
-      log "$db FAIL — pg_dump exit $rc; previous dump left intact${detail:+ — stderr: $detail}"
+      log "$label FAIL — pg_dump exit $rc; previous dump left intact${detail:+ — stderr: $detail}"
     fi
+    rm -f "$dumperr"
+    return 1
   fi
-  rm -f "$dumperr"
+}
+
+# ── tier configuration — declared HERE because it decides the pass below ────
+# These two live above the undifferentiated pass, not beside the tier pass that
+# uses the rest of the tier config, because as of the 2026-09-05 cutover they
+# DECIDE THIS PASS'S MEMBERSHIP: a tiered database is dumped as its tier pair
+# INSTEAD of whole, not as well as. Moving them back down silently re-enables
+# the double dump.
+PC_BACKUP_TIERS_ENABLED="${PC_BACKUP_TIERS_ENABLED:-1}"
+PC_BACKUP_TIER_DBS="${PC_BACKUP_TIER_DBS:-papercusp}"
+
+# is_tiered <db> — true when THIS run dumps $db as a tier pair instead of whole.
+# Setting PC_BACKUP_TIERS_ENABLED=0 is the escape hatch and it is complete: the
+# database falls straight back into the undifferentiated pass below, so disabling
+# tiers can never leave it undumped. That fallback is also why "$db" itself is NOT
+# written into .kopiaignore — an ignore rule would survive the fallback and turn it
+# into silent zero coverage, which is the failure this whole work-item repairs.
+is_tiered() {
+  [ "$PC_BACKUP_TIERS_ENABLED" = 1 ] || return 1
+  case " $PC_BACKUP_TIER_DBS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+for db in $DBS; do
+  # RETIRED 2026-09-05 (WI-2146225): the undifferentiated papercusp dump. It was
+  # 94G written every hour beside 95G of tiers covering the same rows — the same
+  # data dumped twice, at double the dump budget, on a run already taking ~20min.
+  # Authorized only after tier 1 was proven BOTH restorable (pg_restore rc=0, 590
+  # tables, 95 FKs validated) AND inside a COMPLETE kopia snapshot at PATH level
+  # (k4258cdeb). Neither half alone is sufficient: an enrolled-but-unsnapshotted
+  # tier and a snapshotted-but-unrestorable one both read as "covered".
+  if is_tiered "$db"; then
+    log "$db dumped as tiers ($db-state + $db-transcript), not undifferentiated"
+    continue
+  fi
+  if dump_one "$db" "$db"; then DUMPED+=("$db"); else FAILED+=("$db"); fi
 done
+
+# ── tiered dumps (WI-2146225) — AUTHORITATIVE PHASE ─────────────────────────
+# MEASURED 2026-09-05 on the live 93 GiB papercusp dump, by attributing every
+# -Fd data member to its table via the archive TOC: SIX append-only
+# transcript/telemetry tables are 73 GiB of it (78%), and the state that
+# actually has to come back to restart this system is the other 20 GiB.
+#
+#   session_archive_files 42G · session_turns 9.1G · tool_invocations 8.3G
+#   session_turn_chunks 7.3G · session_turn_parts 5.6G · route_invocations 3.1G
+#
+# WHY THE SPLIT LIVES HERE AND NOT IN KOPIA. It was ratified as a kopia
+# exclusion first; that is not expressible. A -Fd dump names its data members by
+# pg_dump's internal dumpId, and dumpIds DRIFT between dump sets (measured:
+# session_archive_files was 30053 in the live set and 30016 in a frozen one, +37
+# on every row) while only the pg OID is stable. A filename exclusion would keep
+# matching — silently, with no error — a DIFFERENT table on the next run. The
+# producer is the only layer that can name a table by name.
+#
+# THE TIERS ARE NOW AUTHORITATIVE (cutover 2026-09-05, WI-2146225). This pass was
+# additive-first on purpose while the undifferentiated dump still existed; it does
+# not exist any more, so for a tiered database THIS is the entire backup — tier 1
+# ($db-state) carries the state that has to come back to restart the system and is
+# the tier enrolled in kopia; tier 2 ($db-transcript) is the local-only append-only
+# archive. Together they are the whole database.
+#
+# TIER FAILURES NOW REDDEN THE BACKUP, and this inverted with the cutover. While an
+# undifferentiated dump existed, reddening over a redundant artifact was a FALSE
+# ALARM and this file warns twice that a false alarm is how a real one stops being
+# believed. With that dump retired the same silence is the opposite defect: a failed
+# tier means the database has NO fresh backup at all, and staying green over it is
+# exactly the 30-day-unnoticed blindness EI-10733 exists to prevent. So each tier
+# joins DUMPED/FAILED like any other database, AND keeps its own status field.
+#
+# ⚠ The consumer default travels with this: papercup-backup-health-check.sh asserts
+# freshness over BACKUP_ARTIFACTS, whose default named pg/papercusp. Left stale it
+# would have alarmed forever on a path nothing writes — the PERMANENT false alarm
+# documented in that file's own header — while never once looking at the tiers.
+PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.session_archive_files harness_shared.session_turns harness_shared.tool_invocations harness_shared.session_turn_chunks harness_shared.session_turn_parts harness_shared.route_invocations}"
+TIER_DUMPED=()
+TIER_FAILED=()
+
+# ── Tier 2 (transcript) is NEVER enrolled in kopia — and that rule is TREE-OWNED
+# The transcript tier is ~73G of high-churn session archive. The ratified ruling
+# on WI-2146225 is "enroll tier 1, never tier 2": covering it would put tens of
+# gigabytes of churning duplicate data into a repo whose volume capacity is the
+# very wall that caused the dump relocation this work-item exists to repair.
+#
+# That exclusion previously lived ONLY as an operator-added line in an untracked
+# .kopiaignore — the exact failure shape documented at the top of this file, and
+# the one that already cost this system its dump coverage once: state kept
+# outside the tree does not survive a relocation, and its absence raises no
+# error anywhere. It would have failed silently and EXPENSIVELY here (a sweep
+# would simply start uploading tier 2), so the producer provisions it.
+#
+# Derived from PC_BACKUP_TIER_DBS rather than hardcoded, so it cannot drift from
+# the tier set actually being written. Tier 1 (<db>-state) is deliberately NOT
+# excluded: it is the enrolled tier.
+if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
+  for db in $PC_BACKUP_TIER_DBS; do
+    ensure_kopiaignore_rule "$db-transcript" \
+      "Tier 2 (transcript) is deliberately NOT backed up — ratified on WI-2146225. Tier 1 ($db-state) IS enrolled and must stay covered."
+  done
+fi
+
+if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
+  for db in $PC_BACKUP_TIER_DBS; do
+    # NO "did the undifferentiated dump succeed" GATE ANY MORE. It read
+    # `case " ${DUMPED[*]} " in *" $db "*)` and skipped the tiers when the whole-db
+    # dump had failed — correct while that dump was the backup and the tiers were a
+    # redundant extra. After the cutover it inverts into the worst possible rule:
+    # the tiered database is never in DUMPED (nothing dumps it whole), so the gate
+    # would skip the ONLY backup this database has, on every single run, and report
+    # a green "backup OK" while doing it. Deleted deliberately, not overlooked.
+
+    # VERIFY EVERY CONFIGURED TABLE EXISTS FIRST — this is the recurrence guard
+    # for the failure this split can have, and it is silent in BOTH directions:
+    # `pg_dump --exclude-table-data=<pattern>` does NOT error when the pattern
+    # matches nothing. A renamed or mistyped table therefore produces a "state"
+    # tier that still carries the 42 GiB table, exits 0, validates under
+    # pg_restore -l, and reports ok — while `--table=<same pattern>` produces a
+    # transcript tier MISSING it. So one typo silently un-splits the state tier
+    # and silently drops rows from the transcript tier at the same time, and
+    # every signal downstream stays green. Size alone cannot catch it either:
+    # both tiers are expected to change size run to run.
+    # NOTE the connection: $PSQL is pinned to -d postgres, and to_regclass is
+    # resolved per-DATABASE, so asking it there would report every table missing
+    # and disable the tiers permanently. Ask the database being dumped.
+    missing=""
+    for t in $PC_BACKUP_TRANSCRIPT_TABLES; do
+      [ "$(sudo -n -u postgres psql -h /var/run/postgresql -d "$db" -tAc \
+             "SELECT to_regclass('$t') IS NOT NULL" 2>/dev/null | tr -d ' ')" = "t" ] \
+        || missing="${missing:+$missing }$t"
+    done
+    if [ -n "$missing" ]; then
+      TIER_FAILED+=("$db-state" "$db-transcript")
+      FAILED+=("$db-state" "$db-transcript")
+      log "$db tiers SKIPPED — configured transcript table(s) do not exist: $missing. Refusing to dump: pg_dump ignores a table pattern that matches nothing, so proceeding would silently leave those rows in the state tier AND out of the transcript tier."
+      continue
+    fi
+
+    ex=(); inc=()
+    for t in $PC_BACKUP_TRANSCRIPT_TABLES; do
+      # --exclude-table-data keeps the DDL and drops the rows, so the state tier
+      # restores to a working schema with empty transcript tables rather than to
+      # a database missing them entirely.
+      ex+=("--exclude-table-data=$t")
+      inc+=("--table=$t")
+    done
+
+    # Each tier lands in BOTH ledgers: TIER_* so a consumer can still ask about the
+    # split specifically, and DUMPED/FAILED because since the cutover these ARE the
+    # database's backup and a failure has to reach ALERT-BACKUP-FAILING like any
+    # other. Reporting a tier failure only in tierFailed[] would leave the run's
+    # top-level "ok" true with the database wholly unbacked.
+    if dump_one "$db" "$db-state" "${ex[@]}"; then
+      TIER_DUMPED+=("$db-state"); DUMPED+=("$db-state")
+    else
+      TIER_FAILED+=("$db-state"); FAILED+=("$db-state")
+    fi
+    if dump_one "$db" "$db-transcript" "${inc[@]}"; then
+      TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
+    else
+      TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
+    fi
+  done
+fi
 
 reap_own_stragglers   # nothing of ours may outlive this script holding locks
 
@@ -535,6 +764,16 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   printf '  "dumped": [%s],\n' "$(json_arr ${DUMPED[@]+"${DUMPED[@]}"})"
   printf '  "failed": [%s],\n' "$(json_arr ${FAILED[@]+"${FAILED[@]}"})"
   printf '  "systemIdentifier": "%s",\n' "$SYSID"
+  # WI-2146225 tiered dumps. These fields are now a NAMED VIEW of the split, not a
+  # quarantine: since the 2026-09-05 cutover each tier ALSO appears in dumped[] /
+  # failed[] and therefore does move "ok". That is the opposite of the additive
+  # phase, when a tier was a redundant copy beside a green authoritative dump and
+  # folding its failure into "ok" would have alarmed on a healthy backup. The tier
+  # pair IS the backup now, so a consumer asserting only on dumped[]/failed[] gets
+  # the right answer, and one that wants the split specifically still has these.
+  printf '  "tiersEnabled": %s,\n' "$([ "$PC_BACKUP_TIERS_ENABLED" = 1 ] && echo true || echo false)"
+  printf '  "tierDumped": [%s],\n' "$(json_arr ${TIER_DUMPED[@]+"${TIER_DUMPED[@]}"})"
+  printf '  "tierFailed": [%s],\n' "$(json_arr ${TIER_FAILED[@]+"${TIER_FAILED[@]}"})"
   # WI-39502: the oddsmith embedded PG (5544) reports SEPARATELY from the system
   # cluster above — see the leg's comment for why coupling them would be a bug.
   # healthcheck.sh asserts oddsmithLastSuccessEpoch on its own threshold.
