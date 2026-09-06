@@ -509,6 +509,57 @@ Preserve this plan body.
     expect(ratifyRev.content_hash).toBe(activePlan.content_hash);
   });
 
+  it('reads an immutable historical rubric revision without falling back to current template_data', async () => {
+    const rubricId = 'revision-addressed-rubric';
+    await rubrics.proposeRubric({
+      rubricId,
+      characteristic: 'hive-coordination',
+      title: 'Revision v1',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'author-a',
+    });
+    const v2Criteria = [
+      ...sampleCriteria,
+      {
+        key: 'new-criterion',
+        title: 'New criterion',
+        model: 'The second revision carries an additional measurable contract.',
+        method: 'Read the second revision snapshot and count this criterion.',
+        driftMarkers: 'The criterion disappears from the current rubric.',
+      },
+    ];
+    const current = await rubrics.proposeRubric({
+      rubricId,
+      characteristic: 'hive-coordination',
+      title: 'Revision v2',
+      criteria: v2Criteria,
+      status: 'active',
+      by: 'author-a',
+    });
+
+    expect(current.revision).toBe(2);
+    const historical = await rubrics.getRubric(rubricId, 1);
+    expect(historical).not.toBeNull();
+    expect(historical!.revision).toBe(1);
+    expect(historical!.title).toBe('Revision v2'); // current plan-row metadata is preserved
+    expect(historical!.criteria).toHaveLength(sampleCriteria.length);
+    expect(historical!.criteria.some((criterion) => criterion.key === 'new-criterion')).toBe(false);
+    expect(historical!.criteriaHash).toBeTruthy();
+    expect(historical!.criteriaHash).not.toBe(current.criteriaHash);
+    expect(await rubrics.getRubric(rubricId, 99)).toBeNull();
+
+    // A revision row without the enriched structured snapshot is not safe to grade:
+    // the historical read must fail closed instead of using the current row.
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_revisions
+        (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+         rationale, author_kind, author_id, created_at)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${rubricId}, 3, md5('malformed'),
+              '# malformed historical rubric', 'test', 'agent', 'test', 1)`;
+    expect(await rubrics.getRubric(rubricId, 3)).toBeNull();
+  });
+
   it('ratify PRESERVES every criterion replication drill in template_data (EI-10443 — the status-flip must not strip them)', async () => {
     // The reported bug: rubrics:ratify's status-flip write DESTROYED criterion.replication
     // drills from template_data — whole-document revalidation silently dropped the then-
