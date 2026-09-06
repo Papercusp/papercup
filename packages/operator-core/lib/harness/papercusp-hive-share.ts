@@ -45,8 +45,9 @@ import type { HivePolicy } from '../hive-policy-schema';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import {
-  fetchOwnerHiveIdentity,
+  fetchOwnerHiveIdentityRecord,
   publishOwnerHiveIdentity,
+  isUsableIdentityPassphrase,
   type OwnerHiveIdentity,
 } from './papercusp-shared-identity-gist';
 import { bakedCanonicalHiveInvite } from './papercusp-hive-join';
@@ -60,13 +61,30 @@ export interface SharedHiveState {
   token: string;
   /** The identity fetched from the gist; null ⇒ THIS device is the first/creator. */
   existing: OwnerHiveIdentity | null;
+  /** The OWNER-HELD passphrase the identity gist is sealed under (WI-2147371 / D-056).
+   *  Required and non-optional: without one there is no publish path at all, so
+   *  {@link adoptSharedHiveIdentity} returns null rather than producing a state that
+   *  could reach a plaintext write. */
+  passphrase: string;
+  /** True when `existing` came from a pre-fix v1 PLAINTEXT gist. goSharedHive re-seals
+   *  it in place so the live exposure is retired, not merely adopted. */
+  existingLegacyPlaintext: boolean;
 }
 
 export interface HiveShareDeps {
   isEnabled?: () => Promise<boolean>;
   resolveGithub?: typeof resolveLocalGithubIdentity;
-  fetchIdentity?: typeof fetchOwnerHiveIdentity;
+  /** Resolve the canonical gist blob AND whether it was a legacy plaintext publish.
+   *  Default: {@link fetchOwnerHiveIdentityRecord}. */
+  fetchIdentityRecord?: typeof fetchOwnerHiveIdentityRecord;
   publishIdentity?: typeof publishOwnerHiveIdentity;
+  /** The OWNER-HELD passphrase the identity gist is sealed under (WI-2147371 / D-056).
+   *  Default: `PAPERCUSP_HIVE_IDENTITY_PASSPHRASE` from the environment — injected
+   *  config the owner supplies on each of their devices, never a repo file and never
+   *  the gh token (which rotates and would strand every published blob). When it
+   *  resolves to null/too-short, sharing NO-OPS for this boot: the device keeps its own
+   *  hive identity. That degradation is deliberate — there is no plaintext fallback. */
+  identityPassphrase?: () => Promise<string | null>;
   storeKey?: (keychainId: string, value: Buffer, service: string) => Promise<unknown>;
   loadKey?: (keychainId: string, service: string) => Promise<{ kind: 'ok'; value: Buffer } | { kind: 'error' }>;
   setListing?: typeof setHiveListing;
@@ -102,6 +120,18 @@ export interface HiveShareDeps {
   contentWriteAuthority?: 'member' | 'author-scoped';
 }
 
+/**
+ * The owner-held sealing passphrase (WI-2147371 / D-056). Injected config on each of
+ * the owner's devices — deliberately NOT the gh token (it rotates, which would strand
+ * every already-published blob) and never a repo file. Absent ⇒ sharing no-ops.
+ */
+export const IDENTITY_PASSPHRASE_ENV = 'PAPERCUSP_HIVE_IDENTITY_PASSPHRASE';
+
+async function defaultIdentityPassphrase(): Promise<string | null> {
+  const raw = process.env[IDENTITY_PASSPHRASE_ENV];
+  return isUsableIdentityPassphrase(raw) ? raw : null;
+}
+
 async function defaultIsEnabled(): Promise<boolean> {
   try {
     return await getFlag(FLAGS.DOGFOOD_PAPERCUSP_POT_SHARE, 'system');
@@ -119,14 +149,23 @@ export async function adoptSharedHiveIdentity(deps: HiveShareDeps = {}): Promise
   if (!(await isEnabled())) return null;
 
   const resolveGithub = deps.resolveGithub ?? resolveLocalGithubIdentity;
-  const fetchIdentity = deps.fetchIdentity ?? fetchOwnerHiveIdentity;
+  const fetchIdentityRecord = deps.fetchIdentityRecord ?? fetchOwnerHiveIdentityRecord;
+  const identityPassphrase = deps.identityPassphrase ?? defaultIdentityPassphrase;
   const storeKey =
     deps.storeKey ?? ((id, value, service) => keychainStore(id, value, service));
 
   try {
     const id = await resolveGithub();
     if (id.kind !== 'ok') return null; // no gh yet → can't share; retry next boot
-    const existing = await fetchIdentity(id.token);
+
+    // No owner passphrase ⇒ no sealed publish is possible, and there is deliberately no
+    // plaintext fallback (WI-2147371). Skip sharing entirely rather than reach a write
+    // path that could leak the hive private key to anyone who learns the gist URL.
+    const passphrase = await identityPassphrase();
+    if (!isUsableIdentityPassphrase(passphrase)) return null;
+
+    const record = await fetchIdentityRecord(id.token, passphrase);
+    const existing = record?.identity ?? null;
     if (existing) {
       // Adopt the owner's hive identity BEFORE the hive is created, so
       // ensurePapercuspHive → loadOrGenerateHiveKeypair LOADS it (same pubkey ⇒ same
@@ -137,7 +176,13 @@ export async function adoptSharedHiveIdentity(deps: HiveShareDeps = {}): Promise
         HIVE_KEYPAIR_SERVICE,
       );
     }
-    return { githubLogin: id.githubLogin, token: id.token, existing };
+    return {
+      githubLogin: id.githubLogin,
+      token: id.token,
+      existing,
+      passphrase,
+      existingLegacyPlaintext: record?.legacyPlaintext ?? false,
+    };
   } catch {
     return null; // best-effort
   }
@@ -237,12 +282,26 @@ export async function goSharedHive(state: SharedHiveState | null, deps: HiveShar
       const loaded = await loadKey(hiveKeychainId(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG), HIVE_KEYPAIR_SERVICE);
       if (loaded.kind !== 'ok') return; // can't read our own key — skip, retry next boot
       inviteSecret = bakedSecret ?? randomSecret();
-      await publishIdentity(state.token, {
-        version: 1,
-        privateKeyDer: Buffer.from(loaded.value).toString('base64'),
-        pubkeyBase64: derivePubkey(loaded.value),
-        inviteSecret,
-      });
+      await publishIdentity(
+        state.token,
+        {
+          version: 1,
+          privateKeyDer: Buffer.from(loaded.value).toString('base64'),
+          pubkeyBase64: derivePubkey(loaded.value),
+          inviteSecret,
+        },
+        state.passphrase,
+      );
+    } else if (state.existingLegacyPlaintext && state.existing) {
+      // WI-2147371: the canonical gist is a pre-fix PLAINTEXT blob that is readable by
+      // anyone who learns its URL. Adopting it is not enough — RE-SEAL it in place (the
+      // publish path PATCHes the canonical gist), which is what actually retires the
+      // live exposure instead of only preventing new ones.
+      await publishIdentity(
+        state.token,
+        { ...state.existing, inviteSecret: state.existing.inviteSecret },
+        state.passphrase,
+      );
     }
     if (!inviteSecret) return;
 
@@ -322,13 +381,21 @@ export async function shareExistingHive(deps: HiveShareDeps = {}): Promise<void>
   if (!(await isEnabled())) return;
 
   const resolveGithub = deps.resolveGithub ?? resolveLocalGithubIdentity;
-  const fetchIdentity = deps.fetchIdentity ?? fetchOwnerHiveIdentity;
+  const fetchIdentityRecord = deps.fetchIdentityRecord ?? fetchOwnerHiveIdentityRecord;
+  const identityPassphrase = deps.identityPassphrase ?? defaultIdentityPassphrase;
   const loadPubkey = deps.loadPubkey ?? loadHiveKeyStatus;
 
   try {
     const id = await resolveGithub();
     if (id.kind !== 'ok') return;
-    const existing = await fetchIdentity(id.token);
+
+    // Same fail-closed rule as adoptSharedHiveIdentity: no owner passphrase ⇒ no sealed
+    // publish path exists, and there is no plaintext fallback (WI-2147371).
+    const passphrase = await identityPassphrase();
+    if (!isUsableIdentityPassphrase(passphrase)) return;
+
+    const record = await fetchIdentityRecord(id.token, passphrase);
+    const existing = record?.identity ?? null;
     if (existing) {
       const status = await loadPubkey(PAPERCUSP_WORKSPACE_ID, PAPERCUSP_HIVE_SLUG);
       // WI-762: the original guard was `if (localPubkey && localPubkey !== existing.pubkeyBase64) return`
@@ -343,7 +410,16 @@ export async function shareExistingHive(deps: HiveShareDeps = {}): Promise<void>
       // status.kind === 'not_found': no local identity to compare (the expected,
       // legitimate state for every non-owner member device) — proceed.
     }
-    await goSharedHive({ githubLogin: id.githubLogin, token: id.token, existing }, deps);
+    await goSharedHive(
+      {
+        githubLogin: id.githubLogin,
+        token: id.token,
+        existing,
+        passphrase,
+        existingLegacyPlaintext: record?.legacyPlaintext ?? false,
+      },
+      deps,
+    );
   } catch {
     // best-effort
   }
