@@ -539,8 +539,19 @@ describe('work_items:create handler (keyed-array)', () => {
         title: 'outside',
         assign_to: undefined,
         admissionBypass: 'bypass:explicit-assignment',
-        payload: { _claimHold: true },
+        payload: {
+          fleetScopeDowngrade: {
+            requestedAssignee: 'bee-7',
+            reportedBy: 'me',
+            fleet: 'fixed-wave',
+            code: 'fleet_scope_violation',
+          },
+        },
       });
+      // EI-22457572700056749: the refused assignment is stripped, but the
+      // durable fallback must not also be claim-held; otherwise no lane can
+      // adopt the filed finding without a second, hidden override.
+      expect(createM.mock.calls[0][0].payload).not.toHaveProperty('_claimHold');
       expect(fleetAdmission.notify).toHaveBeenCalledOnce();
     });
 
@@ -558,19 +569,19 @@ describe('work_items:create handler (keyed-array)', () => {
         assign_to: undefined,
         admissionBypass: 'bypass:explicit-assignment',
         payload: {
-          _claimHold: true,
           fleetScopeDowngrade: { code: 'fleet_scope_missing', requestedAssignee: 'bee-7' },
         },
       });
+      expect(createM.mock.calls[0][0].payload).not.toHaveProperty('_claimHold');
     });
 
     it('records the requester as reporter so the filing stays attributable', async () => {
       fleetAdmission.decision = { ...outOfScope };
       await body({ kind: 'bug', title: 'outside', assign_to: 'bee-7' });
       expect(createM.mock.calls[0][0].payload).toMatchObject({
-        _claimHold: true,
         fleetScopeDowngrade: { requestedAssignee: 'bee-7', reportedBy: 'me', fleet: 'fixed-wave', code: 'fleet_scope_violation' },
       });
+      expect(createM.mock.calls[0][0].payload).not.toHaveProperty('_claimHold');
     });
 
     it('tells the caller plainly they do NOT hold it, with the leader remedy', async () => {

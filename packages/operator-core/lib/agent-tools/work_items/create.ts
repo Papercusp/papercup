@@ -485,11 +485,11 @@ export default defineTool({
             const requestedAssignee = spec.assign_to;
             spec.payload = {
               ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
-              // EI-21830980285885156: the downgraded filing is deliberately
-              // unassigned, so keep it out of every generic self-select pool
-              // until a fleet owner explicitly adopts it. _create-core stamps
-              // the creator/reason/timestamp attribution for this durable hold.
-              _claimHold: true,
+              // The downgraded filing is deliberately unassigned, but it must remain
+              // adoptable by a lane that can actually own it. Do not add `_claimHold`
+              // here: stripping the refused assignment already protects the fleet
+              // boundary, while a hold would make the durable fallback unclaimable
+              // from both directions.
               fleetScopeDowngrade: {
                 requestedAssignee,
                 reportedBy: ident.ownerId,
