@@ -266,11 +266,15 @@ vi.mock("@/app/harness/Select", () => ({
 
 const improvementsDigest = {
   generatedAt: new Date(0).toISOString(),
-  total: 135,
-  open: 117,
-  byKind: { bug: 107, change: 28 },
-  bySeverity: { major: 87, minor: 40, critical: 5, nit: 3 },
-  byState: { open: 117, resolved: 15, closed: 3 },
+  census: { total: 135 },
+  window: {
+    examined: 135,
+    windowed: false,
+    open: 117,
+    byKind: { bug: 107, change: 28 },
+    bySeverity: { major: 87, minor: 40, critical: 5, nit: 3 },
+    byState: { open: 117, resolved: 15, closed: 3 },
+  },
   autoEligible: [
     {
       id: "EI-75",
@@ -1211,10 +1215,15 @@ describe("LearningTab — Improvements view (default)", () => {
       data: [
         {
           ...improvementsDigest,
-          open: 0,
-          total: 0,
-          returned: 0,
-          windowed: false,
+          census: { total: 0 },
+          window: {
+            examined: 0,
+            windowed: false,
+            open: 0,
+            byKind: {},
+            bySeverity: {},
+            byState: {},
+          },
           autoEligible: [],
           humanQueue: [],
           routedRows: [],
@@ -1252,11 +1261,11 @@ describe("LearningTab — Improvements view (default)", () => {
 
   // WI-386679. The count element's tooltip may not describe a different
   // population than the number it annotates. It used to say "the list holds the
-  // most recent {returned} of {total} captured", but `digest.returned` counts
-  // only the WORK ITEMS the read projected (== autoEligible + humanQueue on the
-  // wire), while the rendered set also carries the routed ideas not yet filed as
-  // work that `allRows` appends when lane === 'all'. Same defect class as D-003,
-  // one level out from the rail chips.
+  // most recent {examined} of {total} captured", but
+  // `digest.window.examined` counts only the WORK ITEMS the read projected
+  // (== autoEligible + humanQueue on the wire), while the rendered set also
+  // carries the routed ideas not yet filed as work that `allRows` appends when
+  // lane === 'all'. Same defect class as D-003, one level out from the rail chips.
   //
   // The lane is deliberately left at its 'all' default: `serverPredicateActive`
   // is true for ANY lane/source/rail/search/column selection, so a narrowed view
@@ -1268,11 +1277,11 @@ describe("LearningTab — Improvements view (default)", () => {
       data: [
         {
           ...improvementsDigest,
-          // Realistic: `returned` equals autoEligible + humanQueue (1 + 1). The
-          // fixture's two routed ideas are unfiled (`plan:` / `gym:` refs, not
-          // `wi:`), so they are listed too — 4 rows under a "2" window.
-          returned: 2,
-          windowed: true,
+          // Realistic: `window.examined` equals autoEligible + humanQueue
+          // (1 + 1). The fixture's two routed ideas are unfiled (`plan:` /
+          // `gym:` refs, not `wi:`), so they are listed too — 4 rows under a
+          // "2" window.
+          window: { ...improvementsDigest.window, examined: 2, windowed: true },
         },
       ],
       loading: false,
@@ -1576,11 +1585,17 @@ describe("LearningTab — Improvements view (default)", () => {
       data: [
         {
           ...improvementsDigest,
-          total: 0,
-          open: 0,
+          census: { total: 0 },
+          window: {
+            examined: 0,
+            windowed: false,
+            open: 0,
+            byKind: {},
+            bySeverity: {},
+            byState: {},
+          },
           autoEligible: [],
           humanQueue: [],
-          byState: {},
         },
       ],
       loading: false,
@@ -1604,11 +1619,17 @@ describe("LearningTab — Improvements view (default)", () => {
       data: [
         {
           ...improvementsDigest,
-          total: 0,
-          open: 0,
+          census: { total: 0 },
+          window: {
+            examined: 0,
+            windowed: false,
+            open: 0,
+            byKind: {},
+            bySeverity: {},
+            byState: {},
+          },
           autoEligible: [],
           humanQueue: [],
-          byState: {},
         },
       ],
       loading: false,
@@ -1748,8 +1769,14 @@ describe("LearningTab — Improvements view (default)", () => {
       data: [
         {
           ...improvementsDigest,
-          total: 1,
-          open: 1,
+          census: { total: 1 },
+          window: {
+            ...improvementsDigest.window,
+            examined: 1,
+            windowed: false,
+            open: 1,
+            byState: { open: 1 },
+          },
           autoEligible: [],
           humanQueue: [improvementsDigest.humanQueue[0]],
         },
@@ -2849,8 +2876,15 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
       data: [
         {
           ...improvementsDigest,
-          total: 0,
-          open: 0,
+          census: { total: 0 },
+          window: {
+            examined: 0,
+            windowed: false,
+            open: 0,
+            byKind: {},
+            bySeverity: {},
+            byState: {},
+          },
           autoEligible: [],
           humanQueue: [],
         },
