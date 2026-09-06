@@ -30,6 +30,7 @@ import { queueConcurrency } from './queue-concurrency';
 import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_FLEET_CONTROL_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
@@ -97,6 +98,15 @@ const routinesCriticalQueue = idempotentWorkflowQueue(
   ROUTINES_CRITICAL_QUEUE,
   () => new WorkflowQueue(ROUTINES_CRITICAL_QUEUE, { concurrency: queueConcurrency(2) }),
 );
+// EI-22526486100493483: fleet restoration is latency-sensitive control-plane work,
+// but its spawn + worker-attestation path can be materially longer than git-sync,
+// loop wakes, or inbound-source polls. A dedicated serial lane prevents an ordinary
+// due-routine backlog from starving recovery without letting headcount work occupy
+// any of those must-stay-responsive queues.
+const routinesFleetControlQueue = idempotentWorkflowQueue(
+  ROUTINES_FLEET_CONTROL_QUEUE,
+  () => new WorkflowQueue(ROUTINES_FLEET_CONTROL_QUEUE, { concurrency: queueConcurrency(1) }),
+);
 // EI-21386288922867645: loop wakes are quick but deadline-sensitive. A five-minute
 // loop sat FIFO behind 29 shared-routines jobs for ~11 minutes; a separate bounded
 // lane keeps long green-checkpoint/gym fires from consuming its execution slots.
@@ -125,6 +135,7 @@ const routinesReleaseQueue = idempotentWorkflowQueue(
 export const ROUTINE_FIRE_QUEUES = [
   routinesQueue.name,
   routinesCriticalQueue.name,
+  routinesFleetControlQueue.name,
   routinesLoopQueue.name,
   routinesTriggersQueue.name,
   routinesReleaseQueue.name,

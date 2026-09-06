@@ -127,6 +127,10 @@ curl -X POST http://127.0.0.1:8787/harnesses \
    wrangler secret put GITHUB_CLIENT_SECRET
    wrangler secret put IP_HASH_PEPPER       # 32 random bytes, base64
    ```
+   Commerce (Stripe) needs two more — see
+   [Stripe commerce runbook](#stripe-commerce-runbook-p-038) below. `wrangler
+   secret list` is the authoritative check for which are installed; the Worker
+   answers `payments_unconfigured` on `/commerce/checkout-sessions` without them.
 
 4. **DNS + Workers route:**
    - Decide the hostname. `cupboard.papercusp.dev` is the v5 default; can also live at `cupboard.papercuspai.com` if the team prefers a single brand.
@@ -142,6 +146,124 @@ curl -X POST http://127.0.0.1:8787/harnesses \
    ```bash
    echo 'PAPERCUSP_CUPBOARD_URL="https://<hostname>"' >> ~/.papercusp/env
    ```
+
+## Stripe commerce runbook (P-038)
+
+How to arm real card payments on a deployed Cupboard Worker, and how to prove
+the whole chain works. Verified end to end in Stripe TEST mode on 2026-09-06
+against Worker version `011d7af2-42fd-4127-aa88-4542afaba225`.
+
+### 1. Install the two Stripe secrets
+
+```bash
+cd apps/operator-public
+wrangler secret put STRIPE_SECRET_KEY      # sk_test_… (or sk_live_… in production)
+wrangler secret put STRIPE_WEBHOOK_SECRET  # whsec_… — from the endpoint created in step 2
+wrangler secret list                       # both names must appear
+```
+
+Neither secret is ever read from the repo or from `wrangler.toml`; they exist
+only as Worker secrets. `STRIPE_WEBHOOK_SECRET` is what
+`/commerce/webhooks/stripe` verifies the `stripe-signature` header against, so
+an unsigned or wrongly-signed POST is rejected — do not skip it to "test
+faster", or the webhook leg is untested.
+
+### 2. Register the webhook endpoint
+
+Create it against the **branded** host (the same origin the Worker route
+serves), not the `*.workers.dev` name:
+
+```bash
+curl -sS https://api.stripe.com/v1/webhook_endpoints \
+  -u "$STRIPE_SECRET_KEY:" \
+  -d url="https://cupboard.papercusp.com/commerce/webhooks/stripe" \
+  -d "enabled_events[]=checkout.session.completed" \
+  -d "enabled_events[]=checkout.session.expired" \
+  -d "enabled_events[]=checkout.session.async_payment_succeeded" \
+  -d "enabled_events[]=checkout.session.async_payment_failed"
+```
+
+The response's `secret` (`whsec_…`) is what step 1 installs. Then `npm run
+deploy`.
+
+⚠ **A dev box that cannot reach the branded host is not evidence the webhook is
+broken.** This machine SNI-blackholes `cupboard.papercusp.com` (EI-16742), so a
+local `curl` to it fails while Stripe delivers to it perfectly. Prove delivery
+from `wrangler tail`, never from a local request.
+
+### 3. Managed Payments must stay OFF
+
+Stripe enables **Managed Payments** by default on new accounts. With it on,
+every Checkout Session built from ad-hoc `price_data` line items is a hard 400:
+
+```
+Invalid line_items[0]: the product tax code is missing.
+Product tax code is required for Managed Payments, which is enabled by default on your account.
+```
+
+Ad-hoc products cannot carry a `tax_code`, so **no purchase can ever be
+opened**. `buildStripeCheckoutSessionParams`
+(`packages/operator-core/lib/cupboard/payment-adapters/stripe.ts`) therefore
+sends `managed_payments: { enabled: false }`, covered by regression tests in
+`stripe.test.ts`.
+
+This is a correctness requirement, not a workaround: Managed Payments makes
+Stripe the merchant of record and gives it settlement, which would bypass the
+DAO split manifest and the P-033/P-034 settlement batches. Those need a direct
+charge. Do not "simplify" this flag away.
+
+### 4. Drive a real test purchase
+
+The `$10.00` prepaid-credit SKU needs no publishing: an `index.ts` middleware
+installs `prepaidCreditCatalogEvents()` on every `POST
+/commerce/checkout-sessions`, so offer `papercusp-prepaid-byoc-credits-usd-10`
+always exists even though `/commerce/offers` is otherwise empty. Auth is a
+GitHub bearer; an operator id in `CUPBOARD_OPERATOR_GITHUB_IDS` passes
+`authorizeBuyer` via the SELF branch, so `buyerOrgId` may be its own
+`gh:<id>` with no org.
+
+```bash
+BASE=https://papercusp-cupboard.aviynw.workers.dev
+TOK=$(gh auth token)
+
+# start a tail FIRST — it is the only proof Stripe reached the branded host
+wrangler tail papercusp-cupboard --format json &
+
+curl -sS -X POST "$BASE/commerce/checkout-sessions" \
+  -H "Authorization: Bearer $TOK" -H 'content-type: application/json' \
+  -d '{"offerId":"papercusp-prepaid-byoc-credits-usd-10","buyerOrgId":"gh:<your-gh-id>"}'
+```
+
+A `201` returns the hosted Checkout URL. Open it and pay with test card
+`4242 4242 4242 4242`, any future expiry, any CVC, any postcode.
+
+⚠ Per-use offers never reach Stripe at all (they short-circuit in the
+microcharge preflight), so only a **one-time or subscription** offer exercises
+the real purchase path. Testing with a per-use offer proves nothing here.
+
+### 5. Prove the chain landed
+
+Four independent observations, all of which must hold:
+
+```bash
+# entitlement created
+curl -s -H "Authorization: Bearer $TOK" "$BASE/commerce/entitlements?buyer=gh:<your-gh-id>"
+# credit granted
+curl -s -H "Authorization: Bearer $TOK" "$BASE/commerce/prepaid-credits/balance"
+```
+
+Recorded 2026-09-06 for `gh:279242982`:
+
+| leg | evidence |
+| --- | --- |
+| Checkout opened | `POST /commerce/checkout-sessions` → `201`; session `cs_test_a1ejthSt4FuRcTgUzZsGdLRoOHVnGPgNFPa4MurC4LK5vWfjUDngroRY95` |
+| Payment taken | session `status=complete`, `payment_status=paid`, `1000 usd`, `livemode=false`, `payment_intent pi_3UCi3GF4bhCZliK30iE6HYLd` |
+| Webhook delivered + verified | `wrangler tail`: Stripe `POST https://cupboard.papercusp.com/commerce/webhooks/stripe` → `200`, valid `stripe-signature` (`t=1788708736`, UA `Stripe/1.0`), event `evt_1UCi3IF4bhCZliK3svvZATan` (`checkout.session.completed`) |
+| Fulfilment | order `ord_389b6dc3cfbe7ec7db75b4b2fdd89545`; entitlement `ent:ord_389b6dc3cfbe7ec7db75b4b2fdd89545` `state=active`; balance `availableMicros=10000000` / `grantedMicros=10000000` ($10.00) |
+
+A `201` on the checkout session alone proves nothing past step 4 — the webhook
+and the entitlement are separate legs, and each has failed independently here.
+Check all four.
 
 ## P-076 indexer (not yet wired)
 
