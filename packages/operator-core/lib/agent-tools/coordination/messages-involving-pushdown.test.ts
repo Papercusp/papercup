@@ -88,7 +88,8 @@ describe('readInvolvingOwner — PG fast path (sender-or-recipient pushdown)', (
     expect(seen).toHaveLength(1);
     const text = seen[0].text.replace(/\s+/g, ' ');
     expect(text).toContain("body->>'from'");
-    expect(text).toContain('jsonb_exists');
+    expect(text).toContain("(body->'to') ?");
+    expect(text).not.toContain('jsonb_exists');
     expect(seen[0].values).toContain('alice');
   });
 

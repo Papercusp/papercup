@@ -1273,6 +1273,11 @@ export const INVOLVING_FAST_PATH_ROW_CAP = 25_000;
  * Safe here because the caller (`deriveCoordState`) re-sorts by ts rather than
  * trusting SQL order.
  *
+ * Keep the recipient membership checks in PostgreSQL's native JSONB `?`
+ * operator. `coord_event_log_msgs_to_gin` (migration 1053) can answer that
+ * operator directly; the semantically equivalent `jsonb_exists(...)` spelling
+ * degrades this OR into a parallel sequential scan on the live log.
+ *
  * Falls back to the authoritative `coordLog.readLines('messages')` on a
  * non-PG seam (tests) or any query error.
  */
@@ -1292,7 +1297,7 @@ export async function readInvolvingOwner(
              body->>'from' = ${ownerId}
              OR (
                jsonb_typeof(body->'to') = 'array'
-               AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+               AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
              )
            )
          ORDER BY id DESC
