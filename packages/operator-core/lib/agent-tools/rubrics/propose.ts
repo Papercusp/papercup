@@ -26,116 +26,129 @@ import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 
+const driftMarkers = z
+  .string()
+  .min(1)
+  .describe(
+    'what degraded / broken looks like — the concrete falsifier. REQUIRED and non-empty for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
+  );
+
+const criterionFields = {
+  key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
+  title: z.string().min(1),
+  intent: requirementIntentSchema.optional(),
+  acceptance: requirementAcceptanceSchema.optional(),
+  verification: requirementVerificationSchema.optional(),
+  requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers,
+  model: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric; optional on an acceptance-kind criterion only when the title, non-empty driftMarkers, and concrete verification check/procedure carry the outcome semantics the meta-acceptance-rubric vets',
+    ),
+  bar: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'acceptance-kind only: clearer wire/UI alias for model. It is canonicalized into model and never stored as a second text field; if both are supplied they must match after trimming',
+    ),
+  barKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('acceptance-kind only: stable BAR identity, normally the source R-N key'),
+  barHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional()
+    .describe(
+      'read-back compatibility only: the server ignores this value and recomputes barHash from canonical meaning on every write',
+    ),
+  role: acceptanceCriterionRoleSchema
+    .optional()
+    .describe("acceptance-kind only: 'outcome' is gradeable truth; 'disclosure' can report but never satisfy it"),
+  mandatory: z
+    .boolean()
+    .optional()
+    .describe('acceptance-kind only: include this outcome in the non-waivable ship floor'),
+  requiredScope: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('acceptance-kind only: stable surface/cohort/subject tokens the BAR must cover'),
+  evidencePlane: acceptanceEvidencePlaneSchema
+    .optional()
+    .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
+  passRatings: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(50)
+    .optional()
+    .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
+  coversBarKeys: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('acceptance disclosure only: outcome BAR keys this criterion reports on'),
+  barProvenance: acceptanceBarProvenanceSchema
+    .optional()
+    .describe('acceptance-kind only: pre-implementation declaration or honest legacy-backfill provenance'),
+  method: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria only when a concrete check/procedure makes the outcome independently falsifiable',
+    ),
+  ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
+  driftMarkers: driftMarkers.optional(),
+  replication: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "this criterion's own REPLICATION DRILL: the full copy-runnable testing procedure (fixtures → verbatim subject prompt → spawn/measurement → grading queries → cleanup). Every criterion SHOULD carry one — rubrics:ratify reports the ones that don't",
+    ),
+  instrumentKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("stable machine-readable instrument binding; use 'none' only for an explicitly manual criterion"),
+  window: rubricCriterionWindowSchema.optional(),
+  criterionClass: z
+    .enum(['settle-once', 'violatable'])
+    .optional()
+    .describe(
+      "grading class (P-008): 'violatable' = monotonic-downward, one violation falsifies permanently — mid-run ratings are stamped PROVISIONAL by scorecards:emit until the graded subject terminates. Omitted = settle-once",
+    ),
+  check: rubricCriterionCheckSchema
+    .optional()
+    .describe(
+      "the criterion's STRUCTURED CHECK (P-011 / D-006), preferred wherever the outcome is objectively checkable: " +
+        "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
+        'THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted ' +
+        "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
+        'Omitted = fuzzy judgment criterion; for an acceptance rubric with bespoke criteria, AT LEAST ONE criterion must carry a structured check (and every objectively checkable outcome should carry its own); ' +
+        'when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
+    ),
+};
+
+// `superRefine` below enforces the kind-specific profile at runtime, but Zod
+// cannot project a super-refinement into JSON Schema. Keep the wire contract
+// honest at the generated schema boundary with a representable union: every
+// criterion must carry either the canonical direct falsifier or the unified
+// acceptance.falsifier alias. The acceptance branch is deliberately allowed to
+// omit direct driftMarkers because normalizeRequirementSections canonicalizes
+// that alias before proposeRubric persists the criterion.
 const criterion = z
-  .object({
-    key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
-    title: z.string().min(1),
-    intent: requirementIntentSchema.optional(),
-    acceptance: requirementAcceptanceSchema.optional(),
-    verification: requirementVerificationSchema.optional(),
-    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers,
-    model: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric; optional on an acceptance-kind criterion only when the title, non-empty driftMarkers, and concrete verification check/procedure carry the outcome semantics the meta-acceptance-rubric vets',
-      ),
-    bar: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'acceptance-kind only: clearer wire/UI alias for model. It is canonicalized into model and never stored as a second text field; if both are supplied they must match after trimming',
-      ),
-    barKey: z
-      .string()
-      .min(1)
-      .optional()
-      .describe('acceptance-kind only: stable BAR identity, normally the source R-N key'),
-    barHash: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .optional()
-      .describe(
-        'read-back compatibility only: the server ignores this value and recomputes barHash from canonical meaning on every write',
-      ),
-    role: acceptanceCriterionRoleSchema
-      .optional()
-      .describe("acceptance-kind only: 'outcome' is gradeable truth; 'disclosure' can report but never satisfy it"),
-    mandatory: z
-      .boolean()
-      .optional()
-      .describe('acceptance-kind only: include this outcome in the non-waivable ship floor'),
-    requiredScope: z
-      .array(z.string().min(1))
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('acceptance-kind only: stable surface/cohort/subject tokens the BAR must cover'),
-    evidencePlane: acceptanceEvidencePlaneSchema
-      .optional()
-      .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
-    passRatings: z
-      .array(z.string().min(1))
-      .min(1)
-      .max(50)
-      .optional()
-      .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
-    coversBarKeys: z
-      .array(z.string().min(1))
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('acceptance disclosure only: outcome BAR keys this criterion reports on'),
-    barProvenance: acceptanceBarProvenanceSchema
-      .optional()
-      .describe('acceptance-kind only: pre-implementation declaration or honest legacy-backfill provenance'),
-    method: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria only when a concrete check/procedure makes the outcome independently falsifiable',
-      ),
-    ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
-    driftMarkers: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        'what degraded / broken looks like — the concrete falsifier. REQUIRED and non-empty for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
-      ),
-    replication: z
-      .string()
-      .min(1)
-      .optional()
-      .describe(
-        "this criterion's own REPLICATION DRILL: the full copy-runnable testing procedure (fixtures → verbatim subject prompt → spawn/measurement → grading queries → cleanup). Every criterion SHOULD carry one — rubrics:ratify reports the ones that don't",
-      ),
-    instrumentKey: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("stable machine-readable instrument binding; use 'none' only for an explicitly manual criterion"),
-    window: rubricCriterionWindowSchema.optional(),
-    criterionClass: z
-      .enum(['settle-once', 'violatable'])
-      .optional()
-      .describe(
-        "grading class (P-008): 'violatable' = monotonic-downward, one violation falsifies permanently — mid-run ratings are stamped PROVISIONAL by scorecards:emit until the graded subject terminates. Omitted = settle-once",
-      ),
-    check: rubricCriterionCheckSchema
-      .optional()
-      .describe(
-        "the criterion's STRUCTURED CHECK (P-011 / D-006), preferred wherever the outcome is objectively checkable: " +
-          "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
-          'THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted ' +
-          "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
-          'Omitted = fuzzy judgment criterion; for an acceptance rubric with bespoke criteria, AT LEAST ONE criterion must carry a structured check (and every objectively checkable outcome should carry its own); ' +
-          'when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
-      ),
-  })
+  .union([
+    z.object({ ...criterionFields, driftMarkers }),
+    z.object({ ...criterionFields, acceptance: requirementAcceptanceSchema }),
+  ])
   .superRefine((input, ctx) => {
     try {
       normalizeRequirementSections(input);

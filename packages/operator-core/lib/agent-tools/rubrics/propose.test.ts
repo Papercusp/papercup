@@ -172,6 +172,43 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     }
   });
 
+  it('publishes a criterion schema that requires a direct falsifier or acceptance.falsifier alias', () => {
+    const schema = z.toJSONSchema(rubricsProposeArgs as never) as {
+      properties?: {
+        criteria?: {
+          items?: {
+            anyOf?: Array<{ required?: string[] }>;
+          };
+        };
+      };
+    };
+    const branches = schema.properties?.criteria?.items?.anyOf ?? [];
+
+    expect(branches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ required: expect.arrayContaining(['driftMarkers']) }),
+        expect.objectContaining({ required: expect.arrayContaining(['acceptance']) }),
+      ]),
+    );
+  });
+
+  it('rejects a criterion that omits both direct and unified falsifiers', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [
+        {
+          key: 'tests',
+          title: 'Required tests pass for the shipped behavior',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it('accepts canonical BAR metadata and keeps model as the single semantic text', () => {
     const parsed = rubricsProposeArgs.safeParse({
       ...base,
@@ -252,8 +289,8 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
       expect(missingFalsifier.error.issues).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            path: ['criteria', 0, 'driftMarkers'],
-            message: expect.stringContaining('requires non-empty driftMarkers'),
+            code: 'invalid_union',
+            path: ['criteria', 0],
           }),
         ]),
       );
