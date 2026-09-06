@@ -257,6 +257,24 @@ export interface MetricSpec {
   eligibilityIsOccurrence?: boolean;
 
   /**
+   * Is producer liveness INDEPENDENT of whether an eligible occurrence appears?
+   *
+   * This is narrower than {@link MetricSpec.eligibilityIsOccurrence}. A failure-row
+   * scanner can use a sufficiently busy call population as evidence that failures
+   * should eventually appear. `acted-on-stale-or-wrong-value` cannot: its producer
+   * runs at every `coord:send`, while eligibility is a sender choosing to spell a
+   * registered cell identity in section text. Thousands of ordinary messages with
+   * no such citation say nothing about whether the resolver ran. Without this bit,
+   * the ratchet turns a long citation-free period into a claimed producer death and
+   * red-pins the release even though the only observable event simply did not occur.
+   *
+   * A true value therefore keeps sustained zero-occurrence windows explicitly
+   * UNJUDGEABLE; it never turns them into a clean pass. The producer wiring remains
+   * guarded at its actual chokepoint by the coord:send integration tests.
+   */
+  producerLivenessIndependentOfEligibility?: boolean;
+
+  /**
    * The THIRD quiet-window shape (WI-212675, measured 2026-09-03): eligibility is
    * FLEET TRAFFIC on a named set of surfaces, not an input a producer stamps and not
    * a defect occurrence.
@@ -401,6 +419,11 @@ export const METRIC_SPECS: Readonly<Record<PlaneMetricId, MetricSpec>> = Object.
     polarity: 'defect',
     vacuousPassWhen:
       'A citation-free window has no comparable unit and is NOT a clean zero. The detector intentionally matches only registered cell identities and dotted projected paths, never bare values such as a SHA; the rate therefore measures the honest detectable subset, not every live value an agent may have quoted.',
+    // Eligibility is the CITATION occurrence, not output a producer writes. The
+    // resolver runs at coord:send even when no sender happens to cite a cell, and
+    // message volume cannot turn that absence into evidence the resolver died.
+    eligibilityIsOccurrence: true,
+    producerLivenessIndependentOfEligibility: true,
   },
   'acted-on-stale-declared-basis': {
     id: 'acted-on-stale-declared-basis',

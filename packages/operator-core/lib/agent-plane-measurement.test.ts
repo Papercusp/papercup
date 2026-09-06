@@ -316,6 +316,27 @@ describe('composePlaneMeasurement', () => {
     expect(m.awaitingProducer).not.toContain('intent-action-divergence-sampling');
   });
 
+  it('does not call a citation-free message window a missing producer', () => {
+    const m = composePlaneMeasurement({
+      counts: countsWith({
+        'acted-on-stale-or-wrong-value': {
+          population: 571,
+          eligible: 0,
+          comparable: 0,
+          observed: 0,
+        },
+      }),
+      windowStartMs: 0,
+      windowEndMs: 1,
+    });
+
+    expect(m.metrics.find((metric) => metric.id === 'acted-on-stale-or-wrong-value')).toMatchObject({
+      interpretable: false,
+      zeroReason: 'nothing-eligible',
+    });
+    expect(m.awaitingProducer).not.toContain('acted-on-stale-or-wrong-value');
+  });
+
   it('is deterministic — same counts, same row', () => {
     const args = { counts: countsWith({}), windowStartMs: 5, windowEndMs: 9, measuredAt: 'X' };
     expect(JSON.stringify(composePlaneMeasurement(args))).toBe(

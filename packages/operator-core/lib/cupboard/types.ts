@@ -94,6 +94,9 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *                              package identity; STARTING it is a separate
  *                              deliberate act. May declare `requires_rubrics`,
  *                              same as `plan`.)
+ *   theme         → install   (an inert semantic-token theme package. Installing
+ *                              adds it to the existing theme picker; selecting it
+ *                              is a separate explicit action.)
  *   app           → download  (STANDALONE) | install (BUNDLE) — a whole
  *                              distributable application (cupboard-app-distribution
  *                              -2026-07-14 [owner 2026-07-14]). The
@@ -127,6 +130,7 @@ export const LISTING_KINDS = [
   'plan',
   'recipe',
   'goal',
+  'theme',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
@@ -256,6 +260,7 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'plan':
     case 'recipe':
     case 'goal':
+    case 'theme':
       return 'install';
     case 'app':
       return l.delivery_type === 'bundle' ? 'install' : 'download';
