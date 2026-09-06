@@ -1503,10 +1503,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   //   zql.operatorBudget.where(workspaceId).limit(1)
   // Per the ZQL comment: limit(1) instead of .one() — feedback_zero_one_shape_mismatch.
   'operatorBudget.byWorkspace': {
-    argsSchema: z.object({ workspaceId: z.string() }),
+    // `workspaceId` is OPTIONAL. The operator Settings page reads this beside
+    // operatorConfig/Preferences/StandingApprovals.byWorkspace, none of which
+    // take args — they scope by the request's x-papercusp-workspace ALS — and
+    // a REQUIRED id here 500'd that page on every load (zod invalid_type,
+    // EI-22469131771258095) while OperatorPanel, which passes it explicitly,
+    // worked. Absent ⇒ the request's workspace, the same resolution every
+    // other `activeWorkspaceId()` reader in this registry uses.
+    argsSchema: z.object({ workspaceId: z.string().optional() }).optional(),
     resolve: async (args) => {
-      const { workspaceId } = args as { workspaceId: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
+      const explicit = (args as { workspaceId?: string } | undefined)?.workspaceId;
+      const [{ getOrgPg, generated }, { activeWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+      ]);
+      const workspaceId = explicit ?? activeWorkspaceId();
       const { eq } = await import('drizzle-orm');
       const t = generated.operatorBudgetInHarnessShared;
       const { db } = getOrgPg();

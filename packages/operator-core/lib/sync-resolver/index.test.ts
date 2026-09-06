@@ -321,9 +321,15 @@ describe('sync-resolver v2 registry', () => {
       ).rejects.toThrow();
     });
 
-    it('operatorBudget.byWorkspace requires workspaceId (string)', async () => {
-      const { resolveNamedQueryV2: r } = await import('./index');
-      await expect(r('operatorBudget.byWorkspace', {})).rejects.toThrow();
+    it('operatorBudget.byWorkspace takes an OPTIONAL workspaceId (request-scoped when omitted) and still rejects a non-string', async () => {
+      // The operator Settings page sends no args, like its operatorConfig /
+      // Preferences / StandingApprovals siblings; a required id 500'd that page
+      // on every load (EI-22469131771258095).
+      const { getRegistryEntryV2, resolveNamedQueryV2: r } = await import('./index');
+      const entry = getRegistryEntryV2('operatorBudget.byWorkspace');
+      expect(entry?.argsSchema?.parse(undefined)).toBeUndefined();
+      expect(entry?.argsSchema?.parse({})).toEqual({});
+      expect(entry?.argsSchema?.parse({ workspaceId: 'ws-1' })).toEqual({ workspaceId: 'ws-1' });
       await expect(r('operatorBudget.byWorkspace', { workspaceId: 42 })).rejects.toThrow();
     });
   });
