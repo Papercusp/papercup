@@ -1616,6 +1616,29 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
   });
 
+  it('EI-22435583452728403: wires a guarded commit-time live-lock refresh into the pure pipeline', async () => {
+    const refreshedHoldings = [{
+      path: 'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+      owner: 'su-peer',
+      intent: 'lock acquired after the initial git-sync census',
+    }];
+    liveLockHoldingsStrictMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(refreshedHoldings);
+    let observedRefresh: unknown;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      const refresh = opts.refreshLiveLockHoldings as (() => Promise<unknown>) | undefined;
+      expect(refresh).toEqual(expect.any(Function));
+      observedRefresh = await refresh!();
+      return syncedOutcome;
+    });
+
+    await action(ctx);
+
+    expect(observedRefresh).toEqual(refreshedHoldings);
+    expect(liveLockHoldingsStrictMock).toHaveBeenCalledTimes(2);
+  });
+
   it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {
     let firstRunStarted!: () => void;
     const firstRunStartedPromise = new Promise<void>((resolve) => {
