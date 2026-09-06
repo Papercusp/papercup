@@ -13,6 +13,8 @@ import { prepaidCreditsRoute } from './prepaid-credits.ts';
 import { paymentChannelsRoute } from './payment-channels.ts';
 import { meteredUsageRoute } from './metered-usage.ts';
 import { settlementsRoute } from './settlements.ts';
+import { treasuryRoute } from './treasury.ts';
+import type { SafeTreasuryAdapter } from '../treasury-adapter.ts';
 import type { PaymentChannelFundingAdapter } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
 import type { EvmSettlementFacilitator } from '@papercusp/operator-core/lib/p2p/evm-settlement.ts';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
@@ -35,6 +37,7 @@ export function buildApi(
     loadOrgs?: (db: D1Database) => Promise<ReadonlyMap<string, Organization>>;
     paymentChannelAdapter?: PaymentChannelFundingAdapter;
     settlementFacilitator?: EvmSettlementFacilitator;
+    treasuryAdapter?: SafeTreasuryAdapter;
   } = {},
 ): Hono<{ Bindings: Env }> {
   const api = new Hono<{ Bindings: Env }>();
@@ -82,6 +85,10 @@ export function buildApi(
   // the settled usage receipts drawn against it. Its POST returns a payment
   // CLAIM; only its /finality transition can report payment finality.
   api.route('/', settlementsRoute({ facilitator: options.settlementFacilitator }));
+  // P-034 DAO treasury routing. Mounted after settlementsRoute because it acts
+  // on what that route produces and only once it is FINAL: a claim can still be
+  // dropped by a reorg, and a transfer out of the Safe cannot be unwound.
+  api.route('/', treasuryRoute({ adapter: options.treasuryAdapter }));
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

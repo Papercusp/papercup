@@ -46,6 +46,15 @@ export interface Env {
   /** 32-byte EVM private key. The bound-wallet funding path additionally
    * requires its derived address to equal the authenticated wallet binding. */
   PAYMENT_CHANNEL_PRIVATE_KEY?: string;
+  /** 32-byte EVM private key the P-034 treasury automation signs Zodiac Roles
+   *  module calls with. OPTIONAL and fail-closed like the Stripe secrets: an
+   *  unconfigured deployment answers 503 on the treasury routing route rather
+   *  than attempting a transfer it cannot sign. Installing it is an OWNER
+   *  credential action, deliberately outside any agent's scope — and the key
+   *  MUST NOT be a Safe owner, which `validateTreasuryConfig` refuses outright:
+   *  an always-online key that also counts toward the owner threshold erodes
+   *  the offline control meant to sit above the automated role. */
+  TREASURY_AUTOMATION_PRIVATE_KEY?: string;
   /** Idempotent channel contract implementing openChannel/closeChannel. */
   PAYMENT_CHANNEL_SETTLEMENT_CONTRACT?: string;
   /** Stablecoin contract address (pilot: Base-compatible USDC). */
@@ -63,11 +72,38 @@ export interface Env {
    *  `splitManifestHash` the payer signed into each voucher, so a settlement
    *  can only apply a split the buyer actually agreed to. */
   REVENUE_SPLIT_MANIFEST?: string;
-  /** Destination recorded in the settlement receipt for the DAO share. A var,
-   *  not a secret: a treasury address is public by construction. Recording is
-   *  all that happens here — routing funds to the Safe/Zodiac treasury is
-   *  P-034, which is blocked on P-033. */
+  /** Destination recorded in the settlement receipt for the DAO share, and —
+   *  since P-034 — the recipient a reconciled treasury routing pays. A var, not
+   *  a secret: a treasury address is public by construction. */
   DAO_TREASURY_ADDRESS?: string;
+  /** Safe smart account holding DAO treasury capital (P-034). A var: a Safe
+   *  address is public by construction. Routing additionally requires a
+   *  RECORDED on-chain deployment for (chain, address) — a configured address
+   *  alone is not evidence a Safe exists there, and a typo is unrecoverable
+   *  once funds are sent. */
+  TREASURY_SAFE_ADDRESS?: string;
+  /** Zodiac Roles v2 modifier enabled on that Safe. The automation executes
+   *  through this module, never as an owner, so the module is what enforces the
+   *  role's target/selector scopes on chain. */
+  TREASURY_ROLES_MODULE_ADDRESS?: string;
+  /** Comma-separated Safe owner addresses, and the owner threshold. Recorded
+   *  with the deployment so an audit can see owner control was separate from
+   *  the automated role AT THE TIME the deployment was accepted. */
+  TREASURY_SAFE_OWNERS?: string;
+  TREASURY_SAFE_THRESHOLD?: string;
+  /** Per-transfer cap on the automated `settlement` role, in stablecoin micros.
+   *  The bound the Zodiac role enforces on chain; asserted here too so a
+   *  transfer over the cap refuses before it is submitted. */
+  TREASURY_SETTLEMENT_MAX_MICROS?: string;
+  /** Comma-separated revenue shares routed to the Safe. Default `dao`.
+   *  `creator`, `host` and `component` are PAYEE shares — money owed outward to
+   *  a person, not DAO capital — so the door refuses them here rather than
+   *  quietly sweeping a creator's earnings into the treasury. */
+  TREASURY_ROUTED_SHARES?: string;
+  /** Owner-gated. Routing on a deployment recorded as `mainnet` refuses unless
+   *  this is exactly 'true'. Acceptance line 13 gates Safe signers and any
+   *  mainnet capital on the owner; this is that gate, defaulting to refuse. */
+  TREASURY_MAINNET_CAPITAL_APPROVED?: string;
   ENVIRONMENT: string;
   CUPBOARD_HOST: string;
   /** Comma-separated GitHub user ids allowed to use /admin operator surfaces
