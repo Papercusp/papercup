@@ -207,7 +207,11 @@ export async function evaluateScorecard(
     await listScorecards({ rubricRef: args.rubricRef, sourceHive: args.sourceHive, limit: 1 })
   )[0];
 
-  if (!args.ratings) {
+  // An empty ratings object is the natural discovery request for callers that
+  // need the rubric's criterion keys and allowed values before grading. Treat
+  // it like the skeleton-only form instead of flowing into the delta loop,
+  // where a missing criterion entry would otherwise be dereferenced.
+  if (!args.ratings || Object.keys(args.ratings).length === 0) {
     return {
       ok: true as const,
       graderEligibility,
@@ -304,7 +308,7 @@ export async function evaluateScorecard(
       .filter((key) => {
         const before = latest?.ratings[key];
         const after = ratings[key];
-        return !before || before.rating !== after.rating || before.evidence !== after.evidence;
+        return !before || !after || before.rating !== after.rating || before.evidence !== after.evidence;
       });
     return {
       ok: true as const,

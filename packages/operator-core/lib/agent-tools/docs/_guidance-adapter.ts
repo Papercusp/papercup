@@ -213,7 +213,11 @@ interface RegistryTool {
     notWhen?: string;
     chaining?: string;
     returns?: string;
-    argRedirects?: Record<string, string | { tool: string; args: Record<string, unknown>; note?: string }>;
+    argRedirects?: Record<string,
+      | string
+      | { tool: string; args: Record<string, unknown>; note?: string }
+      | { drop: true; note: string }
+    >;
     byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
   };
 }

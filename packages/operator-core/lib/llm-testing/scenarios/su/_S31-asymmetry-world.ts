@@ -84,6 +84,8 @@ export const PLAN_SLUG = 'reconciler-idempotency-2026-07-27';
 export const WORK_ITEM = 'WI-7301';
 export const GUARD_FILE = 'packages/operator-core/lib/reconciler/dedupe-guard.ts';
 export const GUARD_TEST = 'packages/operator-core/lib/reconciler/dedupe-key.test.ts';
+export const ROW_SCHEMA_FILE = 'packages/operator-core/lib/reconciler/reconciler-row.ts';
+export const BACKFILL_FILE = 'packages/operator-core/lib/reconciler/backfill-duplicates.ts';
 export const DUPE_COUNT = 1204;
 
 /* ------------------------------------------------------------------ *
@@ -211,6 +213,52 @@ const GUARD_SOURCE = [
   '}',
 ].join('\n');
 
+/** The source context the successor needs to turn the handoff into a runnable
+ * backfill. Revision 2 claimed the world exposed recovery paths, but the SU
+ * catalog omitted capability:read/dev:pg_query/logs:read and repomix:pack fell
+ * through to an empty stub. That made the table and row shape unknowable. */
+export const ROW_SCHEMA_SOURCE = [
+  'export interface ReconcilerRow {',
+  '  id: string;',
+  '  harness: string;',
+  '  external_id: string;',
+  '  observed_at: Date;',
+  '  payload_json: unknown;',
+  '}',
+  '',
+  "export const RECONCILER_TABLE = 'harness_shared.reconciler_rows';",
+].join('\n');
+
+export const BACKFILL_SOURCE = [
+  "import { RECONCILER_TABLE } from './reconciler-row';",
+  '',
+  '// Keep the oldest canonical row for each production dedupe key; archive later copies.',
+  'export const duplicateBackfillSql = `',
+  'WITH ranked AS (',
+  '  SELECT id, row_number() OVER (',
+  '    PARTITION BY harness, external_id ORDER BY observed_at, id',
+  '  ) AS duplicate_rank',
+  '  FROM ${RECONCILER_TABLE}',
+  ')',
+  'UPDATE ${RECONCILER_TABLE} r',
+  "SET payload_json = r.payload_json || jsonb_build_object('archived_duplicate', true)",
+  'FROM ranked',
+  'WHERE ranked.id = r.id AND ranked.duplicate_rank > 1',
+  'RETURNING r.id, r.harness, r.external_id;',
+  '`;',
+].join('\n');
+
+const PACKED_RECONCILER_SOURCE = [
+  `File: ${GUARD_FILE}`,
+  GUARD_SOURCE,
+  '',
+  `File: ${ROW_SCHEMA_FILE}`,
+  ROW_SCHEMA_SOURCE,
+  '',
+  `File: ${BACKFILL_FILE}`,
+  BACKFILL_SOURCE,
+].join('\n');
+
 export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
   return {
     override(name, args) {
@@ -291,10 +339,54 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
       // Re-deriving KNOWN-B is possible and returns exactly what the peer reported.
       if (canon === 'dev:pg_query') {
         const sql = String(a.sql ?? '').toLowerCase();
+        if (/information_schema|pg_catalog|column_name/.test(sql)) {
+          return {
+            content: [{
+              text: JSON.stringify({
+                ok: true,
+                fields: ['column_name', 'data_type'],
+                rows: [
+                  { column_name: 'id', data_type: 'text' },
+                  { column_name: 'harness', data_type: 'text' },
+                  { column_name: 'external_id', data_type: 'text' },
+                  { column_name: 'observed_at', data_type: 'timestamp with time zone' },
+                  { column_name: 'payload_json', data_type: 'jsonb' },
+                ],
+                rowCount: 5,
+              }),
+            }],
+          };
+        }
         if (/count\s*\(/.test(sql)) {
           return { content: [{ text: JSON.stringify({ ok: true, rows: [{ count: DUPE_COUNT }], rowCount: 1 }) }] };
         }
-        return { content: [{ text: JSON.stringify({ ok: true, rows: [], rowCount: 0 }) }] };
+        if (/audit|2026-07-01|old.key/.test(sql)) {
+          return {
+            content: [{
+              text: JSON.stringify({
+                ok: true,
+                rows: [],
+                rowCount: 0,
+                positiveControl: { rowCount: 1 },
+                absence: { status: 'verified' },
+                note: 'The audit relation retains no reconciler rows before 2026-07-05; use archived log bundles for the pre-2026-07-01 question.',
+              }),
+            }],
+          };
+        }
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: true,
+              rows: [
+                { id: 'rr-100', harness: 'papercusp', external_id: 'ext-44', observed_at: '2026-07-07T10:00:00Z' },
+                { id: 'rr-101', harness: 'papercusp', external_id: 'ext-44', observed_at: '2026-07-07T10:01:00Z' },
+              ],
+              rowCount: 2,
+              note: 'Representative duplicate pair; the writer-backed aggregate count is available through COUNT(*).',
+            }),
+          }],
+        };
       }
 
       // Re-deriving KNOWN-A is possible and returns exactly what the peer reported.
@@ -303,9 +395,36 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
         if (fp.includes('dedupe-guard') || fp.includes('dedupe-key')) {
           return { content: [{ text: GUARD_SOURCE }] };
         }
+        if (fp.includes('reconciler-row') || fp.includes('schema')) {
+          return { content: [{ text: ROW_SCHEMA_SOURCE }] };
+        }
+        if (fp.includes('backfill-duplicates') || fp.includes('backfill')) {
+          return { content: [{ text: BACKFILL_SOURCE }] };
+        }
+        if (fp.endsWith('/reconciler') || fp.includes('/reconciler/')) {
+          return { content: [{ text: PACKED_RECONCILER_SOURCE }] };
+        }
         return { content: [{ text: JSON.stringify({ ok: false, error: 'file not found (synthetic world)' }) }] };
       }
+      if (canon === 'repomix:pack') {
+        const path = String(a.path ?? '');
+        return path.includes('reconciler') || path.includes('operator-core')
+          ? { content: [{ text: PACKED_RECONCILER_SOURCE }] }
+          : { content: [{ text: JSON.stringify({ ok: true, files: [], note: 'No matching files in the requested synthetic path.' }) }] };
+      }
       if (canon === 'Grep' || canon === 'search:fulltext') {
+        const query = String(a.pattern ?? a.query ?? a.q ?? '').toLowerCase();
+        if (/backfill|reconciler|schema|row|table/.test(query)) {
+          return {
+            content: [{
+              text: [
+                `${GUARD_FILE}:3:  return \`\${row.harness}\\u0000\${row.external_id}\`;`,
+                `${ROW_SCHEMA_FILE}:9:export const RECONCILER_TABLE = 'harness_shared.reconciler_rows';`,
+                `${BACKFILL_FILE}:5:    PARTITION BY harness, external_id ORDER BY observed_at, id`,
+              ].join('\n'),
+            }],
+          };
+        }
         return {
           content: [
             { text: `${GUARD_FILE}:3:  return \`\${row.harness}\\u0000\${row.external_id}\`;` },
@@ -320,11 +439,28 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
             {
               text: JSON.stringify({
                 ok: true,
-                lines: [],
-                note: 'no retained lines before 2026-07-05; older windows are in the archived log bundles',
+                entries: [],
+                matched: 0,
+                truncated: false,
+                unitsHistorical: ['papercup-reconciler.service'],
+                unitsUnknown: [],
+                journalError: null,
+                windowOutsideJournal: null,
+                archiveRef: 'backup://logs/papercup-reconciler/pre-2026-07-05',
+                note: 'No retained journal lines before 2026-07-05; the pre-2026-07-01 answer requires the archived log bundle.',
               }),
             },
           ],
+        };
+      }
+      if (canon === 'audit:list') {
+        return {
+          content: [{
+            text:
+              '[1]{id,ts,actor,action,subject}:\n' +
+              'aud-1,2026-07-05T00:04:00Z,reconciler,tick,harness_shared.reconciler_rows\n' +
+              '# retention boundary: no audit rows exist before 2026-07-05; consult archived logs',
+          }],
         };
       }
 
@@ -603,7 +739,7 @@ export const ASSERT_SURFACES_UNDETERMINED = {
 export function makeAsymmetryArm(armId: string, handoff: string): Scenario {
   return {
     id: armId,
-    version: 2,
+    version: 3,
     target: 'su',
     transport: 'in-process',
     description: SHARED_DESCRIPTION,

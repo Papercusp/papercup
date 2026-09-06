@@ -34,7 +34,7 @@ import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S24_DELTA_FALLBACK_COMPACTED: Scenario = {
   id: 'su-S24-delta-fallback-compacted',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -44,7 +44,12 @@ export const SU_S24_DELTA_FALLBACK_COMPACTED: Scenario = {
   caps: { maxTurns: 4, maxWallSecs: 420, maxCostUsd: 2.5 },
   triggers: [
     { on: 'after_turn', param: 0, fire: 'user_message', text: 'List the current open work items.' },
-    { on: 'after_turn', param: 1, fire: 'user_message', text: 'Give me the current full list.' },
+    {
+      on: 'after_turn',
+      param: 1,
+      fire: 'user_message',
+      text: 'Give me the current full open work-item list.',
+    },
   ],
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   // P-006 seam: before turn 1, replace the turn-0 user+assistant pair (the base

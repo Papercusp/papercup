@@ -34,8 +34,7 @@ const {
   readClaimConcurrencyBatch,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
-} =
-  await import('./claim-spec-store');
+} = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
 
@@ -115,9 +114,7 @@ describe('migration 389 restored after the migration 555 table rename', () => {
       // Faithfully reproduce the persisted r22 shape: migration 389 was absent from
       // the package, but migration 555 later renamed the table and installed this
       // compatibility view. R24 then restored 389 and must converge from here.
-      await recovery.sql.unsafe(
-        'ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs',
-      );
+      await recovery.sql.unsafe('ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs');
       await recovery.sql.unsafe(
         'CREATE VIEW harness_shared.bee_claim_specs AS SELECT * FROM harness_shared.cup_claim_specs',
       );
@@ -339,7 +336,13 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
 
   it('returns source:"default" (DEFAULT_CLAIM_SPEC, no metadata) for a bee/fleet with no stored spec', async () => {
     const rec = await getClaimSpecRecord({ cupId: 'no-such-bee-rec' }, db.sql);
-    expect(rec).toEqual({ source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null });
+    expect(rec).toEqual({
+      source: 'default',
+      spec: DEFAULT_CLAIM_SPEC,
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
   });
 
   it('reads a FLEET-level spec directly via its sentinel key (fleetSpecBeeKey)', async () => {
@@ -355,7 +358,11 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
 describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet-slug and specId namespaces)', () => {
   it('resolves via the literal fleet SLUG (the sentinel bee_id)', async () => {
     await setClaimSpec(
-      { cupId: fleetSpecBeeKey('drain-fleet-slug'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-slug-lane' }, updatedBy: 'leader-a' },
+      {
+        cupId: fleetSpecBeeKey('drain-fleet-slug'),
+        spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-slug-lane' },
+        updatedBy: 'leader-a',
+      },
       db.sql,
     );
     const resolved = await resolveFleetClaimSpec({ spec: 'drain-fleet-slug' }, db.sql);
@@ -369,7 +376,11 @@ describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet
   it('resolves via an already-prefixed fleet sentinel identifier', async () => {
     const fleetSlug = 'drain-fleet-prefixed-slug';
     await setClaimSpec(
-      { cupId: fleetSpecBeeKey(fleetSlug), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-prefixed-lane' }, updatedBy: 'leader-prefixed' },
+      {
+        cupId: fleetSpecBeeKey(fleetSlug),
+        spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-prefixed-lane' },
+        updatedBy: 'leader-prefixed',
+      },
       db.sql,
     );
     const resolved = await resolveFleetClaimSpec({ spec: fleetSpecBeeKey(fleetSlug) }, db.sql);
@@ -381,17 +392,27 @@ describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet
 
   it('EI-18694186565089433: a re-steered fleet spec also carries the stamped (non-diverged) revision', async () => {
     const cupId = fleetSpecBeeKey('drain-fleet-restamped');
-    await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' }, db.sql);
-    await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' }, db.sql);
+    await setClaimSpec(
+      { cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' },
+      db.sql,
+    );
+    await setClaimSpec(
+      { cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' },
+      db.sql,
+    );
     const resolved = await resolveFleetClaimSpec({ spec: 'drain-fleet-restamped' }, db.sql);
     expect(resolved).not.toBeNull();
     expect(resolved!.record.revision).toBe(1);
     expect(resolved!.record.spec.revision).toBe(resolved!.record.revision);
   });
 
-  it('resolves via the spec\'s own specId when the caller passes THAT instead of the fleet slug (the field-reported bug)', async () => {
+  it("resolves via the spec's own specId when the caller passes THAT instead of the fleet slug (the field-reported bug)", async () => {
     await setClaimSpec(
-      { cupId: fleetSpecBeeKey('p2p-release'), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'p2p-release-lane' }, updatedBy: 'leader-b' },
+      {
+        cupId: fleetSpecBeeKey('p2p-release'),
+        spec: { ...DEFAULT_CLAIM_SPEC, specId: 'p2p-release-lane' },
+        updatedBy: 'leader-b',
+      },
       db.sql,
     );
     // caller passes the specId ('p2p-release-lane'), NOT the fleet slug ('p2p-release') —
@@ -523,31 +544,29 @@ describe('getClaimSpecHeadsForBees (the bee-runs spec join, P-001)', () => {
       await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-local'`,
     ).toHaveLength(0);
     // hive-scoped — one put outbox row keyed by bee_id, tagged with the hive home slug.
-    await setClaimSpec(
-      { cupId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'my-hive' },
-      db.sql,
-    );
+    await setClaimSpec({ cupId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'my-hive' }, db.sql);
     const rows = await db.sql<{ op: string; key: string; harness_slug: string }[]>`
       SELECT op, key, harness_slug FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-fed'`;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ op: 'put', key: 'su-bee-fed', harness_slug: 'my-hive' });
     // a re-steer (revision bump) of the hive-scoped spec captures again (UPDATE gate).
-    await setClaimSpec(
-      { cupId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'my-hive' },
-      db.sql,
-    );
+    await setClaimSpec({ cupId: 'su-bee-fed', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'my-hive' }, db.sql);
     expect(
-      (await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-fed'`).length,
+      (
+        await db.sql`SELECT 1 FROM harness_shared.substrate_outbox WHERE table_name='cup_claim_specs' AND key='su-bee-fed'`
+      ).length,
     ).toBeGreaterThanOrEqual(1);
   });
-
 });
 
 describe('L9 (P-058) — tombstone on scope-downgrade (cup_claim_specs re-home)', () => {
   it('re-homing a spec to a DIFFERENT hive scope federates a TOMBSTONE (del) to the OLD scope + a put to the NEW', async () => {
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
     await setClaimSpec({ cupId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveA' }, db.sql);
-    const r = await setClaimSpec({ cupId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveB' }, db.sql);
+    const r = await setClaimSpec(
+      { cupId: 'su-rehome', spec: DEFAULT_CLAIM_SPEC, updatedBy: 'mug', potSlug: 'hiveB' },
+      db.sql,
+    );
     expect(r.ok).toBe(true);
     const ops = await db.sql<{ op: string; harness_slug: string }[]>`
       SELECT op, harness_slug FROM harness_shared.substrate_outbox
@@ -677,7 +696,8 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
       resolveCommsTier: async () => ({ tier, githubUserId: 4242 }),
     });
   const applied = async (cupId: string) =>
-    (await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id='default' AND bee_id=${cupId}`).length > 0;
+    (await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id='default' AND bee_id=${cupId}`)
+      .length > 0;
 
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.cup_claim_specs WHERE bee_id LIKE 'm6-%'`;
@@ -701,7 +721,7 @@ describe('M6 (P-055) — federated claim-spec steer-tier authz gate (bee-claim-s
     expect(await applied('m6-local')).toBe(true);
   });
 
-  it('a NON-hive-bound projection stays full-passthrough (no gate — today\'s behavior)', async () => {
+  it("a NON-hive-bound projection stays full-passthrough (no gate — today's behavior)", async () => {
     const plain = buildBeeClaimSpecProjection({ workspaceId: 'default', harnessSlug: HIVE, sql: db.sql }); // no potHomeSlug
     await plain.writeToPg(specRow('m6-plain'), { authorPubkey: 'devA', origin: 'remote' });
     expect(await applied('m6-plain')).toBe(true);

@@ -48,6 +48,33 @@ describe('evaluateHostDumpCoverage', () => {
     expect(r.reason).toContain(SYSID);
   });
 
+  it('covers the authoritative state tier when the host producer uses tiered dumps', () => {
+    const r = evaluate({
+      status: {
+        ok: true,
+        lastSuccessEpoch: NOW - 600,
+        dumped: ['papercusp-state', 'papercusp-transcript', 'restart'],
+        tiersEnabled: true,
+        systemIdentifier: SYSID,
+      },
+    });
+    expect(r.covered).toBe(true);
+    expect(r.reason).toContain('artifact papercusp-state');
+  });
+
+  it('does not treat a tier name as coverage unless tier mode is advertised', () => {
+    const r = evaluate({
+      status: {
+        ok: true,
+        lastSuccessEpoch: NOW - 600,
+        dumped: ['papercusp-state', 'papercusp-transcript', 'restart'],
+        systemIdentifier: SYSID,
+      },
+    });
+    expect(r.covered).toBe(false);
+    expect(r.reason).toContain('not in host-dump receipt');
+  });
+
   it('does not cover when there is no receipt at all (the desktop ship target)', () => {
     expect(evaluate({ status: null })).toMatchObject({ covered: false });
   });

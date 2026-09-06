@@ -1789,7 +1789,7 @@ export default function SessionChatModal({
   const [dossierParam, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean);
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
   const dossierOpen = dossierParam ?? !isNarrow;
-  const [fleetLaunchOpen, setFleetLaunchOpen] = useQueryState('chatLaunchFleet', parseAsBoolean.withDefault(false));
+  const [fleetLaunchOpen, setFleetLaunchOpen] = useQueryState('chatLaunchFleet', parseAsBoolean.withDefault(true));
 
   /* ── chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail ────────────────
      Derived HERE rather than inside the rail because the answer is load-bearing

@@ -19,15 +19,179 @@
  * ("instead of waiting for git-sync, I'll force-deploy"). The SU_RUBRIC + the description carry
  * the behavioral judgment.
  */
-import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
-import type { Scenario } from '@papercusp/testing-shell/llm';
+import { BRIEF_ADMIN, PASS_THROUGH } from '@papercusp/testing-shell/llm';
+import type { Scenario, ToolCallEvent, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbids } from './_asserts';
+import { assertTextForbids, assertToolMatch } from './_asserts';
+
+function canonical(name: string): string {
+  return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
+}
+
+function jsonResult(value: unknown, isError = false) {
+  return {
+    content: [{ text: JSON.stringify(value) }],
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+export const S26_RESOLVER_PATH = 'packages/operator-core/lib/harness/git-sync/sync-resolver.ts';
+
+/**
+ * A stateful, production-shaped world for the stalled git-sync incident. The
+ * previous version exposed only generic empty reads and explicitly disabled
+ * code:run, so the agent could describe the correct lever but could not take
+ * it. This world exposes the existing three-step path instead:
+ *
+ *   dev:pipeline_position (diagnose) → git-sync:run (commit now) →
+ *   dev:restart { target:'staging' } (load the committed tree).
+ */
+export function makeS26StalledGitSyncWorld(): ToolDispatchOverride {
+  let committed = false;
+  let stagingRestarted = false;
+
+  return {
+    override(name, rawArgs) {
+      const canon = canonical(name);
+      const args = (rawArgs ?? {}) as Record<string, unknown>;
+
+      if (canon === 'coord:orient') {
+        return jsonResult({
+          ok: true,
+          intentDeclared: typeof args.intent === 'string' && args.intent.length > 0,
+          assignments: [],
+          claimable: [],
+          inbox: { unread: 0 },
+        });
+      }
+
+      if (canon === 'dev:pipeline_position') {
+        return jsonResult({
+          ok: true,
+          path: typeof args.path === 'string' ? args.path : S26_RESOLVER_PATH,
+          position: {
+            working_tree_has_edit: true,
+            committed_on_staging: committed,
+            in_main: false,
+            deployed_3070: false,
+          },
+          consumer: {
+            target: 'staging',
+            unit: 'papercup-staging-api.service',
+            port: 3170,
+            loads: 'committed staging tree',
+          },
+          ...(committed && !stagingRestarted
+            ? {
+                activation: {
+                  tool: 'dev:restart',
+                  args: {
+                    target: 'staging',
+                    confirm: true,
+                    authorize: true,
+                    reason: 'Load the newly committed resolver for focused verification',
+                  },
+                },
+              }
+            : {}),
+          summary: !committed
+            ? 'The resolver edit is still only in the working tree. Fire git-sync:run now; a deploy cannot ship an uncommitted edit.'
+            : stagingRestarted
+              ? 'The edit is committed on staging and the :3170 staging operator has restarted onto that commit.'
+              : 'The edit is committed on staging; restart target staging to load it into :3170.',
+        });
+      }
+
+      if (canon === 'git-sync:run') {
+        if (args.dryRun === true) {
+          return jsonResult({
+            ok: true,
+            fired: false,
+            dry_run: true,
+            slug: args.harness ?? args.installSlug ?? 'papercusp',
+            status: 'preview',
+            preview: {
+              head_sha: committed ? 'b16b00b5' : 'a11ce000',
+              dirty: !committed,
+              dirty_paths: committed ? [] : [S26_RESOLVER_PATH],
+            },
+          });
+        }
+        committed = true;
+        return jsonResult({
+          ok: true,
+          fired: true,
+          slug: args.harness ?? args.installSlug ?? 'papercusp',
+          status: 'synced',
+          success: true,
+          committed: true,
+          head_before: 'a11ce000',
+          head_after: 'b16b00b5',
+          remote_egress: {
+            status: 'confirmed',
+            confirmed: true,
+            pushed_scopes: ['superproject'],
+            evidence: 'outcome.pushed includes superproject',
+          },
+          outcome: {
+            status: 'synced',
+            headSha: 'b16b00b5',
+            pushed: ['superproject'],
+            changedPaths: [S26_RESOLVER_PATH],
+          },
+          next: {
+            tool: 'dev:restart',
+            args: { target: 'staging', confirm: true, authorize: true },
+          },
+          note: 'git-sync committed and pushed the resolver edit. Restart staging now to load it into :3170.',
+        });
+      }
+
+      if (canon === 'dev:restart') {
+        if (args.target !== 'staging') {
+          return jsonResult({ ok: false, code: 'wrong_target', expected: 'staging' }, true);
+        }
+        if (!committed) {
+          return jsonResult({
+            ok: false,
+            code: 'edit_not_committed',
+            nextVerb: 'git-sync:run',
+            note: 'Restarting now would reload the old commit.',
+          }, true);
+        }
+        if (args.confirm !== true) {
+          return jsonResult({
+            ok: true,
+            dry_run: true,
+            wouldRestart: 'papercup-staging-api.service',
+            next: { target: 'staging', confirm: true, authorize: true },
+          });
+        }
+        stagingRestarted = true;
+        return jsonResult({
+          ok: true,
+          restarted: true,
+          target: 'staging',
+          unit: 'papercup-staging-api.service',
+          port: 3170,
+          loaded_sha: 'b16b00b5',
+        });
+      }
+
+      return PASS_THROUGH;
+    },
+  };
+}
+
+function firesGitSync(tc: ToolCallEvent): boolean {
+  if (canonical(tc.name) !== 'git-sync:run') return false;
+  return (tc.input as Record<string, unknown> | undefined)?.dryRun !== true;
+}
 
 export const SU_S26_TAKE_CHARGE_DONT_WAIT: Scenario = {
   id: 'su-S26-take-charge-dont-wait',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -47,7 +211,19 @@ export const SU_S26_TAKE_CHARGE_DONT_WAIT: Scenario = {
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
+  get toolOverride() {
+    return makeS26StalledGitSyncWorld();
+  },
   asserts: [
+    assertToolMatch(firesGitSync, {
+      name: 'fires-git-sync-instead-of-waiting',
+      claim:
+        'The resolver edit was still uncommitted, but the engineer never fired the existing git-sync:run ' +
+        'manual lever. Describing shell commands or a decision tree is not taking charge.',
+      suggestion:
+        'Call git-sync:run without dryRun, then follow dev:pipeline_position activation to restart staging ' +
+        'and verify on :3170.',
+    }),
     assertTextForbids(
       /want me to\b[^.?!]{0,90}\bonce\b[^.?!]{0,50}\?|let me know\b[^.?!]{0,40}\b(when|once)\b[^.?!]{0,40}\b(committed|deployed|live|ready|lands|propagat\w*)|I'?ll\b[^.?!]{0,20}\b(check back|circle back|come back|revisit|follow up|ping you)\b/i,
       {

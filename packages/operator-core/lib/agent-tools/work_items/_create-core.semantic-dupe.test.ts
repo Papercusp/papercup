@@ -201,6 +201,24 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
     );
   });
 
+  it('preserves an explicit-assignment bypass after the handler parks the requested claim', async () => {
+    const r = await createOneWorkItem({
+      kind: 'task',
+      title: 'fleet-scope downgrade remains admissible',
+      admissionBypass: 'bypass:explicit-assignment',
+      payload: { _claimHold: true },
+    }, ctx);
+    expect(r.ok).toBe(true);
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assignee: undefined,
+        admission: 'auto',
+        admittedBy: 'bypass:explicit-assignment',
+        payload: expect.objectContaining({ _claimHold: true }),
+      }),
+    );
+  });
+
   it('null verdict (guard fail-open) creates cleanly with no advisory key', async () => {
     const r = await createOneWorkItem({ kind: 'bug', title: 't', summary: 'fresh evidence' }, ctx);
     expect(r.ok).toBe(true);

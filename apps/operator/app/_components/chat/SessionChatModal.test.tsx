@@ -160,6 +160,12 @@ const H = vi.hoisted(() => ({
 }));
 const attentionInvalidate = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  ORIGIN_SCHEDULER_CLASSES: [
+    'interactive-control',
+    'foreground-read',
+    'background-sync',
+    'bulk',
+  ],
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     H.results[queryName] ?? { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() },
@@ -2027,9 +2033,22 @@ describe('SessionChatModal', () => {
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(screen.getByTestId('session-chat-dossier-toggle')).toBeTruthy();
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
-      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(false);
+      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(true);
+      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+      nuqsSetters.chatLaunchFleet.mockClear();
       fireEvent.click(screen.getByText('Launch a fleet'));
-      expect(nuqsSetters.chatLaunchFleet).toHaveBeenCalledWith(true);
+      expect(nuqsSetters.chatLaunchFleet).toHaveBeenCalledWith(false);
+    });
+
+    it('respects an explicit ?chatLaunchFleet=false URL choice while defaulting open', async () => {
+      nuqs.chatLaunchFleet = false;
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+
+      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(false);
+      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
     });
 
     it('mounts the dossier rail by default when the viewport has room for it', async () => {

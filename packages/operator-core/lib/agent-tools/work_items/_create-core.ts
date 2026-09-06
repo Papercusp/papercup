@@ -104,6 +104,13 @@ export interface CreateOneWorkItemArgs {
   /** Atomic create+claim target (B-LOOP-4): the agent id to own the new item. */
   assign_to?: string;
   /**
+   * Server-derived admission reason for a create whose requested assignment was
+   * deliberately removed at the fleet-scope seam. This preserves the explicit
+   * assignment's born-admitted property without granting the out-of-scope claim;
+   * only the create tool handler sets it after the admission check succeeds.
+   */
+  admissionBypass?: AdmissionBypassReason;
+  /**
    * EI-10897: initial lifecycle state — e.g. `wip` for an ad-hoc unit the creator is
    * starting right now (the shape the su persona already prescribes:
    * `{ title, assign_to:'self', state:'wip' }`). Applied as a transition immediately
@@ -1003,7 +1010,7 @@ export async function createOneWorkItem(
             ? 'bypass:topic-security'
             : args.assign_to?.trim()
               ? 'bypass:explicit-assignment'
-              : null;
+              : args.admissionBypass ?? null;
     const bornAdmission: 'pending' | 'auto' = admissionBypass ? 'auto' : 'pending';
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
