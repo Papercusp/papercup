@@ -46,6 +46,13 @@ export interface RefHydrationBudget {
   maxRefs: number;
 }
 
+/** Delivery-time lifecycle state for a referenced work-item. */
+export interface TerminalSubject {
+  state: string;
+  /** Canonical time the item entered its current terminal state; null for legacy rows. */
+  closedAt: string | null;
+}
+
 /** D-004: ~200 chars/ref, ≤3 refs/message, never recursive. */
 export const DEFAULT_REF_BUDGET: RefHydrationBudget = { snippetChars: 200, maxRefs: 3 };
 
@@ -59,6 +66,8 @@ export interface HydratedRef {
   snippet: string;
   /** Failure tag when !ok: 'not_found' | 'resolver_not_installed' | 'resolve_error'. */
   error?: string;
+  /** Present when a referenced work-item is already terminal at delivery time. */
+  terminalSubject?: TerminalSubject;
 }
 
 const WORK_ITEM_ID = /^(?:wi:)?((?:WI|EI|F)-\d+)$/i;
@@ -327,4 +336,23 @@ export function renderBodyRefsSuffix(hs: HydratedRef[]): string {
   const ok = hs.filter((h) => h.ok);
   if (!ok.length) return '';
   return ` ${ok.map((h) => (h.snippet ? `↪ ${h.label}: "${h.snippet}"` : `↪ ${h.label}`)).join('; ')}`;
+}
+
+/**
+ * Render a warning for a directed action/answer request whose cited subject is
+ * already terminal. This is deliberately an annotation, not suppression: a
+ * terminal subject may still fail to satisfy the ask, but the receiver should
+ * not spend a full pass without first checking whether the request is already
+ * answered. The warning is rendered by coord-schema only for directed asks.
+ */
+export function renderTerminalSubjectSuffix(hs: HydratedRef[]): string {
+  const terminal = hs.filter((h) => h.ok && h.ref.kind === 'work-item' && h.terminalSubject);
+  if (!terminal.length) return '';
+  const subjects = terminal.map((h) => {
+    const subject = h.ref.kind === 'work-item' ? h.ref.id : h.label;
+    const stamp = h.terminalSubject!;
+    const since = stamp.closedAt ? ` since ${stamp.closedAt}` : '';
+    return `${subject} [${stamp.state}]${since}`;
+  });
+  return ` ⚠ SUBJECT TERMINAL: ${subjects.join('; ')} — this ask may already be satisfied`;
 }

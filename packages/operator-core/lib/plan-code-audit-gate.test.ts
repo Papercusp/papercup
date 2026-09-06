@@ -7,6 +7,7 @@
  * only the items whose requirement or cited bytes moved are sent back for audit.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
@@ -281,6 +282,19 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
         itemText: 'first requirement — note: reflected from EI-21907088033648683',
       },
     ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(verdict.code).not.toBe('audit_coverage_stale');
+  });
+
+  it('accepts a legacy raw item-text hash after the note-normalization change', async () => {
+    const itemText = 'first requirement — note: reflected from EI-21907088033648683';
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', auditSeq: 1 });
+    p1.entry.itemTextHash = createHash('sha256').update(itemText).digest('hex');
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText }]);
 
     const verdict = await evaluatePlanAcceptanceGate(PLAN);
 

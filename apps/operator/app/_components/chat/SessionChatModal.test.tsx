@@ -675,6 +675,39 @@ describe('SessionChatModal', () => {
     );
   });
 
+  it('makes every T# click target that turn answer, with the newest rapid click winning', async () => {
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-turns', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'prompt', text: 'first question' },
+        { kind: 'text', text: 'first answer' },
+        { kind: 'prompt', text: 'second question' },
+        { kind: 'text', text: 'second answer' },
+        { kind: 'prompt', text: 'third question' },
+        { kind: 'text', text: 'third answer' },
+      ]));
+    });
+
+    const rail = await screen.findByTestId('turn-rail');
+    const rows = within(rail).getAllByTestId('turn-rail-row');
+    expect(rows.map((row) => row.getAttribute('data-turn'))).toEqual(['1', '2', '3']);
+    scrollToIndexSpy.mockClear();
+
+    fireEvent.click(rows[1]);
+    await waitFor(() => expect(scrollToIndexSpy).toHaveBeenCalledWith(3, { align: 'start' }));
+
+    // The owner-reported race: a second click on the same T# must still issue
+    // another request, and a rapid different click must supersede it.
+    const callsAfterFirst = scrollToIndexSpy.mock.calls.length;
+    fireEvent.click(rows[1]);
+    await waitFor(() => expect(scrollToIndexSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst));
+    fireEvent.click(rows[0]);
+    fireEvent.click(rows[2]);
+    await waitFor(() => expect(scrollToIndexSpy.mock.calls.at(-1)?.[0]).toBe(5));
+  });
+
   describe('P-012 identity chip', () => {
     function seedRoster(entries: Array<Record<string, unknown>>) {
       H.results['advRoster.list'] = {

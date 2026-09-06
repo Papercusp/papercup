@@ -16,10 +16,10 @@ import {
   DEFAULT_THEME_ID,
   customThemeSlug,
   deleteCustomTheme,
-  fetchCustomThemes,
   findCustomTheme,
   themeList,
   useActiveTheme,
+  useThemeCatalog,
   writeActiveTheme,
   type CustomTheme,
 } from '@/lib/theme';
@@ -94,7 +94,7 @@ function ThemePreview({ themeId }: { themeId: string }) {
 export default function PersonalizationSettingsPage() {
   const [visualEffectsMode, setVisualEffectsMode] = useState<VisualEffectsMode>('system');
   const activeTheme = useActiveTheme();
-  const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
+  const { themes: customThemes, invalidate: invalidateThemes } = useThemeCatalog();
   // Editor open-state in the URL (repo nuqs rule): null = closed, 'new' = create
   // (seed from active), 'custom:<id>' = edit that theme.
   const [themeEdit, setThemeEdit] = useQueryState('themeEdit', parseAsString);
@@ -109,19 +109,6 @@ export default function PersonalizationSettingsPage() {
     syncVisualEffects();
     return subscribeVisualEffects(() => setVisualEffectsMode(readVisualEffectsMode()));
   }, []);
-
-  const reloadCustomThemes = useCallback(async () => {
-    try {
-      setCustomThemes(await fetchCustomThemes());
-    } catch {
-      // The themes endpoint is unavailable until the operator restarts after a
-      // fresh install; built-ins still work, so fail quietly.
-    }
-  }, []);
-
-  useEffect(() => {
-    void reloadCustomThemes();
-  }, [reloadCustomThemes]);
 
   const setVisualEffectsPreference = useCallback((value: string) => {
     const mode = (VISUAL_EFFECTS_OPTIONS.some((opt) => opt.value === value) ? value : 'system') as VisualEffectsMode;
@@ -151,27 +138,31 @@ export default function PersonalizationSettingsPage() {
         if (activeTheme === id) writeActiveTheme(DEFAULT_THEME_ID);
         if (themeEdit === id) void setThemeEdit(null);
         toast.success('Theme deleted');
-        await reloadCustomThemes();
+        invalidateThemes();
       } catch (err) {
         toast.error((err as Error).message);
       } finally {
         setConfirmDeleteId(null);
       }
     },
-    [activeTheme, themeEdit, setThemeEdit, reloadCustomThemes],
+    [activeTheme, themeEdit, setThemeEdit, invalidateThemes],
   );
 
   const onSaved = useCallback(
     async (theme: CustomTheme) => {
-      await reloadCustomThemes();
+      invalidateThemes();
       writeActiveTheme(`${CUSTOM_PREFIX}${theme.id}`);
       void setThemeEdit(null);
     },
-    [reloadCustomThemes, setThemeEdit],
+    [invalidateThemes, setThemeEdit],
   );
 
-  const editorSeedId = themeEdit === 'new' ? activeTheme : themeEdit ?? activeTheme;
-  const editorExisting = themeEdit && themeEdit !== 'new' ? findCustomTheme(themeEdit, customThemes) : null;
+  const copyThemeId = themeEdit?.startsWith('copy:') ? themeEdit.slice('copy:'.length) : null;
+  const editorSeedId = themeEdit === 'new' ? activeTheme : copyThemeId ?? themeEdit ?? activeTheme;
+  const editorExisting = themeEdit && themeEdit !== 'new' && !copyThemeId
+    ? findCustomTheme(themeEdit, customThemes)
+    : null;
+  const editorCopyOf = copyThemeId ? findCustomTheme(copyThemeId, customThemes) : null;
   const descriptionText =
     THEME_DESCRIPTIONS[activeTheme] ??
     (findCustomTheme(activeTheme, customThemes) ? 'Your custom theme.' : 'Custom theme.');
@@ -192,6 +183,8 @@ export default function PersonalizationSettingsPage() {
         <div role="radiogroup" aria-label="Theme" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {themes.map((t) => {
             const selected = t.id === activeTheme;
+            const definition = findCustomTheme(t.id, customThemes);
+            const installed = definition?.installed === true;
             const cardStyle: CSSProperties = {
               position: 'relative',
               display: 'flex',
@@ -230,18 +223,18 @@ export default function PersonalizationSettingsPage() {
                       tabIndex={0}
                       onClick={(e) => {
                         e.stopPropagation();
-                        void setThemeEdit(t.id);
+                        void setThemeEdit(installed ? `copy:${t.id}` : t.id);
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
                           e.stopPropagation();
-                          void setThemeEdit(t.id);
+                          void setThemeEdit(installed ? `copy:${t.id}` : t.id);
                         }
                       }}
                       style={{ fontSize: 11, color: 'var(--fg-mute)', cursor: 'pointer' }}
                     >
-                      Edit
+                      {installed ? 'Edit as copy' : 'Edit'}
                     </span>
                     <span
                       role="button"
@@ -261,8 +254,17 @@ export default function PersonalizationSettingsPage() {
                       }}
                       style={{ fontSize: 11, color: confirmDeleteId === t.id ? 'var(--bad)' : 'var(--fg-mute)', cursor: 'pointer', fontWeight: confirmDeleteId === t.id ? 600 : 400 }}
                     >
-                      {confirmDeleteId === t.id ? 'Confirm?' : 'Delete'}
+                      {confirmDeleteId === t.id ? 'Confirm?' : installed ? 'Remove' : 'Delete'}
                     </span>
+                  </div>
+                )}
+                {installed && definition && (
+                  <div
+                    data-testid="installed-theme-provenance"
+                    style={{ fontSize: 10.5, lineHeight: 1.35, color: 'var(--fg-mute)' }}
+                  >
+                    Installed{definition.version ? ` · v${definition.version}` : ''}
+                    {definition.source ? <><br />{definition.source.replace(/^https?:\/\/github\.com\//, '')}</> : null}
                   </div>
                 )}
               </button>
@@ -301,6 +303,7 @@ export default function PersonalizationSettingsPage() {
             key={themeEdit}
             seedThemeId={editorSeedId}
             existing={editorExisting}
+            copyOf={editorCopyOf}
             onSaved={onSaved}
             onCancel={() => void setThemeEdit(null)}
           />

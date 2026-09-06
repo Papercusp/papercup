@@ -22,14 +22,14 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
   it('emits NOTHING when every tool is healthy (all clear)', () => {
     expect(
       buildToolTelemetryPatterns(
-        base({ tools: [{ tool: 'coord:orient', calls: 500, errors: 1, p95Ms: 300, repeatWithinSpawn: 0 }] }),
+        base({ tools: [{ tool: 'coord:orient', calls: 500, errors: 1, refusals: 0, p95Ms: 300, repeatWithinSpawn: 0 }] }),
       ),
     ).toEqual([]);
   });
 
   it('surfaces a high error-rate tool, but only above the volume floor (a fluke on tiny N is not a pattern)', () => {
     const out = buildToolTelemetryPatterns(
-      base({ tools: [{ tool: 'flaky:tool', calls: 100, errors: 40, p95Ms: 200, repeatWithinSpawn: 0 }] }),
+      base({ tools: [{ tool: 'flaky:tool', calls: 100, errors: 40, refusals: 0, p95Ms: 200, repeatWithinSpawn: 0 }] }),
     );
     const err = out.find((p) => p.ref === 'tool:error-rate:flaky-tool');
     expect(err).toBeTruthy();
@@ -39,17 +39,34 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
 
     // 1/1 = 100% rate but below the volume floor ⇒ silent
     const fluke = buildToolTelemetryPatterns(
-      base({ tools: [{ tool: 'rare:tool', calls: 1, errors: 1, p95Ms: 10, repeatWithinSpawn: 0 }] }),
+      base({ tools: [{ tool: 'rare:tool', calls: 1, errors: 1, refusals: 0, p95Ms: 10, repeatWithinSpawn: 0 }] }),
     );
     expect(fluke.some((p) => p.ref.startsWith('tool:error-rate:'))).toBe(false);
+  });
+
+  it('keeps deliberate refusals out of the error rate while carrying them as context', () => {
+    const refusalOnly = buildToolTelemetryPatterns(
+      base({ tools: [{ tool: 'guarded:tool', calls: 100, errors: 0, refusals: 80, p95Ms: 10, repeatWithinSpawn: 0 }] }),
+    );
+    expect(refusalOnly.some((p) => p.ref === 'tool:error-rate:guarded-tool')).toBe(false);
+
+    const mixed = buildToolTelemetryPatterns(
+      base({ tools: [{ tool: 'mixed:tool', calls: 100, errors: 30, refusals: 50, p95Ms: 10, repeatWithinSpawn: 0 }] }),
+    );
+    const error = mixed.find((p) => p.ref === 'tool:error-rate:mixed-tool');
+    expect(error).toBeTruthy();
+    expect(error!.summary).toContain('30% of calls (30/100 in window)');
+    expect(error!.summary).toContain('a further 50 call(s) were refused by guards');
+    expect(error!.detail).toContain('30 genuine error(s)');
+    expect(error!.detail).toContain('50 deliberate refusal(s) are excluded');
   });
 
   it('ranks failing tools by absolute failed-call impact (rate × volume), not rate alone', () => {
     const out = buildToolTelemetryPatterns(
       base({
         tools: [
-          { tool: 'high:rate-low-vol', calls: 25, errors: 25, p95Ms: 10, repeatWithinSpawn: 0 }, // 100% × 25 = 25
-          { tool: 'mid:rate-high-vol', calls: 1000, errors: 300, p95Ms: 10, repeatWithinSpawn: 0 }, // 30% × 1000 = 300
+          { tool: 'high:rate-low-vol', calls: 25, errors: 25, refusals: 0, p95Ms: 10, repeatWithinSpawn: 0 }, // 100% × 25 = 25
+          { tool: 'mid:rate-high-vol', calls: 1000, errors: 300, refusals: 0, p95Ms: 10, repeatWithinSpawn: 0 }, // 30% × 1000 = 300
         ],
       }),
     );
@@ -77,8 +94,8 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
     const out = buildToolTelemetryPatterns(
       base({
         tools: [
-          { tool: 'work_items:get', calls: 400, errors: 0, p95Ms: 50, repeatWithinSpawn: 120 },
-          { tool: 'calm:tool', calls: 400, errors: 0, p95Ms: 50, repeatWithinSpawn: 3 }, // below floor (25)
+          { tool: 'work_items:get', calls: 400, errors: 0, refusals: 0, p95Ms: 50, repeatWithinSpawn: 120 },
+          { tool: 'calm:tool', calls: 400, errors: 0, refusals: 0, p95Ms: 50, repeatWithinSpawn: 3 }, // below floor (25)
         ],
       }),
     );
@@ -92,8 +109,8 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
     const out = buildToolTelemetryPatterns(
       base({
         tools: [
-          { tool: 'slow:tool', calls: 60, errors: 0, p95Ms: 45_000, repeatWithinSpawn: 0 },
-          { tool: 'unmeasured:tool', calls: 60, errors: 0, p95Ms: null, repeatWithinSpawn: 0 },
+          { tool: 'slow:tool', calls: 60, errors: 0, refusals: 0, p95Ms: 45_000, repeatWithinSpawn: 0 },
+          { tool: 'unmeasured:tool', calls: 60, errors: 0, refusals: 0, p95Ms: null, repeatWithinSpawn: 0 },
         ],
       }),
     );
@@ -107,9 +124,9 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
     const out = buildToolTelemetryPatterns(
       base({
         tools: [
-          { tool: 't:err', calls: 100, errors: 50, p95Ms: 10, repeatWithinSpawn: 0 },
-          { tool: 't:retry', calls: 100, errors: 0, p95Ms: 10, repeatWithinSpawn: 80 },
-          { tool: 't:slow', calls: 100, errors: 0, p95Ms: 40_000, repeatWithinSpawn: 0 },
+          { tool: 't:err', calls: 100, errors: 50, refusals: 0, p95Ms: 10, repeatWithinSpawn: 0 },
+          { tool: 't:retry', calls: 100, errors: 0, refusals: 0, p95Ms: 10, repeatWithinSpawn: 80 },
+          { tool: 't:slow', calls: 100, errors: 0, refusals: 0, p95Ms: 40_000, repeatWithinSpawn: 0 },
         ],
         limitFailures: [{ tool: 't:limit', errs: 50 }],
       }),
@@ -122,7 +139,7 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
 
   it('slugifies an mcp__-prefixed tool name into a bounded, stable ref suffix', () => {
     const out = buildToolTelemetryPatterns(
-      base({ tools: [{ tool: 'mcp__papercusp-su__work_items_complete', calls: 200, errors: 60, p95Ms: 10, repeatWithinSpawn: 0 }] }),
+      base({ tools: [{ tool: 'mcp__papercusp-su__work_items_complete', calls: 200, errors: 60, refusals: 0, p95Ms: 10, repeatWithinSpawn: 0 }] }),
     );
     const ref = out.find((p) => p.ref.startsWith('tool:error-rate:'))!.ref;
     const suffix = ref.slice('tool:error-rate:'.length);
@@ -139,6 +156,7 @@ describe('buildToolTelemetryPatterns — the measured-DX lane (WI-4454)', () => 
           tool: `t${i}`,
           calls: 100,
           errors: 50,
+          refusals: 0,
           p95Ms: 10,
           repeatWithinSpawn: 0,
         })),

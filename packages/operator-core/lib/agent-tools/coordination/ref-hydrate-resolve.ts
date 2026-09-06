@@ -18,7 +18,7 @@
 
 import type { CoordEnvelope } from './envelope';
 import { getMessageById } from './messages';
-import { getWorkItem } from '../../work-items';
+import { getWorkItem, isSettledWorkItemState } from '../../work-items';
 import { findAnnouncementsForKey } from '../../events/await/store';
 import { getPlanRow, planItemsForRow } from '../plans/source';
 import { resolveEffectiveStatusForItems } from '../plans/effective-status';
@@ -34,13 +34,20 @@ import {
   type HydratableRef,
   type HydratedRef,
   type RefHydrationBudget,
+  type TerminalSubject,
 } from './ref-hydrate';
 
-/** One resolver: typed ref → { label, snippet } | null (null = not found). */
+/** One resolver: typed ref → render-ready metadata | null (null = not found). */
+export interface RefResolution {
+  label: string;
+  snippet: string;
+  terminalSubject?: TerminalSubject;
+}
+
 export type RefResolver = (
   ref: HydratableRef,
   budget: RefHydrationBudget,
-) => Promise<{ label: string; snippet: string } | null>;
+) => Promise<RefResolution | null>;
 
 export type RefResolvers = Partial<Record<HydratableRef['kind'], RefResolver>>;
 
@@ -59,6 +66,12 @@ function msgLabel(env: CoordEnvelope): string {
   return `msg ${env.msg_id} (${shortHandle(env.from)} → ${to}, ${shortTs(env.ts)})`;
 }
 
+function terminalSubjectFor(wi: { state: string; closedAt: string | null }): TerminalSubject | undefined {
+  return isSettledWorkItemState(wi.state)
+    ? { state: wi.state, closedAt: wi.closedAt }
+    : undefined;
+}
+
 const defaultMsgResolver: RefResolver = async (ref, budget) => {
   if (ref.kind !== 'msg') return null;
   const env = await getMessageById(ref.id);
@@ -72,9 +85,11 @@ const defaultWorkItemResolver: RefResolver = async (ref, budget) => {
   const wi = await getWorkItem(ref.id);
   if (!wi) return null;
   const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
+  const terminalSubject = terminalSubjectFor(wi);
   return {
     label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`,
     snippet: clampSnippet([wi.title, wi.summary].filter(Boolean).join(' — '), budget.snippetChars),
+    ...(terminalSubject ? { terminalSubject } : {}),
   };
 };
 
@@ -103,6 +118,7 @@ export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
   const wi = await getWorkItem(ref.id);
   if (!wi) return null;
   const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
+  const terminalSubject = terminalSubjectFor(wi);
   let tail = '';
   try {
     const [{ getWorkItemCheckpoint }, { activeWorkspaceId }] = await Promise.all([
@@ -122,7 +138,11 @@ export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
     [wi.title, wi.summary].filter(Boolean).join(' — '),
     Math.max(0, budget.snippetChars - tail.length),
   );
-  return { label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`, snippet: `${head}${tail}` };
+  return {
+    label: `${wi.id} [${wi.kind}/${wi.state}${assignee}]`,
+    snippet: `${head}${tail}`,
+    ...(terminalSubject ? { terminalSubject } : {}),
+  };
 };
 
 /**
@@ -210,7 +230,13 @@ export async function hydrateRefs(
         if (!hit) {
           return { ref, ok: false, label: canonicalRefKey(ref), snippet: '', error: 'not_found' };
         }
-        return { ref, ok: true, label: hit.label, snippet: hit.snippet };
+        return {
+          ref,
+          ok: true,
+          label: hit.label,
+          snippet: hit.snippet,
+          ...(hit.terminalSubject ? { terminalSubject: hit.terminalSubject } : {}),
+        };
       } catch {
         return { ref, ok: false, label: canonicalRefKey(ref), snippet: '', error: 'resolve_error' };
       }

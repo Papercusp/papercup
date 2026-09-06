@@ -909,6 +909,47 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     });
   });
 
+  it("coordinates an XDG_RUNTIME_DIR credential edit through the reserved runtime lock key", async () => {
+    const runtimeDir = join(home, "runtime");
+    const stateFile = join(
+      runtimeDir,
+      "papercusp-p029-acceptance.9aTT9e",
+      "storage-state.json",
+    );
+    fs.mkdirSync(dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, "{}\n");
+    const r = await run(
+      {
+        tool_name: "Edit",
+        tool_input: { file_path: stateFile },
+        tool_use_id: "tu-runtime-credential",
+        session_id: "codex-session-owner",
+        cwd: home,
+      },
+      {
+        PAPERCUSP_LOCK_SID: "codex-session-owner",
+        PAPERCUSP_SID: "codex-session-owner",
+        XDG_RUNTIME_DIR: runtimeDir,
+      },
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("");
+    expect(lastRequest?.body.params.arguments.paths).toEqual([
+      "@external/runtime/papercusp-p029-acceptance.9aTT9e/storage-state.json",
+    ]);
+    expect(fs.existsSync(join(cache, "tu-runtime-credential.lock"))).toBe(true);
+    const decision = JSON.parse(
+      fs.readFileSync(join(cache, "last-decision.json"), "utf8"),
+    );
+    expect(decision).toMatchObject({
+      decision: "granted",
+      owner: "codex-session-owner",
+      paths: [
+        "@external/runtime/papercusp-p029-acceptance.9aTT9e/storage-state.json",
+      ],
+    });
+  });
+
   it("block-on-held (busy) → permissionDecision:deny carrying the holder + intent", async () => {
     nextInner = {
       ok: false,

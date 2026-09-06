@@ -8,17 +8,17 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { ensureBootstrap, getTxPool, readQueue } from './su-lock-store';
 import { acquireWithContentionRetry } from './contention-retry';
-import { externalHomePathToLockKey } from './external-path';
+import { externalPathToLockKey } from './external-path';
 import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
 
 export default defineTool({
   name: 'locks:queue',
   description:
-    'Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute home files and maps them to the same @external/home/* keys used by locks:acquire before merging the filter. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.',
+    'Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute current-user home or XDG_RUNTIME_DIR files and maps them to the same @external/home/* or @external/runtime/* keys used by locks:acquire before merging the filter. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.',
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
-    chaining: 'Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it maps to the same @external/home/* key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector.',
+    chaining: 'Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home or XDG_RUNTIME_DIR file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it maps to the same reserved external key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector.',
     seeAlso: [
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',
@@ -64,7 +64,7 @@ export default defineTool({
       .max(50)
       .optional()
       .describe(
-        'absolute configuration-file paths below the current user home; mapped to @external/home/* lock keys — the same mapping locks:acquire uses — then merged into the paths filter',
+        'absolute configuration-file paths below the current user home or XDG_RUNTIME_DIR; mapped to @external/home/* or @external/runtime/* lock keys — the same mapping locks:acquire uses — then merged into the paths filter',
       ),
     owner: z.string().optional(),
     include_completed: z.boolean().optional(),
@@ -73,18 +73,18 @@ export default defineTool({
     await ensureBootstrap();
     const sql = getTxPool();
 
-    // EI-22075918402561858: `paths` is repo-relative; a home-directory file locked
-    // via locks:acquire's external_paths lives under a distinct @external/home/*
-    // key that a raw absolute path never matches. Map external_paths through the
-    // identical helper acquire uses and merge into the paths filter so external
-    // holders are inspectable through this diagnostic too. Only enter the merge
-    // when the caller actually supplied a filter — omitting both stays an
-    // unfiltered scan, and an explicit paths:[] (with no external_paths) must
-    // keep failing closed exactly as before.
+    // EI-22075918402561858 / EI-22439115152462582: `paths` is repo-relative;
+    // an external file locked via locks:acquire's external_paths lives under a
+    // distinct reserved key that a raw absolute path never matches. Map
+    // external_paths through the identical helper acquire uses and merge into
+    // the paths filter so external holders are inspectable through this
+    // diagnostic too. Only enter the merge when the caller actually supplied
+    // a filter — omitting both stays an unfiltered scan, and an explicit
+    // paths:[] (with no external_paths) must keep failing closed exactly as before.
     let paths = args.paths;
     if (args.external_paths !== undefined) {
       try {
-        paths = [...(args.paths ?? []), ...args.external_paths.map((p) => externalHomePathToLockKey(p))];
+        paths = [...(args.paths ?? []), ...args.external_paths.map((p) => externalPathToLockKey(p))];
       } catch (err: unknown) {
         return {
           content: [

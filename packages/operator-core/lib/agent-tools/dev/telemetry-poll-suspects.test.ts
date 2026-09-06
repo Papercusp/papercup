@@ -22,6 +22,7 @@ function entry(overrides: Partial<TelemetryRollupEntry>): TelemetryRollupEntry {
     tool_name: 'x:y',
     call_count: 0,
     error_count: 0,
+    refused_count: 0,
     p50_ms: 1,
     p95_ms: 2,
     total_bytes: 0,

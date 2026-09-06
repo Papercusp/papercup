@@ -226,6 +226,24 @@ describe('locks:acquire — outcome branches', () => {
     expect(b.path_warning).toBeUndefined();
   });
 
+  it('does not probe logical XDG-runtime keys as repository paths', async () => {
+    routeM.mockResolvedValue({
+      value: {
+        ok: true,
+        lock_id: 'L-runtime-warning',
+        expires_ts: new Date('2026-02-01T00:00:00Z'),
+        held: ['@external/runtime/papercusp-p029/storage-state.json'],
+      },
+      via: 'local-authority',
+    });
+    const b = body(await call({
+      paths: ['@external/runtime/papercusp-p029/storage-state.json'],
+      coordination_domain: warningRoot,
+    }));
+    expect(b).toMatchObject({ ok: true, lock_id: 'L-runtime-warning' });
+    expect(b.path_warning).toBeUndefined();
+  });
+
   it('uses the client edit hook domain when supplied, so a release-tree operator cannot split the lock namespace', async () => {
     routeM.mockResolvedValue({ value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] }, via: 'local-authority' });
     await call({ coordination_domain: '/canonical/staging' });
@@ -249,6 +267,33 @@ describe('locks:acquire — outcome branches', () => {
     } as never, {} as never) as Out;
     expect(normM).toHaveBeenCalledWith(['@external/home/.config/mimeapps.list']);
     expect(body(out)).toMatchObject({ ok: true, lock_id: 'L-home' });
+  });
+
+  it('maps absolute XDG runtime files to the hook-compatible reserved key', async () => {
+    const previousRuntimeDir = process.env.XDG_RUNTIME_DIR;
+    process.env.XDG_RUNTIME_DIR = '/run/user/1000';
+    routeM.mockResolvedValue({
+      value: {
+        ok: true,
+        lock_id: 'L-runtime',
+        expires_ts: new Date('2026-02-01T00:00:00Z'),
+        held: ['@external/runtime/papercusp-p029/storage-state.json'],
+      },
+      via: 'local-authority',
+    });
+    try {
+      const out = await tool.handler({
+        external_paths: ['/run/user/1000/papercusp-p029/storage-state.json'],
+        intent: 'refresh runtime credential',
+      } as never, {} as never) as Out;
+      expect(normM).toHaveBeenCalledWith([
+        '@external/runtime/papercusp-p029/storage-state.json',
+      ]);
+      expect(body(out)).toMatchObject({ ok: true, lock_id: 'L-runtime' });
+    } finally {
+      if (previousRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = previousRuntimeDir;
+    }
   });
 
   it('fast-path busy with no wait/wake → busy()', async () => {

@@ -24,6 +24,7 @@ import {
   renderHydratedRef,
   renderHydratedRefs,
   renderReplyQuoteSuffix,
+  renderTerminalSubjectSuffix,
   type HydratableRef,
 } from './ref-hydrate';
 import { hydrateRefs, resolveGateRefStamps, type RefResolver } from './ref-hydrate-resolve';
@@ -268,6 +269,27 @@ describe('body auto-refs (P-008) — eligibility, opt-out, entry detection, tail
     expect(renderBodyRefsSuffix([miss])).toBe('');
     expect(renderBodyRefsSuffix([])).toBe('');
   });
+
+  it('renderTerminalSubjectSuffix marks terminal cited subjects and omits non-terminal/missing refs', () => {
+    const terminal = {
+      ref: { kind: 'work-item', id: 'EI-9719' },
+      ok: true,
+      label: 'EI-9719 [bug/done]',
+      snippet: 'already shipped',
+      terminalSubject: { state: 'done', closedAt: '2026-08-25T21:10:47.721Z' },
+    } as const;
+    const open = {
+      ref: { kind: 'work-item', id: 'WI-4173' },
+      ok: true,
+      label: 'WI-4173 [bug/open]',
+      snippet: 'still active',
+    } as const;
+    expect(renderTerminalSubjectSuffix([terminal, open])).toBe(
+      ' ⚠ SUBJECT TERMINAL: EI-9719 [done] since 2026-08-25T21:10:47.721Z — this ask may already be satisfied',
+    );
+    expect(renderTerminalSubjectSuffix([open])).toBe('');
+    expect(renderTerminalSubjectSuffix([{ ...terminal, ok: false }])).toBe('');
+  });
 });
 
 describe('hydrateRefs (injected resolvers — DB-free)', () => {
@@ -289,6 +311,22 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
       [false, 'not_found'],
     ]);
     expect(out[0].label).toContain('WI-4070');
+  });
+
+  it('preserves terminal subject metadata from a resolver', async () => {
+    const out = await hydrateRefs([{ kind: 'work-item', id: 'EI-9719' }], {
+      resolvers: {
+        'work-item': async () => ({
+          label: 'EI-9719 [bug/done]',
+          snippet: 'already shipped',
+          terminalSubject: { state: 'done', closedAt: '2026-08-25T21:10:47.721Z' },
+        }),
+      },
+    });
+    expect(out[0]).toMatchObject({
+      ok: true,
+      terminalSubject: { state: 'done', closedAt: '2026-08-25T21:10:47.721Z' },
+    });
   });
 
   it('degrades a missing resolver to resolver_not_installed (fail-soft)', async () => {

@@ -505,9 +505,17 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
     snippet: '',
     error: 'not_found',
   } as const;
+  const TERMINAL_HIT = {
+    ref: { kind: 'work-item', id: 'EI-9719' },
+    ok: true,
+    label: 'EI-9719 [bug/done]',
+    snippet: 'already shipped',
+    terminalSubject: { state: 'done', closedAt: '2026-08-25T21:10:47.721Z' },
+  } as const;
   const refs = new Map<string, unknown>([
     ['WI-4173', WI_HIT],
     ['EI-9999', EI_MISS],
+    ['EI-9719', TERMINAL_HIT],
   ]);
 
   it('a free-prose line citing a mapped id gets the inline ↪ status+title+checkpoint suffix', () => {
@@ -553,6 +561,28 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
 
   it('no bodyRefs map (legacy caller / hydration failed) ⇒ prior behavior, plain line', () => {
     expect(renderInjection([e({ summary: 'see WI-4173' })])).not.toContain('↪');
+  });
+
+  it('a directed action/answer ask citing a terminal subject gets a visible satisfaction warning', () => {
+    for (const expects of ['action', 'answer'] as const) {
+      const out = renderInjection(
+        [e({ to: ['su-peer'], expects, summary: 'Please re-check EI-9719' })],
+        { bodyRefs: refs as never, nowMs: FIXTURE_NOW },
+      );
+      expect(out).toContain(
+        '⚠ SUBJECT TERMINAL: EI-9719 [done] since 2026-08-25T21:10:47.721Z — this ask may already be satisfied',
+      );
+    }
+  });
+
+  it('terminal subjects are annotated only for directed action/answer lines, never broadcasts or FYIs', () => {
+    const cases = [
+      e({ to: ['*'], expects: 'action', summary: 'Please re-check EI-9719' }),
+      e({ to: ['su-peer'], expects: 'ack', summary: 'Please re-check EI-9719' }),
+      e({ to: ['su-peer'], summary: 'Please re-check EI-9719' }),
+    ];
+    const out = renderInjection(cases, { bodyRefs: refs as never, nowMs: FIXTURE_NOW });
+    expect(out).not.toContain('SUBJECT TERMINAL');
   });
 
   it('composes LAST on the line — after relay, reply-quote, and gate suffixes', () => {

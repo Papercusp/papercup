@@ -3,13 +3,20 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
 import {
+  RELATED_WIDEN_THRESHOLD_DEFAULT,
+  RELATED_WIDEN_THRESHOLD_ENV,
   buildIndex,
   classifySpecifier,
   isTestFile,
   playwrightOwnedTest,
+  resolveRelatedWidenThreshold,
   selectRelatedTests,
   transitiveDeps,
+  writeRelatedFilterList,
 } from '../../../../scripts/lib/related-tests.mjs';
 
 /**
@@ -199,6 +206,94 @@ describe('selectRelatedTests — every rail fails toward running MORE tests', ()
 
     expect(r.mode).toBe('full');
     expect(r.reason).toMatch(/^over-threshold\(10\/10\)$/);
+    expect(r.threshold).toBe(RELATED_WIDEN_THRESHOLD_DEFAULT);
+  });
+
+  // P-001 (gate-latency-selection-and-retry-policy-2026-09-06): widening is a COST rule, not a
+  // soundness rail. Gate run e70cd139 selected 3,849 of 6,493 operator-core files (59%) and the
+  // old 0.5 default widened it to the whole lane — 2,634 unrelated files for nothing.
+  it('keeps a majority-share selection RELATED under the default — 6/10 is not "everything"', () => {
+    const files: Record<string, string> = {
+      [`${ROOT}/hub.ts`]: 'export const hub = 1;',
+      [`${ROOT}/leaf.ts`]: 'export const leaf = 1;',
+    };
+    for (let i = 0; i < 6; i++) files[`${ROOT}/hub${i}.test.ts`] = `import './hub';`;
+    for (let i = 0; i < 4; i++) files[`${ROOT}/leaf${i}.test.ts`] = `import './leaf';`;
+
+    const r = selectRelatedTests({ rootDir: ROOT, changedPaths: [`${ROOT}/hub.ts`], fs: vfs(files) });
+
+    expect(RELATED_WIDEN_THRESHOLD_DEFAULT).toBeGreaterThan(0.6);
+    expect(r.mode).toBe('related');
+    expect(r.selected).toHaveLength(6);
+    expect(r.selected.every((f) => /hub\d\.test\.ts$/.test(f))).toBe(true);
+    expect(r.threshold).toBe(RELATED_WIDEN_THRESHOLD_DEFAULT);
+  });
+
+  it('honours an explicit threshold — the same 6/10 widens at 0.5', () => {
+    const files: Record<string, string> = {
+      [`${ROOT}/hub.ts`]: 'export const hub = 1;',
+      [`${ROOT}/leaf.ts`]: 'export const leaf = 1;',
+    };
+    for (let i = 0; i < 6; i++) files[`${ROOT}/hub${i}.test.ts`] = `import './hub';`;
+    for (let i = 0; i < 4; i++) files[`${ROOT}/leaf${i}.test.ts`] = `import './leaf';`;
+
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [`${ROOT}/hub.ts`],
+      fs: vfs(files),
+      threshold: 0.5,
+    });
+
+    expect(r.mode).toBe('full');
+    expect(r.reason).toBe('over-threshold(6/10)');
+    expect(r.threshold).toBe(0.5);
+  });
+});
+
+describe('resolveRelatedWidenThreshold (P-001)', () => {
+  it('defaults when the env var is unset or blank', () => {
+    expect(resolveRelatedWidenThreshold({})).toEqual({
+      threshold: RELATED_WIDEN_THRESHOLD_DEFAULT,
+      source: 'default',
+    });
+    expect(resolveRelatedWidenThreshold({ [RELATED_WIDEN_THRESHOLD_ENV]: '  ' }).source).toBe('default');
+  });
+
+  it('accepts a fraction in (0, 1] from the env', () => {
+    expect(resolveRelatedWidenThreshold({ [RELATED_WIDEN_THRESHOLD_ENV]: '0.5' })).toEqual({
+      threshold: 0.5,
+      source: 'env',
+    });
+    expect(resolveRelatedWidenThreshold({ [RELATED_WIDEN_THRESHOLD_ENV]: '1' }).threshold).toBe(1);
+  });
+
+  it('REPORTS an unparseable or out-of-range value instead of silently re-widening', () => {
+    for (const bad of ['abc', '0', '-0.2', '1.5', 'NaN']) {
+      const r = resolveRelatedWidenThreshold({ [RELATED_WIDEN_THRESHOLD_ENV]: bad });
+      expect(r.threshold).toBe(RELATED_WIDEN_THRESHOLD_DEFAULT);
+      expect(r.source).toBe('default');
+      expect(r.invalid).toBe(bad);
+    }
+  });
+});
+
+describe('writeRelatedFilterList (P-001)', () => {
+  it('writes a sorted, de-duplicated, content-addressed JSON list and is idempotent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'related-filter-'));
+    try {
+      const a = writeRelatedFilterList(dir, ['lib/b.test.ts', 'lib\\a.test.ts', 'lib/b.test.ts']);
+      expect(a.count).toBe(2);
+      expect(a.path).toBe(join(dir, `related-filter-${a.digest}.json`));
+      expect(JSON.parse(readFileSync(a.path, 'utf8'))).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+
+      // Same content ⇒ same file, no EEXIST escape; different content ⇒ a different digest.
+      const again = writeRelatedFilterList(dir, ['lib/a.test.ts', 'lib/b.test.ts']);
+      expect(again.path).toBe(a.path);
+      const other = writeRelatedFilterList(dir, ['lib/c.test.ts']);
+      expect(other.digest).not.toBe(a.digest);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('treats an unreadable file as unknown-dependency rather than dependency-free', () => {

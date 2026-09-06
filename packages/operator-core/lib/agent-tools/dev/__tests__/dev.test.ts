@@ -528,7 +528,7 @@ describe('dev:resolve_owner', () => {
 
 describe('dev:telemetry', () => {
   it('returns count + poll_suspects + entries', async () => {
-    const entries = [{ tool_name: 'x', call_count: 5, error_count: 0, p50_ms: 10, p95_ms: 20, workspaces: ['default'] }];
+    const entries = [{ tool_name: 'x', call_count: 5, error_count: 0, refused_count: 0, p50_ms: 10, p95_ms: 20, workspaces: ['default'] }];
     // Keep the REAL flagPollSuspects (EI-7029) — only the PG-backed rollup is mocked.
     vi.doMock('../../../dev-data', async (importOriginal) => ({
       ...(await importOriginal<typeof import('../../../dev-data')>()),
@@ -546,7 +546,7 @@ describe('dev:telemetry', () => {
   it('flags a poll-shaped storm in poll_suspects (EI-7029)', async () => {
     const entries = [
       // 6000/24h from 5 callers = 250/hr aggregate, 50/hr per caller → poll-shaped.
-      { tool_name: 'activity:recent', call_count: 6000, error_count: 0, p50_ms: 10, p95_ms: 20, total_bytes: 1000, avg_bytes: 1, repeat_within_spawn: 5990, distinct_callers: 5, workspaces: ['default'] },
+      { tool_name: 'activity:recent', call_count: 6000, error_count: 0, refused_count: 0, p50_ms: 10, p95_ms: 20, total_bytes: 1000, avg_bytes: 1, repeat_within_spawn: 5990, distinct_callers: 5, workspaces: ['default'] },
     ];
     vi.doMock('../../../dev-data', async (importOriginal) => ({
       ...(await importOriginal<typeof import('../../../dev-data')>()),

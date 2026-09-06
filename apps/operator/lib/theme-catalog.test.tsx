@@ -40,6 +40,17 @@ const cachedTheme: CustomTheme = {
   source: 'https://github.com/acme/themes',
 };
 
+const storageRows = new Map<string, string>();
+const localStorageStub: Storage = {
+  get length() { return storageRows.size; },
+  clear: () => storageRows.clear(),
+  getItem: (key) => storageRows.get(key) ?? null,
+  key: (index) => [...storageRows.keys()][index] ?? null,
+  removeItem: (key) => { storageRows.delete(key); },
+  setItem: (key, value) => { storageRows.set(key, String(value)); },
+};
+Object.defineProperty(window, 'localStorage', { configurable: true, value: localStorageStub });
+
 beforeEach(() => {
   window.__PAPERCUSP_WS__ = 'alpha';
   window.localStorage.clear();

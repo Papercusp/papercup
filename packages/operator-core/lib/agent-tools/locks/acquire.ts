@@ -71,7 +71,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
-import { EXTERNAL_HOME_LOCK_PREFIX, externalHomePathToLockKey } from './external-path';
+import { externalPathToLockKey, isExternalLockKey } from './external-path';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
 import { validateExplicitRepoPaths } from '../work_items/_derive-paths';
@@ -104,7 +104,7 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim repository or authorized home-directory configuration files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass home files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp, not caller input.',
+    'Claim repository or authorized home-directory/XDG-runtime files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass current-user home or XDG_RUNTIME_DIR files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp, not caller input.',
   guidance: {
     // P-011: response documentation lives in `returns`, which promptWeight() does not
     // sum (description + when + notWhen + chaining + byRole only) — the WI-9334 pattern.
@@ -189,7 +189,7 @@ export default defineTool({
       .array(z.string().min(1))
       .max(50)
       .optional()
-      .describe('absolute configuration-file paths below the current user home; mapped to @external/home/* lock keys shared with automatic edit hooks'),
+      .describe('absolute configuration-file paths below the current user home or XDG_RUNTIME_DIR; mapped to @external/home/* or @external/runtime/* lock keys shared with automatic edit hooks'),
     intent: hardText(LIMITS.SHORT_TITLE),
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
     wait: z
@@ -221,7 +221,7 @@ export default defineTool({
       ),
   }).superRefine((args, ctx) => {
     const total = (args.paths?.length ?? 0) + (args.external_paths?.length ?? 0);
-    if (total === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass at least one repo-relative `paths` entry or absolute home `external_paths` entry' });
+    if (total === 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass at least one repo-relative `paths` entry or absolute home/runtime `external_paths` entry' });
     if (total > 50) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'at most 50 total paths may be acquired in one call' });
     if (args.pending_edit && (args.external_paths?.length ?? 0) > 0) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['pending_edit'], message: 'pending_edit supports repository paths only; edit external files after the lock grant' });
@@ -252,7 +252,7 @@ export default defineTool({
     try {
       paths = normalizePaths([
         ...(args.paths ?? []),
-        ...(args.external_paths ?? []).map((path) => externalHomePathToLockKey(path)),
+        ...(args.external_paths ?? []).map((path) => externalPathToLockKey(path)),
       ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -963,16 +963,15 @@ function ok(
  * Warn when a successful grant names an in-tree path that is absent from the
  * physical checkout. This is deliberately advisory: lock callers may reserve
  * a file they are about to create, and unit/integration callers may use
- * synthetic lock keys. External home-directory keys are logical reservations,
- * not repository paths, so they are excluded from the probe.
+ * synthetic lock keys. External home-directory and XDG-runtime keys are
+ * logical reservations, not repository paths, so they are excluded from the
+ * probe.
  */
 function missingRepoPathWarning(
   paths: readonly string[],
   coordinationDomain: string,
 ): string | undefined {
-  const repoPaths = paths.filter(
-    (path) => path !== EXTERNAL_HOME_LOCK_PREFIX && !path.startsWith(`${EXTERNAL_HOME_LOCK_PREFIX}/`),
-  );
+  const repoPaths = paths.filter((path) => !isExternalLockKey(path));
   // A relative or unavailable domain is a synthetic/uninspectable lock
   // namespace. Do not turn that absence of filesystem evidence into a warning.
   if (!isAbsolute(coordinationDomain) || repoPaths.length === 0 || !existsSync(coordinationDomain)) {

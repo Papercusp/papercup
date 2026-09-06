@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 863,
+  "count": 864,
   "tools": [
     {
       "name": "ablation:report",
@@ -7608,6 +7608,24 @@
         "when": "Installing an app-template FROM the Cupboard into the local store so templates:new-app / templates:list can use it — the user found a template listing (cupboard:search kind='template') and wants it available locally to build from.",
         "notWhen": "Building an app from an ALREADY-local/bundled template (skip straight to templates:new-app — it materializes + kicks off a builder). Just reading a template's build guide (templates:get-guide). Installing a blueprint (cupboard:install-blueprint) or plugin (cupboard:install-plugin). Publishing a template (cupboard:publish-template).",
         "chaining": "cupboard:search { kind:'template' } → cupboard:install-template { listingId } → templates:new-app { template: <ref>, slug } to materialize it into a new app."
+      }
+    },
+    {
+      "name": "cupboard:install-theme",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-theme",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a Cupboard theme into this workspace. The validated semantic-token package becomes immediately available in the existing theme picker; installation does not select it. Pass update:true to replace an installed package explicitly.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a result from cupboard:search { kind:'theme' } so it can be selected locally.",
+        "notWhen": "Selecting an already installed theme or editing a local theme.",
+        "chaining": "cupboard:search { kind:'theme' } → cupboard:install-theme { listingId } → select the returned activeThemeId in the ordinary UI."
       }
     },
     {
@@ -15775,7 +15793,7 @@
           "POST"
         ]
       },
-      "description": "Claim repository or authorized home-directory configuration files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass home files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp, not caller input.",
+      "description": "Claim repository or authorized home-directory/XDG-runtime files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass current-user home or XDG_RUNTIME_DIR files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp, not caller input.",
       "capabilities": [
         "locks:write"
       ],
@@ -16366,7 +16384,7 @@
           "POST"
         ]
       },
-      "description": "Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute home files and maps them to the same @external/home/* keys used by locks:acquire before merging the filter. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.",
+      "description": "Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute current-user home or XDG_RUNTIME_DIR files and maps them to the same @external/home/* or @external/runtime/* keys used by locks:acquire before merging the filter. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.",
       "capabilities": [
         "locks:read"
       ],
@@ -16429,7 +16447,7 @@
       "guidance": {
         "when": "Diagnostics — \"what are the other agents doing?\" or \"why am I blocked?\". Cheap, MVCC read.",
         "notWhen": "Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.",
-        "chaining": "Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it maps to the same @external/home/* key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector."
+        "chaining": "Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home or XDG_RUNTIME_DIR file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it maps to the same reserved external key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector."
       }
     },
     {
@@ -26515,7 +26533,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
+      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
       "capabilities": [
         "coord:read"
       ],

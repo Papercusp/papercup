@@ -216,7 +216,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
           title: 'read current state with work_items:get',
           body: 'coord:declare-intent is an allowed control for this role',
           harness: 'papercusp',
-          checkpoint: 'preserve the evidence',
+          checkpoint: 'coord:declare-intent { items: [] }',
         },
       ],
     });
@@ -258,7 +258,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
           title: 'finish with work_items:complete',
           body: 'git-sync:run after code:run',
           harness: 'papercusp',
-          checkpoint: 'coord:declare-intent { items: [] }',
+          checkpoint: 'git-sync:run after code:run; coord:declare-intent { items: [] }',
         },
       ],
     });

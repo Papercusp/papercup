@@ -58,6 +58,7 @@ import {
   renderBodyRefsSuffix,
   renderGateRefsSuffix,
   renderReplyQuoteSuffix,
+  renderTerminalSubjectSuffix,
   type HydratedRef,
 } from './agent-tools/coordination/ref-hydrate';
 
@@ -160,6 +161,8 @@ export interface CoordLineSource {
   summary?: string;
   body?: string;
   ts: string;
+  /** What a directed sender expects back; terminal-subject warnings use action/answer only. */
+  expects?: unknown;
   plan_slug?: string;
   /** The canonical reply / escalation-resolution back-reference (envelope field).
    *  Read ONLY by the P-005 reply-quote hydration — guarded at use, so a
@@ -444,6 +447,7 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // structural, not citations); the sender opt-out is honored; a map miss
     // or unresolved hydration renders nothing — see renderBodyRefsSuffix.
     let bodyRefsSuffix = '';
+    let terminalSubjectSuffix = '';
     if (
       opts.bodyRefs?.size &&
       isBodyRefEligible(e) &&
@@ -456,6 +460,9 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
         return h ? [h] : [];
       });
       bodyRefsSuffix = renderBodyRefsSuffix(hits);
+      if (isDirected(e) && (e.expects === 'action' || e.expects === 'answer')) {
+        terminalSubjectSuffix = renderTerminalSubjectSuffix(hits);
+      }
     }
     // P-010: the EVIDENCE BAND on a finding/escalation renders as an inline
     // `⊢ <band> (confidence: <derived>)` suffix — distinct from `↪` (relay) and
@@ -519,7 +526,7 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // byte-identical to before.
     const ageSuffix = renderMessageAgeSuffix(e.ts, nowMs);
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${terminalSubjectSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
     );
   }
   return lines.join('\n');

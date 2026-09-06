@@ -55,6 +55,7 @@ import {
   getPlanItemStatuses,
   isCitationContextFailure,
   planItemTextHash,
+  planItemTextHashCandidates,
   repoCitationContextForHarness,
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
@@ -643,7 +644,7 @@ export async function evaluatePlanAcceptanceGate(
         }
         if (!entry.itemTextHash) {
           reasons.push(`item-text fingerprint is missing from audit #${auditSeq}`);
-        } else if (entry.itemTextHash !== planItemTextHash(item.itemText)) {
+        } else if (!planItemTextHashCandidates(item.itemText).includes(entry.itemTextHash)) {
           reasons.push(`item text changed since audit #${auditSeq}`);
         }
 

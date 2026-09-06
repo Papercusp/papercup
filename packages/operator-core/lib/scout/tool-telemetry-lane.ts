@@ -29,6 +29,8 @@ import type { MetaPattern } from './types';
 export interface ToolTelemetryStat {
   tool: string;
   calls: number;
+  /** Calls deliberately refused by a guard; these are excluded from errors. */
+  refusals: number;
   errors: number;
   /** 95th-percentile latency in ms (null when unmeasured). */
   p95Ms: number | null;
@@ -87,7 +89,8 @@ function humanMs(ms: number): string {
 /**
  * PURE: the per-tool telemetry aggregate → digest patterns.
  *
- * Emits (most-acute first): tools with a high ERROR RATE (failing calls, volume-
+ * Emits (most-acute first): tools with a high ERROR RATE (genuine non-refused
+ * failing calls, volume-
  * gated so a 1/1 fluke doesn't surface), then per-tool ARG-LIMIT rejections (a
  * cap too tight), then RETRY / batching-waste loops (a tool hammered one-at-a-time
  * — the code:run-batching target), then chronic P95 latency (slow tools). Sorted
@@ -112,11 +115,13 @@ export function buildToolTelemetryPatterns(
     .map((t) => ({ ...t, rate: t.errors / t.calls }))
     .sort((a, b) => b.rate * b.calls - a.rate * a.calls); // by absolute failed-call impact
   for (const t of failing) {
+    const refusalContext =
+      t.refusals > 0 ? `; a further ${t.refusals} call(s) were refused by guards` : '';
     out.push({
       category: 'tool-telemetry',
       ref: `tool:error-rate:${slug(t.tool)}`,
-      summary: `${t.tool} fails ${pct(t.rate)} of calls (${t.errors}/${t.calls} in window) — a chronically failing tool`,
-      detail: `${t.errors} error(s) across ${t.calls} call(s) — a measured error rate the fleet works around silently; the tool's contract, args, or a dependency is friction-prone (verify against tool_invocations before assuming the cause).`,
+      summary: `${t.tool} fails ${pct(t.rate)} of calls (${t.errors}/${t.calls} in window)${refusalContext} — a chronically failing tool`,
+      detail: `${t.errors} genuine error(s) across ${t.calls} call(s) — a measured non-refusal error rate the fleet works around silently; ${t.refusals > 0 ? `${t.refusals} deliberate refusal(s) are excluded from this count; ` : ''}the tool's contract, args, or a dependency is friction-prone (verify against tool_invocations before assuming the cause).`,
       weight: Math.min(1, 0.6 + t.rate),
     });
   }
@@ -202,6 +207,7 @@ export async function buildToolTelemetryLane(
       tools: entries.map((e) => ({
         tool: e.tool_name,
         calls: Number(e.call_count) || 0,
+        refusals: Number(e.refused_count) || 0,
         errors: Number(e.error_count) || 0,
         p95Ms: e.p95_ms == null ? null : Number(e.p95_ms),
         repeatWithinSpawn: Number(e.repeat_within_spawn) || 0,

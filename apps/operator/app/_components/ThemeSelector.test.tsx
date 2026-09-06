@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 const { theme } = vi.hoisted(() => ({
@@ -76,10 +77,30 @@ describe('<ThemeSelector />', () => {
     expect(await within(menu).findByRole('menuitemradio', { name: /Sunset/ })).toBeTruthy();
   });
 
+  it('shows a newly installed theme on the next live catalog render', async () => {
+    const view = render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
+    expect(screen.queryByRole('menuitemradio', { name: /Aurora/ })).toBeNull();
+
+    theme.custom = [{ id: 'installed:abc', label: 'Aurora' }];
+    view.rerender(<ThemeSelector />);
+
+    expect(await screen.findByRole('menuitemradio', { name: /Aurora/ })).toBeTruthy();
+  });
+
   it('writes the picked theme on click', async () => {
     render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
     const menu = await screen.findByRole('menu');
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: /Light/ }));
+    expect(theme.writeActiveTheme).toHaveBeenCalledWith('light');
+  });
+
+  it('supports native keyboard selection from the open menu', async () => {
+    const user = userEvent.setup();
+    render(<ThemeSelector />, { wrapper: withNuqsTestingAdapter({ searchParams: '?themeSwitch=true' }) });
+    const menu = await screen.findByRole('menu');
+    const light = within(menu).getByRole('menuitemradio', { name: /Light/ });
+    light.focus();
+    await user.keyboard('{Enter}');
     expect(theme.writeActiveTheme).toHaveBeenCalledWith('light');
   });
 

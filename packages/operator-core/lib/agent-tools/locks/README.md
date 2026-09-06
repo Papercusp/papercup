@@ -12,7 +12,7 @@ surface that matches the thing being protected:
 
 | Tool | Scope and behavior |
 |---|---|
-| `locks:acquire` | Exclusive locks for a deliberate set of repository files (or authorized home-directory configuration files). Supports an immediate result, a same-turn `wait.max_sec` drain, or `wake_on_grant:true` for a queued one-shot wake. |
+| `locks:acquire` | Exclusive locks for a deliberate set of repository files (or authorized current-user home/XDG-runtime files). Supports an immediate result, a same-turn `wait.max_sec` drain, or `wake_on_grant:true` for a queued one-shot wake. |
 | `locks:release` | Release selected file-lock sets by `lock_id`/`lock_ids`, release the caller's active rows for requested `paths` across all coordination domains, or release all of the caller's locks with `all_mine:true`. Path-only requests group rows by `lock_id` and release only the requested paths. |
 | `locks:heartbeat` | Extend a held file-lock lease; `extended:false` means the lock is gone, stolen, expired, or not found in the requested domain. |
 | `locks:cancel_wait` | Cancel a queued `locks:acquire` waiter ticket. If a grant raced, cancel returns false and the caller must release the lock it received. |
@@ -29,7 +29,8 @@ surface that matches the thing being protected:
   `ttl_sec=3600` (1 hour). `ttl_sec=0` is invalid; it is not a request for
   an immediate expiry.
 - `locks:acquire` accepts up to 50 total file entries across `paths` and
-  `external_paths`; `intent` is capped at 1000 characters. Its blocking
+  `external_paths` (home files map to `@external/home/*`; XDG runtime files
+  map to `@external/runtime/*`); `intent` is capped at 1000 characters. Its blocking
   `wait.max_sec` is capped at 300 seconds (larger values are clamped). For a
   longer wait, use `wake_on_grant:true` and end the turn.
 - `locks:acquire_resource` accepts only registered resource names. Its

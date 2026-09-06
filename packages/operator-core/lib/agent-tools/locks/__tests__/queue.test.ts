@@ -109,6 +109,26 @@ describe('locks:queue handler', () => {
     });
   });
 
+  it('EI-22439115152462582: maps XDG_RUNTIME_DIR paths to @external/runtime/* keys', async () => {
+    const previousRuntimeDir = process.env.XDG_RUNTIME_DIR;
+    process.env.XDG_RUNTIME_DIR = '/run/user/1000';
+    try {
+      await tool.handler(
+        { external_paths: ['/run/user/1000/papercusp-p029-acceptance/storage-state.json'] },
+        ctx,
+      );
+      expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
+        coordinationDomain: null,
+        paths: ['@external/runtime/papercusp-p029-acceptance/storage-state.json'],
+        owner: undefined,
+        includeCompleted: undefined,
+      });
+    } finally {
+      if (previousRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+      else process.env.XDG_RUNTIME_DIR = previousRuntimeDir;
+    }
+  });
+
   it('EI-22075918402561858: external_paths alone (paths omitted) filters by the mapped key only', async () => {
     await tool.handler({ external_paths: [join(homedir(), '.config', 'mimeapps.list')] }, ctx);
     expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {

@@ -109,7 +109,9 @@ export async function listAllHarnessesWithHealth(
 export interface TelemetryRollupEntry {
   tool_name: string;
   call_count: number;
+  /** Genuine non-refused failures; deliberate status='refused' calls are separate. */
   error_count: number;
+  refused_count: number;
   p50_ms: number | null;
   p95_ms: number | null;
   /** Total bytes this tool's results returned over the window (sum of output_size).
@@ -162,6 +164,7 @@ export async function telemetryRollup(
     tool_name: string;
     call_count: number;
     error_count: number;
+    refused_count: number;
     p50: number | null;
     p95: number | null;
     total_bytes: number;
@@ -175,7 +178,8 @@ export async function telemetryRollup(
         SELECT
           tool_name,
           count(*)::int AS call_count,
-          count(*) FILTER (WHERE status != 'ok')::int AS error_count,
+          count(*) FILTER (WHERE status NOT IN ('ok', 'refused'))::int AS error_count,
+          count(*) FILTER (WHERE status = 'refused')::int AS refused_count,
           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,
           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95,
           coalesce(sum(output_size), 0)::float8 AS total_bytes,
@@ -196,7 +200,8 @@ export async function telemetryRollup(
         SELECT
           tool_name,
           count(*)::int AS call_count,
-          count(*) FILTER (WHERE status != 'ok')::int AS error_count,
+          count(*) FILTER (WHERE status NOT IN ('ok', 'refused'))::int AS error_count,
+          count(*) FILTER (WHERE status = 'refused')::int AS refused_count,
           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS p50,
           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95,
           coalesce(sum(output_size), 0)::float8 AS total_bytes,
@@ -218,6 +223,7 @@ export async function telemetryRollup(
       tool_name: r.tool_name,
       call_count: r.call_count,
       error_count: r.error_count,
+      refused_count: r.refused_count ?? 0,
       p50_ms: r.p50 == null ? null : Math.round(r.p50),
       p95_ms: r.p95 == null ? null : Math.round(r.p95),
       total_bytes: Math.round(r.total_bytes ?? 0),

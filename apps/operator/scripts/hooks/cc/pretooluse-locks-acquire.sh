@@ -681,10 +681,11 @@ def _origin_is_local_path_into_canonical(url, repo_root, canonical_tree,
 # lock keys as paths RELATIVE TO each worktree root, so the same logical
 # file collides across worktrees AND with the OMP hook (which keys the
 # same way) — that's the cross-client/cross-worktree contention we want.
-# A non-repository file below HOME is mapped to the reserved
-# `@external/home/<relative>` key. This coordinates shared desktop/config edits
-# (mimeapps.list, KDE settings, agent config) without weakening the server's
-# no-absolute-path lock-store contract. Other repos and paths outside HOME stay
+# A non-repository file below the current user's HOME or XDG_RUNTIME_DIR is
+# mapped to a reserved logical key. This coordinates shared desktop/config and
+# runtime credential edits (mimeapps.list, KDE settings, agent config,
+# Playwright storage state) without weakening the server's no-absolute-path
+# lock-store contract. Other repos and paths outside those roots stay
 # unguarded.
 workspace_root = os.path.realpath(
     os.environ.get('PAPERCUSP_WORKSPACE_ROOT')
@@ -754,13 +755,31 @@ repo_relative = []
 repo_domains = set()
 
 
-def _external_home_key(abs_path):
-    """Reserved key for hidden HOME configuration. A user's HOME may itself
-    be a git repo, so this check cannot depend on find_repo_root returning None.
-    Keep automatic scope to dot-directories; an unrelated ~/project repo stays
-    outside Papercusp coordination. Explicit locks:acquire external_paths may
-    authorize any file below HOME."""
+def _external_lock_key(abs_path):
+    """Map current-user HOME/runtime files to the shared external keyspace.
+
+    A user's HOME may itself be a git repo, so this check cannot depend on
+    find_repo_root returning None. Keep automatic HOME scope to dot-directories;
+    an unrelated ~/project repo stays outside Papercusp coordination. Runtime
+    files are scoped to the current user's XDG_RUNTIME_DIR (or Linux's
+    /run/user/<uid> fallback) and may use any relative path beneath it.
+    Explicit locks:acquire external_paths uses the same roots server-side.
+    """
     try:
+        runtime_root = os.environ.get('XDG_RUNTIME_DIR', '').strip()
+        if not runtime_root and sys.platform == 'linux':
+            getuid = getattr(os, 'getuid', None)
+            if getuid is not None:
+                runtime_root = f'/run/user/{getuid()}'
+        if runtime_root and os.path.isabs(runtime_root):
+            runtime_root = os.path.realpath(runtime_root)
+            logical_abs = os.path.abspath(abs_path)
+            rel_runtime = os.path.relpath(logical_abs, runtime_root)
+            if (rel_runtime and rel_runtime != '..'
+                    and not rel_runtime.startswith('..' + os.sep)
+                    and not os.path.isabs(rel_runtime)):
+                return '@external/runtime/' + rel_runtime.replace(os.sep, '/')
+
         home_root = os.path.realpath(
             os.environ.get('PAPERCUSP_EXTERNAL_LOCK_HOME')
             or os.path.expanduser('~'))
@@ -783,7 +802,7 @@ for p in raw_paths:
 
     root = find_repo_root(abs_p)
     if not root:
-        _external_key = _external_home_key(abs_p)
+        _external_key = _external_lock_key(abs_p)
         if _external_key:
             repo_relative.append(_external_key)
         continue  # Outside a repo and outside HOME remains uncoordinated.
@@ -887,7 +906,7 @@ for p in raw_paths:
         if _scope_root is None and _managed_suite_app_repo(root):
             _scope_root = root
         if _scope_root is None:
-            _external_key = _external_home_key(abs_p)
+            _external_key = _external_lock_key(abs_p)
             if _external_key:
                 repo_relative.append(_external_key)
             continue  # Outside a workspace worktree remains uncoordinated.
@@ -959,7 +978,7 @@ for p in raw_paths:
         pass  # The guard must never wedge an edit on its own error (fail-open).
 
     if _scope_root is None or _scope_real is None:
-        _external_key = _external_home_key(abs_p)
+        _external_key = _external_lock_key(abs_p)
         if _external_key:
             repo_relative.append(_external_key)
         continue  # Outside a workspace worktree remains uncoordinated.
@@ -969,7 +988,7 @@ for p in raw_paths:
     # part of this automatic lock domain. Direct-child independent repos keep
     # their existing normal lock behavior.
     if _scope_real != _real_root and _scope_real != _canonical_tree:
-        _external_key = _external_home_key(abs_p)
+        _external_key = _external_lock_key(abs_p)
         if _external_key:
             repo_relative.append(_external_key)
         continue

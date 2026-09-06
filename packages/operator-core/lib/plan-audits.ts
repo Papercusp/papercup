@@ -1470,6 +1470,19 @@ export function planItemTextHash(itemText: string): string {
 }
 
 /**
+ * Hashes accepted when reading an audit entry during the raw→semantic
+ * fingerprint migration. New writes use `planItemTextHash`, but older deployed
+ * writers hashed the indexed item text verbatim, including any mutable note
+ * suffix. Accept both representations on read so audits written by either
+ * build can cross the deployment boundary; future writes remain canonical.
+ */
+export function planItemTextHashCandidates(itemText: string): readonly string[] {
+  const semanticHash = planItemTextHash(itemText);
+  const rawHash = createHash('sha256').update(itemText).digest('hex');
+  return rawHash === semanticHash ? [semanticHash] : [semanticHash, rawHash];
+}
+
+/**
  * Build the item array for a new pass. Submitted items receive fresh provenance;
  * unlisted items are copied by the verb with their original provenance intact and
  * an immediate carriedFrom link. Removed items are not resurrected.

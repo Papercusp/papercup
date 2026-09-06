@@ -47,11 +47,14 @@ The edit hook coordinates canonical-tree files and managed suite-app checkouts
 (`~/.papercusp-workspaces/<workspace>/.papercusp/apps/<app>`) by repo-relative
 path plus physical repository domain. Hidden home configuration (`~/.config`,
 `~/.papercusp`, `~/.codex`, etc.) uses the reserved `@external/home/*` keyspace;
-explicit callers acquire it with
-`locks:acquire { external_paths:["/absolute/home/path"] }`. Other repositories
-remain outside Papercusp coordination. `/api/su-locks/hook-health` exposes the
-last automatic decision (owner, tool, logical paths, lock id) as well as
-success/error health, so enforcement is inspectable instead of inferred.
+files under the current user's `XDG_RUNTIME_DIR` use
+`@external/runtime/*` (for example, Playwright storage state under
+`/run/user/1000`). Explicit callers acquire either namespace with
+`locks:acquire { external_paths:["/absolute/path"] }`. Other repositories,
+`/tmp`, and other users' runtime directories remain outside Papercusp
+coordination. `/api/su-locks/hook-health` exposes the last automatic decision
+(owner, tool, logical paths, lock id) as well as success/error health, so
+enforcement is inspectable instead of inferred.
 
 Installed to `~/.papercusp/hooks/cc/` by `install-standalone-mcp.sh`, which
 also merges the Claude `settings.json` entries. The Codex entries are written
