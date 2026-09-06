@@ -552,6 +552,81 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  it('does not treat a complete independent card for another subject as a duplicate', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-OTHER-SUBJECT',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: {
+          ...RATINGS,
+          'crit-a': { rating: 'pass', evidence: 'other subject evidence' },
+        },
+        subject: { kind: 'scorecard', ref: 'EI-OTHER-SUBJECT' },
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        subject: { kind: 'scorecard', ref: 'EI-TARGET-SUBJECT' },
+      },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(r).toMatchObject({ ok: true, created: true, issueId: 'ISS-1' });
+    expect(listM).toHaveBeenCalledWith({
+      rubricRef: 'test-rubric',
+      subjectRef: 'EI-TARGET-SUBJECT',
+      limit: 500,
+    });
+    expect(captureM).toHaveBeenCalledTimes(1);
+  });
+
+  it('still requires acknowledgement for a second complete independent card on the same subject', async () => {
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-SAME-SUBJECT',
+        rubricRef: 'test-rubric',
+        rubricRevision: 7,
+        ratings: RATINGS,
+        subject: { kind: 'scorecard', ref: 'EI-TARGET-SUBJECT' },
+        createdBy: 'su-peer',
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        subject: { kind: 'scorecard', ref: 'EI-TARGET-SUBJECT' },
+      },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'existing_independent_scorecards',
+      existingIndependentScorecardIds: ['EI-SAME-SUBJECT'],
+      acknowledgementRequired: 'acknowledgeExisting:true',
+    });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('explicit acknowledgement permits an intentional additional independent card', async () => {
     listM.mockResolvedValue([
       {
