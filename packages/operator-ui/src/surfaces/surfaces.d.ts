@@ -76,7 +76,10 @@ export type OperatorSurfaceKind =
   | 'cupboard'
   | 'dev'
   | 'support'
-  | 'settings';
+  | 'settings'
+  // The desktop's global-shortcut palette, mounted by the portal as its `quick`
+  // shell panel (portal-quick-panel-palette-2026-09-06 D-001).
+  | 'quick-panel';
 
 /**
  * Every operator /adv tab id → the surface kind that mounts its body. Complete

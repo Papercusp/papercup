@@ -64,9 +64,21 @@ describe('portal surface registry covers every ADV tab', () => {
       );
     }
     // Non-ADV surfaces never get a pot bar; an unknown kind never throws.
-    for (const kind of ['plans', 'inbox', 'desktops', 'cloud', 'cupboard', 'dev', 'support', 'settings', 'no-such-kind']) {
+    for (const kind of ['plans', 'inbox', 'desktops', 'cloud', 'cupboard', 'dev', 'support', 'settings', 'quick-panel', 'no-such-kind']) {
       expect(potScopeForSurface(kind)).toEqual({ show: false, withStatus: false });
       expect(advTabForSurface(kind)).toBeUndefined();
     }
+  });
+
+  /**
+   * The desktop's global-shortcut palette (/quick-panel: prompts | brainstorm |
+   * docs) reaches the portal as the `quick` shell PANEL, not a rail app
+   * (portal-quick-panel-palette-2026-09-06 D-001) — so it is a registered
+   * surface with no ADV tab behind it and no pot bar.
+   */
+  it('registers the quick-panel palette as a non-ADV surface (D-001)', () => {
+    expect(isOperatorSurfaceKind('quick-panel')).toBe(true);
+    expect(OPERATOR_SURFACES['quick-panel']).toBeDefined();
+    expect(Object.values(ADV_TAB_SURFACE_KINDS)).not.toContain('quick-panel');
   });
 });
