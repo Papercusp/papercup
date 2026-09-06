@@ -65,6 +65,7 @@ import {
   judgeRequirementRealization,
   type DroppedTarget,
   type ExemptMapping,
+  type NonCodeItemProof,
 } from './plan-requirement-realization';
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
@@ -389,6 +390,7 @@ export async function evaluatePlanAcceptanceGate(
   // spec-coverage census needs to scope its clause read (P-008).
   let planHarnessSlug: string | null = null;
   let planContent: string | null = null;
+  let nonCodeItemProofs: NonCodeItemProof[] = [];
   try {
     const { sql } = getOrgPg();
     const rows = await sql<
@@ -461,6 +463,7 @@ export async function evaluatePlanAcceptanceGate(
         expectedApplicable,
         ...(opts.current ? { current: opts.current } : {}),
       });
+      nonCodeItemProofs = barLifecycle.nonCodeItemProofs ?? [];
       if (expectedApplicable && !barLifecycle.applicable) {
         return {
           satisfied: false, code: 'acceptance_bar_contract_not_ready',
@@ -745,6 +748,7 @@ export async function evaluatePlanAcceptanceGate(
         const realization = judgeRequirementRealization({
           mappings: activationMappings,
           itemAudits: effectiveAudits,
+          nonCodeItemProofs,
           // P-016 / D-040: without this the judge resolves every `P-NNN` target against
           // the folded audit alone, which spans all passes and is never filtered by the
           // plan's current items — so an item deleted from the plan keeps vouching for
@@ -768,9 +772,10 @@ export async function evaluatePlanAcceptanceGate(
                 `plan '${planSlug}' cannot be marked shipped: ${realization.unrealized.length} requirement(s) ` +
                 `the activation audit dispositioned covered/repaired never reached a VERIFIED plan item — ` +
                 `${lines.slice(0, 5).join('; ')}${lines.length > 5 ? ` (+${lines.length - 5} more)` : ''}. ` +
-                `Each names a requirement the plan claims it absorbed; only code/test citations count as ` +
-                `verification (D-008), so a target audited with doc/none is unproven. Either audit the named ` +
-                `item(s) against the real code with plans:audit, or — if the requirement genuinely was not ` +
+                `Each names a requirement the plan claims it absorbed. Code verification requires code/test ` +
+                `citations (D-008); a completed, reasoned not-code outcome instead requires exact current ` +
+                `operational/check BAR proof. Doc/none citations alone prove neither. Audit the named ` +
+                `item(s) against real code or bind current proof for the non-code outcome; if the requirement was not ` +
                 `absorbed — correct its disposition to 'rejected'/'open' via plans:audit { phase:'activation' } ` +
                 `so the record stops claiming otherwise. Unfulfilled requirements are not waived by force; ` +
                 `a follow-on task or disclosure is not fulfillment of the original promise.`,
