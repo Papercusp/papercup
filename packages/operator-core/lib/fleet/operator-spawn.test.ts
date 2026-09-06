@@ -23,7 +23,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   // 'overwatch' included so the B-10 flag-gate (which runs AFTER the known-role
   // check) is reachable in the gate tests below.
-  AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'cup', 'kettle'],
+  AGENT_ROLES: ['scoper', 'worker', 'validator', 'reviewer', 'operator', 'cup', 'kettle', 'papercup-deep'],
   // operator-spawn now transitively imports ../inference-gateway/stall-waker-loop
   // (gateway-rate-limit-stall-autowake) → ../agent-tools/turn/interrupt, which calls
   // defineTool() at module load. The full agent-mcp module is mocked away here, so this
@@ -1034,6 +1034,20 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(res.error).toBeNull();
     const [, role] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
     expect(role).toBe(FIXTURE_ROLE);
+  });
+
+  it('admits papercup-deep through the real role and retirement gates at the deep tier', async () => {
+    const res = await spawnAgentInHarness({
+      workspaceId: 'ws-1',
+      harness: 'demo',
+      role: 'papercup-deep',
+      tier: 'deep',
+      featureId: 'WI-301',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeNull();
+    const [, role] = vi.mocked(spawnInvokeOnceWithFallback).mock.calls[0];
+    expect(role).toBe('papercup-deep');
   });
 
   it('threads the Queen brief into the child env as MUG_BRIEF (P-060 — the real delivery channel, not `extras`)', async () => {
