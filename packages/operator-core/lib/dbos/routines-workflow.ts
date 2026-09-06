@@ -55,6 +55,8 @@ import {
 } from '../harness/routines/system-actions';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import {
+  CRITICAL_PROBE_MS,
+  ELEVATED_PROBE_MS,
   poolPressure,
   recordPoolShed,
   lastPoolProbeMs,
@@ -64,6 +66,8 @@ import {
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
 import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from './routine-tick-overlap-guard';
+import { CaplessAdaptiveController } from '../resource-governor/controller';
+import { HEALTH_ANALYSIS_SCHEMA_VERSION, type HealthVerdict } from '../resource-governor/health-analysis';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
@@ -125,6 +129,188 @@ export const ROUTINE_FIRE_QUEUES = [
   routinesTriggersQueue.name,
   routinesReleaseQueue.name,
 ] as const;
+
+export interface RoutineDispatchQueueDecision {
+  readonly queueName: string;
+  readonly inFlight: number;
+  readonly desiredWindow: number;
+  readonly effectiveWindow: number;
+  readonly controllerAvailableStarts: number;
+  readonly availableStarts: number;
+  /** The critical lane remains attributable to database pressure; only its one-start floor is protected. */
+  readonly controllerProtected: boolean;
+}
+
+export interface RoutineDispatchAdmissionEpoch {
+  readonly pressure: PoolPressure;
+  readonly probeMs: number;
+  readonly evaluatedAtMs: number;
+  readonly generation: number;
+  readonly reasons: readonly string[];
+  readonly queues: readonly RoutineDispatchQueueDecision[];
+}
+
+/**
+ * One process-local controller owns the feedback history between scheduler ticks.
+ * The durable source of truth is the indexed DBOS in-flight population read below;
+ * resetting this transient state on a process restart is deliberately safe because
+ * a cold controller restarts at the one-start floor. Persisting a larger window via
+ * the shared snapshot store would add a write to the pool this guard protects and
+ * could restore stale optimistic credit after a host failure. Each evaluated epoch
+ * is nevertheless a DBOS step output, so replay of that tick uses the exact decision.
+ */
+const routineDispatchController = new CaplessAdaptiveController({
+  initialWindow: 1,
+  minimumWindow: 1,
+});
+
+/**
+ * Read actual queued/running routine-fire occupancy from DBOS's partial in-flight
+ * index (`idx_workflow_status_in_flight`: queue_name/status/priority/created_at).
+ * Counts are complete before shaping, and include both asynchronous enqueue states.
+ */
+export async function readRoutineFireInFlightByQueue(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+): Promise<Readonly<Record<string, number>>> {
+  const rows = await sql<{ queue_name: string; in_flight: number | string }[]>`
+    SELECT queue_name, count(*)::int AS in_flight
+      FROM dbos.workflow_status
+     WHERE queue_name = ANY(${[...ROUTINE_FIRE_QUEUES]}::text[])
+       AND status IN ('ENQUEUED', 'PENDING')
+       AND name = 'routineFire'
+     GROUP BY queue_name`;
+  const counts: Record<string, number> = Object.fromEntries(ROUTINE_FIRE_QUEUES.map((queueName) => [queueName, 0]));
+  for (const row of rows) {
+    if (!(ROUTINE_FIRE_QUEUES as readonly string[]).includes(row.queue_name)) continue;
+    const value = Number(row.in_flight);
+    counts[row.queue_name] = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  }
+  return Object.freeze(counts);
+}
+
+/** Direct physical pool feedback in the canonical controller's health vocabulary. */
+export function routinePoolHealthVerdict(
+  pressure: PoolPressure,
+  probeMs: number,
+  evaluatedAtMs: number,
+): HealthVerdict {
+  const degraded = pressure !== 'ok';
+  const severity = pressure === 'critical' ? 'critical' : pressure === 'elevated' ? 'warning' : 'none';
+  const objectiveId = 'routine-org-admin-pool-latency';
+  const verdict: HealthVerdict = {
+    schemaVersion: HEALTH_ANALYSIS_SCHEMA_VERSION,
+    scopeId: 'dbos-routine-dispatch',
+    evaluatedAtMs,
+    state: degraded ? 'degraded' : 'healthy',
+    severity,
+    actionable: degraded,
+    evidence: [
+      {
+        objectiveId,
+        signal: 'database.waitP95Ms',
+        resource: 'database',
+        readingState: 'measured',
+        value: probeMs,
+        confidence: 1,
+        baseline: null,
+        warningBoundary: ELEVATED_PROBE_MS,
+        criticalBoundary: CRITICAL_PROBE_MS,
+        inflationRatio: null,
+        breached: degraded,
+        severity,
+        quality: 'actionable',
+        reason: degraded ? `org-admin-pool-${pressure}` : 'org-admin-pool-healthy',
+      },
+    ],
+    attributions: degraded
+      ? [
+          {
+            objectiveId,
+            outcomeSignal: 'database.waitP95Ms',
+            causeSignal: 'database.waitP95Ms',
+            resource: 'database',
+            confidence: 1,
+            correlation: 1,
+            temporallyAligned: true,
+            actionable: true,
+            reason: 'direct-org-admin-acquire-latency',
+          },
+        ]
+      : [],
+    actionableResources: degraded ? ['database'] : [],
+    ignoredCapacitySignals: [],
+    reasons: [degraded ? `physical-pool-${pressure}` : 'physical-pool-healthy'],
+  };
+  return Object.freeze(verdict);
+}
+
+/**
+ * Build one capless feedback epoch before any routine is claimed.
+ *
+ * A single fresh probe describes the PREVIOUS cohort: asynchronous DBOS starts
+ * from this tick cannot materialize quickly enough to grade themselves. The
+ * controller therefore adjusts its unbounded AIMD window once, subtracts the
+ * actual ENQUEUED/PENDING population, and hands the loop a finite amount of
+ * feedback credit to spend. Healthy active lanes keep probing upward; idle lanes
+ * do not accumulate speculative credit. Under critical pressure all ordinary
+ * lanes close while the critical queue retains exactly one in-flight liveness
+ * floor. That queue is still a normal database-attributed controller class, so
+ * starts above the floor cannot escape later contraction.
+ */
+export function evaluateRoutineDispatchEpoch(input: {
+  readonly pressure: PoolPressure;
+  readonly probeMs: number;
+  readonly inFlightByQueue: Readonly<Record<string, number>>;
+  readonly activeQueues: readonly string[];
+  readonly controller?: CaplessAdaptiveController;
+  readonly atMs?: number;
+}): RoutineDispatchAdmissionEpoch {
+  const atMs = Math.max(0, Math.floor(input.atMs ?? Date.now()));
+  const active = new Set(input.activeQueues);
+  const queues = ROUTINE_FIRE_QUEUES.filter(
+    (queueName) => active.has(queueName) || (input.inFlightByQueue[queueName] ?? 0) > 0,
+  );
+  const controller = input.controller ?? routineDispatchController;
+  const decision = controller.step({
+    verdict: routinePoolHealthVerdict(input.pressure, input.probeMs, atMs),
+    classes: queues.map((queueName) => ({
+      admissionClass: queueName,
+      inFlight: Math.max(0, Math.floor(input.inFlightByQueue[queueName] ?? 0)),
+      demand: { databaseConnections: 1 },
+    })),
+    atMs,
+  });
+  const byClass = new Map(decision.classes.map((item) => [item.admissionClass, item]));
+  return Object.freeze({
+    pressure: input.pressure,
+    probeMs: input.probeMs,
+    evaluatedAtMs: atMs,
+    generation: decision.generation,
+    reasons: decision.reasons,
+    queues: Object.freeze(
+      queues.map((queueName): RoutineDispatchQueueDecision => {
+        const lane = byClass.get(queueName);
+        if (!lane) throw new Error(`routine dispatch controller omitted active queue ${queueName}`);
+        const inFlight = Math.max(0, Math.floor(input.inFlightByQueue[queueName] ?? 0));
+        const availableStarts =
+          input.pressure !== 'critical'
+            ? lane.availableStarts
+            : queueName === ROUTINES_CRITICAL_QUEUE
+              ? Math.max(0, 1 - inFlight)
+              : 0;
+        return Object.freeze({
+          queueName,
+          inFlight,
+          desiredWindow: lane.desiredWindow,
+          effectiveWindow: lane.effectiveWindow,
+          controllerAvailableStarts: lane.availableStarts,
+          availableStarts,
+          controllerProtected: lane.protected,
+        });
+      }),
+    ),
+  });
+}
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -470,40 +656,6 @@ async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Prom
   );
 }
 
-export interface RoutineDispatchAdmissionDecision {
-  /** A first start in each durable queue is the liveness floor; later starts are feedback-gated. */
-  readonly admitted: boolean;
-  /** null means the first start was admitted without spending a diagnostic probe. */
-  readonly pressure: PoolPressure | null;
-}
-
-/**
- * Feedback admission for one DBOS routine queue.
- *
- * P-015 removed every fixed WorkflowQueue ceiling so productive capacity can
- * probe upward. The missing half was an admission check at the actual fan-out
- * seam: one recovered scheduler tick consequently started 27 git-sync
- * workflows, with 14 DBOS operations active together when the org-admin pool's
- * SELECT 1 probe timed out. Durable workflow rows preserved the work, but
- * durability alone did not pace it.
- *
- * Admit the first start in a queue unconditionally so a pressured system can
- * still make forward progress. Before every additional start, ask the physical
- * resource itself. Healthy service expands naturally; elevated/critical service
- * pauses only that queue for the rest of this tick, leaving every unclaimed row
- * due for the next 30-second recovery probe. This is feedback credit, not a
- * configured maximum, and it reuses the exact org-admin probe that protects the
- * scheduler's own heavy sweeps.
- */
-export async function evaluateRoutineDispatchAdmission(
-  startedInQueue: number,
-  probe: () => Promise<PoolPressure> = poolPressure,
-): Promise<RoutineDispatchAdmissionDecision> {
-  if (startedInQueue <= 0) return { admitted: true, pressure: null };
-  const pressure = await probe();
-  return { admitted: pressure === 'ok', pressure };
-}
-
 /** The scheduled tick: list due routines, claim + enqueue feedback-paced deduped fires. */
 async function routinesTickImpl(): Promise<void> {
   // WI-3351: routinesTick is the LIGHTWEIGHT scheduler. Heavy periodic jobs
@@ -535,11 +687,12 @@ async function routinesTickImpl(): Promise<void> {
   // heavy sweeps stay shed exactly as before, so the shed's protective behaviour is unchanged;
   // this only guarantees the must-never-starve lane survives (bounded to ~a few quick queries).
   const pool = await poolPressure();
+  const poolProbeMs = lastPoolProbeMs();
   const poolCritical = pool === 'critical';
   if (poolCritical) {
     const shedCount = recordPoolShed();
     console.warn(
-      `[routines-tick] PG pool starvation (acquire+SELECT1 probe ${lastPoolProbeMs()}ms ≥ critical) — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
+      `[routines-tick] PG pool starvation (acquire+SELECT1 probe ${poolProbeMs}ms ≥ critical) — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
     );
     // EI-13108 ask (2): durably record the shed (fire-and-forget — never await on an
     // already-starved pool) so instrument-staleness consumers can distinguish
@@ -585,34 +738,42 @@ async function routinesTickImpl(): Promise<void> {
   }
 
   const due = await DBOS.runStep(() => listDueCronRoutines(sql), { name: 'list-due-routines' });
-  const startedByQueue = new Map<string, number>();
-  const pausedQueues = new Set<string>();
-  let criticalShedRecorded = poolCritical;
+  // routineFire workflow fan-out — one prior-cohort health epoch reads indexed
+  // DBOS in-flight rows before claim/start, then the loop spends only its credit.
+  const dispatchEpoch = await DBOS.runStep(
+    async () =>
+      evaluateRoutineDispatchEpoch({
+        pressure: pool,
+        probeMs: poolProbeMs,
+        inFlightByQueue: await readRoutineFireInFlightByQueue(sql),
+        activeQueues: due.map((routine) => queueForRoutine(routine.targetRole, routine.installSlug)),
+        atMs: Date.now(),
+      }),
+    { name: 'routine-dispatch-feedback-epoch' },
+  );
+  const queueAdmission = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item]));
+  const remainingStartsByQueue = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item.availableStarts]));
+  const loggedWithheldQueues = new Set<string>();
   for (const r of due) {
     // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY the protected
     // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     const queueName = queueForRoutine(r.targetRole, r.installSlug);
-    if (pausedQueues.has(queueName)) continue;
-
-    // EI-224330: queueConcurrency() intentionally installs no fixed DBOS cap. Pace
-    // the ACTUAL fan-out with fresh physical feedback instead: each queue gets one
-    // liveness-floor start, then must keep proving the shared org-admin pool healthy.
-    // A withheld row has not been claimed, so it remains durably due for the next tick.
-    const startedInQueue = startedByQueue.get(queueName) ?? 0;
-    const admission = await evaluateRoutineDispatchAdmission(startedInQueue);
-    if (!admission.admitted) {
-      pausedQueues.add(queueName);
-      if (admission.pressure === 'critical' && !criticalShedRecorded) {
-        const shedCount = recordPoolShed();
-        criticalShedRecorded = true;
-        recordPoolShedEvent(activeWorkspaceId(), shedCount);
+    // EI-224330 stage 2: admission is checked BEFORE claim, from the epoch's
+    // previous-cohort feedback and actual durable occupancy. A withheld row has
+    // not advanced next_fire_at, so it remains due for the next feedback epoch.
+    const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0;
+    if (remainingStarts <= 0) {
+      const admission = queueAdmission.get(queueName);
+      if (!loggedWithheldQueues.has(queueName)) {
+        loggedWithheldQueues.add(queueName);
+        console.warn(
+          `[routines-tick] HELD ${queueName} dispatch — feedback epoch has ` +
+            `window=${admission?.effectiveWindow ?? 0}, inFlight=${admission?.inFlight ?? 0}, ` +
+            `available=0, pool=${dispatchEpoch.pressure} (${dispatchEpoch.probeMs}ms); ` +
+            `unclaimed routines remain due for the next epoch (EI-224330)`,
+        );
       }
-      console.warn(
-        `[routines-tick] PAUSED ${queueName} dispatch after ${startedInQueue} start(s) — ` +
-          `fresh org-admin probe is ${admission.pressure} (${lastPoolProbeMs()}ms); ` +
-          `unclaimed routines remain due for the next feedback probe (EI-224330)`,
-      );
       continue;
     }
 
@@ -667,7 +828,7 @@ async function routinesTickImpl(): Promise<void> {
         r.rescheduleIntervalSec ?? null,
         r.targetOwnerId ?? null,
       );
-      startedByQueue.set(queueName, startedInQueue + 1);
+      remainingStartsByQueue.set(queueName, remainingStarts - 1);
     } catch (e) {
       // Already enqueued/active for this routine — collapse (back-pressure).
       if (!/Duplicat/i.test(String(e))) throw e;
@@ -1065,9 +1226,8 @@ async function routinesTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { hostCodeStalenessFromLedgerSweep } = await import(
-          '../harness/routines/host-code-staleness-from-ledger'
-        );
+        const { hostCodeStalenessFromLedgerSweep } =
+          await import('../harness/routines/host-code-staleness-from-ledger');
         const result = await hostCodeStalenessFromLedgerSweep({});
         if (result.outcome === 'alerted' || result.outcome === 'error' || result.outcome === 'inconclusive') {
           console.warn(`[stale-serving-host] ${result.outcome}: ${result.reason}`);
@@ -1635,7 +1795,9 @@ async function routinesTickImpl(): Promise<void> {
       try {
         producerStatus = await readAppProducerStatus(sql, activeWorkspaceId(), { probeApps: false });
         for (const s of producerStatus.filter((r) => r.fault)) {
-          console.error(`[app-data-producer] ${s.health.toUpperCase()}: ${s.app}${s.userId ? `/${s.userId}` : ''} — ${s.detail}`);
+          console.error(
+            `[app-data-producer] ${s.health.toUpperCase()}: ${s.app}${s.userId ? `/${s.userId}` : ''} — ${s.detail}`,
+          );
         }
       } catch (cause) {
         console.error('[app-data-producer] status read failed', cause);
