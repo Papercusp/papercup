@@ -475,9 +475,10 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
       data-index={index}
       data-turn={turn.id}
       data-role={turn.role}
+      data-message-index={index}
       data-focus-match={focused ? 'true' : undefined}
       ref={measureElement}
-      className={`pc-chat__turn pc-chat__turn--${turn.role}${turn.error ? ' pc-chat__turn--error' : ''}${focused ? ' pc-chat__turn--focus-match' : ''}`}
+      className={`pc-chat__turn pc-chat__turn--${turn.role} oracle-msg oracle-msg-${turn.role}${turn.error ? ' pc-chat__turn--error' : ''}${focused ? ' pc-chat__turn--focus-match' : ''}`}
       style={style}
     >
       {renderAvatar ? <div className="pc-chat__avatar">{renderAvatar(turn)}</div> : null}
@@ -727,9 +728,13 @@ export function PapercupChat(props: PapercupChatProps) {
             {chat.loadingHistory ? 'Loading…' : 'Load earlier messages'}
           </button>
         ) : null}
-        {placeholder ? (
+        {placeholder === 'invite' && emptyState ? (
+          <div className="pc-chat__placeholder" data-placeholder={placeholder} role="status">
+            {emptyState}
+          </div>
+        ) : placeholder ? (
           <p className="pc-chat__placeholder" data-placeholder={placeholder} role="status">
-            {placeholder === 'opening' ? 'Opening this conversation…' : (emptyState ?? 'Ask a question to start.')}
+            {placeholder === 'opening' ? 'Opening this conversation…' : 'Ask a question to start.'}
           </p>
         ) : null}
         <div className="pc-chat__list" style={{ height: totalSize, position: 'relative' }} role="log" aria-live="polite">
@@ -799,6 +804,7 @@ export function PapercupChat(props: PapercupChatProps) {
       {!composerDisabled ? <form className="pc-chat__composer" onSubmit={submit} data-testid="papercup-chat-composer">
         <textarea
           className="pc-chat__input"
+          data-testid="composer"
           rows={1}
           value={text}
           placeholder={composerPlaceholder}
@@ -813,7 +819,7 @@ export function PapercupChat(props: PapercupChatProps) {
             Stop
           </button>
         ) : (
-          <button type="submit" className="pc-chat__send" disabled={!text.trim() || chat.streaming} aria-label="Send">
+          <button type="submit" className="pc-chat__send" data-testid="send" disabled={!text.trim() || chat.streaming} aria-label="Send">
             Send
           </button>
         )}
