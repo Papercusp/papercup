@@ -40,7 +40,8 @@ import {
   type ImplementationReadinessEvidence,
   type ImplementationReadinessState,
 } from './agent-review-policy';
-import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { ALL_TERMINAL_STATUSES, ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { getWorkItem } from '../../work-items';
 import {
   deploymentStalenessScreen,
   renderDeploymentStalenessDivert,
@@ -97,6 +98,24 @@ export interface ApplyTriageResult {
 /** Injectable dependency seam (unit tests run without PG). */
 export interface TriageCoreDeps {
   getIssue: (id: string) => Promise<EngineerIssue | null>;
+  /**
+   * WI-2147241 — resolve a CITED id through the MIXED-FAMILY door, not the issue-only one.
+   *
+   * `extractCitedIds` extracts `EI-`/`WI-`/`F-` indiscriminately, but feature-family rows
+   * live in the canonical `harness_shared.work_items` base table under `feature_id` and are
+   * INVISIBLE to `getIssue` (the issue-family view covers bug/change/task only). Resolving
+   * citations through `getIssue` therefore returned `null` for every real feature-family
+   * citation, which the integrity guard below reads as "does not exist" — so a REAL,
+   * resolvable, on-topic citation was reported fabricated and the decision silently
+   * downgraded place→gate. Measured end-to-end 2026-09-06: EI-22432204022928478 citing
+   * WI-2145950 (a `done` feature row) was gated as unresolved.
+   *
+   * This is the exact trap the repo guide's "Verify mixed-family work-item citations
+   * against the base table" section warns about; the guard was making the mistake it
+   * exists to catch. Kept as a SEPARATE dep from `getIssue` on purpose: the guard needs
+   * both families, while every other call here is legitimately issue-family.
+   */
+  getCitedWorkItem: (id: string, harness?: string) => Promise<CitedWorkItem | null>;
   setIssueState: (
     id: string,
     state: 'open' | 'resolved' | 'closed',
@@ -120,6 +139,7 @@ export interface TriageCoreDeps {
 
 const defaultDeps: TriageCoreDeps = {
   getIssue,
+  getCitedWorkItem: getWorkItem,
   setIssueState,
   commentIssue,
   mergeIssuePayload,
@@ -198,7 +218,38 @@ export async function reopenRejectedTriageForCompensation(
  * unresolved citation keeps the premise unverified rather than being silently
  * ignored; citation integrity is enforced by the companion inspection below.
  */
-type EvidenceIssue = Pick<EngineerIssue, 'id' | 'title' | 'body'> & { payload?: EngineerIssue['payload'] };
+type EvidenceIssue = Pick<EngineerIssue, 'id' | 'title' | 'body'> & {
+  payload?: EngineerIssue['payload'];
+  /** `'operator' | 'harness:<slug>'` — the harness the citation lookup is scoped to. */
+  scope?: EngineerIssue['scope'];
+};
+
+/**
+ * The only fields the citation guard reads off a cited row. Deliberately narrow and
+ * FAMILY-NEUTRAL: `WorkItem` (mixed-family) and `EngineerIssue` (issue-family) both
+ * satisfy it, so the resolver seam can return either without the guard caring which
+ * store answered.
+ */
+type CitedWorkItem = {
+  id: string;
+  /** Kind-specific lifecycle state — issue: open|resolved|closed; feature: todo|passed|… */
+  state: string;
+  terminalCompletionRef: string | null;
+  payload?: unknown;
+};
+
+/**
+ * WI-2147241: the harness a citation must be resolved under. Feature-family ids are
+ * unique only within a (workspace, harness) — `WI-<n>` comes from a per-database
+ * sequence that starts at 1 — so passing the citing item's own harness is what keeps
+ * `WI-3` from resolving to a stranger's row. Issue-family rows ignore it (see the
+ * `getWorkItem` note on why the issue branch is deliberately unscoped).
+ */
+function citationHarnessOf(issue: { scope?: string }): string | undefined {
+  const scope = issue.scope;
+  if (typeof scope !== 'string' || !scope.startsWith('harness:')) return undefined;
+  return scope.slice('harness:'.length) || undefined;
+}
 
 interface EvidenceCitationInspection {
   citedIds: string[];
@@ -209,7 +260,7 @@ interface EvidenceCitationInspection {
   stale: boolean;
 }
 
-function sourceRoleOf(issue: { payload?: EngineerIssue['payload'] }): string | undefined {
+function sourceRoleOf(issue: { payload?: unknown }): string | undefined {
   const payload = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
   return typeof payload.sourceRole === 'string' ? payload.sourceRole : undefined;
 }

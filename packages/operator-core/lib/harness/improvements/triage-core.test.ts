@@ -89,10 +89,19 @@ function noStaleness(): TriageCoreDeps['deploymentStalenessScreen'] {
   return vi.fn(async () => ({ screened: false, divert: false, skipReason: 'no-structured-tool-failure' }) as const);
 }
 
+/**
+ * A FEATURE-family row as the citation guard sees it (WI-2147241). Feature rows live in
+ * the canonical `work_items` base table, never in the issue-family view, so they are
+ * reachable only through the mixed-family `getCitedWorkItem` door — which is exactly the
+ * axis the guard used to get wrong.
+ */
+type CitedRow = { id: string; state: string; terminalCompletionRef: string | null; payload?: unknown };
+
 function depsOf(
   issue: EngineerIssue | null,
   registry: Record<string, EngineerIssue | null> = {},
   overrides: Partial<TriageCoreDeps> = {},
+  featureRegistry: Record<string, CitedRow | null> = {},
 ): TriageCoreDeps & {
   merged: Record<string, unknown>[];
   states: string[];
@@ -110,6 +119,14 @@ function depsOf(
     comments,
     reviews,
     getIssue: vi.fn(async (id: string) => (id in byId ? byId[id] : id === issue?.id ? issue : null)),
+    // The MIXED-family door: the issue store first (so every pre-existing fixture keeps
+    // resolving exactly as before), then the feature-family store the old guard could not see.
+    getCitedWorkItem: vi.fn(async (id: string): Promise<CitedRow | null> => {
+      if (id in byId) return byId[id];
+      if (id === issue?.id) return issue;
+      if (id in featureRegistry) return featureRegistry[id];
+      return null;
+    }),
     setIssueState: vi.fn(async (_id, state) => {
       states.push(state);
       return issue;
@@ -352,6 +369,65 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     });
   });
 
+  /**
+   * WI-2147241 — the citation guard resolved every id through the ISSUE-family door, so a
+   * REAL feature-family `WI-`/`F-` citation came back null and was reported fabricated.
+   * Both halves are required: without the negative control the fix is unfalsifiable in the
+   * direction that matters, and without the positive control the "fix" could simply be the
+   * guard going blind.
+   */
+  describe('mixed-family citation resolution (WI-2147241)', () => {
+    it('does NOT downgrade a real FEATURE-family citation that the issue-family door cannot see', async () => {
+      const idea = issueOf({
+        id: 'i-mixed',
+        scope: 'harness:papercusp',
+        body: 'Grounded in the measurement published as WI-2145950.',
+      });
+      const deps = depsOf(
+        idea,
+        { 'WI-2145950': null }, // the issue-family view genuinely does not hold feature rows
+        {},
+        { 'WI-2145950': { id: 'WI-2145950', state: 'open', terminalCompletionRef: null } },
+      );
+      const res = await applyTriageDecision({ id: 'i-mixed', decision: 'place', reason: 'code-bug' }, deps);
+      expect(res.ok).toBe(true);
+      expect(res.decision).toBe('place');
+      expect(res.evidenceDowngrade).toBeUndefined();
+    });
+
+    it('resolves the citation under the CITING item’s harness, not an ambient one', async () => {
+      const idea = issueOf({ id: 'i-scoped', scope: 'harness:papercusp', body: 'Per WI-3.' });
+      const deps = depsOf(idea, { 'WI-3': null }, {}, { 'WI-3': { id: 'WI-3', state: 'open', terminalCompletionRef: null } });
+      await applyTriageDecision({ id: 'i-scoped', decision: 'place', reason: 'x' }, deps);
+      expect(deps.getCitedWorkItem).toHaveBeenCalledWith('WI-3', 'papercusp');
+    });
+
+    it('STILL downgrades a citation absent from BOTH families (fabrication detection preserved)', async () => {
+      const idea = issueOf({ id: 'i-fab', scope: 'harness:papercusp', body: 'Per WI-999999.' });
+      const deps = depsOf(idea, { 'WI-999999': null }, {}, { 'WI-999999': null });
+      const res = await applyTriageDecision({ id: 'i-fab', decision: 'place', reason: 'x' }, deps);
+      expect(res.decision).toBe('gate');
+      expect(res.evidenceDowngrade?.unresolvedIds).toEqual(['WI-999999']);
+    });
+
+    it('applies the staleness guard to feature-family terminal states too, not just issue ones', async () => {
+      const idea = issueOf({ id: 'i-feat-stale', scope: 'harness:papercusp', body: 'Per WI-2145950.' });
+      const deps = depsOf(
+        idea,
+        { 'WI-2145950': null },
+        {},
+        // 'passed' is a FEATURE-family terminal state — invisible to ISSUE_TERMINAL_STATUSES.
+        { 'WI-2145950': { id: 'WI-2145950', state: 'passed', terminalCompletionRef: 'ref-1' } },
+      );
+      const res = await applyTriageDecision({ id: 'i-feat-stale', decision: 'place', reason: 'x' }, deps);
+      expect(res.decision).toBe('gate');
+      expect(res.evidenceDowngrade?.staleIds).toEqual(['WI-2145950']);
+      expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain(
+        'EVIDENCE-STALENESS GUARD',
+      );
+    });
+  });
+
   it('downgrades same-role Scout citations because ideas are not incident evidence', async () => {
     const cited = issueOf({ id: 'EI-105', payload: { sourceRole: 'Scout' } });
     const idea = issueOf({
@@ -394,7 +470,10 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
   it('a lookup failure never blocks the decision (best-effort)', async () => {
     const idea = issueOf({ id: 'i15', body: 'Per EI-104.' });
     const deps = depsOf(idea);
-    deps.getIssue = vi.fn(async (id: string) => {
+    // WI-2147241: the citation leg now resolves through the MIXED-family door, so that is
+    // the seam a datastore failure has to enter through for this fail-open test to mean
+    // anything. Throwing from `getIssue` here would only fail loading the idea itself.
+    deps.getCitedWorkItem = vi.fn(async (id: string) => {
       if (id === 'EI-104') throw new Error('db unavailable');
       return id === 'i15' ? idea : null;
     });

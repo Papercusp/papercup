@@ -5024,7 +5024,26 @@ export default defineTool({
             await persistLaunchTransaction();
           },
         );
-        if (launchTransaction.verifiedMemberIds.length === transactionRequestedMemberIds.length) {
+        // P-003 worker attestation is a stricter readiness contract than the
+        // legacy "agent took a turn" verification above. A member can satisfy
+        // that older probe while still having no durable wake, scheduler pull,
+        // or accountable disposition; reporting the transaction as verified in
+        // that shape is exactly the ready:0/verified false-green. Preserve the
+        // legacy fallback when no typed worker evidence exists, but once any
+        // worker attestation is recorded require every requested member to be
+        // in the ready set.
+        const hasTypedWorkerEvidence =
+          launchTransaction.workerAttestations !== undefined ||
+          launchTransaction.workerReadyMemberIds !== undefined;
+        const workersReady =
+          !hasTypedWorkerEvidence ||
+          transactionRequestedMemberIds.every((ownerId) =>
+            launchTransaction.workerReadyMemberIds?.includes(ownerId) === true,
+          );
+        if (
+          launchTransaction.verifiedMemberIds.length === transactionRequestedMemberIds.length &&
+          workersReady
+        ) {
           launchTransaction.state = 'verified';
         } else {
           launchTransaction.state = 'partial';

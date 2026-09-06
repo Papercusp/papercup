@@ -3246,6 +3246,10 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       tx.requestedMemberIds,
     );
     expect(tx.workerReadyMemberIds).toEqual([tx.requestedMemberIds[0]]);
+    // A real agent turn is not enough for the transaction-level verified label:
+    // the second member has a typed durable-wake failure, so the launch must
+    // remain partial even though the legacy verifier marked both turns observed.
+    expect(tx.state).toBe('partial');
     expect(tx.workerAttestations[1]).toMatchObject({
       ownerId: tx.requestedMemberIds[1],
       ready: false,
