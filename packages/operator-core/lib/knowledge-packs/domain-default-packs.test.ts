@@ -121,26 +121,37 @@ describe('blueprint → default-pack wiring (resolved via the pot-create path)',
     expect(v.blueprint!.learning?.loops).toContain('scout');
   });
 
-  it('still reads a PRE-RENAME blueprint that declares the deprecated `learning.pack`', () => {
+  it('keeps legacy-only `learning.pack` readable without allowing two seed-pack authorities', () => {
     // Blueprint YAML is a true boundary (knowledge-packs-2026-07-11 D-001): a
     // blueprint authored before the rename — or already installed in a user's
     // tree, which we never rewrite — still says `learning.pack`. It must still
     // PARSE (the schema keeps the key) and still SEED the author's pack.
     //
-    // This is the merge that used to be a silent wrong-pack bug: extending
-    // `coding` now inherits `knowledge.pack: coding`, while the author's own line
-    // says `learning.pack: my-pack`. resolveSeedPackKey arbitrates in the
-    // author's favour (see seed-pack-key.test.ts for the full matrix).
+    // P-033 made `knowledge.pack` the single authority. A legacy override of a
+    // base that already declares the canonical key now resolves to TWO sites and
+    // must fail loudly instead of letting a downstream reader choose one.
+    const ambiguous = resolveAndValidate(
+      { id: 'probe-legacy-ambiguous', extends: 'coding', learning: { pack: 'my-pack' } },
+      resolver,
+    );
+    expect(ambiguous.ok).toBe(false);
+    expect(
+      ambiguous.validation?.errors.some((issue) => issue.code === 'duplicate-knowledge-pack-authority'),
+    ).toBe(true);
+
+    // Read-side compatibility still applies when there is only ONE declaration.
+    // `implement` supplies a complete runnable shape but no default seed pack,
+    // so the resolved blueprint retains the legacy key without ambiguity.
     const v = resolveAndValidate(
-      { id: 'probe-legacy', extends: 'coding', learning: { pack: 'my-pack' } },
+      { id: 'probe-legacy-only', extends: 'implement', learning: { pack: 'my-pack' } },
       resolver,
     );
     expect(v.ok, v.parseError ?? JSON.stringify(v.validation?.errors)).toBe(true);
     expect(v.blueprint!.learning?.pack).toBe('my-pack'); // the deprecated key still parses
-    expect(v.blueprint!.knowledge?.pack).toBe('coding'); // inherited from the base
+    expect(v.blueprint!.knowledge?.pack).toBeUndefined(); // no competing canonical declaration
 
     const seed = resolveSeedPackKey(v.blueprint!);
-    expect(seed.packId).toBe('my-pack'); // the AUTHOR's choice wins, not the base's
+    expect(seed.packId).toBe('my-pack');
     expect(seed.deprecatedKey).toBe(true);
   });
 });
