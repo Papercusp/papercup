@@ -23,7 +23,7 @@ import {
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { getWorkItemCheckpointWithMeta, setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
-import { readOutbox } from '../coordination/messages';
+import { readOutbox, type CoordEnvelope } from '../coordination/messages';
 import { listEscalations, type EscalationRecord } from '../coordination/escalations';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
@@ -241,8 +241,14 @@ async function readPriorCompletionAssertion(
   itemId: string,
 ): Promise<{ msgId: string; ts: string } | null> {
   try {
-    const messages = await readOutbox(holder);
-    const match = messages.find((message) => message.from === holder && assertsCompletionForItem(message, itemId));
+    // EI-22501782402425140: this release-time advisory used to scan the holder's
+    // entire outbox. Use the bounded newest-first window and stop as soon as an
+    // assertion is visible; if none is found, readOutboxWindow still caps the
+    // search at its page budget and reports the shortfall through its warning.
+    const isMatch = (message: CoordEnvelope): boolean =>
+      message.from === holder && assertsCompletionForItem(message, itemId);
+    const messages = await readOutbox(holder, {}, { enough: (entries) => entries.some(isMatch) });
+    const match = messages.find(isMatch);
     return match ? { msgId: match.msg_id, ts: match.ts } : null;
   } catch {
     // A coord read outage must never turn a voluntary release into a failed release.
