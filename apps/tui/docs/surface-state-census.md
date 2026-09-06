@@ -14,7 +14,7 @@ States: **loading** = the surface's own loading flag/text · **empty** = zero ro
 |---|---|---|---|---|---|
 | Overview | n/a — Overview composes tiles from already-loaded App vectors; no loading flag exists — it renders as EMPTY until data lands | ✓ `no alerts` | n/a — no error field feeds the Overview body; fetch failures surface in the HUD status line / toasts, which pinned mode does not draw | ✓ ` Plans (1)` | ✓ ` Plans (1)` |
 | Operator | ✓ `↑ loading…` | ✓ `No messages yet` | ✗ NOT EXERCISED — the only error rendering is ` · reconnecting` on a STALE SU-session binding (`app.su_session.stale`); building a live SuSessionState offline is out of this census's scope — covered by su_session tests | ✓ `census reply` | ✓ `census reply` |
-| Inbox | ✓ `Loading conversations…` | ✓ `Inbox empty` | n/a — no error representation: a failed attention fetch leaves the previous list, i.e. error renders as EMPTY (WI-573215 D-005) | ✓ `Census attention row` | ✓ `Census attention row` |
+| Inbox | ✓ `Loading conversations…` | ✓ `Inbox facet empty` | n/a — no error representation: a failed attention fetch leaves the previous list, i.e. error renders as EMPTY (WI-573215 D-005) | ✓ `Census attention row` | ✓ `Census attention row` |
 | Plans | n/a — no loading flag; renders as EMPTY ("No plans loaded.") until set_plans | ✓ `No plans loaded.` | n/a — no error representation: a failed plans fetch renders as EMPTY (WI-573215 D-005) | ✓ `census-plan` | ✓ `census-plan` |
 | Fleet | ✓ `(loading work frontier…)` | ✓ `(no agents in the fleet)` | ✓ `frontier unavailable: census frontier boom` | ✓ `1/1 online` | ✓ `1/1 online` |
 | Sessions | ✓ `searching…` | ✓ ` sessions ` | ✓ `census transcript error` | ✓ `census-session` | ✓ `census-session` |
@@ -56,7 +56,7 @@ Surfaces whose `error` cell is not-applicable because a failed fetch leaves the 
 | Operator | populated | populate() — one-row fixture per data setter |
 | Operator | keyboard | populate() + ↓ ↑ through App::update — body intact, no panic |
 | Inbox | loading | inbox_focus = Threads, conversations_loading = true (the Attention sub-view has no loading flag) |
-| Inbox | empty | App::new() — no attention items |
+| Inbox | empty | App::new() — default Needs-you facet, no attention items |
 | Inbox | populated | populate() — one-row fixture per data setter |
 | Inbox | keyboard | populate() + ↓ ↑ through App::update — body intact, no panic |
 | Plans | empty | App::new() — no plans |

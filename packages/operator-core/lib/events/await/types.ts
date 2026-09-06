@@ -217,6 +217,17 @@ export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'plan-run-resume',
 ];
 
+/** Whether a settled channel attempted to re-invoke the subscriber's agent.
+ *
+ * `psu-socket-*-unconfirmed` remains true here: the host accepted the write, so
+ * the channel burns wake budget even though the turn-start acknowledgement was
+ * not observed. Inbox, coalesced, and redundant-suppression channels are
+ * explicitly false because they settle without invoking a turn.
+ */
+export function wakeChannelInvokesTurn(channel: WakeChannel | null | undefined): boolean {
+  return channel != null && WAKE_TURN_CHANNELS.includes(channel);
+}
+
 export interface DeliveryRow {
   id: number;
   workspaceId: string;

@@ -21,7 +21,7 @@ import {
   listRecentDeliveries,
   wakeMeter,
 } from '../../events/await/store';
-import type { KeyFireRow } from '../../events/await/types';
+import { wakeChannelInvokesTurn, type KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import { payloadMatchesFilter } from '../../events/await/pattern';
 import type { AwaitRow } from '../../events/await/types';
@@ -301,6 +301,8 @@ export default defineTool({
             subscriber_id: d.subscriberId,
             status: d.status,
             channel: d.channel,
+            /** Derived from channel; inbox/coalesced/suppressed do not invoke a turn. */
+            turn_invoked: wakeChannelInvokesTurn(d.channel),
             attempts: d.attempts,
             source: d.source,
             last_error: d.lastError,
@@ -363,6 +365,8 @@ export default defineTool({
                     event: d.eventKey,
                     status: d.status,
                     channel: d.channel,
+                    /** Derived from channel; status='delivered' alone is not a turn receipt. */
+                    turn_invoked: wakeChannelInvokesTurn(d.channel),
                     attempts: d.attempts,
                     last_error: d.lastError,
                     created_at: d.createdAt,

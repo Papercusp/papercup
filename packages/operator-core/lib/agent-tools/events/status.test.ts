@@ -193,13 +193,14 @@ describe('events:status projection', () => {
     expect(out.active_awaits.map((row: { await_id: number }) => row.await_id)).toEqual([11]);
   });
 
-  it('projects delivery rows to delivery_id/event/status/channel/last_error/...', async () => {
+  it('projects delivery rows with derived turn_invoked state, not status alone', async () => {
     const out = await call({});
     expect(out.recent_wakes[0]).toEqual({
       delivery_id: 22,
       event: 'lock:grant:t1',
       status: 'parked',
       channel: 'inbox',
+      turn_invoked: false,
       attempts: 2,
       last_error: 'boom',
       created_at: 'C2',
@@ -317,7 +318,11 @@ describe('events:status projection', () => {
       { generation: 1, state: 'superseded' },
     ]);
     expect(out.event_inspection.waiters[0]).toMatchObject({ await_id: 31, state: 'fired' });
-    expect(out.event_inspection.wake_outcomes[0]).toMatchObject({ delivery_id: 41, status: 'delivered' });
+    expect(out.event_inspection.wake_outcomes[0]).toMatchObject({
+      delivery_id: 41,
+      status: 'delivered',
+      turn_invoked: true,
+    });
     expect(out.event_inspection.resync).toMatchObject({
       required: true,
       reason: 'consumer_behind',

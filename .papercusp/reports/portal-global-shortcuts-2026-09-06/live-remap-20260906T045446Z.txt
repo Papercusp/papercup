@@ -9,3 +9,10 @@ N5 after reload storage: {"key":"pc:ws:default:papercusp.shortcuts.v1","val":"{\
 N5 new chord after reload: http://127.0.0.1:3081/?app=home
 --- CONTROL PASS 04:58:32Z (prior run timed out before reset) ---
 C0 clear override: []
+C1 default chord, no override (expect settings): http://127.0.0.1:3081/?app=settings
+C2 set override via storage: set
+C3 new chord same page (expect settings): http://127.0.0.1:3081/?app=home
+C4 new chord after reload (expect settings): http://127.0.0.1:3081/?app=home
+--- SHIFT-LETTER PASS 05:02:08Z ---
+S0 storage now: [["pc:ws:default:papercusp.shortcuts.v1","{\"settings.open\":\"mod+alt+s\"}"]]
+S1 set override mod+shift+o: set

@@ -1087,7 +1087,8 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     );
     expect(h.store.markDeliveryParked).not.toHaveBeenCalled();
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(15, 'inbox', 1);
-    expect(stats.delivered).toBe(1);
+    expect(stats.delivered).toBe(0);
+    expect(stats.inbox).toBe(1);
     expect(stats.parked).toBe(0);
   });
 
@@ -1115,7 +1116,8 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     const stats = await pumpWakeDeliveries('ws-test');
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(30, 'inbox', 1);
     expect(h.store.markDeliveryDropped).not.toHaveBeenCalled();
-    expect(stats.delivered).toBe(1);
+    expect(stats.delivered).toBe(0);
+    expect(stats.inbox).toBe(1);
     expect(stats.dropped).toBe(0);
   });
 
@@ -1150,7 +1152,8 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     );
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(12, 'inbox', 1);
     expect(h.store.markDeliveryFailed).not.toHaveBeenCalled();
-    expect(stats.delivered).toBe(1);
+    expect(stats.delivered).toBe(0);
+    expect(stats.inbox).toBe(1);
     expect(stats.failed).toBe(0);
   });
 
@@ -1339,7 +1342,7 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     const stats = await pumpWakeDeliveries('ws-test');
     expect(h.executeWake).not.toHaveBeenCalled();
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(30, 'suppressed-redundant', 1);
-    expect(stats.delivered).toBe(1);
+    expect(stats.delivered).toBe(0);
     expect(stats.suppressed).toBe(1);
     expect(stats.deferred).toBe(0);
   });
@@ -1460,7 +1463,7 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(38, 'suppressed-redundant', 2);
     expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([37], 38);
     expect(stats.suppressed).toBe(1);
-    expect(stats.delivered).toBe(1);
+    expect(stats.delivered).toBe(0);
     expect(stats.coalesced).toBe(1);
   });
 
