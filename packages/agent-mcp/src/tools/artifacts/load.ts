@@ -56,7 +56,10 @@ export default defineTool({
     chaining: 'Pair with `artifacts:save` to round-trip, `artifacts:append` to add to an existing one. Bulk: single { slug?, rel_path } | items[] → { ok, results, counts }; correlate by (slug, rel_path) not position; one failure never fails the rest.',
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // The frozen judge must be able to inspect acceptance evidence it is asked
+  // to grade. Keep this grant local to the read-only tool: adding `judge` to
+  // SU_ROLES would unintentionally widen every standard SU-tool allowlist.
+  agentRoles: [...SU_ROLES, 'judge'],
   args: z
     .object({
       slug: z.string().min(1).regex(SLUG_RE).optional(),

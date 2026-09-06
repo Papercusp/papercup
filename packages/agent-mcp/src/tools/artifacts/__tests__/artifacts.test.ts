@@ -100,6 +100,29 @@ describe('artifacts:load', () => {
     expect(item.updated_at).toBe(1234567);
   });
 
+  it('allows the frozen judge to load rubric-mandated acceptance evidence', async () => {
+    sqlImpl.mockResolvedValueOnce([{ content: 'acceptance evidence', updated_at: '42' }]);
+    const tool = lookupByMcpName('artifacts:load')!;
+    expect(tool.agentRoles).toContain('judge');
+
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:load',
+      { slug: 'test', rel_path: 'evidence/acceptance.json' },
+      MAKE_CTX({ role: 'judge' }),
+      {},
+    );
+
+    expect(r.ok).toBe(true);
+    expect(envelopeOf(r).results[0]).toMatchObject({
+      ok: true,
+      slug: 'test',
+      rel_path: 'evidence/acceptance.json',
+      found: true,
+      content: 'acceptance evidence',
+    });
+  });
+
   it('EI-21471082146021784: offset/max_chars page large content deterministically', async () => {
     const big = 'a'.repeat(5000) + 'b'.repeat(5000);
     sqlImpl.mockResolvedValueOnce([{ content: big, updated_at: '7' }]);
