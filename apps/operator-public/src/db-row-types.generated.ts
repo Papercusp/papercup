@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 3892e3e1a5b43f7bb634272107fd62d0fed5d0c1feb5b1ee9278f4d3f0b47d4a
+ * Migration digest: 259641f21e1bcc16a8ce8a1b54f1a7f56e0bb200f7cd06fda4d9f6ee24095ac7
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "3892e3e1a5b43f7bb634272107fd62d0fed5d0c1feb5b1ee9278f4d3f0b47d4a";
+  "259641f21e1bcc16a8ce8a1b54f1a7f56e0bb200f7cd06fda4d9f6ee24095ac7";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -31,6 +31,8 @@ export const GENERATED_TABLES = [
   "reports",
   "settlement_batch_vouchers",
   "settlement_batches",
+  "treasury_safe_deployments",
+  "treasury_transfers",
   "usage_receipts",
   "wallet_binding_challenges",
   "wallet_bindings",
@@ -370,6 +372,44 @@ export interface SettlementBatchesRow {
   created_at_ms: number;
   updated_at_ms: number;
   finalized_at_ms: number | null;
+}
+
+export interface TreasurySafeDeploymentsRow {
+  chain_id: number;
+  safe_address: string;
+  roles_module_address: string;
+  roles_version: string;
+  deployment_tx_hash: string;
+  network: string;
+  owners: string;
+  threshold: number;
+  automation_signer: string;
+  deployed_at_ms: number;
+  recorded_at_ms: number;
+  recorded_by: string;
+}
+
+export interface TreasuryTransfersRow {
+  transfer_id: string;
+  batch_id: string;
+  channel_id: string;
+  principal_id: string;
+  settlement_id: string;
+  receipt_hash: string;
+  split_manifest_hash: string;
+  share: string;
+  role: string;
+  chain_id: number;
+  safe_address: string;
+  roles_module_address: string;
+  token: string;
+  recipient: string;
+  amount_micros: number;
+  safe_tx_hash: string;
+  transaction_hash: string;
+  block_number: string;
+  proof_event_id: string | null;
+  created_at_ms: number;
 }
 
 export interface UsageReceiptsRow {

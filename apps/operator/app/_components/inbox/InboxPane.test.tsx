@@ -566,6 +566,40 @@ describe("<InboxPane>", () => {
     });
   });
 
+  /* ── The accent token (inbox-three-column-resolver-states-2026-09-06 P-010) ──
+     The 31 Aug board: "the hero, the row icons and the active filter use
+     #3f7fd6; the app accent is sage-teal". The rendered blue came from a
+     hardcoded royal-blue gradient family in this stylesheet. Every such site
+     now takes `--accent`, so the portal's own accent shows through. */
+  describe("accent token (P-010)", () => {
+    const css = readFileSync(join(__dirname, "inbox-pane.css"), "utf8");
+    const rule = (selector: string): string =>
+      css.match(
+        new RegExp(
+          selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*\\}",
+        ),
+      )?.[0] ?? "";
+
+    it("carries no off-palette blue literal anywhere in the stylesheet", () => {
+      expect(css).not.toMatch(/#1688ff|#0757b8|#0766d8|#3f7fd6/i);
+    });
+
+    it("paints the active scope pill, the masthead + rail icons, the row icon and the selected row from the accent token", () => {
+      for (const selector of [
+        ".op-inbox__chip.is-active",
+        ".op-inbox__masthead-icon",
+        ".op-inbox__rail-icon",
+        ".op-inbox__row-icon",
+        ".op-inbox__row.is-selected",
+      ]) {
+        const body = rule(selector);
+        expect(body, selector).not.toBe("");
+        expect(body, selector).toMatch(/var\(--accent\b/);
+        expect(body, selector).not.toMatch(/#[0-9a-f]{6}\s*\d+%/i);
+      }
+    });
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem("d1"),
