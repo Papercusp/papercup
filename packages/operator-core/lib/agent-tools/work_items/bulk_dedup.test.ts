@@ -21,6 +21,39 @@ beforeEach(() => {
 });
 
 describe('work_items:bulk_dedup handler', () => {
+  it('previews a reviewed ledger without enqueuing, mutating, or calling a model', async () => {
+    const out = (await tool.handler(
+      {
+        op: 'preview-reviewed',
+        harness: 'papercusp',
+        confirm: true,
+        reviewedEntries: [
+          {
+            itemId: 'EI-missing',
+            action: 'preserve',
+            evidence: {
+              status: 'unknown',
+              ref: 'ledger#EI-missing',
+              reason: 'no current evidence establishes a safe mutation',
+            },
+          },
+        ],
+      },
+      { workspaceId: 'ctx-ws' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(out.data).toMatchObject({
+      ok: true,
+      mode: 'preview-reviewed',
+      schemaVersion: 'reviewed-admission-cleanup-preview-v1',
+      mutates: false,
+      modelCalled: false,
+      counts: { total: 1, eligible: 0, preserved: 0, unknown: 1 },
+      entries: [{ itemId: 'EI-missing', outcome: 'unknown' }],
+    });
+  });
+
   it('enqueues one durable due-now action with the bounded census controls', async () => {
     const out = (await tool.handler(
       {

@@ -15,6 +15,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { WORK_ITEM_ADMISSION_BULK_DEDUP } from '../../work-items-admission-bulk-dedup';
+import { previewReviewedAdmissionCleanup } from '../../work-items-admission-promoter';
 
 type RoutineSql = Parameters<typeof upsertRoutine>[0];
 
@@ -35,10 +36,7 @@ function bulkDedupRoutineId(harness: string, routineName: string): string {
  * input. Surface that state before upsertRoutine so a same-run rearm cannot
  * report success while silently retaining stale controls.
  */
-async function activeBulkDedupFire(
-  sql: RoutineSql,
-  routineId: string,
-): Promise<ActiveBulkDedupFire | null> {
+async function activeBulkDedupFire(sql: RoutineSql, routineId: string): Promise<ActiveBulkDedupFire | null> {
   try {
     const rows = await sql<ActiveBulkDedupFire[]>`
       SELECT r.id AS "routineId", d.workflow_uuid AS "workflowUuid", d.status
@@ -57,9 +55,7 @@ async function activeBulkDedupFire(
     // failures stay loud: updating a payload without the protection query
     // would recreate the very outcome-unknown hazard this guard prevents.
     const code =
-      error && typeof error === 'object' && 'code' in error
-        ? String((error as { code?: unknown }).code ?? '')
-        : '';
+      error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
     if (code === '42P01') return null;
     throw error;
   }
@@ -69,13 +65,13 @@ export default defineTool({
   name: 'work_items:bulk_dedup',
   profile: 'engineer',
   description:
-    'Enqueue the durable staged work-item bulk deduplicator for one harness and return immediately. The one-shot system action creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.',
+    'Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, or enqueue the durable staged work-item bulk deduplicator. Reviewed preview reads the same full endpoint/reference snapshots and readiness protections as persistence and returns deterministic eligible/preserved/unknown receipts. The run operation creates a fresh pinned census/shard map, applies the duplication-only charter, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true.',
   guidance: {
-    when: 'A reviewed bulk-dedup plan is ready to execute and its current corpus must converge under the admission census ratchet.',
+    when: 'A reviewed historical cohort needs a current evidence/readiness preflight, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.',
     notWhen:
       'Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.',
     chaining:
-      'work_items:bulk_dedup { harness, confirm:true } → the durable one-shot runs independently → inspect workItemAdmission.runs / admin admission history for the stage and final census.',
+      'work_items:bulk_dedup { op:"preview-reviewed", reviewedEntries:[...], harness, confirm:true } → inspect deterministic receipts → centralized owner applies only eligible entries; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the durable model-backed run.',
     seeAlso: [
       'work_items:search (inspect candidate rows before an exceptional manual intervention)',
       'work_items:get (inspect one canonical or merged row)',
@@ -86,6 +82,10 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
+    op: z
+      .enum(['run', 'preview-reviewed'])
+      .optional()
+      .describe('Default run; preview-reviewed is read-only and never calls a model.'),
     harness: z.string().min(1).max(80).describe('Harness whose active non-observation corpus is deduplicated.'),
     workspace: z
       .string()
@@ -94,6 +94,29 @@ export default defineTool({
       .optional()
       .describe('Workspace override; defaults to call context/active workspace.'),
     confirm: z.literal(true).describe('Required acknowledgement that r-finding-merge verdicts terminalize duplicates.'),
+    reviewedEntries: z
+      .array(
+        z.object({
+          itemId: z.string().min(1).max(200),
+          action: z.enum(['merge', 'preserve']),
+          canonicalId: z.string().min(1).max(200).optional(),
+          evidence: z.object({
+            status: z.enum(['ready', 'unknown', 'not-ready']),
+            ref: z.string().min(1).max(2_000),
+            reason: z.string().min(1).max(4_000),
+            sourceSha256: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/i)
+              .optional(),
+          }),
+        }),
+      )
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Explicit reviewed ledger entries for op=preview-reviewed; preserves may omit canonicalId, merges require it.',
+      ),
     runId: z.string().min(1).max(160).optional().describe('Optional stable root run id for operator correlation.'),
     maxStages: z.number().int().min(1).max(50).optional().describe('Full-corpus convergence ceiling; default 12.'),
     pairsPerCall: z
@@ -141,6 +164,20 @@ export default defineTool({
     const runId = args.runId ?? `bulk-dedup-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const routineName = `${WORK_ITEM_ADMISSION_BULK_DEDUP}-${runId}`.slice(0, 180);
     const sql = getOrgPg().sql;
+    if ((args.op ?? 'run') === 'preview-reviewed') {
+      if (!args.reviewedEntries?.length) {
+        throw new Error('work_items:bulk_dedup preview-reviewed requires reviewedEntries');
+      }
+      const preview = await previewReviewedAdmissionCleanup(sql, {
+        workspaceId,
+        harnessSlug: args.harness,
+        proposals: args.reviewedEntries,
+      });
+      return { data: { ok: true, mode: 'preview-reviewed', ...preview } };
+    }
+    if (args.reviewedEntries !== undefined) {
+      throw new Error('work_items:bulk_dedup reviewedEntries are valid only with op=preview-reviewed');
+    }
     const activeFire = await activeBulkDedupFire(sql, bulkDedupRoutineId(args.harness, routineName));
     if (activeFire) {
       return {
