@@ -91,9 +91,9 @@ describe('validateCustomTheme', () => {
 });
 
 describe('customThemeCss', () => {
-  it('emits a scoped [data-theme="custom:<id>"] block', () => {
+  it('emits a root-scoped custom layer that outranks the data-theme-base fallback', () => {
     const css = customThemeCss({ id: 'mid', label: 'Mid', tokens: { bg: '#000', accent: '#88f' } });
-    expect(css).toContain('[data-theme="custom:mid"]');
+    expect(css).toContain(':root[data-theme="custom:mid"]');
     expect(css).toContain('--bg: #000;');
     expect(css).toContain('--accent: #88f;');
   });

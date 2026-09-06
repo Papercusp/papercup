@@ -168,5 +168,9 @@ export function customThemeCss(theme: CustomTheme): string {
   const decls = (Object.entries(theme.tokens) as [ThemeToken, string][])
     .map(([token, value]) => `  --${token}: ${value};`)
     .join('\n');
-  return `[data-theme="${CUSTOM_PREFIX}${theme.id}"] {\n${decls}\n}`;
+  // A custom theme also carries `data-theme-base`, whose generated semantic
+  // block supplies tokens the package omitted. Give the explicit custom layer
+  // higher specificity than that base alias so it wins even when its cached
+  // pre-paint <style> appears before the bundled base CSS after a reload.
+  return `:root[data-theme="${CUSTOM_PREFIX}${theme.id}"] {\n${decls}\n}`;
 }
