@@ -379,6 +379,17 @@ export function formatToolCallFailure(toolName: any, error: any, { idempotencyKe
  * Pure — exported for focused diagnostics tests.
  */
 export function formatToolCatalogFailure(requestedToolName: any, error: any): string;
+/**
+ * A scripted named call already has the only input ptool needs to dispatch:
+ * the target name and its JSON arguments. If read-only catalog discovery is
+ * unavailable, bypassing it keeps tools/list from becoming a prerequisite for
+ * an exact tools/call. Interactive calls cannot use this path because their
+ * arguments still need the catalog's input schema.
+ */
+export function canDispatchWithoutCatalog(toolName: any, inputKind: any): boolean;
+/** Explain the catalog-independent fallback on stderr without contaminating
+ * scripted JSON output. The target tool still validates its own arguments. */
+export function formatToolCatalogBypass(requestedToolName: any, error: any): string;
 export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, sleep, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
@@ -428,6 +439,17 @@ export function callToolWithReplayRecovery(client: any, params: any, { reconnect
     timeoutMs?: number;
     readOnly?: boolean;
 }): Promise<{
+    client: any;
+    result: any;
+}>;
+/**
+ * Dispatch a named scripted call without first resolving its catalog entry.
+ * This is safe after tools/list failed because no target tools/call was sent;
+ * the operator remains authoritative for target existence and argument
+ * validation. Do not opt the call into post-connect replay: the target may be
+ * a mutation, and only the catalog can provide the read-only annotation.
+ */
+export function dispatchScriptedToolWithoutCatalog(client: any, toolName: any, callArgs: any, { idempotencyKey, reconnect, timeoutMs, }?: {}): Promise<{
     client: any;
     result: any;
 }>;

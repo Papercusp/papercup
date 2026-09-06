@@ -1160,7 +1160,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         );
         if (degraded.kind === 'delivered') {
           await markDeliveryDelivered(headline.id, degraded.channel, group.length);
-          stats.delivered++;
+          recordSettledDeliveryStats(stats, degraded.channel);
           if (siblings.length > 0) {
             await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
             stats.coalesced += siblings.length;

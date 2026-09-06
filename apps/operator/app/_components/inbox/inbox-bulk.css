@@ -361,6 +361,74 @@
 .op-inbox__rowstate--routed { color: #93c5fd; }
 .op-inbox__rowstate--investigate { color: var(--warn, #fbbf24); }
 
+/* ── CARD variant (inbox-three-column-resolver-states-2026-09-06 P-003) ──
+   The same three states as a compact card for the split page's 210px rail —
+   the board's `.f-bulk`. Stack mode never renders it; the band above stays
+   byte-identical there. Everything is a modifier ON the band's classes, so
+   the two cannot drift. */
+.op-inbox__bulk-slot--card,
+.op-inbox__bulk--card {
+  gap: 8px; margin: 0; padding: 10px; border-radius: 10px; box-shadow: none;
+  border: 1px solid color-mix(in srgb, var(--accent, #8b5cf6) 32%, transparent);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 8%, var(--bg-2, rgba(0, 0, 0, 0.18)));
+}
+.op-inbox__bulk--card.op-inbox__bulk--running {
+  border-color: color-mix(in srgb, #38bdf8 45%, transparent);
+  background: color-mix(in srgb, #1688ff 10%, var(--bg-2, rgba(0, 0, 0, 0.18)));
+}
+.op-inbox__bulk-card-hd {
+  display: flex; align-items: center; gap: 6px; margin: 0;
+  font-size: 9px; font-weight: 760; text-transform: uppercase;
+  color: var(--accent-strong, #7dd3fc);
+}
+.op-inbox__bulk-card-hd .op-inbox__bulk-icon { color: inherit; }
+.op-inbox__bulk-slot--card .op-inbox__bulk-start-copy { gap: 3px; }
+.op-inbox__bulk-slot--card .op-inbox__bulk-start-title {
+  font-size: 11.5px; font-weight: 640; line-height: 1.3; color: var(--fg, #e7e7ea);
+}
+.op-inbox__bulk-slot--card .op-inbox__bulk-start-sub {
+  white-space: normal; font-size: 10px; line-height: 1.45; color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__bulk-start--card {
+  justify-content: center; gap: 6px; min-height: 30px; padding: 0 10px;
+  border-radius: 7px; font-size: 10.5px; font-weight: 700; text-align: center;
+  box-shadow: none;
+}
+.op-inbox__bulk-start--card:hover:not(:disabled) { box-shadow: none; }
+.op-inbox__bulk--card .op-inbox__bulk-head { flex-wrap: wrap; row-gap: 2px; }
+.op-inbox__bulk--card .op-inbox__bulk-title,
+.op-inbox__bulk--card.op-inbox__bulk--review .op-inbox__bulk-title {
+  font-size: 11.5px; font-weight: 640; line-height: 1.3; white-space: normal;
+}
+.op-inbox__bulk--card .op-inbox__bulk-elapsed { flex: 1 0 100%; }
+.op-inbox__bulk-caption {
+  margin: 0; font-size: 10.5px; line-height: 1.45; color: var(--fg-mute, #8a8a91);
+  font-variant-numeric: tabular-nums;
+}
+.op-inbox__bulk--card .op-inbox__bulk-counts { gap: 9px; font-size: 9.5px; }
+.op-inbox__bulk--card .op-inbox__bulk-counts--accounting { padding-top: 0; border-top: 0; }
+.op-inbox__bulk--card .op-inbox__bulk-counts:empty { display: none; }
+.op-inbox__bulk-stop--card {
+  justify-content: center; width: 100%; min-height: 30px; font-size: 10.5px; font-weight: 700;
+  color: var(--bad, #f87171);
+  border-color: color-mix(in srgb, var(--bad, #f87171) 50%, transparent);
+}
+.op-inbox__bulk-stop--card:hover {
+  color: var(--bad, #f87171);
+  border-color: color-mix(in srgb, var(--bad, #f87171) 80%, transparent);
+}
+.op-inbox__bulk--card .op-inbox__bulk-actions { flex-direction: column; align-items: stretch; gap: 6px; }
+.op-inbox__bulk--card .op-inbox__bulk-accept-all,
+.op-inbox__bulk--card .op-inbox__bulk-continue,
+.op-inbox__bulk--card .op-inbox__bulk-ghost--wide {
+  min-height: 30px; font-size: 10.5px; border-radius: 7px;
+}
+.op-inbox__bulk--card .op-inbox__bulk-hint { font-size: 9.5px; }
+/* The settings trigger is a full-width row already; in the card it is the
+   quiet first line, not the hero. */
+.op-inbox__bulk-slot--card .op-resolver-settings__trigger,
+.op-inbox__bulk--card .op-resolver-settings__trigger { min-height: 26px; font-size: 10px; }
+
 @media (max-width: 520px) {
   .op-inbox__bulk-start-sub { display: none; }
   .op-inbox__bulk-counts { gap: 8px; }

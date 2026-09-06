@@ -70,6 +70,42 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)).toBeUndefined();
   });
 
+  it('EI-22458045233456597: one exact reply clears an earlier same-goal ask cluster, but not a later ask', async () => {
+    const goalRef = 'EI-22458045233456597#cluster';
+    const firstAsk = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'cluster ask 1',
+      expectsReply: true,
+      extra: { why: { goalRef } },
+    });
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'cluster ask 2',
+      expectsReply: true,
+      extra: { why: { goalRef } },
+    });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'substantive reply covers the cluster',
+      related_msg_id: firstAsk.msg_id,
+      extra: { why: { goalRef } },
+    });
+    const laterAsk = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'later ask in the same goal',
+      expectsReply: true,
+      extra: { why: { goalRef } },
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+    expect(map.get(MEMBER.ownerId)?.newest[0]).toMatchObject({
+      msgId: laterAsk.msg_id,
+      from: LEADER.ownerId,
+      summary: 'later ask in the same goal',
+    });
+  });
+
   it('EI-13819: a reply-shaped message threaded onto something ELSE in the same correspondence, sent after the ask, also clears it', async () => {
     const ask = await sendMessage(LEADER, {
       to: [MEMBER.ownerId],
@@ -456,6 +492,42 @@ describe('fetchOpenAsks (sender-side mirror; WI-4537(c) mirrored exclusion, EI-2
 
     const map = await fetchOpenAsks([LEADER.ownerId]);
     expect(map.get(LEADER.ownerId)?.count).toBe(1);
+  });
+
+  it('EI-22458045233456597 mirrored: one exact reply clears an earlier same-goal ask cluster, but not a later ask', async () => {
+    const goalRef = 'EI-22458045233456597#cluster-mirror';
+    const firstAsk = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'cluster ask 1',
+      expectsReply: true,
+      extra: { why: { goalRef } },
+    });
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'cluster ask 2',
+      expectsReply: true,
+      extra: { why: { goalRef } },
+    });
+    await sendMessage(MEMBER, {
+      to: [LEADER.ownerId],
+      summary: 'substantive reply covers the cluster',
+      related_msg_id: firstAsk.msg_id,
+      extra: { why: { goalRef } },
+    });
+    const laterAsk = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'later ask in the same goal',
+      expectsReply: true,
+      extra: { why: { goalRef } },
+    });
+
+    const map = await fetchOpenAsks([LEADER.ownerId]);
+    expect(map.get(LEADER.ownerId)?.count).toBe(1);
+    expect(map.get(LEADER.ownerId)?.newest[0]).toMatchObject({
+      msgId: laterAsk.msg_id,
+      to: MEMBER.ownerId,
+      summary: 'later ask in the same goal',
+    });
   });
 
   it('EI-22401733710869471: SQL rolls up recipients and partitions ended recipients in one batch', async () => {

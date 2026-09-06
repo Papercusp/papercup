@@ -1601,6 +1601,29 @@ export function formatToolCatalogFailure(requestedToolName, error) {
   );
 }
 
+/**
+ * A scripted named call already has the only input ptool needs to dispatch:
+ * the target name and its JSON arguments. If read-only catalog discovery is
+ * unavailable, bypassing it keeps tools/list from becoming a prerequisite for
+ * an exact tools/call. Interactive calls cannot use this path because their
+ * arguments still need the catalog's input schema.
+ */
+export function canDispatchWithoutCatalog(toolName, inputKind) {
+  return typeof toolName === 'string' && toolName.trim().length > 0 && inputKind != null;
+}
+
+/** Explain the catalog-independent fallback on stderr without contaminating
+ * scripted JSON output. The target tool still validates its own arguments. */
+export function formatToolCatalogBypass(requestedToolName, error) {
+  const requested = typeof requestedToolName === 'string' && requestedToolName
+    ? ` for requested tool ${requestedToolName}`
+    : '';
+  return (
+    `ptool: tool catalog discovery failed${requested}: ${errorDetail(error)}; ` +
+    'failure_stage=tools/list; dispatching the supplied scripted arguments directly without catalog discovery.'
+  );
+}
+
 export async function callToolWithPressureRetry(
   client,
   params,
@@ -1807,6 +1830,34 @@ export async function callToolWithReplayRecovery(
       activeClient = await reconnect();
     }
   }
+}
+
+/**
+ * Dispatch a named scripted call without first resolving its catalog entry.
+ * This is safe after tools/list failed because no target tools/call was sent;
+ * the operator remains authoritative for target existence and argument
+ * validation. Do not opt the call into post-connect replay: the target may be
+ * a mutation, and only the catalog can provide the read-only annotation.
+ */
+export async function dispatchScriptedToolWithoutCatalog(
+  client,
+  toolName,
+  callArgs,
+  {
+    idempotencyKey,
+    reconnect,
+    timeoutMs,
+  } = {},
+) {
+  return callToolWithReplayRecovery(
+    client,
+    buildCallToolParams(toolName, callArgs, { idempotencyKey }),
+    {
+      timeoutMs: timeoutMs ?? timeoutForTool(toolName, callArgs),
+      reconnect,
+      readOnly: false,
+    },
+  );
 }
 
 /**
@@ -2497,10 +2548,42 @@ async function main() {
   });
   let client = await connectOperator();
   try {
+    let projection;
+    if (args.projection != null) {
+      try {
+        projection = JSON.parse(args.projection);
+      } catch (e) {
+        console.error(`ptool: --projection is not valid JSON: ${e.message}`);
+        process.exit(1);
+      }
+    }
+
     let tools;
     try {
       tools = await listAllTools(client, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) });
     } catch (error) {
+      if (canDispatchWithoutCatalog(args.tool, inputKind)) {
+        const callArgs = mergeDispatchProjection(inputArgs, projection);
+        const idempotencyKey = args.idempotencyKey || randomUUID();
+        console.error(formatToolCatalogBypass(args.tool, error));
+        try {
+          const recovered = await dispatchScriptedToolWithoutCatalog(
+            client,
+            args.tool,
+            callArgs,
+            { idempotencyKey, reconnect: connectOperator },
+          );
+          client = recovered.client;
+          const code = await printResult(recovered.result, {
+            raw: shouldPrintRawResult(inputKind, args.raw),
+          });
+          if (code !== 0) process.exitCode = code;
+        } catch (callError) {
+          console.error(formatToolCallFailure(args.tool, callError, { idempotencyKey }));
+          process.exitCode = 1;
+        }
+        return;
+      }
       console.error(formatToolCatalogFailure(args.tool, error));
       process.exitCode = 1;
       return;
@@ -2532,16 +2615,7 @@ async function main() {
     // Assemble args from the input parsed before connect, or prompt
     // interactively when no scripted source was provided.
     let callArgs = inputKind != null ? inputArgs : await collectArgs(tool.inputSchema);
-    if (args.projection != null) {
-      let projection;
-      try {
-        projection = JSON.parse(args.projection);
-      } catch (e) {
-        console.error(`ptool: --projection is not valid JSON: ${e.message}`);
-        process.exit(1);
-      }
-      callArgs = mergeDispatchProjection(callArgs, projection);
-    }
+    callArgs = mergeDispatchProjection(callArgs, projection);
     callArgs = mergeConvenienceArgs(callArgs, { workspace, harness }, tool.inputSchema);
 
     // Interactive confirmation (only when we prompted — a scripted --json/

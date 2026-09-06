@@ -166,12 +166,12 @@
     {
       "id": "EI-21275903434503631",
       "frozenOutcome": "candidate-shared-root-consolidation",
-      "frozenSourceSha256": "35888a7c6bdb2dab96479a83cc0dd4787796fcf5eaab8040accd620cf3cc59707",
+      "frozenSourceSha256": "35888ef6bdb2dab96479a83cc0dd4787796fcf5eaab8040accd620cf3cc59707",
       "currentState": "open",
       "currentOrigin": "local",
       "currentAssignee": null,
       "currentFingerprintEvidence": {
-        "currentSha256": "35888a7c6bdb2dab96479a83cc0dd4787796fcf5eaab8040accd620cf3cc59707",
+        "currentSha256": "35888ef6bdb2dab96479a83cc0dd4787796fcf5eaab8040accd620cf3cc59707",
         "shaMatchesFrozen": true,
         "title": "improvements:capture summary field mismatch",
         "summary": "The intuitive summary field was rejected while filing a scheduler tool failure; the live capture contract requires body.",

@@ -16,3 +16,9 @@ C4 new chord after reload (expect settings): http://127.0.0.1:3081/?app=home
 --- SHIFT-LETTER PASS 05:02:08Z ---
 S0 storage now: [["pc:ws:default:papercusp.shortcuts.v1","{\"settings.open\":\"mod+alt+s\"}"]]
 S1 set override mod+shift+o: set
+S2 new chord after reload (expect settings): http://127.0.0.1:3081/?app=settings
+S3 default with override (expect unchanged): http://127.0.0.1:3081/?app=home
+S4 cleanup: cleared
+S5 default restored (expect settings): http://127.0.0.1:3081/?app=settings
+console: No console messages. 
+SHIFT_PASS_END 05:04:03Z
