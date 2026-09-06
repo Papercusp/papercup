@@ -137,6 +137,10 @@ export const PIPELINE_GATE_PROJECTED_FIELDS = [
   'observedCandidate',
   'inconclusive',
   'repairQueue',
+  // P-025 / WI-2146319. `repairQueue` is intentionally nullable for compatibility, so
+  // project the persisted read disposition too: a present newer-schema row must not be
+  // rendered as an absent queue at this projection boundary.
+  'repairQueueRead',
   // WI-2140908. The frozen-candidate failure set. `pickPipelineFields` emits a field
   // whose value is `null` (it skips only `undefined`), so the no-repair-queue case
   // reaches the caller as an explicit `null` rather than a missing key.
