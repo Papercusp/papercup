@@ -30,15 +30,18 @@ let ledgerThrows = false;
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray) => {
-      const text = strings.join('?');
-      sqlCalls.push(text);
-      if (ledgerThrows) return Promise.reject(new Error('ledger unavailable'));
-      // The two ledger reads are told apart by their projection: the id-only
-      // "which rows recur" read vs the "how many times" count read.
-      if (text.includes('count(*)::text')) return Promise.resolve(occurrenceRows);
-      return Promise.resolve(recurringIdRows);
-    },
+    sql: Object.assign(
+      (strings: TemplateStringsArray) => {
+        const text = strings.join('?');
+        sqlCalls.push(text);
+        if (ledgerThrows) return Promise.reject(new Error('ledger unavailable'));
+        // The two ledger reads are told apart by their projection: the id-only
+        // "which rows recur" read vs the "how many times" count read.
+        if (text.includes('count(*)::text')) return Promise.resolve(occurrenceRows);
+        return Promise.resolve(recurringIdRows);
+      },
+      { begin: vi.fn() },
+    ),
   }),
 }));
 
