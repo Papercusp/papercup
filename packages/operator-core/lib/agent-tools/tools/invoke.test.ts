@@ -17,7 +17,7 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 }));
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 
-import toolInvoke, { summarizeNestedToolOutcome } from './invoke';
+import toolInvoke, { NestedToolRefusalError, summarizeNestedToolOutcome } from './invoke';
 
 const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
 
@@ -159,6 +159,59 @@ describe('tools:invoke handler', () => {
       effectiveStatus: 'error',
       childFailureCount: 1,
       childFailureRefs: ['plans:new'],
+    });
+  });
+
+  it('rejects a resolved nested isError refusal while preserving its code/details', async () => {
+    const metadata = vi.fn();
+    const refusalText = JSON.stringify({
+      ok: false,
+      error: 'invalid_input',
+      message: 'invalid_args: Unrecognized key: "harness"',
+      details: { field: 'harness' },
+    });
+    const nested = {
+      isError: true,
+      content: [{ type: 'text' as const, text: refusalText }],
+    };
+    const ctx = {
+      metadata,
+      dispatchTool: async () => nested,
+    };
+
+    await expect(def.handler({ name: 'db:check_drift', args: {} }, ctx)).rejects.toMatchObject({
+      name: 'NestedToolRefusalError',
+      toolName: 'db:check_drift',
+      code: 'invalid_input',
+      details: { field: 'harness' },
+      nestedResult: nested,
+      message: refusalText,
+    });
+    expect(metadata).toHaveBeenCalledWith({
+      effectiveStatus: 'error',
+      childFailureCount: 1,
+      childFailureRefs: ['db:check_drift'],
+    });
+  });
+
+  it('keeps structured nested refusal details when compact content omits the code', async () => {
+    const nested = {
+      isError: true,
+      content: [{ type: 'text' as const, text: 'request refused by the target gate' }],
+      structuredContent: {
+        ok: false,
+        error: { code: 'role_not_allowed', message: 'su cannot call this tool' },
+        details: { requiredRole: 'operator' },
+      },
+    };
+    const ctx = { dispatchTool: async () => nested };
+
+    const rejection = await def.handler({ name: 'flags:set', args: {} }, ctx).catch((error: unknown) => error);
+    expect(rejection).toBeInstanceOf(NestedToolRefusalError);
+    expect(rejection).toMatchObject({
+      code: 'role_not_allowed',
+      details: { requiredRole: 'operator' },
+      message: 'role_not_allowed: request refused by the target gate',
     });
   });
 });

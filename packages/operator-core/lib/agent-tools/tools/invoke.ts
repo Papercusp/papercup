@@ -26,6 +26,142 @@ type NestedOutcome = {
   childFailureCount: number;
 };
 
+type NestedToolResult = {
+  content?: ReadonlyArray<unknown>;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+  structuredContent?: unknown;
+};
+
+type NestedRefusal = {
+  code: string | null;
+  message: string | null;
+  details: unknown;
+};
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function firstNonBlankString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== 'string' || value.trim().length === 0) continue;
+    return value.trim();
+  }
+  return null;
+}
+
+function jsonValue(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function jsonText(value: unknown): string | null {
+  try {
+    const text = JSON.stringify(value);
+    return typeof text === 'string' ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function nestedTextContent(result: NestedToolResult): string[] {
+  return (result.content ?? [])
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object' || (item as { type?: unknown }).type !== 'text') return [];
+      const text = (item as { text?: unknown }).text;
+      return typeof text === 'string' && text.trim().length > 0 ? [text.trim()] : [];
+    });
+}
+
+function refusalFields(payload: unknown): NestedRefusal {
+  const record = recordValue(payload);
+  if (!record) return { code: null, message: null, details: payload };
+  const error = recordValue(record.error);
+  const code = firstNonBlankString(
+    error?.code,
+    typeof record.error === 'string' ? record.error : undefined,
+    record.code,
+    record.errorCode,
+    record.reason,
+  );
+  const message = firstNonBlankString(
+    error?.message,
+    error?.errorMessage,
+    error?.detail,
+    record.message,
+    record.errorMessage,
+    record.detail,
+  );
+  return {
+    code,
+    message,
+    // Preserve the caller-facing details field when one exists; the complete
+    // structured refusal is retained separately on NestedToolRefusalError.
+    details: error?.details ?? record.details ?? payload,
+  };
+}
+
+function nestedRefusal(result: NestedToolResult): NestedRefusal {
+  const texts = nestedTextContent(result);
+  const rawText = texts.join('\n');
+  const candidates: unknown[] = [];
+  if (result.structuredContent !== undefined) candidates.push(result.structuredContent);
+  for (const text of texts) {
+    const parsed = jsonValue(text);
+    if (parsed !== undefined) candidates.push(parsed);
+  }
+
+  let code: string | null = null;
+  let structuredMessage: string | null = null;
+  let details: unknown = undefined;
+  for (const candidate of candidates) {
+    const fields = refusalFields(candidate);
+    if (!code && fields.code) code = fields.code;
+    if (!structuredMessage && fields.message) structuredMessage = fields.message;
+    if (details === undefined && fields.details !== undefined) details = fields.details;
+  }
+
+  if (!code && rawText) {
+    const prefix = rawText.match(/^([A-Za-z][A-Za-z0-9_.-]*):\s*(.*)$/s);
+    if (prefix?.[1]) code = prefix[1];
+  }
+  if (details === undefined) details = rawText || result.structuredContent;
+
+  // Keep the nested content verbatim when possible: this is where plain MCP
+  // refusals carry their code and actionable detail. If structured content has
+  // the code but the compact text does not, prefix it so the outer handler_error
+  // still exposes the machine-readable refusal to callers that only read text.
+  let message = rawText || structuredMessage || jsonText(result.structuredContent);
+  if (message && code && !message.includes(code)) message = `${code}: ${message}`;
+  return { code, message, details };
+}
+
+/**
+ * The nested dispatcher resolves MCP refusals as values. The invoke wrapper
+ * must reject them locally so callers' ordinary try/catch probes see a refusal,
+ * while retaining the nested code/details that would otherwise be flattened to
+ * an opaque outer handler_error.
+ */
+export class NestedToolRefusalError extends Error {
+  override readonly name = 'NestedToolRefusalError';
+
+  constructor(
+    readonly toolName: string,
+    readonly code: string | null,
+    readonly details: unknown,
+    readonly nestedResult: NestedToolResult,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 /**
  * Envelope keys that NAME a measured population (EI-20460134627396216).
  *
@@ -235,6 +371,16 @@ export default defineTool({
       ...(outcome.childFailureCount > 0 ? { childFailureRefs: [name] } : {}),
       ...wrapperMark,
     });
+    if (result.isError) {
+      const refusal = nestedRefusal(result);
+      throw new NestedToolRefusalError(
+        name,
+        refusal.code,
+        refusal.details,
+        result,
+        refusal.message ?? `nested tool "${name}" returned isError=true`,
+      );
+    }
     // dispatchTool returns an MCP-shaped result already ({ content, isError?, _meta?, structuredContent? }).
     return result as unknown as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
   },
