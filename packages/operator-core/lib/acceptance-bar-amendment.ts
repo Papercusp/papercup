@@ -18,25 +18,48 @@ import { setSpecClause, type SpecClauseSql, type SpecClauseWrite } from './agent
 
 export type AcceptanceBarAmendmentSql = Sql | TransactionSql;
 
-/** Ignore only generated completion backlinks and the frontmatter update date.
- * Everything else, including authored notes, remains an exact comparison. */
-function acceptanceBookkeepingBody(body: string): string {
-  return body
-    .replace(/^---\r?\n[\s\S]*?\r?\n---/, (frontmatter) =>
-      frontmatter.replace(/^updated:.*$/m, 'updated: <bookkeeping>'))
-    // Plan-item progress is execution bookkeeping, not a change to the BAR's
-    // promised outcome.  Keep `dropped` distinct: removing a discharge lane is
-    // a contract change and must make the snapshot stale until it is amended.
-    .replace(
-      /^(-[ \t]+\*\*P-\d+\*\*[ \t]+)`(?:todo|wip|blocked|needs-human|done)`/gm,
-      '$1`<progress>`',
-    )
-    .replace(/^(-[ \t]+\*\*P-\d+\*\*[^\r\n]*?) — note: ← (?:WI|EI)-\d+ completed \((?:done|passed|resolved|closed|dropped|deprecated)\)[ \t]*$/gm, '$1');
+/** Fingerprint the authored BAR source, including its map edges.
+ *
+ * Ordinary plan writes (Now/Decision/progress updates) should not invalidate a
+ * BAR pin, but a Requirements or Bar-to-work-map edit must remain stale until
+ * the canonical BAR writer re-adopts it. This is deliberately stricter than
+ * `barSetHash`: the rubric hash captures BAR meaning, while this source
+ * fingerprint also catches mapping changes that would otherwise leave the
+ * clause projection stale.
+ */
+export async function acceptanceBarSourceFingerprint(body: string): Promise<string | null> {
+  const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const requirements = parseRequirementBars(body);
+  if (!requirements.ok) return null;
+  const mappings = parseBarMappings(
+    body,
+    new Set(requirements.bars.map((bar) => bar.barKey)),
+  );
+  if (!mappings.ok) return null;
+  const material = {
+    bars: requirements.bars.map((bar) => ({
+      barKey: bar.barKey,
+      model: bar.model,
+      criterion: bar.criterion ?? null,
+    })),
+    mappings: mappings.mappings.map((mapping) => ({
+      barKey: mapping.barKey,
+      planItemIds: [...mapping.planItemIds].sort(),
+      evidencePlane: mapping.evidencePlane,
+    })),
+  };
+  return createHash('sha256').update(JSON.stringify(material)).digest('hex');
 }
 
-/** Keep a derived subject-version pin current after a bookkeeping-only write.
- * Called while the subject lock is held. The rubric try-lock avoids reversing
- * an amendment's lock order. Criteria, rubric version and spec pins never change. */
+/** Keep a derived subject-version pin current after a BAR-neutral write.
+ *
+ * Called while the subject lock is held. The rubric try-lock avoids reversing an
+ * amendment's lock order. The current rubric BAR-set hash is checked against the
+ * new subject source before updating, so a stale pin can be repaired without
+ * blessing a Requirements change. The source fingerprint additionally refuses
+ * map changes, because those require projection refresh even when BAR hashes
+ * happen to remain equal.
+ */
 export async function synchronizeAcceptanceBarSubjectRevision(
   sql: AcceptanceBarAmendmentSql,
   args: {
@@ -44,13 +67,18 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     previousBody: string; nextBody: string; previousVersion: number; nextVersion: number;
   },
 ): Promise<boolean> {
-  if (args.nextVersion !== args.previousVersion + 1 ||
-      acceptanceBookkeepingBody(args.previousBody) !== acceptanceBookkeepingBody(args.nextBody)) return false;
+  if (args.nextVersion !== args.previousVersion + 1) return false;
+  const [previousSource, nextSource] = await Promise.all([
+    acceptanceBarSourceFingerprint(args.previousBody),
+    acceptanceBarSourceFingerprint(args.nextBody),
+  ]);
+  if (!previousSource || !nextSource || previousSource !== nextSource) return false;
   const [subject] = await sql<Array<{
+    status: string | null;
     acceptance_bar_rubric_slug: string; acceptance_bar_rubric_revision: number;
     acceptance_bar_set_hash: string;
   }>>`
-    SELECT acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+    SELECT status, acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
        AND plan_slug = ${args.planSlug} AND version = ${args.nextVersion}
@@ -60,6 +88,37 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
       hashtext(${planAdvisoryLockKey(args.workspaceId, args.harnessSlug, subject.acceptance_bar_rubric_slug)})) AS ok`;
   if (!lock?.ok) throw new Error('acceptance_bar_subject_revision_rubric_busy');
+  const [rubric] = await sql<Array<{ version: number | string; template_data: unknown }>>`
+    SELECT version, template_data
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+       AND plan_slug = ${subject.acceptance_bar_rubric_slug}
+       AND template = 'rubric' AND template_data->>'kind' = 'acceptance'
+     FOR UPDATE`;
+  if (!rubric || Number(rubric.version) !== Number(subject.acceptance_bar_rubric_revision)) return false;
+  const parsedRubric = rubricTemplateDataAuthoringSchema.safeParse(rubric.template_data);
+  if (!parsedRubric.success || parsedRubric.data.subjectPlan !== args.planSlug ||
+      !parsedRubric.data.barContract || parsedRubric.data.barSetHash !== subject.acceptance_bar_set_hash) {
+    return false;
+  }
+  const existingBarCriteria = parsedRubric.data.criteria.filter((criterion) => criterion.barKey);
+  if (existingBarCriteria.length === 0) return false;
+  const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
+  const rebuilt = buildAcceptanceBarSeed({
+    planSlug: args.planSlug,
+    planContent: args.nextBody,
+    actorId: 'system:acceptance-bar-subject-revision',
+    declaredAt: parsedRubric.data.barContract.seededAt,
+    cohort: parsedRubric.data.barContract.cohort,
+    backfilled: parsedRubric.data.barContract.cohort === 'legacy-backfilled',
+    adoptionEpoch: parsedRubric.data.barContract.adoptionEpoch,
+    subjectPlanRevision: args.nextVersion,
+    planStatus: subject.status,
+    rubricSlug: subject.acceptance_bar_rubric_slug,
+    rubricRevision: Number(rubric.version),
+    existingTemplateData: { ...parsedRubric.data, criteria: existingBarCriteria },
+  });
+  if (!rebuilt.ok || rebuilt.barSetHash !== subject.acceptance_bar_set_hash) return false;
   const rows = await sql`
     UPDATE harness_shared.harness_plans
        SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',
@@ -70,7 +129,6 @@ export async function synchronizeAcceptanceBarSubjectRevision(
        AND template = 'rubric' AND template_data->>'kind' = 'acceptance'
        AND template_data->>'subjectPlan' = ${args.planSlug}
        AND template_data->>'barSetHash' = ${subject.acceptance_bar_set_hash}
-       AND template_data->'barContract'->>'subjectPlanRevision' = ${String(args.previousVersion)}
     RETURNING plan_slug`;
   return rows.length === 1;
 }
