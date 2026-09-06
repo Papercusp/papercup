@@ -53,6 +53,7 @@ function mkRun(turns: TurnResult[]): RunSummary {
     runId: 'r1',
     scenarioId: 's1',
     scenarioVersion: 1,
+    scenarioTarget: 'su',
     identityHash: 'h',
     sutModel: 'sonnet',
     judgeModel: 'sonnet',
