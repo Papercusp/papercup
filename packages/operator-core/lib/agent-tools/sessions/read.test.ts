@@ -362,7 +362,11 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(calls[0]?.sql).toContain('owner = ANY');
     expect(calls[0]?.values).toContainEqual(['su-self', 'su-predecessor']);
     expect(dispatched.result?.structuredContent).toMatchObject({
-      session_id: 'sess-successor',
+      session_id: null,
+      session_ids: [
+        { source_kind: 'codex', session_id: 'sess-predecessor' },
+        { source_kind: 'codex', session_id: 'sess-successor' },
+      ],
       turn_count: 2,
       turns: [
         { ref: 'session_turn:codex:sess-predecessor:8', text: 'before compaction' },

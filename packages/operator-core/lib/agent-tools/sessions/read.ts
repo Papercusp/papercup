@@ -128,7 +128,14 @@ export default defineTool({
   // door-truncated JSON string is not a valid machine-readable response.
   result: z.object({
     ok: z.boolean(),
-    session_id: z.string(),
+    // A self read can span multiple native transcripts after a carry-respawn.
+    // In that case there is no single truthful session_id for the returned
+    // turns; callers should use session_ids and each turn's canonical ref.
+    session_id: z.string().nullable(),
+    session_ids: z.array(z.object({
+      source_kind: z.string(),
+      session_id: z.string(),
+    })).optional(),
     note: z.string().optional(),
     turn_count: z.number().int().nonnegative(),
     turns: z.array(
@@ -279,6 +286,27 @@ export default defineTool({
     // chronological. An asc (head) fetch is already chronological.
     if (!asc) rows.reverse();
 
+    // `session:'self'` is owner-chain scoped, so the window may contain turns
+    // from both the predecessor and successor native transcripts. Never label
+    // that mixed window with the newest transcript's id: it makes the envelope
+    // contradict the turn refs it just returned. For a one-session window,
+    // report that session's id; with no rows, retain the requested/anchor id so
+    // an empty read remains attributable.
+    const returnedSessions: Array<{ source_kind: string; session_id: string }> = [];
+    const returnedSessionKeys = new Set<string>();
+    for (const row of rows) {
+      const key = `${row.source_kind}\u0000${row.session_id}`;
+      if (returnedSessionKeys.has(key)) continue;
+      returnedSessionKeys.add(key);
+      returnedSessions.push({ source_kind: row.source_kind, session_id: row.session_id });
+    }
+    const responseSessionId =
+      returnedSessions.length === 1
+        ? returnedSessions[0].session_id
+        : returnedSessions.length > 1
+          ? null
+          : sessionId;
+
     // Archive fall-through (session-db-archive-retire-dirs P-009): the index
     // prunes at 45d, but the session_archives blob store is permanent. A
     // session with NO index rows may still be readable — decompress, re-parse
@@ -333,7 +361,8 @@ export default defineTool({
         type: 'text' as const,
         text: JSON.stringify({
           ok: true,
-          session_id: sessionId,
+          session_id: responseSessionId,
+          ...(selfSession ? { session_ids: returnedSessions } : {}),
           ...(selfNote ? { note: selfNote } : {}),
           ...(archiveNote ? { note: archiveNote } : {}),
           // EI-9970: this is the WINDOW size (rows returned here, capped by
