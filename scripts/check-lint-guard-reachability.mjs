@@ -128,7 +128,9 @@ import { listTrackedFiles } from './lib/tracked-files.mjs';
 import {
   assessGraphHealth,
   buildImportGraph,
+  buildShipmentDispositionInventory,
   findUnreachableModules,
+  findUnclassifiedShipmentModules,
   NEW_MODULE_GRACE_DAYS,
   partitionByGracePeriod,
   detectEntrypointMarkers,
@@ -477,20 +479,90 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
   // check (knip) reports as fully used. The ROOT and the probe-runner have since
   // been wired and graduated out; only the two leaf adapters remain unreachable,
   // and they are now reachable-or-retirable INDEPENDENTLY of the family decision.
-  ['packages/operator-core/lib/release/external-prerequisite-apple-adapter.ts', 'family member, 1 test, only dead siblings import it'],
-  ['packages/operator-core/lib/release/external-prerequisite-stripe-adapter.ts', 'family member, 1 test, only dead siblings import it'],
+  [
+    'packages/operator-core/lib/release/external-prerequisite-apple-adapter.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: 'family member, 1 test, only dead siblings import it',
+    },
+  ],
+  [
+    'packages/operator-core/lib/release/external-prerequisite-stripe-adapter.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: 'family member, 1 test, only dead siblings import it',
+    },
+  ],
 
   // ── The release-publication family: same transitive shape. The CLI root
   // (record-release-cli), release-completeness and changelog-generate have since
   // been wired and graduated out; these three are what is left of the family.
-  ['apps/operator/lib/release/finalize-release-publication.ts', '1 test; reached only from dead publication siblings'],
-  ['apps/operator/lib/release/patch-artifact-provenance.ts', 'no test, no caller — strongest retire candidate in the family'],
-  ['apps/operator/lib/release/preflight-build-set.ts', '1 test; reached only from dead publication siblings'],
-  ['apps/operator/lib/release/gate-release-site.ts', '1 test, 0 callers — wire-or-retire'],
-  ['apps/operator/lib/release/seed-release-routines.ts', '1 test, 0 callers — wire-or-retire'],
-  ['apps/operator/lib/release/verify-seed-payload-cli.ts', '1 test, 0 callers — wire-or-retire'],
-  ['apps/operator/lib/release/rollback.ts', '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring'],
-  ['apps/operator/lib/release/preview-data-plane.ts', 'no test, no caller — wire-or-retire'],
+  [
+    'apps/operator/lib/release/finalize-release-publication.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: '1 test; reached only from dead publication siblings',
+    },
+  ],
+  [
+    'apps/operator/lib/release/patch-artifact-provenance.ts',
+    {
+      kind: 'dead',
+      action: 'delete',
+      reason: 'no test, no caller — strongest retire candidate in the family',
+    },
+  ],
+  [
+    'apps/operator/lib/release/preflight-build-set.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: '1 test; reached only from dead publication siblings',
+    },
+  ],
+  [
+    'apps/operator/lib/release/gate-release-site.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: '1 test, 0 callers — wire-or-retire',
+    },
+  ],
+  [
+    'apps/operator/lib/release/seed-release-routines.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: '1 test, 0 callers — wire-or-retire',
+    },
+  ],
+  [
+    'apps/operator/lib/release/verify-seed-payload-cli.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: '1 test, 0 callers — wire-or-retire',
+    },
+  ],
+  [
+    'apps/operator/lib/release/rollback.ts',
+    {
+      kind: 'dead',
+      action: 'verify-then-delete',
+      reason: '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring',
+    },
+  ],
+  [
+    'apps/operator/lib/release/preview-data-plane.ts',
+    {
+      kind: 'dead',
+      action: 'wire-or-delete',
+      reason: 'no test, no caller — wire-or-retire',
+    },
+  ],
 ]);
 
 /**
@@ -1288,24 +1360,32 @@ function runModuleReachability({ files, workspaceDirByName }) {
       unresolvedRelativeCount: health.unresolvedRelativeCount,
       rounds: result.rounds,
       dead: [],
+      inventory: [],
+      unclassified: [],
       unacknowledged: [],
       staleAcknowledged: [],
     };
   }
 
-  const dead = result.rows.filter((r) => r.dead);
+  const inventory = buildShipmentDispositionInventory({
+    rows: result.rows,
+    dispositions: ACKNOWLEDGED_UNREACHABLE_MODULES,
+  });
+  const dead = inventory.filter((r) => r.dead);
   return {
     measurable: true,
     reason: null,
     // Every row, not only the dead ones: "which files keep this module alive" is the
     // first question anyone auditing a verdict here asks, and recomputing the graph to
     // answer it is how a reader ends up trusting the headline instead of checking it.
-    rows: result.rows,
+    rows: inventory,
+    inventory,
     population: population.length,
     resolvedEdges: graph.resolvedEdges,
     unresolvedRelativeCount: health.unresolvedRelativeCount,
     rounds: result.rounds,
     dead,
+    unclassified: findUnclassifiedShipmentModules(inventory),
     unacknowledged: dead.filter((r) => !ACKNOWLEDGED_UNREACHABLE_MODULES.has(r.module)),
     // An entry is STALE either because the module got wired or because it was deleted.
     // Both mean the same thing for the ratchet: a paid-down entry has to LEAVE the set,
@@ -1520,7 +1600,17 @@ function main() {
             : 'no test, no caller';
           const ack = ACKNOWLEDGED_UNREACHABLE_MODULES.get(r.module);
           console.log(`  [${why}] ${r.module}`);
-          if (ack) console.log(`      acknowledged: ${ack}`);
+          if (ack) console.log(`      acknowledged: ${typeof ack === 'string' ? ack : ack.reason}`);
+        }
+        if (moduleAxis.unclassified?.length) {
+          console.log(
+            `\nMODULES WITHOUT A VALID SHIPMENT DISPOSITION (${moduleAxis.unclassified.length}) — ` +
+              'new dead modules need a caller, seam decision + test, or dead/delete decision:',
+          );
+          for (const row of moduleAxis.unclassified) {
+            console.log(`  ${row.module}`);
+            for (const error of row.shipmentDisposition?.errors ?? []) console.log(`      ${error}`);
+          }
         }
       }
     }
@@ -1710,6 +1800,23 @@ function main() {
       }
       console.error('   WIRE it (call it from a blocking path) or DELETE it. A unit test is not a caller,');
       console.error('   and a plan code-truth citation proves the code EXISTS, never that anything RUNS it.');
+    }
+
+    const invalidAcknowledgedDispositions = (moduleAxis.unclassified ?? []).filter((row) =>
+      ACKNOWLEDGED_UNREACHABLE_MODULES.has(row.module),
+    );
+    if (invalidAcknowledgedDispositions.length) {
+      failed = true;
+      console.error(
+        `\n❌ ${invalidAcknowledgedDispositions.length} acknowledged detector module(s) have an invalid shipment disposition:`,
+      );
+      for (const row of invalidAcknowledgedDispositions) {
+        console.error(`     ${row.module}`);
+        for (const error of row.shipmentDisposition?.errors ?? []) console.error(`       ${error}`);
+      }
+      console.error(
+        '   Acknowledged modules must carry a structured dead/delete decision or an approved seam decision plus test.',
+      );
     }
 
     // ── The acknowledgement REASONS must match what was measured ────────────────
