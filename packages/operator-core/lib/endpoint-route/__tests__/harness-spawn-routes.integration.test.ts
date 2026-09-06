@@ -72,7 +72,7 @@ vi.mock('../../fleet/spawn-reclaim', async (orig) => ({
   recordSpawnPid: (...a: unknown[]) => (recordSpawnPid as (...args: unknown[]) => unknown)(...a),
 }));
 
-const armInboxWake = vi.hoisted(() => vi.fn(async (_args: unknown) => ({
+const armInboxWake = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({
   awaitId: 1,
   eventKey: 'coord:inbox-wake:test',
   handleNote: 'resumable',
@@ -159,7 +159,7 @@ vi.mock('../../agent-tools/coordination/presence', async (orig) => {
 });
 
 const cleanupMergeResolverAfterFailure = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (..._args: unknown[]) => ({
     parsed: true,
     scopes: [],
     released: true,

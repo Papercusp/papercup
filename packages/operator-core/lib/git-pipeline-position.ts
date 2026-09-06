@@ -5619,7 +5619,11 @@ export async function gitPipelinePosition(
     repairHeadSha: persistedQueue?.repairHead ?? unreadableQueue?.repairHead ?? null,
     root,
     submodulePaths: persistedQueue ? await submodulePaths(git, root) : [],
-    repairQueueRead: snap.gate.repairQueueRead ?? null,
+    // `readGateCandidateFailures` only branches on the unreadable disposition;
+    // readable queue identity is already supplied through candidateSha/repairHeadSha.
+    // The snapshot deliberately projects a readable row down to schemaVersion, so
+    // do not pretend that compact projection is the full persisted queue union.
+    repairQueueRead: unreadableQueue,
     // WI-2143253: already parsed by git-pipeline-stats (a second key off the same
     // `gate_health` blob it loaded, never a second query) — thread it through so
     // `gate.candidateFailures.nonTestLegs` can name which lint/perf/desktop/delta

@@ -88,7 +88,7 @@ export default defineTool({
         : {}),
     });
     return result.ok
-      ? text({ ok: true, ...result })
+      ? text({ ...result })
       : text({
           ok: false,
           error: result.error,

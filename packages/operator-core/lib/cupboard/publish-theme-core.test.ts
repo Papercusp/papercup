@@ -10,7 +10,11 @@ function deps(root: string): PublishThemeDeps {
     listThemes: async () => [{ id: 'aurora', label: 'Aurora', tokens: { bg: '#fff', fg: '#111' } }],
     writePackage: (theme, opts) => writeThemePackageDir(theme, { ...opts, targetDir: root }),
     fetchRepo: vi.fn(async () => ({ id: 24, html_url: 'https://github.com/acme/themes' })),
-    publish: vi.fn(async (input) => ({ ok: true as const, data: { id: 'listing-24', ...input } })),
+    publish: vi.fn(async (input) => ({
+      ok: true as const,
+      status: 201,
+      data: { id: 'listing-24', ...input },
+    })),
   };
 }
 

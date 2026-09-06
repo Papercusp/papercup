@@ -5,7 +5,11 @@ import {
   type WorkspaceHostControllerForwardingOptions,
 } from './controller-forwarding';
 
-const row = (overrides: Partial<Awaited<ReturnType<WorkspaceHostControllerForwardingOptions['collectControllers']>>[number]> = {}) => ({
+type ControllerRow = Awaited<
+  ReturnType<NonNullable<WorkspaceHostControllerForwardingOptions['collectControllers']>>
+>[number];
+
+const row = (overrides: Partial<ControllerRow> = {}) => ({
   port: 3271,
   pid: 4271,
   label: 'bg-host:3271',

@@ -61,20 +61,15 @@ async function insertCoord(
     INSERT INTO harness_shared.coord_event_log
       (workspace_id, surface, msg_id, body, ts)
     VALUES
-      (${workspaceId}, ${surface}, ${msgId}, ${db.sql.json(body)}, ${at}::timestamptz)`;
+      (${workspaceId}, ${surface}, ${msgId}, ${db.sql.json(body as unknown as Parameters<typeof db.sql.json>[0])}, ${at}::timestamptz)`;
 }
 
-async function insertAttention(
-  id: string,
-  at: string,
-  data: Record<string, unknown>,
-  workspaceId = WS,
-): Promise<void> {
+async function insertAttention(id: string, at: string, data: Record<string, unknown>, workspaceId = WS): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.attention_notifications
       (workspace_id, kind, title, body, data, created_at)
     VALUES
-      (${workspaceId}, 'goal-report', ${id}, ${id}, ${db.sql.json(data)}, ${at}::timestamptz)`;
+      (${workspaceId}, 'goal-report', ${id}, ${id}, ${db.sql.json(data as unknown as Parameters<typeof db.sql.json>[0])}, ${at}::timestamptz)`;
 }
 
 async function lastReportAt(): Promise<string | null> {
@@ -201,11 +196,17 @@ describe('GOAL owner-report evidence union (real PostgreSQL)', () => {
       to: ['human'],
       [GOAL_OWNER_REPORT_FIELD]: reportStamp(),
     });
-    await insertCoord('messages', 'wrong-workspace', T4, {
-      from: OWNER,
-      to: ['human'],
-      [GOAL_OWNER_REPORT_FIELD]: reportStamp(),
-    }, OTHER_WS);
+    await insertCoord(
+      'messages',
+      'wrong-workspace',
+      T4,
+      {
+        from: OWNER,
+        to: ['human'],
+        [GOAL_OWNER_REPORT_FIELD]: reportStamp(),
+      },
+      OTHER_WS,
+    );
     await insertCoord('messages', 'not-to-human', T4, {
       from: OWNER,
       to: ['peer'],

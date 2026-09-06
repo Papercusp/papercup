@@ -70,7 +70,7 @@ export default defineTool({
     }
 
     if (outcome.session.kind === 'microcharge-preflight') {
-      return text({ ok: true, ...outcome.session });
+      return text({ ...outcome.session });
     }
 
     return text({

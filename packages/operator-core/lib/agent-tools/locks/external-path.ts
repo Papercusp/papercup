@@ -31,7 +31,7 @@ function defaultRuntimeDir(): string | undefined {
   return uid === undefined ? undefined : `/run/user/${uid}`;
 }
 
-function relativeFile(root: string | undefined, absolute: string): string | undefined {
+function relativeFile(root: string | null | undefined, absolute: string): string | undefined {
   if (!root || !isAbsolute(root)) return undefined;
   const rel = relative(resolve(root), absolute);
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
