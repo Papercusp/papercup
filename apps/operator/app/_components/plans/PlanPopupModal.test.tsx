@@ -322,6 +322,13 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
       name: "Enter fullscreen",
     }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+    // No native title on the button (design-primitives lint): the explanation
+    // is the Tooltip primitive's label (the mock above renders it as a title on
+    // its own span), reached through the focusable wrapper that stands in for
+    // a disabled button, which receives no pointer/focus events of its own.
+    expect(button.hasAttribute("title")).toBe(false);
+    const wrap = screen.getByTestId("plan-popup-fullscreen-wrap");
+    expect(wrap.tabIndex).toBe(0);
     expect(button.closest("[title]")?.getAttribute("title")).toContain(
       "Fullscreen is not available",
     );

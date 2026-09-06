@@ -921,6 +921,21 @@
 .plan-popup__fullscreen:disabled {
   cursor: not-allowed;
   opacity: 0.42;
+  /* Let hover fall through to .plan-popup__fullscreen-wrap, the Tooltip
+     trigger — a disabled button swallows pointer events in some engines, which
+     would leave the "not available" explanation unreachable. */
+  pointer-events: none;
+}
+/* Tooltip trigger around the fullscreen button; focusable (tabIndex=0) only
+   while the button is disabled so keyboard users can still reach the reason. */
+.plan-popup__fullscreen-wrap {
+  flex: 0 0 auto;
+  display: inline-flex;
+  border-radius: 8px;
+}
+.plan-popup__fullscreen-wrap:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #38bdf8) 70%, transparent);
+  outline-offset: 1px;
 }
 /* PlanDetail relies on a scrolling parent (.pc-plans__main) — give it one so
    the read-mode preview + action strip never clip inside the modal box. */
