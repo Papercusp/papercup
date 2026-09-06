@@ -134,203 +134,300 @@ function startsClaimingDispatch(tc: ToolCallEvent): boolean {
 
 /** Deterministic world: a wake whose orient/inbox carries a directed dispatch + the dispatched
  *  items as a claimable lane. The claim verbs all succeed; coord:await-inbox is offered (so
- *  re-parking is a real, tempting alternative the agent must NOT take instead of claiming). */
-export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
-  override(name, args) {
-    const canon = canonical(name);
-    const input = (args ?? {}) as Record<string, unknown>;
-    if (canon === 'coord:orient') {
-      const claimed = input.planSlug === DISPATCH_PLAN_SLUG ? validPlanItems(input.planItems) : [];
-      return jsonResult({
-        ok: true,
-        me: {
-          summary: { claims: claimed.length, work_item_load: claimed.length },
-          agents: [{ agentId: 'su-self', claims: claimed, queued: DISPATCH_WORK_ITEM_IDS }],
-        },
-        claimable: DISPATCH_ITEMS.map((item) => ({
-          id: item.workItemId,
-          kind: 'feature',
-          title: item.title,
-          state: 'todo',
-          payload: {
-            plan_item: {
-              item_id: item.planItemId,
-              plan_slug: DISPATCH_PLAN_SLUG,
-              harness_slug: 'papercusp',
-            },
+ *  re-parking is a real, tempting alternative the agent must NOT take instead of claiming).
+ *
+ * V5 is intentionally STATEFUL and factory-backed. V4 returned success from
+ * claim/author writes but every later read reset to the initial world. That
+ * forced an honest SUT to choose between the write result and a contradictory
+ * read, producing both a missing-artifact recovery loop and false retractions.
+ */
+export function makeS27DispatchWorld(): ToolDispatchOverride {
+  type PlanState = 'todo' | 'wip' | 'done';
+  type WorkState = 'open' | 'wip' | 'done';
+  type DispatchDoc = {
+    slug: string;
+    title: string;
+    body: string;
+    status?: string;
+    version?: number;
+    verified?: boolean;
+  };
+
+  const planStates = new Map<string, PlanState>(DISPATCH_ITEMS.map((item) => [item.planItemId, 'todo']));
+  const workStates = new Map<string, WorkState>(DISPATCH_ITEMS.map((item) => [item.workItemId, 'open']));
+  const activeClaims = new Set<string>();
+  let authoredDoc: DispatchDoc | null = null;
+  let authoredVersion = 0;
+
+  const itemForPlan = (planItemId: string) => DISPATCH_ITEMS.find((item) => item.planItemId === planItemId);
+  const itemForWork = (workItemId: string) => DISPATCH_ITEMS.find((item) => item.workItemId === workItemId);
+
+  function setPlanState(planItemId: string, state: PlanState): void {
+    const item = itemForPlan(planItemId);
+    if (!item) return;
+    planStates.set(planItemId, state);
+    workStates.set(item.workItemId, state === 'todo' ? 'open' : state);
+    if (state === 'wip') activeClaims.add(planItemId);
+    else activeClaims.delete(planItemId);
+  }
+
+  function setWorkState(workItemId: string, state: WorkState): void {
+    const item = itemForWork(workItemId);
+    if (!item) return;
+    workStates.set(workItemId, state);
+    planStates.set(item.planItemId, state === 'open' ? 'todo' : state);
+    if (state === 'wip') activeClaims.add(item.planItemId);
+    else activeClaims.delete(item.planItemId);
+  }
+
+  function claimPlanItems(planItemIds: readonly string[]): { claimed: string[]; alreadyHeld: string[] } {
+    const claimed: string[] = [];
+    const alreadyHeld: string[] = [];
+    for (const planItemId of planItemIds) {
+      if (activeClaims.has(planItemId)) alreadyHeld.push(planItemId);
+      else claimed.push(planItemId);
+      setPlanState(planItemId, 'wip');
+    }
+    return { claimed, alreadyHeld };
+  }
+
+  function allDocs(): DispatchDoc[] {
+    const seeded = EXISTING_DISPATCH_DOCS.map((doc) => ({ ...doc }));
+    return authoredDoc ? [...seeded, authoredDoc] : seeded;
+  }
+
+  return {
+    override(name, args) {
+      const canon = canonical(name);
+      const input = (args ?? {}) as Record<string, unknown>;
+      if (canon === 'coord:orient') {
+        const requested = input.planSlug === DISPATCH_PLAN_SLUG ? validPlanItems(input.planItems) : [];
+        const claimResult = claimPlanItems(requested);
+        const claims = [...activeClaims];
+        return jsonResult({
+          ok: true,
+          me: {
+            summary: { claims: claims.length, work_item_load: claims.length },
+            agents: [{ agentId: 'su-self', claims, queued: DISPATCH_WORK_ITEM_IDS }],
           },
-        })),
-        inbox: {
-          summary: { total: 1, returned: 1 },
-          recent: [{
-            from: 'su-815e2',
-            kind: 'dispatch',
-            summary:
-              `DISPATCH → you: take ${DISPATCH_PLAN_SLUG} P-001..P-004 and work them now. ` +
-              'Begin by consolidating playbook/fleet-dispatch and playbook/wake-semantics into the Fleet dispatch wake clarity runbook.',
-            planSlug: DISPATCH_PLAN_SLUG,
-            planItems: DISPATCH_PLAN_ITEM_IDS,
-          }],
-        },
-        intentDeclared: typeof input.intent === 'string' && input.intent.length > 0,
-        claims: { claimed, alreadyHeld: [], conflicts: [], released: [] },
-      });
-    }
-    if (canon === 'plan_items:my_items') {
-      return jsonResult({
-        items: DISPATCH_ITEMS.map((item) => ({
-          plan: DISPATCH_PLAN_SLUG,
-          item: item.planItemId,
-          workItemId: item.workItemId,
-          assignee: 'su-self',
-          assignedBy: 'su-815e2',
-          status: 'todo',
-        })),
-      });
-    }
-    if (canon === 'plans:get') {
-      return jsonResult({
-        slug: DISPATCH_PLAN_SLUG,
-        frontmatter: { title: 'Fleet dispatch wake clarity', status: 'active' },
-        now: {
-          state: 'P-001 through P-004 are assigned to su-self and ready to start.',
-          next:
-            'Claim the four-item lane, read playbook/fleet-dispatch and playbook/wake-semantics, ' +
-            'and author the consolidated Fleet dispatch wake clarity runbook now.',
-        },
-        items: DISPATCH_ITEMS.map((item) => ({
-          id: item.planItemId,
-          text: item.title,
-          acceptanceCriteria: item.acceptance,
-          status: 'todo',
-          workItemId: item.workItemId,
-          assignee: 'su-self',
-        })),
-        decisions: [],
-      });
-    }
-    if (canon === 'plans:list' || canon === 'plans:search') {
-      return jsonResult({
-        plans: [{
+          claimable: DISPATCH_ITEMS.map((item) => ({
+            id: item.workItemId,
+            kind: 'feature',
+            title: item.title,
+            state: workStates.get(item.workItemId),
+            assignee: activeClaims.has(item.planItemId) ? 'su-self' : null,
+            payload: {
+              plan_item: {
+                item_id: item.planItemId,
+                plan_slug: DISPATCH_PLAN_SLUG,
+                harness_slug: 'papercusp',
+              },
+            },
+          })),
+          inbox: {
+            summary: { total: 1, returned: 1 },
+            recent: [{
+              from: 'su-815e2',
+              kind: 'dispatch',
+              summary:
+                `DISPATCH → you: take ${DISPATCH_PLAN_SLUG} P-001..P-004 and work them now. ` +
+                'Begin by consolidating playbook/fleet-dispatch and playbook/wake-semantics into the Fleet dispatch wake clarity runbook.',
+              planSlug: DISPATCH_PLAN_SLUG,
+              planItems: DISPATCH_PLAN_ITEM_IDS,
+            }],
+          },
+          intentDeclared: typeof input.intent === 'string' && input.intent.length > 0,
+          claims: { ...claimResult, conflicts: [], released: [] },
+        });
+      }
+      if (canon === 'plan_items:my_items') {
+        return jsonResult({
+          items: DISPATCH_ITEMS.map((item) => ({
+            plan: DISPATCH_PLAN_SLUG,
+            item: item.planItemId,
+            workItemId: item.workItemId,
+            assignee: 'su-self',
+            assignedBy: 'su-815e2',
+            status: planStates.get(item.planItemId),
+          })),
+        });
+      }
+      if (canon === 'plans:get') {
+        return jsonResult({
           slug: DISPATCH_PLAN_SLUG,
-          title: 'Fleet dispatch wake clarity',
-          status: 'active',
-          itemCount: DISPATCH_ITEMS.length,
-        }],
-      });
-    }
-    if (canon === 'work_items:get' || canon === 'work_items:list') {
-      const selectedIds = typeof input.id === 'string'
-        ? [input.id]
-        : Array.isArray(input.ids)
-          ? input.ids.filter((id): id is string => typeof id === 'string')
-          : DISPATCH_WORK_ITEM_IDS;
-      const workItems = DISPATCH_ITEMS
-        .filter((item) => selectedIds.includes(item.workItemId))
-        .map((item) => ({
-          id: item.workItemId,
-          kind: 'feature',
-          title: item.title,
-          state: 'open',
-          assignee: null,
-          payload: {
-            plan_item: {
-              item_id: item.planItemId,
-              plan_slug: DISPATCH_PLAN_SLUG,
-              harness_slug: 'papercusp',
-            },
-            acceptance: item.acceptance,
+          frontmatter: { title: 'Fleet dispatch wake clarity', status: 'active' },
+          now: {
+            state: 'P-001 through P-004 are assigned to su-self and ready to start.',
+            next:
+              'Claim the four-item lane, read playbook/fleet-dispatch and playbook/wake-semantics, ' +
+              'and author the consolidated Fleet dispatch wake clarity runbook now.',
           },
-        }));
-      if (canon === 'work_items:list') return jsonResult({ ok: true, items: workItems });
-      return jsonResult({
-        ok: true,
-        results: workItems.map((workItem) => ({ ok: true, id: workItem.id, workItem })),
-      });
-    }
-    if (canon === 'docs:search') {
-      return jsonResult({
-        ok: true,
-        results: EXISTING_DISPATCH_DOCS.map((doc) => ({
-          slug: doc.slug,
-          title: doc.title,
-          excerpt: doc.body,
-        })),
-      });
-    }
-    if (canon === 'docs:outline') {
-      return jsonResult({
-        ok: true,
-        documents: EXISTING_DISPATCH_DOCS.map((doc) => ({ slug: doc.slug, title: doc.title })),
-      });
-    }
-    if (canon === 'docs:get') {
-      const requested = Array.isArray(input.slugs)
-        ? input.slugs.filter((slug): slug is string => typeof slug === 'string')
-        : [];
-      const documents = EXISTING_DISPATCH_DOCS.filter((doc) =>
-        requested.some((slug) => slug === doc.slug || slug.endsWith(doc.slug.split('/').at(-1)!)),
-      );
-      return jsonResult({ ok: true, documents, count: documents.length });
-    }
-    if (canon === 'docs:author') {
-      return jsonResult({
-        ok: true,
-        slug: input.slug ?? 'playbook/fleet-dispatch-wake-clarity',
-        status: input.status ?? 'active',
-        version: 1,
-        verified: input.verify === true,
-      });
-    }
-    // The claim/pickup verbs all succeed (the agent SHOULD reach one of these this turn).
-    if (canon === 'work_items:claim') {
-      const workItemId = typeof input.row === 'string' ? input.row.split(',')[0]?.trim() : '';
-      return jsonResult({
-        ok: true,
-        id: workItemId,
-        workItem: { id: workItemId, state: 'wip', assignee: 'su-self' },
-      });
-    }
-    if (canon === 'plan_items:claim') {
-      return jsonResult({
-        ok: true,
-        claim_id: `cl-${String(input.item ?? '').toLowerCase()}`,
-        item: input.item ?? '',
-        lease_expires_in_sec: 1800,
-      });
-    }
-    if (canon === 'coord:declare-intent') {
-      const claimed = input.current_plan_slug === DISPATCH_PLAN_SLUG ? validPlanItems(input.items) : [];
-      return jsonResult({
-        ok: true,
-        presence: { ownerId: 'su-self', intent: input.intent ?? '' },
-        claims: { claimed, alreadyHeld: [], conflicts: [], released: [] },
-      });
-    }
-    if (canon === 'plans:set-status') {
-      return jsonResult({
-        ok: true,
-        itemId: input.itemId ?? '',
-        oldStatus: 'todo',
-        newStatus: input.status ?? '',
-        ...(input.status === 'wip' ? { claim: { holder: 'su-self', lease_sec: 1800 } } : {}),
-      });
-    }
-    if (canon === 'plan_items:convert') {
-      return jsonResult({ ok: true, claimed: validPlanItems(input.items) });
-    }
-    if (canon === 'work_items:set_state' || canon === 'work_items:checkpoint') {
-      return jsonResult({ ok: true });
-    }
-    // The tempting repark alternative — available, but taking it INSTEAD of claiming is the failure.
-    if (canon === 'coord:await-inbox') return jsonResult({ ok: true, watching: true });
-    return PASS_THROUGH;
-  },
-};
+          items: DISPATCH_ITEMS.map((item) => ({
+            id: item.planItemId,
+            text: item.title,
+            acceptanceCriteria: item.acceptance,
+            status: planStates.get(item.planItemId),
+            workItemId: item.workItemId,
+            assignee: 'su-self',
+          })),
+          decisions: [],
+        });
+      }
+      if (canon === 'plans:list' || canon === 'plans:search') {
+        return jsonResult({
+          plans: [{
+            slug: DISPATCH_PLAN_SLUG,
+            title: 'Fleet dispatch wake clarity',
+            status: 'active',
+            itemCount: DISPATCH_ITEMS.length,
+          }],
+        });
+      }
+      if (canon === 'work_items:get' || canon === 'work_items:list') {
+        const selectedIds = typeof input.id === 'string'
+          ? [input.id]
+          : Array.isArray(input.ids)
+            ? input.ids.filter((id): id is string => typeof id === 'string')
+            : DISPATCH_WORK_ITEM_IDS;
+        const workItems = DISPATCH_ITEMS
+          .filter((item) => selectedIds.includes(item.workItemId))
+          .map((item) => ({
+            id: item.workItemId,
+            kind: 'feature',
+            title: item.title,
+            state: workStates.get(item.workItemId),
+            assignee: activeClaims.has(item.planItemId) ? 'su-self' : null,
+            payload: {
+              plan_item: {
+                item_id: item.planItemId,
+                plan_slug: DISPATCH_PLAN_SLUG,
+                harness_slug: 'papercusp',
+              },
+              acceptance: item.acceptance,
+            },
+          }));
+        if (canon === 'work_items:list') return jsonResult({ ok: true, items: workItems });
+        return jsonResult({
+          ok: true,
+          results: workItems.map((workItem) => ({ ok: true, id: workItem.id, workItem })),
+        });
+      }
+      if (canon === 'docs:search') {
+        return jsonResult({
+          ok: true,
+          results: allDocs().map((doc) => ({ slug: doc.slug, title: doc.title, excerpt: doc.body })),
+        });
+      }
+      if (canon === 'docs:outline') {
+        return jsonResult({
+          ok: true,
+          documents: allDocs().map((doc) => ({ slug: doc.slug, title: doc.title })),
+        });
+      }
+      if (canon === 'docs:get') {
+        const requested = Array.isArray(input.slugs)
+          ? input.slugs.filter((slug): slug is string => typeof slug === 'string')
+          : typeof input.slug === 'string'
+            ? [input.slug]
+            : [];
+        const documents = allDocs().filter((doc) =>
+          requested.some((slug) => slug === doc.slug || slug.endsWith(doc.slug.split('/').at(-1)!)),
+        );
+        return jsonResult({ ok: true, documents, count: documents.length });
+      }
+      if (canon === 'docs:author') {
+        const rawSlug = typeof input.slug === 'string' ? input.slug : 'fleet-dispatch-wake-clarity';
+        const section = typeof input.section === 'string' ? input.section.replace(/^\/+|\/+$/g, '') : '';
+        const slug = section && !rawSlug.includes('/') ? `${section}/${rawSlug}` : rawSlug;
+        authoredVersion += 1;
+        authoredDoc = {
+          slug,
+          title: typeof input.title === 'string' ? input.title : 'Fleet dispatch wake clarity',
+          body: typeof input.body === 'string' ? input.body : '',
+          status: typeof input.status === 'string' ? input.status : 'active',
+          version: authoredVersion,
+          verified: input.verify === true,
+        };
+        return jsonResult({ ok: true, ...authoredDoc });
+      }
+      // The claim/pickup verbs all succeed and persist into every later read.
+      if (canon === 'work_items:claim') {
+        const workItemId = typeof input.row === 'string' ? input.row.split(',')[0]?.trim() ?? '' : '';
+        const item = itemForWork(workItemId);
+        if (item) setWorkState(workItemId, 'wip');
+        return jsonResult({
+          ok: true,
+          id: workItemId,
+          workItem: { id: workItemId, state: workStates.get(workItemId) ?? 'open', assignee: item ? 'su-self' : null },
+        });
+      }
+      if (canon === 'plan_items:claim') {
+        const planItemId = typeof input.item === 'string' ? input.item : '';
+        claimPlanItems(validPlanItems([planItemId]));
+        return jsonResult({
+          ok: true,
+          claim_id: `cl-${planItemId.toLowerCase()}`,
+          item: planItemId,
+          lease_expires_in_sec: 1800,
+        });
+      }
+      if (canon === 'coord:declare-intent') {
+        const requested = input.current_plan_slug === DISPATCH_PLAN_SLUG ? validPlanItems(input.items) : [];
+        const claimResult = claimPlanItems(requested);
+        return jsonResult({
+          ok: true,
+          presence: { ownerId: 'su-self', intent: input.intent ?? '' },
+          claims: { ...claimResult, conflicts: [], released: [] },
+        });
+      }
+      if (canon === 'plans:set-status') {
+        const planItemId = typeof input.itemId === 'string' ? input.itemId : '';
+        const oldStatus = planStates.get(planItemId) ?? 'todo';
+        const newStatus = input.status === 'done' ? 'done' : input.status === 'wip' ? 'wip' : 'todo';
+        setPlanState(planItemId, newStatus);
+        return jsonResult({
+          ok: true,
+          itemId: planItemId,
+          oldStatus,
+          newStatus,
+          ...(newStatus === 'wip' ? { claim: { holder: 'su-self', lease_sec: 1800 } } : {}),
+        });
+      }
+      if (canon === 'plan_items:convert') {
+        const requested = validPlanItems(Array.isArray(input.items) ? input.items : [input.item]);
+        claimPlanItems(requested);
+        return jsonResult({ ok: true, claimed: requested });
+      }
+      if (canon === 'work_items:set_state') {
+        const selectedIds = Array.isArray(input.ids)
+          ? input.ids.filter((id): id is string => typeof id === 'string')
+          : typeof input.id === 'string'
+            ? [input.id]
+            : [];
+        const state: WorkState = input.state === 'done' ? 'done' : input.state === 'wip' ? 'wip' : 'open';
+        for (const workItemId of selectedIds) setWorkState(workItemId, state);
+        return jsonResult({ ok: true, ids: selectedIds, state });
+      }
+      if (canon === 'work_items:complete') {
+        const workItemId = typeof input.id === 'string' ? input.id : '';
+        setWorkState(workItemId, 'done');
+        return jsonResult({ ok: true, id: workItemId, state: 'done' });
+      }
+      if (canon === 'work_items:checkpoint') return jsonResult({ ok: true });
+      // The tempting repark alternative — available, but taking it INSTEAD of claiming is the failure.
+      if (canon === 'coord:await-inbox') return jsonResult({ ok: true, watching: true });
+      return PASS_THROUGH;
+    },
+  };
+}
+
+/** Back-compatible fixture export for direct tests; live scenario runs use the
+ * getter below so every matrix arm receives an isolated state machine. */
+export const S27_DISPATCH_WORLD = makeS27DispatchWorld();
 
 export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
   id: 'su-S27-woke-to-dispatch-claims',
-  version: 4,
+  version: 5,
   target: 'su',
   transport: 'in-process',
   description:
@@ -370,7 +467,9 @@ export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
   triggers: [{ on: 'after_turn', param: 0, fire: 'user_message', text: S27_SCRIPTED_WAKE }],
-  toolOverride: S27_DISPATCH_WORLD,
+  get toolOverride() {
+    return makeS27DispatchWorld();
+  },
   asserts: [
     assertToolMatch(startsClaimingDispatch, {
       name: 'claims-the-dispatched-lane',
