@@ -183,12 +183,19 @@ describe('locks:release_resource handler', () => {
   });
 
   it('releases selected resource names and broadcasts per exclusive resource', async () => {
-    mockImplementationTyped(releaseM, async (_tx, spec) => ({
-      released: [spec.resource],
-      releasedModes: ['exclusive'],
-      exclusiveResources: [spec.resource],
-      waiters: { [spec.resource as string]: [`waiter:${spec.resource}`] },
-    }));
+    // The previous `as never` here hid a fixture that did not match tryReleaseResource's
+    // real result: `released` is a COUNT, not an array of names, and `expired` was missing
+    // entirely. Typed via mockImplementationTyped so the fixture cannot drift again.
+    mockImplementationTyped(releaseM, async (_tx, spec) => {
+      const resource = spec.resource as string;
+      return {
+        released: 1,
+        releasedModes: ['exclusive'],
+        exclusiveResources: [resource],
+        expired: [],
+        waiters: { [resource]: [`waiter:${resource}`] },
+      };
+    });
     const b = body(await call({ resources: ['dev-server', 'db'] }));
     expect(b).toMatchObject({
       ok: true,

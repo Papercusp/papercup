@@ -29,6 +29,7 @@ vi.mock('./workspace-listener', () => ({
 import {
   readResourceLockStatus,
   tryAcquireResource,
+  type ResourceAcquireResult,
 } from './su-lock-store';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { inWorkspaceTxn } from './in-workspace-txn';
@@ -40,7 +41,7 @@ const subscribeM = vi.mocked(subscribeWorkspace);
 const acquireM = vi.mocked(tryAcquireResource);
 const statusM = vi.mocked(readResourceLockStatus);
 
-const held = {
+const held: Extract<ResourceAcquireResult, { ok: true }> = {
   ok: true,
   lock_id: 'exclusive-retry',
   mode: 'exclusive',
