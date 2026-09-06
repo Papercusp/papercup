@@ -79,6 +79,10 @@ import {
   type RepairLegShrinkSummary,
   type RepairLegStatus,
 } from './release/repair-leg-lifecycle';
+import {
+  describeUnreadableFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueueRead,
+} from './release/frozen-candidate-repair-queue';
 
 /** Hard cap on rendered failing files — the result is read in-prompt. */
 const MAX_FAILING_FILES = 60;
@@ -312,6 +316,12 @@ export interface ReadGateCandidateFailuresOpts {
    * one open with no hold tick yet).
    */
   repairTickLegs?: StoredRepairTickLegs | null;
+  /**
+   * P-025: the persisted queue read status. A present row that this build cannot parse is
+   * NOT the same as an absent queue; preserve its disposition and raw identity in the
+   * stable candidate-failures object instead of returning the old null subtree.
+   */
+  repairQueueRead?: FrozenCandidateRepairQueueRead | null;
   git?: GitRunner;
   sql?: ReturnType<typeof getOrgPg>['sql'];
 }
@@ -701,6 +711,17 @@ export async function readGateCandidateFailures(
     ? 'measured'
     : 'not-recorded';
   const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs);
+  if (opts.repairQueueRead?.status === 'unreadable') {
+    return unavailable(
+      `${describeUnreadableFrozenCandidateRepairQueue(opts.repairQueueRead)}; ` +
+        'the reader cannot safely measure test_runs for this row, so candidate failures are UNMEASURED.',
+      opts.repairQueueRead.candidate ?? candidateSha,
+      opts.repairQueueRead.repairHead ?? repairHeadSha,
+      'unmeasured',
+      nonTestLegs,
+      nonTestLegsMeasured,
+    );
+  }
   if (!candidateSha) {
     return unavailable(
       'no frozen candidate — there is no sha to judge, so there is no failing-files answer. This is not "zero failures".',

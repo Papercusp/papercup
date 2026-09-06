@@ -15,11 +15,11 @@
  * "healthy"; this read is what `assessHarnessSubstrateHealth` consumes to flip
  * it off "healthy".
  *
- * COLUMN NOTE (verified against 000-baseline.sql + outbox-drain.ts, NOT the
- * handoff recipe): the capture timestamp column is `ts` and the drain marker is
- * `drained_at`, BOTH `BIGINT` epoch-ms — there is NO `created_ts` / `captured_ts`
- * column. So oldest-undrained age = `Date.now() - MIN(ts)`, computed here, not in
- * SQL (`MIN(ts)` returns epoch-ms directly).
+ * COLUMN NOTE: `ts` is the operation's wire/LWW timestamp and can be historical
+ * during backfill. The local enqueue timestamp is `enqueued_at_ms` (migration
+ * 1131), while the drain marker remains `drained_at`; all are BIGINT epoch-ms.
+ * Oldest-undrained age = `Date.now() - MIN(enqueued_at_ms)`, computed here, not
+ * from the wire timestamp.
  *
  * QUARANTINED ROWS ARE EXCLUDED (mig 645, WI-3896 follow-up): a row that
  * outbox-drain.ts's per-row poison quarantine has stamped `quarantined_at` on
@@ -50,7 +50,7 @@ interface RawDrainRow {
   workspace_id: string;
   harness_slug: string;
   undrained: string | number;
-  oldest_ts: string | number | null;
+  oldest_enqueued_at_ms: string | number | null;
 }
 
 function toNum(v: string | number | null): number {
@@ -79,7 +79,7 @@ export async function loadSubstrateDrainStats(
     rows = await opts.runQuery<RawDrainRow>(
       `SELECT workspace_id, harness_slug,
               COUNT(*) AS undrained,
-              MIN(ts)  AS oldest_ts
+              MIN(enqueued_at_ms) AS oldest_enqueued_at_ms
          FROM harness_shared.substrate_outbox
         WHERE drained_at IS NULL
           AND quarantined_at IS NULL
@@ -93,8 +93,8 @@ export async function loadSubstrateDrainStats(
     const undrainedCount = toNum(r.undrained);
     if (undrainedCount <= 0) continue;
     let oldestUndrainedAgeMs: number | null = null;
-    if (r.oldest_ts != null) {
-      const oldest = toNum(r.oldest_ts);
+    if (r.oldest_enqueued_at_ms != null) {
+      const oldest = toNum(r.oldest_enqueued_at_ms);
       // Clamp clock skew (a capture ts slightly ahead of `now`) to 0 rather than
       // reporting a negative age.
       if (oldest > 0) oldestUndrainedAgeMs = Math.max(0, now - oldest);

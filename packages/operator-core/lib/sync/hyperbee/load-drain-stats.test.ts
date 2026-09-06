@@ -18,10 +18,10 @@ function fakeRunQuery(rows: unknown[]) {
 }
 
 describe('loadSubstrateDrainStats', () => {
-  it('maps each (workspace, harness) to undrainedCount + age = now - MIN(ts)', async () => {
+  it('maps each (workspace, harness) to undrainedCount + age = now - MIN(enqueued_at_ms)', async () => {
     const runQuery = fakeRunQuery([
-      { workspace_id: 'ws', harness_slug: 'a', undrained: '4', oldest_ts: String(NOW - 120_000) },
-      { workspace_id: 'ws', harness_slug: 'b', undrained: '1', oldest_ts: String(NOW - 5_000) },
+      { workspace_id: 'ws', harness_slug: 'a', undrained: '4', oldest_enqueued_at_ms: String(NOW - 120_000) },
+      { workspace_id: 'ws', harness_slug: 'b', undrained: '1', oldest_enqueued_at_ms: String(NOW - 5_000) },
     ]);
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
     expect(map.get('ws::a')).toEqual({ undrainedCount: 4, oldestUndrainedAgeMs: 120_000 });
@@ -34,7 +34,8 @@ describe('loadSubstrateDrainStats', () => {
     const sql = runQuery.mock.calls[0][0];
     expect(sql).toMatch(/substrate_outbox/);
     expect(sql).toMatch(/drained_at IS NULL/);
-    expect(sql).toMatch(/MIN\(ts\)/); // the real column is `ts`, NOT created_ts/captured_ts
+    expect(sql).toMatch(/MIN\(enqueued_at_ms\)/);
+    expect(sql).not.toMatch(/MIN\(ts\)/); // `ts` is the wire/LWW clock, not enqueue age
     expect(sql).toMatch(/GROUP BY workspace_id, harness_slug/);
   });
 
@@ -55,7 +56,7 @@ describe('loadSubstrateDrainStats', () => {
 
   it('clamps clock skew (capture ts ahead of now) to age 0, never negative', async () => {
     const runQuery = fakeRunQuery([
-      { workspace_id: 'ws', harness_slug: 'skew', undrained: '2', oldest_ts: String(NOW + 3_000) },
+      { workspace_id: 'ws', harness_slug: 'skew', undrained: '2', oldest_enqueued_at_ms: String(NOW + 3_000) },
     ]);
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
     expect(map.get('ws::skew')).toEqual({ undrainedCount: 2, oldestUndrainedAgeMs: 0 });
@@ -63,7 +64,7 @@ describe('loadSubstrateDrainStats', () => {
 
   it('null oldest_ts → undrained counted, age null (not measured)', async () => {
     const runQuery = fakeRunQuery([
-      { workspace_id: 'ws', harness_slug: 'n', undrained: '3', oldest_ts: null },
+      { workspace_id: 'ws', harness_slug: 'n', undrained: '3', oldest_enqueued_at_ms: null },
     ]);
     const map = await loadSubstrateDrainStats({ runQuery, nowMs: NOW });
     expect(map.get('ws::n')).toEqual({ undrainedCount: 3, oldestUndrainedAgeMs: null });

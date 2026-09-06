@@ -4,12 +4,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let fixtureRepo = '';
+let resolvedVersion = '1.0.0';
 vi.mock('./install-io', () => ({
   gitCloneShallow: async (_url: string, dest: string) => fs.cp(fixtureRepo, dest, { recursive: true }),
 }));
+vi.mock('./resolve-listing-by-kind', () => ({
+  resolveListingByKind: async () => ({
+    githubUrl: 'https://github.com/acme/themes',
+    ref: 'aurora',
+    listingId: 'listing-aurora',
+    releaseVersion: resolvedVersion,
+  }),
+}));
 
 import { _resetPapercuspRootForTests } from '../papercusp-root';
+import { listCustomThemes, saveCustomTheme } from '../custom-themes';
 import { installThemeFromCupboard, removeInstalledTheme } from './install-theme-io';
+import { resolveInstalledTheme } from './theme-store';
 
 let root = '';
 
@@ -32,6 +43,7 @@ beforeEach(async () => {
   await fs.mkdir(fixtureRepo, { recursive: true });
   process.env.PAPERCUSP_HOME = join(root, 'home');
   _resetPapercuspRootForTests();
+  resolvedVersion = '1.0.0';
 });
 
 afterEach(async () => {
@@ -63,5 +75,70 @@ describe('theme install lifecycle', () => {
       ok: true, theme: { id: updated.result.id },
     });
     await expect(removeInstalledTheme(updated.result.id)).resolves.toMatchObject({ ok: false, status: 404 });
+  });
+
+  it('treats the same served release as a no-op', async () => {
+    await writeTheme('1.0.0', '#ffffff');
+    const first = await installThemeFromCupboard({ listingId: 'listing-aurora' });
+    const second = await installThemeFromCupboard({ listingId: 'listing-aurora' });
+
+    expect(first).toMatchObject({ ok: true, result: { operation: 'install', version: '1.0.0' } });
+    expect(second).toMatchObject({ ok: true, result: { operation: 'no-op', version: '1.0.0' } });
+    if (!first.ok || !second.ok) throw new Error('install unexpectedly failed');
+    expect(second.result.id).toBe(first.result.id);
+  });
+
+  it('keeps the prior valid package when an update fails validation', async () => {
+    await writeTheme('1.0.0', '#ffffff');
+    const first = await installThemeFromCupboard({
+      githubUrl: 'https://github.com/acme/themes', listingRef: 'aurora',
+    });
+    if (!first.ok) throw new Error('initial install failed');
+
+    await writeTheme('2.0.0', 'red; } html {');
+    await expect(installThemeFromCupboard({
+      githubUrl: 'https://github.com/acme/themes', listingRef: 'aurora', update: true,
+    })).resolves.toMatchObject({ ok: false, status: 422 });
+
+    expect(resolveInstalledTheme(first.result.id)).toMatchObject({
+      version: '1.0.0',
+      tokens: { bg: '#ffffff' },
+    });
+  });
+
+  it('serializes concurrent explicit updates into a valid final package', async () => {
+    await writeTheme('1.0.0', '#ffffff');
+    const first = await installThemeFromCupboard({
+      githubUrl: 'https://github.com/acme/themes', listingRef: 'aurora',
+    });
+    if (!first.ok) throw new Error('initial install failed');
+
+    await writeTheme('2.0.0', '#fafafa');
+    const updates = await Promise.all([
+      installThemeFromCupboard({ githubUrl: 'https://github.com/acme/themes', listingRef: 'aurora', update: true }),
+      installThemeFromCupboard({ githubUrl: 'https://github.com/acme/themes', listingRef: 'aurora', update: true }),
+    ]);
+
+    expect(updates.some((result) => result.ok)).toBe(true);
+    expect(resolveInstalledTheme(first.result.id)).toMatchObject({
+      version: '2.0.0',
+      tokens: { bg: '#fafafa' },
+    });
+  });
+
+  it('removes only package bytes and preserves an independent local theme', async () => {
+    await saveCustomTheme({ id: 'local-copy', label: 'Local copy', tokens: { bg: '#222222' } });
+    await writeTheme('1.0.0', '#ffffff');
+    const installed = await installThemeFromCupboard({
+      githubUrl: 'https://github.com/acme/themes', listingRef: 'aurora',
+    });
+    if (!installed.ok) throw new Error('install failed');
+
+    await removeInstalledTheme(installed.result.id);
+
+    expect(await listCustomThemes()).toEqual([
+      { id: 'local-copy', label: 'Local copy', tokens: { bg: '#222222' } },
+    ]);
+    expect(resolveInstalledTheme(installed.result.id)).toBeNull();
   });
 });

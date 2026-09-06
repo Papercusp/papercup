@@ -2484,6 +2484,23 @@ export function reportSessionResumeFinalized(advSessionId: number | string | nul
  */
 export function reportSessionResumeReleased(advSessionId: number | string | null, resumeClaimKey: string, opts?: ResumeTransitionOptions): Promise<ResumeReleaseOutcome>;
 /**
+ * Reconstruct the current psu invocation for a tracked exact resume.
+ *
+ * The prior launch record supplies durable identity/placement flags (fleet,
+ * carry, mode, etc.); model/account and per-invocation backend flags are
+ * replaced with the values actually resolved for this resume. The resulting
+ * argv is only sent after runWrapper reports a concrete child spawn, so a
+ * failed setup never erases the last known-good launch record.
+ */
+export function resumeLaunchArgvRecord(session: any, { model, account, addDir, allowSubagents, passthrough, launchMode, brain, }?: {
+    model?: null | undefined;
+    addDir?: never[] | undefined;
+    allowSubagents?: null | undefined;
+    passthrough?: never[] | undefined;
+    launchMode?: null | undefined;
+    brain?: boolean | undefined;
+}): string[];
+/**
  * Render a refused {@link ResumeClaimOutcome} as the clause the operator reads
  * (EI-21414979137146784). Each reason gets its OWN sentence: the old single
  * message asserted contention ("its resume claim was not acquired") for all
@@ -3816,6 +3833,10 @@ export type ResumeTransitionOptions = {
     sleep?: ((ms: number) => Promise<void>) | undefined;
     now?: (() => number) | undefined;
     onNotice?: ((message: string) => any) | undefined;
+    /**
+     * current resolved psu invocation, sent on finalize only
+     */
+    launchArgv?: string[] | undefined;
 };
 export type ResumeFinalizeOutcome = {
     finalized: boolean;

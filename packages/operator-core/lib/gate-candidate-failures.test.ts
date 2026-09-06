@@ -193,6 +193,30 @@ describe('readGateCandidateFailures', () => {
     expect(res.unavailable).not.toBeNull();
   });
 
+  it('P-025: an unreadable persisted queue stays present-but-unmeasured with its raw identity', async () => {
+    const res = await readGateCandidateFailures({
+      candidateSha: null,
+      repairHeadSha: null,
+      root: '/repo',
+      repairQueueRead: {
+        status: 'unreadable',
+        reason: 'schema-newer-than-reader',
+        schemaVersion: 5,
+        candidate: CANDIDATE,
+        repairHead: REPAIR_HEAD,
+        phase: 'ready-to-verify',
+      },
+    });
+    expect(res).toMatchObject({
+      candidateSha: CANDIDATE,
+      repairHeadSha: REPAIR_HEAD,
+      assessment: 'unmeasured',
+      unavailable: expect.stringContaining('phase ready-to-verify'),
+    });
+    expect(res.unavailable).toMatch(new RegExp(`candidate ${CANDIDATE.slice(0, 12)}`));
+    expect(res.unavailable).toMatch(new RegExp(`repairHead ${REPAIR_HEAD.slice(0, 12)}`));
+  });
+
   it('an unreachable test_runs is UNMEASURED, and never degrades to a green-looking zero', async () => {
     const res = await readGateCandidateFailures({
       candidateSha: CANDIDATE,

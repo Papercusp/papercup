@@ -76,7 +76,12 @@ describe('dev:dogfood_substrate_status — drain-stats wiring (WI-37387)', () =>
   it('resolves the REAL undrained backlog, not the zero-drain default', async () => {
     const oldTs = Date.now() - 120_000; // 2 rows captured ~2m ago, still undrained
     M.sqlUnsafe.mockResolvedValue([
-      { workspace_id: 'ws-test', harness_slug: 'a', undrained: '2', oldest_ts: String(oldTs) },
+      {
+        workspace_id: 'ws-test',
+        harness_slug: 'a',
+        undrained: '2',
+        oldest_enqueued_at_ms: String(oldTs),
+      },
     ]);
 
     await tool.handler({} as never, {} as never);
@@ -92,7 +97,12 @@ describe('dev:dogfood_substrate_status — drain-stats wiring (WI-37387)', () =>
 
   it('wires the resolver at EVERY composer call site, not just the last', async () => {
     M.sqlUnsafe.mockResolvedValue([
-      { workspace_id: 'ws-test', harness_slug: 'a', undrained: '7', oldest_ts: String(Date.now()) },
+      {
+        workspace_id: 'ws-test',
+        harness_slug: 'a',
+        undrained: '7',
+        oldest_enqueued_at_ms: String(Date.now()),
+      },
     ]);
 
     await tool.handler({} as never, {} as never);

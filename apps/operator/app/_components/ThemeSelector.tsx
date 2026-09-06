@@ -121,6 +121,8 @@ export default function ThemeSelector() {
                 type="button"
                 role="menuitemradio"
                 aria-checked={isCurrent}
+                data-testid="theme-selector-option"
+                data-theme-id={t.id}
                 onClick={() => pick(t.id)}
                 className="pc-theme-menu-item"
                 style={{

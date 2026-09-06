@@ -412,6 +412,87 @@ export function findUnreachableModules({
 }
 
 /**
+ * Turn the measured graph into the shipment-facing module inventory.
+ *
+ * A module with a live non-test importer is automatically classified as `wired`, and
+ * the importer path is retained as the citation. A module with no production caller
+ * must carry a structured attestation: either an approved `seam` decision plus a test,
+ * or an explicit `dead` disposition with an action/reason. Missing or malformed
+ * attestations remain visible as unclassified rows instead of silently becoming an
+ * allowlist entry.
+ *
+ * @param {{rows: Array<{module:string, dead:boolean, productionImporters?:string[], testImporters?:string[]}>, dispositions?: Map<string, object|string>}} args
+ * @returns {Array<object>} generated shipment inventory rows
+ */
+export function buildShipmentDispositionInventory({ rows, dispositions = new Map() }) {
+  return (rows ?? []).map((row) => {
+    const productionCaller =
+      !row.dead && (row.productionImporters ?? []).find((file) => !isTestFile(file));
+    if (productionCaller) {
+      return {
+        ...row,
+        shipmentDisposition: {
+          status: 'classified',
+          kind: 'wired',
+          citation: {
+            kind: 'non-test-production-caller',
+            path: productionCaller,
+          },
+        },
+      };
+    }
+
+    const raw = dispositions.get(row.module);
+    const attestation =
+      typeof raw === 'string'
+        ? { kind: 'dead', action: 'wire-or-delete', reason: raw }
+        : raw && typeof raw === 'object'
+          ? raw
+          : null;
+    const errors = [];
+
+    if (!attestation) {
+      errors.push('missing shipment disposition');
+    } else if (attestation.kind === 'seam') {
+      if (!/^D-\d+$/.test(String(attestation.decision ?? ''))) {
+        errors.push('seam disposition requires an approved D-NNN decision');
+      }
+      if (!/\.test\.[cm]?[jt]sx?$/.test(String(attestation.test ?? ''))) {
+        errors.push('seam disposition requires a test-file citation');
+      }
+    } else if (attestation.kind === 'dead') {
+      if (!String(attestation.action ?? '').trim()) {
+        errors.push('dead disposition requires an explicit action');
+      }
+      if (!String(attestation.reason ?? '').trim()) {
+        errors.push('dead disposition requires a reason');
+      }
+    } else {
+      errors.push(`unknown shipment disposition kind: ${String(attestation.kind ?? '(missing)')}`);
+    }
+
+    return {
+      ...row,
+      shipmentDisposition: {
+        status: errors.length ? 'unclassified' : 'classified',
+        ...(attestation ?? {}),
+        errors,
+      },
+    };
+  });
+}
+
+/**
+ * Find modules whose generated inventory has no valid shipment disposition.
+ *
+ * @param {Array<object>} inventory
+ * @returns {Array<object>}
+ */
+export function findUnclassifiedShipmentModules(inventory) {
+  return (inventory ?? []).filter((row) => row.shipmentDisposition?.status !== 'classified');
+}
+
+/**
  * The instrument's positive control. Answers "did this probe actually SEE the tree?"
  * before any verdict derived from it is believed.
  *
@@ -561,7 +642,9 @@ export function findInaccurateAcknowledgements({ rows, acknowledgements }) {
   const violations = [];
   for (const row of rows ?? []) {
     if (!row?.dead) continue;
-    const reason = acknowledgements?.get(row.module);
+    const acknowledgement = acknowledgements?.get(row.module);
+    const reason =
+      typeof acknowledgement === 'string' ? acknowledgement : acknowledgement?.reason;
     if (typeof reason !== 'string' || reason.length === 0) continue;
 
     const production = row.productionImporters ?? [];

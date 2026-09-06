@@ -8,6 +8,7 @@ import {
   FROZEN_REPAIR_CONVERGENCE_ROUND_CAP,
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
+  describeUnreadableFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
   decideFrozenRepairDispatchInfeasible,
   decideFrozenConvergenceCycleEntry,
@@ -1038,6 +1039,9 @@ describe('frozen-candidate repair queue', () => {
       status: 'unreadable',
       reason: 'schema-newer-than-reader',
       schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+      candidate: C,
+      repairHead: C,
+      phase: raw.phase,
     });
   });
 
@@ -1046,7 +1050,23 @@ describe('frozen-candidate repair queue', () => {
       status: 'unreadable',
       reason: 'invalid-shape',
       schemaVersion: 4,
+      candidate: null,
+      repairHead: null,
+      phase: 'ready-to-test',
     });
+  });
+
+  it('P-025: describes the raw identity of an unreadable queue instead of saying none is frozen', () => {
+    expect(
+      describeUnreadableFrozenCandidateRepairQueue({
+        status: 'unreadable',
+        reason: 'schema-newer-than-reader',
+        schemaVersion: 5,
+        candidate: C,
+        repairHead: C1,
+        phase: 'ready-to-verify',
+      }),
+    ).toMatch(/candidate 111111111111, repairHead 222222222222, phase ready-to-verify/);
   });
 });
 

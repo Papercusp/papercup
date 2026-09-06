@@ -18,9 +18,11 @@ import { describe, expect, it } from 'vitest';
 import {
   assessGraphHealth,
   buildImportGraph,
+  buildShipmentDispositionInventory,
   detectEntrypointMarkers,
   findInaccurateAcknowledgements,
   findUnreachableModules,
+  findUnclassifiedShipmentModules,
   isTestFile,
   NEW_MODULE_GRACE_DAYS,
   parseImportSpecifiers,
@@ -212,6 +214,97 @@ describe('findUnreachableModules', () => {
     });
     expect(guarded.rows[0].dead).toBe(true);
     expect(guarded.rows[0].testedButUnwired).toBe(true);
+  });
+});
+
+describe('buildShipmentDispositionInventory', () => {
+  const live = {
+    module: 'apps/operator/lib/release/live.ts',
+    dead: false,
+    productionImporters: ['apps/operator/lib/release/caller.ts'],
+    testImporters: ['apps/operator/lib/release/live.test.ts'],
+    testedButUnwired: false,
+  };
+  const dead = {
+    module: 'apps/operator/lib/release/dead.ts',
+    dead: true,
+    productionImporters: [],
+    testImporters: ['apps/operator/lib/release/dead.test.ts'],
+    testedButUnwired: true,
+  };
+
+  it('generates a wired disposition with a non-test caller citation', () => {
+    const [row] = buildShipmentDispositionInventory({ rows: [live] });
+    expect(row.shipmentDisposition).toEqual({
+      status: 'classified',
+      kind: 'wired',
+      citation: {
+        kind: 'non-test-production-caller',
+        path: 'apps/operator/lib/release/caller.ts',
+      },
+    });
+  });
+
+  it('accepts a seam only with an approved decision and test citation', () => {
+    const [row] = buildShipmentDispositionInventory({
+      rows: [dead],
+      dispositions: new Map([
+        [
+          dead.module,
+          {
+            kind: 'seam',
+            decision: 'D-044',
+            test: 'apps/operator/lib/release/dead.test.ts',
+          },
+        ],
+      ]),
+    });
+    expect(row.shipmentDisposition).toMatchObject({
+      status: 'classified',
+      kind: 'seam',
+      decision: 'D-044',
+    });
+  });
+
+  it('keeps a missing or malformed disposition unclassified', () => {
+    const inventory = buildShipmentDispositionInventory({
+      rows: [dead, { ...dead, module: 'apps/operator/lib/release/bad-seam.ts' }],
+      dispositions: new Map([
+        [
+          'apps/operator/lib/release/bad-seam.ts',
+          { kind: 'seam', decision: 'not-a-decision', test: 'fixture.ts' },
+        ],
+      ]),
+    });
+    expect(findUnclassifiedShipmentModules(inventory).map((row) => row.module)).toEqual([
+      dead.module,
+      'apps/operator/lib/release/bad-seam.ts',
+    ]);
+    expect(inventory[1].shipmentDisposition.errors).toEqual([
+      'seam disposition requires an approved D-NNN decision',
+      'seam disposition requires a test-file citation',
+    ]);
+  });
+
+  it('accepts an explicit dead/delete disposition', () => {
+    const [row] = buildShipmentDispositionInventory({
+      rows: [dead],
+      dispositions: new Map([
+        [
+          dead.module,
+          {
+            kind: 'dead',
+            action: 'delete',
+            reason: 'no production caller after the completed plan',
+          },
+        ],
+      ]),
+    });
+    expect(row.shipmentDisposition).toMatchObject({
+      status: 'classified',
+      kind: 'dead',
+      action: 'delete',
+    });
   });
 });
 
