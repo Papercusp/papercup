@@ -1456,6 +1456,10 @@ import './cupboard/install-recipe';
 // then seeds an INACTIVE status:'paused' stub — install ≠ start (D-002).
 import './cupboard/publish-goal';
 import './cupboard/install-goal';
+// cupboard-themes-2026-09-05 — inert semantic-token packages. Publish exports a
+// local custom theme; install adds it to the existing selector without selecting it.
+import './cupboard/publish-theme';
+import './cupboard/install-theme';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
