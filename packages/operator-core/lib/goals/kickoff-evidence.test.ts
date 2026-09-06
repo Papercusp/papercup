@@ -34,6 +34,7 @@ interface Fixture {
   reads?: Partial<Record<GoalKickoffRead, string>>;
   reportAt?: string | null;
   reportGoalId?: string;
+  reportEnvelope?: Record<string, unknown>;
   modeError?: string;
   evidenceError?: string;
 }
@@ -94,11 +95,28 @@ function mockSql(fixture: Fixture): Sql {
     if (text.includes('FROM harness_shared.coord_event_log')) {
       if (fixture.evidenceError) return Promise.reject(new Error(fixture.evidenceError));
       const latestReadAt = String(values[2]);
-      const requiredGoal = String(values[3]);
       const reportGoal = fixture.reportGoalId ?? GOAL;
       const reportAt = fixture.reportAt ?? null;
       return Promise.resolve(
-        reportAt && reportGoal === requiredGoal && reportAt >= latestReadAt ? [{ ts: reportAt }] : [],
+        reportAt && reportAt >= latestReadAt
+          ? [
+              {
+                ts: reportAt,
+                body:
+                  fixture.reportEnvelope ??
+                  {
+                    goalOwnerReport: {
+                      schemaVersion: 'goal-owner-report-v1',
+                      goalId: reportGoal,
+                      moved: 'P-001 advanced',
+                      cost: 'unknown (goal-pots source unavailable)',
+                      ownerWalled: 'none',
+                      killed: 'none',
+                    },
+                  },
+              },
+            ]
+          : [],
       );
     }
 
@@ -159,6 +177,35 @@ describe('GOAL kickoff required-leg gate', () => {
     });
     expect(evidence.complete).toBe(false);
     expect(evidence.missing).toEqual(['owner-report']);
+  });
+
+  it('refuses an arbitrary to-human ping and a partial labeled body', async () => {
+    const ping = await read({
+      reads: completeReads(),
+      reportAt: '2026-08-29T21:42:00.000Z',
+      reportEnvelope: { body: `Status for ${GOAL}: still working.` },
+    });
+    expect(ping.evidence).toMatchObject({ complete: false, missing: ['owner-report'] });
+
+    const partial = await read({
+      reads: completeReads(),
+      reportAt: '2026-08-29T21:42:00.000Z',
+      reportEnvelope: { body: `Goal ${GOAL}\nMOVED: P-001\nCOST: 1c\nOWNER-WALLED: none` },
+    });
+    expect(partial.evidence).toMatchObject({ complete: false, missing: ['owner-report'] });
+  });
+
+  it('compatibility control: accepts a complete legacy four-label body naming the exact goal', async () => {
+    const { evidence } = await read({
+      reads: completeReads(),
+      reportAt: '2026-08-29T21:42:00.000Z',
+      reportEnvelope: {
+        body:
+          `Goal ${GOAL}\nMOVED: P-001 advanced\nCOST: unknown (legacy)\n` +
+          'OWNER-WALLED: none\nKILLED: none',
+      },
+    });
+    expect(evidence).toMatchObject({ complete: true, ownerReportAt: '2026-08-29T21:42:00.000Z' });
   });
 
   it('positive control: admits a STANDING goal with all evidence and no kill criterion', async () => {

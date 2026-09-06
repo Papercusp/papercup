@@ -4,6 +4,11 @@ import type { Sql } from 'postgres';
 
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
+  GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS,
+  GOAL_OWNER_REPORT_SCHEMA_VERSION,
+} from '../goal-owner-report';
+import {
   GOAL_OWNER_REPORT_MAX_SILENCE_MS,
   GOAL_OWNER_REPORT_MEASURED_FAILURE_SILENCE_MS,
   GOAL_OWNER_REPORT_MEASURED_HEALTHY_CADENCE_MS,
@@ -171,6 +176,38 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     await expect(
       readGoalOwnerReportObligation(none, { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' }, NOW),
     ).resolves.toBeNull();
+  });
+
+  it('the SQL-backed union requires complete report evidence on every rail, never a bare human ping', async () => {
+    const queryTexts: string[] = [];
+    const queryValues: unknown[] = [];
+    const sqlFn = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      queryTexts.push(strings.join(' '));
+      queryValues.push(...values);
+      // Inner sql`` filter fragment.
+      if (!strings.join('').includes('FROM harness_shared.agent_modes')) return { fragment: values };
+      return [];
+    }) as unknown as Sql;
+
+    await readGoalOwnerReportObligation(
+      sqlFn,
+      { workspaceId: 'ws', ownerId: 'su-holder', goalId: 'goal-1' },
+      NOW,
+    );
+
+    const query = queryTexts.find((text) => text.includes('FROM harness_shared.agent_modes')) ?? '';
+    expect(query).toContain("NULLIF(BTRIM(e.body ->");
+    expect(query).toContain("->> 'moved'), '') IS NOT NULL");
+    expect(query).toContain("->> 'cost'), '') IS NOT NULL");
+    expect(query).toContain("->> 'ownerWalled'), '') IS NOT NULL");
+    expect(query).toContain("->> 'killed'), '') IS NOT NULL");
+    expect(query).toContain("a.data->>'ownerId' = m.owner_id");
+    expect(query).not.toContain("a.data->>'goalId' = m.subject OR");
+    expect(queryValues).toContain(GOAL_OWNER_REPORT_FIELD);
+    expect(queryValues).toContain(GOAL_OWNER_REPORT_SCHEMA_VERSION);
+    for (const pattern of Object.values(GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS)) {
+      expect(queryValues).toContain(pattern);
+    }
   });
 });
 

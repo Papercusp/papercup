@@ -69,6 +69,11 @@ import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracl
 // holder-read guard clears it because the liveness fold below is present, which
 // is the property D-003 actually enforces.
 import { holderCountsAsAlive, resolveHolderLiveness } from '../goals/holder';
+import {
+  GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS,
+  GOAL_OWNER_REPORT_SCHEMA_VERSION,
+} from '../goal-owner-report';
 
 /** Hours-scale detection needs no seconds-scale sweep: one tick per 10 minutes
  *  bounds the worst-case detection lag to ~4% of the floor. */
@@ -392,12 +397,42 @@ function makeReadGoalModeOwners(
            WHERE e.workspace_id = m.workspace_id
              AND e.surface = 'escalations'
              AND e.body->>'from' = m.owner_id
+             AND (
+               (
+                 e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'schemaVersion' = ${GOAL_OWNER_REPORT_SCHEMA_VERSION}
+                 AND e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'goalId' = m.subject
+                 AND NULLIF(BTRIM(e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'moved'), '') IS NOT NULL
+                 AND NULLIF(BTRIM(e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'cost'), '') IS NOT NULL
+                 AND NULLIF(BTRIM(e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'ownerWalled'), '') IS NOT NULL
+                 AND NULLIF(BTRIM(e.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'killed'), '') IS NOT NULL
+               )
+               OR (
+                 -- Bounded compatibility for pre-stamp reports. Keep the old
+                 -- exact-subject requirement and require FOUR non-empty label
+                 -- values; an arbitrary escalation is not report evidence.
+                 strpos(COALESCE(e.body->>'body', ''), m.subject) > 0
+                 AND COALESCE(e.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.moved}
+                 AND COALESCE(e.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.cost}
+                 AND COALESCE(e.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.ownerWalled}
+                 AND COALESCE(e.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.killed}
+               )
+             )
         ) er ON true
         LEFT JOIN LATERAL (
           SELECT max(a.created_at) AS last_attention_ts
             FROM harness_shared.attention_notifications a
            WHERE a.workspace_id = m.workspace_id
-             AND (a.data->>'goalId' = m.subject OR a.data->>'ownerId' = m.owner_id)
+             -- notifyAttention has no authenticated author column. It counts
+             -- only when the producer explicitly attributes THIS owner and
+             -- carries a complete current-subject report stamp; goalId alone
+             -- is context, not proof the holder reported.
+             AND a.data->>'ownerId' = m.owner_id
+             AND a.data -> ${GOAL_OWNER_REPORT_FIELD} ->> 'schemaVersion' = ${GOAL_OWNER_REPORT_SCHEMA_VERSION}
+             AND a.data -> ${GOAL_OWNER_REPORT_FIELD} ->> 'goalId' = m.subject
+             AND NULLIF(BTRIM(a.data -> ${GOAL_OWNER_REPORT_FIELD} ->> 'moved'), '') IS NOT NULL
+             AND NULLIF(BTRIM(a.data -> ${GOAL_OWNER_REPORT_FIELD} ->> 'cost'), '') IS NOT NULL
+             AND NULLIF(BTRIM(a.data -> ${GOAL_OWNER_REPORT_FIELD} ->> 'ownerWalled'), '') IS NOT NULL
+             AND NULLIF(BTRIM(a.data -> ${GOAL_OWNER_REPORT_FIELD} ->> 'killed'), '') IS NOT NULL
         ) an ON true
         LEFT JOIN LATERAL (
           -- WI-2091959: a coord:send addressed to 'human' is an owner report in
@@ -410,6 +445,23 @@ function makeReadGoalModeOwners(
              AND h.surface = 'messages'
              AND h.body->>'from' = m.owner_id
              AND h.body->'to' @> '["human"]'::jsonb
+             AND (
+               (
+                 h.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'schemaVersion' = ${GOAL_OWNER_REPORT_SCHEMA_VERSION}
+                 AND h.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'goalId' = m.subject
+                 AND NULLIF(BTRIM(h.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'moved'), '') IS NOT NULL
+                 AND NULLIF(BTRIM(h.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'cost'), '') IS NOT NULL
+                 AND NULLIF(BTRIM(h.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'ownerWalled'), '') IS NOT NULL
+                 AND NULLIF(BTRIM(h.body -> ${GOAL_OWNER_REPORT_FIELD} ->> 'killed'), '') IS NOT NULL
+               )
+               OR (
+                 strpos(COALESCE(h.body->>'body', ''), m.subject) > 0
+                 AND COALESCE(h.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.moved}
+                 AND COALESCE(h.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.cost}
+                 AND COALESCE(h.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.ownerWalled}
+                 AND COALESCE(h.body->>'body', '') ~* ${GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS.killed}
+               )
+             )
         ) hm ON true
        WHERE m.mode = 'goal' AND m.subject IS NOT NULL
          ${

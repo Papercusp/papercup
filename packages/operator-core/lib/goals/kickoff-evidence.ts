@@ -30,6 +30,7 @@ import {
   PORTFOLIO_CREATE_TOOLS,
   PORTFOLIO_PLACE_TOOLS,
 } from './portfolio-acts';
+import { envelopeHasCompleteGoalOwnerReport } from '../goal-owner-report';
 
 export const GOAL_KICKOFF_REQUIRED_READS = ['goals:list', 'pot:list', 'plans:list', 'search:semantic'] as const;
 
@@ -201,22 +202,27 @@ export async function readGoalKickoffEvidence(args: ReadGoalKickoffEvidenceArgs)
       .sort()
       .at(-1)!;
     const reportRows = (await sql`
-      SELECT ts
+      SELECT ts, body
         FROM harness_shared.coord_event_log
        WHERE workspace_id = ${args.workspaceId}
          AND body->>'from' = ${args.ownerId}
          AND ts >= ${latestReadAt}::timestamptz
          AND superseded_by_msg_id IS NULL
-         AND strpos(body::text, ${out.goalId}) > 0
          AND (
            (surface = 'messages' AND body->'to' @> '["human"]'::jsonb)
            OR surface = 'escalations'
          )
        ORDER BY ts DESC
-       LIMIT 1
+       -- Compatibility is intentionally bounded. Modern reports carry a
+       -- server-authored goalOwnerReport stamp; legacy rows are parsed below
+       -- and must still contain all four labeled values plus the exact goal.
+       LIMIT 256
     `) as unknown as Array<Record<string, unknown>>;
 
-    out.ownerReportAt = reportRows.length ? iso(reportRows[0]!.ts) : null;
+    const reportRow = reportRows.find((row) =>
+      envelopeHasCompleteGoalOwnerReport(row.body, out.goalId!),
+    );
+    out.ownerReportAt = reportRow ? iso(reportRow.ts) : null;
     if (!out.ownerReportAt) {
       out.missing = ['owner-report'];
       return out;
