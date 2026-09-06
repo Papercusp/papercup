@@ -77,7 +77,25 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(textOf(stagingPage)).toContain('/tmp/tauri-dev-bridge-<child-pid>.token');
     expect(textOf(stagingPage)).not.toContain('cd papercusp-desktop && npm run dev');
     expect(evidence).not.toMatch(/\bverdict\b|\bxdg-open\b/i);
-    expect(SU_S02_TAURI_ONLY.version).toBe(3);
+    expect(SU_S02_TAURI_ONLY.version).toBe(4);
+  });
+
+  it('gives S02 a truthful capability check and enforces docs scope', () => {
+    const find = TAURI_APP_VERIFICATION_CONTEXT.override('tools:find', {
+      query: 'select:fleet:launch-on-plan',
+    });
+    const catalog = TAURI_APP_VERIFICATION_CONTEXT.override('agent_tools:list', {
+      asRole: 'su',
+    });
+    const unscopedDocs = TAURI_APP_VERIFICATION_CONTEXT.override('docs:get', {
+      slugs: ['testing/agent-e2e'],
+    });
+
+    expect(textOf(find)).toContain('"count":0');
+    expect(textOf(find)).toContain('Do not offer or claim');
+    expect(textOf(catalog)).toContain('"tools"');
+    expect(textOf(catalog)).toContain('No process launcher');
+    expect(textOf(unscopedDocs)).toContain('harness_required');
   });
 
   it('passes unrelated tools through to the target default', () => {

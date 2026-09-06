@@ -134,6 +134,47 @@ export const HARNESS_REQUIRED_GATE: ToolDispatchOverride = {
 export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
   override(name, args) {
     const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'tools:find') {
+      const query = typeof a.query === 'string' ? a.query : '';
+      return {
+        content: [{
+          text: JSON.stringify({
+            query,
+            count: 0,
+            totalMatches: 0,
+            activated: false,
+            hits: [],
+            howToCall:
+              'No matching execution tool is available in this hermetic session. Do not offer or claim ' +
+              'a fleet launcher, background shell, or desktop-driver route.',
+          }),
+        }],
+      };
+    }
+    if (canon === 'agent_tools:list') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            role: 'su',
+            tools: [
+              'coord:orient',
+              'coord:presence',
+              'docs:search',
+              'docs:get',
+              'harness:list',
+              'logs:read',
+              'notifications:recent',
+              'tools:find',
+            ],
+            note:
+              'This is the complete executable surface for the scenario. No process launcher, fleet launcher, ' +
+              'or desktop driver is available.',
+          }),
+        }],
+      };
+    }
     if (canon === 'docs:search' || canon === 'docs:outline') {
       return {
         content: [{
@@ -158,7 +199,18 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
       };
     }
     if (canon === 'docs:get') {
-      const a = (args ?? {}) as Record<string, unknown>;
+      if (typeof a.harness !== 'string' || a.harness.trim().length === 0) {
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: false,
+              error: 'harness_required',
+              hint: "Pass harness:'all' for Papercusp operator-level docs.",
+            }),
+          }],
+          isError: true,
+        };
+      }
       const requested = Array.isArray(a.slugs)
         ? a.slugs.filter((slug): slug is string => typeof slug === 'string')
         : typeof a.slug === 'string'
