@@ -1028,6 +1028,7 @@ export function LiveSessionChat({
   const [earlierEvents, setEarlierEvents] = useState<TimelineEntry[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
+  const [historyReady, setHistoryReady] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
@@ -1035,6 +1036,7 @@ export function LiveSessionChat({
     setEarlierEvents([]);
     setHistoryCursor(null);
     setHasMoreEarlier(false);
+    setHistoryReady(false);
     setLoadingEarlier(false);
     setHistoryError(null);
   }, [streamUrl]);
@@ -1043,6 +1045,7 @@ export function LiveSessionChat({
     if (!history || earlierEvents.length > 0) return;
     setHistoryCursor(history.cursor);
     setHasMoreEarlier(history.hasMore);
+    setHistoryReady(true);
   }, [history, earlierEvents.length]);
 
   const ownerPagingEnabled = useMemo(() => {
@@ -1251,7 +1254,7 @@ export function LiveSessionChat({
       <div className="pc-conversation-context-layout__chat">
         <OperatorChat
           messages={projectedMessages}
-          onLoadEarlier={ownerPagingEnabled ? loadEarlier : undefined}
+          onLoadEarlier={ownerPagingEnabled && historyReady ? loadEarlier : undefined}
           hasMoreEarlier={hasMoreEarlier}
           loadingEarlier={loadingEarlier}
           focusAnchor={focusAnchor}
