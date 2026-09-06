@@ -31,6 +31,13 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   loadHarnessRegistry: loadHarnessRegistryMock,
 }));
+// The bridge leg now resolves the signed protocol scope before reading its
+// routine watermarks. Keep this focused fixture hermetic and give that real
+// resolver the same stable hive identity used by the broader action suite.
+vi.mock('../../hive-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getHiveBySlug: vi.fn(async () => ({ pubkeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' })),
+}));
 // Partial: unrelated modules pulled in transitively (locks/configure.ts) call other
 // db-org exports at import time, and vitest throws on ANY access to a missing mock key.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({

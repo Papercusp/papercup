@@ -105,8 +105,9 @@ export default defineTool({
   description:
     'Run a multi-step tool-orchestration JS script in one call with tools.ns.verb(args). Only the ' +
     'returned summary/media re-enters context; intermediate results stay in the runtime. Wrong ' +
-    'names return typed signatures; dryRun:true previews write effects. Colon-to-dot mapping ' +
-    'preserves underscores (`work_items:get` → tools.work_items.get or tools.workItems.get; ' +
+    'names return typed signatures; dryRun:true previews write effects. Tool-name mapping is ' +
+    'colon-to-dot: only the namespace/verb separator `:` becomes `.`, while `_` stays inside each segment ' +
+    '(work_items:get → tools.work_items.get or tools.workItems.get; ' +
     '`tools:invoke` → tools.tools.invoke).',
   guidance: {
     when:
