@@ -20,15 +20,22 @@ import { activeExternalBlockers } from './external-blockers';
 import { isCompletionRef } from './harness/completion-ref-types';
 import { admissionIdentity } from './harness/improvements/digest';
 import {
+  IMPLEMENTATION_READINESS_SCHEMA_VERSION,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
+  agentReviewNormalExclusionSql,
   hasStrictOwnerAction,
   readAgentReviewState,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
-import { selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-ledger';
+import {
+  readIssueOccurrenceCounts,
+  selectCanonicalIssue,
+  recordIssueOccurrence,
+} from './issue-occurrence-ledger';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
-import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
+import { admittedWhereSqlWi, DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
 import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 
@@ -702,6 +709,8 @@ export interface WorkItemAdmissionRun {
   modelId: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
+  /** Writer-priced model cost. Null is unknown/unpriced, never zero. */
+  costUsd?: number | null;
   latencyMs: number | null;
   outcome: AdmissionRunOutcome;
   outcomeSource?: AdmissionRunOutcomeSource;
@@ -730,6 +739,92 @@ export interface WorkItemAdmissionQueueHealth {
   reviewDebt?: AdmissionReviewDebt;
 }
 
+export const WORK_ITEM_READINESS_HEADLINE_PRECEDENCE = [
+  'terminal',
+  'active',
+  'awaitingRevision',
+  'awaitingReview',
+  'held',
+  'ready',
+  'unknown',
+] as const;
+
+export type WorkItemReadinessHeadline = (typeof WORK_ITEM_READINESS_HEADLINE_PRECEDENCE)[number];
+
+export interface WorkItemReadinessProjection {
+  schemaVersion: 'work-item-readiness-projection-v1';
+  measuredAt: string;
+  scope: {
+    workspaceId: string;
+    harnessSlug: string | null;
+    itemKinds: readonly ['bug', 'change', 'task'];
+    population: 'root issue-family rows excluding observation-lane records';
+  };
+  headline: Record<WorkItemReadinessHeadline, number> & {
+    population: number;
+    nonTerminal: number;
+  };
+  /** Independent causes. These deliberately overlap and must never be summed. */
+  reasons: {
+    admissionPending: number;
+    admissionUnreviewed: number;
+    pendingAgentReview: number;
+    revisionRequestedAgentReview: number;
+    legacyRevisionException: number;
+    readinessAbsentLegacy: number;
+    readinessReady: number;
+    readinessUnknown: number;
+    readinessNotReady: number;
+    readinessMalformed: number;
+    activeClaim: number;
+    blockedStatus: number;
+    claimHold: number;
+    needsOwnerAction: number;
+    activeExternalBlocker: number;
+    activeDependency: number;
+    remoteOrigin: number;
+    terminalWithoutCommittedEvidence: number;
+  };
+  aging: {
+    neverClaimed: { count: number; oldestAgeMs: number | null };
+    awaitingReview: { count: number; oldestAgeMs: number | null };
+    awaitingRevision: { count: number; oldestAgeMs: number | null };
+  };
+  flow: {
+    windowDays: number;
+    since: string;
+    arrivals: number;
+    currentApprovalsUpdatedInWindow: number;
+    currentRevisionRequestsUpdatedInWindow: number;
+    terminalInWindow: number;
+    verifiedCompletionsInWindow: number;
+    retainedReopenEventsInWindow: number;
+    reopenedItemsInWindow: number;
+    recurrence: Awaited<ReturnType<typeof readIssueOccurrenceCounts>>;
+    readyExpectedCost: {
+      coveredRows: number;
+      totalRows: number;
+      cents: number | null;
+    };
+  };
+  availability: {
+    corpus: 'drained' | 'nonempty';
+    writerReady: 'ready' | 'none';
+    claimSpec: 'not-evaluated';
+    fleetControl: 'not-evaluated';
+    note: string;
+  };
+  contract: {
+    precedence: typeof WORK_ITEM_READINESS_HEADLINE_PRECEDENCE;
+    headline: 'non-overlapping';
+    reasons: 'overlapping';
+    readinessWriter: 'payload.implementationReadiness + payload.agentReview + work-item lifecycle columns';
+    recurrenceWriter: 'harness_shared.work_item_occurrences';
+    reopenWriter: 'payload.reopenHistory (newest five retained by the writer)';
+    truncation: 'none for stock/flow SQL; reopen history is writer-bounded to five entries per item';
+  };
+}
+
 export interface WorkItemAdmissionSnapshot {
   runs: WorkItemAdmissionRun[];
   censusTrend: AdmissionCensusPoint[];
@@ -737,7 +832,22 @@ export interface WorkItemAdmissionSnapshot {
     latestCensus: AdmissionCensusPoint | null;
     latestCensusRise: AdmissionCensusPoint | null;
     runCounts: AdmissionRunCounts;
+    readiness?: WorkItemReadinessProjection;
+    usage?: AdmissionRunUsage;
   };
+}
+
+export interface AdmissionRunUsage {
+  scope: 'shown runs after kind/state filters and limit';
+  cap: number;
+  modelRuns: number;
+  inputTokens: number;
+  outputTokens: number;
+  pricedRuns: number;
+  unpricedRuns: number;
+  /** Null whenever any shown model run is unpriced; pricedSubtotalUsd remains inspectable. */
+  costUsd: number | null;
+  pricedSubtotalUsd: number;
 }
 
 export interface AdmissionRunCounts {
@@ -807,6 +917,23 @@ function summarizeAdmissionRuns(runs: readonly WorkItemAdmissionRun[]): Admissio
     }
   }
   return counts;
+}
+
+function summarizeAdmissionUsage(runs: readonly WorkItemAdmissionRun[], cap: number): AdmissionRunUsage {
+  const modelRuns = runs.filter((run) => run.modelId != null);
+  const pricedRuns = modelRuns.filter((run) => run.costUsd != null);
+  const pricedSubtotalUsd = pricedRuns.reduce((sum, run) => sum + (run.costUsd ?? 0), 0);
+  return {
+    scope: 'shown runs after kind/state filters and limit',
+    cap,
+    modelRuns: modelRuns.length,
+    inputTokens: runs.reduce((sum, run) => sum + (run.tokensIn ?? 0), 0),
+    outputTokens: runs.reduce((sum, run) => sum + (run.tokensOut ?? 0), 0),
+    pricedRuns: pricedRuns.length,
+    unpricedRuns: modelRuns.length - pricedRuns.length,
+    costUsd: pricedRuns.length === modelRuns.length ? pricedSubtotalUsd : null,
+    pricedSubtotalUsd,
+  };
 }
 
 export type WorkItemAdmissionPressureLevel = 'normal' | 'elevated' | 'deep';
@@ -2136,6 +2263,316 @@ export async function readWorkItemAdmissionProducerPressure(opts: {
 }
 
 /**
+ * Owner-facing stock/flow projection for the issue-family queue.
+ *
+ * Headline cohorts are a partition with an explicit precedence; reason facets
+ * are independent signals and intentionally overlap. `ready` reuses the live
+ * admission + agent-review SQL predicates. Caller-relative claim-spec, cooldown,
+ * plan-lane and fleet-pause evaluation stays a separate axis: this reader never
+ * turns "not evaluated" into a false drained verdict.
+ */
+export async function readWorkItemReadinessProjection(opts: {
+  workspaceId: string;
+  harnessSlug?: string;
+  windowDays?: number;
+  now?: () => number;
+  sql?: OrgSql;
+}): Promise<WorkItemReadinessProjection> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const harnessSlug = opts.harnessSlug ?? null;
+  const windowDays = Math.max(1, Math.min(Math.trunc(opts.windowDays ?? DEFAULT_RECENT_TERMINAL_DAYS), 365));
+  const nowMs = (opts.now ?? Date.now)();
+  const measuredAt = new Date(nowMs).toISOString();
+  const since = new Date(nowMs - windowDays * 24 * 60 * 60_000).toISOString();
+  const terminalStates = [...ALL_TERMINAL_STATUSES];
+
+  type ProjectionRow = Record<string, number | string | null>;
+  const [rows, recurrence] = await Promise.all([
+    sql<ProjectionRow[]>`
+      WITH scoped AS MATERIALIZED (
+        SELECT wi.*,
+               (
+                 wi.status = ANY(${terminalStates}::text[])
+                 OR (wi.terminal_owner IS NOT NULL AND wi.terminal_completion_ref IS NOT NULL)
+               ) AS is_terminal,
+               (
+                 wi.taken_by IS NOT NULL
+                 AND btrim(wi.taken_by) <> ''
+                 AND lower(btrim(wi.taken_by)) <> 'unassigned'
+               ) AS has_active_claim,
+               (COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,status}' = 'pending') AS review_pending,
+               (
+                 COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,status}' = 'revision-requested'
+                 AND COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,submittedBy}'
+                       IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+               ) AS review_revision,
+               (
+                 COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,status}' = 'revision-requested'
+                 AND COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,submittedBy}'
+                       = ${LEGACY_AGENT_REVIEW_SUBMITTER}
+               ) AS legacy_revision,
+               (COALESCE(wi.payload, '{}'::jsonb) ? 'implementationReadiness') AS readiness_enrolled,
+               (
+                 COALESCE(wi.payload, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}'
+                   = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+                 AND COALESCE(wi.payload, '{}'::jsonb) #>> '{implementationReadiness,status}'
+                   = ANY(ARRAY['ready','unknown','not-ready']::text[])
+               ) AS readiness_known,
+               (${admittedWhereSqlWi(sql)}) AS admission_ready,
+               (${agentReviewNormalExclusionSql(sql)}) AS review_ready,
+               COALESCE(COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' = 'true', FALSE) AS claim_hold,
+               COALESCE(COALESCE(wi.payload, '{}'::jsonb) ->> 'needsOwnerAction' = 'true', FALSE) AS owner_action,
+               EXISTS (
+                 SELECT 1
+                   FROM jsonb_path_query(
+                     COALESCE(wi.payload, '{}'::jsonb),
+                     '$.externalBlockers[*]'::jsonpath
+                   ) blocker
+                  WHERE lower(COALESCE(blocker ->> 'status', '')) = 'active'
+               ) AS external_blocker,
+               EXISTS (
+                 SELECT 1
+                   FROM harness_shared.work_item_deps d
+                   JOIN harness_shared.work_items blocker
+                     ON blocker.workspace_id = wi.workspace_id
+                    AND (
+                      blocker.feature_id = d.blocker_ref
+                      OR blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref
+                    )
+                  WHERE d.workspace_id = 'default'
+                    AND d.dep_type = 'blocks'
+                    AND d.blocked_ref = wi.feature_id
+                    AND blocker.status <> ALL(${terminalStates}::text[])
+               ) AS active_dependency
+          FROM harness_shared.work_items wi
+         WHERE wi.workspace_id = ${opts.workspaceId}
+           AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})
+           AND wi.item_kind IN ('bug', 'change', 'task')
+           AND (wi.parent_id IS NULL OR wi.parent_id = '')
+           AND wi.lane IS DISTINCT FROM 'observation'
+      ), signals AS (
+        SELECT s.*,
+               (
+                 NOT s.is_terminal
+                 AND NOT s.has_active_claim
+                 AND s.status = 'open'
+                 AND s.admission_ready
+                 AND s.review_ready
+                 AND NOT s.claim_hold
+                 AND NOT s.owner_action
+                 AND NOT s.external_blocker
+                 AND NOT s.active_dependency
+                 AND (s.origin IS NULL OR s.origin = 'local')
+               ) AS writer_ready,
+               (
+                 s.status <> 'open'
+                 OR s.admission = 'pending'
+                 OR s.claim_hold
+                 OR s.owner_action
+                 OR s.external_blocker
+                 OR s.active_dependency
+                 OR (s.origin IS NOT NULL AND s.origin <> 'local')
+                 OR (
+                   s.readiness_known
+                   AND COALESCE(s.payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'not-ready'
+                 )
+               ) AS known_hold
+          FROM scoped s
+      ), classified AS (
+        SELECT signals.*,
+               CASE
+                 WHEN is_terminal THEN 'terminal'
+                 WHEN has_active_claim THEN 'active'
+                 WHEN review_revision THEN 'awaitingRevision'
+                 WHEN review_pending THEN 'awaitingReview'
+                 WHEN known_hold THEN 'held'
+                 WHEN writer_ready THEN 'ready'
+                 ELSE 'unknown'
+               END AS headline
+          FROM signals
+      ), reopen_events AS (
+        SELECT c.feature_id,
+               event ->> 'at' AS reopened_at
+          FROM classified c
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(COALESCE(c.payload, '{}'::jsonb) -> 'reopenHistory') = 'array'
+                THEN COALESCE(c.payload, '{}'::jsonb) -> 'reopenHistory'
+              ELSE '[]'::jsonb
+            END
+          ) event
+      )
+      SELECT count(*)::int AS population,
+             (count(*) FILTER (WHERE NOT is_terminal))::int AS non_terminal,
+             (count(*) FILTER (WHERE headline = 'terminal'))::int AS terminal,
+             (count(*) FILTER (WHERE headline = 'active'))::int AS active,
+             (count(*) FILTER (WHERE headline = 'awaitingRevision'))::int AS awaiting_revision,
+             (count(*) FILTER (WHERE headline = 'awaitingReview'))::int AS awaiting_review,
+             (count(*) FILTER (WHERE headline = 'held'))::int AS held,
+             (count(*) FILTER (WHERE headline = 'ready'))::int AS ready,
+             (count(*) FILTER (WHERE headline = 'unknown'))::int AS unknown,
+             (count(*) FILTER (WHERE admission = 'pending'))::int AS admission_pending,
+             (count(*) FILTER (WHERE admission = 'unreviewed'))::int AS admission_unreviewed,
+             (count(*) FILTER (WHERE review_pending))::int AS reason_review_pending,
+             (count(*) FILTER (
+               WHERE COALESCE(payload, '{}'::jsonb) #>> '{agentReview,status}' = 'revision-requested'
+             ))::int AS reason_review_revision,
+             (count(*) FILTER (WHERE legacy_revision))::int AS legacy_revision_exception,
+             (count(*) FILTER (WHERE NOT readiness_enrolled))::int AS readiness_absent,
+             (count(*) FILTER (
+               WHERE readiness_known
+                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'ready'
+             ))::int AS readiness_ready,
+             (count(*) FILTER (
+               WHERE readiness_known
+                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'unknown'
+             ))::int AS readiness_unknown,
+             (count(*) FILTER (
+               WHERE readiness_known
+                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'not-ready'
+             ))::int AS readiness_not_ready,
+             (count(*) FILTER (WHERE readiness_enrolled AND NOT readiness_known))::int AS readiness_malformed,
+             (count(*) FILTER (WHERE has_active_claim AND NOT is_terminal))::int AS active_claim,
+             (count(*) FILTER (WHERE NOT is_terminal AND status <> 'open'))::int AS blocked_status,
+             (count(*) FILTER (WHERE claim_hold))::int AS reason_claim_hold,
+             (count(*) FILTER (WHERE owner_action))::int AS reason_owner_action,
+             (count(*) FILTER (WHERE external_blocker))::int AS reason_external_blocker,
+             (count(*) FILTER (WHERE active_dependency))::int AS reason_active_dependency,
+             (count(*) FILTER (WHERE origin IS NOT NULL AND origin <> 'local'))::int AS remote_origin,
+             (count(*) FILTER (WHERE is_terminal AND authority IS DISTINCT FROM 'committed'))::int
+               AS terminal_without_committed,
+             (count(*) FILTER (WHERE NOT is_terminal AND first_claimed_at IS NULL))::int AS never_claimed,
+             MIN(created_ts) FILTER (WHERE NOT is_terminal AND first_claimed_at IS NULL) AS never_claimed_oldest_ts,
+             MIN(payload #>> '{implementationReadiness,updatedAt}') FILTER (WHERE review_pending)
+               AS review_oldest_at,
+             MIN(payload #>> '{implementationReadiness,updatedAt}') FILTER (WHERE review_revision)
+               AS revision_oldest_at,
+             (count(*) FILTER (WHERE created_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}))::int AS arrivals,
+             (count(*) FILTER (
+               WHERE COALESCE(payload, '{}'::jsonb) #>> '{agentReview,status}' = 'approved'
+                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,updatedAt}' >= ${since}
+             ))::int AS approvals_in_window,
+             (count(*) FILTER (
+               WHERE review_revision
+                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,updatedAt}' >= ${since}
+             ))::int AS revisions_in_window,
+             (count(*) FILTER (
+               WHERE is_terminal AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
+             ))::int AS terminal_in_window,
+             (count(*) FILTER (
+               WHERE is_terminal AND authority = 'committed'
+                 AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
+             ))::int AS verified_in_window,
+             (SELECT count(*)::int FROM reopen_events WHERE reopened_at >= ${since}) AS reopen_events_in_window,
+             (SELECT count(DISTINCT feature_id)::int FROM reopen_events WHERE reopened_at >= ${since})
+               AS reopened_items_in_window,
+             (count(*) FILTER (WHERE headline = 'ready' AND expected_cost_cents IS NOT NULL))::int
+               AS ready_cost_covered,
+             COALESCE(sum(expected_cost_cents) FILTER (WHERE headline = 'ready' AND expected_cost_cents IS NOT NULL), 0)::bigint
+               AS ready_cost_cents
+        FROM classified`,
+    readIssueOccurrenceCounts(
+      { workspaceId: opts.workspaceId, harnessSlug, since },
+      sql,
+    ),
+  ]);
+  const row = rows[0] ?? {};
+  const n = (key: string): number => Number(row[key] ?? 0);
+  const ageFromEpoch = (value: number | string | null | undefined): number | null => {
+    if (value == null) return null;
+    const epoch = Number(value);
+    return Number.isFinite(epoch) ? Math.max(0, nowMs - epoch) : null;
+  };
+  const ageFromIso = (value: number | string | null | undefined): number | null => {
+    if (typeof value !== 'string') return null;
+    const epoch = Date.parse(value);
+    return Number.isFinite(epoch) ? Math.max(0, nowMs - epoch) : null;
+  };
+  const headline = {
+    population: n('population'),
+    nonTerminal: n('non_terminal'),
+    terminal: n('terminal'),
+    active: n('active'),
+    awaitingRevision: n('awaiting_revision'),
+    awaitingReview: n('awaiting_review'),
+    held: n('held'),
+    ready: n('ready'),
+    unknown: n('unknown'),
+  };
+  return {
+    schemaVersion: 'work-item-readiness-projection-v1',
+    measuredAt,
+    scope: {
+      workspaceId: opts.workspaceId,
+      harnessSlug,
+      itemKinds: ['bug', 'change', 'task'],
+      population: 'root issue-family rows excluding observation-lane records',
+    },
+    headline,
+    reasons: {
+      admissionPending: n('admission_pending'),
+      admissionUnreviewed: n('admission_unreviewed'),
+      pendingAgentReview: n('reason_review_pending'),
+      revisionRequestedAgentReview: n('reason_review_revision'),
+      legacyRevisionException: n('legacy_revision_exception'),
+      readinessAbsentLegacy: n('readiness_absent'),
+      readinessReady: n('readiness_ready'),
+      readinessUnknown: n('readiness_unknown'),
+      readinessNotReady: n('readiness_not_ready'),
+      readinessMalformed: n('readiness_malformed'),
+      activeClaim: n('active_claim'),
+      blockedStatus: n('blocked_status'),
+      claimHold: n('reason_claim_hold'),
+      needsOwnerAction: n('reason_owner_action'),
+      activeExternalBlocker: n('reason_external_blocker'),
+      activeDependency: n('reason_active_dependency'),
+      remoteOrigin: n('remote_origin'),
+      terminalWithoutCommittedEvidence: n('terminal_without_committed'),
+    },
+    aging: {
+      neverClaimed: { count: n('never_claimed'), oldestAgeMs: ageFromEpoch(row.never_claimed_oldest_ts) },
+      awaitingReview: { count: n('reason_review_pending'), oldestAgeMs: ageFromIso(row.review_oldest_at) },
+      awaitingRevision: { count: n('awaiting_revision'), oldestAgeMs: ageFromIso(row.revision_oldest_at) },
+    },
+    flow: {
+      windowDays,
+      since,
+      arrivals: n('arrivals'),
+      currentApprovalsUpdatedInWindow: n('approvals_in_window'),
+      currentRevisionRequestsUpdatedInWindow: n('revisions_in_window'),
+      terminalInWindow: n('terminal_in_window'),
+      verifiedCompletionsInWindow: n('verified_in_window'),
+      retainedReopenEventsInWindow: n('reopen_events_in_window'),
+      reopenedItemsInWindow: n('reopened_items_in_window'),
+      recurrence,
+      readyExpectedCost: {
+        coveredRows: n('ready_cost_covered'),
+        totalRows: headline.ready,
+        cents: n('ready_cost_covered') === headline.ready ? n('ready_cost_cents') : null,
+      },
+    },
+    availability: {
+      corpus: headline.nonTerminal === 0 ? 'drained' : 'nonempty',
+      writerReady: headline.ready > 0 ? 'ready' : 'none',
+      claimSpec: 'not-evaluated',
+      fleetControl: 'not-evaluated',
+      note:
+        'Corpus stock, writer readiness, claim-spec matching, and fleet pause are separate axes. ' +
+        'This workspace/harness projection never calls a paused or spec-empty lane drained.',
+    },
+    contract: {
+      precedence: WORK_ITEM_READINESS_HEADLINE_PRECEDENCE,
+      headline: 'non-overlapping',
+      reasons: 'overlapping',
+      readinessWriter: 'payload.implementationReadiness + payload.agentReview + work-item lifecycle columns',
+      recurrenceWriter: 'harness_shared.work_item_occurrences',
+      reopenWriter: 'payload.reopenHistory (newest five retained by the writer)',
+      truncation: 'none for stock/flow SQL; reopen history is writer-bounded to five entries per item',
+    },
+  };
+}
+
+/**
  * Owner-facing P-005 projection over the admission ledger and its two live
  * work-item rollups. One reader backs every sync transport so the admin pane,
  * REST fallback, and tests cannot drift into subtly different definitions.
@@ -2226,11 +2663,18 @@ export async function readWorkItemAdmissionSnapshot(opts: {
      ORDER BY ar.started_at DESC, ar.id DESC
      LIMIT ${limit}`;
 
-  const queueHealth = await readWorkItemAdmissionQueueHealth({
-    workspaceId: opts.workspaceId,
-    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
-    sql,
-  });
+  const [queueHealth, readiness] = await Promise.all([
+    readWorkItemAdmissionQueueHealth({
+      workspaceId: opts.workspaceId,
+      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+      sql,
+    }),
+    readWorkItemReadinessProjection({
+      workspaceId: opts.workspaceId,
+      ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+      sql,
+    }),
+  ]);
 
   const censusRows = await sql<CensusRow[]>`
     SELECT ar.id,
@@ -2280,6 +2724,10 @@ export async function readWorkItemAdmissionSnapshot(opts: {
       modelId: row.model_id,
       tokensIn: numberOrNull(row.tokens_in),
       tokensOut: numberOrNull(row.tokens_out),
+      costUsd:
+        typeof row.detail?.modelCostUsd === 'number' && Number.isFinite(row.detail.modelCostUsd)
+          ? Math.max(0, row.detail.modelCostUsd)
+          : null,
       latencyMs: numberOrNull(row.latency_ms),
       outcome: deriveAdmissionRunOutcome({
         state,
@@ -2318,6 +2766,8 @@ export async function readWorkItemAdmissionSnapshot(opts: {
       latestCensus: newestFirstCensus[0] ?? null,
       latestCensusRise: newestFirstCensus.find((point) => point.delta > 0) ?? null,
       runCounts: summarizeAdmissionRuns(normalizedRuns),
+      readiness,
+      usage: summarizeAdmissionUsage(normalizedRuns, limit),
     },
   };
 }
@@ -4034,6 +4484,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
     let judgements: PromoterJudgement[] = [];
     let tokensIn = 0;
     let tokensOut = 0;
+    let modelCostUsd: number | null = null;
     if (pairs.length > 0) {
       const prompt = buildPromoterPrompt(pairs);
       const response = await opts.llmCall({
@@ -4049,6 +4500,10 @@ export async function runWorkItemAdmissionPromoter(opts: {
       if (unknownPair) throw new Error(`promoter model returned unknown pairKey ${unknownPair.pairKey}`);
       tokensIn = response.inputTokens;
       tokensOut = response.outputTokens;
+      modelCostUsd =
+        typeof response.costUsd === 'number' && Number.isFinite(response.costUsd)
+          ? Math.max(0, response.costUsd)
+          : null;
     }
     const recurrenceItems = new Map<string, PromoterItem>();
     for (const item of pending) recurrenceItems.set(item.id, item);
@@ -4107,6 +4562,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
         mode: 'promoter',
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
+        // Null is explicit unpriced coverage, never a fabricated zero-dollar call.
+        modelCostUsd,
         flaggedPairs: pairs.length,
         verdicts: persisted.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;

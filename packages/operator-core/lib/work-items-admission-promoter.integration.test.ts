@@ -18,6 +18,7 @@ const {
   readPendingBatch,
   readWorkItemAdmissionSnapshot,
   readWorkItemAdmissionProducerPressure,
+  readWorkItemReadinessProjection,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
   WORK_ITEM_ADMISSION_PROMOTER,
@@ -43,6 +44,7 @@ const DDL = `
     summary text,
     status text,
     item_kind text,
+    parent_id text,
     taken_by text,
     admission text,
     admitted_at timestamptz,
@@ -61,6 +63,7 @@ const DDL = `
     created_ts bigint,
     updated_ts bigint,
     closed_ts bigint,
+    expected_cost_cents bigint,
     terminal_reason text,
     terminal_owner text,
     embedding vector(3),
@@ -176,17 +179,31 @@ async function seedItem(input: {
   harness?: string;
   workspaceId?: string;
   payload?: Record<string, unknown>;
+  itemKind?: string;
+  parentId?: string | null;
+  takenBy?: string | null;
+  firstClaimedAt?: string | null;
+  expectedCostCents?: number | null;
+  closedTs?: number | null;
+  authority?: string | null;
+  origin?: string;
 }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
-       admission, condition_key, lane, payload, created_ts, updated_ts, embedding, embedding_mode)
+      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, parent_id,
+       taken_by, admission, admitted_at, first_claimed_at, condition_key, lane, payload,
+       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, embedding, embedding_mode)
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
-            ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, 'bug',
-            ${input.admission === undefined ? 'pending' : input.admission}, ${input.conditionKey ?? null}, NULL,
+            ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, ${input.itemKind ?? 'bug'},
+            ${input.parentId ?? null}, ${input.takenBy ?? null},
+            ${input.admission === undefined ? 'pending' : input.admission},
+            ${input.admission === 'admitted' ? '2026-08-26T11:00:00Z' : null},
+            ${input.firstClaimedAt ?? null}, ${input.conditionKey ?? null}, NULL,
             ${JSON.stringify(input.payload ?? {})}::text::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
+            ${input.closedTs ?? null}, ${input.authority ?? null}, ${input.expectedCostCents ?? null},
+            ${input.origin ?? 'local'},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
             ${input.vector === null ? null : 'gemma'})`;
 }
@@ -1482,6 +1499,104 @@ describe('work-item admission promoter (real Postgres)', () => {
       p95Ms: 4800,
       maxIdeators: null,
     });
+  });
+
+  it('partitions readiness by precedence while keeping overlapping reasons and stock/flow evidence separate', async () => {
+    const readiness = (status: 'ready' | 'unknown' | 'not-ready', updatedAt: string) => ({
+      schemaVersion: 'implementation-readiness-v1',
+      status,
+      source: 'agent-review',
+      reason: `fixture-${status}`,
+      updatedAt,
+    });
+    await seedItem({
+      id: 'WI-terminal', admission: 'admitted', status: 'done', authority: 'committed',
+      closedTs: NOW - 1_000, payload: { implementationReadiness: readiness('ready', '2026-08-26T11:00:00.000Z') },
+    });
+    await seedItem({
+      id: 'WI-active', admission: 'admitted', takenBy: 'su-worker', firstClaimedAt: '2026-08-26T11:30:00Z',
+      payload: { implementationReadiness: readiness('ready', '2026-08-26T11:00:00.000Z') },
+    });
+    await seedItem({
+      id: 'WI-revision', admission: 'admitted', payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-author', ledgerIdeaId: 'idea-r', round: 1 },
+        implementationReadiness: readiness('not-ready', '2026-08-26T11:10:00.000Z'),
+      },
+    });
+    await seedItem({
+      id: 'WI-review', admission: 'admitted', payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-p', round: 1 },
+        implementationReadiness: readiness('unknown', '2026-08-26T11:20:00.000Z'),
+      },
+    });
+    await seedItem({
+      id: 'WI-held', admission: 'admitted', payload: {
+        _claimHold: true,
+        implementationReadiness: readiness('ready', '2026-08-26T11:30:00.000Z'),
+      },
+    });
+    await seedItem({
+      id: 'WI-ready-legacy-revision', admission: 'admitted', expectedCostCents: 250, payload: {
+        agentReview: {
+          status: 'revision-requested', submittedBy: 'system:legacy-agent-review', ledgerIdeaId: 'idea-l', round: 1,
+        },
+        reopenHistory: [{ at: '2026-08-26T11:40:00.000Z', by: 'su-fixer', prevState: 'done' }],
+      },
+    });
+    await seedItem({
+      id: 'WI-unknown', admission: 'admitted',
+      payload: { implementationReadiness: { schemaVersion: 'future-v9', status: 'ready' } },
+    });
+    await db.sql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter, source_tool,
+         report_kind, reported_title, evidence, admission_identity, occurred_at)
+      VALUES
+        (${WS}, ${HARNESS}, 'WI-ready-legacy-revision', 'su-a', 'improvements:capture',
+         'canonical-created', 'ready', '{}'::jsonb, '{}'::jsonb, '2026-08-26T11:35:00Z'),
+        (${WS}, ${HARNESS}, 'WI-ready-legacy-revision', 'su-b', 'improvements:capture',
+         'regression', 'ready again', '{}'::jsonb, '{}'::jsonb, '2026-08-26T11:45:00Z')`;
+
+    const projection = await readWorkItemReadinessProjection({
+      workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, now: () => NOW, windowDays: 30,
+    });
+
+    expect(projection.headline).toEqual({
+      population: 7,
+      nonTerminal: 6,
+      terminal: 1,
+      active: 1,
+      awaitingRevision: 1,
+      awaitingReview: 1,
+      held: 1,
+      ready: 1,
+      unknown: 1,
+    });
+    expect(projection.reasons).toMatchObject({
+      revisionRequestedAgentReview: 2,
+      legacyRevisionException: 1,
+      pendingAgentReview: 1,
+      claimHold: 1,
+      readinessMalformed: 1,
+    });
+    expect(projection.flow).toMatchObject({
+      arrivals: 7,
+      terminalInWindow: 1,
+      verifiedCompletionsInWindow: 1,
+      retainedReopenEventsInWindow: 1,
+      reopenedItemsInWindow: 1,
+      readyExpectedCost: { coveredRows: 1, totalRows: 1, cents: 250 },
+      recurrence: { canonicalClusters: 1, rawOccurrences: 2, duplicateOccurrences: 1 },
+    });
+    expect(projection.aging.neverClaimed.count).toBe(5);
+    expect(projection.availability).toMatchObject({
+      corpus: 'nonempty', writerReady: 'ready', claimSpec: 'not-evaluated', fleetControl: 'not-evaluated',
+    });
+    expect(
+      projection.headline.terminal + projection.headline.active + projection.headline.awaitingRevision +
+      projection.headline.awaitingReview + projection.headline.held + projection.headline.ready +
+      projection.headline.unknown,
+    ).toBe(projection.headline.population);
   });
 
   it('uses writer status over finished_at and keeps outcome totals unit-separated', async () => {
