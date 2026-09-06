@@ -1247,7 +1247,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "judge"
       ],
       "guidance": {
         "when": "You need to read a file the harness wrote earlier (notes, intermediate outputs, plans) by its harness_slug + rel_path. Pass every (slug, rel_path) at once via `items`.",

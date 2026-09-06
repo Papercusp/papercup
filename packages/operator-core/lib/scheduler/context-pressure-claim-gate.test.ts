@@ -67,6 +67,64 @@ describe('decideContextPressureGate', () => {
     expect(d.diagnosis.overrideArg).toBe('ignoreContextPressure');
   });
 
+  it('names the verified COLD loop instead of prescribing unavailable self-compaction', () => {
+    const d = decideContextPressureGate({
+      bucket: 'critical',
+      recovery: {
+        path: 'cold-loop',
+        selfCompactionAvailable: false,
+        carryNoteVerified: true,
+        reason: 'active-cold-loop',
+      },
+    });
+    if (!d.refuse) throw new Error('expected refusal');
+    expect(d.error).toContain('armed COLD loop');
+    expect(d.error).not.toContain('session:request-compaction');
+    expect(d.diagnosis).toMatchObject({
+      remedy: 'cold-loop settle',
+      recoveryPath: 'cold-loop',
+    });
+  });
+
+  it('offers the warm-loop retune when no host exists but a WARM loop is active', () => {
+    const d = decideContextPressureGate({
+      bucket: 'critical',
+      recovery: {
+        path: 'warm-loop',
+        selfCompactionAvailable: false,
+        carryNoteVerified: null,
+        reason: 'active-warm-loop',
+      },
+    });
+    if (!d.refuse) throw new Error('expected refusal');
+    expect(d.error).toContain('no-PTY fallback retunes the active WARM loop to COLD');
+    expect(d.error).toContain('session:request-compaction');
+    expect(d.diagnosis).toMatchObject({
+      remedy: 'checkpoint, then warm-loop retune',
+      recoveryPath: 'warm-loop',
+    });
+  });
+
+  it('does not claim self-compaction is available when no recovery path is known', () => {
+    const d = decideContextPressureGate({
+      bucket: 'critical',
+      recovery: {
+        path: 'no-path',
+        selfCompactionAvailable: false,
+        carryNoteVerified: null,
+        reason: 'no-live-pty-or-loop',
+      },
+    });
+    if (!d.refuse) throw new Error('expected refusal');
+    expect(d.error).toContain('self-compaction is unavailable');
+    expect(d.error).toContain('arm a COLD loop');
+    expect(d.error).not.toContain('self-compact (session:request-compaction');
+    expect(d.diagnosis).toMatchObject({
+      remedy: 'checkpoint, arm a fresh-context wake',
+      recoveryPath: 'no-path',
+    });
+  });
+
   it('kill-switch and override are consulted BEFORE the bucket, so a stale reading cannot defeat them', () => {
     // Both must win over the strongest possible bucket value.
     expect(decideContextPressureGate({ bucket: 'critical', enabled: false }).refuse).toBe(false);
