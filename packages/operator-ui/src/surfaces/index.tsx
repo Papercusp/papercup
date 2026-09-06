@@ -115,7 +115,11 @@ export type OperatorSurfaceKind =
   | 'cupboard'
   | 'dev'
   | 'support'
-  | 'settings';
+  | 'settings'
+  // The desktop's global-shortcut palette — /quick-panel: prompts | brainstorm |
+  // docs (portal-quick-panel-palette-2026-09-06 D-001). Not a rail surface: the
+  // portal mounts it as its `quick` shell PANEL, the way it models every popup.
+  | 'quick-panel';
 
 /**
  * The single-pot panels of `AdvHarnessPanelPage`. In the operator's /adv switch
@@ -225,6 +229,21 @@ export const OPERATOR_SURFACES: Record<
   // /settings/** — SettingsLayout around the sub-page the (virtual) pathname
   // selects; the sub-page table is pinned to the operator's route set by test.
   settings: lazy(() => import('../../../../apps/operator/app/settings/SettingsSurface')),
+  // /quick-panel — the palette's tabbed body, bound for a host that mounts it
+  // OVER another page rather than as the whole window:
+  //   - no `headerSlot`: the vite route's "N POT / N agents" pills are the
+  //     popup window's chrome and live under operator-vite;
+  //   - `chatSidebar={false}`: the page's docked OperatorChatSidebar writes
+  //     `--op-chat-w` on :root and `body.has-op-chat`, which would shift the
+  //     host's whole page; the portal has its own chat dock;
+  //   - `queryPrefix="qp"`: the page shares the host's URL, and its bare keys
+  //     collide there (`q` is the portal's search box, `tab` belongs to the
+  //     dev / cloud pages) — `?panel=quick&qptab=brainstorm&qpq=deploy`.
+  'quick-panel': lazy(async () => {
+    const mod = await import('../../../../apps/operator/app/quick-panel/page');
+    const Page = mod.default;
+    return { default: () => <Page chatSidebar={false} queryPrefix="qp" /> };
+  }),
 };
 
 /** Whether a portal rail kind has a native operator surface behind it. */
