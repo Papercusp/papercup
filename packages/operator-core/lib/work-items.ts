@@ -7578,7 +7578,7 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'needs-owner-action':
     'payload.needsOwnerAction = true — a typed credential, physical-device, or external-service-action capability requires the owner',
   'agent-review':
-    'payload.agentReview is pending or revision-requested — reserved to the peer-review lifecycle until approved',
+    'payload.agentReview is pending/revision-requested, or payload.implementationReadiness is enrolled without a ready verdict — reserved to review/validation until approved',
   'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
   'claim-hold':
     'payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before ' +
