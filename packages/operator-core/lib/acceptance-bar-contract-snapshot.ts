@@ -1489,7 +1489,8 @@ function sameValue(a: unknown, b: unknown): boolean {
 export type AcceptanceBarContractDiffView = Pick<AcceptanceBarContractSnapshot, 'contentHash'> & {
   plan: Pick<AcceptanceBarSubjectPlanSource, 'cohort' | 'adoptionEpoch'> | null;
   bars: Array<Pick<AcceptanceBarTrace, 'barKey' | 'barHash' | 'model' | 'method' | 'falsifier' |
-    'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'passRatings' | 'coversBarKeys' | 'provenance'> & {
+    'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' | 'passRatings' |
+    'coversBarKeys' | 'provenance'> & {
       mappings: Array<{ planItemId: string; specId: string }>;
     }>;
 };
@@ -1524,6 +1525,7 @@ export function diffAcceptanceBarContractSnapshots(
       'role',
       'mandatory',
       'requiredScope',
+      'requiredTestLayers',
       'passRatings',
       'coversBarKeys',
     ] as const;

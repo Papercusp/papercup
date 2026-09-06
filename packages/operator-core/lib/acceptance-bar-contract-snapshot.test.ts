@@ -540,6 +540,23 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     ]);
   });
 
+  it('names a required proof-layer change instead of reporting a hash-only BAR amendment', () => {
+    const before = projectAcceptanceBarContractSnapshot(fixture(1));
+    const after = structuredClone(before);
+    after.bars[0]!.requiredTestLayers = ['integration'];
+
+    const diff = diffAcceptanceBarContractSnapshots(before, after, 'amend');
+
+    expect(diff.requiresAmendment).toBe(true);
+    expect(diff.changes).toEqual([
+      expect.objectContaining({
+        barKey: 'R-1',
+        kinds: ['bar-meaning'],
+        fields: ['requiredTestLayers'],
+      }),
+    ]);
+  });
+
   it('classifies BAR meaning, evidence plane, mapping, and provenance separately', () => {
     const before = projectAcceptanceBarContractSnapshot(fixture(1));
     const after = structuredClone(before);
