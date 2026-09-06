@@ -4,6 +4,7 @@ import {
   callToolWithPressureRetry,
   callToolWithReplayRecovery,
   buildCallToolParams,
+  canDispatchWithoutCatalog,
   buildMcpUrl,
   connectWithLocalRetry,
   listToolsWithLocalRetry,
@@ -16,7 +17,9 @@ import {
   resolveHarnessScope,
   resolveTokenPath,
   resolveTokenPaths,
+  dispatchScriptedToolWithoutCatalog,
   formatToolCallFailure,
+  formatToolCatalogBypass,
   formatToolCatalogFailure,
   isLoopPressureShed,
   isReadOnlyTool,
@@ -618,6 +621,53 @@ describe('ptool tools/call failure diagnostics', () => {
     )).resolves.toBe(result);
     expect(callTool).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(2_000);
+  });
+});
+
+describe('ptool catalog-independent scripted dispatch', () => {
+  it('only bypasses catalog discovery for a named scripted call', () => {
+    expect(canDispatchWithoutCatalog('rubrics:get', 'stdin')).toBe(true);
+    expect(canDispatchWithoutCatalog('rubrics:get', 'file')).toBe(true);
+    expect(canDispatchWithoutCatalog('rubrics:get', null)).toBe(false);
+    expect(canDispatchWithoutCatalog(null, 'stdin')).toBe(false);
+    expect(canDispatchWithoutCatalog('', 'stdin')).toBe(false);
+  });
+
+  it('dispatches supplied arguments without asking the client for tools/list', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const client = {
+      listTools: vi.fn(),
+      callTool: vi.fn().mockResolvedValue(result),
+    };
+
+    await expect(dispatchScriptedToolWithoutCatalog(
+      client,
+      'rubrics:get',
+      { rubricRef: 'pot-coordination-health' },
+      { idempotencyKey: 'catalog-bypass-1', timeoutMs: 1 },
+    )).resolves.toEqual({ client, result });
+
+    expect(client.listTools).not.toHaveBeenCalled();
+    expect(client.callTool).toHaveBeenCalledWith(
+      {
+        name: 'rubrics:get',
+        arguments: { rubricRef: 'pot-coordination-health' },
+        _meta: { format: 'json', idempotencyKey: 'catalog-bypass-1' },
+      },
+      undefined,
+      { timeout: 1, maxTotalTimeout: 1 },
+    );
+  });
+
+  it('labels the fallback as pre-dispatch while keeping scripted output on stdout', () => {
+    const message = formatToolCatalogBypass(
+      'rubrics:get',
+      Object.assign(new Error('Request timed out'), { code: -32001 }),
+    );
+
+    expect(message).toContain('failure_stage=tools/list');
+    expect(message).toContain('dispatching the supplied scripted arguments directly');
+    expect(message).not.toContain('may have executed');
   });
 });
 
