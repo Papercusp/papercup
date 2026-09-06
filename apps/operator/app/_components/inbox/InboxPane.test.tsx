@@ -479,6 +479,39 @@ describe("<InboxPane>", () => {
     });
   });
 
+  /* ── The rail column (inbox-three-column-resolver-states-2026-09-06 P-002) ──
+     CSS contract for the split grid's first column. The DOM half — what
+     renders in it — is under the layout="split" tests below. */
+  describe("rail column (P-002)", () => {
+    const css = readFileSync(join(__dirname, "inbox-pane.css"), "utf8");
+    const rule = (selector: string): string =>
+      css.match(
+        new RegExp(
+          selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*\\}",
+        ),
+      )?.[0] ?? "";
+
+    it("opens the split grid with the 210px rail, then the list band, then the aside", () => {
+      expect(rule(".op-inbox--split")).toMatch(
+        /grid-template-columns:\s*210px\s+minmax\(380px,\s*37%\)\s+minmax\(0,\s*1fr\)/,
+      );
+    });
+
+    it("scrolls the rail internally instead of growing the page", () => {
+      const rail = rule(".op-inbox__rail");
+      expect(rail).toMatch(/overflow-y:\s*auto/);
+      expect(rail).toMatch(/min-height:\s*0\b/);
+    });
+
+    it("at narrow widths hides the rail together with the list column while an item is selected", () => {
+      const narrow = css.slice(css.indexOf("@media (max-width: 900px)"));
+      expect(narrow.length).toBeGreaterThan(0);
+      expect(narrow).toMatch(
+        /\.op-inbox--split\[data-has-selection\] \.op-inbox__rail,\s*\.op-inbox--split\[data-has-selection\] \.op-inbox__column\s*\{[^}]*display:\s*none/,
+      );
+    });
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem("d1"),
@@ -691,6 +724,130 @@ describe("<InboxPane>", () => {
     expect(document.getElementById("inbox-expanded-d2")).toBe(expanded);
     // The unselected row renders nothing extra.
     expect(screen.queryByTestId("inbox-expanded-d1")).toBeNull();
+  });
+
+  /* ── The rail (inbox-three-column-resolver-states-2026-09-06 P-002 / D-001) ── */
+  it("split renders the rail FIRST — scopes, facets and the collapsed masthead leave the list column", () => {
+    seedAttention([mkItem("d1"), mkItem("d2")]);
+    renderPane("", { layout: "split" });
+    const root = screen.getByTestId("inbox-tab");
+    const rail = screen.getByTestId("inbox-rail");
+    // Grid order IS column order: rail, then the list column, then the aside.
+    expect(root.firstElementChild).toBe(rail);
+    expect(rail.nextElementSibling?.className).toBe("op-inbox__column");
+    expect(rail.tagName).toBe("NAV");
+    // The scopes + kind facets moved, with their ids and handlers intact.
+    expect(rail.contains(screen.getByTestId("inbox-filter-needs"))).toBe(true);
+    expect(rail.contains(screen.getByTestId("inbox-filter-all"))).toBe(true);
+    expect(rail.contains(screen.getByTestId("inbox-facet-coord-message"))).toBe(
+      true,
+    );
+    // The masthead collapsed to `Inbox` + the count, in the rail head.
+    expect(root.querySelector(".op-inbox__masthead")).toBeNull();
+    expect(rail.querySelector(".op-inbox__rail-title")?.textContent).toBe(
+      "Inbox",
+    );
+    const count = screen.getByTestId("inbox-masthead-count");
+    expect(rail.contains(count)).toBe(true);
+    expect(count.getAttribute("aria-label")).toBe("2 items need you");
+    // The list column keeps search + sort and the rows — and nothing moved.
+    const master = screen.getByTestId("inbox-master");
+    expect(master.contains(rail)).toBe(false);
+    const controls = master.querySelector(".op-inbox__controls");
+    expect(controls?.querySelector(".op-inbox__chips")).toBeNull();
+    expect(controls?.querySelector(".op-inbox__facets")).toBeNull();
+    expect(controls?.contains(screen.getByTestId("inbox-search"))).toBe(true);
+    expect(controls?.contains(screen.getByTestId("inbox-sort"))).toBe(true);
+    expect(master.contains(screen.getByTestId("inbox-row-d1"))).toBe(true);
+    // Exactly one of each — nothing is rendered twice.
+    expect(screen.getAllByTestId("inbox-filter-needs")).toHaveLength(1);
+    expect(screen.getAllByTestId("inbox-masthead-count")).toHaveLength(1);
+  });
+
+  it("split: the rail's scope and facet buttons still drive the same URL state", async () => {
+    seedAttention([
+      mkItem("d1"),
+      mkItem("a1", {
+        tier: "alert",
+        needsHuman: false,
+        kind: "coord-escalation",
+      }),
+    ]);
+    const { lastQuery } = renderPane("", { layout: "split" });
+    const rail = screen.getByTestId("inbox-rail");
+    expect(screen.queryByTestId("inbox-row-a1")).toBeNull();
+    fireEvent.click(screen.getByTestId("inbox-filter-all"));
+    await waitFor(() => expect(lastQuery()).toContain("opci=all"));
+    expect(
+      screen.getByTestId("inbox-filter-all").getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(rail.contains(screen.getByTestId("inbox-filter-all"))).toBe(true);
+    await waitFor(() => expect(screen.getByTestId("inbox-row-a1")).toBeTruthy());
+  });
+
+  it("stack renders no rail — masthead, scopes and facets stay inside the master (D-001)", () => {
+    seedAttention([mkItem("d1")]);
+    renderPane("");
+    expect(screen.queryByTestId("inbox-rail")).toBeNull();
+    const master = screen.getByTestId("inbox-master");
+    expect(master.querySelector(".op-inbox__masthead")).not.toBeNull();
+    expect(master.contains(screen.getByTestId("inbox-masthead-count"))).toBe(
+      true,
+    );
+    const controls = master.querySelector(".op-inbox__controls");
+    expect(
+      controls?.contains(screen.getByTestId("inbox-filter-needs")),
+    ).toBe(true);
+    expect(
+      controls?.contains(screen.getByTestId("inbox-facet-coord-message")),
+    ).toBe(true);
+    // Stack order inside the master is unchanged: masthead first, then the
+    // (bulk slot and) controls, then the list, then the foot.
+    const order = Array.from(master.children).map((el) => el.className);
+    expect(order[0]).toBe("op-inbox__masthead");
+    expect(order.indexOf("op-inbox__controls")).toBeGreaterThan(0);
+    expect(order.indexOf("op-inbox__controls")).toBeLessThan(
+      order.indexOf("op-inbox__list"),
+    );
+    expect(order[order.length - 1]).toBe("op-inbox__foot");
+  });
+
+  /* ── The bulk card (inbox-three-column-resolver-states-2026-09-06 P-003 / D-002) ── */
+  it("split: the bulk card renders at the FOOT of the rail — never in the list column", () => {
+    seedAttention([mkItem("d1")]);
+    renderPane("", { layout: "split" });
+    const rail = screen.getByTestId("inbox-rail");
+    const railBulk = screen.getByTestId("inbox-rail-bulk");
+    expect(rail.lastElementChild).toBe(railBulk);
+    const start = screen.getByTestId("inbox-bulk-start");
+    expect(railBulk.contains(start)).toBe(true);
+    // Exactly one mount: the strip is not ALSO in the master.
+    expect(screen.getAllByTestId("inbox-bulk-start")).toHaveLength(1);
+    expect(
+      screen.getByTestId("inbox-master").querySelector(".op-inbox__bulk-slot"),
+    ).toBeNull();
+    // The card variant: text copy + a labelled button, same handler contract.
+    const slot = start.closest(".op-inbox__bulk-slot");
+    expect(slot?.getAttribute("data-bulk-resolver-strip-variant")).toBe("card");
+    expect(slot?.textContent).toContain("1 row can be reviewed together");
+    expect(start.textContent).toContain("Review bulk recommendation");
+    expect(start.getAttribute("aria-label")).toBe(
+      "Review bulk recommendation for 1 filtered item",
+    );
+  });
+
+  it("stack: the bulk strip stays in the master as the full-width band (D-001)", () => {
+    seedAttention([mkItem("d1")]);
+    renderPane("");
+    const start = screen.getByTestId("inbox-bulk-start");
+    expect(screen.getByTestId("inbox-master").contains(start)).toBe(true);
+    expect(screen.queryByTestId("inbox-rail-bulk")).toBeNull();
+    expect(
+      start
+        .closest(".op-inbox__bulk-slot")
+        ?.getAttribute("data-bulk-resolver-strip-variant"),
+    ).toBe("strip");
+    expect(start.getAttribute("aria-label")).toBe("Bulk resolve 1 filtered item");
   });
 
   it("split: clicking a row still writes ?opcis, and Back to list clears it", async () => {
