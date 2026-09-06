@@ -325,6 +325,23 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ to: { type: 'array', items: { type: 'string' } }, body: { type: 'string' } }, ['body']),
   },
   {
+    name: 'coord:handoff',
+    description:
+      'Record a work transition. Open a handoff to other agents with to[] + summary (optionally plan/items, body, next_action, files_modified, commit), or accept an existing handoff with accept_msg_id alone. Use it to transfer work, not as a free-text FYI.',
+    input: obj({
+      accept_msg_id: { type: 'string', description: 'Accept an existing handoff; use this form alone.' },
+      to: { type: 'array', items: { type: 'string' } },
+      plan_slug: { type: 'string' },
+      summary: { type: 'string' },
+      body: { type: 'string' },
+      next_action: { type: 'string' },
+      files_modified: { type: 'array', items: { type: 'string' } },
+      commit: { type: 'string' },
+      items: { type: 'array', items: { type: 'string' }, maxItems: 40 },
+      note: { type: 'string' },
+    }),
+  },
+  {
     name: 'coord:presence',
     description: 'List active coordination agents and their declared intent.',
     input: obj({ workspace: { type: 'string' } }),
