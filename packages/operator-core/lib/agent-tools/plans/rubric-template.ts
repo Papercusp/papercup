@@ -313,6 +313,38 @@ export type RubricCriterionCheck = z.infer<typeof rubricCriterionCheckSchema>;
 export const acceptanceCriterionRoleSchema = z.enum(['outcome', 'disclosure']);
 export type AcceptanceCriterionRole = z.infer<typeof acceptanceCriterionRoleSchema>;
 
+/** The pass-rating field is optional for legacy criteria, and may be explicitly
+ * empty only for a disclosure BAR. Keep the array shape permissive here so the
+ * role-aware validators below can explain the real contract instead of Zod's
+ * generic "too small" message. */
+export const acceptancePassRatingsSchema = z
+  .array(z.string().trim().min(1))
+  .max(50)
+  .optional()
+  .describe(
+    "acceptance-kind only: outcome BARs use non-empty satisfying labels; role:'disclosure' may use [] and cannot name pass labels",
+  );
+
+export function acceptancePassRatingsError(input: {
+  role?: AcceptanceCriterionRole | null;
+  passRatings?: readonly string[] | null;
+} | null | undefined): string | undefined {
+  if (input?.passRatings == null) return undefined;
+  if (input.role === 'disclosure') {
+    if (input.passRatings.length > 0) {
+      return "`passRatings` must be empty or omitted when role:'disclosure' is set";
+    }
+    return undefined;
+  }
+  if (input.passRatings.length === 0) {
+    return (
+      "`passRatings` must contain at least one rating unless role:'disclosure' is set; " +
+      'a disclosure criterion may use passRatings: []'
+    );
+  }
+  return undefined;
+}
+
 /** Evidence plane an acceptance BAR promises to prove. This is structural rather
  * than prose so tree-only evidence cannot accidentally satisfy a deployed/live BAR. */
 export const acceptanceEvidencePlaneSchema = z.enum(['tree', 'deployed', 'live']);
@@ -360,7 +392,7 @@ export const requirementAcceptanceSchema = z
     requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
     evidencePlane: acceptanceEvidencePlaneSchema.optional(),
     requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
-    passRatings: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
+    passRatings: acceptancePassRatingsSchema,
     mandatory: z.boolean().optional(),
     role: acceptanceCriterionRoleSchema.optional(),
     coversBarKeys: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
@@ -389,7 +421,7 @@ export const requirementSectionsSchema = z
  * (a compile-time assignability check pins this in rubric-template.test.ts). A
  * structured observation's `ratings` Record is keyed by `key`.
  */
-export const rubricCriterionSchema = z
+const rubricCriterionObjectSchema = z
   .object({
     key: z.string().min(1).describe("stable kebab id; a structured observation's ratings Record is keyed by this"),
     title: z.string().min(1).describe('short human label for the criterion'),
@@ -429,12 +461,7 @@ export const rubricCriterionSchema = z
     requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers.describe(
       'acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change',
     ),
-    passRatings: z
-      .array(z.string().trim().min(1))
-      .min(1)
-      .max(50)
-      .optional()
-      .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
+    passRatings: acceptancePassRatingsSchema,
     coversBarKeys: z
       .array(z.string().trim().min(1))
       .min(1)
@@ -495,6 +522,11 @@ export const rubricCriterionSchema = z
   })
   .strict();
 
+export const rubricCriterionSchema = rubricCriterionObjectSchema.superRefine((input, ctx) => {
+  const message = acceptancePassRatingsError(input);
+  if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['passRatings'], message });
+});
+
 /**
  * The acceptance-kind criterion: the SAME field vocabulary as a standard criterion (so
  * the grading path — ratings keyed by `key` against the rating scale — is identical,
@@ -504,7 +536,7 @@ export const rubricCriterionSchema = z
  * rubrics still require the full fields — enforced by the per-kind superRefine below,
  * NOT by this element schema, so one criteria array serves both kinds.
  */
-export const acceptanceRubricCriterionSchema = rubricCriterionSchema.partial({
+export const acceptanceRubricCriterionSchema = rubricCriterionObjectSchema.partial({
   model: true,
   method: true,
   driftMarkers: true,
@@ -525,7 +557,11 @@ export const requirementCriterionInputSchema = acceptanceRubricCriterionSchema
   })
   .superRefine((input, ctx) => {
     try {
-      normalizeRequirementSections(input);
+      const normalized = normalizeRequirementSections(input);
+      const passRatingsError = acceptancePassRatingsError(normalized);
+      if (passRatingsError) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['passRatings'], message: passRatingsError });
+      }
     } catch (error) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
     }
@@ -545,7 +581,13 @@ export const requirementAmendmentSchema = z
         (section) => section && Object.keys(section).length > 0,
       ),
     'provide an Intent, Acceptance or Verification amendment',
-  );
+  )
+  .superRefine((input, ctx) => {
+    const passRatingsError = acceptancePassRatingsError(input.acceptance);
+    if (passRatingsError) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['acceptance', 'passRatings'], message: passRatingsError });
+    }
+  });
 
 /**
  * The `rubric` template's structured data (the `template_data` jsonb). EXACTLY the
@@ -922,6 +964,15 @@ const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.supe
         message:
           `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
           '(the concrete degraded/broken state that falsifies the outcome)',
+      });
+    }
+
+    const passRatingsError = acceptancePassRatingsError(criterion);
+    if (passRatingsError && !(criterion.role === 'outcome' && criterion.mandatory === true)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria', index, 'passRatings'],
+        message: passRatingsError,
       });
     }
 
