@@ -18,13 +18,16 @@ import {
   formatRetryDecisionLine,
   formatRetryPoolLine,
   matchRetryFlakeClasses,
+  vitestFailureReport,
 } from '../../../../scripts/lib/retry-failure-shape.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const MAX = 15;
 const MIN = 60_000;
 const files = (n: number) => Array.from({ length: n }, (_, i) => `lib/f${i}.test.ts`);
+// The stderr tail of a real red: vitest's failure-report divider, then one entry per failure.
 const ASSERTION_RED = [
+  '⎯⎯⎯⎯⎯⎯ Failed Tests 37 ⎯⎯⎯⎯⎯⎯',
   'FAIL lib/f0.test.ts > renders',
   'AssertionError: expected "a" to deeply equal "b"',
   '- Expected',
@@ -49,6 +52,44 @@ describe('matchRetryFlakeClasses', () => {
     // @ts-expect-error — runtime callers pass null when capture was streamed
     expect(matchRetryFlakeClasses(null)).toEqual([]);
   });
+
+  it('sees a coloured signature — the reporter wraps tokens in ANSI, which breaks a bare \\b match', () => {
+    expect(matchRetryFlakeClasses('Error: connect \x1b[31mECONNREFUSED\x1b[39m 127.0.0.1:5432')).toEqual(['connection']);
+  });
+});
+
+describe('vitestFailureReport', () => {
+  it('scopes to the tail from the first failure-report divider, ANSI stripped', () => {
+    const out =
+      'noise: this passing title says SIGKILL\n' +
+      '\x1b[31m⎯⎯⎯⎯⎯⎯\x1b[39m\x1b[1m\x1b[41m Failed Suites 1 \x1b[49m\x1b[22m\x1b[31m⎯⎯⎯⎯⎯⎯⎯\x1b[39m\n' +
+      'FAIL lib/a.test.ts [ lib/a.test.ts ]\nError: boom\n' +
+      '⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯\nFAIL lib/b.test.ts > x\nAssertionError: nope';
+    const r = vitestFailureReport(out);
+    expect(r.scope).toBe('failure-report');
+    expect(r.report.startsWith('⎯⎯⎯⎯⎯⎯ Failed Suites 1 ')).toBe(true);
+    expect(r.report).not.toContain('SIGKILL');
+    expect(r.report).toContain('Failed Tests 2');
+    expect(r.report).not.toContain('\x1b[');
+  });
+
+  it("also anchors on vitest's unhandled-error forms", () => {
+    for (const divider of ['⎯⎯ Unhandled Errors ⎯⎯', 'Vitest caught 1 unhandled error during the test run.', '⎯⎯ Unhandled Rejection ⎯⎯']) {
+      const r = vitestFailureReport(`green title SIGABRT\n${divider}\nError: Worker exited unexpectedly`);
+      expect(r.scope).toBe('failure-report');
+      expect(r.report).not.toContain('SIGABRT');
+      expect(matchRetryFlakeClasses(`green title SIGABRT\n${divider}\nError: Worker exited unexpectedly`)).toEqual(['worker-crash']);
+    }
+  });
+
+  it('falls back to the WHOLE capture when no report exists (a crash before any report, a non-vitest runner)', () => {
+    const r = vitestFailureReport('npm ERR! spawn ENOENT\nFATAL ERROR: Reached heap limit');
+    expect(r).toEqual({ report: 'npm ERR! spawn ENOENT\nFATAL ERROR: Reached heap limit', scope: 'whole-output' });
+    expect(matchRetryFlakeClasses('FATAL ERROR: Reached heap limit')).toEqual(['worker-crash']);
+    expect(vitestFailureReport('')).toEqual({ report: '', scope: 'whole-output' });
+    // @ts-expect-error — runtime callers pass null when capture was streamed
+    expect(vitestFailureReport(null)).toEqual({ report: '', scope: 'whole-output' });
+  });
 });
 
 describe('decideRetry', () => {
@@ -59,8 +100,39 @@ describe('decideRetry', () => {
     expect(d.reason).toBe('broad-deterministic-red(36>15)');
     expect(formatRetryDecisionLine('@papercusp/operator-core', d)).toBe(
       'AFFECTED_RETRY_SKIPPED ws=@papercusp/operator-core retry=0 mode=none failedFiles=36 flakeClasses=none ' +
-        'reason=broad-deterministic-red(36>15)',
+        'flakeScope=failure-report reason=broad-deterministic-red(36>15)',
     );
+  });
+
+  it('P-006 replay (e70cd139 lane-stateful): flake tokens in PASSING titles and console output do not earn a retry', () => {
+    // The first pass's stdout, as captured: green rows whose titles carry SIGKILL/SIGABRT, a
+    // green test's console output printing ECONNREFUSED — then the stderr failure report,
+    // which holds only assertion diffs.
+    const output = [
+      '\x1b[32m✓\x1b[39m lib/host-recycle.test.ts \x1b[2m(\x1b[22m\x1b[2m3 tests\x1b[22m\x1b[2m)\x1b[22m',
+      '     \x1b[32m✓\x1b[39m installFatalDiagnostics (diagnostic report on native SIGABRT)',
+      '     \x1b[32m✓\x1b[39m hitting the deadline SIGTERMs first (it used to SIGKILL and leak)',
+      '\x1b[90mstdout\x1b[2m | lib/harness/routines/release-actions.test.ts > a green tick',
+      '[release-actions] mocked pool refused: connect ECONNREFUSED 127.0.0.1:5432 (expected under the mock)',
+      ' \x1b[31m❯\x1b[39m lib/static-tool-catalog.test.ts (1 test | 1 failed)',
+      ...Array.from({ length: 16 }, (_, i) => ` \x1b[31m❯\x1b[39m lib/f${i}.test.ts (9 tests | 1 failed)`),
+      '',
+      '\x1b[31m⎯⎯⎯⎯⎯⎯\x1b[39m\x1b[1m\x1b[41m Failed Tests 128 \x1b[49m\x1b[22m\x1b[31m⎯⎯⎯⎯⎯⎯\x1b[39m',
+      '',
+      '\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m lib/static-tool-catalog.test.ts\x1b[2m > \x1b[22mmatches every projected MCP identity',
+      '\x1b[31m\x1b[1mAssertionError\x1b[22m: derived catalog must have no missing or invented MCP names\x1b[39m',
+    ].join('\n');
+    expect(matchRetryFlakeClasses(output)).toEqual([]);
+    const d = decideRetry({ failedFiles: files(16), output, maxFiles: MAX });
+    expect(d).toMatchObject({ retry: false, mode: 'none', flakeScope: 'failure-report', reason: 'broad-deterministic-red(16>15)' });
+    // The same tokens INSIDE the report are real signatures and still earn the retry.
+    const flaky = `${output}\nError: connect ECONNREFUSED 127.0.0.1:5432\n    at TCPConnectWrap.afterConnect`;
+    expect(matchRetryFlakeClasses(flaky)).toEqual(['connection']);
+    expect(decideRetry({ failedFiles: files(16), output: flaky, maxFiles: MAX })).toMatchObject({
+      retry: true,
+      mode: 'whole-workspace',
+      reason: 'flake-class:connection(broad)',
+    });
   });
 
   it('SKIPS a mid-sized deterministic red too (above the small-red floor, no signature)', () => {
@@ -81,7 +153,7 @@ describe('decideRetry', () => {
       maxFiles: MAX,
     });
     expect(d).toMatchObject({ retry: true, mode: 'fresh-files', flakeClasses: ['test-timeout'] });
-    expect(formatRetryDecisionLine('ws', d)).toMatch(/^AFFECTED_RETRY_DECISION ws=ws retry=1 mode=fresh-files failedFiles=8 flakeClasses=test-timeout reason=flake-class:test-timeout$/);
+    expect(formatRetryDecisionLine('ws', d)).toMatch(/^AFFECTED_RETRY_DECISION ws=ws retry=1 mode=fresh-files failedFiles=8 flakeClasses=test-timeout flakeScope=failure-report reason=flake-class:test-timeout$/);
   });
 
   it('retries the WHOLE workspace when a flake class is present but the set exceeds the cap (unchanged behaviour)', () => {
