@@ -146,7 +146,7 @@ const GIT_SYNC_HISTORY_LIMIT = 30;
 export interface ExecutorReaperResult {
   /** Stuck PENDING/ENQUEUED workflows cancelled (dedup freed). */
   cancelled: number;
-  /** Orphaned workflow_queue rows purged. */
+  /** Compatibility count for the removed queue-row cleanup path; always zero. */
   queuePurged: number;
   /** Routine ids pushed back to due-now after a no-first-output routineFire was reaped. */
   requeuedRoutineIds: string[];
@@ -203,7 +203,9 @@ export async function reapDeadExecutorWorkflows(
     const staleRoutineFireNoOutputAt = now - staleRoutineFireNoOutputMs;
     const staleRoutineFireOrphanAt = now - staleRoutineFireOrphanMs;
     let cancelled = 0;
-    let queuePurged = 0;
+    // Keep this result field for callers that still consume the historical shape.
+    // The supported DBOS schema has no queue-row relation to purge.
+    const queuePurged = 0;
 
     // EI-18752434722211671: when this process knows its own start time, a
     // 'local'-executor routineFire created before that instant is provably
@@ -245,17 +247,6 @@ export async function reapDeadExecutorWorkflows(
            AND status IN ('PENDING', 'ENQUEUED')`;
       cancelled += cancelRes.count;
 
-      // Purge the matching uncompleted queue rows (they can also pin a dedup). Secondary
-      // to the status cancel above — never let it fail the reap.
-      try {
-        const qRes = await sql`
-          DELETE FROM dbos.workflow_queue
-           WHERE executor_id = ANY(${deadIds})
-             AND completed_at_epoch_ms IS NULL`;
-        queuePurged += qRes.count;
-      } catch {
-        /* queue purge is best-effort */
-      }
     }
 
     // Executor ids are intentionally stable in systemd (`DBOS__VMID=bg-host-3270`),
@@ -265,8 +256,8 @@ export async function reapDeadExecutorWorkflows(
     //   - a non-terminal routinesTick older than the scheduler silence window, and
     //   - a routineFire whose creation time is older than the longer first-output
     //     window and that has not checkpointed any DBOS step output, OR an
-    //     ENQUEUED routineFire older than the fast-orphan window whose queue row is
-    //     GONE (never dequeued yet un-queued — a genuine anomaly, see below), and
+    //     ENQUEUED routineFire older than the fast-orphan window with no live sibling
+    //     workflow on the same queue, and
     //   - any non-terminal workflow past its explicit DBOS deadline.
     //
     // operation_outputs is a checkpoint/output table, not a live "step entered"
@@ -276,39 +267,20 @@ export async function reapDeadExecutorWorkflows(
     // start row until it completes or records its own timeout/error, so routineFire
     // uses the LONGER first-action-output window than the scheduler tick.
     //
-    // QUEUE-ROW SEMANTICS — CORRECTED (WI-1416, verified live 2026-07-01): our DBOS
-    // version DELETES the workflow_queue row at DEQUEUE time, so every actively-
-    // EXECUTING PENDING workflow has NO live queue row. "No queue row" therefore
-    // means "executing OR orphaned", NOT "orphaned" — the old fast path built on the
-    // opposite reading cancelled ANY healthy fire whose first step outlived the 90s
-    // scheduler window (git-sync on the big tree: reaped + requeued every 2-min pass
-    // → restart-from-scratch loop → ~1 commit/40min, WI-1415). The fast path now
-    // only reaps the state that IS anomalous under the corrected semantics: an
-    // ENQUEUED row (never dequeued) with no live queue row — e.g. a crash between
-    // the queue delete and the status flip, or a prior partial reap — after its own
-    // longer, env-tunable orphan window. A PENDING no-output fire is left to the
-    // no-output window, its explicit deadline, or the dead-executor branch.
-    //
-    // SEMANTICS CORRECTED AGAIN (WI-3519, verified live 2026-07-09): in this DBOS
-    // version dbos.workflow_queue holds NO rows even for never-dequeued ENQUEUED
-    // workflows (the table was observed 0-rows-total while 9 fires sat ENQUEUED),
-    // so "ENQUEUED with no queue row" is the NORMAL state of every backlogged fire,
-    // not an anomaly — the guard above is vacuous. Under queue-slot starvation
-    // (routines-critical concurrency=2; two slow-but-checkpointing fires under host
-    // CPU pressure) every waiting fire aged past the orphan window and was
-    // cancelled+requeued each sweep (oddsmith reaped_count hit 114 — the WI-1415
-    // flap, reintroduced). The fast path therefore ALSO requires the QUEUE itself to
-    // be dead: no sibling workflow on the same queue_name either actively PENDING
-    // (recent updated_at OR still inside its explicit workflow deadline) or recently
-    // drained to SUCCESS/ERROR within the orphan window. The deadline leg matters for
-    // long single-step actions such as green-checkpoint: their external log can make
-    // steady progress for up to two hours while workflow_status.updated_at remains at
-    // step start. Treating only a recent status write as liveness cancelled healthy
-    // ENQUEUED siblings after ten minutes, including the operator-home release gate.
-    // CANCELLED is deliberately NOT liveness — the reaper's own cancels bump updated_at
-    // and would self-mask a genuinely wedged queue. A healthy backlog behind live
-    // workers is left alone (the no-output window, explicit deadlines, and the
-    // dead-executor branch still backstop true wedges).
+    // The current DBOS deployment does not expose a queue-row relation, so queue
+    // liveness is inferred entirely from workflow_status siblings. An ENQUEUED
+    // fire is fast-reaped only when no sibling on the same queue_name is either
+    // actively PENDING (recent updated_at OR still inside its explicit workflow
+    // deadline) or recently drained to SUCCESS/ERROR within the orphan window.
+    // The deadline leg matters for long single-step actions such as green-checkpoint:
+    // their external log can make steady progress for up to two hours while
+    // workflow_status.updated_at remains at step start. Treating only a recent
+    // status write as liveness cancelled healthy ENQUEUED siblings after ten
+    // minutes, including the operator-home release gate. CANCELLED is deliberately
+    // NOT liveness — the reaper's own cancels bump updated_at and would self-mask
+    // a genuinely wedged queue. A healthy backlog behind live workers is left alone
+    // (the no-output window, explicit deadlines, and the dead-executor branch still
+    // backstop true wedges).
     //
     // Use created_at, not started_at_epoch_ms or updated_at: DBOS recovery can
     // refresh BOTH timestamps on a row it still has not checkpointed, and that
@@ -323,12 +295,6 @@ export async function reapDeadExecutorWorkflows(
                   OR (
                     status = 'ENQUEUED'
                     AND created_at < ${staleRoutineFireOrphanAt}
-                    AND NOT EXISTS (
-                      SELECT 1
-                        FROM dbos.workflow_queue q
-                       WHERE q.workflow_uuid = dbos.workflow_status.workflow_uuid
-                         AND q.completed_at_epoch_ms IS NULL
-                    )
                     AND NOT EXISTS (
                       SELECT 1
                         FROM dbos.workflow_status w2
@@ -389,12 +355,6 @@ export async function reapDeadExecutorWorkflows(
                  AND created_at < ${staleRoutineFireOrphanAt}
                  AND NOT EXISTS (
                    SELECT 1
-                     FROM dbos.workflow_queue q
-                    WHERE q.workflow_uuid = dbos.workflow_status.workflow_uuid
-                      AND q.completed_at_epoch_ms IS NULL
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1
                      FROM dbos.workflow_status w2
                     WHERE w2.queue_name = dbos.workflow_status.queue_name
                       AND w2.workflow_uuid <> dbos.workflow_status.workflow_uuid
@@ -433,9 +393,8 @@ export async function reapDeadExecutorWorkflows(
       // The workflow cancellation and routine due-now write are ONE state transition.
       // Previously the cancellation committed first; if the metadata UPDATE then failed,
       // the dedup was freed but the routine stayed scheduled for its next normal cadence.
-      // That exact split stranded the 17:15 Papercusp gate until 18:15. Keep the optional
-      // workflow_queue cleanup outside this transaction: it is secondary evidence cleanup,
-      // and a best-effort DELETE must not be able to abort the authoritative transition.
+      // That exact split stranded the 17:15 Papercusp gate until 18:15, so keep both
+      // writes in one transaction.
       const staleTransition = await sql.begin(async (tx) => {
         const staleCancel = await tx`
           UPDATE dbos.workflow_status
@@ -497,18 +456,9 @@ export async function reapDeadExecutorWorkflows(
         return { cancelled: staleCancel.count };
       });
       cancelled += staleTransition.cancelled;
-      try {
-        const qRes = await sql`
-          DELETE FROM dbos.workflow_queue
-           WHERE workflow_uuid = ANY(${staleIds})
-             AND completed_at_epoch_ms IS NULL`;
-        queuePurged += qRes.count;
-      } catch {
-        /* queue purge is best-effort */
-      }
     }
 
-    if (cancelled === 0 && queuePurged === 0) return empty;
+    if (cancelled === 0) return empty;
     return {
       cancelled,
       queuePurged,
@@ -630,9 +580,9 @@ export function startExecutorReaper(
       opts.staleRoutineFireOrphanMs,
       processStartedAtMs,
     ).then((r) => {
-      if (r.cancelled > 0 || r.queuePurged > 0) {
+      if (r.cancelled > 0) {
         console.warn(
-          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s) + ${r.queuePurged} queue row(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
+          `[dbos-executor-reaper] reaped ${r.cancelled} workflow(s); dead executor(s): ${r.deadExecutorIds.join(', ') || 'none'}; stale workflow(s): ${r.staleWorkflowIds.join(', ') || 'none'}; requeued routine(s): ${r.requeuedRoutineIds.join(', ') || 'none'}`,
         );
       }
     });
