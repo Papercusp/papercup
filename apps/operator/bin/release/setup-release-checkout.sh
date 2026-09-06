@@ -1458,6 +1458,34 @@ EOF
   log "provisioned $_provisioned_assets gitignored runtime asset(s) under $PUBLIC_ASSET_REL"
 fi
 
+# 3c. Checksum-pinned desktop rootfs -----------------------------------------
+# A nested .papercusp/worktrees/<cut> cannot discover the integration tree via
+# the cutter's sibling scan. Copy only a donor matching the RELEASE's stamp.
+ROOTFS_REL="papercusp-desktop/src-tauri/resources/papercup-runtime.tar.gz"
+ROOTFS_TARGET="$RELEASE_ROOT/$ROOTFS_REL"
+ROOTFS_STAMP="$(dirname "$ROOTFS_TARGET")/.rootfs-build-stamp"
+ROOTFS_DONOR="$INTEGRATION_ROOT/$ROOTFS_REL"
+if [ -f "$ROOTFS_STAMP" ] && [ -f "$ROOTFS_DONOR" ] && [ ! -f "$ROOTFS_TARGET" ]; then
+  ROOTFS_EXPECTED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("rootfsSha256", ""))' "$ROOTFS_STAMP")"
+  ROOTFS_ACTUAL="$(sha256sum "$ROOTFS_DONOR" | cut -d ' ' -f 1)"
+  if [[ "$ROOTFS_EXPECTED" =~ ^[a-f0-9]{64}$ ]] && [ "$ROOTFS_ACTUAL" = "$ROOTFS_EXPECTED" ]; then
+    mkdir -p "$(dirname "$ROOTFS_TARGET")"
+    cp "$ROOTFS_DONOR" "$ROOTFS_TARGET.tmp.$$"
+    ROOTFS_COPIED="$(sha256sum "$ROOTFS_TARGET.tmp.$$" | cut -d ' ' -f 1)"
+    if [ "$ROOTFS_COPIED" != "$ROOTFS_EXPECTED" ]; then
+      rm -f "$ROOTFS_TARGET.tmp.$$"
+      log "ERROR rootfs donor changed during copy; refusing unverified input"
+      exit 1
+    fi
+    mv "$ROOTFS_TARGET.tmp.$$" "$ROOTFS_TARGET"
+    log "provisioned WSL rootfs from integration (release stamp SHA-256 verified)"
+  else
+    # Web-only checkouts do not require this desktop artifact. Windows cuts
+    # still fail closed at their preflight when no matching donor is present.
+    log "WARN integration WSL rootfs does not match release stamp; not copied"
+  fi
+fi
+
 # 4. SPA dist (deploys only) -------------------------------------------------
 # operator-vite/dist is UNTRACKED, so a fresh swap serves whatever dist was
 # last built in this tree — found 25h STALE on 2026-06-06 (the /admin/git tab
