@@ -1201,6 +1201,9 @@ export async function backfillFromOwnerSessionTurns(
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const textCap = THINKING_ENTRY_TEXT_CAP + 200;
+  // Bind cursor timestamps as text before PostgreSQL parses them. A directly
+  // inferred timestamptz parameter uses postgres.js's Date serializer, which
+  // drops retained microseconds and skips rows at the page boundary.
   const rows = await sql<Array<{
     event_at: string; source_kind: string; session_id: string; turn_idx: number;
     speaker: string | null; text: string | null;
@@ -1213,9 +1216,9 @@ export async function backfillFromOwnerSessionTurns(
           FROM harness_shared.session_turns
          WHERE owner = ${owner}
            AND (
-             ${cursor?.at ?? null}::timestamptz IS NULL
+             ${cursor?.at ?? null}::text::timestamptz IS NULL
              OR (COALESCE(ts, ingested_at), source_kind, session_id, turn_idx)
-                < (${cursor?.at ?? null}::timestamptz,
+                < (${cursor?.at ?? null}::text::timestamptz,
                    ${cursor?.sourceKind ?? null}::text,
                    ${cursor?.sessionId ?? null}::text,
                    ${cursor?.turnIdx ?? null}::int)

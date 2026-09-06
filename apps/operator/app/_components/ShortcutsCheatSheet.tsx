@@ -8,6 +8,10 @@
  * link to the editable settings page.
  */
 import * as Dialog from '@radix-ui/react-dialog';
+// The sheet's rules ride with the component, not globals.css: the cloud portal
+// mounts this through @papercusp/operator-ui/shortcuts without the operator's
+// globals (portal-global-shortcuts-2026-09-06 P-001).
+import './shortcuts-cheat-sheet.css';
 import RouteLink from './RouteLink';
 import { SHORTCUTS, effectiveCombo, type ShortcutCategory } from '@papercusp/operator-core/lib/shortcut-registry';
 import { isMacPlatform } from '@papercusp/operator-core/lib/shortcut-match';

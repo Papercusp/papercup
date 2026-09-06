@@ -23,6 +23,11 @@
       "import": "./src/surfaces/index.tsx",
       "default": "./src/surfaces/index.tsx"
     },
+    "./shortcuts": {
+      "types": "./src/shortcuts/shortcuts.d.ts",
+      "import": "./src/shortcuts/index.tsx",
+      "default": "./src/shortcuts/index.tsx"
+    },
     "./grid-theme-bridge": {
       "types": "./src/grid-theme-bridge.ts",
       "import": "./src/grid-theme-bridge.ts",

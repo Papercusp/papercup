@@ -17,6 +17,10 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
+// This dialog reuses the cheat-sheet's overlay class; the rules ride with the
+// components (see ShortcutsCheatSheet), so a host mounting this without the
+// operator's globals.css still gets them (portal-global-shortcuts-2026-09-06 P-001).
+import './shortcuts-cheat-sheet.css';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useShortcutAction } from '../../lib/hotkeys';
 import { useRouter } from '../../lib/router-compat/navigation';

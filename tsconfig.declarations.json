@@ -93,6 +93,10 @@
     // the same import, one defect surfacing at two gates.
     "scripts/lib/related-tests.mjs",
     "scripts/lib/retry-failure-shape.mjs",
+    // gate-latency-selection-and-retry-policy-2026-09-06 P-002 — the runner side of the
+    // executed-source map (loader + git drift seam). Registered for the same reason as
+    // related-tests.mjs above: imported directly by executed-source-map.test.ts.
+    "scripts/lib/executed-source-map.mjs",
     // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
     // Registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure

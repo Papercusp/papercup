@@ -131,7 +131,15 @@ export default function GlobalFindInPage() {
       setMainEl(null);
       return;
     }
-    setMainEl(document.querySelector<HTMLElement>(MAIN_SELECTOR));
+    // The operator's routed <main> first; a host that mounts this bar without
+    // the route-transition wrapper — the cloud portal, whose centre pane is a
+    // plain `<main class="surface">` — falls back to its <main>, so the search
+    // covers the page rather than the detached placeholder
+    // (portal-global-shortcuts-2026-09-06 P-001).
+    setMainEl(
+      document.querySelector<HTMLElement>(MAIN_SELECTOR) ??
+        document.querySelector<HTMLElement>('main'),
+    );
     const raf = requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.select();

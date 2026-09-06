@@ -74,6 +74,20 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   },
   {
+    // The quick panel (prompts | brainstorm | docs). On the desktop it is a
+    // NATIVE popup window opened by a Tauri global shortcut, so no web handler
+    // binds this id there and the combo falls through (category 'global', not
+    // 'palette', precisely so an unhandled press is NOT swallowed). The cloud
+    // portal mounts the same page as a shell panel and binds this id to it
+    // (portal-global-shortcuts-2026-09-06 D-002); the entry lives here so the
+    // cheat sheet and settings/shortcuts list the binding in both hosts.
+    id: 'panel.quick',
+    description: 'Open or close the quick panel (prompts, brainstorm, docs)',
+    defaultCombo: 'mod+j',
+    category: 'global',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] },
+  },
+  {
     id: 'shortcuts.show',
     description: 'Show keyboard-shortcut cheat-sheet',
     // Mod+/ is Discord's "Keyboard Shortcuts menu" combo; `?` kept as the

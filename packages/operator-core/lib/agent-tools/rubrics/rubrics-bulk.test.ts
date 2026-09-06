@@ -297,6 +297,52 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(b.results[1]).toMatchObject({ ok: false, rubricRef: 'gone', error: 'rubric not found' });
   });
 
+  it('reads an exact immutable revision and returns its selected revision plus criteria fingerprint', async () => {
+    const historical = { ...RUBRIC_R1, revision: 3, criteriaHash: 'criteria-hash-r3' };
+    getM.mockImplementation(async (_id: string, revision?: number) => (revision === 3 ? historical : null));
+
+    const b = await body(getTool, { rubricRef: 'r-1', revision: 3 });
+
+    const projected = lookupByMcpName('rubrics:get');
+    expect(projected?.inputSchema).toMatchObject({
+      properties: { revision: expect.anything() },
+    });
+    expect(getM).toHaveBeenCalledWith('r-1', 3);
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      rubricRef: 'r-1',
+      rubric: { revision: 3, criteriaHash: 'criteria-hash-r3' },
+    });
+  });
+
+  it('fails closed when the requested immutable revision is unavailable instead of falling back to current', async () => {
+    getM.mockResolvedValue(null);
+    revisionM.mockResolvedValue({ ok: true, revision: 4 });
+
+    const b = await body(getTool, { rubricRef: 'r-1', revision: 3 });
+
+    expect(getM).toHaveBeenCalledTimes(1);
+    expect(getM).toHaveBeenCalledWith('r-1', 3);
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      rubricRef: 'r-1',
+      error: 'rubric revision 3 not found; current revision is 4',
+    });
+  });
+
+  it('reports an exact revision projection failure without treating it as a current read', async () => {
+    getM.mockResolvedValue(null);
+    revisionM.mockResolvedValue({ ok: true, revision: 3 });
+
+    const b = await body(getTool, { rubricRef: 'r-1', revision: 3 });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      rubricRef: 'r-1',
+      error: 'rubric revision 3 exists, but its immutable snapshot could not be projected.',
+    });
+  });
+
   it('surfaces a current acceptance-rubric vetting attestation', async () => {
     mockAcceptanceVetting([vettingCard(7)]);
 

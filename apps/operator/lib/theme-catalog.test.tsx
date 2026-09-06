@@ -5,13 +5,21 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react';
 
 const h = vi.hoisted(() => ({
   data: undefined as unknown,
+  loading: true,
+  fetching: true,
   error: null as unknown,
   invalidate: vi.fn(),
   writeProfile: vi.fn(),
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: h.data, error: h.error, invalidate: h.invalidate }),
+  useSyncQuery: () => ({
+    data: h.data,
+    loading: h.loading,
+    fetching: h.fetching,
+    error: h.error,
+    invalidate: h.invalidate,
+  }),
 }));
 vi.mock('@papercusp/operator-core/lib/profile-pref', () => ({
   injectedPref: () => null,
@@ -56,6 +64,8 @@ beforeEach(() => {
   window.localStorage.clear();
   document.getElementById('pc-custom-themes')?.remove();
   h.data = undefined;
+  h.loading = true;
+  h.fetching = true;
   h.error = null;
   h.invalidate.mockClear();
   h.writeProfile.mockClear();
@@ -80,6 +90,8 @@ describe('useThemeCatalog recovery', () => {
     expect(result.current.themes).toEqual([]);
 
     h.data = [cachedTheme];
+    h.loading = false;
+    h.fetching = false;
     rerender();
 
     await waitFor(() => expect(result.current.themes).toEqual([cachedTheme]));
@@ -98,11 +110,35 @@ describe('useThemeCatalog recovery', () => {
   it('falls back through the canonical writer when a live catalog removes the active theme', async () => {
     window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'custom:gone');
     h.data = [];
+    h.loading = false;
+    h.fetching = false;
 
     renderHook(() => useThemeCatalog());
 
     await waitFor(() => expect(h.writeProfile).toHaveBeenCalledWith('theme_id', 'frost'));
     expect(window.localStorage.getItem(wsLocalKey(THEME_STORAGE_KEY))).toBe('frost');
+  });
+
+  it('does not erase an injected custom selection while the initial catalog is still loading', async () => {
+    window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'custom:installed:abc');
+    window.localStorage.setItem(wsLocalKey(CUSTOM_THEMES_CATALOG_KEY), JSON.stringify([cachedTheme]));
+    h.data = [];
+    h.loading = true;
+    h.fetching = true;
+
+    const { result, rerender } = renderHook(() => useThemeCatalog());
+
+    expect(result.current.themes).toEqual([cachedTheme]);
+    expect(h.writeProfile).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(wsLocalKey(THEME_STORAGE_KEY))).toBe('custom:installed:abc');
+
+    h.data = [cachedTheme];
+    h.loading = false;
+    h.fetching = false;
+    rerender();
+
+    await waitFor(() => expect(result.current.themes).toEqual([cachedTheme]));
+    expect(h.writeProfile).not.toHaveBeenCalled();
   });
 
   it('treats corrupt cached metadata as absent without throwing', () => {

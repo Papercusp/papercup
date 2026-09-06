@@ -232,7 +232,19 @@ export function readCachedThemeCatalog(): CustomTheme[] {
  * active custom id falls back through the canonical preference writer. */
 export function useThemeCatalog(): { themes: CustomTheme[]; error: unknown; invalidate: () => void } {
   const query = useSyncQuery({ queryName: 'themes.catalog', args: {} });
-  const liveThemes = Array.isArray(query.data) ? query.data as CustomTheme[] : null;
+  // `useSyncQuery` exposes `data: []` during its initial load (and can expose a
+  // persisted stale array while a refetch is active). Neither is an
+  // authoritative declaration that the catalog is empty. Treat only a
+  // successful, settled result as live truth; otherwise keep the workspace's
+  // last-known-good catalog/CSS. This is especially load-bearing on reload:
+  // falling back from an injected `custom:<id>` while the first catalog fetch
+  // is still in flight overwrites the correct PG preference with `frost`.
+  const liveThemes = (
+    !query.loading &&
+    !query.fetching &&
+    query.error == null &&
+    Array.isArray(query.data)
+  ) ? query.data as CustomTheme[] : null;
   const themes = useMemo(
     () => liveThemes ?? readCachedThemeCatalog(),
     [liveThemes],
