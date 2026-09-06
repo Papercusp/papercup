@@ -322,7 +322,11 @@ for (const vp of VIEWPORTS) {
       expect(review.briefingLast).toBe("inbox-aside-feed");
       expect(review.paneBottom).toBeLessThanOrEqual(vp.height + 0.5);
       expect(review.docScrolls).toBe(false);
-      expect(review.rowsWhole).toBeGreaterThanOrEqual(vp.rows);
+      // The recommended row carries its inline "Papercup recommends" card in
+      // the list (D-002 — bulk behaviour untouched), which is worth about two
+      // row pitches; the floor allows for exactly that and nothing else.
+      await expect(page.getByTestId("inbox-bulk-rec-aside-01")).toBeVisible();
+      expect(review.rowsWhole).toBeGreaterThanOrEqual(vp.rows - 2);
       await expect(page.getByTestId("inbox-briefing-running")).toHaveCount(0);
       await expect(page.getByTestId("inbox-briefing-continue")).toContainText(
         "Continue 1 retryable",
