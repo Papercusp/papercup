@@ -128,7 +128,12 @@ export async function reviveConsultResponder(
       };
     }
 
-    let cmd = d.buildAgentLaunchCommand({ mode: 'resume', sessionId: target.sessionId, headless: true });
+    let cmd = d.buildAgentLaunchCommand({
+      mode: 'resume',
+      sessionId: target.sessionId,
+      resumeId: target.resumeId ?? target.sessionId,
+      headless: true,
+    });
     cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;
 
     const base = await d.buildConsoleEnvelope({
