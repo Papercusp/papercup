@@ -35,8 +35,21 @@ export interface WorkspaceHostSchemaRecoveryContract {
   sourceSchemaVersion: number;
   targetSchemaVersion: number;
   compatibleSourceRange: { minimum: number; maximum: number };
-  /** Immutable image used if migration or post-migration health fails. */
-  rollbackImage: WorkspaceHostImageRef & { version: string };
+  /**
+   * Runtime rollback and data rollback are deliberately separate. An older runtime may be
+   * restarted against the current data only when that schema is inside this explicit range;
+   * otherwise the provider snapshot must be restored first.
+   */
+  rollback: {
+    runtime: {
+      image: WorkspaceHostImageRef & { version: string };
+      schemaVersion: number;
+      compatibleDataRange: { minimum: number; maximum: number };
+    };
+    data: {
+      strategy: "restore-provider-snapshot";
+    };
+  };
 }
 
 export interface WorkspaceHostRestoreProofPolicy {
@@ -47,6 +60,8 @@ export interface WorkspaceHostRestoreProofPolicy {
 export interface WorkspaceHostRecoverySpec {
   contractVersion: typeof WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION;
   recoveryId: string;
+  /** Stable customer Workspace/data identity retained across replacement Hosts. */
+  workspaceId: string;
   requestedAt: string;
   sourceHost: WorkspaceHostRef;
   desired: WorkspaceHostDesiredSpec;
@@ -79,6 +94,7 @@ export interface WorkspaceHostRecoveryStep {
 export interface WorkspaceHostRecoveryPlan {
   contractVersion: typeof WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION;
   recoveryId: string;
+  workspaceId: string;
   sourceHostId: string;
   targetHostId: string;
   targetImage: WorkspaceHostImageRef & { version: string };
@@ -87,8 +103,18 @@ export interface WorkspaceHostRecoveryPlan {
   steps: readonly WorkspaceHostRecoveryStep[];
   rollback: {
     trigger: "migration-or-health-failure";
-    image: WorkspaceHostImageRef & { version: string };
-    providerSnapshot: WorkspaceHostSnapshotRef;
+    runtime: {
+      image: WorkspaceHostImageRef & { version: string };
+      schemaVersion: number;
+      compatibleDataRange: { minimum: number; maximum: number };
+    };
+    data: {
+      strategy: "restore-provider-snapshot";
+      providerSnapshot: WorkspaceHostSnapshotRef;
+      restoredSchemaVersion: number;
+    };
+    /** Data restore MUST precede runtime rollback when the migrated schema is incompatible. */
+    order: readonly ("restore-data" | "rollback-runtime")[];
     retainFailedHost: true;
   };
   proof: {
@@ -101,11 +127,13 @@ export interface WorkspaceHostRecoveryPlan {
 export interface WorkspaceHostRestoreProof {
   contractVersion: typeof WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION;
   recoveryId: string;
+  workspaceId: string;
   sourceSnapshotId: string;
   targetHostId: string;
   observedAt: string;
   applicationBackupVerified: true;
   providerSnapshotVerified: true;
+  dataRestoredFromSnapshot: true;
   migrationApplied: true;
   healthAttested: true;
 }
@@ -113,6 +141,28 @@ export interface WorkspaceHostRestoreProof {
 export interface WorkspaceHostRestoreProofValidation {
   ok: boolean;
   errors: readonly string[];
+}
+
+/**
+ * Refuse a runtime-only rollback when the older runtime cannot read the schema currently on disk.
+ * Supplying `dataRestored:true` means the separately modelled provider-snapshot restore has already
+ * returned the disk to `sourceSchemaVersion`; that version is validated against the runtime range
+ * when the plan is built.
+ */
+export function assertWorkspaceHostRuntimeRollbackSafe(
+  plan: WorkspaceHostRecoveryPlan,
+  currentSchemaVersion: number,
+  dataRestored: boolean,
+): void {
+  const current = version(currentSchemaVersion, "currentSchemaVersion");
+  const range = plan.rollback.runtime.compatibleDataRange;
+  if (current >= range.minimum && current <= range.maximum) return;
+  if (dataRestored && plan.schema.sourceSchemaVersion >= range.minimum && plan.schema.sourceSchemaVersion <= range.maximum) {
+    return;
+  }
+  throw new Error(
+    "runtime rollback refused: current data schema is incompatible; restore the provider snapshot before starting the older runtime",
+  );
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
