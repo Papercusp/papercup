@@ -33,27 +33,28 @@
           "ref": "turn",
           "children": [
             {
-              "kind": "header",
-              "ref": "turn-meta",
+              "kind": "stack",
+              "direction": "horizontal",
+              "ref": "message-line",
               "children": [
-                { "kind": "badge", "ref": "turn-role", "label": { "key": "chat.turn.role", "default": "Papercup" } },
-                { "kind": "text", "ref": "turn-timestamp", "binding": { "slot": "createdAt", "shape": "iso-8601" } }
+                { "kind": "component", "ref": "turn-avatar", "binding": { "slot": "role", "shape": "user|assistant|system" }, "a11y": { "ariaLabel": { "key": "chat.turn.role", "default": "Papercup" } } },
+                { "kind": "text", "ref": "turn-timestamp", "binding": { "slot": "createdAt", "shape": "time-today|short-date-time-older" } },
+                {
+                  "kind": "raw",
+                  "ref": "markdown-body",
+                  "ecosystem": "react-tailwind",
+                  "binding": { "slot": "text", "shape": "markdown" },
+                  "spec": {
+                    "why-raw": "react-markdown is the one markdown engine (parity rows md-*); the IR has no markdown kind",
+                    "engine": "react-markdown + remark-gfm + remarkWorkRefs",
+                    "rawHtml": "inert (no rehype-raw, no dangerouslySetInnerHTML) on BOTH hosts — D-005",
+                    "links": "URL-scheme allowlist https: mailto: only — D-005",
+                    "images": "off; owner host may opt in — D-005",
+                    "tables": "public=inert owner=render — D-005",
+                    "workRefs": "WI-/P-/EI- refs → HydratedWorkRefPill; public=inert owner=render"
+                  }
+                }
               ]
-            },
-            {
-              "kind": "raw",
-              "ref": "markdown-body",
-              "ecosystem": "react-tailwind",
-              "binding": { "slot": "text", "shape": "markdown" },
-              "spec": {
-                "why-raw": "react-markdown is the one markdown engine (parity rows md-*); the IR has no markdown kind",
-                "engine": "react-markdown + remark-gfm + remarkWorkRefs",
-                "rawHtml": "inert (no rehype-raw, no dangerouslySetInnerHTML) on BOTH hosts — D-005",
-                "links": "URL-scheme allowlist https: mailto: only — D-005",
-                "images": "off; owner host may opt in — D-005",
-                "tables": "public=inert owner=render — D-005",
-                "workRefs": "WI-/P-/EI- refs → HydratedWorkRefPill; public=inert owner=render"
-              }
             },
             {
               "kind": "list",
@@ -128,6 +129,7 @@
     { "id": "send", "registry": "action.primary", "props": { "label": "Send", "icon": "send" } },
     { "id": "retry", "registry": "action.secondary", "props": { "label": "Retry", "variant": "ghost" } },
     { "id": "composer-input", "registry": "control.text", "props": { "placeholder": "Ask Papercup…", "variant": "trailing-slot" } },
+    { "id": "turn-avatar", "registry": "host:PapercupChatHost#avatar", "props": { "note": "icon carries the visible sender identity; role name remains screen-reader-only (D-011)" } },
     { "id": "capability-notice", "registry": "feedback.banner", "props": { "tone": "info" } },
     { "id": "turn-error", "registry": "feedback.banner", "props": { "tone": "error" } },
     { "id": "card-renderer", "registry": "@papercusp/chat-cards#CardRenderer", "props": { "note": "shared card layer (D-003); not in the v0.1 design registry" } },
