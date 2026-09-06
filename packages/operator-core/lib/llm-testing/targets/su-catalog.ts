@@ -89,7 +89,7 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       slugs: { type: 'array', items: { type: 'string' } },
       heading: { type: 'string' },
       ...HARNESS_ARG,
-    }, ['slugs']),
+    }, ['slugs', 'harness']),
   },
   {
     name: 'docs:search',
@@ -154,11 +154,11 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
       "Flip one plan item's status. Flipping to `wip` AUTO-CLAIMS the item for you (rejected with claim_conflict when a live peer holds it); done/dropped releases your claim.",
     input: obj({
       slug: { type: 'string' },
-      itemId: { type: 'string', description: 'P-NNN' },
+      item: { type: 'string', description: 'P-NNN' },
       status: { type: 'string', enum: ['todo', 'wip', 'blocked', 'needs-human', 'done', 'dropped'] },
       note: { type: 'string' },
       ...HARNESS_ARG,
-    }, ['slug', 'itemId', 'status']),
+    }, ['slug', 'item', 'status']),
   },
   {
     name: 'plan_items:claim',
@@ -452,8 +452,17 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
   {
     name: 'agent_tools:list',
-    description: 'The authoritative, self-describing tool catalog for a role.',
+    description:
+      'The authoritative, self-describing tool catalog for a role. Inspect it before claiming or offering ' +
+      'an execution capability; a route whose launcher is absent must not be offered.',
     input: obj({ asRole: { type: 'string' } }),
+  },
+  {
+    name: 'tools:find',
+    description:
+      'Search the full live MCP catalog for a capability before offering an execution route. No matching ' +
+      'tool means that route is unavailable in this session; never promise it from memory.',
+    input: obj({ query: { type: 'string' } }, ['query']),
   },
   {
     name: 'repomix:pack',

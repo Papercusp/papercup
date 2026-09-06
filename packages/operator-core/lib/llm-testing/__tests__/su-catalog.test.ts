@@ -89,6 +89,17 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     }
   });
 
+  it('makes docs:get scope and execution-route discovery explicit', () => {
+    const docsGet = SU_CATALOG.find((entry) => entry.name === 'docs:get')!;
+    const required = (docsGet.input as { required?: string[] }).required ?? [];
+    expect(required).toContain('harness');
+
+    const find = SU_CATALOG.find((entry) => entry.name === 'tools:find')!;
+    expect(find.description).toMatch(/before offering an execution route/i);
+    expect(find.description).toMatch(/unavailable/i);
+    expect(names).toContain('agent_tools:list');
+  });
+
   it('plans:list advertises the real full-lifecycle switch instead of a synthetic status:all', () => {
     const entry = SU_CATALOG.find((candidate) => candidate.name === 'plans:list')!;
     const properties = (entry.input as { properties?: Record<string, any> }).properties ?? {};
@@ -96,6 +107,15 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(properties.includeArchived).toMatchObject({ type: 'boolean' });
     expect(properties.status.enum).not.toContain('all');
     expect(entry.description).toMatch(/includeArchived:true/);
+  });
+
+  it('plans:set-status uses the live scalar item argument', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'plans:set-status')!;
+    const input = entry.input as { properties?: Record<string, unknown>; required?: string[] };
+
+    expect(input.properties).toHaveProperty('item');
+    expect(input.properties).not.toHaveProperty('itemId');
+    expect(input.required).toEqual(['slug', 'item', 'status']);
   });
 
   it('exposes the PG-canonical docs:author write required by SU-S12', () => {
