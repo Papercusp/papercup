@@ -29,7 +29,7 @@ describe('buildScoutPlanTemplate', () => {
     const body = buildScoutPlanTemplate({ slug: 'x-2026-06-08', title: 'T', date: '2026-06-08' });
     expect(body).toContain('Blender-generated broad-scope proposal');
   });
-  it('emits a complete spec triad for post-epoch actionable gating', () => {
+  it('marks the default placeholder triad as incomplete for post-epoch gating', () => {
     const body = buildScoutPlanTemplate({
       slug: 'x-2026-08-13',
       title: 'A routed proposal',
@@ -44,8 +44,8 @@ describe('buildScoutPlanTemplate', () => {
     expect(body).toContain('specTriad: required');
     expect(body).toContain('## Requirements');
     expect(body).toContain('## Design');
-    expect(verdict.gated).toBe(false);
-    expect(verdict.missing).toEqual([]);
+    expect(verdict.gated).toBe(true);
+    expect(verdict.missing).toEqual(['requirements', 'design']);
   });
 });
 
@@ -224,6 +224,56 @@ describe('createScoutPlanDraft', () => {
       expect(captured.stampCalls).toHaveLength(1);
       expect(captured.revisionCalls).toHaveLength(1);
     });
+  });
+
+  it('keeps substantive custom buildBody content eligible for the spec triad', async () => {
+    const customBody = [
+      '---',
+      'slug: custom-2026-08-13',
+      'status: draft',
+      'specTriad: required',
+      'created: 2026-08-13',
+      '---',
+      '',
+      '# Custom proposal',
+      '',
+      '## Requirements',
+      '',
+      'The first slice must expose a deterministic result that a reviewer can verify.',
+      '',
+      '## Design',
+      '',
+      'The implementation will isolate the smallest observable change and its test seam.',
+      '',
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` implement and verify the custom proposal',
+      '',
+    ].join('\n');
+    const { deps, captured } = fakeLock({ current: null });
+
+    const result = await createScoutPlanDraft(
+      {
+        slug: 'custom',
+        title: 'Custom proposal',
+        date: '2026-08-13',
+        buildBody: () => customBody,
+      },
+      deps,
+    );
+
+    expect(result).toEqual({ slug: 'custom-2026-08-13', created: true });
+    const verdict = specTriadGate(
+      {
+        planSlug: result.slug,
+        content: captured.body!,
+        created: '2026-08-13',
+        itemCount: 1,
+      },
+      { flagEnabled: true, epoch: new Date('2026-08-09T00:00:00.000Z') },
+    );
+    expect(verdict.gated).toBe(false);
+    expect(verdict.missing).toEqual([]);
   });
 
   it('throws on lock contention (busy)', async () => {
