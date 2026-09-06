@@ -5942,36 +5942,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── learning.mugWakeEfficiency — the Benchmark view's Queen per-wake efficiency ──
-  //
-  // The live Queen's per-wake prompt efficiency (queen-brief-cache-assembly-2026-06-13 B-06 /
-  // P-010, D-016/D-018) over harness_shared.agent_usage_samples role='queen' (mugWakeEfficiency):
-  // cache-hit ratio (Win-1 frozen-prefix cache), avg turns/wake (Win-2 round-trip elimination),
-  // cachedWakes (the "cache is real" signal, P-003), and token/cost totals. Workspace-wide (all
-  // Queen wakes). PG failure OR a not-yet-applied migration (272 turn_count) degrades to the empty
-  // aggregate — the panel renders its no-wakes state, never a 500. Returns a 1-element array (client
-  // reads data[0]). The append-heavy telemetry table is watched by the existing debounced
-  // change detector (never a per-row trigger), which pushes this query on new samples (WI-6182).
-  'learning.mugWakeEfficiency': {
-    backingTables: ['harness_shared.agent_usage_samples'] as const,
-    resolve: async () => {
-      const { mugWakeEfficiency, EMPTY_MUG_WAKE_EFFICIENCY } = await import('../pot/mug-wake-efficiency');
-      try {
-        const { activeWorkspaceId } = await import('../workspace-registry');
-        return [await mugWakeEfficiency(activeWorkspaceId(), { limit: 50 })];
-      } catch (err) {
-        // 42P01 (undefined table) / 42703 ("column does not exist", pre-mig-272 turn_count) are the
-        // expected pre-boot-apply states, not worth a warn — degrade silently to the empty aggregate.
-        const code = (err as { code?: string })?.code;
-        const msg = err instanceof Error ? err.message : String(err);
-        if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
-          console.warn('[learning.mugWakeEfficiency] read failed:', msg);
-        }
-        return [degraded(EMPTY_MUG_WAKE_EFFICIENCY, err)];
-      }
-    },
-  },
-
   // ── p2p.* — the P2P work-sharing settings surface (p2p-work-distribution P-002) ──
   //
   // `p2p.settings` is a workspace-singleton (client subscribes with NO args → the
