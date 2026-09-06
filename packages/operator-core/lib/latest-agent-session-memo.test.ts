@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The memo wraps the real listing by default; this unit test injects its own, so
 // the heavy adv-sessions module (PG client, workspace registry) is stubbed out.
-vi.mock('./adv-sessions', () => ({
+vi.mock('./adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('./adv-sessions')>()),
   listResumableSessions: vi.fn(async () => []),
 }));
 
