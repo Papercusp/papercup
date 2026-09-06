@@ -16,6 +16,7 @@ import {
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
   buildUnusedCteAdvisory,
+  buildPopulationNarrowingAdvisory,
   buildClaimabilityAdvisory,
   buildBacklogFlowAdvisory,
   buildCorpusNamespaceAdvisory,
@@ -1413,6 +1414,51 @@ describe('buildUnusedCteAdvisory (EI-20261038811991822 — the CTE that is defin
     ).toBeNull();
     // An unbalanced body cannot be delimited; same rule.
     expect(buildUnusedCteAdvisory('WITH targets AS (SELECT 1 SELECT 2')).toBeNull();
+  });
+});
+
+describe('buildPopulationNarrowingAdvisory (EI-22433765987075358)', () => {
+  it('warns when HAVING narrows grouped output', () => {
+    const advisory = buildPopulationNarrowingAdvisory(
+      'SELECT tool_name, count(*) FROM work_items GROUP BY tool_name HAVING count(*) = 1',
+    );
+    expect(advisory).toContain('population-narrowing');
+    expect(advisory).toContain('HAVING');
+    expect(advisory).toContain('no group matched the HAVING predicate');
+    expect(advisory).toContain('underlying population is empty');
+  });
+
+  it('warns when a numeric LIMIT is below the configured maxRows', () => {
+    const advisory = buildPopulationNarrowingAdvisory(
+      'SELECT id FROM work_items ORDER BY id LIMIT 5',
+      20,
+    );
+    expect(advisory).toContain('LIMIT');
+    expect(advisory).toContain('bounded query');
+  });
+
+  it('composes HAVING and LIMIT warnings instead of reporting only the first', () => {
+    const advisory = buildPopulationNarrowingAdvisory(
+      'SELECT tool_name, count(*) FROM work_items GROUP BY tool_name HAVING count(*) = 1 LIMIT 5',
+      20,
+    );
+    expect(advisory).toContain('HAVING/LIMIT');
+  });
+
+  it('stays silent when LIMIT reaches the configured maxRows or is unbounded', () => {
+    expect(buildPopulationNarrowingAdvisory('SELECT id FROM work_items LIMIT 20', 20)).toBeNull();
+    expect(buildPopulationNarrowingAdvisory('SELECT id FROM work_items LIMIT 21', 20)).toBeNull();
+    expect(buildPopulationNarrowingAdvisory('SELECT id FROM work_items LIMIT ALL', 20)).toBeNull();
+    expect(buildPopulationNarrowingAdvisory('SELECT id FROM work_items', 20)).toBeNull();
+  });
+
+  it('does not match HAVING or LIMIT text inside literals or comments', () => {
+    expect(
+      buildPopulationNarrowingAdvisory(
+        "SELECT 'HAVING count(*) = 1 LIMIT 1' AS note FROM work_items -- LIMIT 1",
+        20,
+      ),
+    ).toBeNull();
   });
 });
 
