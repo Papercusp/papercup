@@ -32,7 +32,9 @@
  *     completion for a terminal git-sync fire (EI-21049559233457671).
  */
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { resolve } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
@@ -70,11 +72,13 @@ import {
   runGithubBridgeTick,
 } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
+import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
 import {
-  runWorktreeBridgeTick,
-  WORKTREE_BRIDGE_RETRY_TTL_MS,
-} from '../../sync/pot-git/worktree-bridge-tick';
-import { HiveEffectAuthorityError, loadHiveEffectAuthority, nextHivePublicationTerm, requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
+  HiveEffectAuthorityError,
+  loadHiveEffectAuthority,
+  nextHivePublicationTerm,
+  requireHiveEffectAuthority,
+} from '../../sync/pot-git/hive-effect-authority';
 import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
 import {
   runRefAnnouncePublishTick,
@@ -105,7 +109,12 @@ import {
   type ReleaseConsistencyVerdict,
 } from '../../sync/pot-git/convergence-probe';
 import { readSigrefs, SIGREFS_REF } from '../../sync/pot-git/sigrefs';
-import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
+import {
+  STAGING_ADVANCE_EVENT_KEY,
+  isSignedStagingAdvance,
+  type SignedStagingAdvance,
+  type EpochSeq,
+} from '../../sync/pot-git/staging-advance';
 // EI-19332963201820362: the ONLY sanctioned way to build a `worktree_bridge`
 // metadata value. patchRoutineMetadata is a top-level jsonb merge, so writing
 // that key REPLACES it wholesale — constructing it here means a writer cannot
@@ -136,8 +145,20 @@ import {
   type RefAnnounceRoutineState,
 } from './routine-metadata-state';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
-import { signedProtocolContextMatches, isSignedProtocolContext, type SignedProtocolScope, type SignedSnapshotFloor } from '../../sync/pot-git/signed-context';
-import { assertGitServingCapability, guardGitServingSigner, validateGitServingState, type GitServingCapability, type GitServingRequest, type GitServingState } from '../../sync/pot-git/serving-capability';
+import {
+  signedProtocolContextMatches,
+  isSignedProtocolContext,
+  type SignedProtocolScope,
+  type SignedSnapshotFloor,
+} from '../../sync/pot-git/signed-context';
+import {
+  assertGitServingCapability,
+  guardGitServingSigner,
+  validateGitServingState,
+  type GitServingCapability,
+  type GitServingRequest,
+  type GitServingState,
+} from '../../sync/pot-git/serving-capability';
 import { getHiveBySlug } from '../../hive-store';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import {
@@ -152,10 +173,7 @@ import { runOwnHeadPublishTick, type OwnHeadPublishTickOutcome } from '../../syn
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
 import { fetchCoalescerKey, withFetchCoalescing } from '../../sync/pot-git/fetch-coalescer';
-import {
-  openHiveGitDuplexToDevice,
-  type HiveGitDuplexRequest,
-} from '../../sync/pot-git/peer-dial-registry';
+import { openHiveGitDuplexToDevice, type HiveGitDuplexRequest } from '../../sync/pot-git/peer-dial-registry';
 import { Duplex } from 'node:stream';
 // EI-18777176681958978: `potHomeSlug` here is the LOCAL registry handle
 // (`entry.hive_slug ?? entry.slug`), which on a joiner can differ from the
@@ -171,6 +189,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
 import { deriveGenesisBaselineSha } from './genesis-baseline';
 import { appendPipelineEvent } from './pipeline-events';
+import { DEFAULT_CONTENT_DETECTORS } from '../../content-lint/registry';
 import {
   runGitSync,
   runGitBounded,
@@ -339,7 +358,8 @@ function createGitSyncActionLivenessGuard(opts: {
 
   const run = <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
     if (stopped) return Promise.reject(new Error(`git-sync action is already stopped before ${phase}`));
-    if (timedOut) return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
+    if (timedOut)
+      return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
     activePhase = phase;
     touch();
 
@@ -506,10 +526,9 @@ export function parseGitSyncOwnerPid(owner: string): number | null {
  * split module record would make the set read empty and turn every live fire's
  * own lease into a reclaim candidate.
  */
-const gitSyncLockState = pinModuleState(
-  '@papercusp/operator-core.git-sync-lock-owners',
-  () => ({ inFlight: new Set<string>() }),
-);
+const gitSyncLockState = pinModuleState('@papercusp/operator-core.git-sync-lock-owners', () => ({
+  inFlight: new Set<string>(),
+}));
 
 /** True when `owner` names this process but no fire here still holds it. */
 export function isOrphanedSelfOwner(
@@ -704,9 +723,7 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
       push: triggerConfig.push !== false,
       pushSubmodules: triggerConfig.push_submodules !== false,
       pushSubmoduleOrigins:
-        typeof triggerConfig.pushSubmoduleOrigins === 'boolean'
-          ? triggerConfig.pushSubmoduleOrigins
-          : undefined,
+        typeof triggerConfig.pushSubmoduleOrigins === 'boolean' ? triggerConfig.pushSubmoduleOrigins : undefined,
       branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
       remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
       maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
@@ -751,7 +768,7 @@ export async function registerGitSyncResource(tx: SqlTag, slug: string): Promise
   const resource = gitSyncResourceName(slug);
   const description =
     `The automated git-sync pipeline for harness "${slug}" (commit + submodule push + merge + push to origin). ` +
-    'Concurrent git-sync runs, or a run racing a peer\'s manual git work on this checkout, race the index/refs.';
+    "Concurrent git-sync runs, or a run racing a peer's manual git work on this checkout, race the index/refs.";
   const ruleText =
     `The system:git-sync routine action holds exclusive(${resource}) for the whole ` +
     'commit -> submodule-push -> pointer-bump -> push sequence. A peer doing manual whole-tree git work in this ' +
@@ -928,9 +945,7 @@ function startLockHeartbeat(
         }
       }
     } catch (e) {
-      console.warn(
-        `[git-sync] ${slug}: lock-set heartbeat failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      console.warn(`[git-sync] ${slug}: lock-set heartbeat failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -1014,7 +1029,8 @@ async function acquireLocks(
 ): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
   for (const { resource, mode } of resources) {
-    const acquireOne = () => acquireWithContentionRetry(() =>
+    const acquireOne = () =>
+      acquireWithContentionRetry(() =>
       inWorkspaceTxn(cd, owner, async (tx) => {
         // Auto-register ONLY the per-slug name, in the same txn as its acquire.
         if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
@@ -1183,37 +1199,20 @@ export async function runWithGitSyncPerInstallLease<T>(
   signal?: AbortSignal,
 ): Promise<GitSyncPerInstallLeaseResult<T>> {
   const coordinationDomain = workspaceId || '*';
-  const resources: GitSyncLockRequest[] = [
-    { resource: gitSyncResourceName(slug), mode: 'exclusive' },
-  ];
+  const resources: GitSyncLockRequest[] = [{ resource: gitSyncResourceName(slug), mode: 'exclusive' }];
   const acquired: GitSyncLockRequest[] = [];
   const owner = newGitSyncLockOwner();
-  const lease = await acquireLocks(
-    coordinationDomain,
-    slug,
-    resources,
-    acquired,
-    owner,
-  );
+  const lease = await acquireLocks(coordinationDomain, slug, resources, acquired, owner);
   if (lease.state !== 'acquired') {
     return {
       state: 'skipped',
-      reason:
-        lease.blockedReason ??
-        (lease.state === 'contended'
-          ? 'lock_contended'
-          : 'lock_infra_unavailable'),
+      reason: lease.blockedReason ?? (lease.state === 'contended' ? 'lock_contended' : 'lock_infra_unavailable'),
       ...(lease.blockedOn ? { blockedOn: lease.blockedOn } : {}),
       ...(lease.holders ? { holders: lease.holders } : {}),
     };
   }
 
-  const stopHeartbeat = startLockHeartbeat(
-    coordinationDomain,
-    slug,
-    resources,
-    owner,
-  );
+  const stopHeartbeat = startLockHeartbeat(coordinationDomain, slug, resources, owner);
   let heartbeatStop: Promise<void> | null = null;
   const stopHeartbeatOnce = (): Promise<void> => {
     if (!heartbeatStop) heartbeatStop = stopHeartbeat();
@@ -1226,9 +1225,7 @@ export async function runWithGitSyncPerInstallLease<T>(
 
   try {
     if (signal?.aborted) {
-      throw signal.reason instanceof Error
-        ? signal.reason
-        : new Error('git-sync per-install lease operation aborted');
+      throw signal.reason instanceof Error ? signal.reason : new Error('git-sync per-install lease operation aborted');
     }
     return { state: 'ran', value: await operation() };
   } finally {
@@ -1302,6 +1299,15 @@ export interface ResolverMarker {
   instance?: string;
 }
 
+/** Extra identity carried by the content-fixer marker. */
+interface ContentFixerMarker extends ResolverMarker {
+  /** Stable offender identity, independent of the detector's human message. */
+  signature?: string;
+  /** Consecutive content-error pass that produced this dispatch. */
+  pass?: number;
+  files?: string[];
+}
+
 /**
  * Whether a merge-resolver is GENUINELY in-flight for this harness — pure so the
  * dedup WINDOW is directly unit-testable (P-007: the window is keyed on PG
@@ -1318,11 +1324,7 @@ export interface ResolverMarker {
  *     backstop. A crashed writer may delay one retry, but can never spawn an
  *     unbounded concurrent repair storm.
  */
-export function isResolverInFlight(
-  lr: ResolverMarker | null | undefined,
-  now: number,
-  _instanceId: string,
-): boolean {
+export function isResolverInFlight(lr: ResolverMarker | null | undefined, now: number, _instanceId: string): boolean {
   if (!lr || lr.status !== 'dispatched') return false; // never-run or already settled → retry
   // Instance ids are attribution, not liveness. A different id may be another
   // healthy operator process serving the same workspace, so only the durable TTL
@@ -1466,7 +1468,12 @@ async function writeGitSyncStrandEscalation(
 async function writeGitSyncErrorEscalation(
   slug: string,
   workspaceId: string,
-  info: { reasons: EscalationReason[]; consecutiveErrorTicks: number; errors: RepoError[]; oversized: ScopedOversized[] },
+  info: {
+    reasons: EscalationReason[];
+    consecutiveErrorTicks: number;
+    errors: RepoError[];
+    oversized: ScopedOversized[];
+  },
 ): Promise<void> {
   const { sql } = getOrgPg();
   const body = JSON.stringify({
@@ -1479,8 +1486,12 @@ async function writeGitSyncErrorEscalation(
     emitted_at: Date.now(),
     detail:
       `git-sync needs attention: ${info.reasons.join(' + ')}` +
-      (info.reasons.includes('push-failure') ? ` — push failed ${info.consecutiveErrorTicks} consecutive ticks (commits NOT reaching origin)` : '') +
-      (info.oversized.length > 0 ? ` — ${info.oversized.length} oversized file(s) excluded from auto-commit (gitignore or remove them)` : ''),
+      (info.reasons.includes('push-failure')
+        ? ` — push failed ${info.consecutiveErrorTicks} consecutive ticks (commits NOT reaching origin)`
+        : '') +
+      (info.oversized.length > 0
+        ? ` — ${info.oversized.length} oversized file(s) excluded from auto-commit (gitignore or remove them)`
+        : ''),
   });
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -1568,7 +1579,12 @@ async function readEscalationCounters(
  *      `void … .catch(console.warn)` that went to uncaptured stdout.
  * Query `metadata->'last_resolver'` on the routine to see whether the resolver ran.
  */
-async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: RepoConflict[], superprojectBranch: string): Promise<void> {
+async function spawnMergeResolver(
+  slug: string,
+  workspaceId: string,
+  conflicts: RepoConflict[],
+  superprojectBranch: string,
+): Promise<void> {
   // workspace-work-scope-policy-2026-09-04 P-008: git-sync keeps COMMITTING every
   // install, but an out-of-scope install gets no agent dispatched for its conflicts.
   {
@@ -1608,12 +1624,23 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
   // (1) durable "dispatched" marker, awaited — observable even if (2) is lost.
   // Stamp THIS process instance for attribution; liveness is deliberately derived
   // from status + TTL because a different live operator instance shares this row.
-  await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', scopes, instance: PROCESS_INSTANCE_ID });
+  await recordResolverDispatch(slug, workspaceId, {
+    at: dispatchedAt,
+    status: 'dispatched',
+    scopes,
+    instance: PROCESS_INSTANCE_ID,
+  });
 
   // Pipeline history (mig 177): log each resolver SETTLE (not the dispatch) so the
   // Git tab can show resolver success rate. Best-effort, like recordResolverDispatch.
   const logResolverSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
-    appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'merge_resolver', status, detail: { scopes, ...extra } });
+    appendPipelineEvent({
+      workspaceId,
+      installSlug: slug,
+      kind: 'merge_resolver',
+      status,
+      detail: { scopes, ...extra },
+    });
 
   // (2) async result recording. The /invoke route reads `extra` (forwarded to
   // invoke-once) — `kickoff` is for human readability only (the route ignores it);
@@ -1639,7 +1666,13 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
       let timedOut: boolean | undefined;
       let detail = '';
       try {
-        const j = (await res.json()) as { ok?: boolean; exitCode?: number; timedOut?: boolean; stderr?: string; decisionLine?: string };
+        const j = (await res.json()) as {
+          ok?: boolean;
+          exitCode?: number;
+          timedOut?: boolean;
+          stderr?: string;
+          decisionLine?: string;
+        };
         exitCode = j?.exitCode;
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
@@ -1647,7 +1680,10 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
         await recordResolverDispatch(slug, workspaceId, {
           at: dispatchedAt,
           status: settled,
-          httpStatus: res.status, exitCode, timedOut, detail,
+          httpStatus: res.status,
+          exitCode,
+          timedOut,
+          detail,
         });
         await logResolverSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
@@ -1681,7 +1717,7 @@ async function recordResolverDispatch(slug: string, workspaceId: string, info: R
  */
 async function contentFixerInFlight(slug: string, workspaceId: string): Promise<boolean> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ lr: ResolverMarker | null }[]>`
+  const rows = await sql<{ lr: ContentFixerMarker | null }[]>`
     SELECT metadata->'last_content_fixer' AS lr
       FROM harness_shared.routines
      WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
@@ -1691,12 +1727,114 @@ async function contentFixerInFlight(slug: string, workspaceId: string): Promise<
 }
 
 /** Record the content-fixer dispatch lifecycle onto the routine metadata. */
-async function recordContentFixerDispatch(slug: string, workspaceId: string, info: Record<string, unknown>): Promise<void> {
+async function recordContentFixerDispatch(
+  slug: string,
+  workspaceId: string,
+  info: Record<string, unknown>,
+): Promise<void> {
   try {
     await patchRoutineMetadata(slug, workspaceId, { last_content_fixer: info });
   } catch (e) {
     console.warn(`[git-sync] failed to record content-fixer dispatch (${slug}): ${e instanceof Error ? e.message : e}`);
   }
+}
+
+/** Stable identity for one content-fixer job. Human detector messages are deliberately excluded. */
+function contentFixerSignature(contentErrors: readonly ScopedContentError[]): string {
+  return [...new Set(contentErrors.map((c) => `${c.scope}\u0000${c.file}\u0000${c.detectorKey}`))]
+    .sort()
+    .join('\u0001');
+}
+
+/**
+ * Atomically reserve a content-fixer dispatch.
+ *
+ * The old read-then-write sequence let two git-sync fires both observe a free
+ * marker and enqueue the same fixer. The marker write is now the CAS: the row
+ * is updated only when neither a live dispatch nor the same signature/pass is
+ * already recorded.
+ */
+async function claimContentFixerDispatch(
+  slug: string,
+  workspaceId: string,
+  marker: ContentFixerMarker,
+): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const signature = marker.signature ?? '';
+  const pass = String(marker.pass ?? '');
+  const staleBefore = Date.now() - RESOLVER_INFLIGHT_MS;
+  try {
+    const rows = (await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+              updated_at = now()
+        WHERE install_slug = $1
+          AND workspace_id = $2
+          AND target_role = 'system:git-sync'
+          AND NOT (
+            (
+              metadata->'last_content_fixer'->>'status' = 'dispatched'
+              AND COALESCE((metadata->'last_content_fixer'->>'at')::bigint, 0) > $4::bigint
+            )
+            OR (
+              metadata->'last_content_fixer'->>'signature' = $5::text
+              AND metadata->'last_content_fixer'->>'pass' = $6::text
+            )
+          )
+        RETURNING true AS claimed`,
+      [slug, workspaceId, JSON.stringify({ last_content_fixer: marker }), staleBefore, signature, pass],
+    )) as Array<{ claimed?: boolean }>;
+    return rows[0]?.claimed === true;
+  } catch (e) {
+    // Dedup is a safety rail. If its CAS cannot be established, leave the
+    // quarantine visible and let a later tick retry instead of spawning blind.
+    console.warn(`[git-sync] failed to claim content-fixer dispatch (${slug}): ${e instanceof Error ? e.message : e}`);
+    return false;
+  }
+}
+
+/**
+ * Re-check the canonical content-detector registry against the current working
+ * tree immediately before dispatch. Unknown cross-file guards (for example
+ * unsafe-deletion) are retained: inability to re-prove them clean is not proof
+ * that they disappeared.
+ */
+async function revalidateContentErrors(
+  repoPath: string | null | undefined,
+  contentErrors: readonly ScopedContentError[],
+): Promise<ScopedContentError[]> {
+  if (!repoPath || contentErrors.length === 0) return [...contentErrors];
+  const detectors = new Map(DEFAULT_CONTENT_DETECTORS.map((detector) => [detector.key, detector]));
+  const root = resolve(repoPath);
+  const checked = await Promise.all(
+    contentErrors.map(async (contentError) => {
+      const detector = detectors.get(contentError.detectorKey);
+      if (!detector) return contentError;
+      const repo = resolve(root, contentError.scope === 'superproject' ? '.' : contentError.scope);
+      const candidate = resolve(repo, contentError.file);
+      if (candidate !== repo && !candidate.startsWith(`${repo}/`)) return contentError;
+      let text: string;
+      try {
+        text = await readFile(candidate, 'utf8');
+      } catch {
+        // A gone/unreadable path may be a deletion/import guard finding. Keep
+        // it quarantined rather than treating an unreadable file as clean.
+        return contentError;
+      }
+      try {
+        const inScope = await detector.matches(contentError.file, { repoPath: repo });
+        if (!inScope) return null;
+        const error = await detector.detect(contentError.file, text, { repoPath: repo });
+        return error ? { ...contentError, error } : null;
+      } catch {
+        // The guard itself is fail-open during the commit path, but dispatch
+        // revalidation fails closed so a detector failure cannot erase a real
+        // quarantine from the escalation/fixer path.
+        return contentError;
+      }
+    }),
+  );
+  return checked.filter((error): error is ScopedContentError => error !== null);
 }
 
 /**
@@ -1707,7 +1845,21 @@ async function recordContentFixerDispatch(slug: string, workspaceId: string, inf
  * + commits when they pass. It reads its file list from the `--git-sync-content-error`
  * extra (the open escalation is for human visibility, not the fixer's read path).
  */
-async function spawnContentFixer(slug: string, workspaceId: string, contentErrors: ScopedContentError[]): Promise<void> {
+async function spawnContentFixer(
+  slug: string,
+  workspaceId: string,
+  contentErrors: ScopedContentError[],
+  repoPath: string | null | undefined,
+  pass: number,
+): Promise<ScopedContentError[]> {
+  // This is deliberately repeated after the action has released its git-sync
+  // locks: the outcome handed to this post-leg can be stale by the time an
+  // invoke request is created.
+  const currentErrors = await revalidateContentErrors(repoPath, contentErrors);
+  if (currentErrors.length === 0) {
+    console.warn(`[git-sync] ${slug}: content-fixer dispatch suppressed — the canonical detector is clean`);
+    return [];
+  }
   // workspace-work-scope-policy-2026-09-04 P-008: quarantine still happens (staging
   // stays clean); only the fixer AGENT is withheld for an out-of-scope install.
   {
@@ -1715,24 +1867,24 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
     const scope = await gateWorkScope('git-sync:content-fixer', { harness: slug });
     if (!scope.allowed) {
       console.warn(`[git-sync] ${slug}: content-fixer dispatch skipped — ${scope.message}`);
-      return;
+      return currentErrors;
     }
   }
   const target = await resolveLaunchTargetForEvent(CONTENT_ERROR_EVENT, { installSlug: slug, workspaceId });
   if (!target) {
     console.warn(`[git-sync] no launch blueprint declares "${CONTENT_ERROR_EVENT}" — skipping content-fixer dispatch`);
-    return;
+    return currentErrors;
   }
   const { url } = target;
-  const files = contentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
+  const files = currentErrors.map((c) => ({ scope: c.scope, file: c.file, detector: c.detectorKey, error: c.error }));
   const filePaths = files.map((f) => `${f.scope}/${f.file}`);
-  const filesSummary = contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]: ${c.error}`).join('; ');
+  const filesSummary = currentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]: ${c.error}`).join('; ');
   const dispatchedAt = Date.now();
   // WI-37471: `unsafe-deletion` isn't a syntax fix (there's no syntax — the file
   // doesn't exist) and "restore vs. finish the deletion" is a judgment call about
   // intent the fixer cannot verify from the file system alone. Never tell it to
   // "fix the syntax" for this detectorKey — the persona's own rules escalate it.
-  const hasUnsafeDeletion = contentErrors.some((c) => c.detectorKey === 'unsafe-deletion');
+  const hasUnsafeDeletion = currentErrors.some((c) => c.detectorKey === 'unsafe-deletion');
   const kickoffInstruction = hasUnsafeDeletion
     ? 'For each file: if its detector is `mdx` or `smart-quotes`, fix ONLY the flagged syntax; ' +
       'if its detector is `unsafe-deletion`, do NOT guess whether to restore the file or finish the ' +
@@ -1740,12 +1892,30 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
       'Change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits).'
     : 'Fix ONLY the syntax so each passes its detector, change nothing else, leave the tree clean, and do NOT push (the next git-sync tick re-checks + commits).';
 
-  // (1) durable "dispatched" marker, awaited. The instance tag is forensic
-  //     attribution only; status + TTL provide cross-process in-flight dedup.
-  await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'dispatched', files: filePaths, instance: PROCESS_INSTANCE_ID });
+  const dispatchMarker = {
+    at: dispatchedAt,
+    status: 'dispatched',
+    files: filePaths,
+    signature: contentFixerSignature(currentErrors),
+    pass,
+    instance: PROCESS_INSTANCE_ID,
+  } satisfies ContentFixerMarker;
+  // Fast path for the common in-flight case; the atomic claim below remains
+  // mandatory because two fires can race between this read and the write.
+  if (await contentFixerInFlight(slug, workspaceId)) return currentErrors;
+  if (!(await claimContentFixerDispatch(slug, workspaceId, dispatchMarker))) return currentErrors;
+  console.warn(
+    `[git-sync] ${slug}: ${currentErrors.length} content error(s) quarantined — dispatching content-fixer`,
+  );
 
   const logSettle = (status: 'ok' | 'failed' | 'error', extra: Record<string, unknown>): Promise<void> =>
-    appendPipelineEvent({ workspaceId, installSlug: slug, kind: 'content_fixer', status, detail: { files: filePaths, ...extra } });
+    appendPipelineEvent({
+      workspaceId,
+      installSlug: slug,
+      kind: 'content_fixer',
+      status,
+      detail: { files: filePaths, ...extra },
+    });
 
   // (2) async result recording. Fire-and-forget — never awaited inside the routine step.
   loopbackFetch(url, {
@@ -1767,25 +1937,47 @@ async function spawnContentFixer(slug: string, workspaceId: string, contentError
       let timedOut: boolean | undefined;
       let detail = '';
       try {
-        const j = (await res.json()) as { ok?: boolean; exitCode?: number; timedOut?: boolean; stderr?: string; decisionLine?: string };
+        const j = (await res.json()) as {
+          ok?: boolean;
+          exitCode?: number;
+          timedOut?: boolean;
+          stderr?: string;
+          decisionLine?: string;
+        };
         exitCode = j?.exitCode;
         timedOut = j?.timedOut;
         if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
         const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
-        await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status, exitCode, timedOut, detail });
+        await recordContentFixerDispatch(slug, workspaceId, {
+          ...dispatchMarker,
+          status: settled,
+          httpStatus: res.status,
+          exitCode,
+          timedOut,
+          detail,
+        });
         await logSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
       } catch {
         const settled = res.ok ? 'ok' : 'failed';
-        await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status });
+        await recordContentFixerDispatch(slug, workspaceId, {
+          ...dispatchMarker,
+          status: settled,
+          httpStatus: res.status,
+        });
         await logSettle(settled, { httpStatus: res.status });
       }
     })
     .catch(async (e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[git-sync] content-fixer dispatch failed (${slug}): ${msg}`);
-      await recordContentFixerDispatch(slug, workspaceId, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+      await recordContentFixerDispatch(slug, workspaceId, {
+        ...dispatchMarker,
+        status: 'error',
+        error: msg.slice(0, 300),
+      });
       await logSettle('error', { error: msg.slice(0, 300) });
     });
+  return currentErrors;
 }
 
 /** EI-18775478513129278: the shape of a previously-recorded `bootstrap` metadata
@@ -1961,12 +2153,15 @@ async function recordOutcome(
   // pipeline, but persist the two byte-guard families separately. `bulkExcluded`
   // is supplied by runGitSync; the reason-based fallback keeps injected callers
   // and older checkpoint payloads compatible.
-  const bulkExcluded = (outcome.bulkExcluded ?? outcome.oversized.filter((f) => f.exclusionReason === 'cumulative-limit')).filter(
-    (f) => f.exclusionReason === 'cumulative-limit',
-  );
+  const bulkExcluded = (
+    outcome.bulkExcluded ?? outcome.oversized.filter((f) => f.exclusionReason === 'cumulative-limit')
+  ).filter((f) => f.exclusionReason === 'cumulative-limit');
   const oversized = outcome.oversized.filter((f) => f.exclusionReason !== 'cumulative-limit');
   const localSyncRecordedAt = Date.now();
-  await patchRoutineMetadata(slug, workspaceId, {
+  await patchRoutineMetadata(
+    slug,
+    workspaceId,
+    {
     last_status: outcome.status,
     last_synced_at: localSyncRecordedAt,
     // EI-21647996938145436: this is a write-time receipt from the process that
@@ -2024,22 +2219,25 @@ async function recordOutcome(
     // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
     consecutive_content_error_ticks: consecutiveContentErrorTicks,
     last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
+      // A measured-clean pass invalidates the prior dispatch identity. This is
+      // intentionally in the same outcome write as the clean detector result.
+      ...(outcome.contentErrors.length === 0 ? { last_content_fixer: null } : {}),
     // WI-1416: a COMPLETED fire resets the consecutive-reap counter the executor
     // reaper increments on each cancel+requeue — so `reaped_count` reads as "reaps
     // since the last completed fire" (the git-sync-stall-watchdog's persistent-reap
     // signal), never a forever-growing total.
     reaped_count: 0,
-    ...(outcome.status === 'synced'
-      ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha }
-    : {}),
-  }, {
+      ...(outcome.status === 'synced' ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha } : {}),
+    },
+    {
     ts: localSyncRecordedAt,
     status: outcome.status,
     dirty_path_count: outcome.dirtyPathCount,
     committed_count: outcome.committedCount,
     error: errorMessage || null,
     reaped: false,
-  });
+    },
+  );
 }
 
 /**
@@ -2082,7 +2280,9 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
     // holding a peer's 36-file, +2205/-804 stash. The detector never observed those
     // stashes being created; it inferred "new" from the absence of its own baseline.
     const baselineRecorded = row !== undefined && row.known !== null && row.known !== undefined;
-    const knownShas = Array.isArray(row?.known) ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string') : [];
+    const knownShas = Array.isArray(row?.known)
+      ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [];
 
     const allShas: string[] = [];
     const fresh: { scope: string; sha: string; subject: string; createdAt: string }[] = [];
@@ -2144,7 +2344,9 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
     console.warn(`[git-sync] ${slug}: ${summary}`);
     await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary, category: 'git-sync' }).catch(() => {});
   } catch (e) {
-    console.warn(`[git-sync] ${slug}: stash-check failed (non-fatal, best-effort, never blocks the sync): ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[git-sync] ${slug}: stash-check failed (non-fatal, best-effort, never blocks the sync): ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -2169,7 +2371,9 @@ async function gitSyncRuntimeGate(
   try {
     entry = (await loadHarnessRegistry(workspaceId)).projects.find((p) => p.slug === slug);
   } catch (e) {
-    console.warn(`[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `[git-sync] ${slug}: registry unreadable for the eligibility gate — proceeding: ${e instanceof Error ? e.message : e}`,
+    );
     return { gate: { eligible: true } };
   }
   // A vanished registry entry reads the same as a vanished checkout: no path.
@@ -2177,9 +2381,7 @@ async function gitSyncRuntimeGate(
   // A manual fire pins the exact tree it measured before entering the action.
   // Validate that pinned path rather than silently gating a freshly-resolved
   // sibling checkout if the ambient registry changes underneath the call.
-  const gatedEntry = repoPathOverride === undefined
-    ? entry
-    : { ...entry, path: repoPathOverride ?? '' };
+  const gatedEntry = repoPathOverride === undefined ? entry : { ...entry, path: repoPathOverride ?? '' };
   return { gate: gitSyncEligibility(gatedEntry), entry: gatedEntry };
 }
 
@@ -2294,9 +2496,7 @@ export function mergeAttributionRosters(
  *  it was claimed under. Ledger entries come FIRST so attributionMapForRepo's first-wins gives
  *  them priority; presence fills any files the ledger window missed (and supplies agentLabels).
  *  Best-effort throughout: a ledger-read failure degrades to presence, exactly as before. */
-async function loadAttributionRosterMerged(
-  workspaceId: string | null,
-): Promise<AttributionRosterEntry[]> {
+async function loadAttributionRosterMerged(workspaceId: string | null): Promise<AttributionRosterEntry[]> {
   let ledger: AttributionRosterEntry[] = [];
   try {
     // WI-37668: scope the ledger read by WORKSPACE, not by this repo's root. `repo_root` in the
@@ -2357,10 +2557,7 @@ async function assigneesForContentErrors(
  * fire. The routine metadata + pipeline event retain the structured provenance
  * regardless of delivery.
  */
-async function notifySkippedLockedPaths(
-  slug: string,
-  outcome: GitSyncOutcome,
-): Promise<void> {
+async function notifySkippedLockedPaths(slug: string, outcome: GitSyncOutcome): Promise<void> {
   const skippedPaths = outcome.skippedPaths ?? [];
   if (skippedPaths.length === 0) return;
 
@@ -2378,10 +2575,7 @@ async function notifySkippedLockedPaths(
 
   for (const [holder, rows] of byHolder) {
     const pathDetails = rows
-      .map(
-        (row) =>
-          `- ${row.scope}/${row.path}${row.intent.trim() ? ` — ${row.intent.trim()}` : ''}`,
-      )
+      .map((row) => `- ${row.scope}/${row.path}${row.intent.trim() ? ` — ${row.intent.trim()}` : ''}`)
       .join('\n');
     const count = rows.length;
     const partial =
@@ -2433,7 +2627,10 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
 
     const logRes = await runGit(['log', '-n', '50', '--format=%H'], repoRoot);
     if (logRes.code !== 0) return;
-    const shas = logRes.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    const shas = logRes.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (shas.length === 0) return;
 
     // Which of these are already recorded? (idempotent re-run across ticks.)
@@ -2451,7 +2648,10 @@ async function recordSyncedCommitAttribution(slug: string, workspaceId: string):
       // Only OUR attributed git-sync commits carry these — skip everything else.
       if (!t.agent && t.workItems.length === 0) continue;
       const filesRes = await runGit(['show', '--name-only', '--format=', sha], repoRoot);
-      const files = filesRes.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+      const files = filesRes.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
       for (const file of files) {
         const base = {
           workspaceId,
@@ -2489,7 +2689,11 @@ async function computeConflictAuthorship(
   repoRoot: string,
   conflicts: RepoConflict[],
 ): Promise<
-  Array<{ scope: string; file: string; recent: Array<{ sha: string; subject: string; workItems: string[]; agent?: string }> }>
+  Array<{
+    scope: string;
+    file: string;
+    recent: Array<{ sha: string; subject: string; workItems: string[]; agent?: string }>;
+  }>
 > {
   try {
     const { runGit } = await import('../docs/git-runner');
@@ -2514,7 +2718,12 @@ async function computeConflictAuthorship(
             const sha = (sep >= 0 ? block.slice(0, sep) : block).trim();
             const body = sep >= 0 ? block.slice(sep + 1) : '';
             const t = parsePapercuspTrailers(body);
-            return { sha: sha.slice(0, 12), subject: body.split('\n')[0]?.trim() ?? '', workItems: t.workItems, agent: t.agent };
+            return {
+              sha: sha.slice(0, 12),
+              subject: body.split('\n')[0]?.trim() ?? '',
+              workItems: t.workItems,
+              agent: t.agent,
+            };
           })
           .filter((r) => r.sha.length > 0);
         if (recent.length > 0) out.push({ scope: c.scope, file, recent });
@@ -2555,11 +2764,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // recorded), never escalate.
   const gate = await runCheckpointedStep(
     'git-sync:eligibility',
-    async (): Promise<GitSyncEligibility & {
+    async (): Promise<
+      GitSyncEligibility & {
       hiveGitMode?: PotGitMode;
       hiveGitIdentity?: { potHomeSlug: string; repoKey: string };
       repoPath?: string;
-    }> => {
+      }
+    > => {
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
       const { gate: g, entry } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
       if (!g.eligible) {
@@ -2579,8 +2790,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       const potHomeSlug = entry ? (entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined)) : undefined;
       if (potHomeSlug && workspaceId) {
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
-        if (mode !== 'legacy' && entry) return {
-          ...g, hiveGitMode: mode,
+        if (mode !== 'legacy' && entry)
+          return {
+            ...g,
+            hiveGitMode: mode,
           hiveGitIdentity: { potHomeSlug, repoKey: canonicalRepoKey(entry) },
           ...(entry.path ? { repoPath: entry.path } : {}),
         };
@@ -2833,14 +3046,16 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   let docFreshnessModule: typeof import('../docs/sweep-after-sync') | null = null;
   let prevHeadSha: string | null = null;
   try {
-    await guarded('activity-start', () => writeGitSyncActivity(slug, workspaceId, {
+    await guarded('activity-start', () =>
+      writeGitSyncActivity(slug, workspaceId, {
       active: true,
       phase: 'local-sync',
       started_at: activityStartedAt,
       updated_at: activityStartedAt,
       completed_at: null,
       outcome_status: null,
-    }));
+      }),
+    );
     // EI-18: previous tick's counters BEFORE this tick overwrites them.
     prev = await guarded('read-escalation-counters', () => readEscalationCounters(slug, workspaceId));
 
@@ -2863,7 +3078,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     const contentGuardOn = await guarded('read-content-guard-flag', () => getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug));
     // EI-17 kill-switch: default ON (see FLAGS.GIT_SYNC_DELETION_GUARD doc). A flag-infra
     // error falls back to the default (ON), keeping the safety on — same as content-guard.
-    const deletionGuardOn = await guarded('read-deletion-guard-flag', () => getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug));
+    const deletionGuardOn = await guarded('read-deletion-guard-flag', () =>
+      getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug),
+    );
     // P-004 (git-sync-dx-hardening): derived commit attribution (default OFF). When ON, supply the
     // LIVE roster of active agents + their declared files (coord presence current_files) so runGitSync
     // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
@@ -2901,7 +3118,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       const skippedAt = Date.now();
       console.error(`[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`);
       try {
-        await guarded('record-live-lock-read-failure', () => patchRoutineMetadata(slug, workspaceId, {
+        await guarded('record-live-lock-read-failure', () =>
+          patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
           local_sync_status: 'skipped',
           last_skip_reason: 'live-lock-read-failed',
@@ -2918,7 +3136,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             completed_at: skippedAt,
             outcome_status: null,
           },
-        }));
+          }),
+        );
       } catch (metadataError) {
         if (liveness.timedOut) throw liveness.timeoutError;
         // The primary console error above remains the visible signal if the
@@ -2934,10 +3153,12 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
 
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
-    outcome = await guarded('run-git-sync', () => runGitSync(slug, {
+    outcome = await guarded('run-git-sync', () =>
+      runGitSync(slug, {
       repoPath,
       config: cfg,
-      beforePush: gate.hiveGitMode ? async (args, cwd) => {
+        beforePush: gate.hiveGitMode
+          ? async (args, cwd) => {
         // F6/D-022 covers independent submodule origins too. Resolve a live
         // owner signer for EACH attempt, bound to the tick's parent identity
         // and exact child argv/path, never to a member's advisory election.
@@ -2946,11 +3167,21 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         const scope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
         const owner = await loadHiveEffectAuthority(workspaceId, potHomeSlug, scope);
         const actor = owner ? await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey) : null;
-        await requireHiveEffectAuthority(owner && actor ? { ...owner, sign: async bytes => {
+              await requireHiveEffectAuthority(
+                owner && actor
+                  ? {
+                      ...owner,
+                      sign: async (bytes) => {
           await actor.assertServing();
           return owner.sign(bytes);
-        } } : null, scope, ['git-sync-push', cwd, ...args]);
-      } : undefined,
+                      },
+                    }
+                  : null,
+                scope,
+                ['git-sync-push', cwd, ...args],
+              );
+            }
+          : undefined,
       contentDetectors: contentGuardOn ? undefined : [],
       deletionGuard: deletionGuardOn,
       diffSubjects: diffSubjectsOn,
@@ -2960,9 +3191,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // initial census above protects setup, while this guarded callback closes
       // the longer submodule/guard window where a peer can acquire a lock.
       refreshLiveLockHoldings: () =>
-        guarded('refresh-live-file-locks', () =>
-          acquireWithContentionRetry(() => liveLockHoldingsStrict()),
-        ),
+          guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => liveLockHoldingsStrict())),
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
@@ -2972,7 +3201,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         enqueueActivityHeartbeat();
       },
       signal: liveness.signal,
-    }));
+      }),
+    );
     // Do not let a queued local-sync heartbeat land after the post-legs marker
     // and regress the durable phase back to local-sync.
     await guarded('flush-activity-heartbeat', () => activityHeartbeatWrite);
@@ -3019,6 +3249,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // to RESET this counter to 0 every tick and defer the EI-18 push-failure escalation
   // indefinitely. The error LIST drives the counter now, not the worst status.
   const tickErrors = 'errors' in outcome ? outcome.errors : [];
+  // The local guard ran while this fire held its git-sync lease. Re-check once
+  // after that lease is released so a fixer that repaired/committed the file
+  // during the post-lock window does not become a new work item.
+  const revalidatedContentErrors = await revalidateContentErrors(repoPath, outcome.contentErrors);
+  if (revalidatedContentErrors.length !== outcome.contentErrors.length) {
+    outcome = { ...outcome, contentErrors: revalidatedContentErrors };
+  }
   const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
   // EI-438: consecutive ticks with a file still quarantined (drives P-005 escalate-to-human).
   const contentTicks = outcome.contentErrors.length > 0 ? prev.contentTicks + 1 : 0;
@@ -3064,6 +3301,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         recordAndEscalateTick({
           slug,
           workspaceId,
+          repoPath,
           outcome,
           errTicks,
           contentTicks,
@@ -3145,9 +3383,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             postLegsLiveness.signal,
           );
           if (bootstrap.state === 'skipped') {
-            const detail = bootstrap.blockedOn
-              ? `${bootstrap.reason} on ${bootstrap.blockedOn}`
-              : bootstrap.reason;
+            const detail = bootstrap.blockedOn ? `${bootstrap.reason} on ${bootstrap.blockedOn}` : bootstrap.reason;
             const message =
               `[git-sync] ${slug}: bootstrap-tick stood down — per-install lease unavailable ` +
               `(${detail}); the next scheduled tick retries`;
@@ -3418,11 +3654,16 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
     const ownerKey = await loadHiveEffectAuthority(workspaceId, potHomeSlug, protocolScope);
     const bridgeActor = ownerKey ? await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey) : null;
-    const effectAuthority = ownerKey && bridgeActor ? { ...ownerKey, sign: async (bytes: Buffer) => {
+    const effectAuthority =
+      ownerKey && bridgeActor
+        ? {
+            ...ownerKey,
+            sign: async (bytes: Buffer) => {
       await bridgeActor.assertServing();
       return ownerKey.sign(bytes);
-    } } : null;
-
+            },
+          }
+        : null;
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
@@ -3487,7 +3728,10 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
           if (existingSha && existingSha !== wbSha) {
             const isAncestor = await defaultRunGit(['merge-base', '--is-ancestor', existingSha, wbSha], bareRepoPath);
             if (isAncestor.code === 0) {
-              const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha, existingSha], bareRepoPath);
+              const pinned = await defaultRunGit(
+                ['update-ref', BRIDGE_CANONICAL_REF, wbSha, existingSha],
+                bareRepoPath,
+              );
               if (pinned.code !== 0) {
                 console.warn(
                   `[git-sync] ${slug}: bare canonical stale re-pin failed for ${bareRepoPath} ` +
@@ -3526,6 +3770,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       workspaceId,
       repoKey,
       githubRemote: entry.github_remote,
+      historySourcePath: entry.path,
       forkRemote: entry.fork_remote,
       branches: [entry.github_default_branch ?? 'main'],
       upstreamWrite,
@@ -3602,11 +3847,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     if (outcome.egressHead) {
       const includedShas = await newlyEgressedCommitShas(outcome.egressHead, bareRepoPath, prevEgressHead);
       if (includedShas.length > 0) {
-        emitGitSyncEgressedEvent(
-          outcome.egressHead,
-          { scope: { installSlug: slug, workspaceId } },
-          { includedShas },
-        );
+        emitGitSyncEgressedEvent(outcome.egressHead, { scope: { installSlug: slug, workspaceId } }, { includedShas });
       } else {
         emitGitSyncEgressedEvent(outcome.egressHead, { scope: { installSlug: slug, workspaceId } });
       }
@@ -3815,10 +4056,7 @@ interface HiveGitDialContext {
 }
 
 interface RelocatedHiveGitDialHandle {
-  openHiveGitDuplexToDevice(
-    devicePubkeyBase64: string,
-    request: HiveGitDuplexRequest,
-  ): Promise<Duplex>;
+  openHiveGitDuplexToDevice(devicePubkeyBase64: string, request: HiveGitDuplexRequest): Promise<Duplex>;
 }
 
 function hasRelocatedHiveGitDial(handle: unknown): handle is RelocatedHiveGitDialHandle {
@@ -3845,8 +4083,12 @@ export async function resolveHiveGitActor(
   repoKey: string,
 ): Promise<ServingHiveGitActor | null> {
   try {
-    const request: GitServingRequest = { workspaceId, installSlug, potHomeSlug,
-      scope: await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey) };
+    const request: GitServingRequest = {
+      workspaceId,
+      installSlug,
+      potHomeSlug,
+      scope: await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey),
+    };
     const resolve = async (): Promise<GitServingState> => {
       const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
       let localAnswer: GitServingState | null = null;
@@ -3869,19 +4111,24 @@ export async function resolveHiveGitActor(
     };
     const state = validateGitServingState(await resolve(), request);
     if (state.status !== 'ready') {
-      console.warn(`[git-sync] ${installSlug}: serving unavailable (${state.status}: ${state.reason}); retry next tick`);
+      console.warn(
+        `[git-sync] ${installSlug}: serving unavailable (${state.status}: ${state.reason}); retry next tick`,
+      );
       return null;
     }
     const capability = state.capability;
     const actor = pickHiveGitActor(state, request);
     if (!actor) return null;
     const { keychainId } = actor;
-    return { ...actor,
+    return {
+      ...actor,
       assertServing: () => assertGitServingCapability(capability, request, resolve),
-      sign: guardGitServingSigner(capability, request, resolve, bytes => signWithDeviceKey(keychainId, bytes)),
+      sign: guardGitServingSigner(capability, request, resolve, (bytes) => signWithDeviceKey(keychainId, bytes)),
     };
   } catch (error) {
-    console.warn(`[git-sync] ${installSlug}: serving unavailable (unknown: ${error instanceof Error ? error.message : String(error)}); retry next tick`);
+    console.warn(
+      `[git-sync] ${installSlug}: serving unavailable (unknown: ${error instanceof Error ? error.message : String(error)}); retry next tick`,
+    );
     return null;
   }
 }
@@ -3900,12 +4147,8 @@ async function resolveHiveGitDialContext(
     // (workspace, install) pair; the open helper's FIRST RPC is an
     // existing-only boot (`createIfMissing:false`), so a stale/wrong socket can
     // never mint a store or identity.
-    const { getPgRelocatedHarnessEndpoint } = await import(
-      '../../sync/hyperbee/substrate-booted-handles-pg'
-    );
-    const advertised = await getPgRelocatedHarnessEndpoint(workspaceId, installSlug).catch(
-      () => null,
-    );
+    const { getPgRelocatedHarnessEndpoint } = await import('../../sync/hyperbee/substrate-booted-handles-pg');
+    const advertised = await getPgRelocatedHarnessEndpoint(workspaceId, installSlug).catch(() => null);
     if (advertised) {
       return {
         path: 'sidecar-advertised',
@@ -3934,8 +4177,7 @@ async function resolveHiveGitDialContext(
   if (hasRelocatedHiveGitDial(handle)) {
     return {
       path: 'sidecar',
-      openDuplex: (devicePubkeyBase64, request) =>
-        handle.openHiveGitDuplexToDevice(devicePubkeyBase64, request),
+      openDuplex: (devicePubkeyBase64, request) => handle.openHiveGitDuplexToDevice(devicePubkeyBase64, request),
     };
   }
   const topicHex = handle.swarm?.topicHex;
@@ -4029,7 +4271,8 @@ async function runConvergenceProbe(input: {
       // unparseable one rather than passing NaN into the recency comparison.
       const seq = typeof row.id === 'number' ? row.id : Number.parseInt(String(row.id), 10);
       const observedAtMs = row.ts instanceof Date ? row.ts.getTime() : Date.parse(String(row.ts));
-      const storeGenerationRaw = payload.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT ? payload.store_generation : undefined;
+      const storeGenerationRaw =
+        payload.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT ? payload.store_generation : undefined;
       announced.push({
         devicePubkeyBase64: payload.device_pubkey,
         version: payload.version,
@@ -4038,9 +4281,7 @@ async function runConvergenceProbe(input: {
         observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : undefined,
         signedAtMs: payload.ts,
         storeGeneration:
-          typeof storeGenerationRaw === 'string' && storeGenerationRaw.length > 0
-            ? storeGenerationRaw
-            : undefined,
+          typeof storeGenerationRaw === 'string' && storeGenerationRaw.length > 0 ? storeGenerationRaw : undefined,
       });
     }
 
@@ -4064,9 +4305,7 @@ async function runConvergenceProbe(input: {
         version: stored?.version ?? null,
         sigrefsOid,
         storeGeneration:
-          typeof storeGenerationRaw === 'string' && storeGenerationRaw.length > 0
-            ? storeGenerationRaw
-            : undefined,
+          typeof storeGenerationRaw === 'string' && storeGenerationRaw.length > 0 ? storeGenerationRaw : undefined,
       });
     }
 
@@ -4238,8 +4477,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // namespace as a peer seed, silently skipping bootstrap forever. Fall back
     // to the persisted, keychain-verified announce-identity cache (no network).
     const selfDevicePubkey =
-      actor?.devicePubkey ??
-      (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
+      actor?.devicePubkey ?? (await loadCachedLocalAnnounceIdentity().catch(() => null))?.devicePubkeyBase64;
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -4521,9 +4759,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       // EI-18775478513129278 exists to carry forward. Progress stays on disk in
       // the quarantine refs, which are the resume checkpoint; the next tick
       // continues from there.
-      console.log(
-        `[git-sync] ${slug}: bootstrap-tick stood down — a fetch for this repo is already in flight`,
-      );
+      console.log(`[git-sync] ${slug}: bootstrap-tick stood down — a fetch for this repo is already in flight`);
       return;
     }
     // Re-anchor the narrowing in THIS scope (see the closure's `return` above).
@@ -4691,9 +4927,9 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
           ? 'FETCH COMPLETE BUT HEALTH STALLED'
           : convergence?.releaseConsistency.state === 'current'
             ? 'COLD JOIN CURRENT'
-            : `FETCH COMPLETE; RELEASE CONSISTENCY ${
-                (convergence?.releaseConsistency.state ?? 'unknown').toUpperCase()
-              }`;
+            : `FETCH COMPLETE; RELEASE CONSISTENCY ${(
+                convergence?.releaseConsistency.state ?? 'unknown'
+              ).toUpperCase()}`;
       console.log(
         `[git-sync] ${slug}: bootstrap-tick ${completionLabel} (dialed: ${dialLog.join(', ')}): ` +
           `seeded ${outcome.namespaces.length} namespace(s) in ${outcome.steps ?? 0} rung(s)` +
@@ -4745,7 +4981,11 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
  * only genuine cross-machine reachability (Phase 3's live rig) exercises the
  * happy path end-to-end.
  */
-async function resolveHiveGitProtocolScope(workspaceId: string, potHomeSlug: string, repoKey: string): Promise<SignedProtocolScope> {
+async function resolveHiveGitProtocolScope(
+  workspaceId: string,
+  potHomeSlug: string,
+  repoKey: string,
+): Promise<SignedProtocolScope> {
   const hive = await getHiveBySlug(workspaceId, potHomeSlug);
   if (!hive?.pubkeyBase64) throw new Error('pot-git: stable hive identity unavailable; refusing unscoped protocol');
   return { hive_id: hive.pubkeyBase64, repo_key: repoKey };
@@ -4793,11 +5033,16 @@ async function runRefAnnounceLeg(
     const priorState = stateRows[0]?.ref_announce ?? null;
     const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
     const signedProtocolContext = actor.capability.context;
-    const priorPublishVersion = priorState?.publishGeneration === signedProtocolContext.store_generation && Number.isSafeInteger(priorState?.publishVersion)
+    const priorPublishVersion =
+      priorState?.publishGeneration === signedProtocolContext.store_generation &&
+      Number.isSafeInteger(priorState?.publishVersion)
       ? Math.max(0, priorState?.publishVersion ?? 0)
       : 0;
-    const replayFloors: Record<string, SignedSnapshotFloor> = Object.fromEntries(Object.entries(priorState?.replayFloors ?? {})
-      .filter(([, floor]) => signedProtocolContextMatches(floor, protocolScope)));
+    const replayFloors: Record<string, SignedSnapshotFloor> = Object.fromEntries(
+      Object.entries(priorState?.replayFloors ?? {}).filter(([, floor]) =>
+        signedProtocolContextMatches(floor, protocolScope),
+      ),
+    );
     const sign = actor.sign;
 
     // 1. Publish: announce our own namespace advance, if any.
@@ -4818,7 +5063,9 @@ async function runRefAnnounceLeg(
       await actor.assertServing();
       const announcement = publishOutcome.announcement;
       replayFloors[actor.devicePubkey] = {
-        ...signedProtocolContext, version: announcement.version, sigrefs_oid: announcement.sigrefs_oid,
+        ...signedProtocolContext,
+        version: announcement.version,
+        sigrefs_oid: announcement.sigrefs_oid,
       };
       await emitAwaitedEvent({
         key: REF_ANNOUNCE_EVENT_KEY,
@@ -4874,7 +5121,9 @@ async function runRefAnnounceLeg(
     // 2. Receive: pending peer ref-announce fed-events since our watermark —
     // plus whatever last tick PARKED (read but could not mirror; P-203 Leg A).
     const lastEventId = priorState?.lastEventId ?? 0;
-    const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(Object.entries(priorState?.budgetStates ?? {}));
+    const priorBudgetStates = new Map<string, AnnounceBudgetState | null>(
+      Object.entries(priorState?.budgetStates ?? {}),
+    );
     const priorParked: ParkedRefAnnouncements = priorState?.parked ?? {};
     const hasParked = Object.keys(priorParked).length > 0;
 
@@ -5019,12 +5268,7 @@ async function runRefAnnounceLeg(
     // silently dropped, and never allowed to pin the cursor for every other
     // announcer (the head-of-line block that starved a reachable peer on the
     // two-machine rig). See `decideRefAnnounceReceiveCursor`.
-    const cursorDecision = decideRefAnnounceReceiveCursor(
-      receiveOutcome.results,
-      batch,
-      maxRowId,
-      priorParked,
-    );
+    const cursorDecision = decideRefAnnounceReceiveCursor(receiveOutcome.results, batch, maxRowId, priorParked);
 
     await patchRoutineMetadata(slug, workspaceId, {
       ref_announce: completeRefAnnounceState({
@@ -5153,7 +5397,11 @@ async function runRefAnnounceLeg(
       // and `not-a-superseded-refusal` are the boring no-ops (every ordinary
       // transport failure lands there); anything else means the repair arrived
       // and we turned it down — say which guard did it.
-      if (adoption.skipped && adoption.skipped !== 'not-a-superseded-refusal' && adoption.skipped !== 'already-canonical') {
+      if (
+        adoption.skipped &&
+        adoption.skipped !== 'not-a-superseded-refusal' &&
+        adoption.skipped !== 'already-canonical'
+      ) {
         console.warn(
           `[git-sync] ${slug}: pot-git did NOT adopt the key peer ${f.device.slice(0, 8)} named in its refusal ` +
             `(${adoption.skipped}) — the pair stays diverged until this is resolved.`,
@@ -5184,7 +5432,9 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
   // the reason makes "why is canonical stuck" a one-query answer.
   const decline = async (skipped: string, detail?: string): Promise<void> => {
     try {
-      await patchRoutineMetadata(slug, workspaceId, { integrator_status: { at: Date.now(), skipped, detail: detail ?? null } });
+      await patchRoutineMetadata(slug, workspaceId, {
+        integrator_status: { at: Date.now(), skipped, detail: detail ?? null },
+      });
     } catch {
       /* best-effort: diagnostics must never break the tick */
     }
@@ -5240,12 +5490,18 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       return void (await decline('no_local_store'));
     }
     const ownerKey = await loadHiveEffectAuthority(workspaceId, potHomeSlug, protocolScope);
-    if (!ownerKey) return void (await decline('not_hive_owner',
-      'Canonical integration stops without the owning hive key; member-head exchange continues.'));
-    const effectAuthority = { ...ownerKey, sign: async (bytes: Buffer) => {
+    if (!ownerKey)
+      return void (await decline(
+        'not_hive_owner',
+        'Canonical integration stops without the owning hive key; member-head exchange continues.',
+      ));
+    const effectAuthority = {
+      ...ownerKey,
+      sign: async (bytes: Buffer) => {
       await actor.assertServing();
       return ownerKey.sign(bytes);
-    } };
+      },
+    };
 
     const { sql } = getOrgPg();
     const rows = await sql<
@@ -5262,7 +5518,9 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const prior = rows[0]?.integrator ?? null;
 
     const { epoch, priorSeq } = nextHivePublicationTerm(
-      prior, actor.devicePubkey, actor.capability.context.store_generation,
+      prior,
+      actor.devicePubkey,
+      actor.capability.context.store_generation,
       rows[0]?.worktree_bridge?.epochSeq?.epoch ?? 0,
     );
 
@@ -5596,9 +5854,11 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
         allowedDevices: memberDevicePubkeysBase64,
         expectedContext: protocolScope,
         allowLegacy: false,
-        knownStoreGenerations: Object.fromEntries(Object.entries(rows[0]?.ref_announce?.replayFloors ?? {})
+        knownStoreGenerations: Object.fromEntries(
+          Object.entries(rows[0]?.ref_announce?.replayFloors ?? {})
           .filter(([, floor]) => signedProtocolContextMatches(floor, protocolScope))
-          .map(([device, floor]) => [device, floor.store_generation])),
+            .map(([device, floor]) => [device, floor.store_generation]),
+        ),
       },
       ...(openDuplex ? { openDuplex } : {}),
     });
@@ -5682,6 +5942,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
 async function recordAndEscalateTick(a: {
   slug: string;
   workspaceId: string;
+  repoPath: string | null;
   outcome: GitSyncOutcome;
   errTicks: number;
   contentTicks: number;
@@ -5734,7 +5995,10 @@ async function recordAndEscalateTick(a: {
         outcome.status === 'conflict'
           ? outcome.conflicts.map((c) => ({ scope: c.scope, files: c.conflictedFiles }))
           : [],
-      errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({ scope: e.scope, message: e.message.slice(0, 300) })),
+      errors: ('errors' in outcome ? outcome.errors : []).map((e) => ({
+        scope: e.scope,
+        message: e.message.slice(0, 300),
+      })),
       oversized: oversized.length,
       bulkExcluded: bulkExcluded.length,
       contentErrors: outcome.contentErrors.length,
@@ -5781,7 +6045,7 @@ async function recordAndEscalateTick(a: {
   // can't repair surfaces to a human instead of looping forever. A clean tick clears
   // the escalation + resets the counter. INDEPENDENT of outcome.status — content
   // errors ride alongside on any status (like oversized), so this runs unconditionally.
-  const contentErrors = outcome.contentErrors;
+  const contentErrors = await revalidateContentErrors(a.repoPath, outcome.contentErrors);
   if (contentErrors.length > 0) {
     const needsHuman = contentTicks >= MAX_CONTENT_FIXER_ATTEMPTS;
     await writeGitSyncContentEscalation(slug, workspaceId, contentErrors, contentTicks, needsHuman);
@@ -5801,11 +6065,25 @@ async function recordAndEscalateTick(a: {
         const to = await assigneesForContentErrors(slug, workspaceId, contentErrors);
         await sendMessage(GIT_SYNC_IDENTITY, { to, summary, category: 'git-sync' }).catch(() => {});
       }
-    } else if (!(await contentFixerInFlight(slug, workspaceId))) {
-      console.warn(`[git-sync] ${slug}: ${contentErrors.length} content error(s) quarantined — dispatching content-fixer`);
-      await spawnContentFixer(slug, workspaceId, contentErrors);
+    } else {
+      const stillCurrent = await spawnContentFixer(slug, workspaceId, contentErrors, a.repoPath, contentTicks);
+      if (stillCurrent.length === 0) {
+        await patchRoutineMetadata(slug, workspaceId, {
+          consecutive_content_error_ticks: 0,
+          last_content_errors: [],
+          last_content_fixer: null,
+        });
+        await clearGitSyncEscalation(slug, [CONTENT_ERROR_KIND], CONTENT_ESCALATION_PHASE);
+      }
     }
-  } else if (a.prevContentTicks > 0) {
+  } else if (a.prevContentTicks > 0 || outcome.contentErrors.length > 0) {
+    if (outcome.contentErrors.length > 0) {
+      await patchRoutineMetadata(slug, workspaceId, {
+        consecutive_content_error_ticks: 0,
+        last_content_errors: [],
+        last_content_fixer: null,
+      });
+    }
     // Clean re-check after a quarantine — the previously-broken files now pass: clear the
     // content-error escalation (mirror the merge-resolver's clean-pass clear). Gated on the
     // prior counter so a no-content tick doesn't issue a pointless UPDATE every 10 min.
@@ -5873,7 +6151,9 @@ async function recordAndEscalateTick(a: {
   }
   if (decision.broadcast) {
     console.warn(`[git-sync] ${slug}: ${decision.broadcast}`);
-    await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary: decision.broadcast, category: 'git-sync' }).catch(() => {});
+    await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary: decision.broadcast, category: 'git-sync' }).catch(
+      () => {},
+    );
   }
 }
 

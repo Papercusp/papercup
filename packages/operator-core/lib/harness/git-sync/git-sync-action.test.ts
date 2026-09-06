@@ -38,7 +38,7 @@
  * action module is side-effect imported so the system-action registry is
  * populated as in production (same pattern as routines/release-actions.test.ts).
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -305,6 +305,8 @@ type Row = Record<string, unknown>;
 let resolverRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
 /** Rows returned for the contentFixerInFlight read (`metadata->'last_content_fixer'`). */
 let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
+/** Claimed values returned by the atomic content-fixer marker CAS. */
+let contentFixerClaimResults: boolean[] = [];
 /** Rows returned for the EI-18 + content counters read (`consecutive_error_ticks`/`last_oversized`/`consecutive_content_error_ticks`). */
 let counterRows: Array<{ et: number; lo: string[] | null; ct?: number }> = [];
 /** One-shot setup failures injected at the exact post-lock boundaries under test. */
@@ -353,6 +355,10 @@ const fakeSql = Object.assign(
         } catch {
           // Unrelated writes are not candidates for this phase-targeted failure.
         }
+      }
+      if (text.includes('RETURNING true AS claimed')) {
+        const claimed = contentFixerClaimResults.length > 0 ? contentFixerClaimResults.shift() : true;
+        return Promise.resolve([{ claimed }] as Row[]);
       }
       return Promise.resolve([]);
     },
@@ -637,6 +643,7 @@ beforeEach(() => {
   getFlagMock.mockImplementation(async (key: string) => key !== 'papercusp-git-sync-derived-attribution');
   resolverRows = [];
   contentFixerRows = [];
+  contentFixerClaimResults = [true];
   counterRows = [];
   unsafeCalls.length = 0;
   templateCalls.length = 0;
@@ -3071,6 +3078,51 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     expect(routinePatches()).toContainEqual({
       last_content_fixer: expect.objectContaining({ status: 'ok', httpStatus: 200 }),
     });
+    warn.mockRestore();
+  });
+
+  it('revalidates a repaired offender before dispatch and clears its stale fixer identity', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 2 }];
+    const repairedFile = join(repoDir, 'apps/operator-docs/src/content/docs/x.mdx');
+    mkdirSync(join(repoDir, 'apps/operator-docs/src/content/docs'), { recursive: true });
+    writeFileSync(repairedFile, '# repaired\n');
+
+    try {
+      await action(ctx);
+
+      expect(loopbackFetchMock).not.toHaveBeenCalled();
+      expect(contentUpserts()).toEqual([]);
+      expect(
+        routinePatches().some(
+          (patch) =>
+            patch.consecutive_content_error_ticks === 0 &&
+            Array.isArray(patch.last_content_errors) &&
+            patch.last_content_errors.length === 0 &&
+            patch.last_content_fixer === null,
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(repairedFile, { force: true });
+    }
+  });
+
+  it('atomically coalesces same-signature content-fixer dispatches from concurrent ticks', async () => {
+    runGitSyncMock.mockResolvedValue(contentErrorOutcome);
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    // The first caller wins the marker CAS; the concurrent caller loses it even
+    // though both read an empty in-flight marker before their claims.
+    contentFixerClaimResults = [true, false];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await Promise.all([action(ctx), action(ctx)]);
+
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    const claims = unsafeCalls.filter((call) => call.text.includes('RETURNING true AS claimed'));
+    expect(claims).toHaveLength(2);
+    expect(claims[0].params[4]).toBe(claims[1].params[4]);
+    expect(claims[0].params[5]).toBe(claims[1].params[5]);
+    expect(claims[0].params[5]).toBe('1');
     warn.mockRestore();
   });
 
