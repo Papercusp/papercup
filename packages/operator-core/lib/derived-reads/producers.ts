@@ -545,7 +545,13 @@ registerDerivedRead({
   // window when it is ABSENT — which is exactly the old, wrong behaviour. So without this
   // bump the fix would ship inert on the very read it was filed against, for the third
   // time on this producer. That is the whole reason this counter exists.
-  producerVersion: 5,
+  //
+  // v5 → v6: the ambiguous top-level digest rollups (`total`, `returned`,
+  // `windowed`, `open`, and the by-* maps) moved into explicit `census` and
+  // `window` objects. A stored v5 row is structurally incompatible with readers
+  // of the nested contract, so invalidate it rather than serving stale fields as
+  // `undefined` until the snapshot TTL happens to turn over.
+  producerVersion: 6,
   scope: 'workspace',
   compute: async () => {
     const { computeLearningImprovementsSnapshot } = await import('../harness/improvements/learning-digest-snapshot');
@@ -602,7 +608,11 @@ registerDerivedRead({
   // hive lens is NOT a view predicate, so this variant takes the same unfiltered branch
   // and gains the same field — a stored v4 row here would leave the hive-scoped tab on
   // the window-derived chip set the bump exists to retire.
-  producerVersion: 5,
+  //
+  // v5 → v6 tracks the sibling's nested `census` / `window` digest contract.
+  // Both producers call the same compute function, so both stale-row keys must
+  // be invalidated together.
+  producerVersion: 6,
   scope: 'harness',
   compute: async ({ harnessSlug }) => {
     const { computeLearningImprovementsSnapshot } = await import('../harness/improvements/learning-digest-snapshot');

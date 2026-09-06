@@ -26,6 +26,7 @@ const APP_DIR = resolve(OPERATOR_ROOT, 'app');
 const GLOBALS = resolve(APP_DIR, 'globals.css');
 const PRIMITIVES = resolve(APP_DIR, '_primitives.css');
 const SURFACES_INDEX = resolve(REPO_ROOT, 'packages/operator-ui/src/surfaces/index.tsx');
+const ADV_HEADER_PILLS = resolve(REPO_ROOT, 'apps/operator-vite/src/components/adv/adv-header-pills.css');
 
 /**
  * Classes a mounted surface uses that are DELIBERATELY globals-only, with the reason.
@@ -105,6 +106,13 @@ describe('mounted-surface CSS: a surface the portal mounts carries its own styli
     expect(indexSheets).toContain(PRIMITIVES);
     expect(sharedClasses.has('pc-card'), '.pc-card is a shared primitive').toBe(true);
     expect(globalsClasses.size).toBeGreaterThan(100);
+  });
+
+  it('the native task-roster surface carries its canonical stylesheet', () => {
+    expect(modules.get('tasks-roster')).toContain('apps/operator-vite/src/components/adv/TasksRosterPanel');
+    expect(indexSheets).toContain(ADV_HEADER_PILLS);
+    expect(sharedClasses.has('pc-tasks-roster'), '.pc-tasks-roster is styled for native hosts').toBe(true);
+    expect(readFileSync(ADV_HEADER_PILLS, 'utf8')).toMatch(/\.pc-tasks-roster__row\s*\{/);
   });
 
   it('the primitives file defines the form building blocks the surfaces are written against', () => {
