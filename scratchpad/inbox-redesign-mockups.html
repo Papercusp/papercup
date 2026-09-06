@@ -400,7 +400,7 @@ footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
   border-left:2px solid var(--p-rule);padding-left:15px}
 .bs-body em{font-style:normal;color:var(--p-warn);font-weight:600}
 .bs-body .k{font-family:var(--ff-mono);font-size:11.5px;color:var(--p-accent)}
-.bs-acts{display:flex;gap:9px;margin-top:auto;padding-top:15px;border-top:1px solid var(--p-rule)}
+.bs-acts{display:flex;gap:9px;margin-top:6px}
 .bs-btn{height:34px;border-radius:8px;padding:0 15px;display:flex;align-items:center;
   font-size:11.5px;font-weight:700}
 .bs-btn.pri{background:var(--p-accent);color:#10201c}
@@ -813,8 +813,9 @@ footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
       that makes three of them near-invisible, the body runs about 200 characters per line, and the
       whole thing occupies the top fifth of the pane with ~800px of nothing under it.</p>
       <p>So the detail splits: a main column held to a 60-character measure, and a metadata rail that
-        gathers the chips into labelled rows you can actually read. Actions anchor to the bottom, in
-        the same place on every item.</p></div>
+        gathers the chips into labelled rows you can actually read. Actions sit directly under the
+        body — for a two-sentence item like this one, pinning them to the bottom of a 655px pane just
+        recreates the void in a tidier costume.</p></div>
   </div>
 
   <div class="frame">
@@ -954,23 +955,26 @@ footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
 <section>
   <div class="sec-head"><p class="eyebrow">Recommendation</p><span class="rule"></span></div>
   <div class="rec">
-    <h3>Ship A this week, then B. Hold C until bulk-resolve lands.</h3>
-    <div class="col" style="color:var(--ink-2)"><p>A is a contained change to one component that turns
-      a zero-row screen into an eight-row one, so it should not wait behind a design debate. B is the
-      real answer — it fixes the layout <em>and</em> the wasted half of the screen, and it makes the
-      resolver briefing legible for the first time. C is the right shape for this data, but it is a
-      rewrite, and it pays off most once rows are selectable in bulk.</p></div>
+    <h3>Direction B — selected. Here's the build order.</h3>
+    <div class="col" style="color:var(--ink-2)"><p>B fixes both halves of the screen at once: the list
+      gets its 533px back because everything explanatory moves right, and the pane that was showing one
+      line of placeholder text becomes the briefing when nothing is selected and a properly-set item
+      when something is. A and C stay on this page as the discarded alternatives — A is the same list
+      fix without the pane work, C is where this goes if bulk selection ever lands.</p></div>
     <ol>
-      <li><b>Fix the flex budget first.</b> Whatever direction wins, give
-        <code>.op-inbox__master</code> a chrome cap so the list can never be squeezed below a floor —
-        a <code>min-height</code> on <code>.op-inbox__list</code> is a one-line guard against this
-        whole class of bug returning.</li>
+      <li><b>Land the floor guard first, on its own.</b> A <code>min-height</code> on
+        <code>.op-inbox__list</code> plus a chrome cap on <code>.op-inbox__master</code> stops the
+        collapse today and guards the class from returning — independent of B, reviewable in a minute.</li>
+      <li><b>Then the shell:</b> strip the left column to search, filters and queue; add the briefing
+        view to <code>.op-inbox__aside</code> alongside its existing empty and detail states.</li>
+      <li><b>Then the detail:</b> show the item title in the pane (it currently never appears there),
+        hold the body to a ~60-character measure, and move the six chips into the metadata rail at
+        full contrast.</li>
       <li><b>Pick one total.</b> 100, 143, 158 and 1540 are four different populations. Show the one
-        the screen is about and put the rest behind the run report.</li>
+        the screen is about and put the rest in the briefing.</li>
       <li><b>Drop the blue.</b> The hero, row icons and active filter use <span class="mono">#3f7fd6</span>
         against an app whose accent is <span class="mono">#5fae9f</span>. Nothing else in the portal
         does this.</li>
-      <li><b>Then decide A→B or straight to C</b> based on whether bulk selection is on the roadmap.</li>
     </ol>
   </div>
 </section>
