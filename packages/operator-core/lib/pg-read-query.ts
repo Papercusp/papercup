@@ -2384,11 +2384,13 @@ export function buildNativeToolAttributionAdvisory(rawSql: string): string | nul
     ' are NATIVE client tools and never appear in it, so this returns a well-formed zero rather ' +
     'than a real count (measured 24h: capability:bash 1997, capability:edit 17, native Edit 0). ' +
     'The store that DOES see native tools is harness_shared.session_turn_parts — and it is ' +
-    "corpus-namespaced, so it needs workspace_id = 'default', NOT your tenant id: " +
-    "SELECT owner, count(*) FILTER (WHERE tool_name IN ('Edit','Write','MultiEdit')) " +
-    "FROM harness_shared.session_turn_parts WHERE workspace_id = 'default' " +
-    "AND ts > now() - interval '24 hours' GROUP BY 1. `owner` is the coord ownerId, so it joins " +
-    'straight to an agent.'
+    "corpus-namespaced, so it needs workspace_id = 'default', NOT your tenant id. Its `text` " +
+    'column is the faithful-render payload; there are no `input`, `content`, or JSON payload ' +
+    'columns. For an exact bounded read, use: ' +
+    "SELECT owner, ts, tool_name, text FROM harness_shared.session_turn_parts " +
+    "WHERE workspace_id = 'default' AND tool_name IN ('Edit','Write','MultiEdit') " +
+    "AND ts > now() - interval '24 hours' ORDER BY ts DESC LIMIT 50. " +
+    '`owner` is the coord ownerId, so it joins straight to an agent.'
   );
 }
 
@@ -2468,10 +2470,10 @@ export function buildAgentActivityLedgerAdvisory(rawSql: string): string | null 
     'onto it: that store is empty for ~45% of agents (24h: 182 of 333 tool_invocations owners had ' +
     'any rows), so an empty tool-log is equally not evidence of idleness. Corroborate with the ' +
     "transcript store, which is corpus-namespaced — workspace_id = 'default', NOT your tenant id: " +
-    'SELECT tool_name, count(*) FROM harness_shared.session_turn_parts WHERE ' +
+    'SELECT ts, tool_name, text FROM harness_shared.session_turn_parts WHERE ' +
     "workspace_id = 'default' AND owner = '<the coord ownerId>' AND ts > now() - interval " +
-    "'30 minutes' GROUP BY 1 ORDER BY 2 DESC. `owner` is the coord ownerId, so both take the same " +
-    'id you scoped this query with.'
+    "'30 minutes' ORDER BY ts DESC LIMIT 50. `owner` is the coord ownerId and `text` is the " +
+    'faithful-render payload column, so both take the same id you scoped this query with.'
   );
 }
 

@@ -2443,6 +2443,10 @@ describe('buildNativeToolAttributionAdvisory — native tools are absent from to
     // cannot land the caller in the second trap.
     expect(advisory).toContain('session_turn_parts');
     expect(advisory).toContain("workspace_id = 'default'");
+    expect(advisory).toContain('SELECT owner, ts, tool_name, text');
+    expect(advisory).toContain('faithful-render payload');
+    expect(advisory).toContain('no `input`, `content`, or JSON payload columns');
+    expect(advisory).toContain('ORDER BY ts DESC LIMIT 50');
   });
 
   it('is silent for an MCP tool name, which really is recorded there', () => {
@@ -2531,6 +2535,10 @@ describe('buildAgentActivityLedgerAdvisory — a single-agent ledger window is n
     // And the specific warning that the recommended store is itself incomplete.
     expect(advisory).toMatch(/empty for ~45% of agents/);
     expect(advisory).toMatch(/empty tool-log is equally not evidence/);
+    expect(advisory).toContain('SELECT ts, tool_name, text');
+    expect(advisory).toContain("owner = '<the coord ownerId>'");
+    expect(advisory).toContain('faithful-render payload column');
+    expect(advisory).toContain('ORDER BY ts DESC LIMIT 50');
   });
 
   it('fires on a prefix-matched owner scope and on a spawn_id scope', () => {
