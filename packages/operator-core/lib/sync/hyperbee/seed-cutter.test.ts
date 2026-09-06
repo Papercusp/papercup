@@ -276,16 +276,23 @@ describe('cutHiveSeed — combined git + corestore seed', () => {
       },
     });
 
-    expect(onProgress).toHaveBeenNthCalledWith(1, {
+    expect(onProgress).toHaveBeenNthCalledWith(1, expect.objectContaining({
       phase: 'filtered-source-scan',
       processed: 256,
       total: 257,
-    });
-    expect(onProgress).toHaveBeenLastCalledWith({
+      sourceStart: 0,
+      sourceEnd: 257,
+      decodedOps: 256,
+    }));
+    expect(onProgress).toHaveBeenLastCalledWith(expect.objectContaining({
       phase: 'filtered-source-scan',
       processed: 257,
       total: 257,
-    });
+      sourceStart: 0,
+      sourceEnd: 257,
+      decodedOps: 257,
+    }));
+    expect(onProgress.mock.calls.every(([event]) => event.coreKey === keyHex && event.decodedBytes > 0)).toBe(true);
 
     // Reaching the sink at all is what proves the seam is threaded from here; the
     // row counts pin that this unredacted fixture is carried rather than dropped.

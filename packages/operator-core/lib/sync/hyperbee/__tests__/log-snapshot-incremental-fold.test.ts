@@ -194,6 +194,41 @@ describe('produceLogSnapshot incremental fold (P-014 half 2)', () => {
     expect(res.rowCount).toBe(DISTINCT_KEYS);
   });
 
+  it('attributes own compaction progress to the core, source span, and decoded volume', async () => {
+    const historyLength = SNAPSHOT_READ_CONCURRENCY + 3;
+    const probe = foldProbeLog(historyLength);
+    const progress: Array<{
+      phase: string;
+      coreKey?: string;
+      sourceStart: number;
+      sourceEnd: number;
+      processed: number;
+      total: number;
+      decodedOps: number;
+      decodedBytes: number;
+    }> = [];
+
+    const res = await produceLogSnapshot(probe.log, {
+      now: 5,
+      schemaVersion: 1,
+      onProgress: (event) => progress.push(event),
+    });
+
+    expect(res.appended).toBe(true);
+    expect(progress.length).toBeGreaterThan(1);
+    expect(progress.at(-1)).toMatchObject({
+      phase: 'own-compaction',
+      coreKey: 'k'.repeat(64),
+      sourceStart: 0,
+      sourceEnd: historyLength,
+      processed: historyLength,
+      total: historyLength,
+      decodedOps: historyLength,
+    });
+    expect(progress.at(-1)!.decodedBytes).toBeGreaterThan(0);
+    expect(progress.every((event, i) => i === 0 || event.decodedOps >= progress[i - 1]!.decodedOps)).toBe(true);
+  });
+
   it('peak retention does NOT grow with history length', async () => {
     // The property in its load-bearing form. An absolute bound alone could be satisfied
     // by a big-but-finite buffer; what makes the producer survive a 461k-op corpus is

@@ -1735,6 +1735,8 @@ describe('runGitSync (real git, no submodule)', () => {
         detectorKey: 'fake-broken',
         error: 'contains BROKEN',
         fixerRole: 'content-fixer',
+        contentHash: '0bec6cfbbb9c9e24fe0b0d0898eece375bfde10840e87aa2ed9a0b4293f94260',
+        detectorResultHash: '1056f0bdc70c0c0ffadd4e0742c00323a07e7ae989c1bde9ca544f8615970720',
       },
     ]);
     const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');

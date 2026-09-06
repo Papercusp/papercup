@@ -15,6 +15,7 @@
  * never wedge the whole fleet's commit. Only a clean "this file is broken"
  * verdict excludes a file.
  */
+import { createHash } from 'node:crypto';
 import type { RunGit } from './run-git-sync';
 import type { ContentDetector, ContentDetectorContext } from '../../content-lint/registry';
 
@@ -28,6 +29,30 @@ export interface ContentOffender {
   error: string;
   /** The role git-sync dispatches to fix this offender (the detector's fixerRole). */
   fixerRole: string;
+  /**
+   * SHA-256 of the exact working-tree text that produced this finding.
+   * Optional because structural guards (deletion/import findings) have no
+   * content snapshot to hash.
+   */
+  contentHash?: string;
+  /**
+   * SHA-256 of the detector identity + result that produced this finding.
+   * Binding the result as well as the text prevents a dispatch from silently
+   * following a detector whose verdict changed while the work was queued.
+   */
+  detectorResultHash?: string;
+}
+
+/** Stable content CAS token shared by the guard and action-layer revalidation. */
+export function contentSnapshotHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+/** Stable detector-result token shared by the guard and action-layer revalidation. */
+export function detectorResultHash(detectorKey: string, error: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ detectorKey, error }), 'utf8')
+    .digest('hex');
 }
 
 export interface ContentGuardDeps {
@@ -166,7 +191,14 @@ export async function detectContentOffenders(deps: ContentGuardDeps): Promise<Co
           }
         }
         // Not (fully) auto-repairable — quarantine + dispatch the LLM fixer, as before.
-        offenders.push({ file, detectorKey: d.key, error, fixerRole: d.fixerRole });
+        offenders.push({
+          file,
+          detectorKey: d.key,
+          error,
+          fixerRole: d.fixerRole,
+          contentHash: contentSnapshotHash(text),
+          detectorResultHash: detectorResultHash(d.key, error),
+        });
       } catch (e) {
         // FAIL OPEN — a content-check bug must never block the whole tree's commit.
         log?.(`[content-guard] detector "${d.key}" threw on ${file} — skipping (not blocking): ${errMsg(e)}`);

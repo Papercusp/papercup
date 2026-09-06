@@ -6,6 +6,7 @@ import {
   isSnapshotOp,
   SNAPSHOT_READ_CONCURRENCY,
   type SnapshotPayload,
+  type SnapshotFoldProgress,
 } from '../log-snapshot';
 import type { OwnLog, PeerLogOp } from '../peer-log';
 
@@ -325,7 +326,7 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
       await src.append(put('plans', `p-${i}`, { i }, i));
     }
     const target = memLog('synthetic-seed-core');
-    const progress: Array<{ phase: string; processed: number; total: number }> = [];
+    const progress: SnapshotFoldProgress[] = [];
 
     await produceFilteredSnapshotIntoLog(src, target, {
       now: 2000,
@@ -333,18 +334,14 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
       onProgress: (event) => progress.push(event),
     });
 
-    expect(progress).toEqual([
-      {
-        phase: 'filtered-source-scan',
-        processed: SNAPSHOT_READ_CONCURRENCY,
-        total: SNAPSHOT_READ_CONCURRENCY + 1,
-      },
-      {
-        phase: 'filtered-source-scan',
-        processed: SNAPSHOT_READ_CONCURRENCY + 1,
-        total: SNAPSHOT_READ_CONCURRENCY + 1,
-      },
+    expect(progress.map(({ phase, processed, total }) => ({ phase, processed, total }))).toEqual([
+      { phase: 'filtered-source-scan', processed: SNAPSHOT_READ_CONCURRENCY, total: SNAPSHOT_READ_CONCURRENCY + 1 },
+      { phase: 'filtered-source-scan', processed: SNAPSHOT_READ_CONCURRENCY + 1, total: SNAPSHOT_READ_CONCURRENCY + 1 },
     ]);
+    expect(progress.map((event) => event.decodedOps)).toEqual([SNAPSHOT_READ_CONCURRENCY, SNAPSHOT_READ_CONCURRENCY + 1]);
+    expect(progress.every((event) => event.coreKey === 'source-own-log')).toBe(true);
+    expect(progress.every((event) => event.sourceStart === 0 && event.sourceEnd === SNAPSHOT_READ_CONCURRENCY + 1)).toBe(true);
+    expect(progress.every((event) => event.decodedBytes > 0)).toBe(true);
   });
 
   it('does not call the stall sink for a slow scan whose source cursor keeps advancing', async () => {

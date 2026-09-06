@@ -1,9 +1,12 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import { pgTimestampToIso } from '../../pg-timestamp';
+import { planItemRef } from '../../issue-blocks-merge';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
+import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
 
 export { ADHOC_WORK_ITEM_SPEC_SCOPE };
@@ -432,6 +435,56 @@ export interface EnsureWorkItemSpecRevisionEdgesInput {
   actorId: string;
 }
 
+async function writeWorkItemSpecRevisionEdges(
+  input: EnsureWorkItemSpecRevisionEdgesInput,
+  tx: SpecClauseSql,
+): Promise<WorkItemSpecRevisionEdge[]> {
+  const planItemIds = [...new Set(input.planItemIds.map((id) => id.trim()).filter(Boolean))];
+  if (planItemIds.length === 0) return [];
+
+  await tx`
+    INSERT INTO harness_shared.work_item_spec_revision_edges (
+      workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+      spec_revision, spec_fingerprint, created_by
+    )
+    SELECT c.workspace_id, c.harness_slug, ${input.workItemId}, c.plan_slug,
+           c.spec_id, c.current_revision, r.content_hash, ${input.actorId}
+      FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r
+        ON r.workspace_id = c.workspace_id
+       AND r.harness_slug = c.harness_slug
+       AND r.plan_slug = c.plan_slug
+       AND r.spec_id = c.spec_id
+       AND r.revision = c.current_revision
+     WHERE c.workspace_id = ${input.workspaceId}
+       AND c.harness_slug = ${input.harnessSlug}
+       AND c.plan_slug = ${input.planSlug}
+       AND r.plan_item_id = ANY(${planItemIds}::text[])
+    ON CONFLICT DO NOTHING`;
+
+  const rows = await tx<{
+    work_item_id: string;
+    plan_slug: string;
+    spec_id: string;
+    spec_revision: number | string;
+    spec_fingerprint: string;
+  }[]>`
+    SELECT work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint
+      FROM harness_shared.work_item_spec_revision_edges
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND work_item_id = ${input.workItemId}
+       AND plan_slug = ${input.planSlug}
+     ORDER BY spec_id, spec_revision`;
+  return rows.map((row) => ({
+    workItemId: row.work_item_id,
+    planSlug: row.plan_slug,
+    specId: row.spec_id,
+    specRevision: Number(row.spec_revision),
+    specFingerprint: row.spec_fingerprint,
+  }));
+}
+
 /**
  * Attach a promoted work-item to every current spec revision owned by its plan
  * item.  Promotion is the first moment the canonical work-item id exists, so
@@ -443,51 +496,88 @@ export interface EnsureWorkItemSpecRevisionEdgesInput {
 export async function ensureWorkItemSpecRevisionEdges(
   input: EnsureWorkItemSpecRevisionEdgesInput,
 ): Promise<WorkItemSpecRevisionEdge[]> {
+  return withWorkspace(input.workspaceId, async (tx) => {
+    return writeWorkItemSpecRevisionEdges(input, tx as unknown as SpecClauseSql);
+  });
+}
+
+/**
+ * Attach current clause revisions to every already-existing work-item that
+ * names one of the supplied plan items. Activation can run after promotion,
+ * so this repair must cover terminal rows as well as live rows and must not
+ * mint a replacement work-item. All provenance legs are read in the same
+ * caller-supplied transaction as the BAR/spec writes.
+ */
+export async function ensureExistingWorkItemSpecRevisionEdgesInTransaction(
+  input: Omit<EnsureWorkItemSpecRevisionEdgesInput, 'workItemId'>,
+  tx: SpecClauseSql,
+): Promise<WorkItemSpecRevisionEdge[]> {
   const planItemIds = [...new Set(input.planItemIds.map((id) => id.trim()).filter(Boolean))];
   if (planItemIds.length === 0) return [];
-  return withWorkspace(input.workspaceId, async (tx) => {
-    await tx`
-      INSERT INTO harness_shared.work_item_spec_revision_edges (
-        workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
-        spec_revision, spec_fingerprint, created_by
-      )
-      SELECT c.workspace_id, c.harness_slug, ${input.workItemId}, c.plan_slug,
-             c.spec_id, c.current_revision, r.content_hash, ${input.actorId}
-        FROM harness_shared.plan_spec_clauses c
-        JOIN harness_shared.plan_spec_clause_revisions r
-          ON r.workspace_id = c.workspace_id
-         AND r.harness_slug = c.harness_slug
-         AND r.plan_slug = c.plan_slug
-         AND r.spec_id = c.spec_id
-         AND r.revision = c.current_revision
-       WHERE c.workspace_id = ${input.workspaceId}
-         AND c.harness_slug = ${input.harnessSlug}
-         AND c.plan_slug = ${input.planSlug}
-         AND r.plan_item_id = ANY(${planItemIds}::text[])
-      ON CONFLICT DO NOTHING`;
 
-    const rows = await tx<{
-      work_item_id: string;
-      plan_slug: string;
-      spec_id: string;
-      spec_revision: number | string;
-      spec_fingerprint: string;
-    }[]>`
-      SELECT work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint
-        FROM harness_shared.work_item_spec_revision_edges
-       WHERE workspace_id = ${input.workspaceId}
-         AND harness_slug = ${input.harnessSlug}
-         AND work_item_id = ${input.workItemId}
-         AND plan_slug = ${input.planSlug}
-       ORDER BY spec_id, spec_revision`;
-    return rows.map((row) => ({
-      workItemId: row.work_item_id,
-      planSlug: row.plan_slug,
-      specId: row.spec_id,
-      specRevision: Number(row.spec_revision),
-      specFingerprint: row.spec_fingerprint,
-    }));
-  });
+  // The feature-family coord plane historically lives in `default`, while
+  // issue-family links follow the active workspace when COORD_PER_WORKSPACE is
+  // enabled. Read both without changing the scheduler or claim specification.
+  const coordWorkspaceIds = [...new Set([input.workspaceId, DEFAULT_COORD_WORKSPACE])];
+  const planItemRefs = planItemIds.map((itemId) => planItemRef(input.planSlug, itemId));
+  const rows = await tx<{ work_item_id: string; plan_item_id: string }[]>`
+    WITH provenance AS (
+      SELECT wi.feature_id AS work_item_id,
+             source_item.item_id AS plan_item_id
+        FROM harness_shared.work_items wi
+        CROSS JOIN LATERAL unnest(COALESCE(wi.source_plan_item_ids, ARRAY[]::text[]))
+          AS source_item(item_id)
+       WHERE wi.workspace_id = ANY(${coordWorkspaceIds}::text[])
+         AND wi.harness_slug = ${input.harnessSlug}
+         AND wi.source_plan_slug = ${input.planSlug}
+      UNION
+      SELECT wi.feature_id AS work_item_id,
+             wi.payload->'plan_item'->>'item_id' AS plan_item_id
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ANY(${coordWorkspaceIds}::text[])
+         AND wi.harness_slug = ${input.harnessSlug}
+         AND wi.payload->'plan_item'->>'plan_slug' = ${input.planSlug}
+      UNION
+      SELECT wi.feature_id AS work_item_id,
+             split_part(l.dst_ref, '#', 2) AS plan_item_id
+        FROM harness_shared.coord_links l
+        JOIN harness_shared.work_items wi
+          ON wi.workspace_id = l.workspace_id
+         AND wi.harness_slug = ${input.harnessSlug}
+         AND (
+           (l.src_kind = 'issue' AND wi.feature_id = l.src_ref)
+           OR (
+             l.src_kind = 'feature'
+             AND wi.feature_id = split_part(l.src_ref, '#', 2)
+             AND wi.harness_slug = split_part(l.src_ref, '#', 1)
+           )
+         )
+       WHERE l.workspace_id = ANY(${coordWorkspaceIds}::text[])
+         AND l.rel = ANY(${['implements', 'relates']}::text[])
+         AND l.dst_kind = 'plan_item'
+         AND l.dst_ref = ANY(${planItemRefs}::text[])
+    )
+    SELECT DISTINCT work_item_id, plan_item_id
+      FROM provenance
+     WHERE plan_item_id = ANY(${planItemIds}::text[])
+     ORDER BY work_item_id, plan_item_id`;
+
+  const planItemsByWorkItem = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = planItemsByWorkItem.get(row.work_item_id) ?? [];
+    if (!ids.includes(row.plan_item_id)) ids.push(row.plan_item_id);
+    planItemsByWorkItem.set(row.work_item_id, ids);
+  }
+
+  const edges: WorkItemSpecRevisionEdge[] = [];
+  for (const [workItemId, workItemPlanItemIds] of planItemsByWorkItem) {
+    edges.push(...await writeWorkItemSpecRevisionEdges({
+      ...input,
+      planItemIds: workItemPlanItemIds,
+      workItemId,
+    }, tx));
+  }
+  return edges;
 }
 
 /** Read the explicit many-to-many coverage edges for one work item. */

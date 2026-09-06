@@ -231,12 +231,14 @@ export class SnapshotRowFolder {
     return this.latest.size;
   }
 
-  /** Fold ONE op. Must be called in ascending log-index order (see the class note). */
-  add(op: PeerLogOp): void {
+  /** Fold ONE op. Must be called in ascending log-index order (see the class note).
+   * `decodedValue` is an internal read-once seam used by the producer diagnostics;
+   * callers that do not already have the decoded value keep the original behavior. */
+  add(op: PeerLogOp, decodedValue?: unknown): void {
     if (isSnapshotOp(op)) {
       // A PRIOR snapshot expands: its rows (live AND tombstone) fold in as if they
       // were the ops they summarize, so re-snapshotting is correct + idempotent.
-      const payload = op.value as SnapshotPayload | undefined;
+      const payload = (decodedValue ?? op.value) as SnapshotPayload | undefined;
       if (payload && Array.isArray(payload.rows)) {
         for (const r of payload.rows) {
           if (this.excludeTables.has(r.table)) continue;
@@ -259,8 +261,8 @@ export class SnapshotRowFolder {
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
       const value = this.transformValue
-        ? this.transformValue(op.value, { table: op.table, hbKey: op.hbKey })
-        : op.value;
+        ? this.transformValue(decodedValue ?? op.value, { table: op.table, hbKey: op.hbKey })
+        : (decodedValue ?? op.value);
       if (value === DROP_SNAPSHOT_ROW) {
         // The key may have an earlier accepted winner. Dropping the latest PUT must
         // remove that stale winner rather than silently resurrecting it in the seed.
@@ -523,10 +525,19 @@ export const SNAPSHOT_READ_CONCURRENCY = 256;
 export interface SnapshotFoldProgress {
   /** Named phase so a future multi-phase seed cut cannot conflate counters. */
   phase: string;
+  /** Stable author/core identity when the source exposes one. */
+  coreKey?: string;
+  /** Absolute source-log span represented by this fold invocation. */
+  sourceStart: number;
+  sourceEnd: number;
   /** Number of source-log blocks folded so far. Monotonic within one scan. */
   processed: number;
   /** Source-log length captured for this scan. */
   total: number;
+  /** Decoded source operations consumed by the folder so far. */
+  decodedOps: number;
+  /** Approximate UTF-8 bytes represented by those decoded operations. */
+  decodedBytes: number;
 }
 
 /** Diagnostic emitted when the source cursor has not advanced for `stallMs`. */
@@ -549,6 +560,7 @@ const FILTERED_SNAPSHOT_SCAN_PHASE = 'filtered-source-scan';
 
 interface FoldLogRangeOptions {
   phase?: string;
+  coreKey?: string;
   onProgress?: SnapshotFoldProgressCallback;
   onStall?: SnapshotFoldStallCallback;
   stallMs?: number;
@@ -658,11 +670,20 @@ async function findLatestProducerSnapshot(
  * a wall-clock false positive, while a read that never completes produces one
  * useful diagnostic and does not create a repeating timer storm.
  */
-function watchFoldCursor(from: number, to: number, opts: Required<Pick<FoldLogRangeOptions, 'phase' | 'onStall'>> & { stallMs: number }): {
-  advance: (processed: number) => void;
+function watchFoldCursor(
+  from: number,
+  to: number,
+  opts: Required<Pick<FoldLogRangeOptions, 'phase' | 'onStall'>> & {
+    coreKey?: string;
+    stallMs: number;
+  },
+): {
+  advance: (processed: number, decodedOps: number, decodedBytes: number) => void;
   stop: () => void;
 } {
   let processed = from;
+  let decodedOps = 0;
+  let decodedBytes = 0;
   let lastProgressAt = Date.now();
   let alarmedAt: number | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -678,18 +699,30 @@ function watchFoldCursor(from: number, to: number, opts: Required<Pick<FoldLogRa
         return;
       }
       alarmedAt = processed;
-      opts.onStall({ phase: opts.phase, processed, total: to, stalledForMs });
+      opts.onStall({
+        phase: opts.phase,
+        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+        sourceStart: from,
+        sourceEnd: to,
+        processed,
+        total: to,
+        decodedOps,
+        decodedBytes,
+        stalledForMs,
+      });
     }, opts.stallMs);
     timer.unref?.();
   };
 
   arm();
   return {
-    advance(next: number): void {
+    advance(next: number, nextDecodedOps: number, nextDecodedBytes: number): void {
       // The fold loop is sequential by construction. Keep the guard defensive
       // so a future caller cannot make an alarm appear to recover backwards.
       if (next < processed) return;
       processed = next;
+      decodedOps = nextDecodedOps;
+      decodedBytes = nextDecodedBytes;
       lastProgressAt = Date.now();
       alarmedAt = undefined;
       arm();
@@ -786,21 +819,48 @@ async function foldLogRangeInto(
   const watchdog =
     opts.onStall && opts.stallMs !== undefined && opts.stallMs > 0
       ? watchFoldCursor(from, to, {
-          phase: opts.phase ?? 'source-scan',
-          onStall: opts.onStall,
-          stallMs: opts.stallMs,
-        })
+        phase: opts.phase ?? 'source-scan',
+        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+        onStall: opts.onStall,
+        stallMs: opts.stallMs,
+      })
       : undefined;
+  let decodedOps = 0;
+  let decodedBytes = 0;
   try {
     for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
       const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
       const window = await Promise.all(Array.from({ length: end - start }, (_, k) => log.get(start + k)));
-      for (const op of window) if (op) folder.add(op);
-      watchdog?.advance(end);
+      for (const op of window) {
+        if (!op) continue;
+        // Read the decoded value once, both to fold it and to measure the bounded
+        // source volume. This avoids a second getter read on instrumented logs.
+        const decodedValue = op.value;
+        decodedOps += 1;
+        const encoded = JSON.stringify({
+          type: op.type,
+          table: op.table,
+          hbKey: op.hbKey,
+          value: decodedValue,
+          ts: op.ts,
+          schema_version: op.schema_version,
+          ...(op.author_pubkey != null ? { author_pubkey: op.author_pubkey } : {}),
+          ...(op.hlc ? { hlc: op.hlc } : {}),
+          ...(op.epoch != null ? { epoch: op.epoch } : {}),
+        });
+        decodedBytes += encoded === undefined ? 0 : Buffer.byteLength(encoded, 'utf8');
+        folder.add(op, decodedValue);
+      }
+      watchdog?.advance(end, decodedOps, decodedBytes);
       opts.onProgress?.({
         phase: opts.phase ?? 'source-scan',
+        ...(opts.coreKey ? { coreKey: opts.coreKey } : {}),
+        sourceStart: from,
+        sourceEnd: to,
         processed: end,
         total: to,
+        decodedOps,
+        decodedBytes,
       });
       // `window` falls out of scope here — the decoded blocks it held are collectable.
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -816,6 +876,12 @@ export async function produceLogSnapshot(
     now: number;
     schemaVersion: number;
     maxChunkBytes?: number;
+    /** Optional bounded progress sink for the own-compaction fold. */
+    onProgress?: SnapshotFoldProgressCallback;
+    /** Optional cursor-stall diagnostic for the own-compaction fold. */
+    onStall?: SnapshotFoldStallCallback;
+    /** Override the own-compaction cursor-stall threshold. */
+    stallMs?: number;
     /**
      * Tables dropped from the fold (EI-20108164746219771). Omitted by every live
      * caller, so the behavior of the running system is unchanged; supplied only by
@@ -870,7 +936,14 @@ export async function produceLogSnapshot(
    * Fold `[from, to)` into the folder. Factored out of the main loop so the ANCHOR
    * CONVERGENCE below can reuse it for the (tiny) delta that arrives mid-read.
    */
-  const foldRange = (from: number, to: number): Promise<void> => foldLogRangeInto(ownLog, folder, from, to);
+  const foldRange = (from: number, to: number): Promise<void> =>
+    foldLogRangeInto(ownLog, folder, from, to, {
+      phase: 'own-compaction',
+      coreKey: ownLog.keyHex,
+      onProgress: opts.onProgress,
+      onStall: opts.onStall,
+      stallMs: opts.stallMs,
+    });
 
   await foldRange(foldedUpTo, coversUpTo);
   // The initial target was captured before seed discovery. A concurrent append
@@ -1030,6 +1103,7 @@ export async function produceFilteredSnapshotIntoLog(
     });
   await foldLogRangeInto(sourceLog, folder, 0, sourceLog.length, {
     phase: FILTERED_SNAPSHOT_SCAN_PHASE,
+    coreKey: (sourceLog as Partial<Pick<OwnLog, 'keyHex'>>).keyHex,
     onProgress: opts.onProgress,
     onStall: reportStall,
     stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
