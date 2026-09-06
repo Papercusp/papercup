@@ -130,20 +130,34 @@ echo '=== [6/8] reload the WebView and prove persisted selection + cached CSS ==
 # WebView cache alone.
 PRE_RELOAD_RESULT="$(theme_eval "(async () => {
   const workspace = String(window.__PAPERCUSP_WS__ || '');
-  const response = await fetch('/api/profile', {
-    headers: { accept: 'application/json', ...(workspace ? { 'x-papercusp-workspace': workspace } : {}) }
-  });
-  const profile = await response.json().catch(() => null);
+  const scopedHeaders = { accept: 'application/json', ...(workspace ? { 'x-papercusp-workspace': workspace } : {}) };
+  const [response, catalogResponse] = await Promise.all([
+    fetch('/api/profile', { headers: scopedHeaders }),
+    fetch('/api/themes', { headers: scopedHeaders })
+  ]);
+  const [profile, catalog] = await Promise.all([
+    response.json().catch(() => null),
+    catalogResponse.json().catch(() => null)
+  ]);
   const url = new URL(window.location.href);
   if (workspace) {
     url.searchParams.set('ws', workspace);
     window.history.replaceState(window.history.state, '', url);
   }
-  return JSON.stringify({ status: response.status, themeId: profile?.theme_id ?? null, workspace, href: window.location.href });
+  return JSON.stringify({
+    status: response.status,
+    catalogStatus: catalogResponse.status,
+    themeId: profile?.theme_id ?? null,
+    catalogAccent: catalog?.themes?.find((theme) => theme?.id === 'tauri-aurora')?.tokens?.accent ?? null,
+    workspace,
+    href: window.location.href
+  });
 })()")"
 printf '%s\n' "$PRE_RELOAD_RESULT" | tee "$THEME_TAURI_OUT/pre-reload.json"
 grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$PRE_RELOAD_RESULT"
+grep -Eq '"catalogStatus"[[:space:]]*:[[:space:]]*200' <<<"$PRE_RELOAD_RESULT"
 grep -Eq '"themeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$PRE_RELOAD_RESULT"
+grep -Eq '"catalogAccent"[[:space:]]*:[[:space:]]*"#7c3aed"' <<<"$PRE_RELOAD_RESULT"
 grep -Eq '"workspace"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$PRE_RELOAD_RESULT"
 theme_eval 'window.location.reload()' >/dev/null 2>&1 || true
 # An eval that initiates a navigation can return before the new document exists.
@@ -155,29 +169,44 @@ VERIFY_TAURI_DOM_TIMEOUT=90 "$THEME_TAURI_POLL" \
 bash "$VERIFY_TAURI_SETTLE" --timeout 90
 POST_RELOAD_RESULT="$(theme_eval "(async () => {
   const workspace = String(window.__PAPERCUSP_WS__ || '');
-  const response = await fetch('/api/profile', {
-    headers: { accept: 'application/json', ...(workspace ? { 'x-papercusp-workspace': workspace } : {}) }
-  });
-  const profile = await response.json().catch(() => null);
+  const scopedHeaders = { accept: 'application/json', ...(workspace ? { 'x-papercusp-workspace': workspace } : {}) };
+  const [response, catalogResponse] = await Promise.all([
+    fetch('/api/profile', { headers: scopedHeaders }),
+    fetch('/api/themes', { headers: scopedHeaders })
+  ]);
+  const [profile, catalog] = await Promise.all([
+    response.json().catch(() => null),
+    catalogResponse.json().catch(() => null)
+  ]);
   const nav = performance.getEntriesByType('navigation')[0];
   const style = document.getElementById('pc-custom-themes');
+  const cachedCss = localStorage.getItem('pc:ws:' + workspace + ':papercusp.customThemesCss') || '';
   return JSON.stringify({
     status: response.status,
+    catalogStatus: catalogResponse.status,
     themeId: profile?.theme_id ?? null,
+    catalogAccent: catalog?.themes?.find((theme) => theme?.id === 'tauri-aurora')?.tokens?.accent ?? null,
     injectedThemeId: window.__PAPERCUSP_PREFS__?.theme_id ?? null,
     workspace,
     href: window.location.href,
     navigationType: nav?.type ?? null,
     dataTheme: document.documentElement.dataset.theme ?? null,
-    cachedCssMounted: Boolean(style?.textContent?.includes('custom:tauri-aurora'))
+    computedAccent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+    cachedCssMounted: Boolean(style?.textContent?.includes('custom:tauri-aurora')),
+    mountedCssHasUpdatedAccent: Boolean(style?.textContent?.includes('#7c3aed')),
+    cachedCssHasUpdatedAccent: cachedCss.includes('#7c3aed')
   });
 })()")"
 printf '%s\n' "$POST_RELOAD_RESULT" | tee "$THEME_TAURI_OUT/post-reload.json"
 grep -Eq '"navigationType"[[:space:]]*:[[:space:]]*"reload"' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"catalogStatus"[[:space:]]*:[[:space:]]*200' <<<"$POST_RELOAD_RESULT"
 grep -Eq '"themeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"catalogAccent"[[:space:]]*:[[:space:]]*"#7c3aed"' <<<"$POST_RELOAD_RESULT"
 grep -Eq '"injectedThemeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$POST_RELOAD_RESULT"
 grep -Eq '"dataTheme"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$POST_RELOAD_RESULT"
 grep -Eq '"cachedCssMounted"[[:space:]]*:[[:space:]]*true' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"mountedCssHasUpdatedAccent"[[:space:]]*:[[:space:]]*true' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"cachedCssHasUpdatedAccent"[[:space:]]*:[[:space:]]*true' <<<"$POST_RELOAD_RESULT"
 "$THEME_TAURI_POLL" \
   --require 'html[data-theme="custom:tauri-aurora"]' \
   --eval "String(window.__PAPERCUSP_WS__ || '') !== '' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'" \
