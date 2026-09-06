@@ -1151,6 +1151,9 @@ import './scheduler/pull_ledger';
 import './scheduler/preview_spec_delta';
 // p2p-work-distribution-2026-07-02 P-004: the cross-machine refusal-receipt timeline.
 import './p2p/trace';
+// P-043 (shared-pot-dao-cupboard-v1-2026-09-04, D-057/WI-2147374): bytes per
+// core/kind for the hive peer-log store + the retention-class rollup.
+import './hive/store_breakdown';
 // agent-allocation-framework-2026-07-03 P-002 (D-004): the ONE delegation write path —
 // hand a fleet an account pool / GPU (share-%) or agent seats (agent_slot, count-capped);
 // the /res loopback (p2p-allotment-set) wraps the same core.
