@@ -911,30 +911,38 @@ describe("<InboxPane>", () => {
     const kids = Array.from(expanded.children);
     expect(kids.indexOf(head)).toBeLessThan(kids.indexOf(detail));
     expect(kids.indexOf(detail)).toBeLessThan(kids.indexOf(rail));
-    // The rail: the six facts as labelled rows, in the toolbar's order, the
-    // chip classes riding along for their colour coding.
+    // The rail: the six item-open facts as labelled rows, with Tier remaining
+    // in the eyebrow and the chip classes riding along for their colour coding.
     expect(rail.tagName).toBe("DL");
     const rows = Array.from(
       rail.querySelectorAll(".op-inbox__detail-rail-row"),
     );
     expect(rows.map((r) => r.querySelector("dt")?.textContent)).toEqual([
-      "Tier",
-      "Kind",
-      "Category",
-      "Status",
+      "State",
       "Importance",
+      "Kind",
       "Harness",
+      "Topic",
+      "Waiting",
     ]);
     expect(rows.map((r) => r.querySelector("dd")?.textContent)).toEqual([
-      "Decisions",
-      "escalation",
-      "🔒 deploy",
       "open",
       "high",
+      "escalation",
       "papercusp",
+      "🔒 deploy",
+      "5m",
     ]);
-    expect(rail.querySelector(".pc-tier")?.className).toContain(
-      "pc-tier--decision",
+    expect(screen.getByTestId("inbox-detail-rail-waiting").querySelector("time")?.getAttribute("datetime")).toBeTruthy();
+    expect(screen.getByTestId("inbox-detail-rail-waiting").querySelector("time")?.getAttribute("title")).toBeTruthy();
+    expect(rail.querySelector(".pc-count")?.className).toContain(
+      "pc-count--open",
+    );
+    expect(rail.querySelector(".pc-imp")?.className).toContain(
+      "pc-imp--high",
+    );
+    expect(rail.querySelector(".pc-kind")?.className).toContain(
+      "pc-kind--coord-escalation",
     );
     expect(rail.querySelector(".pc-category")?.className).toContain(
       "pc-category--protected",
@@ -968,7 +976,7 @@ describe("<InboxPane>", () => {
         .getByTestId("inbox-detail-rail")
         .querySelectorAll(".op-inbox__detail-rail-row dt"),
     ).map((dt) => dt.textContent);
-    expect(rows).toEqual(["Tier", "Kind", "Status", "Importance"]);
+    expect(rows).toEqual(["State", "Importance", "Kind"]);
   });
 
   it("stack keeps the disclosure unchanged — no heading, no rail, OtherDetail's own chips (P-008 is split-only)", () => {

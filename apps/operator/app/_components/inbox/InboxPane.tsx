@@ -453,21 +453,29 @@ function InboxDetailHead({ item }: { item: AttentionItem }) {
 }
 
 /**
- * The metadata rail — split mode only (P-008 / D-003). OtherDetail's six
- * toolbar chips (tier · kind · category · status · importance · harness) as
- * LABELLED rows beside the body, at full contrast, instead of a strewn chip
- * row whose tail washed out at the pane's far edge. OtherDetail is told
- * `metadataPlacement="host"` so the same facts are not shown twice; the chip
- * classes ride along on the values so their colour coding is unchanged.
+ * The metadata rail — split mode only (P-008 / D-003). The item-open spec's
+ * six context rows (state · importance · kind · harness · topic · waiting) sit
+ * beside the body at full contrast instead of a strewn chip row whose tail
+ * washed out at the pane's far edge. Tier stays in the eyebrow above the
+ * title. OtherDetail is told `metadataPlacement="host"` so the same facts are
+ * not shown twice; the chip classes ride along on the values so their colour
+ * coding is unchanged.
  */
 function InboxDetailRail({ item }: { item: AttentionItem }) {
   const rows: Array<{ key: string; label: string; value: ReactNode }> = [
     {
-      key: "tier",
-      label: "Tier",
+      key: "status",
+      label: "State",
       value: (
-        <span className={`pc-tier pc-tier--${item.tier}`}>
-          {TIER_LABEL[item.tier] ?? item.tier}
+        <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
+      ),
+    },
+    {
+      key: "importance",
+      label: "Importance",
+      value: (
+        <span className={`pc-imp pc-imp--${item.importance}`}>
+          {item.importance}
         </span>
       ),
     },
@@ -481,10 +489,17 @@ function InboxDetailRail({ item }: { item: AttentionItem }) {
       ),
     },
   ];
+  if (item.harnessSlug) {
+    rows.push({
+      key: "harness",
+      label: "Harness",
+      value: <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span>,
+    });
+  }
   if (item.category) {
     rows.push({
-      key: "category",
-      label: "Category",
+      key: "topic",
+      label: "Topic",
       value: (
         <span
           className={`pc-category${item.whyGated === "protected" ? " pc-category--protected" : ""}`}
@@ -496,27 +511,17 @@ function InboxDetailRail({ item }: { item: AttentionItem }) {
       ),
     });
   }
-  rows.push({
-    key: "status",
-    label: "Status",
-    value: (
-      <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
-    ),
-  });
-  rows.push({
-    key: "importance",
-    label: "Importance",
-    value: (
-      <span className={`pc-imp pc-imp--${item.importance}`}>
-        {item.importance}
-      </span>
-    ),
-  });
-  if (item.harnessSlug) {
+  const occurredAt = item.occurredAt;
+  const waiting = formatRelativeDate(occurredAt);
+  if (waiting && occurredAt) {
     rows.push({
-      key: "harness",
-      label: "Harness",
-      value: <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span>,
+      key: "waiting",
+      label: "Waiting",
+      value: (
+        <time dateTime={occurredAt} title={formatAbsoluteDate(occurredAt) ?? undefined}>
+          {waiting}
+        </time>
+      ),
     });
   }
   return (
