@@ -24,6 +24,7 @@ import {
   type SpecClauseSql,
   type SpecClauseWrite,
 } from './agent-tools/plans/spec-clauses-store';
+import { ensureExistingWorkItemSpecRevisionEdgesInTransaction } from './agent-tools/plans/spec-evidence-store';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import {
   buildRubricPlanBody,
@@ -911,6 +912,21 @@ export async function seedAcceptanceBarsInTransaction(
       }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
     }
   }
+
+  // Activation can run after promotion, including after every mapped plan item
+  // is already terminal. Reconcile the BAR's current clause revisions onto all
+  // existing execution records from the canonical provenance legs, in this same
+  // transaction, without minting or replacing a work-item.
+  await ensureExistingWorkItemSpecRevisionEdgesInTransaction(
+    {
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      planSlug: input.planSlug,
+      planItemIds: built.projections.map((projection) => projection.planItemId),
+      actorId: input.actorId,
+    },
+    sql,
+  );
 
   await sql`
     UPDATE harness_shared.harness_plans
