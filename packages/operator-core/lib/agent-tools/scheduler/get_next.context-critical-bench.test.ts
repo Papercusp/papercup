@@ -53,6 +53,7 @@ vi.mock('../../fleet/context-critical-bench', () => ({
 
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: mocks.fetchContextPressure,
+  resolveContextPressureRecoveryPath: vi.fn(async () => null),
 }));
 
 // Everything below is preflight/enrichment scenery: pinned so a cold module cache or a saturated

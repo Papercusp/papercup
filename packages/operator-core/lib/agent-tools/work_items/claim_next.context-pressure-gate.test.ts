@@ -42,6 +42,7 @@ vi.mock('../coordination/context-pressure', () => ({
     if (pressure.value != null) m.set(ownerIds[0]!, pressure.value);
     return m;
   }),
+  resolveContextPressureRecoveryPath: vi.fn(async () => null),
 }));
 
 vi.mock('../coordination/identity', () => ({
