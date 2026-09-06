@@ -352,7 +352,7 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v).toMatchObject({ satisfied: false, code: 'ephemeral_deliverable_unbacked' });
   });
 
-  describe('BAR missing-grade recruitment', () => {
+  describe('BAR missing-or-stale-grade recruitment', () => {
     const verdict = (phase: AcceptanceBarLifecycleVerdict['phase'],
       codes: AcceptanceBarLifecycleVerdict['codes']): AcceptanceBarLifecycleVerdict => ({
       phase, applicable: true, satisfied: codes.length === 0, codes,
@@ -392,6 +392,29 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
         .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
       expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
+    });
+
+    it('exposes the ungraded refusal when only a stale rubric-revision card exists', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
+      mockScorecards.mockResolvedValue([scorecard({ rubricRevision: 1 })]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_proof_inadequate', 'bar_snapshot_grading_stale', 'bar_snapshot_author_verdict_missing']
+        : []));
+
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_ungraded', rubricId: 'ar-some-plan' });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
+    });
+
+    it('keeps the original BAR refusal if a current-revision card arrives after the stale snapshot', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
+      mockScorecards.mockResolvedValue([scorecard({ rubricRevision: 3 })]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_grading_stale', 'bar_snapshot_author_verdict_missing']
+        : []));
+
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
     });
 
     it('does not recruit through incomplete METHOD or vetting prerequisites', async () => {

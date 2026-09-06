@@ -382,6 +382,11 @@ export async function evaluatePlanAcceptanceGate(
   // rolling back one must not silently disable the other.
   const rubricGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
   let deferredBarShipRefusal: PlanAcceptanceGateVerdict | undefined;
+  // A BAR can already have a complete grading that belongs to an older rubric
+  // revision.  That is still a grader gap, but the ordinary rubric-family read
+  // includes scorecard history.  Remember the stale reading so the recruitment
+  // path cannot mistake the historical card for a current independent grade.
+  let requireCurrentBarGrading = false;
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -478,16 +483,22 @@ export async function evaluatePlanAcceptanceGate(
           message:
             barLifecycle.message ?? `plan '${planSlug}' cannot be marked shipped: acceptance BAR contract is not ready`,
         };
-        if (!barLifecycle.codes.includes('bar_snapshot_grading_missing')) return refusal;
-        // The normal missing-grade refusal recruits the existing independent
-        // grader. Let it run only after the BAR's pre-grading obligations pass,
-        // while retaining this ship refusal through every later success path.
+        const gradingMissing = barLifecycle.codes.includes('bar_snapshot_grading_missing');
+        const gradingStale = barLifecycle.codes.includes('bar_snapshot_grading_stale');
+        if (!gradingMissing && !gradingStale) return refusal;
+        // A missing OR stale grading recruits an independent grader. Let it run
+        // only after the BAR's pre-grading obligations pass, while retaining this
+        // ship refusal through every later success path. In the stale case the
+        // rubric-family read below must ignore historical-revision cards, or the
+        // sweep sees acceptance_bar_contract_not_ready forever and never recruits
+        // the re-grade the BAR lifecycle explicitly asks for.
         // In particular, a card arriving between reads cannot waive live proof.
         deferredBarShipRefusal = refusal;
         const preGrading = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'pre-grading', {
           expectedApplicable: true,
         });
         if (!preGrading.satisfied) return refusal;
+        requireCurrentBarGrading = gradingStale;
       }
     }
   } catch (error) {
@@ -1001,7 +1012,13 @@ export async function evaluatePlanAcceptanceGate(
   // only that one legacy edge: the direct predecessor named by a STANDING author
   // acceptance card. Arbitrary superseded history remains ineligible.
   const scorecards = await listScorecards({ rubricRef: rubric.rubricId, limit: 50, includeSuperseded: true });
-  const allComplete = scorecards.filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
+  const allComplete = scorecards.filter(
+    (s) =>
+      s.rubricResolved &&
+      s.missingKeys.length === 0 &&
+      !s.synthesized &&
+      (!requireCurrentBarGrading || (rubric.revision != null && s.rubricRevision === rubric.revision)),
+  );
   // WI-2141007: `createdBy` FIRST, matching `scorecards:emit` and
   // `grader-eligibility.ts`. This file previously read `proposedBy ?? createdBy`
   // — the OPPOSITE precedence. For a rubric whose later revision was
