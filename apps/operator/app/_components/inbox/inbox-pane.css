@@ -917,6 +917,21 @@
   font-size: 13px;
   text-align: center;
 }
+/* P-004: the feed's window strip + foot, in the aside's unselected state
+   instead of the list column. A left-aligned block under the centered prompt,
+   held to a readable measure; the strip and foot keep their own styling. */
+.op-inbox__aside-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(100%, 440px);
+  margin-top: 6px;
+  text-align: left;
+  font-size: 11px;
+}
+.op-inbox__aside-feed .op-inbox__foot {
+  padding-top: 10px;
+}
 .op-inbox__aside-back {
   display: none;
   align-items: center;

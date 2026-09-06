@@ -840,6 +840,49 @@ export default function InboxPane({
     </span>
   );
 
+  // P-004 (inbox-three-column-resolver-states-2026-09-06): the load-more
+  // window strip and the foot are list-column chrome in STACK only. In split
+  // they render inside the aside's unselected state — the briefing P-005
+  // grows — with the same class names, test ids and handlers, so beneath the
+  // rows the column carries nothing rigid: the rows' floor is the column's.
+  const windowStrip =
+    hasMore || loadingMore ? (
+      <div
+        className="op-inbox__window"
+        role="status"
+        data-testid="inbox-attention-window"
+      >
+        <span>
+          Showing {items.length} of {totalItemCount} attention items. Load more to include
+          older activity.
+        </span>
+        {loadMore ? (
+          <button
+            type="button"
+            className="op-inbox__window-button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            data-testid="inbox-load-more"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        ) : null}
+      </div>
+    ) : null;
+  const foot = (
+    <div className="op-inbox__foot">
+      <span>{visible.length} shown</span>
+      <button
+        type="button"
+        className="op-inbox__queue-link"
+        data-testid="inbox-open-queue"
+        onClick={openQueue}
+      >
+        Open full queue →
+      </button>
+    </div>
+  );
+
   // `data-has-selection` is presence-only: the narrow-width split CSS swaps
   // which column is shown on it (list without a selection, detail with one).
   // The `op-inbox__column` wrapper is display:contents in stack mode, so the
@@ -998,29 +1041,9 @@ export default function InboxPane({
           {split ? null : kindFacetChips}
         </section>
 
-        {hasMore || loadingMore ? (
-          <div
-            className="op-inbox__window"
-            role="status"
-            data-testid="inbox-attention-window"
-          >
-            <span>
-              Showing {items.length} of {totalItemCount} attention items. Load more to include
-              older activity.
-            </span>
-            {loadMore ? (
-              <button
-                type="button"
-                className="op-inbox__window-button"
-                onClick={loadMore}
-                disabled={loadingMore}
-                data-testid="inbox-load-more"
-              >
-                {loadingMore ? "Loading…" : "Load more"}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        {/* Stack: the window strip sits above the rows. Split: in the aside's
+            unselected state (P-004) — never a rigid sibling of the list. */}
+        {split ? null : windowStrip}
 
         {error ? (
           <div className="op-inbox__error" role="alert">
@@ -1209,17 +1232,9 @@ export default function InboxPane({
           </div>
         </div>
 
-        <div className="op-inbox__foot">
-          <span>{visible.length} shown</span>
-          <button
-            type="button"
-            className="op-inbox__queue-link"
-            data-testid="inbox-open-queue"
-            onClick={openQueue}
-          >
-            Open full queue →
-          </button>
-        </div>
+        {/* Stack: the foot closes the master. Split: it follows the window
+            strip in the aside's unselected state (P-004). */}
+        {split ? null : foot}
       </section>
       </div>
 
@@ -1253,6 +1268,16 @@ export default function InboxPane({
             >
               <InboxIcon size={22} aria-hidden="true" />
               <span>Select an item to read and answer it here</span>
+              {/* P-004: the feed's window strip ("Showing N of M · Load
+                  more") and the foot ("N shown · Open full queue") live here
+                  in split — the list column keeps only search + sort + rows. */}
+              <div
+                className="op-inbox__aside-feed"
+                data-testid="inbox-aside-feed"
+              >
+                {windowStrip}
+                {foot}
+              </div>
             </div>
           )}
         </aside>

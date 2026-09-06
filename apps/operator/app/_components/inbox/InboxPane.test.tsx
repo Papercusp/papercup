@@ -812,6 +812,96 @@ describe("<InboxPane>", () => {
     expect(order[order.length - 1]).toBe("op-inbox__foot");
   });
 
+  /* ── The window strip + foot (inbox-three-column-resolver-states-2026-09-06 P-004) ── */
+  // The server's page contract rides on the first group (readAttentionPageMeta):
+  // `hasMore` is what mounts the "Showing N of M … Load more" window strip.
+  function seedPagedAttention(items: AttentionItem[], total: number) {
+    seedAttention(items);
+    const first = H.results["plans.attention"]!.data[0] as Record<
+      string,
+      unknown
+    >;
+    first._meta = {
+      total,
+      offset: 0,
+      limit: items.length,
+      returned: items.length,
+      hasMore: true,
+      nextOffset: items.length,
+    };
+  }
+
+  it("split: the window strip and the foot leave the list column for the aside's unselected state (P-004)", () => {
+    seedPagedAttention([mkItem("d1"), mkItem("d2")], 180);
+    renderPane("", { layout: "split" });
+    const root = screen.getByTestId("inbox-tab");
+    const master = screen.getByTestId("inbox-master");
+    const column = root.querySelector(".op-inbox__column");
+    const asideEmpty = screen.getByTestId("inbox-aside-empty");
+    const feed = screen.getByTestId("inbox-aside-feed");
+    const windowStrip = screen.getByTestId("inbox-attention-window");
+    const loadMore = screen.getByTestId("inbox-load-more");
+    const openQueue = screen.getByTestId("inbox-open-queue");
+    // Both blocks render inside the aside's unselected state, ids intact.
+    expect(asideEmpty.contains(feed)).toBe(true);
+    expect(feed.contains(windowStrip)).toBe(true);
+    expect(feed.contains(loadMore)).toBe(true);
+    expect(feed.contains(openQueue)).toBe(true);
+    expect(windowStrip.textContent).toContain(
+      "Showing 2 of 180 attention items",
+    );
+    expect(feed.querySelector(".op-inbox__foot")?.textContent).toContain(
+      "2 shown",
+    );
+    expect(loadMore.hasAttribute("disabled")).toBe(false);
+    // The list column carries search + sort and the rows — nothing beneath.
+    expect(column?.contains(windowStrip)).toBe(false);
+    expect(column?.contains(openQueue)).toBe(false);
+    expect(master.querySelector(".op-inbox__window")).toBeNull();
+    expect(master.querySelector(".op-inbox__foot")).toBeNull();
+    const order = Array.from(master.children).map((el) => el.className);
+    expect(order[order.length - 1]).toBe("op-inbox__list");
+    // Exactly one of each — nothing is rendered twice.
+    expect(screen.getAllByTestId("inbox-attention-window")).toHaveLength(1);
+    expect(screen.getAllByTestId("inbox-open-queue")).toHaveLength(1);
+  });
+
+  it("split with a selection: the aside is the detail — the feed controls are not duplicated into it", () => {
+    seedPagedAttention([mkItem("d1"), mkItem("d2")], 180);
+    renderPane("?opcis=d2", { layout: "split" });
+    expect(screen.getByTestId("other-detail").getAttribute("data-item")).toBe(
+      "d2",
+    );
+    expect(screen.queryByTestId("inbox-aside-feed")).toBeNull();
+    expect(screen.queryByTestId("inbox-attention-window")).toBeNull();
+    expect(screen.queryByTestId("inbox-open-queue")).toBeNull();
+    expect(
+      screen.getByTestId("inbox-master").querySelector(".op-inbox__foot"),
+    ).toBeNull();
+  });
+
+  it("stack: the window strip and the foot stay in the master, in order (D-001)", () => {
+    seedPagedAttention([mkItem("d1")], 180);
+    renderPane("");
+    const master = screen.getByTestId("inbox-master");
+    expect(screen.queryByTestId("inbox-aside-feed")).toBeNull();
+    const windowStrip = screen.getByTestId("inbox-attention-window");
+    expect(master.contains(windowStrip)).toBe(true);
+    expect(windowStrip.textContent).toContain(
+      "Showing 1 of 180 attention items",
+    );
+    expect(master.contains(screen.getByTestId("inbox-load-more"))).toBe(true);
+    expect(master.contains(screen.getByTestId("inbox-open-queue"))).toBe(true);
+    const order = Array.from(master.children).map((el) => el.className);
+    expect(order.indexOf("op-inbox__window")).toBeGreaterThan(
+      order.indexOf("op-inbox__controls"),
+    );
+    expect(order.indexOf("op-inbox__window")).toBeLessThan(
+      order.indexOf("op-inbox__list"),
+    );
+    expect(order[order.length - 1]).toBe("op-inbox__foot");
+  });
+
   /* ── The bulk card (inbox-three-column-resolver-states-2026-09-06 P-003 / D-002) ── */
   it("split: the bulk card renders at the FOOT of the rail — never in the list column", () => {
     seedAttention([mkItem("d1")]);
