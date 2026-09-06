@@ -445,6 +445,7 @@ export {
   WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
   WORKSPACE_HOST_RECOVERY_MAX_PROOF_CADENCE_DAYS,
   WORKSPACE_HOST_RECOVERY_PHASES,
+  assertWorkspaceHostRuntimeRollbackSafe,
   planWorkspaceHostRecovery,
   validateWorkspaceHostRestoreProof,
 } from "./workspace-host-recovery";

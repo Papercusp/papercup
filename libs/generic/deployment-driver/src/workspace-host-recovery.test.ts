@@ -5,6 +5,7 @@ import type {
 } from "./workspace-host-recovery";
 import {
   WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
+  assertWorkspaceHostRuntimeRollbackSafe,
   planWorkspaceHostRecovery,
   validateWorkspaceHostRestoreProof,
 } from "./workspace-host-recovery";
@@ -15,6 +16,7 @@ function recoverySpec(): WorkspaceHostRecoverySpec {
   return {
     contractVersion: WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
     recoveryId: "recovery:workspace-1:2026-q3",
+    workspaceId: "workspace-1",
     requestedAt: NOW,
     sourceHost: { hostId: "host-source", target: "gcp", resources: [] },
     desired: {
@@ -67,9 +69,16 @@ function recoverySpec(): WorkspaceHostRecoverySpec {
       sourceSchemaVersion: 183,
       targetSchemaVersion: 184,
       compatibleSourceRange: { minimum: 180, maximum: 184 },
-      rollbackImage: {
-        id: "projects/images/global/images/papercusp-v1",
-        version: "v1",
+      rollback: {
+        runtime: {
+          image: {
+            id: "projects/images/global/images/papercusp-v1",
+            version: "v1",
+          },
+          schemaVersion: 183,
+          compatibleDataRange: { minimum: 180, maximum: 184 },
+        },
+        data: { strategy: "restore-provider-snapshot" },
       },
     },
     proof: { cadenceDays: 92, lastSuccessfulAt: "2026-05-01T00:00:00.000Z" },
@@ -99,13 +108,24 @@ describe("workspace-host recovery contract", () => {
       { id: "attest-recovered-host", dependsOn: ["apply-schema-migration"] },
       { id: "record-restore-proof", dependsOn: ["attest-recovered-host"] },
     ]);
+    expect(plan.workspaceId).toBe("workspace-1");
     expect(plan.targetHostId).toBe("host-recovered");
     expect(plan.rollback).toMatchObject({
       trigger: "migration-or-health-failure",
-      image: {
-        id: "projects/images/global/images/papercusp-v1",
-        version: "v1",
+      runtime: {
+        image: {
+          id: "projects/images/global/images/papercusp-v1",
+          version: "v1",
+        },
+        schemaVersion: 183,
+        compatibleDataRange: { minimum: 180, maximum: 184 },
       },
+      data: {
+        strategy: "restore-provider-snapshot",
+        providerSnapshot: plan.providerSnapshot,
+        restoredSchemaVersion: 183,
+      },
+      order: ["rollback-runtime"],
       retainFailedHost: true,
     });
     expect(plan.proof).toMatchObject({ cadenceDays: 92, due: true });
@@ -136,6 +156,34 @@ describe("workspace-host recovery contract", () => {
     expect(() => planWorkspaceHostRecovery(incomplete)).toThrow(
       "embedded-Postgres dump",
     );
+
+    const wrongWorkspace = recoverySpec();
+    wrongWorkspace.applicationBackup.workspaceId = "workspace-2";
+    expect(() => planWorkspaceHostRecovery(wrongWorkspace)).toThrow(
+      "preserve the recovery workspaceId",
+    );
+  });
+
+  it("keeps runtime rollback separate from data restore and refuses an incompatible runtime-only rollback", () => {
+    const spec = recoverySpec();
+    spec.schema.rollback.runtime.compatibleDataRange.maximum = 183;
+    const plan = planWorkspaceHostRecovery(spec);
+
+    expect(plan.rollback.order).toEqual(["restore-data", "rollback-runtime"]);
+    expect(() =>
+      assertWorkspaceHostRuntimeRollbackSafe(
+        plan,
+        plan.schema.targetSchemaVersion,
+        false,
+      ),
+    ).toThrow("restore the provider snapshot");
+    expect(() =>
+      assertWorkspaceHostRuntimeRollbackSafe(
+        plan,
+        plan.schema.targetSchemaVersion,
+        true,
+      ),
+    ).not.toThrow();
   });
 
   it("accepts only an exact successful restore proof for the planned target and snapshot", () => {
@@ -143,11 +191,13 @@ describe("workspace-host recovery contract", () => {
     const proof: WorkspaceHostRestoreProof = {
       contractVersion: WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
       recoveryId: plan.recoveryId,
+      workspaceId: plan.workspaceId,
       sourceSnapshotId: plan.providerSnapshot.providerId,
       targetHostId: plan.targetHostId,
       observedAt: NOW,
       applicationBackupVerified: true,
       providerSnapshotVerified: true,
+      dataRestoredFromSnapshot: true,
       migrationApplied: true,
       healthAttested: true,
     };
@@ -163,6 +213,15 @@ describe("workspace-host recovery contract", () => {
     ).toEqual({
       ok: false,
       errors: ["restore proof targetHostId mismatch"],
+    });
+    expect(
+      validateWorkspaceHostRestoreProof(
+        { ...proof, workspaceId: "wrong-workspace" },
+        plan,
+      ),
+    ).toEqual({
+      ok: false,
+      errors: ["restore proof workspaceId mismatch"],
     });
   });
 });

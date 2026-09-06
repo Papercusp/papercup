@@ -100,6 +100,10 @@ export interface WorkspaceHostRecoveryPlan {
   targetImage: WorkspaceHostImageRef & { version: string };
   providerSnapshot: WorkspaceHostSnapshotRef;
   applicationBackup: WorkspaceHostApplicationBackupRef;
+  schema: {
+    sourceSchemaVersion: number;
+    targetSchemaVersion: number;
+  };
   steps: readonly WorkspaceHostRecoveryStep[];
   rollback: {
     trigger: "migration-or-health-failure";
@@ -157,7 +161,11 @@ export function assertWorkspaceHostRuntimeRollbackSafe(
   const current = version(currentSchemaVersion, "currentSchemaVersion");
   const range = plan.rollback.runtime.compatibleDataRange;
   if (current >= range.minimum && current <= range.maximum) return;
-  if (dataRestored && plan.schema.sourceSchemaVersion >= range.minimum && plan.schema.sourceSchemaVersion <= range.maximum) {
+  if (
+    dataRestored &&
+    plan.rollback.data.restoredSchemaVersion >= range.minimum &&
+    plan.rollback.data.restoredSchemaVersion <= range.maximum
+  ) {
     return;
   }
   throw new Error(
@@ -263,6 +271,7 @@ export function planWorkspaceHostRecovery(
     );
   }
   const recoveryId = required(spec.recoveryId, "recoveryId");
+  const workspaceId = required(spec.workspaceId, "workspaceId");
   const requestedAt = timestamp(spec.requestedAt, "requestedAt");
   const sourceHostId = required(spec.sourceHost.hostId, "sourceHost.hostId");
   const targetHostId = required(spec.desired.hostId, "desired.hostId");
@@ -283,7 +292,14 @@ export function planWorkspaceHostRecovery(
       "applicationBackup must be an ok @papercusp/backup snapshot",
     );
   }
-  required(backup.workspaceId, "applicationBackup.workspaceId");
+  if (
+    required(backup.workspaceId, "applicationBackup.workspaceId") !==
+    workspaceId
+  ) {
+    throw new Error(
+      "applicationBackup.workspaceId must preserve the recovery workspaceId",
+    );
+  }
   positiveInteger(backup.snapshotId, "applicationBackup.snapshotId");
   required(backup.kopiaSnapshotId, "applicationBackup.kopiaSnapshotId");
   timestamp(backup.capturedAt, "applicationBackup.capturedAt");
@@ -333,8 +349,8 @@ export function planWorkspaceHostRecovery(
 
   const targetImage = immutableImage(spec.desired.image, "desired.image");
   const rollbackImage = immutableImage(
-    spec.schema.rollbackImage,
-    "schema.rollbackImage",
+    spec.schema.rollback.runtime.image,
+    "schema.rollback.runtime.image",
   );
   const sourceSchema = version(
     spec.schema.sourceSchemaVersion,
@@ -362,6 +378,41 @@ export function planWorkspaceHostRecovery(
       "target schema version must not precede the source schema version",
     );
   required(spec.schema.migrationId, "schema.migrationId");
+  const rollbackSchema = version(
+    spec.schema.rollback.runtime.schemaVersion,
+    "schema.rollback.runtime.schemaVersion",
+  );
+  const rollbackMinimum = version(
+    spec.schema.rollback.runtime.compatibleDataRange.minimum,
+    "schema.rollback.runtime.compatibleDataRange.minimum",
+  );
+  const rollbackMaximum = version(
+    spec.schema.rollback.runtime.compatibleDataRange.maximum,
+    "schema.rollback.runtime.compatibleDataRange.maximum",
+  );
+  if (
+    rollbackMinimum > rollbackMaximum ||
+    sourceSchema < rollbackMinimum ||
+    sourceSchema > rollbackMaximum
+  ) {
+    throw new Error(
+      "source schema version is outside the rollback runtime compatibility range",
+    );
+  }
+  if (rollbackSchema < rollbackMinimum || rollbackSchema > rollbackMaximum) {
+    throw new Error(
+      "rollback runtime schema version is outside its compatible data range",
+    );
+  }
+  if (spec.schema.rollback.data.strategy !== "restore-provider-snapshot") {
+    throw new Error(
+      "schema.rollback.data.strategy must be 'restore-provider-snapshot'",
+    );
+  }
+  const rollbackOrder =
+    targetSchema >= rollbackMinimum && targetSchema <= rollbackMaximum
+      ? (["rollback-runtime"] as const)
+      : (["restore-data", "rollback-runtime"] as const);
 
   const cadenceDays = positiveInteger(
     spec.proof.cadenceDays,
@@ -383,16 +434,33 @@ export function planWorkspaceHostRecovery(
   return {
     contractVersion: WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
     recoveryId,
+    workspaceId,
     sourceHostId,
     targetHostId,
     targetImage,
     providerSnapshot: snapshot,
     applicationBackup: backup,
+    schema: {
+      sourceSchemaVersion: sourceSchema,
+      targetSchemaVersion: targetSchema,
+    },
     steps: recoverySteps(),
     rollback: {
       trigger: "migration-or-health-failure",
-      image: rollbackImage,
-      providerSnapshot: snapshot,
+      runtime: {
+        image: rollbackImage,
+        schemaVersion: rollbackSchema,
+        compatibleDataRange: {
+          minimum: rollbackMinimum,
+          maximum: rollbackMaximum,
+        },
+      },
+      data: {
+        strategy: "restore-provider-snapshot",
+        providerSnapshot: snapshot,
+        restoredSchemaVersion: sourceSchema,
+      },
+      order: rollbackOrder,
       retainFailedHost: true,
     },
     proof: {
@@ -419,6 +487,8 @@ export function validateWorkspaceHostRestoreProof(
   }
   if (candidate.recoveryId !== plan.recoveryId)
     errors.push("restore proof recoveryId mismatch");
+  if (candidate.workspaceId !== plan.workspaceId)
+    errors.push("restore proof workspaceId mismatch");
   if (candidate.sourceSnapshotId !== plan.providerSnapshot.providerId) {
     errors.push("restore proof sourceSnapshotId mismatch");
   }
@@ -433,6 +503,7 @@ export function validateWorkspaceHostRestoreProof(
   for (const field of [
     "applicationBackupVerified",
     "providerSnapshotVerified",
+    "dataRestoredFromSnapshot",
     "migrationApplied",
     "healthAttested",
   ] as const) {
