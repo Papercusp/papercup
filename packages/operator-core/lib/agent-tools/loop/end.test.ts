@@ -19,6 +19,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const readFleetWindDownLoopEndAuthorizationMock = vi.hoisted(() =>
   vi.fn(async (..._a: unknown[]) => null as boolean | null),
 );
+const readFleetWindDownLoopEndRequirementMock = vi.hoisted(() =>
+  vi.fn(async (..._a: unknown[]) => null as boolean | null),
+);
 
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
@@ -60,6 +63,7 @@ vi.mock('../coordination/tools/continuation-gate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../coordination/tools/continuation-gate')>();
   return {
     ...actual,
+    readFleetWindDownLoopEndRequirement: (...a: unknown[]) => readFleetWindDownLoopEndRequirementMock(...a),
     readFleetWindDownLoopEndAuthorization: (...a: unknown[]) =>
       readFleetWindDownLoopEndAuthorizationMock(...a),
   };
@@ -159,6 +163,8 @@ beforeEach(() => {
   getModesMock.mockResolvedValue([]);
   readFleetWindDownLoopEndAuthorizationMock.mockReset();
   readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(null);
+  readFleetWindDownLoopEndRequirementMock.mockReset();
+  readFleetWindDownLoopEndRequirementMock.mockResolvedValue(null);
   checkOpenDirectivesGuardMock.mockReset();
   checkOpenDirectivesGuardMock.mockResolvedValue(null);
 });
@@ -272,6 +278,47 @@ describe('the P-012 wake-less autonomy guard', () => {
 
     expect(got).toMatchObject({ isError: true, ok: false, error: 'wake_less_autonomy_refused' });
     expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-autonomous fleet member with no deliberate await unless terminal drainage is proven', async () => {
+    readFleetWindDownLoopEndRequirementMock.mockResolvedValue(true);
+    readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(false);
+
+    const got = await run({ reason: 'scheduler reported spec_exhausted' });
+
+    expect(got).toMatchObject({
+      isError: true,
+      ok: false,
+      error: 'wake_less_autonomy_refused',
+      autonomyModes: [],
+    });
+    expect(String(got.message)).toContain('fleet member');
+    expect(readFleetWindDownLoopEndRequirementMock).toHaveBeenCalledWith({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+    });
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a non-autonomous fleet member end when the typed terminal lane authorization is proven', async () => {
+    readFleetWindDownLoopEndRequirementMock.mockResolvedValue(true);
+    readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(true);
+
+    const got = await run({ reason: 'typed terminal fleet stand-down' });
+
+    expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the deliberate-await path for a non-autonomous fleet member', async () => {
+    readFleetWindDownLoopEndRequirementMock.mockResolvedValue(true);
+    listParkedAwaitsMock.mockResolvedValue([parkedAwait]);
+
+    const got = await run({ reason: 'parked on leader gate' });
+
+    expect(got).toMatchObject({ isError: false, ok: true, ended: true });
+    expect(readFleetWindDownLoopEndRequirementMock).not.toHaveBeenCalled();
+    expect(readFleetWindDownLoopEndAuthorizationMock).not.toHaveBeenCalled();
   });
 
   it('does not mistake a platform-armed claim-release interest for a deliberate event park', async () => {
