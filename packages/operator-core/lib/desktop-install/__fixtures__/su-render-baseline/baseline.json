@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-05T21:43:39.924Z",
+  "generatedAt": "2026-09-06T06:59:46.390Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 116503,
-      "sha256": "c0d5bd480d0304a6cacdf7ac18dbc307fcb2bc06a0d903c4411c1d5d1f65979b",
+      "totalBytes": 116536,
+      "sha256": "1892dc4bd28762aeba9e7984892b6a8ae5487754a96118ac632ac980bb219859",
       "sections": [
         {
           "heading": "(preamble)",
@@ -67,8 +67,8 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 4374,
-          "sha256": "6656ac1ddac525499092d89a5039c287605077110990576a9e3785a1cbadabf1"
+          "bytes": 4407,
+          "sha256": "6a058bc19c3aba21a443dd5eb391df55f7b1a60587e7c20220af9fce32a76190"
         },
         {
           "heading": "## Engineering discipline",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 116503,
-      "sha256": "c0d5bd480d0304a6cacdf7ac18dbc307fcb2bc06a0d903c4411c1d5d1f65979b",
+      "totalBytes": 116536,
+      "sha256": "1892dc4bd28762aeba9e7984892b6a8ae5487754a96118ac632ac980bb219859",
       "sections": [
         {
           "heading": "(preamble)",
@@ -211,8 +211,8 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 4374,
-          "sha256": "6656ac1ddac525499092d89a5039c287605077110990576a9e3785a1cbadabf1"
+          "bytes": 4407,
+          "sha256": "6a058bc19c3aba21a443dd5eb391df55f7b1a60587e7c20220af9fce32a76190"
         },
         {
           "heading": "## Engineering discipline",
