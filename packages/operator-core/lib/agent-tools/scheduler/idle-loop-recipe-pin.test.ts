@@ -2,20 +2,21 @@
  * idle-loop-recipe-pin.test.ts — the P-006 idle-loop recipe RECURRENCE GUARD
  * (composable-event-awaits-2026-07-11).
  *
- * The recipe (an idle self-puller parks on ONE await over the canonical
+ * The recipe (an idle self-puller parks on a standing wake watch over the canonical
  * work-item:claimable key — the P-007 dual-emit that collapses the original
  * work-item:created / claim:released:* / work-item:unblocked:* 3-leaf composed
- * spec — with the ~30-min on_timeout backstop, instead of a ~60s re-poll; the
- * pull stays the authoritative claim) lives on THREE prompt surfaces that
+ * spec — with wake:true/once:false persistence, instead of a ~60s re-poll; the
+ * pull stays the authoritative claim) lives on the prompt/code surfaces that
  * drift independently:
  *   1. scheduler:get_next's miss advice (IDLE_PULL_MISS_ADVICE — the point of need),
  *   2. DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE (the loop wake's empty-wake step),
- *   3. the su prompts (papercusp-su-engineer.tools.md / papercusp-su-power.tools.md).
- * This test PINS all three: a future edit that drops the recipe (or renames an event
+ *   3. the su prompts (papercusp-su-engineer.tools.md / papercusp-su-power.tools.md),
+ *      the base su blueprint, and the fleet-member posture.
+ * This test PINS all surfaces: a future edit that drops the recipe (or renames an event
  * family out from under it) reds here instead of silently reviving the poll cadence.
  * Marker style over full-text equality: wording may be tightened freely; the recipe's
- * load-bearing parts (the three event families, the backstop, the authoritative-claim
- * rule, the no-timer-poll mandate) must survive.
+ * load-bearing parts (the three event families, standing-watch persistence,
+ * authoritative-claim rule, and no-timer-poll mandate) must survive.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -82,16 +83,18 @@ const PROMPTS_DIR = join(REPO, 'apps/operator/prompts');
 /** The load-bearing recipe markers a surface must carry to count as teaching it. */
 const RECIPE_MARKERS = [
   'work-item:claimable', // the canonical P-007 dual-emit key
-  'payload_filter', // the SINGLE-EVENT form's filter arg — `when` is leaf-spec-only and silently mis-teaches (P-007 audit)
-  '1800', // the ~30-min on_timeout backstop
+  'payload_filter', // the standing watch's filter arg — `when` is leaf-spec-only and silently mis-teaches (P-007 audit)
+  'watch:create',
+  'wake:true',
+  'once:false',
 ];
 
 describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () => {
-  it('IDLE_PULL_MISS_ADVICE carries the full recipe: claimable key, backstop, hint-not-claim, re-register, no timer poll', () => {
+  it('IDLE_PULL_MISS_ADVICE carries the full recipe: claimable key, standing watch, hint-not-claim, no timer poll', () => {
     for (const m of RECIPE_MARKERS) expect(IDLE_PULL_MISS_ADVICE).toContain(m);
-    expect(IDLE_PULL_MISS_ADVICE).toContain('events:await');
+    expect(IDLE_PULL_MISS_ADVICE).not.toContain('events:await');
     expect(IDLE_PULL_MISS_ADVICE).toContain('AUTHORITATIVE');
-    expect(IDLE_PULL_MISS_ADVICE).toContain('re-register');
+    expect(IDLE_PULL_MISS_ADVICE).toContain('remains armed');
     expect(IDLE_PULL_MISS_ADVICE).toContain('goal');
     expect(IDLE_PULL_MISS_ADVICE).toMatch(/do NOT re-poll/i);
     expect(IDLE_PULL_MISS_ADVICE).toContain('END YOUR TURN');
@@ -105,9 +108,10 @@ describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () =
     expect(out.advice).toBe(IDLE_PULL_MISS_ADVICE);
   });
 
-  it('the default loop wake template parks an idle self-puller on the composed await (no empty-wake spinning)', () => {
+  it('the default loop wake template parks an idle self-puller on the standing watch (no empty-wake spinning)', () => {
     for (const m of RECIPE_MARKERS) expect(DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE).toContain(m);
-    expect(DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE).toContain('events:await');
+    expect(DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE).toContain('watch:create');
+    expect(DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE).not.toContain('timeout_sec: 1800');
     expect(DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE).toContain('authoritative claim');
   });
 
@@ -115,23 +119,23 @@ describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () =
     it(`${file} teaches the composed-await idle recipe (the su prompt surface)`, () => {
       const text = readFileSync(join(PROMPTS_DIR, file), 'utf8');
       for (const m of RECIPE_MARKERS) expect(text).toContain(m);
-      expect(text).toContain('composable-event-awaits P-006');
-      // The P-004 tree-management verbs stay discoverable next to the recipe.
-      expect(text).toContain('composed_awaits');
-      expect(text).toContain('root_id');
       // The authoritative-claim rule (wake = hint, pull = claim) must survive rewording.
       expect(text).toMatch(/authoritative claim/i);
     });
   }
 
-  // P-007 audit follow-up: the OTHER claim-spec self-pullers — a pot cup and the
-  // blueprint fleet-member su — park on the same one-leaf recipe when drained
-  // (get_next's own notWhen names exactly these two as the self-puller personas).
-  // Mug/kettle/blender do NOT self-pull, so their prompts stay recipe-free.
+  // P-007 audit follow-up: the other active claim-spec self-pullers — the base
+  // su blueprint and the fleet-member posture — park on the same standing
+  // watch when drained. Retired cup/Mug/kettle/blender prompts stay out of this
+  // active-agent contract pin.
   const BLUEPRINT_PROMPTS = join(REPO, 'libs/papercusp/packages/harness/blueprints/base/prompts');
-  for (const file of ['cup.base.md', 'su.md']) {
-    it(`${file} teaches the idle claimable-await park (the blueprint self-puller surface)`, () => {
-      const text = readFileSync(join(BLUEPRINT_PROMPTS, file), 'utf8');
+  const FLEET_MEMBER_PROMPTS = join(REPO, 'libs/papercusp/packages/harness/blueprints/su.fleet-member/prompts');
+  for (const [root, file] of [
+    [BLUEPRINT_PROMPTS, 'su.md'],
+    [FLEET_MEMBER_PROMPTS, 'fleet-posture.md'],
+  ] as const) {
+    it(`${file} teaches the idle claimable-watch park (the active self-puller surface)`, () => {
+      const text = readFileSync(join(root, file), 'utf8');
       for (const m of RECIPE_MARKERS) expect(text).toContain(m);
       expect(text).toMatch(/authoritative claim/i);
     });
