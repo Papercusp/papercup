@@ -1191,6 +1191,13 @@ describe('lintUncheckedImperativeActions — singleton mutators need a runnable 
     expect(lintUncheckedImperativeActions('run the focused tests and inspect state:read', [])).toEqual([]);
     expect(lintUncheckedImperativeActions('Do NOT fire release:checkpoint-run while one is active', [])).toEqual([]);
   });
+
+  it('does not infer an imperative from an action-looking word inside a descriptive target name', () => {
+    const descriptive =
+      'WI-2146126 (131 structureless fleet:launch-on-plan refusals) is filed and UNCLAIMED — ' +
+      'deliberately left for the queue, not mine to hold.';
+    expect(lintUncheckedImperativeActions(descriptive, [])).toEqual([]);
+  });
 });
 
 describe('appendCarryJournal — the bounded trajectory ring', () => {

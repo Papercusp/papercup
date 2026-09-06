@@ -20,9 +20,77 @@
 // run that verified nothing. Each rail below is written in that direction, and
 // `related-tests.test.ts` pins them.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { stripCommentsOnly } from "./strip-comments-and-strings.mjs";
+
+// ── WIDENING THRESHOLD (plan gate-latency-selection-and-retry-policy-2026-09-06, P-001) ──
+// A related selection is CORRECT BY CONSTRUCTION at any share of the suite — every test that
+// can reach the change is in it, so widening past it buys no safety, only cost. The old 0.5
+// default widened operator-core to all 6,493 files on a 3,849-file selection (gate run
+// e70cd139, 2026-09-05): 2,634 unrelated files ran for nothing, ~40% of that lane's wall
+// clock. Widening only pays when the subset is so close to the whole that the explicit file
+// list is pure overhead, hence a default just under 1.0. `AFFECTED_RELATED_THRESHOLD` overrides
+// it (a fraction in (0, 1]); anything unparseable falls back to the default and is REPORTED via
+// `source`/`invalid` so a typo cannot silently re-widen or re-narrow the gate.
+export const RELATED_WIDEN_THRESHOLD_DEFAULT = 0.95;
+export const RELATED_WIDEN_THRESHOLD_ENV = "AFFECTED_RELATED_THRESHOLD";
+
+/**
+ * Resolve the widening threshold from the environment.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {{ threshold: number, source: 'default' | 'env', invalid?: string }}
+ */
+export function resolveRelatedWidenThreshold(env = process.env) {
+  const raw = env[RELATED_WIDEN_THRESHOLD_ENV];
+  if (raw == null || String(raw).trim() === "") {
+    return { threshold: RELATED_WIDEN_THRESHOLD_DEFAULT, source: "default" };
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 1) {
+    return {
+      threshold: RELATED_WIDEN_THRESHOLD_DEFAULT,
+      source: "default",
+      invalid: String(raw),
+    };
+  }
+  return { threshold: n, source: "env" };
+}
+
+// ── FILTER-LIST CHANNEL (same plan, P-001) ─────────────────────────────────────────────
+// A large related selection cannot ride on argv: `npm run <script> -- <files>` folds every
+// argument into ONE `sh -c` string, and Linux caps a single argv entry at MAX_ARG_STRLEN
+// (128 KiB) — 3,849 operator-core paths are ~180 KB, so the widened lane was hiding an E2BIG
+// that the old 0.5 threshold never let anyone reach. The selection is therefore written to a
+// content-addressed JSON file and handed to the workspace's vitest config through
+// `PC_TEST_FILTER_LIST` (libs/test-config/src/vitest-config.ts applies it to `include`).
+// Content-addressing keeps the passing-task-verdict identity stable for an identical
+// selection across runs, while a different selection can never alias a full-suite pass.
+export const RELATED_FILTER_LIST_ENV = "PC_TEST_FILTER_LIST";
+
+/**
+ * Persist a workspace-relative selection as a filter-list file.
+ *
+ * @param {string}   dir    directory to write into (created if missing)
+ * @param {string[]} files  workspace-relative test paths
+ * @returns {{ path: string, digest: string, count: number }}
+ */
+export function writeRelatedFilterList(dir, files) {
+  const normalized = [...new Set(files.map((f) => f.replaceAll("\\", "/")))].sort();
+  const body = JSON.stringify(normalized);
+  const digest = createHash("sha256").update(body).digest("hex").slice(0, 16);
+  mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `related-filter-${digest}.json`);
+  try {
+    writeFileSync(filePath, body, { flag: "wx", mode: 0o600 });
+  } catch (err) {
+    // Same content ⇒ same name: a concurrent writer already landed it.
+    if (err?.code !== "EEXIST") throw err;
+  }
+  return { path: filePath, digest, count: normalized.length };
+}
 
 /** Extensions we index. */
 const SOURCE_RE = /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
@@ -516,16 +584,19 @@ export function transitiveDeps(index) {
  * @param {string}                 o.rootDir        absolute dir to index (a workspace's source root)
  * @param {string[]}               o.changedPaths   absolute paths that changed
  * @param {Record<string, string>} [o.aliases]      tsconfig `paths` prefix -> absolute dir
- * @param {number}                 [o.threshold]    fraction of the suite above which selecting is pointless
+ * @param {number}                 [o.threshold]    share of the suite at/above which the selection is
+ *                                                  widened to the whole suite (default: the
+ *                                                  `AFFECTED_RELATED_THRESHOLD` env, else
+ *                                                  RELATED_WIDEN_THRESHOLD_DEFAULT)
  * @param {RelatedFs}              [o.fs]           filesystem seam (injected in tests)
  * @param {RelatedIndex | null}    [o.index]        prebuilt index, to avoid re-walking the tree
- * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string }}
+ * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number }}
  */
 export function selectRelatedTests({
   rootDir,
   changedPaths,
   aliases = {},
-  threshold = 0.5,
+  threshold = resolveRelatedWidenThreshold().threshold,
   fs = defaultFs(),
   index = null,
 } = {}) {
@@ -534,7 +605,7 @@ export function selectRelatedTests({
   const total = testFiles.length;
 
   if (total === 0) {
-    return { mode: "full", selected: [], total: 0, reason: "no-test-files" };
+    return { mode: "full", selected: [], total: 0, reason: "no-test-files", threshold };
   }
 
   // Only changed paths INSIDE this root can be resolved against this index. A
@@ -549,6 +620,7 @@ export function selectRelatedTests({
       selected: [],
       total,
       reason: "no-changed-paths-in-scope",
+      threshold,
     };
   }
 
@@ -580,14 +652,18 @@ export function selectRelatedTests({
   if (selected.size === 0) {
     // An in-scope change that reaches NO test is far more likely to be a graph gap
     // than genuine proof that nothing covers it. Run everything.
-    return { mode: "full", selected: [], total, reason: "empty-selection" };
+    return { mode: "full", selected: [], total, reason: "empty-selection", threshold };
   }
+  // P-001: this is a COST rule, not a soundness rail — the selection above is complete at any
+  // share. It fires only when the subset is so close to the whole suite that the explicit file
+  // list is pure overhead (see RELATED_WIDEN_THRESHOLD_DEFAULT).
   if (selected.size >= total * threshold) {
     return {
       mode: "full",
       selected: [],
       total,
       reason: `over-threshold(${selected.size}/${total})`,
+      threshold,
     };
   }
 
@@ -596,5 +672,6 @@ export function selectRelatedTests({
     selected: [...selected].sort(),
     total,
     reason: "ok",
+    threshold,
   };
 }

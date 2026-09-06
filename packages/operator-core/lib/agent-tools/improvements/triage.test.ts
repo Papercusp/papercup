@@ -309,9 +309,13 @@ describe('improvements:triage tool', () => {
       const response = JSON.parse(result.content[0].text);
       expect(response.ok).toBe(true);
       expect(response.mode).toBe('triage-all');
+      expect(response.previewOnly).toBe(true);
+      expect(response.persisted).toBe(false);
+      expect(response.appliedCount).toBe(0);
       expect(response.decisions).toBeDefined();
       expect(Array.isArray(response.decisions)).toBe(true);
       expect(response.decisions.length).toBe(2);
+      expect(mockApplyTriageDecision).not.toHaveBeenCalled();
 
       // Check that decisions are populated
       const productDecision = response.decisions.find((d: any) => d.id === '1');

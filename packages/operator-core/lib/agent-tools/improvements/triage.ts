@@ -326,6 +326,12 @@ export default defineTool({
             text: JSON.stringify({
               ok: true,
               mode: 'triage-all',
+              // Keep the preview contract machine-readable and near the front of the
+              // envelope. A prose-only note at the end can be truncated away while the
+              // decisions remain, making a no-op bulk read look like a successful write.
+              previewOnly: true,
+              persisted: false,
+              appliedCount: 0,
               coverage,
               decisions,
               note:

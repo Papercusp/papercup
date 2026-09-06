@@ -59,6 +59,7 @@ import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { CupboardErrorState, cupboardHttpError } from '../CupboardErrorState';
 import KnowledgePackInstall from './KnowledgePackInstall';
 import BundleAppInstall from './BundleAppInstall';
+import ThemeInstall from './ThemeInstall';
 import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
 import { Button } from '../../harness/Button';
 import { Tooltip } from '../../harness/Tooltip';
@@ -184,6 +185,11 @@ export default function CupboardDetailPage() {
     // conflict review. Neither kind has a generic primary-button action —
     // guard against a stray call (both panels render their own button).
     if (kind === 'app') {
+      return;
+    }
+    // ThemeInstall owns the inert package lifecycle and keeps installation
+    // separate from the explicit Use theme preference action.
+    if (kind === 'theme') {
       return;
     }
     // template (cupboard-full-dogfood P-003 / public-release P-002): clone the
@@ -684,13 +690,20 @@ export default function CupboardDetailPage() {
           <BundleAppInstall listing={listing} />
         )}
 
+        {/* Themes have a dedicated lifecycle because Install must not silently
+            select, while Update/Remove operate on the installed package and
+            Use theme alone writes the active preference. */}
+        {kind === 'theme' && (
+          <ThemeInstall listing={listing} />
+        )}
+
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
             join is retired; nothing to act on), for knowledge packs (the
             KnowledgePackInstall panel owns their Install action), and for an
             app (the AppDownloadPanel / BundleAppInstall panel owns its
             download/install action per delivery_type). */}
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
-          {action && kind !== 'knowledge-pack' && kind !== 'app' && (
+          {action && kind !== 'knowledge-pack' && kind !== 'app' && kind !== 'theme' && (
           <Button
             size="lg"
             variant="primary"
@@ -743,7 +756,7 @@ export default function CupboardDetailPage() {
         {/* Trust note for code-pulling kinds (D-007/D-009). Knowledge packs pull
             no code and carry no capabilities — their trust surface is the
             browse-before-install list + the install panel's conflict review. */}
-        {action === 'install' && kind !== 'knowledge-pack' && (
+        {action === 'install' && kind !== 'knowledge-pack' && kind !== 'theme' && (
           <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: SIZES.sm }}>
             Installing pulls code from this listing. Plugin capabilities are gated by manifest + your install-time consent; review the source on GitHub first.
           </p>

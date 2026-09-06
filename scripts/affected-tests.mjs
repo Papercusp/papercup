@@ -55,9 +55,11 @@ import {
   formatSelectedFilesLine,
 } from "./lib/vitest-summary.mjs";
 import {
+  RELATED_FILTER_LIST_ENV,
   selectRelatedTests,
   playwrightOwnedTest,
   unitExcludedVitestTest,
+  writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
@@ -4646,7 +4648,12 @@ if (relatedOnly) {
       outSync(
         `RELATED_SELECTION ws=${t.ws.name} selected=${
           result.mode === "related" ? result.selected.length : result.total
-        } total=${result.total} mode=${result.mode} reason=${result.reason}`,
+        } total=${result.total} mode=${result.mode} reason=${result.reason}` +
+          // P-001 (gate-latency-selection-and-retry-policy-2026-09-06): the widening share
+          // is a tunable now, so the line says which value judged this workspace.
+          (typeof result.threshold === "number"
+            ? ` widenThreshold=${result.threshold}`
+            : ""),
       );
       if (result.mode !== "related" || result.selected.length < 1) {
         selectionFailedWide = true;
@@ -5535,11 +5542,24 @@ function runCapturedTask(
     // describe the run that actually produced the verdicts.
     ...(context.coverageArgs ?? []),
     ...extraArgs,
-    ...(extraArgs.length === 0 ? (spawnTask.relatedFiles ?? []) : []),
   ]);
+  // P-001 (gate-latency-selection-and-retry-policy-2026-09-06): the related selection used to
+  // ride on argv here. `npm run … -- <files>` folds every argument into ONE `sh -c` string and
+  // Linux caps a single argv entry at 128 KiB, so a 3,849-file operator-core selection
+  // (~180 KB) would have died E2BIG — the 0.5 widening threshold merely hid that by never
+  // narrowing past ~3,200 files. The selection now travels as a content-addressed JSON file
+  // named by PC_TEST_FILTER_LIST, which @papercusp/test-config's defineVitestConfig applies to
+  // `include` (intersecting a lane's explicit list, so lane semantics are preserved exactly as
+  // the positional-filter form preserved them). Same scoping rule as before: only the initial,
+  // complete invocation is narrowed; a targeted retry already carries its own file list.
+  const relatedFilterList =
+    extraArgs.length === 0 && Array.isArray(spawnTask.relatedFiles) && spawnTask.relatedFiles.length > 0
+      ? writeRelatedFilterList(RUN_LOG_ROOT, spawnTask.relatedFiles)
+      : null;
   const childEnv = {
     ...process.env,
     ...(specEnv ?? {}),
+    ...(relatedFilterList ? { [RELATED_FILTER_LIST_ENV]: relatedFilterList.path } : {}),
     // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
     // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
     // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the
@@ -5606,6 +5626,10 @@ function runCapturedTask(
             argv,
             cwd,
             scriptText: spawnTask.ws.scripts[spawnTask.script] ?? null,
+            // P-001: the selection left argv for an env-named file, so it is pinned here
+            // EXPLICITLY (not just via the env hash) — a narrowed run must never be replayed
+            // as a full-suite pass, and two different selections must never alias.
+            relatedFilterDigest: relatedFilterList?.digest ?? null,
           },
           gateConfig: {
             ...taskVerdictGateConfig,

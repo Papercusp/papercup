@@ -1044,7 +1044,10 @@ export function ChatConversation(props: ChatConversationProps) {
   const [focusIndex, setFocusIndex] = useState(-1);
   const focusedForRef = useRef<string | null>(null);
   const focusFramesRef = useRef(0);
-  const focusLoopActiveRef = useRef(false);
+  // Each click owns a generation. A newer T# request invalidates the old rAF
+  // closure immediately; otherwise an in-flight correction loop keeps
+  // scrolling its OLD index while the new request is silently discarded.
+  const focusGenerationRef = useRef(0);
   const exactIndex = typeof focusIndexProp === 'number' && focusIndexProp >= 0 ? focusIndexProp : -1;
   // One key for "which focus request is this", so a change in ANY input
   // re-focuses and an unchanged request never re-steals the user's scroll.
@@ -1054,6 +1057,8 @@ export function ChatConversation(props: ChatConversationProps) {
   const focusKey = exactIndex >= 0 ? `#${exactIndex}${nonceSuffix}` : (focusAnchor ?? null);
   useEffect(() => {
     if (!focusKey) {
+      focusGenerationRef.current += 1;
+      programmaticScrollRef.current = false;
       focusedForRef.current = null;
       setFocusIndex(-1);
       return;
@@ -1070,16 +1075,29 @@ export function ChatConversation(props: ChatConversationProps) {
     setFocusIndex(idx);
     followRef.current = false; // suspend the tail pin (see 3 above)
     focusFramesRef.current = 45; // same ~750ms convergence budget as pinToBottom
-    if (focusLoopActiveRef.current) return;
-    focusLoopActiveRef.current = true;
+    const generation = ++focusGenerationRef.current;
     const step = () => {
-      if (!scrollerRef.current || focusFramesRef.current <= 0 || followRef.current) {
-        focusLoopActiveRef.current = false;
+      if (
+        generation !== focusGenerationRef.current
+        || !scrollerRef.current
+        || focusFramesRef.current <= 0
+        || followRef.current
+      ) {
+        if (generation === focusGenerationRef.current) programmaticScrollRef.current = false;
         return;
       }
       focusFramesRef.current -= 1;
+      // scrollToIndex emits a scroll event. Mark it before the call so the
+      // transcript's user-scroll listener cannot read a near-bottom target as
+      // a request to resume tail-follow and cancel the other 44 correction
+      // frames. Clear on the next frame even when the virtualizer made no move,
+      // so a later real user scroll is never swallowed by a stale boolean.
+      programmaticScrollRef.current = true;
       virtualizer.scrollToIndex(idx, { align: 'start' });
-      requestAnimationFrame(step);
+      requestAnimationFrame(() => {
+        if (generation === focusGenerationRef.current) programmaticScrollRef.current = false;
+        step();
+      });
     };
     requestAnimationFrame(step);
   }, [focusKey, exactIndex, focusAnchor, messages, virtualizer]);

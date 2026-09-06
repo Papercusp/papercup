@@ -8,7 +8,7 @@
 // field, the token inputs, and the save validation surface.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const { themeMod } = vi.hoisted(() => ({
   themeMod: {
@@ -87,5 +87,33 @@ describe('<ThemeEditor />', () => {
     render(<ThemeEditor seedThemeId="dark" onSaved={() => {}} onCancel={onCancel} />);
     fireEvent.click(screen.getByText('Cancel'));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it('saves an installed theme as an independent local copy', async () => {
+    render(
+      <ThemeEditor
+        seedThemeId="custom:installed:abc"
+        copyOf={{
+          id: 'installed:abc',
+          label: 'Aurora',
+          tokens: { accent: '#ff8800' },
+          installed: true,
+          packageRef: 'acme-aurora',
+        }}
+        onSaved={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect((screen.getByPlaceholderText('My theme') as HTMLInputElement).value).toBe('Aurora copy');
+    fireEvent.click(screen.getByText('Save local copy'));
+
+    await waitFor(() => expect(themeMod.save).toHaveBeenCalled());
+    expect(themeMod.save.mock.calls[0][0]).toMatchObject({
+      id: 'aurora-copy',
+      label: 'Aurora copy',
+      tokens: { accent: '#ff8800' },
+    });
+    expect(themeMod.save.mock.calls[0][0].id).not.toBe('installed:abc');
   });
 });

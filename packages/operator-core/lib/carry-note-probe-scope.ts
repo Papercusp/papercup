@@ -270,8 +270,12 @@ export function describeProbeScope(recheck: string | null | undefined): ProbeSco
  * {@link isPrescriptiveClaim} is the dedicated mechanism for it — which runs
  * first, making any case rule here redundant as well as wrong.
  */
+// `\b` treats the hyphen in an identifier as a word boundary, so it reads the
+// `no` in `deliberate-no-pair`/`no-op` as a standalone quantifier. A hyphen is
+// an identifier-internal separator for the terms this lint sees; require the
+// match to be outside alphanumeric, underscore, and hyphen runs instead.
 const QUANTIFIER_RE =
-  /\b(no|none|nothing|never|every|all|any|always|zero|entire|whole|today|mostly|at all|so far|ever)\b/i;
+  /(?<![A-Za-z0-9_-])(no|none|nothing|never|every|all|any|always|zero|entire|whole|today|mostly|at all|so far|ever)(?![A-Za-z0-9_-])/i;
 
 /**
  * Quantifier-shaped words that are explicitly LIMITING the writer's claim,

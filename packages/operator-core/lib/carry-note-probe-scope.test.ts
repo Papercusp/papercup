@@ -201,6 +201,20 @@ describe('detectScopeOverreach — the advisory lint', () => {
     ).toHaveLength(1);
   });
 
+  it('does NOT flag quantifier-looking fragments inside hyphenated identifiers', () => {
+    const claims = [
+      'the sql_read_census deliberate-no-pair TRI-STATE is shipped and running.',
+      'the no-op path is shipped and running.',
+      'the no-fall branch is covered and running.',
+    ];
+    for (const claim of claims) {
+      expect(
+        detectScopeOverreach([{ claim, recheck: 'tail -5 /tmp/x.log', verified: 'read it' }]),
+        claim,
+      ).toHaveLength(0);
+    }
+  });
+
   it('does NOT flag quantifiers inside conditional trigger antecedents', () => {
     const triggers = [
       'ESCALATION FLOOR: if no values ping by ~22:55Z, ping cc991 for run-6 status.',

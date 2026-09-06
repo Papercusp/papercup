@@ -2234,9 +2234,15 @@ export function lintUncheckedImperativeActions(
 
       SINGLETON_ACTION_VERBS.lastIndex = 0;
       const actionWords = [...line.matchAll(SINGLETON_ACTION_VERBS)];
+      const targetEnd = targetAt + target.length;
       const hasNearbyImperative = actionWords.some((match) => {
         const at = match.index ?? -1;
-        return at >= 0 && Math.abs(at - targetAt) <= 120;
+        const end = at + match[0].length;
+        // Target names can contain an action-looking word (`launch` in
+        // `fleet:launch-on-plan`, `push` in `git push`). That token names the
+        // mutator; it is not an instruction to invoke it.
+        const overlapsTarget = at < targetEnd && end > targetAt;
+        return at >= 0 && !overlapsTarget && Math.abs(at - targetAt) <= 120;
       });
       if (!hasNearbyImperative) continue;
       if (hasRunnableCorrespondingCheck(target, checks)) continue;
