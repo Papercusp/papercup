@@ -1902,6 +1902,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
   function rig({
     output,
     input,
+    quotaBlocked,
     pollMs = 100,
     polls = 4,
     maxResubmits = 3,
@@ -1911,6 +1912,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
   }: {
     output: (t: number) => number;
     input?: (t: number) => number;
+    quotaBlocked?: (t: number) => boolean;
     pollMs?: number;
     polls?: number;
     maxResubmits?: number;
@@ -1933,6 +1935,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     const v = makeSubmitVerifier({
       lastOutputAt: () => output(t),
       lastInputAt: input ? () => input(t) : undefined,
+      isQuotaBlocked: quotaBlocked ? () => quotaBlocked(t) : undefined,
       writeCr: writeCr ?? (() => crs.push(t)),
       quietMs,
       pollMs,
@@ -2010,6 +2013,33 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     const r = await v.verify();
     expect(r.aborted).toBe('human-input');
     expect(crs).toEqual([100]); // the one pre-abort resubmit only
+  });
+
+  it('quota wall present at submission aborts without a retry or fatal exhaustion', async () => {
+    const { v, crs, exhaustedCalls } = rig({ output: () => 0, quotaBlocked: () => true });
+    expect(await v.verify()).toMatchObject({ aborted: 'quota-blocked', resubmits: 0 });
+    expect(crs).toEqual([]);
+    expect(exhaustedCalls).toEqual([]);
+  });
+
+  it('quota wall arriving after the last retry wins over exhaustion', async () => {
+    const { v, crs, exhaustedCalls } = rig({
+      output: () => 0,
+      quotaBlocked: (t) => t >= 200,
+      maxResubmits: 1,
+    });
+    expect(await v.verify()).toMatchObject({ aborted: 'quota-blocked', resubmits: 1 });
+    expect(crs).toEqual([100]);
+    expect(exhaustedCalls).toEqual([]);
+  });
+
+  it('quota recovery allows a later verifier to submit normally', async () => {
+    let blocked = true;
+    const { v, crs } = rig({ output: () => 0, quotaBlocked: () => blocked, maxResubmits: 1 });
+    expect((await v.verify()).aborted).toBe('quota-blocked');
+    blocked = false;
+    expect(await v.verify()).toMatchObject({ aborted: null, resubmits: 1, exhausted: true });
+    expect(crs).toHaveLength(1);
   });
 
   it('WI-2975: an ordinary silent "thinking" gap spanning a poll boundary no longer misfires at the new, decoupled default quietMs — but WOULD have under the old (reused OUTPUT_QUIET_MS=1500) default', async () => {
@@ -2117,6 +2147,22 @@ describe('quotaLimitBannerVisible (WI-1386682 (1) — usage-wall text detector)'
 });
 
 describe('makeQuotaBlockDetector (WI-1386682 (1)/(2) — quota-wall ring-buffer detector)', () => {
+  it('publishes the current quota episode and clears it on recovery or recycle', () => {
+    let now = 1000;
+    const d = makeQuotaBlockDetector({ agent: 'codex', capBytes: 128, now: () => now });
+    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null });
+    d.observe("You've hit your usage limit.");
+    expect(d.snapshot()).toEqual({ quotaBlocked: true, quotaBlockedSinceMs: 1000 });
+    now = 2000;
+    d.observe(' still waiting');
+    expect(d.snapshot().quotaBlockedSinceMs).toBe(1000);
+    d.observe('healthy output '.repeat(20));
+    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null });
+    d.observe('Usage limit reached');
+    expect(d.snapshot()).toEqual({ quotaBlocked: true, quotaBlockedSinceMs: 2000 });
+    d.reset();
+    expect(d.snapshot()).toEqual({ quotaBlocked: false, quotaBlockedSinceMs: null });
+  });
   it('starts unblocked and stays unblocked on ordinary output', () => {
     const d = makeQuotaBlockDetector();
     expect(d.isBlocked()).toBe(false);

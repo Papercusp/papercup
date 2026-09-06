@@ -62,6 +62,11 @@ export interface PsuPtyHost {
   lastInputAt?: number | null;
   lastOutputAt?: number | null;
   lastActivityAt?: number | null;
+  /** Host-observed quota banner. Absence means an older host with no reading,
+   * not a healthy quota state. Cleared on detector recovery and child recycle. */
+  quotaBlocked?: boolean;
+  /** Start of the current detected quota episode, epoch milliseconds. */
+  quotaBlockedSinceMs?: number | null;
   // ── Host capability advertisement (WI-1804; ADDITIVE — absent on files written
   //    by older hosts, which is exactly how the tool detects an old host and falls
   //    back). A new host lists the control-socket modes it understands beyond the

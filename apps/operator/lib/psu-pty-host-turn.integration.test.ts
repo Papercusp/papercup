@@ -78,6 +78,75 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
+it('quota wall during launch kickoff preserves the host and publishes recovery through discovery', async () => {
+  const ownerId = uniqueOwner('QUOTA-STARTUP');
+  const sock = socketPathFor(ownerId);
+  const { io, captured } = fakeIo();
+  let exitCode: number | null = null;
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', [
+      "process.stdin.setRawMode(true); process.stdin.setEncoding('utf8');",
+      "let walled=false; let recovered=false;",
+      "process.stdin.on('data',d=>{",
+      "if(d.includes('\\x04')) process.exit(0);",
+      "if(d.includes('\\x03')){recovered=true;process.stdout.write('healthy '.repeat(1500)+'CLEARED\\n');return;}",
+      "if(d.includes('\\r')){if(recovered)process.stdout.write('RESUMED\\n');",
+      "else if(!walled){walled=true;process.stdout.write(\"You've hit your usage limit.\\n\");}",
+      "else process.stdout.write('FUTILE-RETRY\\n');}});",
+      "process.stdout.write('READY\\n'); setTimeout(()=>process.exit(0),20000);",
+    ].join('')],
+    cwd: '/tmp',
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId,
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '2',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '1',
+    }),
+    ownerId,
+    kickoff: 'trigger-quota',
+    io,
+    bridgeTty: false,
+    onExit: (code: number) => { exitCode = code; },
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, "You've hit your usage limit", 10000)).toBe(true);
+    const eventPath = eventLogPathForOwner(ownerId);
+    const deadline = Date.now() + 5000;
+    let events = '';
+    while (Date.now() < deadline) {
+      events = existsSync(eventPath) ? readFileSync(eventPath, 'utf8') : '';
+      if (events.includes('"reason":"quota-blocked"')) break;
+      await sleep(25);
+    }
+    expect(events).toContain('"kind":"submit-verify-unconfirmed"');
+    expect(events).toContain('"reason":"quota-blocked"');
+    expect(events).not.toContain('"kind":"submit-verify-exhausted"');
+    expect(captured()).not.toContain('FUTILE-RETRY');
+    expect(exitCode).toBeNull();
+    const blocked = findLiveHost(ownerId, PSU_PTY_DIR, ID_OK);
+    expect(blocked?.quotaBlocked).toBe(true);
+    expect(blocked?.quotaBlockedSinceMs).toBeGreaterThan(0);
+
+    // Recovery output must clear the same discovery record immediately. The
+    // subsequent ordinary turn exercises the real reader/socket/host path.
+    expect(await injectIntoHost(sock, { mode: 'raw', data: '\x03' })).toBe(true);
+    expect(await waitForOutput(captured, 'CLEARED')).toBe(true);
+    const recovered = findLiveHost(ownerId, PSU_PTY_DIR, ID_OK);
+    expect(recovered?.quotaBlocked).toBe(false);
+    expect(recovered?.quotaBlockedSinceMs).toBeNull();
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'resume-work' })).toBe(true);
+    expect(await waitForOutput(captured, 'RESUMED')).toBe(true);
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', data: '\x04' }).catch(() => false);
+    await done;
+  }
+  expect(exitCode).toBe(0);
+  expect(existsSync(sock)).toBe(false);
+}, 25000);
+
 /** EI-7662 (residual, post-hermeticEnv): poll `capturedFn()` until it contains
  *  `substr`, instead of injecting the instant `waitForHost` resolves.
  *  `hostThroughPty` writes the discovery meta file SYNCHRONOUSLY right after
