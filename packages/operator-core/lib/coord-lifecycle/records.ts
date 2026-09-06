@@ -437,12 +437,36 @@ function normalizedRootCauseClaim(value: string): string {
 }
 
 function contrastiveObservables(value: string): string[] {
-  return value
-    .split(/\bif\b/gi)
-    .slice(1)
-    .map((arm) => {
-      const separator = /\bthen\b|=>|→/i.exec(arm);
-      return separator ? normalizedRootCauseClaim(arm.slice((separator.index ?? 0) + separator[0].length)) : '';
+  const conditionalMarkers = [...value.matchAll(/\b(?:if|when|assuming|provided\s+that)\b/gi)];
+  return conditionalMarkers
+    .map((marker, index) => {
+      const armStart = (marker.index ?? 0) + marker[0].length;
+      const armEnd = conditionalMarkers[index + 1]?.index ?? value.length;
+      const arm = value.slice(armStart, armEnd);
+
+      // Keep the causal-record floor semantic rather than requiring one exact
+      // sentence template. `then`, arrows, punctuation, and common predictive
+      // verbs all make the boundary between the condition and its observable
+      // explicit; without one of those boundaries, free-form prose is still
+      // rejected instead of being mistaken for a discriminating observation.
+      const explicitSeparator = /\bthen\b|=>|→/i.exec(arm);
+      const punctuationSeparator = /[,;:]\s*|[—–]\s*/.exec(arm);
+      const predictiveSeparator =
+        /\b(?:would|will|should|must|can|could|may|might|yield(?:s)?|produce(?:s)?|return(?:s)?|emit(?:s)?|show(?:s)?|report(?:s)?|reveal(?:s)?|result(?:s)?\s+in|lead(?:s)?\s+to)\b/i.exec(
+          arm,
+        );
+      const separator =
+        explicitSeparator ??
+        [punctuationSeparator, predictiveSeparator]
+          .filter((candidate): candidate is RegExpExecArray => candidate !== null)
+          .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))[0];
+      if (!separator) return '';
+
+      return normalizedRootCauseClaim(
+        arm
+          .slice((separator.index ?? 0) + separator[0].length)
+          .replace(/^then\b\s*/i, ''),
+      );
     })
     .filter(Boolean);
 }
@@ -455,7 +479,9 @@ export const RootCauseVerificationSchema = z
       .string()
       .trim()
       .min(1)
-      .describe('Two contrastive conditional arms: "if H1 then A; if H2 then B".'),
+      .describe(
+        'Two contrastive conditional arms with different observables, for example "if H1 then A; if H2 then B" or equivalent conditional prose.',
+      ),
     testResult: z.string().trim().min(1).describe('The actual pre-fix observable.'),
   })
   .strict()

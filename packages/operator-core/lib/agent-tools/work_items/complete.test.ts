@@ -388,6 +388,38 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(String(result.error)).toMatch(/two different conditional observables/);
   });
 
+  it('accepts semantically equivalent conditional prose without a literal then separator', async () => {
+    const r = await oneRaw({
+      id: 'WI-root',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the callback parser',
+        tests: '4 green',
+        rootCauseVerification: {
+          hypothesis: 'the missing callback brace caused the parser failure',
+          alternativeHypothesis: 'the callback writer supplied an invalid handler',
+          distinguishingTest:
+            'If the missing callback brace is the cause, the parser reports a syntax error; if the writer supplied the invalid handler, the parser invokes the callback successfully',
+          testResult: 'the parser reported a syntax error before the fix',
+        },
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-root',
+      'resolved',
+      expect.objectContaining({
+        completionEvidence: expect.objectContaining({
+          rootCauseVerification: expect.objectContaining({
+            distinguishingTest: expect.stringContaining('If the missing callback brace'),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('accepts and persists a contrastive record on a successful bug close', async () => {
     const r = await oneRaw({
       id: 'WI-root',
