@@ -20,7 +20,7 @@ import { PUSH_UI_GROUNDING_CONTEXT } from './_overrides';
 
 export const SU_S03_PUSH_NOT_POLL: Scenario = {
   id: 'su-S03-push-not-poll',
-  version: 3,
+  version: 4,
   target: 'su',
   transport: 'in-process',
   description:
@@ -29,7 +29,8 @@ export const SU_S03_PUSH_NOT_POLL: Scenario = {
   simUserContext:
     'You are a developer asking for the current, concrete wiring of a live fleet-agent-state panel. ' +
     'A complete answer names the existing advRoster.list query, HarnessSyncProvider/useSyncQuery, the ' +
-    'sync_invalidate LISTEN/NOTIFY bridge, and the source files that define them. Once the engineer gives ' +
+    'sync_invalidate LISTEN/NOTIFY bridge, and the source files that define them. The provider mounts the ' +
+    'shared sync boundary; SessionsRosterContext is the concrete consumer that calls useSyncQuery. Once the engineer gives ' +
     'that grounded path, declare success; never demand invented latency numbers.',
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },

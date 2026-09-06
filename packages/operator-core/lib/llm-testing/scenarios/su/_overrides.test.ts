@@ -77,7 +77,9 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(textOf(stagingPage)).toContain('/tmp/tauri-dev-bridge-<child-pid>.token');
     expect(textOf(stagingPage)).not.toContain('cd papercusp-desktop && npm run dev');
     expect(evidence).not.toMatch(/\bverdict\b|\bxdg-open\b/i);
-    expect(SU_S02_TAURI_ONLY.version).toBe(4);
+    expect(evidence).toContain('/adv?tab=harnesses&slug=<slug>');
+    expect(evidence).toContain('location.pathname');
+    expect(SU_S02_TAURI_ONLY.version).toBe(5);
   });
 
   it('gives S02 a truthful capability check and enforces docs scope', () => {
@@ -90,12 +92,19 @@ describe('SU S01/S02 populated scenario worlds', () => {
     const unscopedDocs = TAURI_APP_VERIFICATION_CONTEXT.override('docs:get', {
       slugs: ['testing/agent-e2e'],
     });
+    const orient = TAURI_APP_VERIFICATION_CONTEXT.override('coord:orient', {});
+    const harnesses = TAURI_APP_VERIFICATION_CONTEXT.override('harness:list', {
+      workspace: 'papercusp-workspace',
+    });
 
     expect(textOf(find)).toContain('"count":0');
     expect(textOf(find)).toContain('Do not offer or claim');
     expect(textOf(catalog)).toContain('"tools"');
     expect(textOf(catalog)).toContain('No process launcher');
     expect(textOf(unscopedDocs)).toContain('harness_required');
+    expect(textOf(orient)).toContain('papercusp-workspace');
+    expect(textOf(orient)).toContain('layout-test-harness');
+    expect(textOf(harnesses)).toContain('/adv?tab=harnesses&slug=layout-test-harness');
   });
 
   it('passes unrelated tools through to the target default', () => {
@@ -110,8 +119,20 @@ describe('SU S01/S02 populated scenario worlds', () => {
     const pushSource = textOf(PUSH_UI_GROUNDING_CONTEXT.override('capability:read', {
       file_path: 'packages/operator-core/lib/sync-resolver/index.ts',
     }));
+    const pushConsumer = textOf(PUSH_UI_GROUNDING_CONTEXT.override('capability:read', {
+      file_path: 'apps/operator/app/adv/sessions/SessionsRosterContext.tsx',
+    }));
+    const pushBridge = textOf(PUSH_UI_GROUNDING_CONTEXT.override('capability:read', {
+      file_path: 'packages/operator-core/lib/sync-sse.ts',
+    }));
+    const pushSemantic = textOf(PUSH_UI_GROUNDING_CONTEXT.override('search:semantic', {
+      query: 'advRoster useSyncQuery sync_invalidate',
+    }));
     const pushPack = textOf(PUSH_UI_GROUNDING_CONTEXT.override('repomix:pack', {
       path: 'packages/operator-core/lib/sync-resolver',
+    }));
+    const pushProviderPack = textOf(PUSH_UI_GROUNDING_CONTEXT.override('repomix:pack', {
+      path: 'apps/operator/providers/HarnessSyncProvider.tsx',
     }));
     const design = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('design-phase:search_registry', {
       query: 'status badge',
@@ -126,15 +147,26 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(push).toContain('advRoster.list');
     expect(push).toContain('sync_invalidate');
     expect(push).not.toMatch(/\b\d+\s*[–-]\s*\d+ms\b/);
-    expect(pushSource).toContain('module-level REGISTRY');
+    expect(pushSource).toContain("'advRoster.list': {");
+    expect(pushSource).toContain('argsSchema: z');
     expect(pushSource).toContain('readAdvRoster');
-    expect(pushPack).toContain('HarnessSyncProvider.tsx');
-    expect(pushPack).toContain('sync-sse.ts');
+    expect(pushSource).toContain('source-backed-code-excerpt');
+    expect(pushConsumer).toContain("queryName: 'advRoster.list'");
+    expect(pushConsumer).toContain('advRosterArgs(workspaceId)');
+    expect(pushBridge).toContain("const CHANNEL = 'sync_invalidate'");
+    expect(pushBridge).toContain('createInvalidationBus');
+    expect(pushSemantic).toContain('SessionsRosterContext.tsx');
+    expect(pushSemantic).toContain('table-to-query-names.ts');
+    expect(pushPack).toContain('sync-resolver/index.ts');
+    expect(pushPack).toContain('table-to-query-names.ts');
+    expect(pushPack).not.toContain('HarnessSyncProvider.tsx');
+    expect(pushProviderPack).toContain('HarnessSyncProvider.tsx');
+    expect(pushProviderPack).not.toContain('sync-resolver/index.ts');
     expect(design).toContain('StatusPill');
     expect(design).toContain('apps/operator-vite/src/components/ui/StatusPill.tsx');
     expect(git).toContain('dev:pipeline_position');
     expect(git).toContain('git-sync:run');
-    expect(SU_S03_PUSH_NOT_POLL.version).toBe(3);
+    expect(SU_S03_PUSH_NOT_POLL.version).toBe(4);
     expect(SU_S04_DESIGN_FIRST.version).toBe(2);
     expect(SU_S06_SHARED_TREE_GIT.version).toBe(2);
   });

@@ -39,6 +39,47 @@ export function executedMapRecordingEnabled(env = process.env) {
 }
 
 /**
+ * The database the map is read from — the SAME precedence the recording reporter uses
+ * (libs/test-config/src/admin-test-runs-reporter.ts `tryGetPg`), so reader and writer can
+ * never disagree about which database holds the rows. Pure over an env.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {{ url: string, source: 'HARNESS_ADMIN_DATABASE_URL' | 'PAPERCUSP_TEST_RUNS_DB_URL' | 'default' }}
+ */
+export function resolveExecutedMapPgUrl(env = process.env) {
+  if (env.HARNESS_ADMIN_DATABASE_URL) {
+    return { url: env.HARNESS_ADMIN_DATABASE_URL, source: "HARNESS_ADMIN_DATABASE_URL" };
+  }
+  if (env.PAPERCUSP_TEST_RUNS_DB_URL) {
+    return { url: env.PAPERCUSP_TEST_RUNS_DB_URL, source: "PAPERCUSP_TEST_RUNS_DB_URL" };
+  }
+  return {
+    url: "postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp",
+    source: "default",
+  };
+}
+
+/**
+ * Open a short-lived `pg` client for the selection read. Bounded: a database that does not
+ * answer within `timeoutMs` is "no map", never a stalled selection.
+ *
+ * @param {{ env?: Record<string, string | undefined>, timeoutMs?: number }} [o]
+ * @returns {Promise<import('pg').Client>}
+ */
+export async function connectExecutedMapPg({ env = process.env, timeoutMs = 5_000 } = {}) {
+  const { Client } = await import("pg");
+  const { url } = resolveExecutedMapPgUrl(env);
+  const client = new Client({
+    connectionString: url,
+    connectionTimeoutMillis: timeoutMs,
+    statement_timeout: 15_000,
+    application_name: "affected-tests executed-source-map",
+  });
+  await client.connect();
+  return client;
+}
+
+/**
  * Turn stored rows into the selector's map. Pure — exported for the unit tests.
  *
  * Rows arrive newest-first per (workspace, test file); the first row wins. Paths are

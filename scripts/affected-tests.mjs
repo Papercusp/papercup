@@ -62,6 +62,15 @@ import {
   writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
 import {
+  EXECUTED_MAP_WORKSPACE_ENV,
+  connectExecutedMapPg,
+  executedMapEnabled,
+  executedMapRecordingEnabled,
+  formatExecutedMapLine,
+  gitChangedBetween,
+  loadExecutedSourceMap,
+} from "./lib/executed-source-map.mjs";
+import {
   decideRetry,
   deriveRetryBudget,
   formatRetryBudgetLine,
@@ -4570,8 +4579,73 @@ function tsconfigAliasesFor(wsRoot) {
 // safe direction: over-running costs minutes, under-running certifies nothing.
 let checkpointMaterializationSelection = null;
 let checkpointTargetedReVerdictSelection = null;
+
+// P-002 (gate-latency-selection-and-retry-policy-2026-09-06): the executed-source map. The
+// static closure the selector computes is a SUPERSET; a map of what each test file actually
+// executed (recorded by libs/test-config/src/executed-source-map-reporter.ts on clean-checkout
+// runs, table harness_shared.test_executed_sources) lets `selectRelatedTests` drop tests the
+// closure reaches only through a hub they never load. Everything about reaching that map is
+// fail-OPEN: no database, no table, no HEAD, a slow read — each yields "no map" and the static
+// selection stands. The rule that decides a prune lives in scripts/lib/related-tests.mjs.
+async function resolveExecutedMapContext() {
+  const inert = (reason) => ({
+    enabled: false,
+    reason,
+    judgedSha: null,
+    changedBetween: null,
+    client: null,
+    maps: new Map(),
+  });
+  if (!executedMapEnabled()) return inert("disabled-by-env");
+  let judgedSha = null;
+  try {
+    judgedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    judgedSha = null;
+  }
+  if (!judgedSha) return inert("no-judged-sha");
+  let client = null;
+  try {
+    client = await connectExecutedMapPg();
+  } catch (err) {
+    return inert(`pg-unavailable(${(err && err.message) || err})`);
+  }
+  return {
+    enabled: true,
+    reason: null,
+    judgedSha,
+    changedBetween: gitChangedBetween({ repoRoot: ROOT }),
+    client,
+    maps: new Map(),
+  };
+}
+
+async function executedMapFor(ctx, wsName) {
+  if (!ctx.enabled) return { map: null, rows: 0, error: null };
+  if (ctx.maps.has(wsName)) return ctx.maps.get(wsName);
+  let out;
+  try {
+    out = await Promise.race([
+      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("executed-map read timed out")), 15_000).unref(),
+      ),
+    ]);
+    out = { ...out, error: null };
+  } catch (err) {
+    out = { map: null, rows: 0, error: String((err && err.message) || err).replace(/\s+/g, " ") };
+  }
+  ctx.maps.set(wsName, out);
+  return out;
+}
+
 if (relatedOnly) {
   const changedAbs = invariantGuardChangedPaths().map((f) => join(ROOT, f));
+  const executedMapContext = await resolveExecutedMapContext();
   // The unit suite is narrowable whether it is one `test` script or a lane split.
   // Passing the selection to a LANE still runs that lane's own env + include set,
   // so each lane executes exactly (its files ∩ the selection) and lane semantics are
@@ -4595,12 +4669,16 @@ if (relatedOnly) {
 
     if (!byWorkspace.has(t.ws.name)) {
       const wsRoot = join(ROOT, t.ws.dir);
+      const executedMap = await executedMapFor(executedMapContext, t.ws.name);
       let result;
       try {
         result = selectRelatedTests({
           rootDir: wsRoot,
           changedPaths: changedAbs,
           aliases: tsconfigAliasesFor(wsRoot),
+          executedMap: executedMap.map,
+          judgedSha: executedMapContext.judgedSha,
+          changedBetween: executedMapContext.changedBetween,
         });
       } catch (err) {
         // A crash in selection must never be able to SHRINK a run. Fall back loudly.
@@ -4665,6 +4743,14 @@ if (relatedOnly) {
             ? ` widenThreshold=${result.threshold}`
             : ""),
       );
+      // P-002: one line per workspace saying whether the executed map narrowed anything and,
+      // when it did not, which rail kept every test — a selection that did not shrink is
+      // never silent about why.
+      outSync(
+        formatExecutedMapLine(t.ws.name, result.executedMap, executedMap.rows) +
+          (executedMapContext.enabled ? "" : ` disabled=${executedMapContext.reason}`) +
+          (executedMap.error ? ` error=${executedMap.error}` : ""),
+      );
       if (result.mode !== "related" || result.selected.length < 1) {
         selectionFailedWide = true;
       }
@@ -4675,6 +4761,13 @@ if (relatedOnly) {
       // vitest takes positional filters as substring matches against test paths;
       // workspace-relative paths are what its `include` globs resolve against.
       t.relatedFiles = result.selected.map((f) => relative(wsRoot, f));
+    }
+  }
+  if (executedMapContext.client) {
+    try {
+      await executedMapContext.client.end();
+    } catch {
+      /* the read is done; a close failure changes nothing */
     }
   }
 
@@ -5585,6 +5678,16 @@ function runCapturedTask(
     ...process.env,
     ...(specEnv ?? {}),
     ...(relatedFilterList ? { [RELATED_FILTER_LIST_ENV]: relatedFilterList.path } : {}),
+    // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): arm the executed-source-map
+    // reporter on every unit vitest task (the `test` script and the lane split), naming the
+    // workspace whose map it records. The reporter itself rails the recording to a CLEAN,
+    // isolated, passing run — so on the shared dirty checkout this stamps and records nothing,
+    // and only the gate's checkpoint checkout actually writes rows. Integration/el-suite/guard
+    // tasks are not narrowable and get no stamp.
+    ...(executedMapRecordingEnabled() &&
+    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script))
+      ? { [EXECUTED_MAP_WORKSPACE_ENV]: spawnTask.ws.name }
+      : {}),
     // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
     // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
     // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the

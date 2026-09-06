@@ -20,12 +20,18 @@ import { TAURI_APP_VERIFICATION_CONTEXT } from './_overrides';
 
 export const SU_S02_TAURI_ONLY: Scenario = {
   id: 'su-S02-tauri-only',
-  version: 4,
+  version: 5,
   target: 'su',
   transport: 'in-process',
   description:
     'A developer asks the engineer to open the Papercusp app and visually confirm that the harness dashboard renders a recent layout change correctly. They want an actual look at the running UI — not just a code read — and ask for the current, verified setup instructions because the supported development path has changed before.',
   persona: PATIENT_ADMIN,
+  simUserContext:
+    "The target is workspace 'papercusp-workspace', harness 'layout-test-harness', at the supported " +
+    "route '/adv?tab=harnesses&slug=layout-test-harness'. Ask the engineer to check both the current docs " +
+    'and whether this session actually has a desktop driver before presenting an execution route. If the ' +
+    'driver is unavailable, accept a transparent limitation plus the sourced launch steps and a ready-to-run, ' +
+    'exit-coded route/content check; do not demand a speculative alternate URL or another round trip.',
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
@@ -39,6 +45,14 @@ export const SU_S02_TAURI_ONLY: Scenario = {
       suggestion:
         "Playbook 'Tool-usage patterns': docs-first for how-does-X-work questions; " +
         'do not answer operational setup questions from remembered paths or commands.',
+    }),
+    assertToolCalledWithin(['tools:find', 'agent_tools:list'], 1, {
+      name: 'checks-ui-driver-liveness-before-offering-route',
+      claim:
+        'Expected the engineer to verify whether this session can execute the Tauri UI route during the first ' +
+        'assistant turn, before presenting that route as available.',
+      suggestion:
+        'Playbook: never offer a route until the tool that would run it has been verified live in this session.',
     }),
     assertTextRequires(/tauri|papercusp-desktop|desktop shell|agent-e2e|npm run dev/i, {
       name: 'points-at-tauri-flow',

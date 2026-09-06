@@ -129,9 +129,11 @@ echo '=== [6/8] reload the WebView and prove persisted selection + cached CSS ==
 # assertion proves the canonical write landed instead of passing from the
 # WebView cache alone.
 PRE_RELOAD_RESULT="$(theme_eval "(async () => {
-  const response = await fetch('/api/profile', { headers: { accept: 'application/json' } });
-  const profile = await response.json().catch(() => null);
   const workspace = String(window.__PAPERCUSP_WS__ || '');
+  const response = await fetch('/api/profile', {
+    headers: { accept: 'application/json', ...(workspace ? { 'x-papercusp-workspace': workspace } : {}) }
+  });
+  const profile = await response.json().catch(() => null);
   const url = new URL(window.location.href);
   if (workspace) {
     url.searchParams.set('ws', workspace);
@@ -152,7 +154,10 @@ VERIFY_TAURI_DOM_TIMEOUT=90 "$THEME_TAURI_POLL" \
   --eval "performance.getEntriesByType('navigation')[0]?.type === 'reload'"
 bash "$VERIFY_TAURI_SETTLE" --timeout 90
 POST_RELOAD_RESULT="$(theme_eval "(async () => {
-  const response = await fetch('/api/profile', { headers: { accept: 'application/json' } });
+  const workspace = String(window.__PAPERCUSP_WS__ || '');
+  const response = await fetch('/api/profile', {
+    headers: { accept: 'application/json', ...(workspace ? { 'x-papercusp-workspace': workspace } : {}) }
+  });
   const profile = await response.json().catch(() => null);
   const nav = performance.getEntriesByType('navigation')[0];
   const style = document.getElementById('pc-custom-themes');
@@ -160,7 +165,7 @@ POST_RELOAD_RESULT="$(theme_eval "(async () => {
     status: response.status,
     themeId: profile?.theme_id ?? null,
     injectedThemeId: window.__PAPERCUSP_PREFS__?.theme_id ?? null,
-    workspace: String(window.__PAPERCUSP_WS__ || ''),
+    workspace,
     href: window.location.href,
     navigationType: nav?.type ?? null,
     dataTheme: document.documentElement.dataset.theme ?? null,

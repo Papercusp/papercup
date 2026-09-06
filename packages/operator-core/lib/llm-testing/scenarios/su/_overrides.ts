@@ -135,6 +135,34 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
   override(name, args) {
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'coord:orient') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            workspaceId: 'papercusp-workspace',
+            harnessSlug: 'layout-test-harness',
+            intent: 'Verify the current harness-dashboard layout in the supported Papercusp desktop shell',
+          }),
+        }],
+      };
+    }
+    if (canon === 'harness:list') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            workspaceId: 'papercusp-workspace',
+            harnesses: [{
+              slug: 'layout-test-harness',
+              name: 'Layout test harness',
+              status: 'active',
+              route: '/adv?tab=harnesses&slug=layout-test-harness',
+            }],
+          }),
+        }],
+      };
+    }
     if (canon === 'tools:find') {
       const query = typeof a.query === 'string' ? a.query : '';
       return {
@@ -185,7 +213,8 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
                 slug: 'testing/agent-e2e',
                 title: 'Agent E2E playbook — driving the operator like a user',
                 excerpt:
-                  'Drive the Papercusp Tauri desktop shell with tauri-agent-tools; the standalone web app is retired.',
+                  'Drive the Papercusp Tauri desktop shell with tauri-agent-tools; the standalone web app is retired. ' +
+                  'The harness surface is /adv?tab=harnesses&slug=<slug>, and acceptance closes on an exit-coded check.',
               },
               {
                 slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
@@ -227,7 +256,11 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
             'pin each command to the selected process with `--pid <pid>`. Bridge metadata is stored ' +
             'in `/tmp/tauri-dev-bridge-<pid>.token`. The dev shell uses its own working-tree host on ' +
             '`:3270`; `:3070` is the separate systemd-owned green release operator. Use an exit-coded ' +
-            '`check` assertion for DOM-verifiable acceptance; a screenshot alone is observational.',
+            '`check` assertion for DOM-verifiable acceptance; a screenshot alone is observational. The retired ' +
+            '`/harness/<slug>` route redirects to `/adv?tab=harnesses&slug=<slug>`. A route/content proof can use ' +
+            '`tauri-agent-tools check --pid <pid> --eval "location.pathname === \'/adv\' && ' +
+            'new URLSearchParams(location.search).get(\'tab\') === \'harnesses\' && ' +
+            'document.body.innerText.includes(\'<slug>\')" --no-errors`.',
         },
         {
           slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
@@ -267,31 +300,174 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
     const sources = [
       {
         path: 'apps/operator/providers/HarnessSyncProvider.tsx',
-        content:
-          "HarnessSyncProvider mounts @papercusp/sync's SyncProvider for every /harness route. " +
-          "Local installs use restEndpoint '/api/zero-harness' and its SSE endpoint; consumers call " +
-          "useSyncQuery. SSE invalidations trigger refetches, while the long drift-repair interval is not " +
-          'the freshness source.',
+        language: 'tsx',
+        lineRanges: ['34-42', '46-53', '260-300'],
+        content: [
+          "import { SyncProvider, setSyncDeltaCodec, CONNECTION_CAPPED_MAX_IN_FLIGHT, syncMetrics } from '@papercusp/sync';",
+          "import { QueryClient, QueryClientProvider } from '@tanstack/react-query';",
+          '',
+          "const DEFAULT_REST_ENDPOINT = '/api/zero-harness';",
+          '// SSE drift-repair tick, NOT a freshness source. Under SSE, freshness comes from',
+          '// invalidate-driven refetches; this interval only repairs pushes lost to an SSE blip.',
+          'const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;',
+          '',
+          'export function HarnessSyncProvider({',
+          '  children,',
+          "  userID = 'papercusp-anon',",
+          '  ssePollIntervalMs = DEFAULT_SSE_DRIFT_REPAIR_MS,',
+          '}: { children: ReactNode; userID?: string; ssePollIntervalMs?: number }) {',
+          '  const [browserTransport] = useState(resolveHarnessSyncTransport);',
+          '  const ipcCarriesFetch = useIpcCarriesFetch();',
+          '  return (',
+          '    <QueryClientProvider client={queryClient}>',
+          '      <SyncProvider',
+          '        syncType="SSE"',
+          '        userId={userID}',
+          '        restEndpoint={browserTransport.restEndpoint}',
+          '        endpointOverride={browserTransport.endpointOverride}',
+          '        ssePollIntervalMs={ssePollIntervalMs}',
+          '        maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}',
+          '      >',
+          '        {children}',
+          '      </SyncProvider>',
+          '    </QueryClientProvider>',
+          '  );',
+          '}',
+        ].join('\n'),
+      },
+      {
+        path: 'apps/operator/app/adv/sessions/SessionsRosterContext.tsx',
+        language: 'tsx',
+        lineRanges: ['12-39'],
+        content: [
+          "import { useSyncQuery } from '@papercusp/sync';",
+          "import { advRosterArgs } from '@/lib/adv-roster-args';",
+          '',
+          'function useRoster(',
+          '  workspaceId: string | null | undefined,',
+          '  enabled: boolean,',
+          '): RosterState {',
+          '  const query = useSyncQuery<RosterResponse>({',
+          "    queryName: 'advRoster.list',",
+          '    args: advRosterArgs(workspaceId),',
+          '    enabled,',
+          '  });',
+          '  return {',
+          '    data: query.data?.[0] ?? null,',
+          '    error: query.error ? String(query.error) : null,',
+          '    loading: query.loading,',
+          '    refresh: () => query.invalidate?.(),',
+          '  };',
+          '}',
+        ].join('\n'),
       },
       {
         path: 'packages/operator-core/lib/sync-resolver/index.ts',
-        content:
-          "The server registry is the module-level REGISTRY consumed by createResolver. It already registers " +
-          "'advRoster.list' with optional workspaceId and endedLimit args; the resolver delegates to readAdvRoster. " +
-          'Use that existing query for a panel showing fleet-agent state rather than inventing a new queryName.',
+        language: 'ts',
+        lineRanges: ['1784-1810'],
+        content: [
+          "'advRoster.list': {",
+          '  argsSchema: z',
+          '    .object({',
+          '      workspaceId: z.string().nullable().optional(),',
+          '      endedLimit: clampedLimit(200, 50).optional(),',
+          '    })',
+          '    .optional(),',
+          '  resolve: async (args) => {',
+          '    const { workspaceId = null, endedLimit = 50 } = (args ?? {}) as {',
+          '      workspaceId?: string | null;',
+          '      endedLimit?: number;',
+          '    };',
+          "    const { readAdvRoster } = await import('./adv-roster-read');",
+          '    return [await readAdvRoster({ workspaceId, endedLimit })];',
+          '  },',
+          '},',
+        ].join('\n'),
+      },
+      {
+        path: 'packages/operator-core/lib/sync-resolver/table-to-query-names.ts',
+        language: 'ts',
+        lineRanges: ['107-116', '126-134', '811-832'],
+        content: [
+          "'harness_shared.adv_sessions': [",
+          "  'advSessions.list',",
+          "  'advSessions.summary',",
+          "  'advRoster.list',",
+          "  'planSessions.list',",
+          '],',
+          '',
+          "'harness_shared.agent_modes': [",
+          "  'advRoster.list',",
+          "  'agentDetail.byOwner',",
+          "  'goals.detail',",
+          '],',
+          '',
+          "'harness_shared.coord_presence': [",
+          "  'fleetAssignments.byHarness',",
+          "  'dev.coordPresence',",
+          "  'agentDetail.byOwner',",
+          "  'advRoster.list',",
+          '],',
+        ].join('\n'),
       },
       {
         path: 'packages/operator-core/lib/sync-sse.ts',
-        content:
-          "The operator invalidation bus injects @papercusp/sync/server with PostgreSQL channel " +
-          "'sync_invalidate'. table-to-query-names maps changed tables such as coord_presence, adv_sessions, " +
-          "and agent_modes to 'advRoster.list', then the SSE subscriber fans the invalidation to clients.",
+        language: 'ts',
+        lineRanges: ['18-28', '43', '132-139', '182-224', '245-252'],
+        content: [
+          'import { createInvalidationBus } from \'@papercusp/sync/server\';',
+          'import { createPgListenSource, createPgNotifySink } from \'@papercusp/sync/server/pg\';',
+          "import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';",
+          '',
+          "const CHANNEL = 'sync_invalidate';",
+          '',
+          'export function bridgeTriggerEvent(',
+          '  name: string,',
+          '  args?: Record<string, unknown>,',
+          '): ReturnType<typeof queryNamesForTriggerEvent> {',
+          "  if (name.endsWith('.changed')) {",
+          "    const ws = typeof args?.workspace_id === 'string' ? args.workspace_id : undefined;",
+          '    emitSystemEvent({ tool: name, args: args ?? {}, ...(ws ? { workspaceId: ws } : {}) });',
+          '  }',
+          '  return queryNamesForTriggerEvent(name, args);',
+          '}',
+          '',
+          'const bus = createInvalidationBus({',
+          '  listen: createPgListenSource({',
+          '    open: () =>',
+          '      listenHubEnabled()',
+          '        ? hubBackedListenSource()',
+          '        : postgres(getHarnessAdminUrl(), { max: 1, idle_timeout: 0, connect_timeout: 30 }),',
+          '    channel: CHANNEL,',
+          '    onListen: () => {',
+          '      getOperatorCache().clearL1();',
+          '      runInvalidationListenHooks();',
+          '    },',
+          '  }),',
+          '  notify: createPgNotifySink({ getSql: () => getOrgPg().sql, channel: CHANNEL }),',
+          '  bridge: (name, args) => bridgeTriggerEvent(name, args),',
+          '});',
+          '',
+          'export const subscribe = bus.subscribe;',
+        ].join('\n'),
       },
       {
         path: 'libs/generic/sync/README.md',
-        content:
-          '@papercusp/sync is schema-agnostic: consumers identify reads with queryName plus args. Its primary ' +
-          'transport is SSE, backed by LISTEN/NOTIFY invalidation and resilient reconnect.',
+        language: 'md',
+        lineRanges: ['1-18'],
+        content: [
+          '# @papercusp/sync',
+          '',
+          'Schema-agnostic client sync over SSE with a polling fallback, reconnect, and',
+          'backpressure handling. A `SyncProvider` picks the active transport and exposes',
+          'the live query handle to the app.',
+          '',
+          '- **SSE transport** (`transports/sse`) — the primary push path:',
+          '  consumes a server endpoint that pushes invalidate/update over PG',
+          '  `LISTEN/NOTIFY`, with resilient reconnect (via `@papercusp/sse`).',
+          '- **Polling transport** (`transports/polling`) — the degraded fallback when',
+          '  SSE cannot stay connected, sharing the same query fetcher and cache.',
+        ].join('\n'),
       },
     ];
     if (canon === 'docs:search' || canon === 'docs:outline') {
@@ -329,15 +505,27 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
             'For a streaming tool operation, ' +
             '`libs/generic/tooldef-http/src/http-projection.ts` maps each handler `ctx.emit(name, data)` ' +
             'to an SSE event and emits a terminal done event.',
+          sourceExcerpts: sources.map(({ path, language, lineRanges, content }) => ({
+            path,
+            language,
+            lineRanges,
+            content,
+            sourceKind: 'source-backed-code-excerpt',
+          })),
         }],
       }) }] };
     }
-    if (canon === 'search:fulltext') {
+    if (canon === 'search:fulltext' || canon === 'search:semantic') {
       return { content: [{ text: JSON.stringify({
         ok: true,
         query: a.query ?? '',
         hits: [
-          ...sources.map((source) => ({ path: source.path, excerpt: source.content })),
+          ...sources.map((source) => ({
+            path: source.path,
+            excerpt: source.content,
+            sourceKind: 'source-backed-code-excerpt',
+            lineRanges: source.lineRanges,
+          })),
           {
             path: 'libs/generic/tooldef-http/src/http-projection.ts',
             excerpt: 'Each ctx.emit call becomes one SSE event and the projection emits a terminal done event.',
@@ -346,10 +534,21 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
       }) }] };
     }
     if (canon === 'repomix:pack') {
+      const requestedPath = String(a.path ?? '');
+      const selected = requestedPath
+        ? sources.filter((source) => (
+            requestedPath === source.path ||
+            requestedPath.endsWith(source.path) ||
+            source.path.startsWith(`${requestedPath.replace(/\/$/, '')}/`)
+          ))
+        : sources;
       return { content: [{ text: JSON.stringify({
         ok: true,
-        requestedPath: a.path ?? null,
-        files: sources,
+        requestedPath: requestedPath || null,
+        files: selected.map((source) => ({
+          ...source,
+          sourceKind: 'source-backed-code-excerpt',
+        })),
       }) }] };
     }
     if (canon === 'capability:read') {
@@ -363,6 +562,10 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
             file_path: source.path,
             content: source.content,
             sourceChars: source.content.length,
+            sourceKind: 'source-backed-code-excerpt',
+            completeFile: false,
+            completeForQuestion: true,
+            lineRanges: source.lineRanges,
           }
         : {
             ok: false,

@@ -456,6 +456,7 @@ export default defineTool({
         // stale until TTL (EI-21582143589662594). Not-found is NOT cached (cacheEmpty
         // default false) — a just-created item must surface immediately, and a miss is
         // cheap to recompute.
+        const checksOnly = args.checksOnly === true;
         const hasThreadLimit = args.threadLimit !== undefined;
         const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
         // P-002: clamp rather than reject (see the `threadLimit` schema note).
@@ -473,11 +474,10 @@ export default defineTool({
         // never pays the unbounded full-render read. Zero is the explicit
         // projection-only form: do not call the low-level window reader, whose
         // COUNT(*) OVER query must clamp LIMIT 0 to one row to retain its total.
-        const readDetail = args.detail === true && !hasThreadLimit;
-        const sourceReadOptions = workItemsGetSourceReadOptions(
-          (ctx as SourceProjectionContext).sourceProjection,
-          readDetail,
-        );
+        const readDetail = !checksOnly && args.detail === true && !hasThreadLimit;
+        const sourceReadOptions = checksOnly
+          ? { includeBody: false, payloadProjection: 'none' as const }
+          : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
         const workItem = await cachedRead(
           ctx as CachedReadCtx,
           {
@@ -486,6 +486,7 @@ export default defineTool({
               id,
               harness: args.harness ?? null,
               detail: readDetail,
+              checksOnly,
               ...(sourceReadOptions ? { sourceReadOptions } : {}),
             },
             tags: [
@@ -504,6 +505,49 @@ export default defineTool({
         );
         if (!workItem) {
           return { ok: false as const, id, error: `work_item '${id}' not found` };
+        }
+        // `checksOnly` is the retire-id recovery path. Read the item only far enough
+        // to resolve its canonical harness, then read the checkpoint ledger and stop:
+        // the narrative, payload, thread, holder, plan, and prior-work enrichments
+        // are all unrelated to building `retireIds` and can be very expensive.
+        if (checksOnly) {
+          const checkpointRead = await getWorkItemCheckpointWithMeta({
+            harness: workItem.harness,
+            workItemId: workItem.id,
+          })
+            .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: false as const }))
+            .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
+          if (checkpointRead.readFailed) {
+            return {
+              ok: true as const,
+              id,
+              __checksOnly: true as const,
+              checkpointChecks: null,
+              checkpointAgeMs: null,
+              checkpointUpdatedAtMs: null,
+              checkpointContentHash: null,
+              checkpointReadFailed: true as const,
+            };
+          }
+          const checks = checkpointRead.checkpoint
+            ? splitCarryNoteChecks(checkpointRead.checkpoint).checks
+            : [];
+          const identities = checkpointCheckIdentities(checks);
+          const checkpointUpdatedAtMs = checkpointRead.updatedAtMs;
+          return {
+            ok: true as const,
+            id,
+            __checksOnly: true as const,
+            checkpointChecks: {
+              count: checks.length,
+              cap: CARRY_NOTE_MAX_CHECKS,
+              remaining: Math.max(0, CARRY_NOTE_MAX_CHECKS - checks.length),
+              ...identities,
+            },
+            checkpointAgeMs: checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null,
+            checkpointUpdatedAtMs,
+            checkpointContentHash: checkpointRead.checkpoint === null ? null : shortCarryHash(checkpointRead.checkpoint),
+          };
         }
         // Bounded diagnostic thread read. Do not route this through
         // getWorkItemDetail: that full-render helper intentionally loads every

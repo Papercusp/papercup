@@ -62,6 +62,7 @@
 import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
 import { ANY_FAMILY_TERMINAL_STATES } from "../../work-item-dispatch-states";
+import { CARRY_NOTE_MAX_CHECKS } from "../../carry-note";
 
 /**
  * The shaper has no caller identity, so it cannot resolve a per-session door
@@ -915,9 +916,67 @@ function jsonLen(v: unknown): number {
   }
 }
 
+/**
+ * The checks-only handler deliberately carries an internal marker so this
+ * projection runs before the normal checkpoint ladder. The ledger rows are
+ * already bounded and sanitized by the handler; retain only their identities
+ * and checkpoint metadata, never the checkpoint narrative or work-item payload.
+ */
+function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
+  const { __checksOnly: _marker, ...envelope } = data;
+  const results = Array.isArray(data.results) ? data.results : [];
+  return {
+    ...envelope,
+    results: results.map((raw) => {
+      if (!raw || typeof raw !== 'object') return raw;
+      const row = raw as Row;
+      if (row.ok === false) return row;
+      const checks = row.checkpointChecks;
+      if (!checks || typeof checks !== 'object' || Array.isArray(checks)) {
+        return {
+          ok: row.ok ?? true,
+          id: row.id ?? null,
+          checkpointChecks: checks ?? null,
+          checkpointAgeMs: row.checkpointAgeMs ?? null,
+          checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
+          ...(row.checkpointContentHash !== undefined
+            ? { checkpointContentHash: row.checkpointContentHash }
+            : {}),
+          ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+        };
+      }
+      const checkRows = Array.isArray(checks.rows) ? checks.rows : [];
+      const claimCap = FIELD_CAPS[tier].checkpointMin;
+      const rows = checkRows.slice(0, CARRY_NOTE_MAX_CHECKS).flatMap((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+        const value = entry as Row;
+        const claim = typeof value.claim === 'string' ? value.claim.trim() : '';
+        return claim ? [{ ...(value.id ? { id: value.id } : {}), claim: clip(claim, claimCap) }] : [];
+      });
+      return {
+        ok: row.ok ?? true,
+        id: row.id ?? null,
+        checkpointChecks: { ...checks, rows },
+        checkpointAgeMs: row.checkpointAgeMs ?? null,
+        checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
+        ...(row.checkpointContentHash !== undefined
+          ? { checkpointContentHash: row.checkpointContentHash }
+          : {}),
+        ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+      };
+    }),
+    _shapeNote: {
+      tier,
+      checksOnly: true,
+      next: 'This is a checkpoint-ledger identity read; re-read without checksOnly for the checkpoint narrative.',
+    },
+  };
+}
+
 export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknown {
   const d = data as ({ results?: unknown[] } & Row) | null | undefined;
   if (!d || !Array.isArray(d.results)) return data;
+  if (d.__checksOnly === true) return shapeChecksOnly(d, tier);
   const caps = FIELD_CAPS[tier];
   const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));
   const ladder = DEGRADATION_LADDER[tier];
