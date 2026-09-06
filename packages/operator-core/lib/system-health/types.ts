@@ -16,6 +16,7 @@
 
 import type { PerfVerdict } from './perf-budgets';
 import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
+import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
 
 /**
  * A panel's health light. `unknown` = the source could not be read this tick
@@ -916,7 +917,7 @@ export interface OverwatchPanelHealth {
    * error). `fresh` = a COMPLETE scorecard landed since the last wake.
    */
   scorecardEmission: {
-    status: 'fresh' | 'partial-only' | 'stale';
+    status: ScorecardFreshnessStatus;
     lastCompleteAt: string | null;
     missingCount: number;
   } | null;
