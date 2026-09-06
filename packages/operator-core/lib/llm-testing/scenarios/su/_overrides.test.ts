@@ -261,6 +261,14 @@ describe('SU S01/S02 populated scenario worlds', () => {
   });
 
   it('keeps S17 gateway/retry follow-up reads source-backed after orient', () => {
+    const memory = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('memory:search', {
+      query: 'gateway-retry',
+    }));
+    const declared = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('coord:declare-intent', {
+      intent: 'shift-start — gateway-retry',
+      current_plan_slug: 'gateway-pool',
+      items: ['P-003'],
+    }));
     const read = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('capability:read', {
       file_path: 'packages/operator-core/lib/llm-testing/llm-client.ts',
     }));
@@ -280,6 +288,11 @@ describe('SU S01/S02 populated scenario worlds', () => {
       file_path: 'packages/operator-core/lib/llm-testing/does-not-exist.ts',
     }));
 
+    expect(memory).toContain('mem-1');
+    expect(memory).toContain('gateway retries must route through the account pool');
+    expect(declared).toContain('"intent":"shift-start — gateway-retry"');
+    expect(declared).toContain('"currentPlanSlug":"gateway-pool"');
+    expect(declared).toContain('"alreadyHeld":["P-003"]');
     expect(read).toContain('source-backed-code-excerpt');
     expect(read).toContain("priority: opts.priority ?? 'llm-testing'");
     expect(semantic).toContain('chat-stream.ts');
