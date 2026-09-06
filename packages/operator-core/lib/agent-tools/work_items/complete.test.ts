@@ -3259,6 +3259,34 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(r.completion.summary).toContain('.papercusp/scratch/readiness.md');
   });
 
+  it('ignores scratch/artifact references quoted only in verification and causal prose', async () => {
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-ephemeral-prose', kind: 'task', family: 'issue', state: 'open' });
+
+    const scratchPath = '/home/x/.papercusp/scratch/out.json';
+    const artifactUrl = 'https://claude.ai/artifacts/quoted';
+    const r = await one({
+      id: 'WI-ephemeral-prose',
+      completion: {
+        summary: 'Fixed the completion evidence guard.',
+        testsRun: `The regression fixture quotes ${scratchPath}.`,
+        testResult: `The source fixture also quotes ${artifactUrl}.`,
+        verifiedHow: 'unit',
+        verification: {
+          testResult: `Forensic verification cites ${scratchPath} and ${artifactUrl}.`,
+        },
+        rootCauseVerification: {
+          ...ROOT_CAUSE_VERIFICATION_FIXTURE,
+          testResult: `The causal record quotes ${artifactUrl} only as source evidence.`,
+        },
+        deferred: [`Follow-up prose also mentions ${scratchPath}.`],
+        coordNotes: `Forensics cite ${artifactUrl}; no deliverable is stored there.`,
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.ephemeralDeliverableWarning).toBeUndefined();
+  });
+
   it('does not treat a loopback URL in forensic verification as the deliverable', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-loopback-forensics', kind: 'task', family: 'issue', state: 'open' });
 
