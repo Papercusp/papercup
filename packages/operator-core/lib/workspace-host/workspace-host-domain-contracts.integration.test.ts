@@ -10,10 +10,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type {
-  WorkspaceHostDesiredSpec,
-  WorkspaceHostRuntimeRelease,
-} from '@papercusp/deployment-driver';
+import type { WorkspaceHostDesiredSpec, WorkspaceHostRuntimeRelease } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ appSql: null as any }));
@@ -252,9 +249,7 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       }),
     ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
 
-    const [host] = await db.adminSql<
-      { controller_id: string; controller_fence: number; desired_revision: number }[]
-    >`
+    const [host] = await db.adminSql<{ controller_id: string; controller_fence: number; desired_revision: number }[]>`
       SELECT controller_id, controller_fence, desired_revision
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}

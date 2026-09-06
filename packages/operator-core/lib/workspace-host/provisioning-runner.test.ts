@@ -361,9 +361,7 @@ describe('assertProviderConnectionUsable (WI-1743793)', () => {
 
     expect(error).toBeInstanceOf(WorkspaceHostProvisioningTransientError);
     expect(error).not.toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
-    expect((error as WorkspaceHostProvisioningTransientError).problems).toEqual([
-      'GCP Compute API was unreachable',
-    ]);
+    expect((error as WorkspaceHostProvisioningTransientError).problems).toEqual(['GCP Compute API was unreachable']);
   });
 
   it('raises a TERMINAL connection error when the provider settled that the connection is bad', async () => {

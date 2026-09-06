@@ -16,10 +16,7 @@ import {
   type WorkspaceHostProvisionRouteDependencies,
 } from '../endpoint-route/routes/workspace-hosts/provision';
 import type { GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
-import {
-  GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS,
-  type GcpManagedWorkspaceHostResourceObservation,
-} from './gcp-safety';
+import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, type GcpManagedWorkspaceHostResourceObservation } from './gcp-safety';
 import {
   runWorkspaceHostDestroy,
   type RunWorkspaceHostDestroyInput,
@@ -456,9 +453,7 @@ describe('runWorkspaceHostDestroy', () => {
 
     expect(result.status).toBe('failed');
     expect(inventoryManagedResources).toHaveBeenCalledOnce();
-    const failure = updateOperation.mock.calls
-      .map(([entry]) => entry)
-      .find((entry) => entry.status === 'failed');
+    const failure = updateOperation.mock.calls.map(([entry]) => entry).find((entry) => entry.status === 'failed');
     const failureError = failure?.error as { reason?: unknown } | undefined;
     const reason = String(failureError?.reason ?? '');
     // The old message named neither which census failed nor what it saw.
@@ -624,9 +619,7 @@ describe('runWorkspaceHostDestroy evidence axes (D-274)', () => {
       spendSettlement: { ...deferredSettlement, reconcileAfter: 'whenever' },
     } satisfies WorkspaceHostDestroyCanaryEvidence;
 
-    await expect(
-      runWorkspaceHostDestroy({ ...runInput(provider, store), canary }),
-    ).rejects.toMatchObject({
+    await expect(runWorkspaceHostDestroy({ ...runInput(provider, store), canary })).rejects.toMatchObject({
       problems: [expect.stringContaining('canary.spendSettlement.reconcileAfter')],
     });
     expect(apply).not.toHaveBeenCalled();

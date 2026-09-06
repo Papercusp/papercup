@@ -48,15 +48,17 @@ function providerHarness() {
     target: 'gcp',
     hostId: 'host-1',
     generatedAt: '2026-08-27T00:00:00Z',
-    steps: [{
-      id: 'start-instance',
-      action: 'start',
-      resourceKind: 'vm',
-      dependsOn: [],
-      idempotencyKey: 'start-key',
-      destructive: false,
-      input: { op: 'start-instance', instanceName: vm.providerId },
-    }],
+    steps: [
+      {
+        id: 'start-instance',
+        action: 'start',
+        resourceKind: 'vm',
+        dependsOn: [],
+        idempotencyKey: 'start-key',
+        destructive: false,
+        input: { op: 'start-instance', instanceName: vm.providerId },
+      },
+    ],
     warnings: [],
   };
   const apply = vi.fn<WorkspaceHostProvider['apply']>();
@@ -131,9 +133,7 @@ function chaosError(spec: { status?: number; code?: string; message: string }): 
   });
 }
 
-const thrownErrorClasses = WORKSPACE_HOST_CHAOS_CLASSES.filter(
-  (entry) => entry.probe.kind === 'thrown-error',
-);
+const thrownErrorClasses = WORKSPACE_HOST_CHAOS_CLASSES.filter((entry) => entry.probe.kind === 'thrown-error');
 const haltingClasses = thrownErrorClasses.filter((entry) => entry.expectedRecovery === 'halt');
 const reconcilingClasses = thrownErrorClasses.filter((entry) => entry.expectedRecovery === 'reconcile');
 
@@ -321,15 +321,17 @@ describe('snapshot restore (P-018)', () => {
     const { store, checkpoints } = storeHarness();
     // Two steps: the VM lands, then the data disk is refused. A single-step plan cannot show this —
     // the operation would simply succeed and the assertion would pass for the wrong reason.
-    const { provider, apply } = restoreHarness([{
-      id: 'restore-disk',
-      action: 'restore',
-      resourceKind: 'disk',
-      dependsOn: ['restore-instance'],
-      idempotencyKey: 'restore-disk-key',
-      destructive: false,
-      input: { op: 'restore-disk', snapshotId: snapshot.providerId },
-    }]);
+    const { provider, apply } = restoreHarness([
+      {
+        id: 'restore-disk',
+        action: 'restore',
+        resourceKind: 'disk',
+        dependsOn: ['restore-instance'],
+        idempotencyKey: 'restore-disk-key',
+        destructive: false,
+        input: { op: 'restore-disk', snapshotId: snapshot.providerId },
+      },
+    ]);
     apply.mockImplementation(async (request) => {
       if (request.step.id === 'restore-instance') {
         return {
@@ -382,10 +384,7 @@ describe('lifecycle controller — uncertain outcomes reconcile', () => {
       // have landed and a fresh apply would duplicate a live billed resource.
       const second = await runWorkspaceHostLifecycle(input(provider, store));
       expect(second.status).toBe('succeeded');
-      expect(reconcile).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'resume' }),
-        expect.anything(),
-      );
+      expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ reason: 'resume' }), expect.anything());
       expect(apply).toHaveBeenCalledOnce();
     },
   );

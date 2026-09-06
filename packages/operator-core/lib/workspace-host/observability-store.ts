@@ -1,10 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import {
-  assertWorkspaceHostDomainState,
-  assertWorkspaceHostSecretIsolation,
-} from '@papercusp/deployment-driver';
+import { assertWorkspaceHostDomainState, assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import type {
   WorkspaceHostControllerAuthority,
   WorkspaceHostProviderConnection,
@@ -436,11 +433,10 @@ export async function readWorkspaceHostDesiredSpec(
   });
 }
 
-export interface StoredWorkspaceHostDestroyTarget
-  extends Pick<
-    WorkspaceHostDomainState,
-    'hostGeneration' | 'desiredRevision' | 'observedRevision' | 'runtimeRelease' | 'controllerAuthority'
-  > {
+export interface StoredWorkspaceHostDestroyTarget extends Pick<
+  WorkspaceHostDomainState,
+  'hostGeneration' | 'desiredRevision' | 'observedRevision' | 'runtimeRelease' | 'controllerAuthority'
+> {
   id: string;
   name: string;
   connectionId: string;
@@ -701,12 +697,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
   const { checkpoint } = input;
   const resource = checkpoint.providerResource;
   await withWorkspace(input.workspaceId, async (tx) => {
-    await requireWorkspaceHostControllerAuthority(
-      tx,
-      input.workspaceId,
-      input.hostId,
-      input.controllerAuthority,
-    );
+    await requireWorkspaceHostControllerAuthority(tx, input.workspaceId, input.hostId, input.controllerAuthority);
     await tx`
       INSERT INTO harness_shared.workspace_host_resources (
         workspace_id, host_id, logical_key, operation_id, state, attempts,
@@ -837,12 +828,7 @@ export interface WorkspaceHostTimelineEventInput {
 export async function appendWorkspaceHostEvent(input: WorkspaceHostTimelineEventInput): Promise<string> {
   const id = input.id ?? randomUUID();
   await withWorkspace(input.workspaceId, async (tx) => {
-    await requireWorkspaceHostControllerAuthority(
-      tx,
-      input.workspaceId,
-      input.hostId,
-      input.controllerAuthority,
-    );
+    await requireWorkspaceHostControllerAuthority(tx, input.workspaceId, input.hostId, input.controllerAuthority);
     await tx`
       INSERT INTO harness_shared.workspace_host_events (
         workspace_id, id, host_id, operation_id, occurred_at, phase,
