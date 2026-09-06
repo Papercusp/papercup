@@ -9,6 +9,7 @@ import gradeIdeaTool, {
   REVISION_WAKE_MAX_GRADE,
   type GradeIdeaDeps,
   type GradedIdeaSummary,
+  type WorkItemExistenceProbeResult,
 } from '../grade-idea';
 
 /**
@@ -49,6 +50,7 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
     // real ledger idea_id. Per-test overrides model the bare-work-item-id
     // resolution (a bare `EI-…` → the cycle-prefixed idea_id, or null on a miss).
     resolveIdeaIdFromKey: vi.fn(async (id: string) => id),
+    getWorkItem: vi.fn(async () => null),
     readIdeaSummary: vi.fn(async () => summary()),
     // D-012: default row is UNattributed (created_by null) — no self-grade path.
     readCreatedBy: vi.fn(async () => null),
@@ -178,7 +180,21 @@ describe('runGradeIdea', () => {
   it('returns not-found without touching the seam when a routedRef resolves to nothing', async () => {
     const deps = fakeDeps({ resolveIdeaIdFromRef: vi.fn(async () => null) });
     const out = await runGradeIdea({ routedRef: 'wi:nope', grade: 4 }, undefined, deps);
-    expect(out).toEqual({ applied: false, reason: 'not-found', gradedBy: 'owner', ideaId: null, idea: null });
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'not-found',
+      gradedBy: 'owner',
+      ideaId: null,
+      idea: null,
+      diagnostic: {
+        code: 'ledger-resolution-miss',
+        attempted: {
+          ideaId: ['wi:nope'],
+          routedRef: ['wi:nope', 'wi:wi:nope', 'gym:wi:nope'],
+        },
+        workItem: { candidateId: null, status: 'not-attempted', family: null, kind: null },
+      },
+    });
     expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
   });
 
@@ -204,6 +220,7 @@ describe('runGradeIdea', () => {
     expect(out.applied).toBe(false);
     expect(out.reason).toBe('not-found');
     expect(out.idea).toBeNull();
+    expect(out.diagnostic).toBeUndefined();
   });
 
   it('synthesizes the summary from the write inputs when the read-back throws after an applied write', async () => {
@@ -249,9 +266,106 @@ describe('EI-15389: bare work-item id keyed as ideaId resolves to the ledger PK'
     const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null) });
     const out = await runGradeIdea({ ideaId: 'EI-does-not-exist', grade: 3, feedback: 'x' }, { role: 'mug' }, deps);
 
-    expect(out).toEqual({ applied: false, reason: 'not-found', gradedBy: 'auto-grader', ideaId: null, idea: null });
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'not-found',
+      gradedBy: 'auto-grader',
+      ideaId: null,
+      idea: null,
+      diagnostic: {
+        code: 'ledger-resolution-miss',
+        workItem: { candidateId: 'EI-does-not-exist', status: 'absent' },
+      },
+    });
     expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
     expect(toToolResult(out).isError).toBe(true); // surfaced loudly to the grader
+  });
+
+  it('returns not-routed with the attempted forms when an issue work-item exists without a ledger row', async () => {
+    const candidate: WorkItemExistenceProbeResult = { id: 'EI-unrouted', family: 'issue', kind: 'bug' };
+    const getWorkItem = vi.fn(async () => candidate);
+    const deps = fakeDeps({
+      resolveIdeaIdFromKey: vi.fn(async () => null),
+      getWorkItem,
+    });
+
+    const out = await runGradeIdea({ ideaId: 'EI-unrouted', grade: 3 }, undefined, deps);
+
+    expect(getWorkItem).toHaveBeenCalledWith('EI-unrouted');
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'not-routed',
+      ideaId: null,
+      idea: null,
+      diagnostic: {
+        code: 'ledger-resolution-miss',
+        attempted: { ideaId: ['EI-unrouted'], routedRef: ['EI-unrouted', 'wi:EI-unrouted', 'gym:EI-unrouted'] },
+        workItem: { candidateId: 'EI-unrouted', status: 'found', family: 'issue', kind: 'bug' },
+        remedy: 'blender:route-idea',
+      },
+    });
+    expect(toToolResult(out).isError).toBe(true);
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('probes the work-item candidate derived from a bare routedRef', async () => {
+    const candidate: WorkItemExistenceProbeResult = { id: 'WI-42', family: 'issue', kind: 'change' };
+    const getWorkItem = vi.fn(async () => candidate);
+    const deps = fakeDeps({
+      resolveIdeaIdFromRef: vi.fn(async () => null),
+      getWorkItem,
+    });
+
+    const out = await runGradeIdea({ routedRef: 'wi:WI-42', grade: 4 }, undefined, deps);
+
+    expect(getWorkItem).toHaveBeenCalledWith('WI-42');
+    expect(out.reason).toBe('not-routed');
+    expect(out.diagnostic).toMatchObject({
+      attempted: { ideaId: ['wi:WI-42'], routedRef: ['wi:WI-42', 'wi:wi:WI-42', 'gym:wi:WI-42'] },
+      workItem: { candidateId: 'WI-42', status: 'found', family: 'issue' },
+      remedy: 'blender:route-idea',
+    });
+  });
+
+  it('keeps not-found diagnostic when the candidate is absent or the probe is unavailable', async () => {
+    const absent = fakeDeps({
+      resolveIdeaIdFromKey: vi.fn(async () => null),
+      getWorkItem: vi.fn(async () => null),
+    });
+    const absentOut = await runGradeIdea({ ideaId: 'EI-absent', grade: 2 }, undefined, absent);
+    expect(absentOut).toMatchObject({
+      reason: 'not-found',
+      diagnostic: { workItem: { candidateId: 'EI-absent', status: 'absent' } },
+    });
+
+    const unavailable = fakeDeps({
+      resolveIdeaIdFromKey: vi.fn(async () => null),
+      getWorkItem: vi.fn(async () => {
+        throw new Error('work-item store unavailable');
+      }),
+    });
+    const unavailableOut = await runGradeIdea({ ideaId: 'EI-unknown', grade: 2 }, undefined, unavailable);
+    expect(unavailableOut).toMatchObject({
+      reason: 'not-found',
+      diagnostic: { workItem: { candidateId: 'EI-unknown', status: 'unavailable' } },
+    });
+  });
+
+  it('does not probe plan or gym artifact refs on a ledger miss', async () => {
+    const getWorkItem = vi.fn(async () => {
+      throw new Error('must not probe artifact refs');
+    });
+    const deps = fakeDeps({ resolveIdeaIdFromRef: vi.fn(async () => null), getWorkItem });
+
+    for (const routedRef of ['plan:missing-plan', 'gym:SP-404']) {
+      const out = await runGradeIdea({ routedRef, grade: 2 }, undefined, deps);
+      expect(out.reason).toBe('not-found');
+      expect(out.diagnostic?.workItem).toMatchObject({
+        candidateId: null,
+        status: 'not-attempted',
+      });
+    }
+    expect(getWorkItem).not.toHaveBeenCalled();
   });
 });
 
@@ -552,6 +666,11 @@ describe('toToolResult envelope', () => {
     const res = toToolResult({ ...base, applied: false, ideaId: null, reason: 'not-found' });
     expect(res.isError).toBe(true);
     expect(JSON.parse(res.content[0].text).reason).toBe('not-found');
+  });
+
+  it('flags not-routed as an error', () => {
+    const res = toToolResult({ ...base, applied: false, ideaId: null, reason: 'not-routed' });
+    expect(res.isError).toBe(true);
   });
 });
 

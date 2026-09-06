@@ -32,6 +32,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 
 import { gradeRoutedIdea, type GradeRoutedIdeaInput, type GradeRoutedIdeaResult } from '../../scout/routed-ledger';
+import { getWorkItem, type WorkItem } from '../../work-items';
 import {
   preflightAgentReviewGrade,
   reconcileAgentReviewGrade,
@@ -77,6 +78,37 @@ export interface GradedIdeaSummary {
   workspaceId: string | null;
 }
 
+/** The read-side evidence attached when a key misses the routed-idea ledger. */
+export type GradeIdeaResolutionProbeStatus = 'not-attempted' | 'absent' | 'unavailable' | 'found';
+
+export interface GradeIdeaResolutionDiagnostic {
+  /** Stable discriminator for consumers that need to branch on the diagnostic. */
+  code: 'ledger-resolution-miss';
+  /** Every value the resolver can compare for the supplied key. */
+  attempted: {
+    ideaId: string[];
+    routedRef: string[];
+  };
+  /** Positive work-item evidence is separate from the ledger result. */
+  workItem: {
+    candidateId: string | null;
+    status: GradeIdeaResolutionProbeStatus;
+    family: WorkItem['family'] | null;
+    kind: WorkItem['kind'] | null;
+  };
+  /** Present only when the existing issue-family candidate needs routing first. */
+  remedy?: 'blender:route-idea';
+}
+
+export interface WorkItemExistenceProbeResult {
+  id: WorkItem['id'];
+  family: WorkItem['family'];
+  kind: WorkItem['kind'];
+}
+
+/** Injectable probe used by the resolution-miss diagnostic (default: getWorkItem). */
+export type WorkItemExistenceProbe = (id: string) => Promise<WorkItemExistenceProbeResult | null>;
+
 /** The C-2 result + attribution + row summary — the tool's full payload. */
 export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> {
   /**
@@ -84,12 +116,18 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
    * a guard that lives ABOVE the write seam — the ledger's gradeRoutedIdea never
    * produces it — so it widens `reason` only here, keeping the seam type clean.
    */
-  reason?: GradeRoutedIdeaResult['reason'] | 'no-self-grade' | NonNullable<AgentReviewGradePreflight['refusal']>;
+  reason?:
+    | GradeRoutedIdeaResult['reason']
+    | 'no-self-grade'
+    | 'not-routed'
+    | NonNullable<AgentReviewGradePreflight['refusal']>;
   gradedBy: GradedBy;
   /** The resolved ledger key (null when a routedRef resolved to nothing). */
   ideaId: string | null;
   /** Post-write row state; on an owner-grade-sovereign no-op this carries the standing owner grade. */
   idea: GradedIdeaSummary | null;
+  /** Resolution evidence when neither key form matched the routed-idea ledger. */
+  diagnostic?: GradeIdeaResolutionDiagnostic;
   /** P-005: revision-notice delivery report — present iff a notice was attempted
    *  (an APPLIED grade on a su-ideate row with feedback + a known originator). */
   revisionWake?: RevisionWakeOutcome;
@@ -199,6 +237,112 @@ async function resolveIdeaIdFromKey(ideaId: string): Promise<string | null> {
      ORDER BY (idea_id = ${ideaId}) DESC, routed_at DESC
      LIMIT 1`;
   return rows[0]?.idea_id ?? null;
+}
+
+const WORK_ITEM_ID_PREFIX = /^(?:WI|EI|F|PR)-/i;
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/**
+ * The exact key forms considered by the two resolver paths. Keeping this pure
+ * makes the diagnostic stable and keeps the probe from inventing a lookup that
+ * the ledger resolver never attempted.
+ */
+export function gradeIdeaResolutionAttempts(args: GradeIdeaArgs): GradeIdeaResolutionDiagnostic['attempted'] {
+  const key = args.ideaId ?? args.routedRef;
+  if (!key) {
+    return { ideaId: [], routedRef: [] };
+  }
+  return {
+    ideaId: [key],
+    routedRef: unique([key, `wi:${key}`, `gym:${key}`]),
+  };
+}
+
+/** Only work-item-shaped keys are candidates; plan:/gym: refs are artifact refs. */
+export function candidateWorkItemId(args: GradeIdeaArgs): string | null {
+  const key = args.ideaId ?? args.routedRef;
+  if (!key || /^(?:plan|gym):/i.test(key)) return null;
+  const candidate = key.replace(/^wi:/i, '');
+  return WORK_ITEM_ID_PREFIX.test(candidate) ? candidate : null;
+}
+
+function diagnosticForMiss(
+  attempted: GradeIdeaResolutionDiagnostic['attempted'],
+  workItem: GradeIdeaResolutionDiagnostic['workItem'],
+  remedy?: GradeIdeaResolutionDiagnostic['remedy'],
+): GradeIdeaResolutionDiagnostic {
+  return {
+    code: 'ledger-resolution-miss',
+    attempted,
+    workItem,
+    ...(remedy ? { remedy } : {}),
+  };
+}
+
+/**
+ * Resolve the actionable distinction behind a null ledger lookup. A probe
+ * failure is deliberately represented as unavailable, never as evidence that
+ * the candidate is absent.
+ */
+async function diagnoseResolutionMiss(
+  args: GradeIdeaArgs,
+  deps: Pick<GradeIdeaDeps, 'getWorkItem'>,
+): Promise<{ reason: 'not-found' | 'not-routed'; diagnostic: GradeIdeaResolutionDiagnostic }> {
+  const attempted = gradeIdeaResolutionAttempts(args);
+  const candidateId = candidateWorkItemId(args);
+  if (!candidateId) {
+    return {
+      reason: 'not-found',
+      diagnostic: diagnosticForMiss(attempted, {
+        candidateId: null,
+        status: 'not-attempted',
+        family: null,
+        kind: null,
+      }),
+    };
+  }
+
+  try {
+    const candidate = await deps.getWorkItem(candidateId);
+    if (!candidate) {
+      return {
+        reason: 'not-found',
+        diagnostic: diagnosticForMiss(attempted, {
+          candidateId,
+          status: 'absent',
+          family: null,
+          kind: null,
+        }),
+      };
+    }
+
+    const workItem = {
+      candidateId,
+      status: 'found' as const,
+      family: candidate.family,
+      kind: candidate.kind,
+    };
+    if (candidate.family === 'issue') {
+      return {
+        reason: 'not-routed',
+        diagnostic: diagnosticForMiss(attempted, workItem, 'blender:route-idea'),
+      };
+    }
+    return { reason: 'not-found', diagnostic: diagnosticForMiss(attempted, workItem) };
+  } catch {
+    return {
+      reason: 'not-found',
+      diagnostic: diagnosticForMiss(attempted, {
+        candidateId,
+        status: 'unavailable',
+        family: null,
+        kind: null,
+      }),
+    };
+  }
 }
 
 /**
@@ -380,6 +524,8 @@ export interface GradeIdeaDeps {
   resolveIdeaIdFromRef: typeof resolveIdeaIdFromRef;
   /** EI-15389: resolve an ideaId-keyed call (bare work-item id or full idea_id) to the ledger PK. */
   resolveIdeaIdFromKey: typeof resolveIdeaIdFromKey;
+  /** Resolution-miss probe; a positive issue-family row is an unrouted candidate. */
+  getWorkItem: WorkItemExistenceProbe;
   readIdeaSummary: typeof readIdeaSummary;
   /** D-012: pre-write originator lookup for the no-self-grade guard. */
   readCreatedBy: typeof readCreatedBy;
@@ -395,6 +541,7 @@ const defaultDeps: GradeIdeaDeps = {
   gradeRoutedIdea,
   resolveIdeaIdFromRef,
   resolveIdeaIdFromKey,
+  getWorkItem: async (id) => getWorkItem(id),
   readIdeaSummary,
   readCreatedBy,
   sendRevisionNotice: deliverRevisionNotice,
@@ -421,7 +568,8 @@ export async function runGradeIdea(
       ? await deps.resolveIdeaIdFromKey(args.ideaId)
       : await deps.resolveIdeaIdFromRef(args.routedRef as string);
   if (ideaId == null) {
-    return { applied: false, reason: 'not-found', gradedBy, ideaId: null, idea: null };
+    const miss = await diagnoseResolutionMiss(args, deps);
+    return { applied: false, ...miss, gradedBy, ideaId: null, idea: null };
   }
 
   // D-012 (owner 2026-07-10, BINDING) — the no-self-grade guard. An ideator grading
@@ -558,7 +706,7 @@ export function toToolResult(out: GradeIdeaOutcome): {
 } {
   return {
     content: [{ type: 'text', text: JSON.stringify(out, null, 2) }],
-    ...(out.reason === 'not-found' ? { isError: true } : {}),
+    ...(out.reason === 'not-found' || out.reason === 'not-routed' ? { isError: true } : {}),
   };
 }
 
