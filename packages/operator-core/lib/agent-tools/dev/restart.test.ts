@@ -1796,7 +1796,9 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
   });
 
   it('never touches the cooldown machinery for dev', async () => {
-    guardM.mockImplementation(runGuard(fenceOk(3)) as never);
+    mockImplementationTyped(guardM, async (_spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      return { acquired: true, result: await run(fenceOk(3) as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true });
     expect(acquireM).not.toHaveBeenCalled();
@@ -1809,7 +1811,9 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
   });
 
   it('target:desktop-dev drains the named resource and signals only the verified listener child', async () => {
-    guardM.mockImplementation(runGuard(fenceOk(7)) as never);
+    mockImplementationTyped(guardM, async (_spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      return { acquired: true, result: await run(fenceOk(7) as never), lock_id: 'L-test' } as GuardOutcome<unknown>;
+    });
     const b = body(
       await call({ target: 'desktop-dev', confirm: true, authorize: true, reason: 'reload desktop operator edit' }),
     );
