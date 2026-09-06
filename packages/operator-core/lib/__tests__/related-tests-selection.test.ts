@@ -12,6 +12,7 @@ import {
   classifySpecifier,
   isTestFile,
   playwrightOwnedTest,
+  pruneWithExecutedMap,
   resolveRelatedWidenThreshold,
   selectRelatedTests,
   transitiveDeps,
@@ -535,5 +536,245 @@ describe('playwrightOwnedTest — against the real repository tree', () => {
     // Negative control: vitest files in the same workspace must survive selection.
     expect(isOwned(join(OPERATOR, 'lib/sync-sse.test.ts'))).toBe(false);
     expect(isOwned(join(OPERATOR, 'vitest.config.ts'))).toBe(false);
+  });
+});
+
+/**
+ * Executed-source pruning (gate-latency-selection-and-retry-policy-2026-09-06, P-002).
+ *
+ * The static closure is the SUPERSET; a recorded map of what a test actually executed may
+ * only REMOVE tests from it, and only when the map is provably current. Every rail below
+ * is asserted in the fail-safe direction: a question the rule cannot answer keeps the test.
+ */
+describe('selectRelatedTests — executed-source pruning (P-002)', () => {
+  const JUDGED = 'judged00000000000000000000000000000000000';
+  const OLDER = 'older000000000000000000000000000000000000';
+  const leaf = `${ROOT}/leaf.ts`;
+  const hub = `${ROOT}/hub.ts`;
+  const other = `${ROOT}/other.ts`;
+  const tests = ['a', 'b', 'c', 'd', 'e'].map((n) => `${ROOT}/${n}.test.ts`);
+  const [a, b, c, d, e] = tests;
+
+  /** leaf changed; hub re-exports it; five tests import hub; three unrelated tests pad the suite. */
+  function hubFs() {
+    return vfs({
+      [leaf]: 'export const leaf = 1;',
+      [other]: 'export const other = 2;',
+      [hub]: `export * from './leaf'; export * from './other';`,
+      ...Object.fromEntries(tests.map((t) => [t, `import './hub';`])),
+      [`${ROOT}/u1.test.ts`]: `import './other';`,
+      [`${ROOT}/u2.test.ts`]: `import './other';`,
+      [`${ROOT}/u3.test.ts`]: `import './other';`,
+    });
+  }
+  const entry = (self: string, executed: string[], recordedSha = JUDGED) => ({
+    recordedSha,
+    executed: new Set([self, ...executed]),
+  });
+  const fresh = () => () => [] as string[];
+
+  it('prunes a test whose current map never executed the change and keeps one whose map did', () => {
+    const executedMap = new Map([
+      [a, entry(a, [hub, other])], // reached leaf statically through the hub, never executed it
+      [b, entry(b, [hub, other, leaf])], // executed the change
+    ]);
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(r.mode).toBe('related');
+    expect(r.selected).toEqual([b, c, d, e]);
+    expect(r.executedMap.applied).toBe(true);
+    expect(r.executedMap.pruned).toBe(1);
+    expect(r.executedMap.kept.intersects).toBe(1);
+    // c, d, e have no entry: the static rail keeps them and the summary says so.
+    expect(r.executedMap.kept.noEntry).toBe(3);
+  });
+
+  it('keeps a test whose closure drifted since its map was recorded (stale map), prunes one whose closure did not', () => {
+    const executedMap = new Map([
+      [a, entry(a, [hub, other], OLDER)],
+      [b, entry(b, [hub, other], OLDER)],
+    ]);
+    // Between OLDER and JUDGED, hub.ts changed — inside a's and b's closure — so both maps are
+    // stale and both tests stay, even though neither recorded set touches leaf.
+    const r1 = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: (from, to) => (from === OLDER && to === JUDGED ? [hub] : null),
+    });
+    expect(r1.selected).toContain(a);
+    expect(r1.selected).toContain(b);
+    expect(r1.executedMap.kept.stale).toBe(2);
+    expect(r1.executedMap.pruned).toBe(0);
+
+    // Drift OUTSIDE the closure (an unrelated file) does not stale the map: both prune.
+    const r2 = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: () => [`${ROOT}/u1.test.ts`],
+    });
+    expect(r2.selected).toEqual([c, d, e]);
+    expect(r2.executedMap.pruned).toBe(2);
+  });
+
+  it('keeps a test when the drift between recorded and judged sha cannot be determined', () => {
+    const executedMap = new Map([[a, entry(a, [hub, other], OLDER)]]);
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: () => null,
+    });
+    expect(r.selected).toContain(a);
+    expect(r.executedMap.kept.unknownDrift).toBe(1);
+    expect(r.executedMap.pruned).toBe(0);
+  });
+
+  it('does not trust an entry that omits the test file itself, or an empty one', () => {
+    const executedMap = new Map([
+      [a, { recordedSha: JUDGED, executed: new Set([hub, other]) }], // no self
+      [b, { recordedSha: JUDGED, executed: new Set<string>() }],
+    ]);
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(r.selected).toContain(a);
+    expect(r.selected).toContain(b);
+    expect(r.executedMap.kept.untrusted).toBe(2);
+  });
+
+  it('always runs a changed test file, whatever its map says', () => {
+    const executedMap = new Map([[a, entry(a, [hub, other])]]);
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [a],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(r.selected).toEqual([a]);
+    expect(r.executedMap.kept.changedTest).toBe(1);
+  });
+
+  it('refuses to narrow the selection to nothing: the static selection stands', () => {
+    const executedMap = new Map(tests.map((t) => [t, entry(t, [hub, other])]));
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(r.mode).toBe('related');
+    expect(r.selected).toEqual(tests);
+    expect(r.executedMap.wouldEmpty).toBe(true);
+    expect(r.executedMap.pruned).toBe(0);
+    expect(r.executedMap.prunable).toBe(5);
+  });
+
+  it('is inert — and says why — without a map, a judged sha, or a drift seam', () => {
+    const executedMap = new Map([[a, entry(a, [hub, other])]]);
+    const base = { rootDir: ROOT, changedPaths: [leaf], fs: hubFs() };
+    const noMap = selectRelatedTests({ ...base, judgedSha: JUDGED, changedBetween: fresh() });
+    const noSha = selectRelatedTests({ ...base, executedMap, changedBetween: fresh() });
+    const noSeam = selectRelatedTests({ ...base, executedMap, judgedSha: JUDGED });
+    for (const r of [noMap, noSha, noSeam]) {
+      expect(r.selected).toEqual(tests);
+      expect(r.executedMap.applied).toBe(false);
+    }
+    expect(noMap.executedMap.reason).toBe('no-map');
+    expect(noSha.executedMap.reason).toBe('no-judged-sha');
+    expect(noSeam.executedMap.reason).toBe('no-drift-seam');
+    // The default call shape is unchanged in outcome AND still reports the summary.
+    const plain = selectRelatedTests(base);
+    expect(plain.selected).toEqual(tests);
+    expect(plain.executedMap).toMatchObject({ applied: false, reason: 'no-map' });
+  });
+
+  it('reports the summary on every full-mode return path too', () => {
+    const noTests = selectRelatedTests({ rootDir: ROOT, changedPaths: [leaf], fs: vfs({ [leaf]: '' }) });
+    expect(noTests.reason).toBe('no-test-files');
+    expect(noTests.executedMap.applied).toBe(false);
+    const outOfScope = selectRelatedTests({ rootDir: ROOT, changedPaths: ['/elsewhere/x.ts'], fs: hubFs() });
+    expect(outOfScope.reason).toBe('no-changed-paths-in-scope');
+    expect(outOfScope.executedMap.applied).toBe(false);
+  });
+
+  it('applies the widening threshold to the PRUNED selection', () => {
+    // Statically 5/8 selected — over a 0.6 threshold, so unpruned this widens to full.
+    const executedMap = new Map([[a, entry(a, [hub, other])], [b, entry(b, [hub, other])]]);
+    const wide = selectRelatedTests({ rootDir: ROOT, changedPaths: [leaf], fs: hubFs(), threshold: 0.6 });
+    expect(wide.mode).toBe('full');
+    const narrowed = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      fs: hubFs(),
+      threshold: 0.6,
+      executedMap,
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(narrowed.mode).toBe('related');
+    expect(narrowed.selected).toEqual([c, d, e]);
+  });
+
+  it('pruneWithExecutedMap keeps a graph hole (unresolved import) whatever the map says', () => {
+    const selected = new Set([a, b]);
+    const { selected: kept, summary } = pruneWithExecutedMap({
+      selected,
+      changedSet: new Set([leaf]),
+      reach: () => new Set([hub, leaf, other]),
+      unresolved: new Set([a]),
+      executedMap: new Map([[a, entry(a, [hub])], [b, entry(b, [hub])]]),
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect([...kept]).toEqual([a]);
+    expect(summary.kept.unresolved).toBe(1);
+    expect(summary.pruned).toBe(1);
+  });
+
+  it('pruneWithExecutedMap caches the drift lookup per recorded sha and survives a throwing seam', () => {
+    let calls = 0;
+    const { summary } = pruneWithExecutedMap({
+      selected: new Set([a, b, c]),
+      changedSet: new Set([leaf]),
+      reach: () => new Set([hub, leaf, other]),
+      unresolved: new Set(),
+      executedMap: new Map([
+        [a, entry(a, [hub], OLDER)],
+        [b, entry(b, [hub], OLDER)],
+        [c, entry(c, [hub], 'third0000000000000000000000000000000000000')],
+      ]),
+      judgedSha: JUDGED,
+      changedBetween: (from) => {
+        calls += 1;
+        if (from === OLDER) return [];
+        throw new Error('unknown sha');
+      },
+    });
+    expect(calls).toBe(2); // OLDER once (cached for b), the throwing sha once
+    expect(summary.pruned).toBe(2);
+    expect(summary.kept.unknownDrift).toBe(1);
   });
 });
