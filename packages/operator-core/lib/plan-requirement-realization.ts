@@ -58,6 +58,67 @@ import {
   type EffectiveItemAudit,
   type PlanItemStatus,
 } from './plan-audits';
+import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
+
+/** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
+export interface NonCodeItemProof {
+  planItemId: string;
+  barKeys: string[];
+  evidenceRefs: string[];
+}
+
+/**
+ * D-008 keeps non-code outcomes out of verifiedAgainstCode. Their realization can
+ * instead be established by current operational/check evidence for EVERY exact BAR
+ * projection owned by the item. A passing sibling projection cannot vouch for it.
+ * Grading is intentionally not required here: the same proof feeds the grader.
+ */
+export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot): NonCodeItemProof[] {
+  if (!snapshot.applicable || !snapshot.plan?.barSetHash || !snapshot.rubric?.revision ||
+      !snapshot.completeness.complete || snapshot.completeness.truncated) return [];
+
+  const byItem = new Map<string, Array<{ bar: AcceptanceBarTrace; mapping: AcceptanceBarTrace['mappings'][number] }>>();
+  for (const bar of snapshot.bars) {
+    if (bar.role !== 'outcome') continue;
+    for (const mapping of bar.mappings) {
+      const rows = byItem.get(mapping.planItemId) ?? [];
+      rows.push({ bar, mapping });
+      byItem.set(mapping.planItemId, rows);
+    }
+  }
+  const proofs: NonCodeItemProof[] = [];
+  for (const [planItemId, projections] of byItem) {
+    const evidenceRefs = new Set<string>();
+    const fulfilled = projections.every(({ bar, mapping }) => {
+      if (mapping.planItemStatus !== 'done' || !bar.barHash || !bar.requiredTestLayers?.length ||
+          mapping.sourceBarHash !== bar.barHash || mapping.sourceBarSetHash !== snapshot.plan!.barSetHash ||
+          mapping.sourceRubricRevision !== snapshot.rubric!.revision || mapping.evidencePlane !== bar.evidencePlane ||
+          bar.proof.state !== 'current' || bar.proof.uncertainEvidence > 0 ||
+          bar.proof.adequacy?.state !== 'pass') return false;
+      const check = bar.proof.adequacy.checks.find((entry) =>
+        entry.specId === mapping.specId && entry.revision === mapping.specRevision);
+      if (check?.verdict !== 'pass' || check.wouldBlock.length > 0 || !bar.workContracts.some((contract) =>
+        contract.current && contract.specId === mapping.specId && contract.specRevision === mapping.specRevision &&
+        contract.specFingerprint === mapping.specContentHash)) return false;
+      const evidence = (bar.proof.history ?? []).filter((row) => {
+        const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+        return (row.evidenceKind === 'operational' || row.evidenceKind === 'check') &&
+          row.matchesCurrentSpec && row.specId === mapping.specId && row.specRevision === mapping.specRevision &&
+          row.specFingerprint === mapping.specContentHash && row.currentness.comparisonSupplied === true &&
+          row.currentness.overall === 'current' && check.evidenceRefs.includes(row.evidenceRef) &&
+          (bar.evidencePlane === 'tree' || plane === bar.evidencePlane);
+      });
+      for (const row of evidence) evidenceRefs.add(row.evidenceRef);
+      return evidence.length > 0;
+    });
+    if (fulfilled) proofs.push({
+      planItemId,
+      barKeys: [...new Set(projections.map(({ bar }) => bar.barKey))].sort(),
+      evidenceRefs: [...evidenceRefs].sort(),
+    });
+  }
+  return proofs.sort((a, b) => a.planItemId.localeCompare(b.planItemId));
+}
 
 /**
  * Dispositions that ASSERT the plan absorbed the requirement, and so owe evidence.
@@ -182,6 +243,8 @@ export interface RequirementRealizationInput {
    * exactly as it did before P-016.
    */
   planItems?: ReadonlyArray<PlanItemStatus>;
+  /** Current exact operational/check proof derived by deriveNonCodeItemProofs. */
+  nonCodeItemProofs?: ReadonlyArray<NonCodeItemProof>;
 }
 
 export function judgeRequirementRealization(
@@ -269,10 +332,13 @@ export function judgeRequirementRealization(
         continue;
       }
 
-      // D-008: only code/test citations verify. An item audited with `doc`/`none`
-      // citations is explicitly NOT verified, so a requirement routed to it has not
-      // been realized however confidently the activation audit says `covered`.
-      if (!audit.entry.citations.some(isVerifyingCitation)) {
+      // D-008 still governs CODE verification. A reasoned, completed not-code item
+      // can realize an operational outcome through separately evaluated BAR proof;
+      // its doc/none citations remain non-verifying and cannot satisfy this alone.
+      const nonCodeProven = currentStatus === 'done' && audit.entry.verdict === 'not-code' &&
+        Boolean(audit.entry.note?.trim()) && input.nonCodeItemProofs?.some((proof) =>
+          proof.planItemId === trimmed && proof.barKeys.length > 0 && proof.evidenceRefs.length > 0);
+      if (!audit.entry.citations.some(isVerifyingCitation) && !nonCodeProven) {
         unrealized.push({
           mappingId: mapping.id,
           requirement: mapping.requirement,
@@ -328,7 +394,7 @@ export function describeUnrealized(entry: UnrealizedRequirement): string {
       ? 'no item audit'
       : entry.reason === 'target-not-in-plan'
         ? 'the plan no longer contains this item'
-        : 'audited with no verifying (code/test) citation';
+        : 'audited with no verifying (code/test) citation or current operational proof for a non-code outcome';
   const requirement =
     entry.requirement.length > 80 ? `${entry.requirement.slice(0, 77)}...` : entry.requirement;
   return `${entry.mappingId} (${entry.disposition}) → ${entry.planTarget}: ${why} — "${requirement}"`;

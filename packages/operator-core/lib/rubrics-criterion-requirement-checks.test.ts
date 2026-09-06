@@ -77,6 +77,22 @@ const criteria: CheckedCriterion[] = [{ key: 'requirements-realized', check: REQ
 const healthyRating = { 'requirements-realized': { rating: 'healthy' } };
 
 describe('evaluateCriterionRequirementChecks — the happy path', () => {
+  it('uses the same exact non-code proof as the ship gate', async () => {
+    const audit = unverifiedAudit('P-001');
+    audit.entry.verdict = 'not-code';
+    audit.entry.note = 'Verified operational outcome.';
+    const result = await evaluateCriterionRequirementChecks({
+      criteria, ratings: healthyRating,
+      readRequirementRealization: async () => ({
+        planSlug: 'a-plan', mappings: [mapping('M-001', ['P-001'])], itemAudits: [audit],
+        planItems: items(['P-001', 'done']),
+        nonCodeItemProofs: [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }],
+      }),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.checkRuns['requirements-realized']).toMatchObject({ verdict: 'pass', unrealized: 0 });
+  });
+
   it('passes and records the run when every realizing requirement reaches a verified item', async () => {
     const result = await evaluateCriterionRequirementChecks({
       criteria,

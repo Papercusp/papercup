@@ -11,6 +11,8 @@ import {
 } from '@papercusp/deployment-driver';
 import {
   assertProviderConnectionUsable,
+  bindWorkspaceHostPlanRevision,
+  nextWorkspaceHostControllerAuthority,
   runWorkspaceHostProvisioning,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
@@ -135,6 +137,39 @@ function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostProvision
   };
 }
 
+describe('workspace-host controller revision identity', () => {
+  it('keeps one controller fence stable and advances it exactly once on takeover', () => {
+    const local = { controllerId: 'controller:local', fence: 4 } as const;
+
+    expect(nextWorkspaceHostControllerAuthority(local, 'controller:local')).toBe(local);
+    expect(nextWorkspaceHostControllerAuthority(local, 'controller:hosted')).toEqual({
+      controllerId: 'controller:hosted',
+      fence: 5,
+    });
+    expect(nextWorkspaceHostControllerAuthority(undefined, 'controller:first')).toEqual({
+      controllerId: 'controller:first',
+      fence: 1,
+    });
+    expect(() => nextWorkspaceHostControllerAuthority(local, '   ')).toThrow(
+      WorkspaceHostProvisioningRequestError,
+    );
+  });
+
+  it('binds the plan and every provider mutation key to one positive desired revision', () => {
+    const plan = providerPlan([planStep('create-network'), planStep('create-instance')]);
+
+    const bound = bindWorkspaceHostPlanRevision(plan, 7);
+
+    expect(bound.planId).toBe('plan-1:desired-revision:7');
+    expect(bound.steps.map((entry) => entry.idempotencyKey)).toEqual([
+      'key:create-network:desired-revision:7',
+      'key:create-instance:desired-revision:7',
+    ]);
+    expect(plan).toEqual(providerPlan([planStep('create-network'), planStep('create-instance')]));
+    expect(() => bindWorkspaceHostPlanRevision(plan, 0)).toThrow(WorkspaceHostProvisioningRequestError);
+  });
+});
+
 describe('runWorkspaceHostProvisioning', () => {
   it('persists intent and every resource plan before the first provider mutation', async () => {
     const steps = [planStep('create-network'), planStep('create-instance', ['create-network'])];
@@ -177,6 +212,47 @@ describe('runWorkspaceHostProvisioning', () => {
     expect(observe).toHaveBeenCalledOnce();
     expect(calls).toContain('observation');
     expect(calls.at(-2)).toBe('operation:succeeded');
+  });
+
+  it('passes the desired revision through the provider request and persisted plan identity', async () => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness([planStep('create-network')]);
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'create-network',
+      state: 'applied',
+      observedAt: '2026-08-25T00:00:05Z',
+      resource: { target: 'gcp', kind: 'network', providerId: 'provider-create-network' },
+    });
+
+    const result = await runWorkspaceHostProvisioning({
+      ...runInput(provider, store),
+      desiredRevision: 7,
+      controllerAuthority: { controllerId: 'controller:test', fence: 3 },
+    });
+
+    expect(provider.plan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: 'op-1',
+        idempotencyKey: 'workspace-host:ws-1:host-1:revision:7:op-1:provision',
+      }),
+      expect.anything(),
+    );
+    expect(result.plan).toMatchObject({
+      planId: 'plan-1:desired-revision:7',
+      steps: [expect.objectContaining({ idempotencyKey: 'key:create-network:desired-revision:7' })],
+    });
+    expect(store.beginOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        desiredRevision: 7,
+        request: expect.objectContaining({
+          plan: {
+            planId: 'plan-1:desired-revision:7',
+            steps: [{ id: 'create-network', idempotencyKey: 'key:create-network:desired-revision:7' }],
+          },
+        }),
+      }),
+    );
   });
 
   it('returns an in-progress receipt and reconciles on replay instead of blindly applying again', async () => {

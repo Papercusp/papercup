@@ -102,6 +102,7 @@ import { trackDetached } from '../../detached-imports';
 import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../../acceptance-seat-succession';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 // TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
 // which mirrors rebind-identity.ts's own dynamic-import discipline for the
 // same oracle so this write-path module never carries it on its static graph.
@@ -230,6 +231,9 @@ export const scorecardEmitArgs = z
         "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The top-level ratings field remains schema-required and must contain the complete rubric ratings; acceptance does not replace it. Independent graders omit it.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    current: z.array(evidenceCurrentInputSchema).max(2000).optional().describe(
+      'Fresh evidence fingerprints for requirements checks, identical to plans:get current. Required to establish non-code operational outcomes; omitted comparisons remain unknown.',
+    ),
     rerunRecipe: specTestAdequacyRerunRecipeSchema.optional(),
     subject: z
       .object({
@@ -1495,11 +1499,15 @@ export async function emitScorecard(
             getEffectiveItemAudits(requirementsPlan),
             getPlanItemStatuses(requirementsPlan),
           ]);
+          const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
+            ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', { current: args.current })
+            : null;
           return {
             planSlug: requirementsPlan,
             mappings: activationAudit?.activation?.mappings ?? [],
             itemAudits,
             planItems,
+            nonCodeItemProofs: proof?.nonCodeItemProofs,
           };
         },
       });

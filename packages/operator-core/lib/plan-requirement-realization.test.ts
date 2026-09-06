@@ -43,6 +43,47 @@ const NONE: AuditCitation = { kind: 'none', reason: 'investigation only' };
 const judge = (i: RequirementRealizationInput) => judgeRequirementRealization(i);
 
 describe('judgeRequirementRealization', () => {
+  it('realizes a completed, reasoned non-code outcome with exact current BAR proof', () => {
+    const audit = itemAudit('P-001', [DOC]);
+    audit.entry.verdict = 'not-code';
+    audit.entry.note = 'The deliverable is verified operational behavior, not new source.';
+    const v = judge({
+      mappings: [mapping()],
+      itemAudits: [audit],
+      planItems: [{ itemId: 'P-001', status: 'done', itemText: 'Verify the live outcome' }],
+      nonCodeItemProofs: [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }],
+    });
+    expect(v.ok).toBe(true);
+    expect(v.unrealized).toEqual([]);
+  });
+
+  it.each(['implemented', 'missing', 'partial', 'dropped'] as const)(
+    'does not use operational proof to excuse an audit verdict of %s', (verdict) => {
+      const audit = itemAudit('P-001', [DOC]);
+      audit.entry.verdict = verdict;
+      audit.entry.note = 'A document claiming the work is finished.';
+      expect(judge({ mappings: [mapping()], itemAudits: [audit],
+        planItems: [{ itemId: 'P-001', status: 'done', itemText: 'The outcome' }],
+        nonCodeItemProofs: [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }],
+      }).ok).toBe(false);
+    },
+  );
+
+  it.each(['missing proof', 'wrong target', 'missing reason', 'unfinished', 'dropped', 'unknown items'])(
+    'keeps a not-code outcome unproven with %s', (gap) => {
+      const audit = itemAudit('P-001', [NONE]);
+      audit.entry.verdict = 'not-code';
+      audit.entry.note = gap === 'missing reason' ? '' : 'Verified live behavior.';
+      expect(judge({ mappings: [mapping()], itemAudits: [audit],
+        planItems: gap === 'unknown items' ? [] : [{ itemId: 'P-001',
+          status: gap === 'unfinished' ? 'wip' : gap === 'dropped' ? 'dropped' : 'done', itemText: 'The outcome' }],
+        nonCodeItemProofs: gap === 'missing proof' ? [] : [{
+          planItemId: gap === 'wrong target' ? 'P-002' : 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'],
+        }],
+      }).ok).toBe(false);
+    },
+  );
+
   describe('the violations it must catch', () => {
     it('catches a covered requirement whose target has NO item audit', () => {
       const v = judge({ mappings: [mapping()], itemAudits: [] });

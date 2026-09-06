@@ -14,6 +14,7 @@ import type {
 } from './acceptance-bar-contract-snapshot';
 import { readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import type { EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
+import { deriveNonCodeItemProofs, type NonCodeItemProof } from './plan-requirement-realization';
 
 export type AcceptanceBarLifecyclePhase = 'pre-start' | 'pre-vetting' | 'pre-grading' | 'ship';
 
@@ -25,6 +26,8 @@ export interface AcceptanceBarLifecycleVerdict {
   blockingBars: Array<{ barKey: string; codes: AcceptanceBarSnapshotCode[] }>;
   nextRepair: AcceptanceBarContractSnapshot['readiness']['nextRepair'];
   message: string | null;
+  /** Same snapshot's exact current operational proof, shared with the activation join. */
+  nonCodeItemProofs?: NonCodeItemProof[];
 }
 
 const POSITIVE_PASS_FORBIDDEN = new Set([
@@ -295,8 +298,11 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
   // writer or terminal ship gate) must not let a failed plan-row read become a
   // false non-applicable result. Force the evaluator into the strict branch so
   // the source-unavailable/plan-missing codes remain visible and blocking.
-  return evaluateAcceptanceBarLifecycle(
-    options.expectedApplicable === true && !snapshot.applicable ? { ...snapshot, applicable: true } : snapshot,
-    phase,
-  );
+  return {
+    ...evaluateAcceptanceBarLifecycle(
+      options.expectedApplicable === true && !snapshot.applicable ? { ...snapshot, applicable: true } : snapshot,
+      phase,
+    ),
+    nonCodeItemProofs: deriveNonCodeItemProofs(snapshot),
+  };
 }

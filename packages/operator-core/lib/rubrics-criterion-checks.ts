@@ -52,6 +52,7 @@ import {
   describeUnrealized,
   judgeRequirementRealization,
   REALIZING_DISPOSITIONS,
+  type NonCodeItemProof,
 } from './plan-requirement-realization';
 import type {
   ScorecardCheckRun,
@@ -1494,6 +1495,7 @@ export type RequirementRealizationReader = () => Promise<{
   mappings: ReadonlyArray<ActivationAuditMapping>;
   itemAudits: ReadonlyArray<EffectiveItemAudit>;
   planItems: ReadonlyArray<PlanItemStatus>;
+  nonCodeItemProofs?: ReadonlyArray<NonCodeItemProof>;
 } | null>;
 
 /**
@@ -1553,10 +1555,11 @@ export async function evaluateCriterionRequirementChecks(input: {
       };
     }
 
-    const { planSlug, mappings, itemAudits, planItems } = resolved;
+    const { planSlug, mappings, itemAudits, planItems, nonCodeItemProofs } = resolved;
     const realization = judgeRequirementRealization({
       mappings,
       itemAudits,
+      nonCodeItemProofs,
       // Same input the ship gate passes (P-016 / D-040): without it a target is resolved
       // against the folded audit alone, so an item DELETED from the plan keeps vouching
       // for the requirement routed to it. The judge treats an empty list as "not

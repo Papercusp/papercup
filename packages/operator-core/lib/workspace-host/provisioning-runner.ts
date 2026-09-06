@@ -68,9 +68,39 @@ import {
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
 export const DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY: WorkspaceHostControllerAuthority = {
-  controllerId: 'papercusp-workspace-host-controller',
+  controllerId: `papercusp-workspace-host-controller:${process.env.DBOS__VMID?.trim() || 'local'}`,
   fence: 1,
 };
+
+export function nextWorkspaceHostControllerAuthority(
+  current: WorkspaceHostControllerAuthority | undefined,
+  controllerId = DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY.controllerId,
+): WorkspaceHostControllerAuthority {
+  const normalized = controllerId.trim();
+  if (!normalized) throw new WorkspaceHostProvisioningRequestError(['controllerId must not be empty']);
+  return current?.controllerId === normalized
+    ? current
+    : { controllerId: normalized, fence: (current?.fence ?? 0) + 1 };
+}
+
+/** Bind all provider-visible plan identities to the persisted desired revision. */
+export function bindWorkspaceHostPlanRevision(
+  plan: WorkspaceHostPlan,
+  desiredRevision: number,
+): WorkspaceHostPlan {
+  if (!Number.isSafeInteger(desiredRevision) || desiredRevision < 1) {
+    throw new WorkspaceHostProvisioningRequestError(['desiredRevision must be a positive safe integer']);
+  }
+  const suffix = `:desired-revision:${desiredRevision}`;
+  return {
+    ...plan,
+    planId: `${plan.planId}${suffix}`,
+    steps: plan.steps.map((step) => ({
+      ...step,
+      idempotencyKey: `${step.idempotencyKey}${suffix}`,
+    })),
+  };
+}
 
 export interface ControllerWorkspaceHostBootstrap {
   script: string;
@@ -330,6 +360,22 @@ const DEFAULT_DESTROY_STORE: WorkspaceHostDestroyStore = {
   updateHostState: updateWorkspaceHostLifecycleState,
 };
 
+function controllerDestroyStore(
+  store: WorkspaceHostDestroyStore,
+  controllerAuthority: WorkspaceHostControllerAuthority,
+  operationId: string,
+): WorkspaceHostDestroyStore {
+  return {
+    ...store,
+    beginOperation: (input) => store.beginOperation({ ...input, controllerAuthority }),
+    updateOperation: (input) => store.updateOperation({ ...input, controllerAuthority }),
+    upsertCheckpoint: (input) => store.upsertCheckpoint({ ...input, controllerAuthority }),
+    appendEvent: (input) => store.appendEvent({ ...input, controllerAuthority }),
+    recordSignals: (input) => store.recordSignals({ ...input, operationId, controllerAuthority }),
+    updateHostState: (input) => store.updateHostState({ ...input, operationId, controllerAuthority }),
+  };
+}
+
 export interface RunWorkspaceHostDestroyInput {
   workspaceId: string;
   hostId: string;
@@ -346,6 +392,8 @@ export interface RunWorkspaceHostDestroyInput {
   actorId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostDestroyStore;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
+  desiredRevision?: number;
   /**
    * How long the terminal census may keep re-reading the provider while it still shows a resource
    * we already deleted. Provider list APIs are eventually consistent, so a census taken the instant
@@ -659,7 +707,7 @@ function durableWorkflow(
       operationId,
       planId: plan.planId,
       target: plan.target,
-      desiredGeneration: 1,
+      desiredRevision: input.desiredRevision ?? 1,
     },
     action: 'provision',
     resources,
@@ -847,15 +895,15 @@ export async function runWorkspaceHostProvisioning(
 
   let plan: WorkspaceHostPlan;
   try {
-    plan = await input.provider.plan(
+    plan = bindWorkspaceHostPlanRevision(await input.provider.plan(
       {
         action: 'provision',
         operationId,
-        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:${operationId}:provision`,
+        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:revision:${desiredRevision}:${operationId}:provision`,
         desired: input.desired,
       },
       context,
-    );
+    ), desiredRevision);
   } catch (error) {
     throw new WorkspaceHostProvisioningRequestError([message(error)]);
   }
@@ -901,7 +949,15 @@ export async function runWorkspaceHostProvisioning(
     action: 'provision',
     status: 'running',
     message: 'Workspace-host provisioning started',
-    request: { connectionId, name, desired: input.desired },
+    request: {
+      connectionId,
+      name,
+      desired: input.desired,
+      plan: {
+        planId: plan.planId,
+        steps: plan.steps.map(({ id, idempotencyKey }) => ({ id, idempotencyKey })),
+      },
+    },
     desiredRevision,
   });
 
@@ -1145,7 +1201,7 @@ function durableDestroyWorkflow(
       operationId,
       planId: plan.planId,
       target: plan.target,
-      desiredGeneration: 1,
+      desiredRevision: input.desiredRevision ?? target.desiredRevision + 1,
     },
     action: 'destroy',
     resources,
@@ -1432,7 +1488,7 @@ async function finalizeDestroyEvidence(
 export async function runWorkspaceHostDestroy(
   input: RunWorkspaceHostDestroyInput,
 ): Promise<WorkspaceHostDestroyResult> {
-  const store = input.store ?? DEFAULT_DESTROY_STORE;
+  const baseStore = input.store ?? DEFAULT_DESTROY_STORE;
   const workspaceId = nonEmpty(input.workspaceId, 'workspaceId');
   const hostId = nonEmpty(input.hostId, 'hostId');
   const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
@@ -1448,7 +1504,7 @@ export async function runWorkspaceHostDestroy(
   isoTimestamp(input.confirmation.confirmedAt, 'destroy confirmation confirmedAt');
   validateDestroyCanaryEvidence(input.canary, workspaceId);
 
-  const target = await store.readTarget(workspaceId, hostId);
+  const target = await baseStore.readTarget(workspaceId, hostId);
   if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);
   if (target.id !== hostId || target.desired.hostId !== hostId) {
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match destroy hostId']);
@@ -1465,6 +1521,10 @@ export async function runWorkspaceHostDestroy(
   if (input.connection.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
   }
+  const controllerAuthority =
+    input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
+  const desiredRevision = input.desiredRevision ?? target.desiredRevision + 1;
+  const store = controllerDestroyStore(baseStore, controllerAuthority, operationId);
 
   const context: WorkspaceHostProviderContext = {
     workspaceId,
@@ -1486,17 +1546,17 @@ export async function runWorkspaceHostDestroy(
   } as const;
   let plan: WorkspaceHostPlan;
   try {
-    plan = await input.provider.plan(
+    plan = bindWorkspaceHostPlanRevision(await input.provider.plan(
       {
         action: 'destroy',
         operationId,
-        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:${operationId}:destroy`,
+        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:revision:${desiredRevision}:${operationId}:destroy`,
         host,
         disposition: 'discard',
         confirmation: input.confirmation,
       },
       context,
-    );
+    ), desiredRevision);
   } catch (error) {
     throw new WorkspaceHostProvisioningRequestError([message(error)]);
   }
@@ -1508,9 +1568,6 @@ export async function runWorkspaceHostDestroy(
 
   const workflow = durableDestroyWorkflow(input, operationId, plan, target);
   let checkpoints = await store.readCheckpoints(workspaceId, hostId, operationId);
-  if (checkpoints.length === 0) {
-    await store.updateHostState({ workspaceId, hostId, state: 'destroying' });
-  }
   await store.beginOperation({
     workspaceId,
     operationId,
@@ -1522,6 +1579,10 @@ export async function runWorkspaceHostDestroy(
       disposition: 'discard',
       confirmation: input.confirmation,
       canary: input.canary,
+      plan: {
+        planId: plan.planId,
+        steps: plan.steps.map(({ id, idempotencyKey }) => ({ id, idempotencyKey })),
+      },
       ...(destroyLabelBinding.legacyPurpose
         ? {
             labelAdmission: {
@@ -1554,7 +1615,14 @@ export async function runWorkspaceHostDestroy(
           }
         : {}),
     },
+    desiredRevision,
   });
+  // `beginOperation` atomically installs this operation's desired revision and controller
+  // authority. Every later store mutation is fenced against that durable identity, so the host
+  // cannot enter `destroying` under an operation that has not itself won ownership.
+  if (checkpoints.length === 0) {
+    await store.updateHostState({ workspaceId, hostId, state: 'destroying' });
+  }
 
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
     const action = nextWorkspaceHostControllerAction(workflow, checkpoints);

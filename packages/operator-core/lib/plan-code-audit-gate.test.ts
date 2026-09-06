@@ -13,6 +13,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
 import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { getAcceptanceRubricsForPlan } from './rubrics';
+import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
 import {
   getEffectiveItemAudits,
   getLatestActivationAudit,
@@ -42,6 +43,7 @@ vi.mock('./rubrics', () => ({
   META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
 }));
 vi.mock('./scorecards', () => ({ listScorecards: vi.fn() }));
+vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: vi.fn() }));
 vi.mock('./plan-audits', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./plan-audits')>();
   return {
@@ -428,6 +430,25 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
   });
 
   const itemDone = () => [{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }];
+
+  it('joins current BAR proof into a reasoned non-code audit without treating the doc as code', async () => {
+    const entry = docOnlyP001();
+    entry.entry.verdict = 'not-code';
+    entry.entry.note = 'This item verifies an operational outcome.';
+    mockEffectiveAudits.mockResolvedValue([entry]);
+    mockPlanItems.mockResolvedValue(itemDone());
+    mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
+    mockFlag.mockImplementation(async flag => flag === FLAGS.PLAN_CODE_AUDIT_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
+    vi.mocked(readAndEvaluateAcceptanceBarLifecycle).mockResolvedValue({
+      phase: 'ship', applicable: true, satisfied: true, codes: [], blockingBars: [], nextRepair: null, message: null,
+      nonCodeItemProofs: [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }],
+    });
+    const current = [{ evidenceKind: 'operational' as const, evidenceRef: 'probe:current', sourceFingerprint: 'now' }];
+    const verdict = await evaluatePlanAcceptanceGate(PLAN, { current });
+    expect(verdict.code).toBe('acceptance_rubric_missing');
+    expect(readAndEvaluateAcceptanceBarLifecycle).toHaveBeenCalledWith(PLAN, 'ship', { expectedApplicable: false, current });
+    expect(entry.entry.citations[0]!.kind).toBe('doc');
+  });
 
   it('refuses when a covered requirement reached an item with no verifying citation', async () => {
     mockEffectiveAudits.mockResolvedValue([docOnlyP001()]);

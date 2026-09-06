@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
 import { evaluateAcceptanceBarContract, evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { deriveNonCodeItemProofs } from './plan-requirement-realization';
 
 function bar(overrides: Partial<AcceptanceBarTrace> = {}): AcceptanceBarTrace {
   return {
@@ -140,6 +141,78 @@ function snapshot(overrides: Partial<AcceptanceBarContractSnapshot> = {}): Accep
     ...overrides,
   };
 }
+
+describe('operational realization from the canonical BAR snapshot', () => {
+  function proven(): AcceptanceBarContractSnapshot {
+    const s = snapshot();
+    const b = s.bars[0]!;
+    b.evidencePlane = 'live';
+    b.requiredTestLayers = ['operational'];
+    b.mappings[0]!.planItemStatus = 'done';
+    b.mappings[0]!.evidencePlane = 'live';
+    b.proof = {
+      state: 'current', currentEvidence: 1, staleEvidence: 0, uncertainEvidence: 0,
+      kinds: ['operational'], evidenceRefs: ['probe:current'], evidencePlanes: ['live'],
+      adequacy: { state: 'pass', checks: [{ specId: 'spec-1', revision: 1, verdict: 'pass',
+        wouldBlock: [], evidenceRefs: ['probe:current'] }] },
+      history: [{ id: 1, workItemId: 'WI-1', specId: 'spec-1', specRevision: 1,
+        specFingerprint: 'spec-hash', evidenceKind: 'operational', evidenceRef: 'probe:current',
+        testRunId: null, observedAt: '2026-09-06T00:00:00Z', createdBy: 'su-grader',
+        details: { evidencePlane: 'live' }, matchesCurrentSpec: true,
+        currentness: { overall: 'current', comparisonSupplied: true, staleReasons: [], unknownReasons: [],
+          dimensions: { spec: 'current', source: 'current', environment: 'current', test: 'not-applicable',
+            fixture: 'not-applicable', rubric: 'not-applicable', coverageEvidence: 'not-applicable', testRun: 'not-applicable' } },
+      }],
+    };
+    return s;
+  }
+
+  it.each(['operational', 'check'] as const)('derives exact %s proof before grading exists', (kind) => {
+    const s = proven();
+    s.bars[0]!.proof.history![0]!.evidenceKind = kind;
+    expect(deriveNonCodeItemProofs(s)).toEqual([
+      { planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] },
+    ]);
+  });
+
+  const gaps: Array<[string, (s: AcceptanceBarContractSnapshot) => void]> = [
+    ['incomplete snapshot', s => { s.completeness.complete = false; }],
+    ['truncated snapshot', s => { s.completeness.truncated = true; }],
+    ['unknown currentness', s => { s.bars[0]!.proof.history![0]!.currentness.overall = 'unknown'; }],
+    ['stale currentness', s => { s.bars[0]!.proof.history![0]!.currentness.overall = 'stale'; }],
+    ['no comparison', s => { s.bars[0]!.proof.history![0]!.currentness.comparisonSupplied = false; }],
+    ['missing evidence', s => { s.bars[0]!.proof.history = []; }],
+    ['mere manual claim', s => { s.bars[0]!.proof.history![0]!.evidenceKind = 'manual'; }],
+    ['wrong evidence plane', s => { s.bars[0]!.proof.history![0]!.details.evidencePlane = 'tree'; }],
+    ['wrong spec revision', s => { s.bars[0]!.proof.history![0]!.specRevision = 2; }],
+    ['wrong spec fingerprint', s => { s.bars[0]!.proof.history![0]!.specFingerprint = 'old'; }],
+    ['wrong BAR hash', s => { s.bars[0]!.mappings[0]!.sourceBarHash = 'old'; }],
+    ['wrong BAR set', s => { s.bars[0]!.mappings[0]!.sourceBarSetHash = 'old'; }],
+    ['wrong rubric revision', s => { s.bars[0]!.mappings[0]!.sourceRubricRevision = 2; }],
+    ['no current work contract', s => { s.bars[0]!.workContracts[0]!.current = false; }],
+    ['wrong adequacy revision', s => { s.bars[0]!.proof.adequacy!.checks[0]!.revision = 2; }],
+    ['unknown adequacy', s => { s.bars[0]!.proof.adequacy!.checks[0]!.verdict = 'unknown'; }],
+    ['missing depth contract', s => { s.bars[0]!.requiredTestLayers = []; }],
+    ['dropped target', s => { s.bars[0]!.mappings[0]!.planItemStatus = 'dropped'; }],
+  ];
+  it.each(gaps)('refuses %s', (_name, change) => {
+    const s = proven();
+    change(s);
+    expect(deriveNonCodeItemProofs(s)).toEqual([]);
+  });
+
+  it('does not let a passing sibling spec prove a different item', () => {
+    const s = proven();
+    s.bars[0]!.mappings.push({ ...s.bars[0]!.mappings[0]!, planItemId: 'P-002', specId: 'spec-2' });
+    expect(deriveNonCodeItemProofs(s).map(p => p.planItemId)).toEqual(['P-001']);
+  });
+
+  it('requires every BAR projection for the item to have exact proof', () => {
+    const s = proven();
+    s.bars.push({ ...s.bars[0]!, barKey: 'R-2', proof: { ...s.bars[0]!.proof, history: [] } });
+    expect(deriveNonCodeItemProofs(s)).toEqual([]);
+  });
+});
 
 describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
   it('allows a complete BAR with an empty METHOD at pre-start', () => {

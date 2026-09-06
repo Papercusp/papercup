@@ -7,7 +7,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type {
   WorkspaceHostApplyResult,
+  WorkspaceHostControllerAuthority,
   WorkspaceHostDesiredSpec,
+  WorkspaceHostObservation,
   WorkspaceHostPlanStep,
   WorkspaceHostProvider,
   WorkspaceHostProviderConnection,
@@ -32,6 +34,14 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
 const { runWorkspaceHostDestroy, runWorkspaceHostProvisioning } = await import('./provisioning-runner');
+const {
+  appendWorkspaceHostEvent,
+  beginWorkspaceHostOperation,
+  recordWorkspaceHostObservation,
+  updateWorkspaceHostOperation,
+  upsertWorkspaceHostResourceCheckpoint,
+  WorkspaceHostControllerFenceError,
+} = await import('./observability-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 let sequence = 0;
@@ -352,6 +362,161 @@ describe('workspace-host provisioning runner (real PG + real RLS)', () => {
       reason: 'resume',
       previousProviderRequestId: 'provider-operation-1',
     });
+  });
+
+  it('replays an exact request but rejects changed or reordered content for the same operation', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = `host_${randomBytes(3).toString('hex')}`;
+    const operationId = `op_${randomBytes(3).toString('hex')}`;
+    const authority: WorkspaceHostControllerAuthority = { controllerId: 'controller:replay', fence: 1 };
+    const steps = [step('create-network'), step('create-instance', ['create-network'])];
+    const first = providerHarness(steps, operationId, hostId);
+    first.apply.mockImplementation(async (request): Promise<WorkspaceHostApplyResult> => ({
+      operationId,
+      stepId: request.step.id,
+      state: 'applied',
+      observedAt: '2026-08-25T00:00:05Z',
+      resource: {
+        target: 'gcp',
+        kind: request.step.resourceKind,
+        providerId: `provider-${request.step.id}`,
+      },
+    }));
+    const input = {
+      workspaceId,
+      connectionId,
+      name: 'Replay host',
+      desired: desired(hostId),
+      connection,
+      provider: first.provider,
+      operationId,
+      controllerAuthority: authority,
+      desiredRevision: 1,
+    };
+
+    await expect(runWorkspaceHostProvisioning(input)).resolves.toMatchObject({ status: 'succeeded' });
+    await expect(runWorkspaceHostProvisioning(input)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(first.apply).toHaveBeenCalledTimes(2);
+    expect(first.reconcile).not.toHaveBeenCalled();
+
+    await expect(
+      runWorkspaceHostProvisioning({ ...input, name: 'Changed replay host' }),
+    ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    const reordered = providerHarness([...steps].reverse(), operationId, hostId);
+    await expect(
+      runWorkspaceHostProvisioning({ ...input, provider: reordered.provider }),
+    ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    expect(reordered.apply).not.toHaveBeenCalled();
+  });
+
+  it('rejects stale same-controller writes after a newer desired revision takes ownership', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = `host_${randomBytes(3).toString('hex')}`;
+    const staleOperationId = `op_stale_${randomBytes(3).toString('hex')}`;
+    const currentOperationId = `op_current_${randomBytes(3).toString('hex')}`;
+    const authority: WorkspaceHostControllerAuthority = { controllerId: 'controller:stable', fence: 8 };
+    const first = providerHarness([step('create-network')], staleOperationId, hostId);
+    first.apply.mockResolvedValue({
+      operationId: staleOperationId,
+      stepId: 'create-network',
+      state: 'applied',
+      observedAt: '2026-08-25T00:00:05Z',
+      resource: { target: 'gcp', kind: 'network', providerId: 'provider-create-network' },
+    });
+    await runWorkspaceHostProvisioning({
+      workspaceId,
+      connectionId,
+      name: 'Revision host',
+      desired: desired(hostId),
+      connection,
+      provider: first.provider,
+      operationId: staleOperationId,
+      controllerAuthority: authority,
+      desiredRevision: 1,
+    });
+
+    await beginWorkspaceHostOperation({
+      workspaceId,
+      operationId: currentOperationId,
+      hostId,
+      action: 'restart',
+      status: 'running',
+      message: 'Revision 2 owns the host',
+      request: { sourceHostId: hostId, revision: 2 },
+      controllerAuthority: authority,
+      desiredRevision: 2,
+    });
+
+    const stale = { operationId: staleOperationId, controllerAuthority: authority };
+    await expect(
+      updateWorkspaceHostOperation({
+        workspaceId,
+        operationId: staleOperationId,
+        status: 'failed',
+        percent: 99,
+        message: 'stale controller update',
+        controllerAuthority: authority,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    await expect(
+      upsertWorkspaceHostResourceCheckpoint({
+        workspaceId,
+        hostId,
+        operationId: staleOperationId,
+        checkpoint: { logicalKey: 'create-network', state: 'failed', attempts: 9, error: 'stale' },
+        controllerAuthority: authority,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    await expect(
+      appendWorkspaceHostEvent({
+        workspaceId,
+        hostId,
+        operationId: staleOperationId,
+        phase: 'stale',
+        status: 'failed',
+        message: 'stale event',
+        controllerAuthority: authority,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    const observation: WorkspaceHostObservation = {
+      host: {
+        hostId,
+        target: 'gcp',
+        resources: [{ target: 'gcp', kind: 'network', providerId: 'stale-provider-network' }],
+      },
+      state: 'degraded',
+      resources: [{ target: 'gcp', kind: 'network', providerId: 'stale-provider-network' }],
+      observedAt: '2026-08-25T00:00:11Z',
+      drift: ['network identity is stale'],
+    };
+    await expect(
+      recordWorkspaceHostObservation(workspaceId, observation, stale),
+    ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    const [host] = await db.adminSql`
+      SELECT desired_revision, observed_revision, observed_state
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(host).toMatchObject({ desired_revision: 2, observed_revision: 1, observed_state: 'running' });
+    const [operation] = await db.adminSql`
+      SELECT status, percent FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND id = ${staleOperationId}
+    `;
+    expect(operation).toMatchObject({ status: 'succeeded', percent: 100 });
+    const [resource] = await db.adminSql`
+      SELECT state, attempts, provider_id FROM harness_shared.workspace_host_resources
+      WHERE workspace_id = ${workspaceId} AND host_id = ${hostId} AND logical_key = 'create-network'
+    `;
+    expect(resource).toMatchObject({ state: 'applied', attempts: 1, provider_id: 'provider-create-network' });
+    const [{ count: staleEventCount }] = await db.adminSql`
+      SELECT count(*)::int AS count FROM harness_shared.workspace_host_events
+      WHERE workspace_id = ${workspaceId} AND operation_id = ${staleOperationId} AND phase = 'stale'
+    `;
+    expect(staleEventCount).toBe(0);
   });
 
   it('persists a complete discard graph and terminal evidence before marking the host absent', async () => {
