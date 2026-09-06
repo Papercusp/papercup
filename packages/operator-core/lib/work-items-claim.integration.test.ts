@@ -11,7 +11,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -169,6 +169,122 @@ beforeEach(async () => {
   leaderDispatchAdmission.fleetControlWindDownRefusal.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.leaderDispatchedAdmission.mockReset().mockResolvedValue(false);
   leaderDispatchAdmission.selfFiledFalloutAdmission.mockReset().mockReturnValue(false);
+});
+
+describe('EI-22536788145490710: upgrade the installed issue claim guard', () => {
+  const migration = '1138-issue-claim-expected-holder-cas.sql';
+  let originalDefinition: string | undefined;
+
+  async function definition() {
+    const [row] = await db.sql<{ definition: string }[]>`
+      SELECT pg_get_functiondef('harness_shared.engineer_issues_view_dml()'::regprocedure) AS definition`;
+    return row.definition;
+  }
+
+  async function upgrade() {
+    // Draft migrations are tested before being armed for live auto-apply.
+    const path = existsSync(resolve(SQL_DIR, migration)) ? migration : `${migration}.DRAFT`;
+    await db.sql.unsafe(readMigration(path)).simple();
+  }
+
+  async function forceClaim(id: string, target: string, expectedAssignee = 'dead-holder') {
+    const issues = await import('./issues-engineer');
+    return wi.claimWorkItem(id, target, {
+      harness: H,
+      expectedAssignee,
+      forceTakeoverAdmission: issues.mintForceTakeoverAdmission({
+        itemId: id, target, expectedAssignee, workspaceId: 'default',
+      }),
+    });
+  }
+
+  beforeEach(async () => {
+    originalDefinition = await definition();
+    // Match the deployed pre-1138 guard, not the already-repaired hand-written
+    // fixture. This change is confined to this test's throwaway database.
+    const legacy = originalDefinition.replace(/^\s*OR taken_by = OLD\.assignee\s*$/m, '');
+    expect(legacy).not.toBe(originalDefinition);
+    await db.sql.unsafe(legacy).simple();
+  });
+
+  afterEach(async () => {
+    if (originalDefinition) await db.sql.unsafe(originalDefinition).simple();
+  });
+
+  it.each(['auto', 'pending'])('upgrades an authorized %s task transfer from refusal to a persisted claim', async (admission) => {
+    const id = `WI-upgrade-${admission}`;
+    await seedIssue(id, { kind: 'task', admission, takenBy: 'dead-holder' });
+
+    // Negative control: the actual writer reaches the old trigger and loses.
+    expect(await forceClaim(id, 'rescuer')).toBeNull();
+    expect((await wi.getWorkItem(id, H))?.assignee).toBe('dead-holder');
+
+    await upgrade();
+    expect((await forceClaim(id, 'rescuer'))?.assignee).toBe('rescuer');
+    const [stored] = await db.sql`
+      SELECT taken_by, admission, status, item_kind FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(stored).toEqual({ taken_by: 'rescuer', admission, status: 'open', item_kind: 'task' });
+  });
+
+  it('allows the holder to transfer its own claim without force', async () => {
+    await seedIssue('WI-upgrade-self', { kind: 'task', admission: 'auto', takenBy: 'caller' });
+    await upgrade();
+    expect((await wi.claimWorkItem('WI-upgrade-self', 'successor', {
+      harness: H, fromHolder: 'caller',
+    }))?.assignee).toBe('successor');
+  });
+
+  it('admits exactly one competing transfer from the same expected holder', async () => {
+    await seedIssue('WI-upgrade-race', { admission: 'auto', takenBy: 'dead-holder' });
+    await upgrade();
+    const results = await Promise.all([
+      forceClaim('WI-upgrade-race', 'rescuer-a'),
+      forceClaim('WI-upgrade-race', 'rescuer-b'),
+    ]);
+    const winners = results.filter((result) => result !== null);
+    expect(winners).toHaveLength(1);
+    expect((await wi.getWorkItem('WI-upgrade-race', H))?.assignee).toBe(winners[0]!.assignee);
+  });
+
+  it('preserves stale-holder, ordinary-claim, admission and foreign-origin refusals', async () => {
+    await upgrade();
+    await seedIssue('WI-upgrade-stale', { admission: 'auto', takenBy: 'intervening-holder' });
+    expect(await forceClaim('WI-upgrade-stale', 'rescuer')).toBeNull();
+    expect(await wi.claimWorkItem('WI-upgrade-stale', 'ordinary-caller', { harness: H })).toBeNull();
+    expect((await wi.getWorkItem('WI-upgrade-stale', H))?.assignee).toBe('intervening-holder');
+
+    await seedIssue('WI-upgrade-pending', { admission: 'pending' });
+    expect(await wi.claimWorkItem('WI-upgrade-pending', 'ordinary-caller', { harness: H })).toBeNull();
+    await seedIssue('WI-upgrade-foreign', { admission: 'auto', origin: 'remote', takenBy: 'dead-holder' });
+    expect(await forceClaim('WI-upgrade-foreign', 'rescuer')).toBeNull();
+    expect((await wi.getWorkItem('WI-upgrade-foreign', H))?.assignee).toBe('dead-holder');
+  });
+
+  it('keeps unclaimed issue races atomic after the upgrade', async () => {
+    await seedIssue('WI-upgrade-unclaimed', { admission: 'auto' });
+    await upgrade();
+    const results = await Promise.all([
+      wi.claimWorkItem('WI-upgrade-unclaimed', 'new-a', { harness: H }),
+      wi.claimWorkItem('WI-upgrade-unclaimed', 'new-b', { harness: H }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('preserves all unrelated function clauses and is idempotent', async () => {
+    const before = await definition();
+    await upgrade();
+    const after = await definition();
+    expect(after.replace('\n        OR taken_by = OLD.assignee', '')).toBe(before);
+    await upgrade();
+    expect(await definition()).toBe(after);
+  });
+
+  it('fails closed when the installed guard no longer has the expected anchor', async () => {
+    const changed = (await definition()).replace('OR taken_by = NEW.assignee', "OR taken_by = 'unexpected-guard'");
+    await db.sql.unsafe(changed).simple();
+    await expect(upgrade()).rejects.toThrow('expected exactly one current-assignee claim guard');
+    expect(await definition()).toBe(changed);
+  });
 });
 
 describe('work_items claim — atomic `in` (D-004, real PG)', () => {
