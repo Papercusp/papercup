@@ -13,11 +13,7 @@ import {
   type AgentObligationEvidence,
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
-import type {
-  GoalLaunchResolution,
-  GoalPlanPlacement,
-  GoalPortfolioBrief,
-} from './goal-launch-settings';
+import type { GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief } from './goal-launch-settings';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
@@ -152,14 +148,17 @@ function placementEvidence(input: PlanPlacementProviderInput, plan?: GoalPortfol
   ];
 }
 
-function unknownPlacement(input: PlanPlacementProviderInput, args: {
-  title: string;
-  code: string;
-  detail: string;
-  retry: string;
-  applicableDemand: number;
-  plan?: GoalPortfolioPlan;
-}): AgentObligationInputShape {
+function unknownPlacement(
+  input: PlanPlacementProviderInput,
+  args: {
+    title: string;
+    code: string;
+    detail: string;
+    retry: string;
+    applicableDemand: number;
+    plan?: GoalPortfolioPlan;
+  },
+): AgentObligationInputShape {
   return {
     title: args.title,
     episode: `unknown:${args.code}:${input.sourceGeneration}`,
@@ -414,10 +413,10 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
         }
       : isAdmitting
         ? { ...baseAction, kind: 'continue', continuesCurrentWork: true }
-      : {
-          ...baseAction,
-          kind: 'repair',
-        },
+        : {
+            ...baseAction,
+            kind: 'repair',
+          },
     ...(ageMs == null ? {} : { ageMs }),
   });
 }
