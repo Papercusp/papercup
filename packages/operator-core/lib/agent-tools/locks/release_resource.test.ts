@@ -17,11 +17,14 @@ vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));
 vi.mock('./su-lock-store', () => ({ tryReleaseResource: vi.fn() }));
+vi.mock('./contention-retry', () => ({ acquireWithContentionRetry: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 
 import { tryReleaseResource } from './su-lock-store';
+import { acquireWithContentionRetry } from './contention-retry';
 import { broadcastResourceBackUp } from './resource-broadcast';
 const releaseM = vi.mocked(tryReleaseResource);
+const retryM = vi.mocked(acquireWithContentionRetry);
 const backUpM = vi.mocked(broadcastResourceBackUp);
 const tool = (await import('./release_resource')).default;
 
@@ -31,6 +34,7 @@ const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  retryM.mockImplementation(async (run) => run());
   backUpM.mockResolvedValue(undefined as never);
 });
 
@@ -115,6 +119,41 @@ describe('locks:release_resource handler', () => {
     });
     expect(backUpM).toHaveBeenCalledTimes(1);
     expect(backUpM.mock.calls[0]![0]).toMatchObject({ resource: 'dev-server', waiters: ['w1'] });
+  });
+
+  it('retries transient workspace contention before releasing a named-resource lease', async () => {
+    const contention = Object.assign(
+      new Error('workspace "host-global" contended (pg 57014: lock/statement timeout)'),
+      { name: 'WorkspaceContendedError', pgCode: '57014' },
+    );
+    retryM.mockImplementation(async (run) => {
+      try {
+        return await run();
+      } catch (error) {
+        expect(error).toBe(contention);
+        return await run();
+      }
+    });
+    releaseM.mockRejectedValueOnce(contention);
+    releaseM.mockResolvedValue({
+      released: 1,
+      releasedModes: ['exclusive'],
+      exclusiveResources: ['git-sync:portal'],
+      waiters: { 'git-sync:portal': ['waiter-1'] },
+    } as never);
+
+    const b = body(await call({ resource: 'git-sync:portal' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [
+        { ok: true, resource: 'git-sync:portal', released: 1, exclusive_resources: ['git-sync:portal'] },
+      ],
+    });
+    expect(retryM).toHaveBeenCalledTimes(1);
+    expect(releaseM).toHaveBeenCalledTimes(2);
+    expect(backUpM).toHaveBeenCalledTimes(1);
   });
 
   it('releases selected resource lock_ids as a keyed bulk envelope', async () => {

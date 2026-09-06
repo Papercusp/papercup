@@ -17,6 +17,7 @@ import { readIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryReleaseResource } from './su-lock-store';
+import { acquireWithContentionRetry } from './contention-retry';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resourceLockDomain, candidateResourceLockDomains } from './coordination-domain';
@@ -93,8 +94,13 @@ export default defineTool({
         // (host-global / workspace-scoped / caller-tree), matching whichever
         // domain locks:acquire_resource used to acquire it.
         const domain = resourceLockDomain(item.resource);
-        const r = await inWorkspaceTxn(domain, ownerId, (tx) =>
-          tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, resource: item.resource }),
+        // EI-22464497553650176: releasing the lease is the cleanup boundary;
+        // ride out transient workspace contention instead of returning a
+        // per-item failure that strands the caller's named-resource lock.
+        const r = await acquireWithContentionRetry(() =>
+          inWorkspaceTxn(domain, ownerId, (tx) =>
+            tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, resource: item.resource }),
+          ),
         );
         await announceBackUp(r);
         return r;
@@ -104,8 +110,10 @@ export default defineTool({
       // cost), falling back to the special-domain families (WI-5960) only if
       // that finds neither a release nor matching expiry evidence.
       for (const domain of candidateResourceLockDomains()) {
-        const r = await inWorkspaceTxn(domain, ownerId, (tx) =>
-          tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, lockId: item.lock_id }),
+        const r = await acquireWithContentionRetry(() =>
+          inWorkspaceTxn(domain, ownerId, (tx) =>
+            tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, lockId: item.lock_id }),
+          ),
         );
         if (r.released > 0 || (r.expired?.length ?? 0) > 0) {
           await announceBackUp(r);

@@ -186,6 +186,24 @@ describe('plans:get — shipReadiness', () => {
     expect(tool.args.safeParse({ slug: 'alpha', shipReadiness: 'yes' }).success).toBe(false);
   });
 
+  it('accepts and threads the same current proof cohort as the ship write', async () => {
+    const current = [
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'testing-run:current#R-1',
+        sourceFingerprint: 'source-current',
+        testFingerprint: 'test-current',
+      },
+    ];
+    expect(tool.args.safeParse({ slug: 'alpha', shipReadiness: true, current }).success).toBe(true);
+
+    await run({ slug: 'alpha', shipReadiness: true, current });
+
+    expect(M.resolvePlanAcceptanceGateVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ planSlug: 'alpha', current }),
+    );
+  });
+
   it('is ABSENT when not requested — and the gate is never even evaluated', async () => {
     const result = await run({ slug: 'alpha' });
     expect(result.results[0]).not.toHaveProperty('shipReadiness');
