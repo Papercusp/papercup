@@ -3169,6 +3169,59 @@ export async function dirtyFiles(runGit: RunGit, repoPath: string): Promise<stri
   return out;
 }
 
+/**
+ * EI-22494259338317391: a negative pathspec only prevents `git add` from
+ * changing the matching index entries; it does not remove an entry that was
+ * staged earlier (for example by `git checkout <sha> -- <path>`). Since the
+ * eventual `git commit` includes the whole index, clear only those pre-staged
+ * protected entries before any attribution or catch-all staging phase.
+ *
+ * The working tree is intentionally untouched. The next tick can stage the
+ * protected content once its lock is gone, while unrelated pre-staged work
+ * remains available for this commit. `-z` keeps legal filenames lossless.
+ */
+async function unstagePreStagedProtectedPaths(
+  runGit: RunGit,
+  repoPath: string,
+  excludePaths: readonly string[],
+  log: (message: string) => void,
+): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> {
+  const normalizedExcludes = [...new Set(
+    excludePaths
+      .map((path) => path.trim().replace(/^\.\/+|\/+$/g, ''))
+      .filter(Boolean),
+  )];
+  if (normalizedExcludes.length === 0) return { ok: true, paths: [] };
+
+  const staged = await runGit(['diff', '--cached', '--name-only', '--no-renames', '-z'], repoPath);
+  if (staged.code !== 0) {
+    return {
+      ok: false,
+      error: `could not inspect pre-staged protected paths: ${(staged.stderr || staged.stdout).trim().slice(0, 300)}`,
+    };
+  }
+  const protectedStaged = [...new Set(
+    staged.stdout
+      .split('\0')
+      .filter(Boolean)
+      .filter((path) => normalizedExcludes.some((exclude) => gitSyncPathsOverlap(path, exclude))),
+  )];
+  if (protectedStaged.length === 0) return { ok: true, paths: [] };
+
+  const unstage = await runGit(['reset', '-q', 'HEAD', '--', ...protectedStaged], repoPath);
+  if (unstage.code !== 0) {
+    return {
+      ok: false,
+      error: `could not unstage protected paths: ${(unstage.stderr || unstage.stdout).trim().slice(0, 300)}`,
+    };
+  }
+  log(
+    `[git-sync] ${repoPath}: removed ${protectedStaged.length} pre-staged protected path(s) from the commit index ` +
+      `(${protectedStaged.join(', ')}) — working-tree edits remain locked`,
+  );
+  return { ok: true, paths: protectedStaged };
+}
+
 /** The CI-skip suffix git-sync's message carries (e.g. ` [skip ci]`), so every per-agent
  *  commit skips CI exactly like the catch-all. Empty when the message has no such marker. */
 function skipCiSuffix(message: string): string {
@@ -3503,6 +3556,18 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         ...contentErrors.map((c) => c.file),
       ]),
     ];
+    const preStagedProtected = await unstagePreStagedProtectedPaths(runGit, repoPath, excludePaths, o.log);
+    if (!preStagedProtected.ok) {
+      return {
+        committedLocal: false,
+        dirtyPathCount,
+        committedCount,
+        error: preStagedProtected.error,
+        oversized,
+        contentErrors,
+        skippedPaths,
+      };
+    }
     // EI-21026041751032400: a live protected-path lock can name an ignored
     // untracked artifact. Git already omits that artifact from `add -A`, but
     // rejects the whole command when the artifact is also mentioned as a
