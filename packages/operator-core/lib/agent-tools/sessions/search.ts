@@ -139,19 +139,17 @@ export default defineTool({
     const mode = args.mode ?? 'hybrid';
     const workspaceId = ctx.workspaceId ?? '';
     const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
-    const selfSession = args.session === 'self'
-      ? await (await import('../../search/self-session')).resolveSelfSession(callerOwnerId)
-      : null;
     const fingerprint = sessionCursorFingerprint(
       { ...args, cursor: undefined, limit: undefined },
       {
         workspaceId,
-        // Bind the syntactic `self` sugar to the authority that resolved it.
-        // Otherwise another caller can replay the same opaque cursor against a
-        // different owner/session result set while retaining the same literal
-        // query fingerprint.
+        // Bind the syntactic `self` sugar to the caller's stable authority.
+        // `session:'self'` intentionally spans the caller's whole respawn
+        // chain, while resolveSelfSession returns the newest native transcript
+        // and therefore changes across carry-respawn. Do not bind a cursor to
+        // that ephemeral transcript id: it would invalidate a byte-for-byte
+        // cursor while replaying the same owner-scoped query.
         selfOwnerId: args.owner === 'self' || args.session === 'self' ? callerOwnerId : undefined,
-        selfSessionId: selfSession?.sessionId,
       },
     );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:search', fingerprint);

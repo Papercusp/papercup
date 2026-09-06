@@ -30,6 +30,16 @@ vi.mock('./_shared', async (importOriginal) => ({
   refreshTargetSessionBeforeRead: (...a: unknown[]) => refreshTargetSessionBeforeRead(...a),
 }));
 
+const resolveSelfSession = vi.fn();
+vi.mock('../../search/self-session', () => ({
+  resolveSelfSession: (...a: unknown[]) => resolveSelfSession(...a),
+}));
+
+vi.mock('../../search/session-ingest', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ingestFileNow: vi.fn(async () => undefined),
+}));
+
 // The verbatim tests below never reach the hybrid branch, but search.ts
 // statically imports both — mock them inertly so the module loads without a
 // live embedder/DB, and let the one hybrid test override the return value.
@@ -120,6 +130,80 @@ describe('sessions:search explicit session refresh scope (EI-21720673196644332)'
     expect(parsed.total_hits).toBe(0);
     expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, undefined, sessionId);
     expect(refreshLiveSessionsBeforeRead).not.toHaveBeenCalled();
+  });
+});
+
+describe('sessions:search self cursor authority (EI-22528353817146321)', () => {
+  it('replays a page cursor after the resolved native self session changes', async () => {
+    let currentSelfSession = {
+      sourceKind: 'codex' as const,
+      sessionId: 'native-before-respawn',
+      filePath: '/tmp/native-before-respawn.jsonl',
+    };
+    resolveSelfSession.mockImplementation(async () => currentSelfSession);
+
+    const rows = [
+      {
+        source_kind: 'codex',
+        session_id: 'native-before-respawn',
+        turn_idx: 1,
+        speaker: 'assistant',
+        owner: 'su-self',
+        harness_slug: null,
+        ts: null,
+        text: 'first cursor page hit',
+      },
+      {
+        source_kind: 'codex',
+        session_id: 'native-before-respawn',
+        turn_idx: 2,
+        speaker: 'assistant',
+        owner: 'su-self',
+        harness_slug: null,
+        ts: null,
+        text: 'second cursor page hit',
+      },
+    ];
+    let mainQueryCount = 0;
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const strings = Array.isArray(args[0]) ? (args[0] as string[]) : [];
+      const sql = strings.join(' ');
+      if (sql.includes('left(text, 700)')) {
+        mainQueryCount += 1;
+        return mainQueryCount === 1 ? rows : [rows[1]];
+      }
+      return [];
+    });
+
+    const first = await callTool({
+      query: 'cursor page hit',
+      mode: 'verbatim',
+      session: 'self',
+      limit: 1,
+      context: 0,
+    }, tx);
+    const firstParsed = JSON.parse(first.content[0].text) as ParsedResult;
+    expect(firstParsed.ok).toBe(true);
+    expect(firstParsed.nextCursor).toBeDefined();
+
+    currentSelfSession = {
+      sourceKind: 'codex',
+      sessionId: 'native-after-respawn',
+      filePath: '/tmp/native-after-respawn.jsonl',
+    };
+    const second = await callTool({
+      query: 'cursor page hit',
+      mode: 'verbatim',
+      session: 'self',
+      limit: 1,
+      context: 0,
+      cursor: firstParsed.nextCursor,
+    }, tx);
+    const secondParsed = JSON.parse(second.content[0].text) as ParsedResult;
+
+    expect(secondParsed.ok).toBe(true);
+    expect(secondParsed.total_hits).toBe(1);
+    expect(secondParsed.results).toHaveLength(1);
   });
 });
 
