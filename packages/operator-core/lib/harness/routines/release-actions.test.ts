@@ -3379,6 +3379,12 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       status: 'unreadable',
       reason: 'schema-newer-than-reader',
       schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1,
+      // Best-effort identity from the raw row (frozen-candidate-repair-queue.ts): a newer
+      // writer's row is unreadable, but its stable coordinates still say WHICH frozen queue
+      // was preserved instead of collapsing it to "none".
+      candidate: queue.candidate,
+      repairHead: queue.repairHead,
+      phase: queue.phase,
     });
 
     fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: newer }]));

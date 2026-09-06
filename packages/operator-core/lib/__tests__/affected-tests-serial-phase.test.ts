@@ -168,7 +168,10 @@ describe('wiring in affected-tests.mjs', () => {
     expect(AFFECTED_TESTS_SRC).toContain(
       'recordLeg(scheduled.task.t, scheduled.value.__elapsedMs)',
     );
-    expect(AFFECTED_TESTS_SRC).toContain('recordLeg(t, retry.value.__elapsedMs)');
+    // P-004 (gate-latency-selection-and-retry-policy-2026-09-06): retries no longer run in a
+    // serial per-workspace loop — every retry goes through ONE runBudgetedTasks pool and its
+    // leg is recorded INSIDE the pool's runTask (`context.t`, `value`), still one leg per retry.
+    expect(AFFECTED_TESTS_SRC).toContain('recordLeg(context.t, value.__elapsedMs)');
   });
 
   it('emits the phase block from the shared helper', () => {

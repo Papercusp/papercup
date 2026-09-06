@@ -84,6 +84,13 @@ const config = {
   workerMemoryMb: 1024,
   maxConcurrentTasks: 2,
   reserveWorkers: 1,
+  // Hermeticity: `runBudgetedTaskShards` reads the LAUNCHER's PAPERCUSP_TASK_DEADLINE_EPOCH_MS
+  // when this is undefined, and a launcher with a modest deadline (a capability:bash job with a
+  // 40-minute timeout, a gate run near its budget) makes it print AFFECTED_TESTS_DEADLINE_TIGHT
+  // through console.error — which vitest-fail-on-console turns into a red for a test that
+  // measured nothing about the launcher. An explicit null means "no deadline" (the scheduler's
+  // documented test setting); the deadline behaviour has its own explicit-deadline tests.
+  deadlineEpochMs: null,
 };
 
 function deferred<T>() {
