@@ -1,9 +1,10 @@
 {
-  "schemaVersion": "p004-validation-shard/v1",
+  "schemaVersion": "feature-change-p004-validation-shard-v1",
   "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
   "planItem": "P-004",
   "workItem": "WI-2146802",
-  "shard": {
+  "shard": 9,
+  "shardMetadata": {
     "revision": 18,
     "index": 9,
     "count": 50,
@@ -26,11 +27,8 @@
     "EI-21137448934207245",
     "EI-21137936760355170"
   ],
-  "assignedIdListSha256": {
-    "algorithm": "sha256",
-    "material": "newline-joined assignedIds in listed order",
-    "value": "7ee5e18b6a574eadb66cbb1a415671292be2abfe0f980643fc40d035d5ff139a"
-  },
+  "assignedIdListSerialization": "JSON.stringify(assignedIds)",
+  "assignedIdListSha256": "58f9af245bebc50fdee5a92947ea42506d57f6a6c42ef278f14afc7e6abac3c0",
   "validationSummary": {
     "candidateCount": 5,
     "preserveCount": 3,

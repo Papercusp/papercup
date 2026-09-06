@@ -215,7 +215,7 @@
     {
       "id": "EI-21216135071826778",
       "frozenOutcome": "candidate-shared-root-consolidation",
-      "frozenSourceSha256": "d415aafa3f9c52f14ebf8d7e808068a9675138811b3ba0e6e365632cdcf8dacc8",
+      "frozenSourceSha256": "d415aafa3f9c52f14ebf8d7e808068a967513881b3ba0e6e365632cdcf8dacc8",
       "currentState": "open",
       "currentOrigin": "local",
       "currentAssignee": null,
@@ -273,6 +273,9 @@
       "id": "EI-21217485572221459",
       "frozenOutcome": "candidate-shared-root-consolidation",
       "frozenSourceSha256": "3836790688a96af8cb8304704778dc9726332d2b2dd0ce0f0532b4c6517b42f0",
+      "currentState": "open",
+      "currentOrigin": "local",
+      "currentAssignee": null,
       "currentFingerprintEvidence": {
         "title": "plans:get omits harness requirement from scoped-session call ergonomics",
         "summary": "Current summary says an exact plans:get call failed harness_required despite active papercusp scope and required retry with harness:'papercusp'.",
