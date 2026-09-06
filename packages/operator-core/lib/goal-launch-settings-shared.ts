@@ -120,16 +120,21 @@ export function goalFleetFamily(args: {
  */
 const FAMILY_SLOTS = {
   plan: {
+    leader: 'plan-fleet-leader',
     member: 'plan-fleet-member',
     director: 'plan-fleet-director',
     implementer: 'plan-fleet-implementer',
   },
   drain: {
+    leader: 'drain-fleet-leader',
     member: 'drain-fleet-member',
     director: 'drain-fleet-director',
     implementer: 'drain-fleet-implementer',
   },
-} as const satisfies Record<GoalFleetFamily, Record<'member' | 'director' | 'implementer', GoalLaunchRole>>;
+} as const satisfies Record<
+  GoalFleetFamily,
+  Record<'leader' | 'member' | 'director' | 'implementer', GoalLaunchRole>
+>;
 
 /**
  * Which slot(s) a launch of this family and shape binds.
@@ -169,6 +174,19 @@ export function goalFleetLaunchSlots(
  */
 export function goalFleetMemberSlot(family: GoalFleetFamily): GoalLaunchRole {
   return FAMILY_SLOTS[family].member;
+}
+
+/**
+ * The independently spawned LEADER slot for a fleet family.
+ *
+ * Leaders sit outside the member count, so they are not part of
+ * {@link GoalFleetSlots}. They still have a first-class launch profile on the
+ * goal record, and returning it from the same family table prevents the
+ * `plan-fleet-leader` / `drain-fleet-leader` profiles from becoming configured
+ * but inert data.
+ */
+export function goalFleetLeaderSlot(family: GoalFleetFamily): GoalLaunchRole {
+  return FAMILY_SLOTS[family].leader;
 }
 
 /**
