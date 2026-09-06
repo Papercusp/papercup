@@ -118,7 +118,9 @@ race async data and report a guarded component's absence as a missing feature.
   --port <n>         dev-bridge port             (default: $VERIFY_TAURI_PORT)
   --token <t>        dev-bridge token            (default: $VERIFY_TAURI_TOKEN)
   --window-label <l> webview window label
-  --timeout <sec>    how long to wait            (default: ${DEFAULT_TIMEOUT_SEC})
+  --timeout <sec>    how long to wait            (default: $VERIFY_TAURI_SETTLE_TIMEOUT,
+                                                   else $VERIFY_TAURI_DOM_TIMEOUT,
+                                                   else ${DEFAULT_TIMEOUT_SEC})
   --quiet-ms <ms>    DOM-quiet window required   (default: ${DEFAULT_QUIET_MS})
   --interval <ms>    sampling interval           (default: ${DEFAULT_INTERVAL_MS})
   --note-only        take a bounded reading, print the note (EMPTY when the page was
@@ -410,6 +412,23 @@ export function settleExitCode(verdictObj) {
     : SETTLE_EXIT_CODES.unknown;
 }
 
+/**
+ * Keep the readiness guard at least as patient as the DOM assertion it guards.
+ * A caller can still give settle its own explicit budget; otherwise inheriting
+ * VERIFY_TAURI_DOM_TIMEOUT avoids a contradictory run where settle gives up
+ * before VERIFY_TAURI_POLL's advertised assertion window has elapsed.
+ */
+export function resolveSettleTimeoutSec(env = {}) {
+  const guardedAssertionTimeoutSec = numberFrom(
+    env.VERIFY_TAURI_DOM_TIMEOUT,
+    DEFAULT_TIMEOUT_SEC,
+  );
+  return numberFrom(
+    env.VERIFY_TAURI_SETTLE_TIMEOUT,
+    guardedAssertionTimeoutSec,
+  );
+}
+
 /** PURE. Argument parsing, split out so it is testable without a live webview. */
 export function parseSettleCliArgs(argv, env = {}) {
   const opts = {
@@ -420,10 +439,7 @@ export function parseSettleCliArgs(argv, env = {}) {
     port: "",
     token: env.VERIFY_TAURI_TOKEN || "",
     windowLabel: "",
-    timeoutSec: numberFrom(
-      env.VERIFY_TAURI_SETTLE_TIMEOUT,
-      DEFAULT_TIMEOUT_SEC,
-    ),
+    timeoutSec: resolveSettleTimeoutSec(env),
     quietMs: numberFrom(env.VERIFY_TAURI_SETTLE_QUIET_MS, DEFAULT_QUIET_MS),
     intervalMs: numberFrom(
       env.VERIFY_TAURI_SETTLE_INTERVAL_MS,

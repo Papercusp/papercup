@@ -33,6 +33,7 @@ import {
   normaliseCount,
   parseSettleCliArgs,
   parseSettleSample,
+  resolveSettleTimeoutSec,
   settleExitCode,
   // TS reports a module-resolution error on the SPECIFIER's line, which for a
   // multi-line import is this closing line — so the suppression has to sit here,
@@ -326,9 +327,24 @@ describe('settle-probe — page-side expression and CLI plumbing', () => {
     expect(parseSettleCliArgs(['--nope'], {}).error).toMatch(/unknown option/);
   });
 
+  it('inherits the guarded DOM budget unless a settle-specific timeout overrides it', () => {
+    expect(resolveSettleTimeoutSec({})).toBe(20);
+    expect(resolveSettleTimeoutSec({ VERIFY_TAURI_DOM_TIMEOUT: '30' })).toBe(30);
+    expect(
+      resolveSettleTimeoutSec({
+        VERIFY_TAURI_DOM_TIMEOUT: '30',
+        VERIFY_TAURI_SETTLE_TIMEOUT: '12',
+      }),
+    ).toBe(12);
+
+    expect(parseSettleCliArgs([], { VERIFY_TAURI_DOM_TIMEOUT: '30' }).timeoutSec).toBe(30);
+    expect(parseSettleCliArgs(['--timeout', '7'], { VERIFY_TAURI_DOM_TIMEOUT: '30' }).timeoutSec).toBe(7);
+  });
+
   it('documents the three exit codes in its usage text', () => {
     expect(SETTLE_USAGE).toMatch(/settled/);
     expect(SETTLE_USAGE).toMatch(/UNKNOWN/);
     expect(SETTLE_USAGE).toMatch(/--note-only/);
+    expect(SETTLE_USAGE).toMatch(/VERIFY_TAURI_DOM_TIMEOUT/);
   });
 });
