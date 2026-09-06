@@ -281,6 +281,8 @@ describe('su SUT delta tool-result adapter (agent-tool-delta-protocol P-007)', (
     const body = JSON.parse(delta.content[0].text as string);
     expect(body.mode).toBe('full');
     expect(body.items.map((r: { title: string }) => r.title)).toEqual(['keep', 'new title', 'added']);
+    expect(body.note).toMatch(/complete current view/i);
+    expect(body.note).toMatch(/change-watermark, not pagination/i);
   });
 
   it('refetches full when a delta arrives without a cached base', async () => {

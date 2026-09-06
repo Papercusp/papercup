@@ -32,7 +32,7 @@
  * real-dispatch executor later is a drop-in: the loop is executor-agnostic.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -831,7 +831,9 @@ export async function adaptDeltaToolResultForModel(
       cursor: typeof payload.cursor === 'string' ? payload.cursor : cached.cursor,
       count: cached.rows.length,
       items: cached.rows,
-      note: 'Delta-aware target reconstructed this full result from its cached base for the model.',
+      note:
+        'Delta-aware target reconstructed this complete current view from its cached base. ' +
+        'The cursor is a change-watermark, not pagination.',
     };
     return replaceToolJson(result, full);
   }
@@ -862,7 +864,9 @@ export async function adaptDeltaToolResultForModel(
     cursor: typeof payload.cursor === 'string' ? payload.cursor : cached.cursor,
     count: merged.length,
     items: merged,
-    note: 'Delta-aware target applied the semantic delta before exposing the result to the model.',
+    note:
+      'Delta-aware target applied the semantic delta before exposing this complete current view to the model. ' +
+      'The cursor is a change-watermark, not pagination; absent ids were removed from the view.',
   });
 }
 
