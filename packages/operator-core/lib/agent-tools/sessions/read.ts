@@ -255,7 +255,7 @@ export default defineTool({
       SELECT source_kind, session_id, turn_idx, speaker, owner, ts::text AS ts,
              length(text)::int AS text_full_chars,
              ${textOffset}::int AS text_offset,
-             substring(text FROM ${textOffset + 1} FOR ${textLimit}) AS text
+             substring(text FROM ${textOffset + 1}::int FOR ${textLimit}::int) AS text
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
          AND (${querySessionId ?? null}::text IS NULL OR session_id = ${querySessionId ?? null})

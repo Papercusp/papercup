@@ -160,6 +160,31 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(turn.readMore).toBeUndefined();
   });
 
+  it('casts text-window bounds before PostgreSQL resolves substring overloads', async () => {
+    const calls: unknown[][] = [];
+    const tx = vi.fn(async (...args: unknown[]) => {
+      calls.push(args);
+      return [];
+    });
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'sess-known', tail: 1 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-substring-casts-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const query = String((calls[0]?.[0] as string[] | undefined)?.join(' ? '));
+    expect(query).toMatch(/substring\(text FROM\s+\?\s+::int FOR\s+\?\s+::int\)/);
+  });
+
   it('accepts a canonical ref with optional window controls and reads the exact turn', async () => {
     refreshTargetSessionBeforeRead.mockClear();
     const tx = makeTx([{
