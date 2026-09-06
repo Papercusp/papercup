@@ -1244,15 +1244,25 @@ export async function emitScorecard(
     // EI-22001573837456548: scorecard history is append-only and independent
     // graders cannot retract a redundant card. Read a bounded, complete-enough
     if (!args.acceptance && !args.acknowledgeExisting) {
-      // This is intentionally a broader read than the source-hive-scoped latest
-      // read below: the redundancy tuple is (rubricRef, rubricRevision), not
-      // (rubricRef, sourceHive, rubricRevision). `force` intentionally does not
-      // bypass this guard; it only means "the evidence changed despite the latest
-      // fingerprint".
-      const priorScorecards = await listScorecards({ rubricRef: args.rubricRef, limit: 500 });
+      // Unscoped scorecards use (rubricRef, rubricRevision); a structured
+      // subject adds (subject.kind, subject.ref). Narrow the read by ref when
+      // possible, then keep kind in the in-memory tuple because scorecards:list
+      // exposes only the scalar subject-ref filter. `force` intentionally does
+      // not bypass this guard; it only means "the evidence changed despite the
+      // latest fingerprint".
+      const subject = args.subject;
+      const priorScorecards = await listScorecards({
+        rubricRef: args.rubricRef,
+        ...(subject ? { subjectRef: subject.ref } : {}),
+        limit: 500,
+      });
       const existingIndependentScorecardIds = priorScorecards
-        .filter(
-          (card) =>
+        .filter((card) => {
+          const sameSubject =
+            !subject ||
+            (card.subject?.ref === subject.ref && (card.subject?.kind ?? null) === (subject.kind ?? null));
+          return (
+            sameSubject &&
             card.rubricRef === args.rubricRef &&
             (card.rubricRevision ?? null) === (rubricRevision ?? null) &&
             card.rubricResolved &&
@@ -1261,8 +1271,9 @@ export async function emitScorecard(
             !card.synthesized &&
             card.createdBy != null &&
             card.createdBy !== input.createdBy &&
-            !card.acceptance,
-        )
+            !card.acceptance
+          );
+        })
         .map((card) => card.issueId);
       if (existingIndependentScorecardIds.length > 0) {
         const revisionLabel = rubricRevision == null ? 'unversioned' : String(rubricRevision);
