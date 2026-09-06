@@ -35,13 +35,18 @@ vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
 
+// Records the args the route hands the converse tool (P-005: host-trust
+// pass-through) — the stream result itself stays the minimal assembled turn.
+const toolFn = vi.fn(async (_args: unknown, _ctx?: unknown) => ({
+  content: [{ type: 'text', text: '{"totalCost":0,"assembled":""}' }],
+}));
 const fakeTool = {
   pluginName: 'test',
   description: 'fake',
   capabilities: [],
   expose: { mcp: { name: 'operator:converse' } },
   inputSchema: { type: 'object' },
-  fn: async () => ({ content: [{ type: 'text', text: '{"totalCost":0,"assembled":""}' }] }),
+  fn: (args: unknown, ctx?: unknown) => toolFn(args, ctx),
 };
 
 const lookupByMcpName = vi.fn((name: string) =>
@@ -67,6 +72,7 @@ import {
   setOpenCards,
 } from '@papercusp/agent-mcp';
 import { registerAllRoutes } from '../register';
+import { UI_CONTEXT_MAX_CHARS } from '../../chat-context-sections';
 
 let app: Hono;
 
@@ -241,5 +247,45 @@ describe('POST /api/agent-mcp/operator-converse — persona role resolution (P-0
     await collectEvents(res, 200);
     expect(lookupByMcpName).toHaveBeenCalledWith('operator:converse');
     expect(lookupByMcpName).not.toHaveBeenCalledWith('papercup:converse');
+  });
+});
+
+describe('POST /api/agent-mcp/operator-converse — host-trust pass-through (papercup-chat P-005, D-007 §2)', () => {
+  it('forwards hostTrust / principalToken (trimmed) / uiContext to the converse tool; absent ⇒ owner', async () => {
+    toolFn.mockClear();
+    let res = await post({
+      messages: [],
+      trigger: 'user_message',
+      role: 'papercup',
+      hostTrust: 'public',
+      principalToken: '  portal-user-bearer  ',
+      uiContext: '{"pane":"chat"}',
+    });
+    await collectEvents(res, 200);
+    expect(toolFn).toHaveBeenCalled();
+    expect(toolFn.mock.calls.at(-1)?.[0]).toMatchObject({
+      role: 'papercup',
+      hostTrust: 'public',
+      principalToken: 'portal-user-bearer',
+      uiContext: '{"pane":"chat"}',
+    });
+    // The desktop / TUI send none of them ⇒ the byte-identical owner path.
+    toolFn.mockClear();
+    res = await post({ messages: [], trigger: 'user_message', role: 'papercup' });
+    await collectEvents(res, 200);
+    expect(toolFn).toHaveBeenCalled();
+    expect(toolFn.mock.calls.at(-1)?.[0]).toMatchObject({
+      hostTrust: 'owner',
+      principalToken: undefined,
+      uiContext: undefined,
+    });
+  });
+
+  it('rejects an unknown hostTrust and an oversized uiContext with 400 before any brain work', async () => {
+    toolFn.mockClear();
+    expect((await post({ messages: [], hostTrust: 'root' })).status).toBe(400);
+    expect((await post({ messages: [], uiContext: 'x'.repeat(UI_CONTEXT_MAX_CHARS + 1) })).status).toBe(400);
+    expect((await post({ messages: [], uiContext: 42 })).status).toBe(400);
+    expect(toolFn).not.toHaveBeenCalled();
   });
 });

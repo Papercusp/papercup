@@ -19,17 +19,19 @@
  * read.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, formatVintageAge, readServerVintage } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getRubric } from '../../rubrics';
+import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
+import { getRubric, readRubricPlanRevision } from '../../rubrics';
+import { listScorecards } from '../../scorecards';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
 export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
   guidance: {
     when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; legacy single-rubric callers may pass `id`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
@@ -91,9 +93,41 @@ export default defineTool({
       ids,
       async (rubricRef) => {
         const rubric = await getRubric(rubricRef);
-        return rubric
-          ? { ok: true as const, rubricRef, rubric }
-          : { ok: false as const, rubricRef, error: 'rubric not found' };
+        if (rubric) {
+          if (rubric.kind === 'acceptance') {
+            const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
+            return { ok: true as const, rubricRef, rubric, vetting };
+          }
+          return { ok: true as const, rubricRef, rubric };
+        }
+
+        // EI-22439598382266201: getRubric intentionally hides acceptance rubric
+        // rows from the default scan path. When its projection misses a ref but
+        // the revision spine can still see a versioned backing plan row, report
+        // the measured stale-reader shape instead of a false ordinary absence.
+        // A failed/unversioned revision read stays terse: it cannot establish
+        // that a backing row exists, so never claim build skew from it.
+        const revisionRead = await readRubricPlanRevision(rubricRef);
+        if (!revisionRead.ok || revisionRead.revision == null) {
+          return { ok: false as const, rubricRef, error: 'rubric not found' };
+        }
+
+        const vintage = readServerVintage();
+        const vintageHint = vintage
+          ? ` This server is running build ${vintage.buildId ?? 'an unknown build'}, started ${formatVintageAge(vintage.bootedAgoMs)} ago.`
+          : '';
+        const freshCodeEndpoint = vintage?.freshCodeEndpoint?.trim();
+        const freshCodeHint = freshCodeEndpoint
+          ? ` For the current source tree, retry this call against ${freshCodeEndpoint}.`
+          : '';
+        return {
+          ok: false as const,
+          rubricRef,
+          error:
+            `rubric not found; a backing rubric plan row exists at revision ${revisionRead.revision}, but this server could not project it.` +
+            vintageHint +
+            freshCodeHint,
+        };
       },
       { keyOf: (rubricRef) => ({ rubricRef }) },
     );

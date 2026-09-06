@@ -118,6 +118,72 @@ describe('pgReadQuery (real PG)', () => {
   });
 });
 
+/**
+ * EI-22453679671058762 recurrence guard: the lossless admin pool carries
+ * `harness_shared, papercusp_shared, public` at connect time, but PgBouncer
+ * transaction pooling discards that startup search_path before handing a
+ * transaction to PostgreSQL. This uses an intentionally unscoped client to
+ * reproduce the pooler's `$user, public` session state, then forces the
+ * canonical PgBouncer predicate so the test remains isolated from the host
+ * pooler while still exercising the production branch.
+ */
+describe('pgReadQuery — per-transaction org search_path (EI-22453679671058762)', () => {
+  let db: OrgTestDb;
+  let unscopedSql: postgres.Sql;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    unscopedSql = postgres(db.adminDsn, {
+      max: 1,
+      onnotice: () => {},
+      prepare: false,
+      connection: { search_path: '$user, public' },
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await unscopedSql?.end({ timeout: 1 }).catch(() => {});
+    await db?.cleanup();
+  });
+
+  it('restores the canonical org path inside the transaction without leaking it', async () => {
+    const [canonical] = (await unscopedSql.unsafe(
+      "SELECT to_regclass('harness_shared.tool_invocations')::text AS relation",
+    )) as unknown as Array<{ relation: string | null }>;
+    expect(canonical?.relation).toBe('harness_shared.tool_invocations');
+
+    const [before] = (await unscopedSql.unsafe(
+      "SELECT current_setting('search_path') AS path",
+    )) as unknown as Array<{ path: string }>;
+    expect(before?.path).not.toContain('harness_shared');
+
+    // CONTROL: the deliberately unscoped client cannot resolve the relation
+    // outside pgReadQuery, so a green result below proves the transaction-local
+    // repair rather than an accidental startup/default path.
+    await expect(unscopedSql.unsafe('SELECT count(*)::int AS c FROM tool_invocations')).rejects.toMatchObject({
+      code: '42P01',
+    });
+
+    const previousPgbouncer = process.env.PAPERCUSP_PGBOUNCER;
+    process.env.PAPERCUSP_PGBOUNCER = '1';
+    try {
+      const r = await pgReadQuery('SELECT count(*)::int AS c FROM tool_invocations', {
+        client: unscopedSql,
+      });
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]?.c).toBeGreaterThanOrEqual(0);
+    } finally {
+      if (previousPgbouncer === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+      else process.env.PAPERCUSP_PGBOUNCER = previousPgbouncer;
+    }
+
+    const [after] = (await unscopedSql.unsafe(
+      "SELECT current_setting('search_path') AS path",
+    )) as unknown as Array<{ path: string }>;
+    expect(after?.path).toBe(before?.path);
+  });
+});
+
 describe('boundedPgReadTxn (real PG)', () => {
   let db: OrgTestDb;
 

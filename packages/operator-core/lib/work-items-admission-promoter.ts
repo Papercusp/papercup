@@ -27,11 +27,7 @@ import {
   readAgentReviewState,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
-import {
-  readIssueOccurrenceCounts,
-  selectCanonicalIssue,
-  recordIssueOccurrence,
-} from './issue-occurrence-ledger';
+import { readIssueOccurrenceCounts, selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-ledger';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
@@ -804,6 +800,9 @@ export interface WorkItemReadinessProjection {
     readyExpectedCost: {
       coveredRows: number;
       totalRows: number;
+      /** Known subtotal even when coverage is incomplete. */
+      pricedSubtotalCents: number;
+      /** Exact total only when every ready row is priced. */
       cents: number | null;
     };
   };
@@ -2093,12 +2092,20 @@ async function finishRun(
      WHERE id = ${input.runId}`;
 }
 
-async function failRun(sql: OrgSql, runId: string, mode: string, error: unknown, latencyMs: number): Promise<void> {
+async function failRun(
+  sql: OrgSql,
+  runId: string,
+  mode: string,
+  error: unknown,
+  latencyMs: number,
+  usage?: { modelId: string | null; tokensIn: number; tokensOut: number; modelCostUsd: number | null },
+): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
   const detail = JSON.stringify({
     status: 'failed',
     mode,
     error: message,
+    ...(usage ? { modelCostUsd: usage.modelCostUsd } : {}),
     outcome: {
       unit: 'items',
       attempted: null,
@@ -2112,7 +2119,12 @@ async function failRun(sql: OrgSql, runId: string, mode: string, error: unknown,
   });
   await sql`
     UPDATE harness_shared.admission_runs
-       SET finished_at = now(), latency_ms = ${latencyMs}, detail = ${detail}::text::jsonb
+       SET finished_at = now(),
+           model_id = ${usage?.modelId ?? null},
+           tokens_in = ${usage?.tokensIn ?? 0},
+           tokens_out = ${usage?.tokensOut ?? 0},
+           latency_ms = ${latencyMs},
+           detail = ${detail}::text::jsonb
      WHERE id = ${runId}`.catch(() => null);
 }
 
@@ -2285,6 +2297,7 @@ export async function readWorkItemReadinessProjection(opts: {
   const measuredAt = new Date(nowMs).toISOString();
   const since = new Date(nowMs - windowDays * 24 * 60 * 60_000).toISOString();
   const terminalStates = [...ALL_TERMINAL_STATUSES];
+  const successfulStates = [...ALL_SUCCESSFUL_STATUSES];
 
   type ProjectionRow = Record<string, number | string | null>;
   const [rows, recurrence] = await Promise.all([
@@ -2336,13 +2349,19 @@ export async function readWorkItemReadinessProjection(opts: {
                    JOIN harness_shared.work_items blocker
                      ON blocker.workspace_id = wi.workspace_id
                     AND (
-                      blocker.feature_id = d.blocker_ref
+                      (position('#' in d.blocker_ref) = 0 AND blocker.feature_id = d.blocker_ref)
                       OR blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref
                     )
                   WHERE d.workspace_id = 'default'
                     AND d.dep_type = 'blocks'
                     AND d.blocked_ref = wi.feature_id
-                    AND blocker.status <> ALL(${terminalStates}::text[])
+                    AND (
+                      (d.satisfaction = 'success' AND blocker.status <> ALL(${successfulStates}::text[]))
+                      OR (
+                        d.satisfaction IS DISTINCT FROM 'success'
+                        AND blocker.status <> ALL(${terminalStates}::text[])
+                      )
+                    )
                ) AS active_dependency
           FROM harness_shared.work_items wi
          WHERE wi.workspace_id = ${opts.workspaceId}
@@ -2471,10 +2490,7 @@ export async function readWorkItemReadinessProjection(opts: {
              COALESCE(sum(expected_cost_cents) FILTER (WHERE headline = 'ready' AND expected_cost_cents IS NOT NULL), 0)::bigint
                AS ready_cost_cents
         FROM classified`,
-    readIssueOccurrenceCounts(
-      { workspaceId: opts.workspaceId, harnessSlug, since },
-      sql,
-    ),
+    readIssueOccurrenceCounts({ workspaceId: opts.workspaceId, harnessSlug, since }, sql),
   ]);
   const row = rows[0] ?? {};
   const n = (key: string): number => Number(row[key] ?? 0);
@@ -2548,6 +2564,7 @@ export async function readWorkItemReadinessProjection(opts: {
       readyExpectedCost: {
         coveredRows: n('ready_cost_covered'),
         totalRows: headline.ready,
+        pricedSubtotalCents: n('ready_cost_cents'),
         cents: n('ready_cost_covered') === headline.ready ? n('ready_cost_cents') : null,
       },
     },
@@ -4453,6 +4470,12 @@ export async function runWorkItemAdmissionPromoter(opts: {
     };
   }
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'promoter' });
+  let runModelId: string | null = null;
+  let tokensIn = 0;
+  let tokensOut = 0;
+  // A deterministic/no-model tick costs exactly zero. Once a call is attempted,
+  // null means the provider did not price the response; it never means free.
+  let modelCostUsd: number | null = 0;
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
     const pendingRows = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize);
@@ -4482,10 +4505,9 @@ export async function runWorkItemAdmissionPromoter(opts: {
       b: bindAdmissionMergeSnapshot(pair.b, snapshotsById.get(pair.b.id)),
     }));
     let judgements: PromoterJudgement[] = [];
-    let tokensIn = 0;
-    let tokensOut = 0;
-    let modelCostUsd: number | null = null;
     if (pairs.length > 0) {
+      runModelId = model;
+      modelCostUsd = null;
       const prompt = buildPromoterPrompt(pairs);
       const response = await opts.llmCall({
         model,
@@ -4494,16 +4516,18 @@ export async function runWorkItemAdmissionPromoter(opts: {
         responseFormat: 'json',
         maxTokens: Math.min(8_000, 500 + pairs.length * 180),
       });
-      judgements = parsePromoterJudgements(responsePayload(response));
-      const expectedPairKeys = new Set(pairs.map((pair) => pair.pairKey));
-      const unknownPair = judgements.find((judgement) => !expectedPairKeys.has(judgement.pairKey));
-      if (unknownPair) throw new Error(`promoter model returned unknown pairKey ${unknownPair.pairKey}`);
+      // Capture usage before parsing. A schema-invalid response still consumed
+      // tokens/cost and the failed run must retain that actual evidence.
       tokensIn = response.inputTokens;
       tokensOut = response.outputTokens;
       modelCostUsd =
         typeof response.costUsd === 'number' && Number.isFinite(response.costUsd)
           ? Math.max(0, response.costUsd)
           : null;
+      judgements = parsePromoterJudgements(responsePayload(response));
+      const expectedPairKeys = new Set(pairs.map((pair) => pair.pairKey));
+      const unknownPair = judgements.find((judgement) => !expectedPairKeys.has(judgement.pairKey));
+      if (unknownPair) throw new Error(`promoter model returned unknown pairKey ${unknownPair.pairKey}`);
     }
     const recurrenceItems = new Map<string, PromoterItem>();
     for (const item of pending) recurrenceItems.set(item.id, item);
@@ -4553,7 +4577,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       autoPromoted: 0,
       censusBefore,
       censusAfter,
-      modelId: pairs.length > 0 ? model : null,
+      modelId: runModelId,
       tokensIn,
       tokensOut,
       latencyMs,
@@ -4590,7 +4614,12 @@ export async function runWorkItemAdmissionPromoter(opts: {
       writerCoverageGap,
     };
   } catch (error) {
-    await failRun(sql, runId, 'promoter', error, Math.max(0, now() - startedAt));
+    await failRun(sql, runId, 'promoter', error, Math.max(0, now() - startedAt), {
+      modelId: runModelId,
+      tokensIn,
+      tokensOut,
+      modelCostUsd,
+    });
     throw error;
   }
 }

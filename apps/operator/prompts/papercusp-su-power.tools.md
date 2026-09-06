@@ -227,22 +227,22 @@ A rate-limit `retryAfterMs` is a wake-at-reset (`events:await { event:
 'wake' }`). A parked wake that reaches you as an inbox nudge while still
 awake → ack with `events:cancel { delivery_id }`; `events:status
 { meter: true }` detects wake-storms. **notify ≠ wake** — a `wake:false` watch
-never wakes you, and a wake costs a whole turn: await only what genuinely
-blocks you. (`await-event-primitive-2026-06-05`.)
-**Waiting on a COMBINATION (or idle with no claimable work)? ONE composed
-await** — `events:await { spec }` takes an `all`/`any`/`some:{require,of}`
+never wakes you, while `watch:create { pattern, wake:true, once:false }` is
+the standing event-watch form that re-invokes you on every matching emit.
+`events:await` remains one-shot, and a wake costs a whole turn: await only what
+genuinely blocks you. (`await-event-primitive-2026-06-05`.)
+**Waiting on a COMBINATION? ONE composed await** — `events:await { spec }` takes an
+`all`/`any`/`some:{require,of}`
 threshold tree over event leaves (`{ event: '<key|glob|@macro>', when? }`) and
-fires ONE wake when satisfied. Idle-fleet recipe
-(composable-event-awaits P-006/P-007): an empty `scheduler:get_next` pull
-parks on ONE leaf — `events:await { event: 'work-item:claimable',
-payload_filter: <your claim-spec view>, timeout_sec: 1800 }` (the single-event
-form takes `payload_filter`; `when` is the leaf-spec spelling) — never a ~60s
-re-poll
-(`work-item:claimable` dual-fires on created-unclaimed / claim-released /
-unblocked, so the older 3-leaf composed spec keeps working too). The wake is a
-HINT; `scheduler:get_next` on the wake turn stays the authoritative claim
-(re-register on a re-miss). `events:cancel { root_id }` kills a whole tree;
-`events:status` shows `composed_awaits`.
+fires ONE wake when satisfied. For an idle self-puller whose
+`scheduler:get_next` pull came back empty, register the standing claimable watch
+`watch:create { pattern: 'work-item:claimable', wake:true, once:false, payload_filter: <your claim-spec view> }`
+and END YOUR TURN. Do not pass `targetKind` with `wake:true`; the watch never
+expires, re-invokes on matching created-unclaimed / claim-released / unblocked
+transitions, and its standing floor coalesces bursts. The wake is a HINT;
+`scheduler:get_next` on the wake turn stays the authoritative claim, and a
+re-miss does not require re-registering. `events:cancel` stops the watch;
+`events:status` shows active wake watches.
 
 **You're always-armed for inbox-wake.** The operator arms your standing
 `coord:inbox-wake:<self>` watch at SessionStart, so a `coord:send {wake:true,

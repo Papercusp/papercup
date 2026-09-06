@@ -383,6 +383,44 @@ footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
 /* ── B: the right pane earns its keep ──────────────────────────────── */
 .b-col{flex:0 0 372px;width:372px;border-right:1px solid var(--p-rule);padding:12px;
   display:flex;flex-direction:column;gap:9px;min-height:0}
+/* B — selected state: detail main at a readable measure + a metadata rail */
+.bs-detail{flex:1 1 auto;min-width:0;display:flex}
+.bs-main{flex:1 1 auto;min-width:0;padding:22px 26px 20px;display:flex;flex-direction:column;gap:14px}
+.bs-crumb{display:flex;align-items:center;gap:9px;font-size:9.5px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--p-mute)}
+.bs-crumb b{color:var(--p-accent);font-weight:700}
+.bs-why{
+  display:inline-flex;align-items:center;gap:7px;align-self:flex-start;border-radius:99px;
+  padding:3px 12px;font-size:10.5px;font-weight:700;letter-spacing:.03em;color:var(--p-warn);
+  border:1px solid color-mix(in srgb,var(--p-warn) 45%,transparent);
+  background:color-mix(in srgb,var(--p-warn) 13%,transparent)
+}
+.bs-title{margin:0;font-size:20px;line-height:1.26;font-weight:700;letter-spacing:-.021em;max-width:34ch}
+.bs-body{font-size:12.5px;line-height:1.68;color:var(--p-fg);max-width:60ch;
+  border-left:2px solid var(--p-rule);padding-left:15px}
+.bs-body em{font-style:normal;color:var(--p-warn);font-weight:600}
+.bs-body .k{font-family:var(--ff-mono);font-size:11.5px;color:var(--p-accent)}
+.bs-acts{display:flex;gap:9px;margin-top:auto;padding-top:15px;border-top:1px solid var(--p-rule)}
+.bs-btn{height:34px;border-radius:8px;padding:0 15px;display:flex;align-items:center;
+  font-size:11.5px;font-weight:700}
+.bs-btn.pri{background:var(--p-accent);color:#10201c}
+.bs-btn.dgr{color:var(--p-danger);background:transparent;
+  border:1px solid color-mix(in srgb,var(--p-danger) 50%,transparent)}
+.bs-btn.def{border:1px solid var(--p-rule);color:var(--p-fg);background:var(--p-bg2)}
+.bs-meta{
+  flex:0 0 236px;width:236px;border-left:1px solid var(--p-rule);padding:22px 18px;
+  background:color-mix(in srgb,var(--p-fg) 2%,transparent)
+}
+.bs-meta dl{margin:0;display:flex;flex-direction:column;gap:14px}
+.bs-meta dt{font-size:9px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--p-mute);margin-bottom:5px}
+.bs-meta dd{margin:0;font-size:11.5px;color:var(--p-fg)}
+.bs-tag{display:inline-flex;align-items:center;border-radius:5px;padding:2px 8px;font-size:10px;
+  font-weight:600;border:1px solid var(--p-rule);background:var(--p-bg3);color:var(--p-fg)}
+.bs-tag.st{color:var(--p-danger);border-color:color-mix(in srgb,var(--p-danger) 45%,transparent);
+  background:color-mix(in srgb,var(--p-danger) 15%,transparent)}
+.bs-tag.hi{color:var(--p-warn);border-color:color-mix(in srgb,var(--p-warn) 45%,transparent);
+  background:color-mix(in srgb,var(--p-warn) 15%,transparent)}
 .b-col .a-list{gap:4px}
 .b-col .mrow{padding:6px 10px;gap:3px}
 .b-col .mrow .l2{font-size:11.5px}
@@ -764,6 +802,97 @@ footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
       <div class="note keep"><b>The briefing is finally readable</b><span>Facet counts become a bar chart at a size you can actually compare, instead of four 10px dots.</span></div>
       <div class="note keep"><b>The empty state says something</b><span>“Select an item to read and answer it here” becomes a working screen you'd keep open.</span></div>
       <div class="note move"><b>Costs a state branch</b><span><span class="mono">.op-inbox__aside</span> needs a briefing view alongside the existing empty and detail views.</span></div>
+    </div>
+  </div>
+
+  <div class="col" style="margin-top:52px">
+    <h3 style="font-size:19px;letter-spacing:-.015em">B, with an item open</h3>
+    <div class="sec-body"><p>Selecting a row replaces the briefing. Today this state has its own
+      problems, separate from the collapse: the item's <em>title is never shown in the pane at all</em>
+      — only in the row you clicked — the six metadata chips are strewn across 1100px at a contrast
+      that makes three of them near-invisible, the body runs about 200 characters per line, and the
+      whole thing occupies the top fifth of the pane with ~800px of nothing under it.</p>
+      <p>So the detail splits: a main column held to a 60-character measure, and a metadata rail that
+        gathers the chips into labelled rows you can actually read. Actions anchor to the bottom, in
+        the same place on every item.</p></div>
+  </div>
+
+  <div class="frame">
+    <div class="frame-bar"><span class="name">B · Item open</span><span class="dim">1280 × 720</span>
+      <span class="score">queue stays live <b>10</b></span></div>
+    <div class="screen"><div class="screen__inner">
+      <nav class="m-rail"><i></i><i></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i></nav>
+      <div class="m-main">
+        <div class="m-top"><span class="dot"></span><span class="t">Resolution Inbox</span>
+          <span class="m-search">Search or chat…</span>
+          <span class="m-pillrow"><span class="m-pill">77 agents</span><span class="m-pill">1191 processes</span></span></div>
+        <div class="m-surface">
+          <div class="b-col">
+            <div class="a-head"><h5>Needs you</h5><span class="n">100</span><span class="of">of 1540</span></div>
+            <div class="b-slim"><span class="in">Search blockers…</span></div>
+            <div class="a-tabs">
+              <span class="a-tab on">Needs you <span class="c">100</span></span>
+              <span class="a-tab">Alerts <span class="c">0</span></span>
+              <span class="a-tab">All <span class="c">100</span></span>
+            </div>
+            <div class="a-list">
+              <div class="mrow sel"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">42m</span></p>
+                <p class="l2">plans:migrate-acceptance-bars tool-call failure</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">1h</span></p>
+                <p class="l2">UNCONFIRMED: 90 running containers / 59 docker volumes</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">2h</span></p>
+                <p class="l2">P-029 fixture email domain routed to a WorkOS connection</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">5h</span></p>
+                <p class="l2">Root filesystem chronically at 98% (~39G free)</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">7h</span></p>
+                <p class="l2">git-sync:run nested exec_command tool-call failure</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">9h</span></p>
+                <p class="l2">Divergent 60da99e0 epoch-key lineage STILL LIVE on Tower</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">10h</span></p>
+                <p class="l2">Hosted HTTP/1.1 stalls at second hydration checkpoint</p></div>
+              <div class="mrow"><p class="l1"><span class="k">ESCALATION</span><span class="st">needs-human</span><span class="age">12h</span></p>
+                <p class="l2">Release gate held by affected-tests failure</p></div>
+              <div class="mrow"><p class="l1"><span class="k">WORK ITEM</span><span class="st">needs-human</span><span class="age">15h</span></p>
+                <p class="l2">Portal quick-panel palette drifts from ratified tokens</p></div>
+              <div class="mrow"><p class="l1"><span class="k">ITEM</span><span class="st">needs-human</span><span class="age">17h</span></p>
+                <p class="l2">Embedded PG data dir exceeds the snapshot budget</p></div>
+            </div>
+          </div>
+          <div class="bs-detail">
+            <div class="bs-main">
+              <p class="bs-crumb"><b>Decisions</b><span>›</span><span>plan-governance</span></p>
+              <span class="bs-why">● needs you · your ratification</span>
+              <h5 class="bs-title">plans:migrate-acceptance-bars tool-call failure (tool_not_found)</h5>
+              <p class="bs-body">Suspected tool-call failure reported through the canonical
+                <span class="k">improvements:capture</span> toolFailure shorthand. Direct ptool call by
+                the live catalog's colon-form name returned no tool named
+                <span class="k">plans:migrate-acceptance-bars</span>; server-side
+                <span class="k">tools:invoke</span> dispatch is required.
+                <em>Clear server mismatch: true</em></p>
+              <div class="bs-acts">
+                <span class="bs-btn pri">Release to agents</span>
+                <span class="bs-btn dgr">Drop</span>
+                <span class="bs-btn def">Open work item</span>
+                <span class="bs-btn def">Discuss</span>
+              </div>
+            </div>
+            <aside class="bs-meta"><dl>
+              <div><dt>State</dt><dd><span class="bs-tag st">needs-human · bug</span></dd></div>
+              <div><dt>Importance</dt><dd><span class="bs-tag hi">HIGH</span></dd></div>
+              <div><dt>Kind</dt><dd>work item</dd></div>
+              <div><dt>Harness</dt><dd>papercusp</dd></div>
+              <div><dt>Topic</dt><dd>plan-governance</dd></div>
+              <div><dt>Waiting</dt><dd class="m-mono">42m</dd></div>
+            </dl></aside>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <div class="notes">
+      <div class="note keep"><b>The title finally appears</b><span>Today the pane never shows it — you have to remember which row you clicked. It becomes the heading.</span></div>
+      <div class="note keep"><b>60-character measure</b><span>The body was running ~200 characters per line across the full 1100px. Now it reads like prose.</span></div>
+      <div class="note move"><b>Chips become a rail</b><span>The same six values, in labelled rows at full contrast, instead of strewn edge-to-edge at 10px.</span></div>
+      <div class="note keep"><b>The queue never leaves</b><span>Ten rows stay live beside the item, so answering one and moving to the next is a single click.</span></div>
     </div>
   </div>
 </section>

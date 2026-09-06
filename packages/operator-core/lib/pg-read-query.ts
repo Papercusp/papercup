@@ -27,6 +27,7 @@ import {
   DbCallDeadlineError,
   getOrgPg,
   getOrgPgLosslessBigint,
+  pgbouncerEnabled,
   withAcquisitionDeadline,
 } from '@papercusp/db-org';
 
@@ -3085,6 +3086,16 @@ export function callTimeoutMessage(timeoutMs: number, callDeadlineMs: number): s
 export const SET_LOCAL_UTC = "SET LOCAL TIME ZONE 'UTC'";
 
 /**
+ * Re-apply the canonical org search path inside a transaction when the client
+ * is routed through PgBouncer transaction pooling. Connect-time startup
+ * parameters do not survive that routing, so an unqualified
+ * `FROM tool_invocations` otherwise runs with PostgreSQL's `$user, public`
+ * default and reports a relation that is present as missing (EI-22453679671058762).
+ */
+export const SET_LOCAL_ORG_SEARCH_PATH =
+  "SELECT set_config('search_path', 'harness_shared, papercusp_shared, public', true)";
+
+/**
  * Run an internal query in one bounded, READ ONLY transaction.
  *
  * This is the shared seam for operator read paths that already use a tagged
@@ -3434,6 +3445,10 @@ export async function pgReadQuery(
   );
 
   const sql = opts.client ?? getOrgPgLosslessBigint().sql;
+  // PgBouncer transaction pooling does not preserve the connect-time
+  // search_path configured by getOrgPgLosslessBigint(). Mirror withWorkspace's
+  // canonical predicate and re-apply it inside this transaction.
+  const usePerTransactionOrgSearchPath = pgbouncerEnabled();
   const startedAt = Date.now();
   let rows: Record<string, unknown>[] = [];
   let positiveControlRows: Record<string, unknown>[] | null = null;
@@ -3443,6 +3458,9 @@ export async function pgReadQuery(
     await tx.unsafe('SET TRANSACTION READ ONLY');
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
     await tx.unsafe(SET_LOCAL_UTC);
+    if (usePerTransactionOrgSearchPath) {
+      await tx.unsafe(SET_LOCAL_ORG_SEARCH_PATH);
+    }
     if (positiveControlQuery) {
       positiveControlRows = (await tx.unsafe(
         `SELECT * FROM (${positiveControlQuery}) AS _pgq_positive_control LIMIT 2`,

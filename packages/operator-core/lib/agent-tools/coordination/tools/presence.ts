@@ -18,6 +18,7 @@ import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snap
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
+import { normalizeFullPresenceRows } from '../presence-payload';
 import { COORD_ROLES } from '../roles';
 import { getModesForOwners } from '../../../modes/store';
 import { modeRegistrationLive } from '../../../modes/liveness';
@@ -573,8 +574,9 @@ export default defineTool({
     // extra IO on a hot path — and emits nothing rather than a half-filled call
     // when either the lane or the target is unresolvable. See dispatch-handle.ts
     // for why a blank `items` is the specific shape that must never ship.
+    const normalizedActive = normalizeFullPresenceRows(active as Array<Record<string, unknown>>);
     const selfRow = self
-      ? (active as Array<Record<string, unknown>>).find((r) => r.ownerId === self.ownerId)
+      ? normalizedActive.find((r) => r.ownerId === self.ownerId)
       : undefined;
     const dispatch = buildDispatchHandle(
       {
@@ -582,14 +584,14 @@ export default defineTool({
         items: (selfRow?.claimedItems as string[] | undefined) ?? null,
         harness: c.harnessSlug ?? null,
       },
-      active as unknown as DispatchCandidate[],
+      normalizedActive as unknown as DispatchCandidate[],
       { selfOwnerId: self?.ownerId ?? null },
     );
 
     const out = {
       ...snapshot,
       ...(self ? { self } : {}),
-      active,
+      active: normalizedActive,
       // EI-21845811145701209: `agents` is the name readers reach for FIRST when
       // guessing the roster key (the tool description already spells out
       // `active` — see EI-13298 above — but the guess persists). Alias it to
@@ -598,7 +600,7 @@ export default defineTool({
       // agents present" instead of "wrong key name", which is the exact
       // silent-false-absence failure both incidents hit. Kept as a reference to
       // `active`, never a second derivation, so the two can never diverge.
-      agents: active,
+      agents: normalizedActive,
       ...coupling,
       ...(dispatch ? { dispatch } : {}),
     };

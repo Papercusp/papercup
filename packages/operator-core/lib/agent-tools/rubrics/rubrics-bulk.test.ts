@@ -7,24 +7,46 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/rubrics/rubrics-bulk.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  dispatchProjectedTool,
+  formatVintageAge,
+  lookupByMcpName,
+  readJsonResult,
+  resetServerVintageResolver,
+  setServerVintageResolver,
+} from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // rubricCompleteness is mocked shape-only here (WI-4287: ratify surfaces it per result);
 // its real logic is pinned in lib/rubrics-loss-guards.test.ts.
 vi.mock('../../rubrics', () => ({
+  META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
   getRubric: vi.fn(),
+  getRubricPlanRevision: vi.fn(),
+  readRubricPlanRevision: vi.fn(),
   ratifyRubric: vi.fn(),
   rubricCompleteness: vi.fn(() => ({ criteriaWithoutReplication: [], methodRefMissing: false, complete: true })),
 }));
+vi.mock('../../scorecards', () => ({ listScorecards: vi.fn() }));
 
-import { getRubric, ratifyRubric } from '../../rubrics';
+import {
+  getRubric,
+  getRubricPlanRevision,
+  META_ACCEPTANCE_RUBRIC_ID,
+  ratifyRubric,
+  readRubricPlanRevision,
+} from '../../rubrics';
 import type { Rubric } from '../../rubrics';
+import { listScorecards } from '../../scorecards';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 const getM = vi.mocked(getRubric);
+const getRevisionM = vi.mocked(getRubricPlanRevision);
+const revisionM = vi.mocked(readRubricPlanRevision);
 const ratifyM = vi.mocked(ratifyRubric);
+const listScorecardsM = vi.mocked(listScorecards);
 
 /**
  * A COMPLETE, typed `Rubric` — the typed-mock alternative to `{ … } as never`
@@ -50,6 +72,26 @@ const RUBRIC_R1: Rubric = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
+const ACCEPTANCE_RUBRIC: Rubric = {
+  ...RUBRIC_R1,
+  rubricId: 'acceptance-rubric',
+  kind: 'acceptance',
+  criteria: [
+    {
+      key: 'criterion-1',
+      title: 'Criterion 1',
+      model: 'The criterion is true.',
+      method: 'Check the criterion.',
+      driftMarkers: 'The criterion is false.',
+    },
+  ],
+};
+
+const META_ACCEPTANCE_RUBRIC: Rubric = {
+  ...RUBRIC_R1,
+  rubricId: META_ACCEPTANCE_RUBRIC_ID,
+};
+
 const getTool = (await import('./get')).default;
 const ratifyTool = (await import('./ratify')).default;
 
@@ -57,7 +99,40 @@ type Out = { data: any };
 const body = async (tool: typeof getTool | typeof ratifyTool, args: unknown) =>
   (((await tool.handler(args as never, {} as never)) as Out).data);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  resetServerVintageResolver();
+  getRevisionM.mockResolvedValue(null);
+  revisionM.mockResolvedValue({ ok: true, revision: null });
+  listScorecardsM.mockResolvedValue([]);
+});
+
+afterEach(() => resetServerVintageResolver());
+
+const vettingCard = (rubricRevision: number) => ({
+  issueId: 'EI-vetting',
+  createdAt: '2026-09-06T00:00:00.000Z',
+  createdBy: 'su-reviewer',
+  rubricRef: META_ACCEPTANCE_RUBRIC_ID,
+  ratings: {},
+  nKeys: 1,
+  missingKeys: [],
+  extraKeys: [],
+  rubricResolved: true,
+  synthesized: false,
+  vetting: { consultId: 'consult-vetting', rubricRevision },
+});
+
+const mockAcceptanceVetting = (cards: unknown[]) => {
+  getM.mockImplementation(async (id: string) => {
+    if (id === ACCEPTANCE_RUBRIC.rubricId) return ACCEPTANCE_RUBRIC;
+    if (id === META_ACCEPTANCE_RUBRIC_ID) return META_ACCEPTANCE_RUBRIC;
+    return null;
+  });
+  getRevisionM.mockResolvedValue(7);
+  revisionM.mockResolvedValue({ ok: true, revision: 7 });
+  listScorecardsM.mockResolvedValue(cards as never);
+};
 
 describe('rubrics:get handler (bulk keyed-array)', () => {
   it('inline { rubricRef } returns a single result', async () => {
@@ -222,6 +297,97 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(b.results[1]).toMatchObject({ ok: false, rubricRef: 'gone', error: 'rubric not found' });
   });
 
+  it('surfaces a current acceptance-rubric vetting attestation', async () => {
+    mockAcceptanceVetting([vettingCard(7)]);
+
+    const b = await body(getTool, { rubricRef: ACCEPTANCE_RUBRIC.rubricId });
+
+    expect(b.results[0].vetting).toMatchObject({
+      required: true,
+      satisfied: true,
+      state: 'vetted',
+      currentRevision: 7,
+      attestedRevision: 7,
+      attestedRevisions: [7],
+    });
+    expect(listScorecardsM).toHaveBeenCalledWith({
+      rubricRef: META_ACCEPTANCE_RUBRIC_ID,
+      subjectRef: ACCEPTANCE_RUBRIC.rubricId,
+      limit: 50,
+    });
+  });
+
+  it('surfaces stale acceptance-rubric vetting after the rubric revision changes', async () => {
+    mockAcceptanceVetting([vettingCard(6)]);
+
+    const b = await body(getTool, { rubricRef: ACCEPTANCE_RUBRIC.rubricId });
+
+    expect(b.results[0].vetting).toMatchObject({
+      required: true,
+      satisfied: false,
+      state: 'unvetted',
+      reason: 'stale-attestation',
+      currentRevision: 7,
+      attestedRevision: 6,
+      attestedRevisions: [6],
+    });
+  });
+
+  it('surfaces missing acceptance-rubric vetting when no attestation exists', async () => {
+    mockAcceptanceVetting([]);
+
+    const b = await body(getTool, { rubricRef: ACCEPTANCE_RUBRIC.rubricId });
+
+    expect(b.results[0].vetting).toMatchObject({
+      required: true,
+      satisfied: false,
+      state: 'unvetted',
+      reason: 'missing-attestation',
+      currentRevision: 7,
+      attestedRevision: null,
+      attestedRevisions: [],
+    });
+  });
+
+  it('diagnoses a projected miss when the versioned backing rubric plan row exists', async () => {
+    getM.mockResolvedValue(null);
+    revisionM.mockResolvedValue({ ok: true, revision: 6 });
+    setServerVintageResolver(() => ({
+      buildId: 'stale-build',
+      bootedAgoMs: 2 * 60 * 60_000,
+      freshCodeEndpoint: 'the Papercusp staging operator at :3170',
+    }));
+
+    const b = await body(getTool, { rubricRef: 'acceptance-rubric' });
+    const result = b.results[0];
+
+    expect(result).toMatchObject({ ok: false, rubricRef: 'acceptance-rubric' });
+    expect(result.error).toContain('a backing rubric plan row exists at revision 6');
+    expect(result.error).toContain('build stale-build');
+    expect(result.error).toContain(`started ${formatVintageAge(2 * 60 * 60_000)} ago`);
+    expect(result.error).toContain('retry this call against the Papercusp staging operator at :3170');
+    expect(revisionM).toHaveBeenCalledWith('acceptance-rubric');
+  });
+
+  it('keeps a not-found terse when the backing-row probe cannot establish existence', async () => {
+    getM.mockResolvedValue(null);
+    revisionM.mockResolvedValue({ ok: false, revision: null });
+    setServerVintageResolver(() => ({
+      buildId: 'stale-build',
+      bootedAgoMs: 2 * 60 * 60_000,
+      freshCodeEndpoint: 'the Papercusp staging operator at :3170',
+    }));
+
+    const b = await body(getTool, { rubricRef: 'unknown-rubric' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      rubricRef: 'unknown-rubric',
+      error: 'rubric not found',
+    });
+    expect(revisionM).toHaveBeenCalledWith('unknown-rubric');
+  });
+
   it('dedups rubricRef + rubricRefs into one merged list', async () => {
     getM.mockImplementation(async (id: string) => ({ id } as never));
     const b = await body(getTool, { rubricRef: 'r-1', rubricRefs: ['r-1', 'r-2'] });
@@ -330,7 +496,7 @@ describe('rubrics:ratify handler (bulk keyed-array)', () => {
  * 'rubricRef', so it stays true if the canonical spelling is ever renamed again.
  */
 describe('bulk result rows round-trip into the input schema', () => {
-  const NON_KEY_FIELDS = new Set(['ok', 'rubric', 'error', 'completeness', 'replicationSqlCheck']);
+  const NON_KEY_FIELDS = new Set(['ok', 'rubric', 'vetting', 'error', 'completeness', 'replicationSqlCheck']);
 
   const inputKeys = (toolName: string): string[] => {
     const tool = lookupByMcpName(toolName);

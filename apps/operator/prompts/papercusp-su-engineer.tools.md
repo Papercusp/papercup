@@ -254,29 +254,28 @@ timeout_sec: ceil(ms/1000)`). **notify ≠ wake — the axis that picks your ver
 The follow verbs split cleanly: `work_items:subscribe` and any standing
 `watch:create { wake:false }` (topic or event key) are **inject-only** — their
 updates land in your context at your NEXT turn and NEVER re-invoke you, so an
-idle session never hears them. `events:await` is the ONLY verb that WAKES you,
-and it is one-shot by construction — it fires once then it's gone (re-await to
-keep listening). A wake costs a whole turn: await only what genuinely BLOCKS
-you; subscribe to what you merely want to SEE.
+idle session never hears them. `watch:create { pattern, wake:true, once:false }`
+is the standing event-watch form that DOES re-invoke you on every matching emit;
+`events:await` remains the one-shot wake preset and must be re-registered after it
+fires. A wake costs a whole turn: await only what genuinely BLOCKS you; subscribe
+to what you merely want to SEE.
 Corners: ack an already-seen parked wake with `events:cancel { delivery_id }`;
 `events:status { meter: true }` detects wake-storms.
-**Waiting on a COMBINATION (or idle with no claimable work)? ONE composed await,
-not N awaits and never a timer poll.** `events:await { spec }` takes an
+**Waiting on a COMBINATION? ONE composed await, not N awaits and never a timer
+poll.** `events:await { spec }` takes an
 `all`/`any`/`some:{require,of}` threshold tree over event leaves
 (`{ event: '<key|glob|@macro>', when?: <payload filter> }`) and fires ONE wake
-when the combination is satisfied. The idle-fleet recipe
-(composable-event-awaits P-006/P-007): your `scheduler:get_next` pull came back
-empty → do NOT re-poll on a ~60s loop cadence — park on ONE leaf,
-`events:await { event: 'work-item:claimable', payload_filter: <your claim-spec
-view>, timeout_sec: 1800 }` (single-event form takes `payload_filter`; `when`
-is the leaf-spec spelling), and END YOUR TURN (the ~30-min `on_timeout: 'wake'`
-backstops a missed emit; `work-item:claimable` dual-fires on every
-created-unclaimed / claim-released / last-blocker-cleared transition, so the
-older 3-leaf composed spec keeps working too). The wake is a HINT that work
-may exist, never a claim — `scheduler:get_next` on the wake turn stays the
-authoritative claim; a re-miss just re-registers the same await. Cancel a whole
-tree with `events:cancel { root_id }`; `events:status` renders your trees under
-`composed_awaits` with per-leaf fired state.
+when the combination is satisfied. For an idle self-puller whose
+`scheduler:get_next` pull came back empty, use the standing claimable watch
+instead of a one-shot await: do NOT re-poll on a ~60s loop cadence — register
+`watch:create { pattern: 'work-item:claimable', wake:true, once:false, payload_filter: <your claim-spec view> }`
+and END YOUR TURN. Do not pass `targetKind` with `wake:true`; this watch never
+expires, re-invokes on every matching created-unclaimed / claim-released /
+last-blocker-cleared transition, and its standing floor coalesces bursts. The
+wake is a HINT that work may exist, never a claim — `scheduler:get_next` on the
+wake turn stays the authoritative claim; a re-miss does not require
+re-registering because the standing watch remains armed. Cancel it with
+`events:cancel` and inspect active wake watches with `events:status`.
 
 **You're always-armed for inbox-wake.** The operator arms your standing
 inbox-wake watch at SessionStart, so a `coord:send {wake:true, to:[you]}`

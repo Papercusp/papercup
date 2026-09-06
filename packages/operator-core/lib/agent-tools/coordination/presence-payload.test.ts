@@ -17,6 +17,7 @@ import {
   partitionPresenceRow,
   deltaEligibleProjection,
   toStableRosterRow,
+  normalizeFullPresenceRows,
   PRESENCE_IDENTITY_FIELDS,
   PRESENCE_STATE_FIELDS,
   PRESENCE_LIVENESS_FIELDS,
@@ -221,6 +222,29 @@ describe('byte-stability (D-006)', () => {
     // P-007: context-pressure bucket is always emitted (null when untracked).
     expect(emitted).toHaveProperty('contextPressure');
     expect(emitted).toHaveProperty('contextPressureAgeSec');
+  });
+});
+
+describe('normalizeFullPresenceRows', () => {
+  it('fills source-specific fields with null so mixed rows share one wire key set', () => {
+    const rows = normalizeFullPresenceRows([
+      { ownerId: 'local', claimCount: 2, contextPressure: 'high', modes: ['auto'] },
+      { ownerId: 'fed', federated: true, contextPressure: null },
+    ]);
+
+    expect(new Set(rows.map((row) => Object.keys(row).sort().join('|'))).size).toBe(1);
+    expect(rows[0]).toMatchObject({ claimCount: 2, contextPressure: 'high', modes: ['auto'] });
+    expect(rows[1]).toMatchObject({
+      claimCount: null,
+      contextPressure: null,
+      modes: null,
+      model: null,
+    });
+  });
+
+  it('normalizes undefined overlays instead of letting JSON omit them', () => {
+    const [row] = normalizeFullPresenceRows([{ ownerId: 'local', parkedOn: undefined }]);
+    expect(row).toHaveProperty('parkedOn', null);
   });
 });
 

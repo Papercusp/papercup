@@ -216,6 +216,7 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
       json: { judgements: keys.map((pairKey) => ({ pairKey, verdict, reason: 'fixture verdict' })) },
       inputTokens: 100,
       outputTokens: 20,
+      costUsd: 0.0042,
     };
   });
 }
@@ -605,10 +606,11 @@ describe('work-item admission promoter (real Postgres)', () => {
         },
       });
     }
-    const run = await db.sql<Array<{ promoted: number; merged: number; status: string }>>`
-      SELECT promoted, merged, detail->>'status' AS status
+    const run = await db.sql<Array<{ promoted: number; merged: number; status: string; model_cost_usd: number }>>`
+      SELECT promoted, merged, detail->>'status' AS status,
+             (detail->>'modelCostUsd')::double precision AS model_cost_usd
         FROM harness_shared.admission_runs WHERE id = 'promoter-clones'`;
-    expect(run).toEqual([{ promoted: 1, merged: 5, status: 'complete' }]);
+    expect(run).toEqual([{ promoted: 1, merged: 5, status: 'complete', model_cost_usd: 0.0042 }]);
     // D-003: the ledger must carry the promoted-to-first-claim DISTRIBUTION, not
     // only promotion volume. An independent acceptance grader measured 0 of 208
     // real promoter-tick rows carrying it (EI-21844734848781188) — the value was
@@ -641,6 +643,50 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(identity.canonical_fingerprint).toMatch(/^[0-9a-f]{64}$/);
     }
   }, 60_000);
+
+  it('retains priced model usage when response validation fails after the call', async () => {
+    await seedItem({ id: 'WI-failed-a', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-failed-b', createdAtMs: NOW - 19_000 });
+
+    await expect(
+      runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'promoter-invalid-response',
+        model: 'model-priced',
+        sql: db.sql,
+        llmCall: vi.fn(async () => ({
+          text: '',
+          json: { judgements: [{ pairKey: 'not-a-real-pair', verdict: 'r-remedy-keep', reason: 'invalid fixture' }] },
+          inputTokens: 77,
+          outputTokens: 11,
+          costUsd: 0.0065,
+        })),
+        now: () => NOW,
+      }),
+    ).rejects.toThrow('unknown pairKey');
+
+    const [run] = await db.sql<
+      Array<{
+        state: string;
+        model_id: string;
+        tokens_in: number;
+        tokens_out: number;
+        model_cost_usd: number;
+      }>
+    >`
+      SELECT detail->>'status' AS state, model_id, tokens_in, tokens_out,
+             (detail->>'modelCostUsd')::double precision AS model_cost_usd
+        FROM harness_shared.admission_runs
+       WHERE id = 'promoter-invalid-response'`;
+    expect(run).toEqual({
+      state: 'failed',
+      model_id: 'model-priced',
+      tokens_in: 77,
+      tokens_out: 11,
+      model_cost_usd: 0.0065,
+    });
+  });
 
   it('selects the keyed pending survivor and preserves recurrence, references, satisfied deps and reversal data', async () => {
     const historicalId = 'WI-historical-unkeyed';
@@ -1456,7 +1502,8 @@ describe('work-item admission promoter (real Postgres)', () => {
         ('census-old', ${WS}, ${HARNESS}, 'census', '2026-08-26T13:00:00Z', '2026-08-26T13:00:01Z',
          10, 0, 0, 0, 10, 7, NULL, 0, 0, 1000, '{"status":"complete"}'::jsonb),
         ('promoter-rise', ${WS}, ${HARNESS}, 'promoter-tick', '2026-08-26T14:00:00Z', '2026-08-26T14:00:02Z',
-         4, 2, 1, 1, 7, 8, 'model-a', 100, 20, 2000, '{"status":"complete"}'::jsonb)`;
+         4, 2, 1, 1, 7, 8, 'model-a', 100, 20, 2000,
+         '{"status":"complete","modelCostUsd":0.0125}'::jsonb)`;
 
     const snapshot = await readWorkItemAdmissionSnapshot({
       workspaceId: WS,
@@ -1471,6 +1518,7 @@ describe('work-item admission promoter (real Postgres)', () => {
       id: 'promoter-rise',
       tokensIn: 100,
       tokensOut: 20,
+      costUsd: 0.0125,
       censusDelta: 1,
     });
     expect(snapshot.summary).toMatchObject({
@@ -1479,6 +1527,16 @@ describe('work-item admission promoter (real Postgres)', () => {
       promotedToFirstClaim: { sampleSize: 2, p50Ms: 3000, p95Ms: 4800 },
       latestCensus: { runId: 'promoter-rise', after: 8 },
       latestCensusRise: { runId: 'promoter-rise', delta: 1 },
+      usage: {
+        cap: 100,
+        modelRuns: 1,
+        inputTokens: 100,
+        outputTokens: 20,
+        pricedRuns: 1,
+        unpricedRuns: 0,
+        costUsd: 0.0125,
+        pricedSubtotalUsd: 0.0125,
+      },
       reviewDebt: {
         pending: 1,
         overdue: 1,
@@ -1510,43 +1568,72 @@ describe('work-item admission promoter (real Postgres)', () => {
       updatedAt,
     });
     await seedItem({
-      id: 'WI-terminal', admission: 'admitted', status: 'done', authority: 'committed',
-      closedTs: NOW - 1_000, payload: { implementationReadiness: readiness('ready', '2026-08-26T11:00:00.000Z') },
-    });
-    await seedItem({
-      id: 'WI-active', admission: 'admitted', takenBy: 'su-worker', firstClaimedAt: '2026-08-26T11:30:00Z',
+      id: 'WI-terminal',
+      admission: 'admitted',
+      status: 'done',
+      authority: 'committed',
+      closedTs: NOW - 1_000,
       payload: { implementationReadiness: readiness('ready', '2026-08-26T11:00:00.000Z') },
     });
     await seedItem({
-      id: 'WI-revision', admission: 'admitted', payload: {
+      id: 'WI-active',
+      admission: 'admitted',
+      takenBy: 'su-worker',
+      firstClaimedAt: '2026-08-26T11:30:00Z',
+      payload: { implementationReadiness: readiness('ready', '2026-08-26T11:00:00.000Z') },
+    });
+    await seedItem({
+      id: 'WI-revision',
+      admission: 'admitted',
+      payload: {
         agentReview: { status: 'revision-requested', submittedBy: 'su-author', ledgerIdeaId: 'idea-r', round: 1 },
         implementationReadiness: readiness('not-ready', '2026-08-26T11:10:00.000Z'),
       },
     });
     await seedItem({
-      id: 'WI-review', admission: 'admitted', payload: {
+      id: 'WI-review',
+      admission: 'admitted',
+      payload: {
         agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-p', round: 1 },
         implementationReadiness: readiness('unknown', '2026-08-26T11:20:00.000Z'),
       },
     });
     await seedItem({
-      id: 'WI-held', admission: 'admitted', payload: {
+      id: 'WI-held',
+      admission: 'admitted',
+      payload: {
         _claimHold: true,
         implementationReadiness: readiness('ready', '2026-08-26T11:30:00.000Z'),
       },
     });
     await seedItem({
-      id: 'WI-ready-legacy-revision', admission: 'admitted', expectedCostCents: 250, payload: {
+      id: 'WI-ready-legacy-revision',
+      admission: 'admitted',
+      expectedCostCents: 250,
+      payload: {
         agentReview: {
-          status: 'revision-requested', submittedBy: 'system:legacy-agent-review', ledgerIdeaId: 'idea-l', round: 1,
+          status: 'revision-requested',
+          submittedBy: 'system:legacy-agent-review',
+          ledgerIdeaId: 'idea-l',
+          round: 1,
         },
         reopenHistory: [{ at: '2026-08-26T11:40:00.000Z', by: 'su-fixer', prevState: 'done' }],
       },
     });
+    await seedItem({ id: 'WI-ready-unpriced', admission: 'admitted' });
     await seedItem({
-      id: 'WI-unknown', admission: 'admitted',
+      id: 'WI-unknown',
+      admission: 'admitted',
       payload: { implementationReadiness: { schemaVersion: 'future-v9', status: 'ready' } },
     });
+    // A `success` dependency remains active when its blocker is deprecated but
+    // did not succeed. This pins the readiness projection to the writer's two
+    // distinct settled-vs-success denominators instead of a generic terminal proxy.
+    await seedItem({ id: 'F-blocker', itemKind: 'feature', admission: 'admitted', status: 'deprecated' });
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES ('default', 'issue', 'WI-held', 'feature', ${`${HARNESS}#F-blocker`}, 'blocks', 'success', 'fixture')`;
     await db.sql`
       INSERT INTO harness_shared.work_item_occurrences
         (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter, source_tool,
@@ -1558,18 +1645,22 @@ describe('work-item admission promoter (real Postgres)', () => {
          'regression', 'ready again', '{}'::jsonb, '{}'::jsonb, '2026-08-26T11:45:00Z')`;
 
     const projection = await readWorkItemReadinessProjection({
-      workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, now: () => NOW, windowDays: 30,
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      sql: db.sql,
+      now: () => NOW,
+      windowDays: 30,
     });
 
     expect(projection.headline).toEqual({
-      population: 7,
-      nonTerminal: 6,
+      population: 8,
+      nonTerminal: 7,
       terminal: 1,
       active: 1,
       awaitingRevision: 1,
       awaitingReview: 1,
       held: 1,
-      ready: 1,
+      ready: 2,
       unknown: 1,
     });
     expect(projection.reasons).toMatchObject({
@@ -1577,25 +1668,33 @@ describe('work-item admission promoter (real Postgres)', () => {
       legacyRevisionException: 1,
       pendingAgentReview: 1,
       claimHold: 1,
+      activeDependency: 1,
       readinessMalformed: 1,
     });
     expect(projection.flow).toMatchObject({
-      arrivals: 7,
+      arrivals: 8,
       terminalInWindow: 1,
       verifiedCompletionsInWindow: 1,
       retainedReopenEventsInWindow: 1,
       reopenedItemsInWindow: 1,
-      readyExpectedCost: { coveredRows: 1, totalRows: 1, cents: 250 },
+      readyExpectedCost: { coveredRows: 1, totalRows: 2, pricedSubtotalCents: 250, cents: null },
       recurrence: { canonicalClusters: 1, rawOccurrences: 2, duplicateOccurrences: 1 },
     });
-    expect(projection.aging.neverClaimed.count).toBe(5);
+    expect(projection.aging.neverClaimed.count).toBe(6);
     expect(projection.availability).toMatchObject({
-      corpus: 'nonempty', writerReady: 'ready', claimSpec: 'not-evaluated', fleetControl: 'not-evaluated',
+      corpus: 'nonempty',
+      writerReady: 'ready',
+      claimSpec: 'not-evaluated',
+      fleetControl: 'not-evaluated',
     });
     expect(
-      projection.headline.terminal + projection.headline.active + projection.headline.awaitingRevision +
-      projection.headline.awaitingReview + projection.headline.held + projection.headline.ready +
-      projection.headline.unknown,
+      projection.headline.terminal +
+        projection.headline.active +
+        projection.headline.awaitingRevision +
+        projection.headline.awaitingReview +
+        projection.headline.held +
+        projection.headline.ready +
+        projection.headline.unknown,
     ).toBe(projection.headline.population);
   });
 

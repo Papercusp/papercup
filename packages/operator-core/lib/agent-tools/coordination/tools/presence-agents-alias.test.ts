@@ -66,7 +66,59 @@ describe('coord:presence `agents` alias (EI-21845811145701209)', () => {
     } as never)) as { data: { active: unknown[]; agents: unknown[] } };
 
     expect(result.data.agents).toBe(result.data.active);
-    expect(result.data.agents).toEqual(ROWS);
+    expect(result.data.active).toHaveLength(ROWS.length);
+    expect(result.data.active[0]).toMatchObject(ROWS[0]!);
+    expect(result.data.active[1]).toMatchObject(ROWS[1]!);
+  });
+
+  it('normalizes mixed local/federated full-tier rows before publishing both aliases', async () => {
+    const mixedRows = [
+      {
+        ownerId: 'local',
+        sessionState: 'live',
+        wakeable: true,
+        model: 'gpt',
+        claimedItems: ['P-001'],
+        claimCount: 1,
+        contextPressure: 'high',
+      },
+      {
+        ownerId: 'federated',
+        sessionState: null,
+        wakeable: null,
+        federated: true,
+        devicePubkey: 'pk',
+        contextPressure: null,
+      },
+    ];
+    mocks.assemblePresenceSnapshot.mockResolvedValueOnce({
+      as_of: '2026-08-30T15:00:00.000Z',
+      scope: 'workspace',
+      etag: 'etag-mixed',
+      summary: { active: mixedRows.length, wakeable: 1, byState: { live: 1, ended: 0 } },
+      active: mixedRows,
+    });
+
+    const result = (await presenceTool.handler({} as never, {
+      workspaceId: 'test-workspace',
+      harnessSlug: 'papercusp',
+      isSuperuser: true,
+    } as never)) as { data: { active: Array<Record<string, unknown>>; agents: unknown[] } };
+    const keys = result.data.active.map((row) => Object.keys(row).sort());
+
+    expect(keys[0]).toEqual(keys[1]);
+    expect(result.data.agents).toBe(result.data.active);
+    expect(result.data.active[0]).toMatchObject({
+      ownerId: 'local',
+      claimCount: 1,
+      contextPressure: 'high',
+    });
+    expect(result.data.active[1]).toMatchObject({
+      ownerId: 'federated',
+      claimCount: null,
+      contextPressure: null,
+      model: null,
+    });
   });
 
   it('keeps the alias in sync at the trimmed tier — tier-projected, not the raw full array', () => {

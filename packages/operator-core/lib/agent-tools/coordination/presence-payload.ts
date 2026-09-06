@@ -283,6 +283,69 @@ export const PRESENCE_DELTA_FIELDS: readonly (keyof RosterRow)[] = [
   ...PRESENCE_STATE_FIELDS,
 ];
 
+/**
+ * Canonical key order for the raw/full coord:presence row.
+ *
+ * `partitionPresenceRow` intentionally omits fields that a source cannot
+ * measure (for example, local Tier-1 joins on a federated row). That is the
+ * right internal representation, but it is not a safe wire shape: a mixed
+ * local/federated roster otherwise contains disjoint key sets, so a caller
+ * filtering on an optional field silently drops one population. Full-tier
+ * output fills these core fields with `null`; handler-only overlays are added
+ * from the response's observed key union below.
+ *
+ * `stale` is deliberately absent: the active/stale split carries that signal
+ * structurally, and the stable row has never emitted it.
+ */
+export const PRESENCE_FULL_ROW_FIELDS = [
+  ...PRESENCE_IDENTITY_FIELDS,
+  ...PRESENCE_STATE_FIELDS,
+  'lastActiveSecAgo',
+  'lastActiveSource',
+  'intentStale',
+  'intentAgeSec',
+  'intentDivergent',
+  'sessionState',
+  'wakeable',
+  'confirmLiveness',
+  'contextPressure',
+  'contextPressureAgeSec',
+  'onDesktop',
+  'viewerAttached',
+] as const;
+
+const PRESENCE_FULL_ROW_FIELD_SET = new Set<string>(PRESENCE_FULL_ROW_FIELDS);
+
+/**
+ * Normalize the raw/full wire rows to one key set without inventing values.
+ *
+ * Core presence fields are always present (with `null` when unmeasured).
+ * Optional response overlays (`modes`, `parkedOn`, `heldFiles`, `cursor`,
+ * `isSelf`, and future additions) are discovered from the complete response
+ * and filled with `null` on rows that do not carry them. `undefined` is also
+ * normalized because JSON serialization would otherwise omit it and recreate
+ * the mixed-shape defect.
+ */
+export function normalizeFullPresenceRows(
+  rows: readonly Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const overlayFields = new Set<string>();
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (!PRESENCE_FULL_ROW_FIELD_SET.has(key)) overlayFields.add(key);
+    }
+  }
+  const keys = [...PRESENCE_FULL_ROW_FIELDS, ...[...overlayFields].sort()];
+  return rows.map((row) => {
+    const normalized: Record<string, unknown> = {};
+    for (const key of keys) {
+      const value = row[key];
+      normalized[key] = value === undefined ? null : value;
+    }
+    return normalized;
+  });
+}
+
 export interface PartitionedPresenceRow {
   /** Stable identity block (byte-stable across reads). */
   identity: Partial<RosterRow>;

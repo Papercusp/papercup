@@ -12,6 +12,7 @@ set -euo pipefail
 
 : "${VERIFY_TAURI_PID:?run through scripts/verify-tauri-headless.sh}"
 : "${VERIFY_TAURI_POLL:?missing verifier DOM poll helper}"
+: "${VERIFY_TAURI_SETTLE:?missing verifier page-settle helper}"
 : "${VERIFY_TAURI_AGENT_TOOLS_BIN:?missing verifier bridge CLI}"
 
 THEME_TAURI_PID="$VERIFY_TAURI_PID"
@@ -143,6 +144,7 @@ grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$PRE_RELOAD_RESULT"
 grep -Eq '"themeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$PRE_RELOAD_RESULT"
 grep -Eq '"workspace"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$PRE_RELOAD_RESULT"
 theme_eval 'window.location.reload()' >/dev/null 2>&1 || true
+bash "$VERIFY_TAURI_SETTLE" --timeout 90
 "$THEME_TAURI_POLL" \
   --require 'html[data-theme="custom:tauri-aurora"]' \
   --eval "String(window.__PAPERCUSP_WS__ || '') !== '' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'" \
