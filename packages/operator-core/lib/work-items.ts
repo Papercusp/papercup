@@ -1317,8 +1317,9 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
     pushMapped(out, rows, featureRowToWorkItem);
   }
 
-  // Issues are always top-level (no parent edge today), so a `parent` filter excludes them.
-  if (wantIssue && !filter.parent) {
+  // Issue-family rows can also carry parent edges (duplicates/delegated children). The
+  // shared issue filter applies the same parent/includeChildren semantics as features.
+  if (wantIssue) {
     const issueFilter: ListIssuesFilter = {
       // A specific issue-family kind, else ALL issue-family kinds (incl. `task`) — the
       // unified surface includes delegated tasks; the issues:* surface (its own default)
@@ -1332,6 +1333,8 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
       q,
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
+      parent: filter.parent,
+      includeChildren: filter.includeChildren === true,
       // WI-3649: mirror the feature branch's admissibleOnly gate (line ~530) so
       // "claimable backlog" excludes federated (origin='remote') issue-family rows
       // that the write path (claimNextIssueWorkItem / the engineer_issues_view_dml
@@ -1451,8 +1454,8 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
     total += rows[0]?.n ?? 0;
   }
 
-  // Issues are always top-level, so a `parent` filter excludes them (mirrors listWorkItems).
-  if (wantIssue && !filter.parent) {
+  // Keep issue-family count semantics identical to listWorkItems.
+  if (wantIssue) {
     total += await countIssues({
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
@@ -1462,6 +1465,8 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
+      parent: filter.parent,
+      includeChildren: filter.includeChildren === true,
       // WI-5512: countWorkItems' issue-family call never threaded this through, even
       // though countIssues itself already supports it (issueAdmissibleWhereSql) and
       // listWorkItems' issue branch already passes it — same count-vs-list parity gap
@@ -1556,8 +1561,8 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
     for (const r of rows) add(r.state, r.n);
   }
 
-  // Issues are always top-level, so a `parent` filter excludes them (mirrors countWorkItems).
-  if (wantIssue && !filter.parent) {
+  // Keep the state histogram's issue-family parent semantics identical to the list/count.
+  if (wantIssue) {
     const issueStates = await countIssuesByState({
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
@@ -1567,6 +1572,8 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
       ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
+      parent: filter.parent,
+      includeChildren: filter.includeChildren === true,
       admissibleOnly: filter.admissibleOnly,
       excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
     });
