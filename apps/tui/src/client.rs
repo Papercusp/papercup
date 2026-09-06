@@ -3642,6 +3642,54 @@ mod tests {
         assert!(error.to_string().contains("cannot be blank"), "{error:#}");
     }
 
+    #[tokio::test]
+    #[ignore = "requires a running operator and a disposable PUI_LIVE_WALL_KEY fact fixture"]
+    async fn live_needs_you_standing_wall_round_trips_through_its_owning_verb() {
+        let fact_key = std::env::var("PUI_LIVE_WALL_KEY")
+            .expect("set PUI_LIVE_WALL_KEY to the unique disposable standing-wall fact key");
+        let client = OperatorClient::from_discovery()
+            .await
+            .expect("discover live operator");
+
+        let before = client
+            .attention_typed()
+            .await
+            .expect("fetch live attention");
+        let item = before
+            .iter()
+            .find(|item| {
+                item.reference
+                    .get("factKey")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(fact_key.as_str())
+            })
+            .unwrap_or_else(|| panic!("disposable wall {fact_key} missing from live attention"));
+        assert_eq!(item.kind, "owner-wall");
+        assert!(item.is_needs_you(), "standing wall must enter Needs-you");
+        assert!(item.has_action("resolve"));
+        assert_eq!(item.reference["wallSource"], "standing-fact");
+        assert_eq!(item.reference["factKey"], fact_key);
+
+        client
+            .run_inbox_action(&InboxActionTarget::from(item), "resolve", None)
+            .await
+            .expect("facts:retract through the PUI action router");
+
+        let after = client
+            .attention_typed()
+            .await
+            .expect("refetch live attention after owning mutation");
+        assert!(
+            after.iter().all(|item| {
+                item.reference
+                    .get("factKey")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(fact_key.as_str())
+            }),
+            "retracted wall remained in the refetched attention feed"
+        );
+    }
+
     #[test]
     fn deferred_su_session_accepts_a_null_native_handle() {
         let deferred = serde_json::json!({ "nativeSession": null });
