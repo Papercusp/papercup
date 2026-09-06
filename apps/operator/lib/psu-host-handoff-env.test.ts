@@ -7,7 +7,12 @@
 //   2. the pty-host allowlist is PINNED ⊇ the helper's keys, so the next key the fresh
 //      path adds cannot silently fall out of the handoff again.
 import { describe, expect, it } from 'vitest';
-import { contextTrimmingEnv, healContextTrimmingEnv } from '../scripts/psu-launcher.mjs';
+import {
+  contextTrimmingEnv,
+  healContextTrimmingEnv,
+  healTerminalRenderEnv,
+  terminalRenderEnv,
+} from '../scripts/psu-launcher.mjs';
 import { HOST_HANDOFF_ENV_KEYS } from '../scripts/psu-pty-host.mjs';
 
 describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => {
@@ -58,5 +63,58 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
     const codex: Record<string, string | undefined> = { PAPERCUSP_AGENT: 'codex' };
     expect(healContextTrimmingEnv(codex)).toEqual(['PAPERCUSP_CONTEXT_TIER']);
     expect(codex.ENABLE_TOOL_SEARCH).toBeUndefined();
+  });
+});
+
+// Console-history preservation (owner terminal 2026-09-06 00:10Z): Claude Code 2.1.259's
+// fullscreen TUI paints on the terminal's alternate screen, so a carry-respawn discarded two
+// whole epochs of su-8ef2d from the owner's console — only their "Resume this session with"
+// exit lines reached primary scrollback. The launcher now stamps
+// CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN on every Claude spawn path, the handoff successor
+// heals it, and the pty-host allowlist is pinned ⊇ the helper's keys, exactly like the trio.
+describe('host-code handoff × alternate-screen env (console-history preservation)', () => {
+  it('terminalRenderEnv: claude is kept off the alternate screen, other agents untouched', () => {
+    expect(terminalRenderEnv('claude', {})).toEqual({ CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' });
+    expect(terminalRenderEnv('codex', {})).toEqual({});
+    expect(terminalRenderEnv('omp', {})).toEqual({});
+    expect(terminalRenderEnv(undefined, {})).toEqual({});
+  });
+
+  it('an explicit value in the launch env wins (an owner who wants fullscreen sets 0)', () => {
+    expect(terminalRenderEnv('claude', { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '0' })).toEqual({});
+    expect(terminalRenderEnv('claude', { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' })).toEqual({});
+    // An EMPTY string is not an explicit choice — the default applies.
+    expect(terminalRenderEnv('claude', { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '' })).toEqual({
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
+    });
+  });
+
+  it('HOST_HANDOFF_ENV_KEYS ⊇ every key terminalRenderEnv sets (allowlist pinned to the helper)', () => {
+    const keys = Object.keys(terminalRenderEnv('claude', {}));
+    expect(keys).toEqual(['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN']);
+    for (const key of keys) expect(HOST_HANDOFF_ENV_KEYS).toContain(key);
+    // Falsifiability control: the pre-fix allowlist (this list minus the key) MUST fail the pin.
+    const preFix = HOST_HANDOFF_ENV_KEYS.filter((k) => !keys.includes(k));
+    expect(keys.some((k) => preFix.includes(k))).toBe(false);
+  });
+
+  it('healTerminalRenderEnv fills ONLY an absent key, keeps an explicit value, is idempotent', () => {
+    const env: Record<string, string | undefined> = {
+      PAPERCUSP_AGENT: 'claude',
+      DISABLE_AUTO_COMPACT: '1',
+      DISABLE_COMPACT: '1',
+    };
+    expect(healTerminalRenderEnv(env)).toEqual(['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN']);
+    expect(env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBe('1');
+    expect(healTerminalRenderEnv(env)).toEqual([]);
+    const fullscreen: Record<string, string | undefined> = {
+      PAPERCUSP_AGENT: 'claude',
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '0',
+    };
+    expect(healTerminalRenderEnv(fullscreen)).toEqual([]);
+    expect(fullscreen.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBe('0');
+    const codex: Record<string, string | undefined> = { PAPERCUSP_AGENT: 'codex' };
+    expect(healTerminalRenderEnv(codex)).toEqual([]);
+    expect(codex.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBeUndefined();
   });
 });
