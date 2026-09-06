@@ -248,15 +248,24 @@ export async function runTwoPeerCommerce(
     peerA.send(`emit ${JSON.stringify(probe)}`);
     await peerA.waitFor((e) => e.evt === 'emitted' && e.eventId === probe.eventId, 20_000);
 
+    // The emitter must accept its OWN probe before the other peer's silence can
+    // mean anything. Without this, an invalid or mis-folded probe presents
+    // exactly as a dead mesh — the two failures need entirely different fixes,
+    // so the control says which one it saw rather than blaming the network.
+    const selfFold = await dump(peerA, -1, 15_000);
+    const acceptedLocally = selfFold.acceptedEventIds.includes(probe.eventId);
+
     const startedAt = Date.now();
     let observedAfterMs = -1;
-    for (let seq = 0; Date.now() - startedAt < PROPAGATION_MEASURE_TIMEOUT_MS; seq += 1) {
-      const control = await dump(peerB, seq, 15_000);
-      if (control.acceptedEventIds.includes(probe.eventId)) {
-        observedAfterMs = Date.now() - startedAt;
-        break;
+    if (acceptedLocally) {
+      for (let seq = 0; Date.now() - startedAt < PROPAGATION_MEASURE_TIMEOUT_MS; seq += 1) {
+        const control = await dump(peerB, seq, 15_000);
+        if (control.acceptedEventIds.includes(probe.eventId)) {
+          observedAfterMs = Date.now() - startedAt;
+          break;
+        }
+        await sleep(250);
       }
-      await sleep(250);
     }
     // The cut is judged over a window several times the MEASURED latency, so
     // "nothing arrived while partitioned" can never be explained by the mesh
@@ -268,7 +277,9 @@ export async function runTwoPeerCommerce(
         observedAfterMs >= 0,
         observedAfterMs >= 0
           ? `an un-cut fact reached the other peer in ${observedAfterMs}ms; the partition below is judged over ${propagationWindowMs}ms`
-          : `no un-cut fact reached the other peer within ${PROPAGATION_MEASURE_TIMEOUT_MS}ms, so no divergence result from this run can be trusted`,
+          : acceptedLocally
+            ? `the probe was accepted on the EMITTER but never reached the other peer within ${PROPAGATION_MEASURE_TIMEOUT_MS}ms — replication, not the probe, is what failed; no divergence result from this run can be trusted`
+            : `the EMITTER never accepted its own probe, so this run measured nothing about the mesh — the probe itself is invalid or mis-folded (peerA accepted ${selfFold.acceptedEventIds.length} event(s))`,
       ),
     );
     if (observedAfterMs < 0) {

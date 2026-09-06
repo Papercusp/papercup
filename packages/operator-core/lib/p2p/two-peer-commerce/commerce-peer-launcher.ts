@@ -142,7 +142,12 @@ export function sshCommercePeerLauncher(opts: {
     async kill(): Promise<void> {
       try {
         const exec = createSshRemoteExec({ ...f.target, sudo: false });
-        await exec.runScript(`pkill -f 'commerce-peer-child.ts ${f.root}' || true\n`);
+        // The leading character is bracketed so the pattern cannot match the
+        // remote shell's OWN argv, which contains this very script. An
+        // unbracketed `pkill -f` here kills the ssh shell that is running it:
+        // ssh then exits 255 with no output and every later line of the
+        // teardown is silently skipped, leaving the host half torn down.
+        await exec.runScript(`pkill -f '[c]ommerce-peer-child.ts ${f.root}' || true\n`);
       } catch (e) {
         log(`[commerce kill ${f.label}] ${e instanceof Error ? e.message : String(e)}`);
       }
