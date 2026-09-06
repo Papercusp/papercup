@@ -113,6 +113,7 @@
     "design:evidence-report": "tsx packages/operator-core/lib/design-compare/report-cli.ts --mode=report --work=design-evidence-report/captures",
     "design:evidence-calibrate": "tsx packages/operator-core/lib/design-compare/report-cli.ts --mode=calibrate",
     "gen:borrowable": "node scripts/gen-borrowable-catalog.mjs",
+    "p2p:two-peer-commerce": "node --import tsx packages/operator-core/lib/p2p/two-peer-commerce/run-two-peer-commerce.ts",
     "gen:borrowable:check": "node scripts/gen-borrowable-catalog.mjs --check",
     "gen:gitnexus-bridge": "node scripts/gen-gitnexus-bridge-runtime.mjs",
     "gen:gitnexus-bridge:check": "node scripts/gen-gitnexus-bridge-runtime.mjs --check",
