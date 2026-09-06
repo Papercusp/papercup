@@ -94,9 +94,11 @@ export function parseRefToken(token: string): HydratableRef | null {
   return null;
 }
 
-/** Work-item id shapes loose in prose — the P-008 auto-detect surface. Word-
- *  bounded so 'WI-123' matches inside a sentence but 'XWI-123' does not. */
-const BODY_WORK_ITEM = /\b((?:WI|EI)-\d+)\b/g;
+/** Work-item id shapes loose in prose — the P-008 auto-detect surface.
+ * Bounded by both word and hyphen characters so 'WI-123' matches inside a
+ * sentence but 'XWI-123' and hyphenated handles such as
+ * 'diag-EI-123-unlabeled' do not manufacture a shorter phantom ref. */
+const BODY_WORK_ITEM = /(?<![\w-])((?:WI|EI)-\d+)(?![\w-])/g;
 
 /**
  * Auto-detect hydratable refs in free prose (P-008). Deliberately NARROW:

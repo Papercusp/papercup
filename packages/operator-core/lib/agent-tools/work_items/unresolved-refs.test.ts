@@ -119,6 +119,18 @@ describe('unresolvedRefsInBody', () => {
     expect(await unresolvedRefsInBody('XEI-123 and blah-WI-9x', { probe })).toBeUndefined();
   });
 
+  it('does not extract a shorter prefix from a hyphenated diagnostic handle', async () => {
+    const full = 'EI-22480960228489210';
+    const probe = probeWith(full);
+    const out = await unresolvedRefsInBody(
+      `owner diag-EI-224809-unlabeled-1788666441808 cited ${full}`,
+      { probe },
+    );
+    expect(out).toBeUndefined();
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(full);
+  });
+
   it('bounds the probes it will run', async () => {
     const probe = probeWith();
     const many = Array.from({ length: MAX_REFS_PROBED + 20 }, (_, i) => `EI-${i + 1}`).join(' ');
