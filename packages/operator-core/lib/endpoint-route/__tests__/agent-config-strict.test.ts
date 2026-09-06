@@ -67,6 +67,8 @@ vi.mock('../../adv-sessions', async (orig) => ({
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listResumableSessions: (limit?: number) => listResumableSessionsMock(limit),
 }));
+import { resetLatestAgentSessionMemo } from '../../latest-agent-session-memo';
+
 vi.mock('../../codex-home-diagnostics', () => ({
   readCodexHomeDiagnostics: (sessionKey: string | number) => readCodexHomeDiagnosticsMock(sessionKey),
 }));
@@ -138,6 +140,9 @@ beforeEach(() => {
     },
   });
   listResumableSessionsMock.mockResolvedValue([] as unknown[]);
+  // The route memoizes the latest-codex lookup for 30s (WI-2147549); every case here
+  // asserts on what the listing returns THIS time, so start each from an empty memo.
+  resetLatestAgentSessionMemo();
 });
 
 describe('GET /agent-config diagnostics', () => {
