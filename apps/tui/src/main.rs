@@ -5834,6 +5834,88 @@ async fn refetch_loop(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinnedHydrationPlan {
+    /// The dock controller renders the fleet roster, work items, and activity
+    /// overlay, so it keeps only that surface's reads.
+    Fleet,
+    /// The Network pane renders the cross-Hive board (and, for hive-pane,
+    /// the separate dossier fetch below).
+    Network,
+    /// The Context pane needs the roster to resolve the live Sentinel target.
+    Roster,
+    /// Wake and AgentCtx have their own dedicated refresh loops.
+    Dedicated,
+    /// The ordinary workbench keeps its full read model.
+    Full,
+}
+
+fn pinned_hydration_plan(pinned: Option<app::Tab>) -> PinnedHydrationPlan {
+    match pinned {
+        Some(app::Tab::Fleet) => PinnedHydrationPlan::Fleet,
+        Some(app::Tab::Network) => PinnedHydrationPlan::Network,
+        Some(app::Tab::PlansBoard) => PinnedHydrationPlan::Roster,
+        Some(app::Tab::Wake | app::Tab::AgentCtx) => PinnedHydrationPlan::Dedicated,
+        _ => PinnedHydrationPlan::Full,
+    }
+}
+
+/// Hydrate only the read model a pinned dock pane can render.
+///
+/// A fresh PUI used to enter the full-workbench `refetch_all` fan-out even for
+/// a one-tab dock pane. A dock layout can contain several such panes, so one
+/// launch multiplied the same roster/config/work-item/activity reads and could
+/// saturate a request-only operator before the first frame. Keep the full
+/// workbench path unchanged, but make the dock's dependency boundary explicit.
+async fn refetch_pinned(client: &OperatorClient, tx: &UnboundedSender<Event>, pinned: app::Tab) {
+    match pinned_hydration_plan(Some(pinned)) {
+        PinnedHydrationPlan::Fleet => {
+            // P-003: Fleet still gets the bounded first-paint snapshot before
+            // its reconciliation reads.
+            spawn_first_paint_work_items(client.clone(), tx.clone());
+            if let Ok((active, pending)) = client.roster_typed().await {
+                let _ = tx.send(Event::Roster { active, pending });
+            }
+            if let Ok(rate) = client.fleet_rate_status().await {
+                let _ = tx.send(Event::FleetRate(rate));
+            }
+            let _ = tx.send(Event::PipelineStatus(Box::new(
+                client.pipeline_status().await,
+            )));
+            if let Ok(frames) = client.deploy_frames().await {
+                let _ = tx.send(Event::Frames(frames));
+            }
+            match client.work_items_list().await {
+                Ok(work) => {
+                    let _ = tx.send(Event::WorkItems { result: Ok(work) });
+                }
+                Err(error) => {
+                    let _ = tx.send(Event::WorkItems {
+                        result: Err(error.to_string()),
+                    });
+                }
+            }
+            if let Ok(activity) = client.activity_recent(None, 200).await {
+                let _ = tx.send(Event::ActivitySeed(activity));
+            }
+            if let Ok(todos) = client.activity_recent(Some("todos"), 50).await {
+                let _ = tx.send(Event::ActivityTodos(todos));
+            }
+        }
+        PinnedHydrationPlan::Network => {
+            if let Ok(rows) = client.network_board().await {
+                let _ = tx.send(Event::NetworkBoard(rows));
+            }
+        }
+        PinnedHydrationPlan::Roster => {
+            if let Ok((active, pending)) = client.roster_typed().await {
+                let _ = tx.send(Event::Roster { active, pending });
+            }
+        }
+        PinnedHydrationPlan::Dedicated | PinnedHydrationPlan::Full => {}
+    }
+}
+
 /// Subscribe to `/api/zero-harness/sse` via the active transport (IPC or HTTP —
 /// `client.subscribe_sse` yields a uniform `SseFrame` stream either way). On each
 /// `invalidate`/`update` frame, ping `sig_tx` with the affected view scope; an
@@ -6090,6 +6172,18 @@ async fn refetch_all(
     pinned: Option<app::Tab>,
     include_plan_reads: bool,
 ) {
+    if let Some(pinned) = pinned {
+        match pinned_hydration_plan(Some(pinned)) {
+            PinnedHydrationPlan::Full => {}
+            PinnedHydrationPlan::Fleet
+            | PinnedHydrationPlan::Network
+            | PinnedHydrationPlan::Roster
+            | PinnedHydrationPlan::Dedicated => {
+                refetch_pinned(client, tx, pinned).await;
+                return;
+            }
+        }
+    }
     // P-003: the Fleet task list is the first useful work surface, so start a
     // bounded snapshot immediately instead of making it wait behind the serial
     // plans/roster/config/plugin reads below. The later full-list fetch remains
