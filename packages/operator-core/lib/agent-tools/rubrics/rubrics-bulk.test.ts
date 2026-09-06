@@ -241,6 +241,33 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(getM).toHaveBeenCalledWith('r-1');
   });
 
+  it('normalizes typed plan provenance refs for lookup while preserving the keyed input ref', async () => {
+    getM.mockImplementation(async (id: string) => (id === 'plan-class-feature-ship' ? RUBRIC_R1 : null));
+
+    const b = await body(getTool, { ref: 'plan:plan-class-feature-ship' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      rubricRef: 'plan:plan-class-feature-ship',
+      rubric: RUBRIC_R1,
+    });
+    expect(getM).toHaveBeenCalledWith('plan-class-feature-ship');
+  });
+
+  it('normalizes typed plan provenance refs for the backing-row diagnostic too', async () => {
+    getM.mockResolvedValue(null);
+    revisionM.mockResolvedValue({ ok: true, revision: 6 });
+
+    const b = await body(getTool, { rubricRef: 'plan:acceptance-rubric' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      rubricRef: 'plan:acceptance-rubric',
+      error: 'rubric not found; a backing rubric plan row exists at revision 6, but this server could not project it.',
+    });
+    expect(revisionM).toHaveBeenCalledWith('acceptance-rubric');
+  });
+
   it('accepts an optional harness hint without filtering the workspace-wide read', async () => {
     mockResolvedTyped(getM, RUBRIC_R1);
     const projected = lookupByMcpName('rubrics:get');
