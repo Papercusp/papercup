@@ -222,6 +222,22 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
     expect(brief.loop).toMatchObject({ harness: 'papercusp', carryNote: null });
   });
 
+  it('preserves a failed carry-note read as distinct from a confirmed empty note', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({ note: null, updatedAtMs: null, readFailed: true }),
+      }),
+    );
+    expect(brief.loop).toMatchObject({
+      carryNote: null,
+      carryNoteUpdatedAtMs: null,
+      carryNoteReadFailed: true,
+    });
+    expect(brief.checks).toEqual([]);
+    expect(brief.walls).toEqual([]);
+  });
+
   it('no loop routine ⇒ loop null', async () => {
     const brief = await buildCarryBrief('su-abc', fullOpts({ getLoopStatusFn: async () => null }));
     expect(brief.loop).toBeNull();

@@ -130,6 +130,12 @@ export interface CarryBrief {
     goal: string | null;
     carryNote: string | null;
     carryNoteUpdatedAtMs: number | null;
+    /**
+     * True when the carry-note store could not be read. Optional keeps legacy
+     * injected briefs compatible while preserving the distinction between an
+     * unreadable note and a confirmed empty note for fresh carry assembly.
+     */
+    carryNoteReadFailed?: boolean;
   } | null;
   /** P-002 (cold-carry-system-hardening-2026-07-19): LIVE one-line hydrations of the
    *  WI-/EI- ids the carry-note cites (P-008 reuse) — a cited item that changed state
@@ -1237,25 +1243,28 @@ export async function buildCarryBrief(
     if (loop) {
       const getNote = opts.getLoopCarryNoteWithMetaFn ?? getLoopCarryNoteWithMeta;
       const meta = await getNote({ harness: loop.harnessSlug, ownerId }).catch(
-        (): LoopCarryNoteWithMeta => ({ note: null, updatedAtMs: null }),
+        (): LoopCarryNoteWithMeta => ({ note: null, updatedAtMs: null, readFailed: true }),
       );
+      const carryNoteReadFailed = meta.readFailed === true;
+      const carryNote = carryNoteReadFailed ? null : meta.note;
       brief.loop = {
         harness: loop.harnessSlug,
         active: Boolean(loop.active),
         intervalSec: loop.intervalSec ?? null,
         carry: loop.carry,
         goal: loop.goal ?? null,
-        carryNote: meta.note,
-        carryNoteUpdatedAtMs: meta.updatedAtMs,
+        carryNote,
+        carryNoteUpdatedAtMs: carryNoteReadFailed ? null : meta.updatedAtMs,
+        carryNoteReadFailed,
       };
       // P-006: walls ride the note's `## Walls` section — surface them structured.
-      brief.walls = splitCarryNoteWalls(meta.note).walls;
+      brief.walls = splitCarryNoteWalls(carryNote).walls;
       // P-001 delivery parity (review fold): checks get the SAME structured
       // extraction as walls — a note that later stale-collapses or truncates
       // must not silently dissolve its carried claims/probes.
-      brief.checks = splitCarryNoteChecks(meta.note).checks;
+      brief.checks = splitCarryNoteChecks(carryNote).checks;
       // P-003: what landed AFTER the note was written — the note predates it.
-      if (meta.note && meta.updatedAtMs != null && Number.isFinite(meta.updatedAtMs)) {
+      if (carryNote && meta.updatedAtMs != null && Number.isFinite(meta.updatedAtMs)) {
         const readDelta = opts.readPostNoteInboxFn ?? defaultReadPostNoteInbox;
         brief.postNoteInbox = await readDelta(ownerId, new Date(meta.updatedAtMs).toISOString()).catch(
           () => null,
