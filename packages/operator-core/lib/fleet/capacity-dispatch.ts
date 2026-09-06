@@ -914,6 +914,14 @@ export function buildCapacityReport(
       `true to false here with no other change). accounts:test-egress on the affected accounts checks for a ` +
       `shared/down egress IP if the refreshed reading still looks exhausted. `
     : '';
+  // EI-22510899908612251: the launch-on-plan path uses dispatchBudget as the hard
+  // concurrent-new-member cap, while factor/recommendedHeadroom describe pool health
+  // and weekly-budget pressure. Keep the healthy-pool advice, but state the cap in the
+  // same payload so "place broadly" cannot hide a one-member launch clamp.
+  const launchClampNote =
+    opts.clampArmed && dispatchBudget != null
+      ? `; launch clamp caps new members at ${dispatchBudget} per wave (dispatchBudget=${dispatchBudget})`
+      : '';
   const advice = blindCaveat + (restartRecovering
     ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
     : poolExhausted
@@ -928,7 +936,7 @@ export function buildCapacityReport(
       ? `scarce (factor ${factor.toFixed(2)}) → place the top-ranked items only, hold the rest${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
       : factor < 1
         ? `tightening (factor ${factor.toFixed(2)}) → trim low-priority placements${dispatchBudget != null ? `; ~${dispatchBudget} bee slots free` : ''}`
-        : 'abundant → place broadly up to your ceiling');
+        : `abundant → place broadly up to your ceiling${launchClampNote}`);
 
   // P-001: the imperative LEADS. The two standing facts that would have prevented the 2026-08-09
   // misdiagnosis were excerpted at 180 chars and both lost their verb, so the instruction has to be

@@ -43,7 +43,16 @@ export type WorkspaceHostActionArgs =
       };
     }
   | { action: Exclude<LifecycleAction, "destroy">; workspaceId: string }
-  | { action: "destroy"; workspaceId: string; disposition: DestroyDisposition };
+  | {
+      action: "destroy";
+      workspaceId: string;
+      disposition: DestroyDisposition;
+      confirmation: {
+        expectedHostId: string;
+        confirmedBy: string;
+        confirmedAt: string;
+      };
+    };
 
 export interface WorkspaceHostActionResponse {
   ok: boolean;

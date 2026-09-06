@@ -213,6 +213,37 @@ test('capacity report labels fresh gateway zero-capacity snapshot as recovering 
   assert.match(r.advice, /startup capacity snapshot is recovering/);
 });
 
+test('EI-22510899908612251 — healthy-pool advice names the launch clamp when dispatchBudget is the tighter limit', () => {
+  // The live contradiction: pool health is abundant (factor 1), but the same
+  // fleet:capacity payload reports only one guaranteed bee-tier slot. The launch
+  // path uses dispatchBudget as its hard concurrent-new-member cap, so the advice
+  // must make that limit legible without requiring a second capacity read.
+  const r = buildCapacityReport(
+    {
+      reachable: true,
+      utilization: 0.77,
+      utilizationPct: 77,
+      paused: false,
+      rejected: false,
+      queueDepth: 0,
+      inFlight: 2,
+      priorityTiers: {
+        healthyAccounts: 3,
+        tier1Reserve: 384,
+        tiers: [{ tier: 3, minShare: 3, inFlight: 2, queued: 0 }],
+      },
+    },
+    { clampArmed: true },
+  );
+
+  assert.equal(r.factor, 1);
+  assert.equal(r.dispatchBudget, 1);
+  assert.match(r.advice, /abundant/);
+  assert.match(r.advice, /launch clamp caps new members at 1 per wave/);
+  assert.match(r.advice, /dispatchBudget=1/);
+  assert.notEqual(r.advice, 'abundant → place broadly up to your ceiling');
+});
+
 test('EI-12282 — gateway reports spare bee slots but the REAL account pool is exhausted ⇒ poolExhausted, factor 0, loud hold', () => {
   // The live false-green: /stats.priorityTiers said healthyAccounts>0 with ~13 spare bee-tier slots
   // (dispatchBudget 13), so the old report read "tightening (factor 0.92) → trim low-priority; ~13 bee

@@ -202,12 +202,24 @@ describe('POST /workspace-hosts/action destroy', () => {
     );
   });
 
-  it('rejects non-discard and missing canary evidence before durable reads', async () => {
+  it('admits every explicit disposition without manufacturing canary evidence and rejects a missing disposition', async () => {
+    const { dependencies, startDestroy } = harness();
+    const ordinary = { ...destroyBody, canary: undefined };
+
+    await expect(post(dependencies, { ...ordinary, disposition: 'snapshot' })).resolves.toMatchObject({ status: 200 });
+    await expect(post(dependencies, { ...ordinary, disposition: 'backup' })).resolves.toMatchObject({ status: 200 });
+    await expect(post(dependencies, { ...ordinary, disposition: 'discard' })).resolves.toMatchObject({ status: 200 });
+    const missing = await post(dependencies, { ...ordinary, disposition: undefined });
+
+    expect(missing.status).toBe(422);
+    expect(startDestroy).toHaveBeenCalledWith(expect.not.objectContaining({ canary: expect.anything() }));
+    expect(startDestroy.mock.calls.map(([input]) => input.disposition)).toEqual(['snapshot', 'backup', 'discard']);
+  });
+
+  it('keeps the canary wrapper strict when canary evidence is supplied', async () => {
     const { dependencies, readTarget } = harness();
-    const snapshot = await post(dependencies, { ...destroyBody, disposition: 'snapshot' });
-    expect(snapshot.status).toBe(422);
-    const missing = await post(dependencies, { ...destroyBody, canary: undefined });
-    expect(missing.status).toBe(400);
+    const malformed = await post(dependencies, { ...destroyBody, canary: { runId: 'incomplete' } });
+    expect(malformed.status).toBe(400);
     expect(readTarget).not.toHaveBeenCalled();
   });
 

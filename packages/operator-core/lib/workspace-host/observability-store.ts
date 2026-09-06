@@ -456,6 +456,11 @@ export interface StoredWorkspaceHostDestroyTarget extends Pick<
   connectionId: string;
   target: string;
   observedState: string;
+  recoverability?: {
+    kind: 'snapshot' | 'backup' | 'none';
+    label: string;
+    updatedAt?: string;
+  };
   desired: WorkspaceHostDesiredSpec;
   resources: readonly {
     resource: WorkspaceHostResourceRef;
@@ -479,6 +484,7 @@ export async function readWorkspaceHostDestroyTarget(
   return inWorkspace(workspaceId, tx, async (query) => {
     const hosts = (await query`
       SELECT id, name, connection_id, target, observed_state, desired_spec,
+             recoverability_kind, recoverability_label, recoverability_updated_at,
              host_generation, desired_revision, observed_revision, runtime_release,
              controller_id, controller_fence
       FROM harness_shared.workspace_hosts
@@ -491,6 +497,9 @@ export async function readWorkspaceHostDestroyTarget(
       target: string;
       observed_state: string;
       desired_spec: unknown;
+      recoverability_kind: 'snapshot' | 'backup' | 'none';
+      recoverability_label: string;
+      recoverability_updated_at: Date | string | null;
       host_generation: number;
       desired_revision: number;
       observed_revision: number;
@@ -547,6 +556,11 @@ export async function readWorkspaceHostDestroyTarget(
       connectionId: host.connection_id,
       target: host.target,
       observedState: host.observed_state,
+      recoverability: {
+        kind: host.recoverability_kind,
+        label: host.recoverability_label,
+        ...(iso(host.recoverability_updated_at) ? { updatedAt: iso(host.recoverability_updated_at) } : {}),
+      },
       hostGeneration: host.host_generation,
       desiredRevision: host.desired_revision,
       observedRevision: host.observed_revision,
@@ -567,9 +581,21 @@ export async function updateWorkspaceHostLifecycleState(input: {
   state: 'destroying' | 'absent';
   observedAt?: string;
   discard?: boolean;
+  recoverability?: {
+    kind: 'snapshot' | 'backup' | 'none';
+    label: string;
+    updatedAt?: string;
+  };
   operationId?: string;
   controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
+  const recoverability = input.recoverability ?? (input.discard === true
+    ? {
+        kind: 'none' as const,
+        label: 'Discarded without a recovery point',
+        updatedAt: input.observedAt ?? new Date().toISOString(),
+      }
+    : null);
   await withWorkspace(input.workspaceId, async (tx) => {
     await requireWorkspaceHostControllerAuthority(
       tx,
@@ -584,13 +610,16 @@ export async function updateWorkspaceHostLifecycleState(input: {
           observed_state = ${input.state},
           observed_at = ${input.observedAt ?? new Date().toISOString()},
           endpoint = CASE WHEN ${input.state} = 'absent' THEN NULL ELSE endpoint END,
-          recoverability_kind = CASE WHEN ${input.discard === true} THEN 'none' ELSE recoverability_kind END,
+          recoverability_kind = CASE
+            WHEN ${recoverability !== null} THEN ${recoverability?.kind ?? 'none'}
+            ELSE recoverability_kind
+          END,
           recoverability_label = CASE
-            WHEN ${input.discard === true} THEN 'Discarded without a recovery point'
+            WHEN ${recoverability !== null} THEN ${recoverability?.label ?? 'No recovery point recorded'}
             ELSE recoverability_label
           END,
           recoverability_updated_at = CASE
-            WHEN ${input.discard === true} THEN ${input.observedAt ?? new Date().toISOString()}
+            WHEN ${recoverability !== null} THEN ${recoverability?.updatedAt ?? input.observedAt ?? new Date().toISOString()}
             ELSE recoverability_updated_at
           END,
           updated_at = now()

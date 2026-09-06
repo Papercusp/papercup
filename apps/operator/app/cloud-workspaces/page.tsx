@@ -463,6 +463,35 @@ export default function CloudWorkspacesPage() {
     setDestroyConfirm("");
   }, [setDestroyId, setDisposition]);
 
+  const backupReady =
+    disposition !== "backup" ||
+    (destroyWorkspace?.recoverability.kind === "backup" &&
+      Boolean(destroyWorkspace.recoverability.updatedAt));
+  const confirmationReady =
+    disposition !== "discard" || destroyConfirm === destroyWorkspace?.name;
+  const canDestroy = Boolean(destroyWorkspace && backupReady && confirmationReady);
+
+  const handleDestroy = useCallback(() => {
+    if (!destroyWorkspace || !backupReady || !confirmationReady) return;
+    const hostId = destroyWorkspace.id;
+    void perform(
+      `destroy:${hostId}`,
+      {
+        action: "destroy",
+        workspaceId: hostId,
+        disposition,
+        confirmation: {
+          expectedHostId: hostId,
+          confirmedBy: "operator:cloud-workspaces-ui",
+          confirmedAt: new Date().toISOString(),
+        },
+      },
+      `Destroying ${destroyWorkspace.name}`,
+    ).then((ok) => {
+      if (ok) closeDestroyModal();
+    });
+  }, [backupReady, closeDestroyModal, confirmationReady, destroyWorkspace, disposition, perform]);
+
   /* ── Render ─────────────────────────────────────────────────────────────── */
 
   return (
@@ -649,11 +678,6 @@ export default function CloudWorkspacesPage() {
               />
             </Field>
           ) : null}
-          {/*
-           * Destroy fails CLOSED: the confirm button is unconditionally
-           * disabled and describes itself by the blocker, until the host canary
-           * workflow supplies its approved evidence.
-           */}
           <p
             id="destroy-admission-blocker"
             className={styles.readiness}
@@ -661,10 +685,21 @@ export default function CloudWorkspacesPage() {
           >
             <AlertTriangle size={16} aria-hidden="true" />
             <span>
-              <strong>Audited canary evidence required</strong>
+              <strong>
+                {disposition === "backup" && !backupReady
+                  ? "Verified backup required"
+                  : disposition === "discard" && !confirmationReady
+                    ? "Typed confirmation required"
+                    : "Ready for durable teardown"}
+              </strong>
               <span>
-                Final destroy stays disabled here until the host canary workflow
-                supplies its approved contract, cost, and teardown evidence.
+                {disposition === "snapshot"
+                  ? "A fresh provider snapshot must complete before any resource is deleted."
+                  : disposition === "backup"
+                    ? backupReady
+                      ? `Existing backup ${destroyWorkspace?.recoverability.label ?? ""} will remain the recovery point.`
+                      : "Record and verify a durable backup before selecting this disposition."
+                    : "Discard permanently removes the host without creating a recovery point."}
               </span>
             </span>
           </p>
@@ -674,8 +709,9 @@ export default function CloudWorkspacesPage() {
             </Button>
             <Button
               variant="destructive"
-              disabled
+              disabled={!canDestroy || busyKeys.has(`destroy:${destroyWorkspace?.id ?? ""}`)}
               aria-describedby="destroy-admission-blocker"
+              onClick={handleDestroy}
             >
               <Trash2 size={14} aria-hidden="true" /> Confirm destroy
             </Button>

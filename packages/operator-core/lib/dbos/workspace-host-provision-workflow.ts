@@ -49,13 +49,14 @@ export interface StartWorkspaceHostDestroyInput {
   hostId: string;
   connectionId: string;
   connection: WorkspaceHostProviderConnection;
-  disposition: 'discard';
+  disposition: 'snapshot' | 'backup' | 'discard';
   confirmation: {
     expectedHostId: string;
     confirmedBy: string;
     confirmedAt: string;
   };
-  canary: WorkspaceHostDestroyCanaryEvidence;
+  /** Present only for the canary wrapper; ordinary customer teardown does not manufacture it. */
+  canary?: WorkspaceHostDestroyCanaryEvidence;
   operationId?: string;
   actorId?: string;
 }

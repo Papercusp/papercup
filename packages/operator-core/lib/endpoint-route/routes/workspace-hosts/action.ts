@@ -49,6 +49,8 @@ interface WorkspaceHostActionBody {
 
 const LIFECYCLE_ACTIONS = ['start', 'stop', 'restart', 'repair', 'snapshot', 'upgrade', 'restore'] as const;
 type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number];
+const DESTROY_DISPOSITIONS = ['snapshot', 'backup', 'discard'] as const;
+type DestroyDisposition = (typeof DESTROY_DISPOSITIONS)[number];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -193,11 +195,17 @@ export function createWorkspaceHostActionRoute(
         return requestError('invalid operationId');
       }
       let destroyAdmission:
-        | { expectedHostId: string; confirmedBy: string; confirmedAt: string; canary: WorkspaceHostDestroyCanaryEvidence }
+        | {
+            disposition: DestroyDisposition;
+            expectedHostId: string;
+            confirmedBy: string;
+            confirmedAt: string;
+            canary?: WorkspaceHostDestroyCanaryEvidence;
+          }
         | undefined;
       if (action === 'destroy') {
-        if (body.disposition !== 'discard') {
-          return requestError('production destroy currently requires disposition=discard', 422);
+        if (!DESTROY_DISPOSITIONS.includes(body.disposition as DestroyDisposition)) {
+          return requestError('destroy disposition must be snapshot, backup, or discard', 422);
         }
         if (!isRecord(body.confirmation)) return requestError('destroy confirmation is required');
         const expectedHostId =
@@ -207,9 +215,15 @@ export function createWorkspaceHostActionRoute(
         if (expectedHostId !== hostId || !confirmedBy || !Number.isFinite(Date.parse(confirmedAt))) {
           return requestError('destroy confirmation must name this host, an actor, and an ISO timestamp');
         }
-        const canary = parseCanaryEvidence(body.canary);
-        if (!canary) return requestError('valid destroy canary evidence is required');
-        destroyAdmission = { expectedHostId, confirmedBy, confirmedAt, canary };
+        const canary = body.canary === undefined ? undefined : parseCanaryEvidence(body.canary);
+        if (body.canary !== undefined && !canary) return requestError('destroy canary evidence is malformed');
+        destroyAdmission = {
+          disposition: body.disposition as DestroyDisposition,
+          expectedHostId,
+          confirmedBy,
+          confirmedAt,
+          ...(canary ? { canary } : {}),
+        };
       }
       if (!dependencies.provisioningAvailable()) {
         try {
@@ -255,13 +269,13 @@ export function createWorkspaceHostActionRoute(
           ? await dependencies.startDestroy({
               ...common,
               connectionId: target.connectionId,
-              disposition: 'discard',
+              disposition: destroyAdmission!.disposition,
               confirmation: {
                 expectedHostId: destroyAdmission!.expectedHostId,
                 confirmedBy: destroyAdmission!.confirmedBy,
                 confirmedAt: destroyAdmission!.confirmedAt,
               },
-              canary: destroyAdmission!.canary,
+              ...(destroyAdmission!.canary ? { canary: destroyAdmission!.canary } : {}),
               actorId: destroyAdmission!.confirmedBy,
             })
           : await dependencies.startLifecycle({

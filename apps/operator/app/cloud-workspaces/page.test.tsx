@@ -1257,7 +1257,7 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     );
   });
 
-  it("preserves explicit recoverability selection but fails closed without audited canary evidence", () => {
+  it("submits an explicit ordinary destroy disposition and exact host confirmation", async () => {
     H.queryDefaults = { ...onOperate };
     render(<CloudWorkspacesPage />);
 
@@ -1286,13 +1286,21 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
       screen.getByLabelText("Type research-control to confirm discard"),
       { target: { value: "research-control" } },
     );
-    /* Fails CLOSED: typing the confirmation does not arm destroy. */
-    expect(confirmButton.disabled).toBe(true);
+    expect(confirmButton.disabled).toBe(false);
     expect(confirmButton.getAttribute("aria-describedby")).toBe(
       "destroy-admission-blocker",
     );
-    expect(screen.getByText("Audited canary evidence required")).toBeTruthy();
-    expect(H.mutate).not.toHaveBeenCalled();
+    expect(screen.getByText("Ready for durable teardown")).toBeTruthy();
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(H.mutate).toHaveBeenCalledWith(expect.objectContaining({
+      action: "destroy",
+      workspaceId: "host-1",
+      disposition: "discard",
+      confirmation: expect.objectContaining({
+        expectedHostId: "host-1",
+        confirmedBy: "operator:cloud-workspaces-ui",
+      }),
+    })));
   });
 
   it("uses one tab stop and arrow-key selection in the recoverability radiogroup", () => {

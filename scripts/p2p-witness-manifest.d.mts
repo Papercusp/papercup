@@ -51,31 +51,31 @@ export function buildManifest({ repoRoot, outputDir, sourceSha, submoduleSha, ru
             path: string;
             fileCount: number;
             sha256: string;
-            input: any;
+            input: string;
         } | {
             path: string;
             sha256: string;
-            input: any;
+            input: string;
         })[];
         migrations: ({
             path: string;
             fileCount: number;
             sha256: string;
-            input: any;
+            input: string;
         } | {
             path: string;
             sha256: string;
-            input: any;
+            input: string;
         })[];
         seeds: ({
             path: string;
             fileCount: number;
             sha256: string;
-            input: any;
+            input: string;
         } | {
             path: string;
             sha256: string;
-            input: any;
+            input: string;
         })[];
         optionalPacks: {
             model: {

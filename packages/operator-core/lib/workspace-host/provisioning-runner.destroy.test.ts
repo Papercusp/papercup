@@ -181,7 +181,10 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
   return { provider, apply, inventoryManagedResources };
 }
 
-function storeHarness(targetDesired: WorkspaceHostDesiredSpec = desired) {
+function storeHarness(
+  targetDesired: WorkspaceHostDesiredSpec = desired,
+  recoverability?: { kind: 'snapshot' | 'backup' | 'none'; label: string; updatedAt?: string },
+) {
   let checkpoints: WorkspaceHostResourceCheckpoint[] = [];
   const updateHostState = vi.fn<WorkspaceHostDestroyStore['updateHostState']>();
   const updateOperation = vi.fn<WorkspaceHostDestroyStore['updateOperation']>();
@@ -195,6 +198,7 @@ function storeHarness(targetDesired: WorkspaceHostDesiredSpec = desired) {
       hostGeneration: 1,
       desiredRevision: 1,
       observedRevision: 1,
+      ...(recoverability ? { recoverability } : {}),
       desired: targetDesired,
       resources: resources.map((resource) => ({ resource, registeredAt: NOW })),
     })),
@@ -305,7 +309,53 @@ function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostDestroySt
   };
 }
 
+function ordinaryInput(
+  provider: WorkspaceHostProvider,
+  store: WorkspaceHostDestroyStore,
+  disposition: RunWorkspaceHostDestroyInput['disposition'] = 'discard',
+): RunWorkspaceHostDestroyInput {
+  const { canary: _canary, ...input } = runInput(provider, store);
+  return { ...input, disposition };
+}
+
 describe('runWorkspaceHostDestroy', () => {
+  it('retires an ordinary non-canary host while preserving identity, receipts, and the clean provider census', async () => {
+    const { provider, apply } = providerHarness();
+    const ordinaryDesired = { ...desired, labels: undefined };
+    const { store, updateHostState } = storeHarness(ordinaryDesired);
+
+    const result = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(result.status).toBe('succeeded');
+    expect(apply).toHaveBeenCalledTimes(resources.length);
+    expect(result.checkpoints).toHaveLength(resources.length);
+    expect(result.checkpoints.every((entry) => entry.deletionConfirmation?.source === 'provider-read')).toBe(true);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceId: WORKSPACE_ID,
+      hostId: 'host-1',
+      state: 'absent',
+      recoverability: expect.objectContaining({ kind: 'none' }),
+    }));
+  });
+
+  it('rejects missing disposition, cross-host ownership, and an unverified backup before provider planning', async () => {
+    const { provider } = providerHarness();
+    const { store } = storeHarness({ ...desired, labels: undefined });
+    await expect(runWorkspaceHostDestroy({
+      ...ordinaryInput(provider, store),
+      disposition: undefined as never,
+    })).rejects.toMatchObject({ problems: [expect.stringContaining('disposition')] });
+    await expect(runWorkspaceHostDestroy({
+      ...ordinaryInput(provider, store),
+      hostId: 'host-other',
+      confirmation: { expectedHostId: 'host-other', confirmedBy: 'operator:test', confirmedAt: NOW },
+    })).rejects.toMatchObject({ problems: [expect.stringContaining('identity')] });
+    await expect(runWorkspaceHostDestroy(ordinaryInput(provider, store, 'backup'))).rejects.toMatchObject({
+      problems: [expect.stringContaining('recorded durable backup')],
+    });
+    expect(provider.plan).not.toHaveBeenCalled();
+  });
+
   it('persists matching provider-read receipts and completes only after non-vacuous clean census + cost proof', async () => {
     const { provider, apply, inventoryManagedResources } = providerHarness();
     const { store, checkpoints, updateHostState, updateOperation } = storeHarness();
