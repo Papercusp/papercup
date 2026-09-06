@@ -1072,6 +1072,43 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(h.sendMessage).toHaveBeenCalledTimes(1); // no second nudge
   });
 
+  it('caps repeated park retries and degrades the wake to inbox delivery', async () => {
+    h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: 'alive, no pty' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 15, subscriberId: 'su-park-cap', attempts: 8 }),
+    ]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.degradeToInboxOrDrop).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 15 }),
+      expect.stringContaining('remained parked and exhausted 8 attempts'),
+      expect.any(Function),
+    );
+    expect(h.store.markDeliveryParked).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(15, 'inbox', 1);
+    expect(stats.delivered).toBe(1);
+    expect(stats.parked).toBe(0);
+  });
+
+  it('settles a park-exhausted wake as dropped when the inbox fallback fails', async () => {
+    h.degradeToInboxOrDrop.mockResolvedValueOnce({
+      kind: 'drop',
+      reason: 'park exhausted — inbox unavailable',
+    });
+    h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: 'alive, no pty' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({ id: 16, subscriberId: 'su-park-drop', attempts: 8 }),
+    ]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.store.markDeliveryParked).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(16, 'park exhausted — inbox unavailable');
+    expect(stats.dropped).toBe(1);
+    expect(stats.parked).toBe(0);
+  });
+
   it('P-001: a degraded delivered/inbox outcome records channel=\'inbox\' on the delivery row, not a drop', async () => {
     h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'inbox' });
     h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({ id: 30, subscriberId: 'su-a' })]);

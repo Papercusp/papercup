@@ -1062,6 +1062,40 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         continue;
       }
       if (outcome.kind === 'park') {
+        // A live-but-uninjectable subscriber may remain parked forever (for example,
+        // a busy psu host that never proves a turn start). Park retries consume the
+        // same delivery-attempt budget as errors, so honor the ceiling here too and
+        // use the contract's inbox fallback instead of re-parking without end.
+        if (headline.attempts >= MAX_ATTEMPTS) {
+          const degraded = await degradeToInboxOrDrop(
+            coalesced,
+            `delivery remained parked and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.reason}`,
+            deps.sendCoordMessage ?? sendMessage,
+          );
+          if (degraded.kind === 'delivered') {
+            await markDeliveryDelivered(headline.id, degraded.channel, group.length);
+            stats.delivered++;
+            if (siblings.length > 0) {
+              await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
+              stats.coalesced += siblings.length;
+            }
+            log(
+              `wake #${headline.id} exhausted ${MAX_ATTEMPTS} parked attempts → degraded to inbox for ${subscriberId} ` +
+                `(last park: ${outcome.reason})`,
+            );
+            continue;
+          }
+          await markDeliveryDropped(headline.id, degraded.reason);
+          stats.dropped++;
+          for (const d of siblings) {
+            await markDeliveryDropped(d.id, `subscriber park exhausted (coalesced with #${headline.id})`);
+            stats.dropped++;
+          }
+          log(
+            `wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} parked attempts → ${subscriberId}: ${degraded.reason}`,
+          );
+          continue;
+        }
         // One-time inbox nudge on the first park: the awake-but-uninjectable agent sees it
         // mid-turn (PostToolUse hook) or on its next turn; the parked row converts to a
         // resume when its process exits. Siblings re-coalesce with the headline next tick.
