@@ -90,6 +90,35 @@ export function gradingCascadeMetaFromRouting(routing: unknown): GradingCascadeM
 export const ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE =
   "For manual citation spot-checks, first resolve the subject harness checkout (a fresh judge is launched in it; a cross-hive judge can use `harness:phase_path` for the subject staging path), then use `capability:read` on the cited repository-relative path there. Do not use the grader's checkout as a substitute. For a path below a git submodule (for example `libs/papercusp/...`), the superproject stores only a gitlink: `git rev-parse <superproject-ref>:<nested-path>` and `git show <superproject-ref>:<nested-path>` are expected to fail and are not evidence of a fabricated citation. Inspect the working-tree file or, when history is required, inspect the superproject gitlink and run `capability:git` with `cwd` set to the nested submodule and its pinned submodule SHA. Mark a citation unresolved only when the subject root or the relevant submodule cannot resolve it.";
 
+/**
+ * Why a grader may not decline on claim-scope grounds (EI-20249725405239230).
+ *
+ * MEASURED: the recruited peer declined TWICE because their fleet mission was
+ * execute-fleet-plan-only and a grading request matches no fleet claim spec, so
+ * they read it as structurally inadmissible. That reasoning is WRONG, and
+ * nothing in the copy told them so: `scorecards:emit` declares
+ * `capability: 'coord:write'` with `requirePrincipal: false` and gates on no
+ * claim, no assignee and no fleet admission anywhere. The objection is a
+ * phantom, but a phantom is indistinguishable from a real floor to the agent
+ * holding it.
+ *
+ * This is the SECOND decline reason the briefs pre-empt — "do not decline
+ * solely for lack of prior context" already handles the first. It sits in
+ * `graderReadingInstructions` because that is the single point all three
+ * grader-facing paths render through (assigned brief, minimum-fill brief,
+ * cascade wake k+1), so no path can be told a different thing.
+ */
+export const ACCEPTANCE_GRADING_NO_CLAIM_FACT =
+  'Grading needs NO work-item claim and NO fleet-scope admission — scorecards:emit requires neither — so a fleet mission or claim spec that cannot represent the request is not a reason to decline it.';
+
+/**
+ * The grader-facing rendering of the fact above. The author-facing refusals in
+ * `plan-acceptance-gate.ts` import the FACT and add their own framing ("say so
+ * when you ask"), so the claim itself is single-sourced across both audiences
+ * and cannot drift into two different statements of what emit requires.
+ */
+export const ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE = `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Emit the card directly.`;
+
 /** The reads a grader has to do, rendered with the subject harness pinned. */
 function graderReadingInstructions(planSlug: string, harnessSlug: string | null, rubricId: string): string {
   const planRead = harnessSlug
@@ -100,7 +129,8 @@ function graderReadingInstructions(planSlug: string, harnessSlug: string | null,
     `Because your session may be in a different hive, keep the plan harness explicit: read the plan ` +
     `(${planRead}) + the acceptance rubric '${rubricId}' + the completion evidence, then emit ONE complete ` +
     `scorecard: scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
-    `with concrete evidence per rating. The targetHive makes deterministic checks run against the subject ` +
+    `with concrete evidence per rating. ${ACCEPTANCE_GRADING_NO_CLAIM_GUIDANCE} The targetHive makes ` +
+    `deterministic checks run against the subject ` +
     `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} The verdict is YOURS — ` +
     `consult if you need to, but the grade is not delegable.`
   );

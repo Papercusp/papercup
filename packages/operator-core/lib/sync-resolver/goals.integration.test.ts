@@ -346,6 +346,7 @@ describe('goals.* resolvers against real SQL', () => {
       activity: Array<{ id: string; closedAt: string | null; updatedAt: string | null }>;
       spendByDay: Array<{ day: string; costUsd: number }>;
       spendLabel: string;
+      goalModeState: { status: string; unknown?: { code?: string } };
     };
 
     expect(out.goal?.id).toBe(GOAL);
@@ -354,6 +355,53 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.activity).toHaveLength(2);
     expect(out.spendByDay.map((d) => d.day)).toEqual(['2026-08-01', '2026-08-02']);
     expect(out.spendLabel).toBe('fleet spend');
+    expect(out.goalModeState).toMatchObject({
+      status: 'unknown',
+      unknown: { code: 'no-canonical-goal-holder' },
+    });
+  });
+
+  it('returns the goal holder’s exact turn-start obligation projection and canonical portfolio', async () => {
+    const { resolveGoalDetail } = await import('./goals');
+    await goal();
+    await agentOnGoal('su-mine');
+    await plan('goal-plan', { goalId: GOAL });
+    // The optional acceptance source is intentionally bounded at 900ms. A
+    // cold migrated test DB may cross that bound and log its fail-soft warning;
+    // either result is valid here because the state must remain renderable as
+    // known OR explicitly degraded, never fail the whole goals.detail query.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+        agents: Array<{ ownerId: string }>;
+        goalModeState: {
+          schemaVersion: string;
+          status: string;
+          ownerId: string | null;
+          portfolio: { goal: { id: string } } | null;
+          obligations: {
+            sourceGeneration: string;
+            projection: { receipt: { sink: string; entriesOmitted: number } };
+            detailRef: string;
+          } | null;
+        };
+      };
+
+      expect(out.agents[0]?.ownerId).toBe('su-mine');
+      expect(out.goalModeState).toMatchObject({
+        schemaVersion: 'agent-goal-mode-state-v1',
+        ownerId: 'su-mine',
+        portfolio: { goal: { id: GOAL } },
+        obligations: {
+          projection: { receipt: { sink: 'turn-start' } },
+          detailRef: 'coord:orient for the complete obligation agenda',
+        },
+      });
+      expect(['known', 'degraded']).toContain(out.goalModeState.status);
+      expect(out.goalModeState.obligations?.sourceGeneration).toMatch(/^[0-9a-f]{20}$/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   /**

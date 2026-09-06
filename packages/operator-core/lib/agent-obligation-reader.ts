@@ -101,6 +101,10 @@ export interface AgentObligationAgendaRead {
   agenda: AgentObligationAgenda;
   goalId: string | null;
   planSlugs: string[];
+  /** The canonical portfolio read that fed the plan-placement provider.
+   *  Exposed so another read-side consumer can present the SAME snapshot
+   *  without issuing a second portfolio query or rebuilding it client-side. */
+  portfolio: GoalPortfolioBrief | null;
   observedAt: string;
   elapsedMs: number;
   degradedSources: string[];
@@ -324,6 +328,7 @@ export async function readAgentObligationAgenda(input: {
     agenda: buildAgentObligationAgenda({ planPlacement, ownerReport, independentVerification }, observedAt),
     goalId,
     planSlugs,
+    portfolio: portfolio.value,
     observedAt,
     elapsedMs: Date.now() - startedAt,
     degradedSources,
@@ -365,6 +370,121 @@ export function projectAgentObligationBrief(input: {
     projection,
     detailRef: input.detailRef,
   };
+}
+
+/**
+ * The automatic turn-start sink's exact projection contract.
+ *
+ * The GUI goal cockpit calls this same function: sharing only the agenda while
+ * respelling these limits would let the screen claim to show “what the agent
+ * sees” while delivering a different subset after the next budget change.
+ */
+export function projectAgentTurnStartObligationBrief(agenda: AgentObligationAgenda): AgentObligationBrief {
+  return projectAgentObligationBrief({
+    agenda,
+    sink: 'turn-start',
+    detailRef: 'coord:orient for the complete obligation agenda',
+    maxEntries: 3,
+    // The whole orientation remains capped at 600 chars. Keep this slice
+    // strict so obligations cannot crowd out direct messages or held work.
+    maxChars: 400,
+    maxEstimatedTokens: 100,
+  });
+}
+
+export const AGENT_GOAL_MODE_STATE_SCHEMA_VERSION = 'agent-goal-mode-state-v1' as const;
+
+/** One read-only server projection shared by the goal agent and its GUI. */
+export interface AgentGoalModeState {
+  schemaVersion: typeof AGENT_GOAL_MODE_STATE_SCHEMA_VERSION;
+  status: 'known' | 'degraded' | 'unknown';
+  ownerId: string | null;
+  observedAt: string;
+  portfolio: GoalPortfolioBrief | null;
+  obligations: AgentObligationBrief | null;
+  degradedReasons: string[];
+  unknown?: {
+    code: 'no-canonical-goal-holder' | 'goal-mode-state-read-failed';
+    detail: string;
+    retry: string;
+  };
+}
+
+/**
+ * Assemble the goal cockpit's state from the same bounded canonical read and
+ * exact turn-start projection the holder receives. Missing attribution and a
+ * whole-read failure are explicit unknowns; a partial source failure remains a
+ * degraded success with the provider-owned unknown evaluations intact.
+ */
+export async function readAgentGoalModeState(input: {
+  workspaceId: string;
+  ownerId: string | null;
+  goalId: string;
+  planSlugs: string[];
+  now?: Date;
+  sourceTimeoutMs?: number;
+  deps?: Partial<AgentObligationReaderDeps>;
+}): Promise<AgentGoalModeState> {
+  const observedAt = (input.now ?? new Date()).toISOString();
+  if (!input.ownerId) {
+    return {
+      schemaVersion: AGENT_GOAL_MODE_STATE_SCHEMA_VERSION,
+      status: 'unknown',
+      ownerId: null,
+      observedAt,
+      portfolio: null,
+      obligations: null,
+      degradedReasons: [],
+      unknown: {
+        code: 'no-canonical-goal-holder',
+        detail: 'No canonical goal holder is attached, so an agent obligation agenda cannot be attributed.',
+        retry: 'start or resume the goal, then refresh goals.detail',
+      },
+    };
+  }
+
+  try {
+    const read = await readAgentObligationAgenda({
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      goalId: input.goalId,
+      planSlugs: input.planSlugs,
+      sourceTimeoutMs: input.sourceTimeoutMs,
+      now: input.now,
+      deps: input.deps,
+    });
+    const portfolioReasons = read.portfolio?.degradedReasons ?? [];
+    const degradedReasons = [...new Set([
+      ...read.degradedSources,
+      ...portfolioReasons,
+      ...(!read.portfolio ? ['canonical goal portfolio was unavailable'] : []),
+    ])];
+    return {
+      schemaVersion: AGENT_GOAL_MODE_STATE_SCHEMA_VERSION,
+      status: degradedReasons.length > 0 ? 'degraded' : 'known',
+      ownerId: input.ownerId,
+      observedAt: read.observedAt,
+      portfolio: read.portfolio,
+      obligations: projectAgentTurnStartObligationBrief(read.agenda),
+      degradedReasons,
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      schemaVersion: AGENT_GOAL_MODE_STATE_SCHEMA_VERSION,
+      status: 'unknown',
+      ownerId: input.ownerId,
+      observedAt,
+      portfolio: null,
+      obligations: null,
+      degradedReasons: [],
+      unknown: {
+        code: 'goal-mode-state-read-failed',
+        detail,
+        retry: 'refresh goals.detail; the goal page remains read-only while this state is unknown',
+      },
+    };
+  }
 }
 
 export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {

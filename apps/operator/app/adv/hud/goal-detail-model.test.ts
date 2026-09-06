@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agoText,
   ceilingLine,
+  goalModeStateView,
   killCriterionLine,
   partitionPots,
   planLabel,
@@ -21,6 +22,119 @@ import {
   type GoalDetailInput,
   type GoalDetailPotInput,
 } from './goal-detail-model';
+
+describe('goalModeStateView — server projection parity', () => {
+  it('carries the server-selected action, demand, timing, generation and omission receipt verbatim', () => {
+    const view = goalModeStateView({
+      status: 'known',
+      ownerId: 'su-goal',
+      observedAt: '2026-09-06T00:00:00.000Z',
+      portfolio: {
+        goal: { id: 'goal-1', title: 'Ship it', status: 'active' },
+        queue: { total: 8, inFlight: 2, blocked: 1, needsHuman: 0, claimable: 5 },
+        priorities: ['finish P-009'],
+      },
+      obligations: {
+        sourceGeneration: 'agenda-generation',
+        projection: {
+          entries: [
+            {
+              id: 'obligation-1',
+              title: 'Independent verification',
+              status: 'due',
+              applicableDemand: 2,
+              sourceGeneration: 'rule-generation',
+              dueAt: '2026-09-06T00:30:00.000Z',
+              ageMs: 90_000,
+              reason: 'two acceptance opportunities are unverified',
+              action: { summary: 'Run independent acceptance' },
+            },
+          ],
+          receipt: {
+            sink: 'turn-start',
+            entriesAvailable: 4,
+            entriesDelivered: 1,
+            entriesOmitted: 3,
+            bodyTruncated: true,
+            refused: false,
+            reason: 'character-cap',
+          },
+        },
+        detailRef: 'coord:orient for the complete obligation agenda',
+      },
+    });
+
+    expect(view).toMatchObject({
+      status: 'known',
+      ownerId: 'su-goal',
+      sourceGeneration: 'agenda-generation',
+      entriesAvailable: 4,
+      entriesDelivered: 1,
+      entriesOmitted: 3,
+      omissionReason: 'character-cap',
+      detailRef: 'coord:orient for the complete obligation agenda',
+      empty: null,
+      portfolio: {
+        title: 'Ship it',
+        status: 'active',
+        queue: '2 in flight · 1 blocked · 0 needs you · 5 claimable',
+      },
+    });
+    expect(view.obligations[0]).toEqual({
+      id: 'obligation-1',
+      title: 'Independent verification',
+      status: 'due',
+      action: 'Run independent acceptance',
+      reason: 'two acceptance opportunities are unverified',
+      demand: 2,
+      deadline: '2026-09-06T00:30:00.000Z',
+      age: '1m',
+      sourceGeneration: 'rule-generation',
+      measurementFailure: null,
+    });
+  });
+
+  it('treats an absent or unrecognised envelope as unknown, never an all-clear', () => {
+    expect(goalModeStateView(undefined)).toMatchObject({
+      status: 'unknown',
+      empty: 'unavailable',
+      notices: [expect.stringContaining('not included')],
+    });
+    expect(goalModeStateView({ status: 'future-wire-value' })).toMatchObject({
+      status: 'unknown',
+      empty: 'unavailable',
+    });
+  });
+
+  it('distinguishes measured no-demand, degraded silence, and all-omitted overflow', () => {
+    const receipt = (entriesAvailable: number, entriesOmitted = entriesAvailable) => ({
+      projection: {
+        entries: [],
+        receipt: {
+          entriesAvailable,
+          entriesDelivered: 0,
+          entriesOmitted,
+          bodyTruncated: entriesOmitted > 0,
+          refused: false,
+        },
+      },
+    });
+
+    expect(goalModeStateView({ status: 'known', obligations: receipt(0) }).empty).toBe('no-demand');
+    expect(
+      goalModeStateView({
+        status: 'degraded',
+        degradedReasons: ['portfolio timed out'],
+        obligations: receipt(0),
+      }),
+    ).toMatchObject({ empty: 'unavailable', notices: ['portfolio timed out'] });
+    expect(goalModeStateView({ status: 'known', obligations: receipt(3) })).toMatchObject({
+      empty: 'overflow',
+      entriesAvailable: 3,
+      entriesOmitted: 3,
+    });
+  });
+});
 
 describe('tripwireBar', () => {
   it('phrases a usd tripwire as $current of $threshold', () => {

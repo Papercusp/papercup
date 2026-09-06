@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   projectAgentObligationBrief,
+  projectAgentTurnStartObligationBrief,
   readAgentObligationAgenda,
+  readAgentGoalModeState,
   type AgentObligationReaderDeps,
 } from './agent-obligation-reader';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
@@ -108,6 +110,7 @@ describe('shared agent obligation reader', () => {
 
     expect(read.goalId).toBe('goal-1');
     expect(read.planSlugs).toEqual(['plan-a']);
+    expect(read.portfolio?.goal.id).toBe('goal-1');
     expect(read.agenda.evaluations.map((entry) => [entry.family, entry.status])).toEqual([
       ['owner-report', 'due'],
       ['plan-placement', 'not-applicable'],
@@ -118,6 +121,7 @@ describe('shared agent obligation reader', () => {
   });
 
   it('turns a failed canonical source into explicit unknown instead of false no-demand', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const read = await readAgentObligationAgenda({
       workspaceId: 'ws',
       ownerId: 'su-goal',
@@ -128,6 +132,8 @@ describe('shared agent obligation reader', () => {
         }),
       }),
     });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('goal-portfolio failed'));
+    warn.mockRestore();
     const placement = read.agenda.evaluations.find((entry) => entry.family === 'plan-placement');
     expect(placement).toMatchObject({
       status: 'unknown',
@@ -170,5 +176,83 @@ describe('shared agent obligation reader', () => {
     expect(brief.sourceGeneration).toBe(agenda.sourceGeneration);
     expect(brief.projection.receipt).toMatchObject({ entriesDelivered: 1, entriesOmitted: 1, bodyTruncated: true });
     expect(brief.detailRef).toBe('coord:orient');
+  });
+
+  it('gives the GUI the exact turn-start projection plus the portfolio that fed it', async () => {
+    const sharedDeps = deps();
+    const state = await readAgentGoalModeState({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      goalId: 'goal-1',
+      planSlugs: ['plan-a'],
+      now: NOW,
+      deps: sharedDeps,
+    });
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      goalId: 'goal-1',
+      planSlugs: ['plan-a'],
+      now: NOW,
+      deps: deps(),
+    });
+
+    expect(state).toMatchObject({
+      schemaVersion: 'agent-goal-mode-state-v1',
+      status: 'known',
+      ownerId: 'su-goal',
+      portfolio: { goal: { id: 'goal-1' } },
+    });
+    expect(state.obligations).toEqual(projectAgentTurnStartObligationBrief(read.agenda));
+    expect(state.obligations?.projection.receipt.sink).toBe('turn-start');
+    expect(state.obligations?.projection.receipt.entriesOmitted).toBeGreaterThan(0);
+  });
+
+  it('keeps partial source failure visibly degraded with provider-owned unknown rows', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const state = await readAgentGoalModeState({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      goalId: 'goal-1',
+      planSlugs: ['plan-a'],
+      now: NOW,
+      deps: deps({
+        goalPortfolio: vi.fn(async () => {
+          throw new Error('portfolio unavailable');
+        }),
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('goal-portfolio failed'));
+    warn.mockRestore();
+
+    expect(state.status).toBe('degraded');
+    expect(state.portfolio).toBeNull();
+    expect(state.degradedReasons.join(' ')).toContain('goal portfolio');
+    expect(state.obligations?.evaluations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ family: 'plan-placement', status: 'unknown' }),
+      ]),
+    );
+  });
+
+  it('reports missing attribution as unknown without touching canonical providers', async () => {
+    const providerDeps = deps();
+    const state = await readAgentGoalModeState({
+      workspaceId: 'ws',
+      ownerId: null,
+      goalId: 'goal-1',
+      planSlugs: ['plan-a'],
+      now: NOW,
+      deps: providerDeps,
+    });
+
+    expect(state).toMatchObject({
+      status: 'unknown',
+      ownerId: null,
+      obligations: null,
+      unknown: { code: 'no-canonical-goal-holder' },
+    });
+    expect(providerDeps.goalPortfolio).not.toHaveBeenCalled();
+    expect(providerDeps.planAcceptance).not.toHaveBeenCalled();
   });
 });

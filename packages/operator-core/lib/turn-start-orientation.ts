@@ -1116,20 +1116,12 @@ export function defaultOrientationDeps(): OrientationDeps {
       return value ? { planSlug: value.planSlug, executableWidth: value.executableWidth } : null;
     },
     obligations: async (ownerId, workspaceId) => {
-      const { readAgentObligationAgenda, projectAgentObligationBrief } = await import('./agent-obligation-reader');
+      const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief } = await import(
+        './agent-obligation-reader'
+      );
       const { agenda } = await readAgentObligationAgenda({ workspaceId, ownerId });
       if (agenda.primary.length === 0) return null;
-      return projectAgentObligationBrief({
-        agenda,
-        sink: 'turn-start',
-        detailRef: 'coord:orient for the complete obligation agenda',
-        maxEntries: 3,
-        // The whole orientation remains capped at 600 chars. This sink gets a
-        // stricter slice than the shared 400-token ceiling so it cannot crowd
-        // out direct messages, wake state, or held work.
-        maxChars: 400,
-        maxEstimatedTokens: 100,
-      });
+      return projectAgentTurnStartObligationBrief(agenda);
     },
     // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
     // re-derived: `currentSessionEpoch` is already best-effort by contract

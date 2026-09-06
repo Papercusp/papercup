@@ -247,8 +247,65 @@ export interface GoalDetailLaunchDefaults {
   maxPerFleet: number;
 }
 
+/** Narrow client-side view of the shared server obligation contract. The
+ *  unions intentionally stay strings here: the server owns the policy
+ *  vocabulary, while this client only presents the values it received. */
+export interface GoalModeObligationInput {
+  id: string;
+  title: string;
+  status: string;
+  applicableDemand: number;
+  sourceGeneration: string;
+  dueAt?: string | null;
+  ageMs?: number | null;
+  reason?: string | null;
+  action?: { summary?: string | null } | null;
+  measurementFailure?: { code?: string; detail?: string; retry?: string } | null;
+}
+
+export interface GoalModeStateInput {
+  schemaVersion?: string;
+  status?: 'known' | 'degraded' | 'unknown' | string;
+  ownerId?: string | null;
+  observedAt?: string | null;
+  portfolio?: {
+    assembledAt?: string | null;
+    goal?: { id?: string; title?: string; status?: string | null } | null;
+    queue?: {
+      total?: number;
+      inFlight?: number;
+      blocked?: number;
+      needsHuman?: number;
+      claimable?: number | null;
+    } | null;
+    priorities?: string[] | null;
+  } | null;
+  obligations?: {
+    evaluatedAt?: string | null;
+    sourceGeneration?: string | null;
+    projection?: {
+      entries?: GoalModeObligationInput[] | null;
+      receipt?: {
+        sink?: string;
+        entriesAvailable?: number;
+        entriesDelivered?: number;
+        entriesOmitted?: number;
+        bodyTruncated?: boolean;
+        refused?: boolean;
+        reason?: string;
+      } | null;
+    } | null;
+    detailRef?: string | null;
+  } | null;
+  degradedReasons?: string[] | null;
+  unknown?: { code?: string; detail?: string; retry?: string } | null;
+}
+
 export interface GoalDetailInput {
   goal: GoalDetailGoalInput | null;
+  /** The read-only server projection shared with the goal holder's turn-start
+   *  brief. Absent means wire skew/unmeasured, never an all-clear. */
+  goalModeState?: GoalModeStateInput | null;
   /** held | unheld | lost | unknown, resolved by the server's holder oracle. */
   holderLiveness?: string | null;
   /** Raw active becomes dormant when policy requires a live holder and none exists. */
@@ -286,6 +343,146 @@ export interface GoalDetailInput {
   spendByDay?: GoalDetailSpendDayInput[] | null;
   spendLabel?: string | null;
   spendNote?: string | null;
+}
+
+export interface GoalModeObligationView {
+  id: string;
+  title: string;
+  status: string;
+  action: string | null;
+  reason: string | null;
+  demand: number | null;
+  deadline: string | null;
+  age: string | null;
+  sourceGeneration: string | null;
+  measurementFailure: { code: string | null; detail: string | null; retry: string | null } | null;
+}
+
+export interface GoalModeStateView {
+  status: 'known' | 'degraded' | 'unknown';
+  ownerId: string | null;
+  observedAt: string | null;
+  portfolio: {
+    title: string;
+    status: string | null;
+    queue: string | null;
+    priorities: string[];
+  } | null;
+  obligations: GoalModeObligationView[];
+  sourceGeneration: string | null;
+  entriesAvailable: number | null;
+  entriesDelivered: number | null;
+  entriesOmitted: number | null;
+  omissionReason: string | null;
+  detailRef: string | null;
+  notices: string[];
+  empty: 'no-demand' | 'unavailable' | 'overflow' | null;
+}
+
+function finiteNonNegative(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Presentation-only fold for the goal-mode section. It never decides whether
+ * an obligation applies or is satisfied: entries, status, demand, timing and
+ * omissions all come directly from the server's evaluated projection.
+ */
+export function goalModeStateView(input: GoalModeStateInput | null | undefined): GoalModeStateView {
+  if (!input) {
+    return {
+      status: 'unknown',
+      ownerId: null,
+      observedAt: null,
+      portfolio: null,
+      obligations: [],
+      sourceGeneration: null,
+      entriesAvailable: null,
+      entriesDelivered: null,
+      entriesOmitted: null,
+      omissionReason: null,
+      detailRef: null,
+      notices: ['Goal-mode state was not included in this server response.'],
+      empty: 'unavailable',
+    };
+  }
+
+  const status = input.status === 'known' || input.status === 'degraded' ? input.status : 'unknown';
+  const receipt = input.obligations?.projection?.receipt;
+  const entriesAvailable = finiteNonNegative(receipt?.entriesAvailable);
+  const entriesDelivered = finiteNonNegative(receipt?.entriesDelivered);
+  const entriesOmitted = finiteNonNegative(receipt?.entriesOmitted);
+  const obligations = (input.obligations?.projection?.entries ?? []).map((entry) => {
+    const ageMs = finiteNonNegative(entry.ageMs);
+    const demand = finiteNonNegative(entry.applicableDemand);
+    return {
+      id: entry.id,
+      title: entry.title,
+      status: entry.status,
+      action: entry.action?.summary?.trim() || null,
+      reason: entry.reason?.trim() || null,
+      demand,
+      deadline: entry.dueAt?.trim() || null,
+      age: ageMs == null ? null : formatAge(Math.round(ageMs / 1_000)),
+      sourceGeneration: entry.sourceGeneration?.trim() || null,
+      measurementFailure: entry.measurementFailure
+        ? {
+            code: entry.measurementFailure.code?.trim() || null,
+            detail: entry.measurementFailure.detail?.trim() || null,
+            retry: entry.measurementFailure.retry?.trim() || null,
+          }
+        : null,
+    };
+  });
+
+  const notices = [
+    ...(status === 'unknown' && input.unknown?.detail ? [input.unknown.detail] : []),
+    ...(status === 'unknown' && input.unknown?.retry ? [`Recovery: ${input.unknown.retry}`] : []),
+    ...(status === 'degraded' ? (input.degradedReasons ?? []).filter(Boolean) : []),
+  ];
+  const queue = input.portfolio?.queue;
+  const queueParts = queue
+    ? [
+        finiteNonNegative(queue.inFlight) == null ? null : `${queue.inFlight} in flight`,
+        finiteNonNegative(queue.blocked) == null ? null : `${queue.blocked} blocked`,
+        finiteNonNegative(queue.needsHuman) == null ? null : `${queue.needsHuman} needs you`,
+        queue.claimable == null
+          ? 'claimable unknown'
+          : finiteNonNegative(queue.claimable) == null
+            ? null
+            : `${queue.claimable} claimable`,
+      ].filter((part): part is string => part != null)
+    : [];
+
+  let empty: GoalModeStateView['empty'] = null;
+  if (obligations.length === 0) {
+    if (entriesAvailable != null && entriesAvailable > 0) empty = 'overflow';
+    else if (status === 'known' && entriesAvailable === 0) empty = 'no-demand';
+    else empty = 'unavailable';
+  }
+
+  return {
+    status,
+    ownerId: input.ownerId?.trim() || null,
+    observedAt: input.observedAt?.trim() || null,
+    portfolio: input.portfolio?.goal
+      ? {
+          title: input.portfolio.goal.title?.trim() || input.portfolio.goal.id?.trim() || 'Goal',
+          status: input.portfolio.goal.status?.trim() || null,
+          queue: queueParts.length > 0 ? queueParts.join(' · ') : null,
+          priorities: (input.portfolio.priorities ?? []).filter((item) => typeof item === 'string' && item.trim()),
+        }
+      : null,
+    obligations,
+    sourceGeneration: input.obligations?.sourceGeneration?.trim() || null,
+    entriesAvailable,
+    entriesDelivered,
+    entriesOmitted,
+    omissionReason: receipt?.reason?.trim() || null,
+    detailRef: input.obligations?.detailRef?.trim() || null,
+    notices,
+    empty,
+  };
 }
 
 /* ── Tripwire bars ───────────────────────────────────────────────────────── */

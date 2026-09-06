@@ -18,14 +18,6 @@ const resolverProbe = vi.hoisted(() => ({
 }));
 const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   const query = strings.join('');
-  if (query.includes('session_turn_parts') && query.includes('WHERE owner =')) {
-    return Promise.resolve([
-      { ts: '2026-08-24T03:40:40.424Z', speaker: 'user', part_kind: 'text', tool_name: null, text: 'prior epoch prompt', store_truncated: false },
-      { ts: '2026-08-24T03:40:42.267Z', speaker: 'assistant', part_kind: 'text', tool_name: null, text: 'prior epoch answer', store_truncated: false },
-      { ts: '2026-08-25T03:40:40.424Z', speaker: 'user', part_kind: 'text', tool_name: null, text: 'current epoch prompt', store_truncated: false },
-      { ts: '2026-08-25T03:40:42.267Z', speaker: 'assistant', part_kind: 'text', tool_name: null, text: 'current epoch answer', store_truncated: false },
-    ]);
-  }
   if (query.includes('session_turns') && query.includes('WHERE owner =')) {
     return Promise.resolve([
       { ts: '2026-08-24T03:40:40.424Z', speaker: 'user', text: 'prior epoch prompt' },
@@ -601,5 +593,8 @@ describe('live session DB fallback (WI-41527)', () => {
       ],
     });
     expect(dbSql.mock.calls.some(([strings]) => strings.join('').includes('WHERE owner ='))).toBe(true);
+    expect(dbSql.mock.calls.some(([strings]) =>
+      strings.join('').includes('session_turn_parts') && strings.join('').includes('WHERE owner ='),
+    )).toBe(false);
   });
 });

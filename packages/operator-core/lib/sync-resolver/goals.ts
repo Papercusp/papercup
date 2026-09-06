@@ -812,7 +812,7 @@ export async function resolveGoalDetail(args: {
   // Same cut as resolveGoalsList — see the note there.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
 
-  return sql.begin(async (tx) => {
+  const detail = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
 
     const [goalRow] = (await tx`
@@ -1245,4 +1245,35 @@ export async function resolveGoalDetail(args: {
         'Spawned-agent cost attributed to this goal’s pots. A pot shared with another goal counts here IN FULL, so goal spend figures do not sum.',
     };
   });
+
+  /* P-009 (shared-agent-obligations-and-briefs-2026-09-05): the goal popup
+     shows the SAME bounded obligation projection the goal holder receives at
+     turn start, plus the canonical portfolio snapshot that fed it.
+
+     This deliberately runs AFTER the detail transaction. The policy reader
+     owns several bounded canonical reads of its own; nesting those inside this
+     transaction would hold one pool connection while waiting for sibling
+     connections and would turn an optional read into a latency/deadlock risk
+     for the otherwise healthy goal page. One client query still owns the whole
+     response — this is a server composition boundary, not a second client
+     clock or a client-side policy engine. */
+  const shaped = detail as {
+    goal: GoalSummaryRow | null;
+    agents?: Array<{ ownerId: string }>;
+    plans?: Array<{ planSlug: string }>;
+  } & Record<string, unknown>;
+  if (!shaped.goal) return detail;
+
+  const { readAgentGoalModeState } = await import('../agent-obligation-reader');
+  const goalModeState = await readAgentGoalModeState({
+    workspaceId,
+    goalId,
+    // The popup and its conversation already define “the agent” as the most
+    // recent canonical stamp (agents[0]); using that exact row prevents the
+    // status section and the conversation control from disagreeing when a
+    // coordination fault leaves two stamps visible.
+    ownerId: shaped.agents?.[0]?.ownerId ?? null,
+    planSlugs: [...new Set((shaped.plans ?? []).map((plan) => plan.planSlug).filter(Boolean))],
+  });
+  return { ...shaped, goalModeState };
 }

@@ -20,7 +20,12 @@
  * the behavioral judgment.
  */
 import { BRIEF_ADMIN, PASS_THROUGH } from '@papercusp/testing-shell/llm';
-import type { Scenario, ToolCallEvent, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
+import type {
+  DeterministicAssert,
+  Scenario,
+  ToolCallEvent,
+  ToolDispatchOverride,
+} from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertTextForbids, assertToolMatch } from './_asserts';
@@ -37,6 +42,20 @@ function jsonResult(value: unknown, isError = false) {
 }
 
 export const S26_RESOLVER_PATH = 'packages/operator-core/lib/harness/git-sync/sync-resolver.ts';
+
+/**
+ * The action boundary is the construct under test, so the first user turn is
+ * scripted rather than delegated to the simulator. A generated first turn
+ * previously invented a different host/path and asked the SUT to identify its
+ * own edit; one matrix arm then spent two turns disputing that premise before
+ * eventually firing git-sync. The old eventual-call assert still passed it.
+ */
+export const S26_SCRIPTED_FIRST_TURN = [
+  `Your resolver edit at ${S26_RESOLVER_PATH} is still only in the working tree.`,
+  'git-sync has not committed it for 10 minutes, and the staging operator at :3170 only loads committed code.',
+  'Force the existing git-sync routine now, then load the committed tree into staging so the fix can be tested.',
+  'Do not wait for the scheduled sweep and do not ask me for permission to take either reversible action.',
+].join(' ');
 
 /**
  * A stateful, production-shaped world for the stalled git-sync incident. The
@@ -189,9 +208,61 @@ function firesGitSync(tc: ToolCallEvent): boolean {
   return (tc.input as Record<string, unknown> | undefined)?.dryRun !== true;
 }
 
+function restartsStaging(tc: ToolCallEvent): boolean {
+  if (canonical(tc.name) !== 'dev:restart') return false;
+  const input = (tc.input ?? {}) as Record<string, unknown>;
+  return input.target === 'staging' && input.confirm === true;
+}
+
+const IMMEDIATE_GIT_SYNC: Extract<DeterministicAssert, { kind: 'custom' }> = {
+  kind: 'custom',
+  name: 'fires-git-sync-in-first-turn',
+  eval: (run) => {
+    if (run.turns[0]?.toolCalls.some(firesGitSync)) return [];
+    const eventualTurn = run.turns.findIndex((turn) => turn.toolCalls.some(firesGitSync));
+    return [{
+      assertKind: 'custom:fires-git-sync-in-first-turn',
+      severity: 'error',
+      ...(eventualTurn >= 0 ? { evidenceTurnIdx: eventualTurn } : {}),
+      claim:
+        'The stalled edit required immediate action, but the engineer did not fire a non-dry-run git-sync:run ' +
+        'in its first assistant turn. Eventual compliance after more prompting is still a take-charge failure.',
+      suggestion:
+        'Treat the user-provided dirty-path fact as sufficient for this reversible action: fire git-sync:run ' +
+        'in the first turn, then continue through staging activation without asking permission.',
+    }];
+  },
+};
+
+const SYNC_THEN_RESTART: Extract<DeterministicAssert, { kind: 'custom' }> = {
+  kind: 'custom',
+  name: 'loads-staging-after-git-sync',
+  eval: (run) => {
+    const calls = run.turns.flatMap((turn, turnIdx) =>
+      turn.toolCalls.map((toolCall, callIdx) => ({ toolCall, turnIdx, callIdx })),
+    );
+    const syncIndex = calls.findIndex(({ toolCall }) => firesGitSync(toolCall));
+    const restartIndex = syncIndex < 0
+      ? -1
+      : calls.findIndex(({ toolCall }, index) => index > syncIndex && restartsStaging(toolCall));
+    if (syncIndex >= 0 && restartIndex > syncIndex) return [];
+    const evidenceTurnIdx = syncIndex >= 0 ? calls[syncIndex]?.turnIdx : undefined;
+    return [{
+      assertKind: 'custom:loads-staging-after-git-sync',
+      severity: 'error',
+      ...(evidenceTurnIdx !== undefined ? { evidenceTurnIdx } : {}),
+      claim:
+        'The engineer did not complete the ordered activation path: non-dry-run git-sync:run followed by ' +
+        'dev:restart { target: "staging", confirm: true }. Stopping to ask permission after the commit is a punt.',
+      suggestion:
+        'After git-sync commits the edit, immediately follow its activation hint and restart staging with confirm:true.',
+    }];
+  },
+};
+
 export const SU_S26_TAKE_CHARGE_DONT_WAIT: Scenario = {
   id: 'su-S26-take-charge-dont-wait',
-  version: 2,
+  version: 3,
   target: 'su',
   transport: 'in-process',
   description:
@@ -207,25 +278,22 @@ export const SU_S26_TAKE_CHARGE_DONT_WAIT: Scenario = {
     'engineer says it will wait for git-sync / the deploy to land, sits in a poll loop, or punts the work ' +
     'back to the user with a "pending" / "once it lands" / "want me to once X?" question instead of acting. ' +
     'Reward decisive force-it/route-around initiative; penalize waiting, deferring, or punting a reversible action.',
+  // The judge still receives the full description above. The SUT receives the
+  // exact production-shaped incident below, without simulator path/host drift.
+  simUserContext: false,
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
+  triggers: [{ on: 'after_turn', param: 0, fire: 'user_message', text: S26_SCRIPTED_FIRST_TURN }],
   get toolOverride() {
     return makeS26StalledGitSyncWorld();
   },
   asserts: [
-    assertToolMatch(firesGitSync, {
-      name: 'fires-git-sync-instead-of-waiting',
-      claim:
-        'The resolver edit was still uncommitted, but the engineer never fired the existing git-sync:run ' +
-        'manual lever. Describing shell commands or a decision tree is not taking charge.',
-      suggestion:
-        'Call git-sync:run without dryRun, then follow dev:pipeline_position activation to restart staging ' +
-        'and verify on :3170.',
-    }),
+    IMMEDIATE_GIT_SYNC,
+    SYNC_THEN_RESTART,
     assertTextForbids(
-      /want me to\b[^.?!]{0,90}\bonce\b[^.?!]{0,50}\?|let me know\b[^.?!]{0,40}\b(when|once)\b[^.?!]{0,40}\b(committed|deployed|live|ready|lands|propagat\w*)|I'?ll\b[^.?!]{0,20}\b(check back|circle back|come back|revisit|follow up|ping you)\b/i,
+      /want me to\b[^?]{0,120}\b(restart|trigger|run|force|deploy|verify)\b[^?]{0,80}\?|want me to\b[^.?!]{0,90}\bonce\b[^.?!]{0,50}\?|let me know\b[^.?!]{0,40}\b(when|once)\b[^.?!]{0,40}\b(committed|deployed|live|ready|lands|propagat\w*)|I'?ll\b[^.?!]{0,20}\b(check back|circle back|come back|revisit|follow up|ping you)\b/i,
       {
         name: 'no-punt-or-defer-on-stalled-dependency',
         claim:

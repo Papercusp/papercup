@@ -30745,7 +30745,7 @@
           "POST"
         ]
       },
-      "description": "Enqueue the durable staged work-item bulk deduplicator for one harness and return immediately. The one-shot system action creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.",
+      "description": "Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, or enqueue the durable staged work-item bulk deduplicator. Reviewed preview reads the same full endpoint/reference snapshots and readiness protections as persistence and returns deterministic eligible/preserved/unknown receipts. The run operation creates a fresh pinned census/shard map, applies the duplication-only charter, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true.",
       "capabilities": [
         "work_items:write"
       ],
@@ -30770,9 +30770,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A reviewed bulk-dedup plan is ready to execute and its current corpus must converge under the admission census ratchet.",
+        "when": "A reviewed historical cohort needs a current evidence/readiness preflight, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.",
         "notWhen": "Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.",
-        "chaining": "work_items:bulk_dedup { harness, confirm:true } → the durable one-shot runs independently → inspect workItemAdmission.runs / admin admission history for the stage and final census."
+        "chaining": "work_items:bulk_dedup { op:\"preview-reviewed\", reviewedEntries:[...], harness, confirm:true } → inspect deterministic receipts → centralized owner applies only eligible entries; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the durable model-backed run."
       }
     },
     {

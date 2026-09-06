@@ -1022,56 +1022,6 @@ export async function backfillFromSessionParts(
 }
 
 /**
- * The ordinary HUD conversation is an OWNER conversation, not one native
- * transcript file. A carry-respawn keeps the coord owner id and creates a new
- * native session id, so session-keyed backfill above necessarily drops every
- * predecessor epoch. Read the same faithful parts store through its stable
- * owner attribution, taking one bounded newest window and returning it in
- * chronological order. The live follower remains session/file-keyed below.
- */
-export async function backfillFromOwnerSessionParts(
-  owner: string,
-  opts: { cap?: number } = {},
-): Promise<Backfill | null> {
-  const cap = Math.max(1, opts.cap ?? 200);
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
-  const textCap = THINKING_ENTRY_TEXT_CAP + 200;
-  const rows = await sql<Array<{
-    ts: string | null; speaker: string | null; part_kind: string | null;
-    tool_name: string | null; text: string | null; store_truncated: boolean | null;
-  }>>`
-    SELECT ts::text AS ts, speaker, part_kind, tool_name, left(text, ${textCap}) AS text,
-           (text ~ ${TRUNCATION_MARKER_POSIX_RE} AND length(text) < ${TRANSCRIPT_RENDER_TEXT_CAP})
-             AS store_truncated
-      FROM (
-        SELECT ts, ingested_at, speaker, part_kind, tool_name, text,
-               source_kind, session_id, part_idx
-          FROM harness_shared.session_turn_parts
-         WHERE owner = ${owner}
-         ORDER BY COALESCE(ts, ingested_at) DESC,
-                  source_kind DESC, session_id DESC, part_idx DESC
-         LIMIT ${cap}
-      ) recent
-     ORDER BY COALESCE(ts, ingested_at) ASC,
-              source_kind ASC, session_id ASC, part_idx ASC
-  `;
-  if (rows.length === 0) return null;
-  const storeTruncated = rows.some((r) => r.store_truncated === true);
-  const entries: AgentTimelineEntry[] = rows.map((r) => {
-    const kind = sessionPartEntryKind(r.part_kind, r.speaker);
-    const body = r.text ?? '';
-    const ts = r.ts ?? undefined;
-    if (r.part_kind === 'tool_use') {
-      return { kind, toolName: r.tool_name ?? undefined, toolInput: body || undefined, ts };
-    }
-    if (r.part_kind === 'thinking') return capEntryText({ kind, text: `[thinking] ${body}`, ts });
-    return capEntryText({ kind, text: body, ts });
-  });
-  return { entries, anchorIndex: null, storeTruncated };
-}
-
-/**
  * P-009: how many of the session's TRAILING rows the positional scan needs.
  *
  * The old query was `ORDER BY turn_idx ASC` with NO LIMIT — a row per turn of
@@ -1226,9 +1176,22 @@ export async function backfillFromSessionTurns(
   return { entries, anchorIndex };
 }
 
-/** Text-turn fallback for an owner's whole carry-respawn chain. It has the
- * same bounded newest-window contract as the parts reader above, but reaches
- * the longer-lived text store when faithful parts have expired or are absent. */
+/**
+ * The ordinary HUD conversation is an OWNER conversation, not one native
+ * transcript file. A carry-respawn keeps the coord owner id and creates a new
+ * native session id, so session-keyed backfill necessarily drops every
+ * predecessor epoch.
+ *
+ * Select from session_turns deliberately. It is the user/assistant
+ * CONVERSATION store and retains 45 days; session_turn_parts retains 14 days
+ * and includes every tool/thinking part. A busy current epoch can fill all 200
+ * part slots by itself (measured live while implementing this fix), recreating
+ * the exact missing-predecessor symptom despite an owner predicate. Text turns
+ * preserve the bounded popup contract while letting prior conversation epochs
+ * survive current-epoch tool volume. The live follower remains tied to the
+ * resolved current transcript file below, so tool activity still appears as it
+ * is appended now.
+ */
 export async function backfillFromOwnerSessionTurns(
   owner: string,
   opts: { cap?: number } = {},
@@ -1657,8 +1620,11 @@ const sessionThinkingStream = defineTool({
             // path. Keep them serial so a single pane cannot reserve two org DB
             // operations at once and both helpers observe the same initialized
             // client/module seam.
+            // An owner-wide popup reads the conversation store directly. Do
+            // not let current-epoch tool parts crowd predecessor epochs out of
+            // the fixed-size history window (backfillFromOwnerSessionTurns).
             const fromParts = historyOwner
-              ? await backfillFromOwnerSessionParts(historyOwner)
+              ? null
               : await backfillFromSessionParts(corpusKey!, { anchorTs });
             const fromTurns = historyOwner
               ? await backfillFromOwnerSessionTurns(historyOwner)
