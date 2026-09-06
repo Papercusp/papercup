@@ -652,6 +652,38 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
+  it('EI-22494259338317391: removes a pre-staged protected path from the commit index without touching its working tree', async () => {
+    // `git checkout <sha> -- <path>` stages the selected blob as well as writing it.
+    // Reproduce the lock incident with a repair-head blob staged before git-sync
+    // receives the protected path.
+    git(repo, 'checkout', '-q', '-b', 'repair-source');
+    writeFileSync(join(repo, 'file.txt'), 'repair-head blob\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'repair-head');
+    const repairHead = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', 'main');
+    git(repo, 'checkout', '-q', repairHead, '--', 'file.txt');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('file.txt');
+
+    const logs: string[] = [];
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['file.txt'],
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('repair-head blob\n');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toBe('M file.txt');
+    expect(logs.join('\n')).toContain('removed 1 pre-staged protected path(s) from the commit index');
+  });
+
   it('EI-22435583452728403: refreshes live locks at the commit seam before staging', async () => {
     writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
