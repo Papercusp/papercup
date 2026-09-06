@@ -52,6 +52,140 @@ export interface ContextPressureReading {
   ageSec: number | null;
 }
 
+/**
+ * Executable fresh-context boundaries available to a caller refused for
+ * critical cached context pressure.
+ */
+export type ContextPressureRecoveryPath =
+  | 'self-compaction'
+  | 'warm-loop'
+  | 'cold-loop'
+  | 'no-path'
+  | 'unknown';
+
+export interface ContextPressureRecoveryResolution {
+  path: ContextPressureRecoveryPath;
+  selfCompactionAvailable: boolean | null;
+  /** A cold-loop note is verified only when this is true. */
+  carryNoteVerified: boolean | null;
+  reason:
+    | 'host-backed'
+    | 'active-warm-loop'
+    | 'active-cold-loop'
+    | 'active-cold-loop-needs-checkpoint'
+    | 'no-live-pty-or-loop'
+    | 'host-predates-carry-respawn'
+    | 'read-failed';
+}
+
+/** PURE: resolve the remedy vocabulary from already-read availability facts. */
+export function deriveContextPressureRecoveryPath(input: {
+  selfCompaction:
+    | { available: boolean; reason?: string | null }
+    | null
+    | undefined;
+  loop?: {
+    active?: boolean;
+    carry?: 'warm' | 'cold';
+    harnessSlug?: string | null;
+  } | null;
+  carryNote?: { note?: string | null; readFailed?: boolean } | null;
+}): ContextPressureRecoveryResolution {
+  const selfCompaction = input.selfCompaction;
+  if (selfCompaction?.available === true) {
+    return {
+      path: 'self-compaction',
+      selfCompactionAvailable: true,
+      carryNoteVerified: null,
+      reason: 'host-backed',
+    };
+  }
+  if (!selfCompaction) {
+    return {
+      path: 'unknown',
+      selfCompactionAvailable: null,
+      carryNoteVerified: null,
+      reason: 'read-failed',
+    };
+  }
+  if (selfCompaction.reason === 'host_predates_carry_respawn') {
+    return {
+      path: 'no-path',
+      selfCompactionAvailable: false,
+      carryNoteVerified: null,
+      reason: 'host-predates-carry-respawn',
+    };
+  }
+
+  const loop = input.loop;
+  if (loop?.active && loop.harnessSlug && loop.carry === 'warm') {
+    return {
+      path: 'warm-loop',
+      selfCompactionAvailable: false,
+      carryNoteVerified: null,
+      reason: 'active-warm-loop',
+    };
+  }
+  if (loop?.active && loop.harnessSlug && loop.carry === 'cold') {
+    const carryNoteVerified =
+      input.carryNote?.readFailed !== true && Boolean(input.carryNote?.note?.trim());
+    return {
+      path: 'cold-loop',
+      selfCompactionAvailable: false,
+      carryNoteVerified,
+      reason: carryNoteVerified ? 'active-cold-loop' : 'active-cold-loop-needs-checkpoint',
+    };
+  }
+  return {
+    path: 'no-path',
+    selfCompactionAvailable: false,
+    carryNoteVerified: null,
+    reason: 'no-live-pty-or-loop',
+  };
+}
+
+/**
+ * IO seam for the refusal callers. The request-compaction tool owns the actual
+ * no-PTY mutation; this helper only answers which remedy it can recommend.
+ */
+export async function resolveContextPressureRecoveryPath(
+  ownerId: string,
+  workspaceId?: string | null,
+): Promise<ContextPressureRecoveryResolution> {
+  try {
+    const { selfCompactionAvailability } = await import('../../events/await/psu-pty-discovery');
+    const availability = selfCompactionAvailability(ownerId);
+    if (availability.available || availability.reason === 'host_predates_carry_respawn') {
+      return deriveContextPressureRecoveryPath({ selfCompaction: availability });
+    }
+
+    const { getLoopStatus } = await import('../../harness/routines/loop');
+    const loop = await getLoopStatus(ownerId);
+    if (!loop?.active || !loop.harnessSlug) {
+      return deriveContextPressureRecoveryPath({ selfCompaction: availability, loop });
+    }
+
+    const { getLoopCarryNoteWithMeta } = await import('../../carry-note');
+    const carryNote = await getLoopCarryNoteWithMeta({
+      harness: loop.harnessSlug,
+      ownerId,
+      workspaceId: workspaceId ?? undefined,
+    });
+    return deriveContextPressureRecoveryPath({
+      selfCompaction: availability,
+      loop,
+      carryNote,
+    });
+  } catch {
+    return {
+      path: 'unknown',
+      selfCompactionAvailable: null,
+      carryNoteVerified: null,
+      reason: 'read-failed',
+    };
+  }
+}
+
 /** How stale a cached (contextTokens, compactionLimit) estimate may be before it
  *  is no longer trustworthy enough to assert a bucket from. Several multiples of
  *  the watchdog's own 2-minute sweep cadence (compaction-compliance-watchdog.ts'
