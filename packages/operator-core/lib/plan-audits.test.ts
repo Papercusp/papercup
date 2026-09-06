@@ -21,6 +21,7 @@ import {
   __repoCitationTrackingCacheStatsForTests,
   __resetRepoCitationTrackingCacheForTests,
   citationBlobSha,
+  citationBlobShaAt,
   foldEffectiveItemAudits,
   gitBlobSha,
   harnessCitationRepoRoot,
@@ -561,6 +562,39 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
       expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 2 });
     } finally {
       __resetRepoCitationTrackingCacheForTests();
+    }
+  });
+});
+
+describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270017)', () => {
+  it('reads the cited blob from the pinned commit instead of the moving worktree', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-commit-'));
+    const citedPath = path.join(root, 'src', 'cited.ts');
+    const oldBody = 'export const cited = "old";\n';
+    const newBody = 'export const cited = "new";\n';
+    try {
+      fs.mkdirSync(path.dirname(citedPath), { recursive: true });
+      fs.writeFileSync(citedPath, oldBody);
+      git(root, 'init', '-q');
+      git(root, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(root, 'config', 'user.name', 'Plan Audits Test');
+      git(root, 'add', '--', 'src/cited.ts');
+      git(root, 'commit', '-qm', 'old cited bytes');
+      const oldSha = git(root, 'rev-parse', 'HEAD').trim();
+
+      fs.writeFileSync(citedPath, newBody);
+      git(root, 'add', '--', 'src/cited.ts');
+      git(root, 'commit', '-qm', 'new cited bytes');
+      const newSha = git(root, 'rev-parse', 'HEAD').trim();
+
+      const deps = repoCitationDeps(root);
+      const citation = code('src/cited.ts');
+      expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(newBody));
+      expect(citationBlobShaAt(citation, oldSha, deps)).toBe(gitBlobSha(oldBody));
+      expect(citationBlobShaAt(citation, newSha, deps)).toBe(gitBlobSha(newBody));
+      expect(citationBlobShaAt(citation, 'f'.repeat(40), deps)).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

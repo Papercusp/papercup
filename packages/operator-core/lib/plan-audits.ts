@@ -40,7 +40,7 @@
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -438,6 +438,9 @@ export interface CitationDeps {
   /** Repo-relative → Git-compatible blob hash of the file's current bytes. Optional
    *  only so small injected resolver tests remain a two-function fixture. */
   blobSha?: (rel: string) => string | null;
+  /** Repo-relative → Git-compatible blob hash of the file at an audited commit/ref.
+   *  Optional only so small injected resolver tests can remain filesystem-pure. */
+  blobShaAt?: (rel: string, auditedSha: string) => string | null;
 }
 
 /** Git's SHA-1 object id for a blob, without writing it into the object database. */
@@ -458,6 +461,18 @@ export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): st
   if (direct) return direct;
   const body = deps.readFile(rel);
   return body == null ? null : gitBlobSha(body);
+}
+
+/** Fingerprint a verifying citation at the exact commit/ref recorded by an audit. */
+export function citationBlobShaAt(
+  citation: AuditCitation,
+  auditedSha: string,
+  deps: CitationDeps,
+): string | null {
+  if (!isVerifyingCitation(citation)) return null;
+  const rel = citation.path?.trim();
+  if (!rel) return null;
+  return deps.blobShaAt?.(rel, auditedSha) ?? null;
 }
 
 /**
@@ -855,6 +870,28 @@ export function repoCitationDeps(
       if (!abs) return null;
       try {
         return gitBlobSha(fs.readFileSync(abs));
+      } catch {
+        return null;
+      }
+    },
+    blobShaAt: (rel, auditedSha) => {
+      const abs = within(rel);
+      if (!abs) return null;
+      const repo = gitRootForFile(abs);
+      if (!repo || !/^[0-9a-f]{7,64}$/i.test(auditedSha)) return null;
+      try {
+        const blob = execFileSync(
+          'git',
+          ['rev-parse', '--verify', '--end-of-options', `${auditedSha}:${repo.rel}`],
+          {
+            cwd: repo.root,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 5_000,
+            killSignal: 'SIGKILL',
+          },
+        ).trim();
+        return /^[0-9a-f]{40}$/i.test(blob) ? blob : null;
       } catch {
         return null;
       }
