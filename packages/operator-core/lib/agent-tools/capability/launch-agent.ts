@@ -706,6 +706,7 @@ export default defineTool({
     // explicit successor path is the one exception that intentionally starts a
     // FRESH process while retaining the ended owner's coord identity.
     let resumeSessionId: string | null = null;
+    let resumeId: string | null = null;
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
     let successorBrief: string | null = null;
@@ -720,6 +721,9 @@ export default defineTool({
       });
       if (!target.ok) return err(`Cannot ${isSuccessor ? 'start successor' : 'resume'}: ${target.detail}`);
       resumeSessionId = target.sessionId;
+      // Native UUID verification remains nullable for tracked Codex rows that
+      // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
+      resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
       // EI-21725123573114023: an IN-PLACE resume whose resolved target carries no
@@ -1373,6 +1377,7 @@ export default defineTool({
           ? buildAgentLaunchCommand({
               mode: fork ? 'fork' : 'resume',
               sessionId: resumeSessionId,
+              resumeId,
               account: args.account ?? null,
               model: args.model ?? null,
               headless: !!args.headless,
@@ -1488,7 +1493,7 @@ export default defineTool({
       (isSuccessor
         ? `successor · ${args.successor?.agentId ?? resumeSessionId ?? 'agent'}`
         : isResume
-          ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeSessionId ?? 'agent'}`
+          ? `${fork ? 'fork' : 'resume'} · ${args.resume?.agentId ?? resumeId ?? resumeSessionId ?? 'agent'}`
           : `agent · ${args.plan ?? (args.brief ?? '').slice(0, 40)}`);
     const anyHeadless = foldedConfigs.some((f) => !!f.headless);
     const headlessLogDir = anyHeadless ? join(papercuspPathForWorkspace(workspaceId), 'fleet-logs') : null;

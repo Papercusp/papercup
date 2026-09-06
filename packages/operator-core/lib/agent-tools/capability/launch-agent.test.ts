@@ -1221,6 +1221,37 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
   });
 
+  it('resumes a tracked Codex row without native session_id by adv-session selector', async () => {
+    const trackedCodex = {
+      ...dead,
+      agent: 'codex',
+      sessionId: null,
+      resumeId: '22661',
+      advSessionId: 22661,
+    };
+    resolveResumeTargetMock.mockResolvedValue(trackedCodex);
+    verifyResumeStartedMock.mockResolvedValue({
+      started: true,
+      waitedMs: 5,
+      expectedSessionId: null,
+      actualSessionId: null,
+      mismatch: false,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the Codex recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=22661');
+    expect(verifyResumeStartedMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      expect.objectContaining({ expectedSessionId: null }),
+    );
+    expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
+  });
+
   it('EI-21725123573114023: refuses an in-place resume whose target records no coord owner id, instead of reporting an unverifiable "Launched"', async () => {
     // Both downstream rails are keyed on the owner id, so without it the verifier
     // is skipped AND `live` is forced false — the tool used to spawn and report
