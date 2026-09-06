@@ -2303,7 +2303,21 @@ export async function readWorkItemReadinessProjection(opts: {
   const [rows, recurrence] = await Promise.all([
     sql<ProjectionRow[]>`
       WITH scoped AS MATERIALIZED (
-        SELECT wi.*,
+        -- Project only the writer fields this aggregate consumes. The work_items
+        -- is a schema-evolving union view and now exposes a physical
+        -- claim_hold column; selecting every view column beside the derived payload
+        -- signal below produced two same-named CTE columns and made the live
+        -- workspace read fail with an ambiguous-column error.
+        SELECT wi.feature_id,
+               wi.status,
+               wi.admission,
+               wi.first_claimed_at,
+               wi.created_ts,
+               wi.closed_ts,
+               wi.authority,
+               wi.expected_cost_cents,
+               wi.origin,
+               wi.payload,
                (
                  wi.status = ANY(${terminalStates}::text[])
                  OR (wi.terminal_owner IS NOT NULL AND wi.terminal_completion_ref IS NOT NULL)

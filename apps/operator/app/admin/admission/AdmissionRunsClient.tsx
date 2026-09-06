@@ -9,6 +9,7 @@ import type {
   AdmissionRunState,
   WorkItemAdmissionRun,
   WorkItemAdmissionSnapshot,
+  WorkItemReadinessProjection,
 } from "@papercusp/operator-core/lib/work-items-admission-promoter";
 import { Select } from "@/app/harness/Select";
 import { Table, type TableColumn } from "@/app/harness/Table";
@@ -61,6 +62,74 @@ function duration(value: number | null): string {
   return `${(minutes / 60).toFixed(1)}h`;
 }
 
+function age(value: number | null): string {
+  if (value == null) return "—";
+  if (value < 24 * 60 * 60_000) return duration(value);
+  const days = value / (24 * 60 * 60_000);
+  return `${days.toFixed(days < 10 ? 1 : 0)}d`;
+}
+
+function usd(value: number | null | undefined): string {
+  if (value == null) return "—";
+  const magnitude = Math.abs(value);
+  const digits =
+    magnitude === 0 || magnitude >= 1 ? 2 : magnitude >= 0.01 ? 4 : 6;
+  return `$${value.toFixed(digits)}`;
+}
+
+function availabilityLabel(value: string): string {
+  if (value === "not-evaluated") return "Not evaluated";
+  if (value === "nonempty") return "Nonempty";
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+const HEADLINE_COHORTS: ReadonlyArray<
+  [
+    keyof Pick<
+      WorkItemReadinessProjection["headline"],
+      | "terminal"
+      | "active"
+      | "awaitingRevision"
+      | "awaitingReview"
+      | "held"
+      | "ready"
+      | "unknown"
+    >,
+    string,
+  ]
+> = [
+  ["terminal", "Terminal"],
+  ["active", "Active"],
+  ["awaitingRevision", "Awaiting revision"],
+  ["awaitingReview", "Awaiting review"],
+  ["held", "Held / blocked"],
+  ["ready", "Build-ready"],
+  ["unknown", "Unknown"],
+];
+
+const REASON_FACETS: ReadonlyArray<
+  [keyof WorkItemReadinessProjection["reasons"], string]
+> = [
+  ["admissionPending", "Admission pending"],
+  ["admissionUnreviewed", "Admission unreviewed"],
+  ["pendingAgentReview", "Pending agent review"],
+  ["revisionRequestedAgentReview", "Revision requested"],
+  ["legacyRevisionException", "Legacy revision exception"],
+  ["readinessAbsentLegacy", "Legacy readiness absent"],
+  ["readinessReady", "Readiness ready"],
+  ["readinessUnknown", "Readiness unknown"],
+  ["readinessNotReady", "Readiness not ready"],
+  ["readinessMalformed", "Readiness malformed"],
+  ["activeClaim", "Active claim"],
+  ["blockedStatus", "Blocked status"],
+  ["claimHold", "Claim hold"],
+  ["needsOwnerAction", "Needs owner action"],
+  ["activeExternalBlocker", "External blocker"],
+  ["activeDependency", "Active dependency"],
+  ["remoteOrigin", "Remote origin"],
+  ["terminalWithoutCommittedEvidence", "Terminal without committed evidence"],
+];
+
 function when(value: string | null): string {
   if (!value) return "—";
   const instant = new Date(value);
@@ -74,7 +143,9 @@ function stateColor(state: string): string {
   return "var(--warn, #fbbf24)";
 }
 
-function outcomeUnitLabel(unit: WorkItemAdmissionRun["outcome"]["unit"]): string {
+function outcomeUnitLabel(
+  unit: WorkItemAdmissionRun["outcome"]["unit"],
+): string {
   if (unit === "items") return "run-local unique items";
   if (unit === "pairs") return "pair verdicts";
   if (unit === "links") return "link coverage";
@@ -153,7 +224,11 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
       <span style={{ color: stateColor(row.state), fontWeight: 650 }}>
         {row.state}{" "}
         <small style={MUTED_STYLE}>
-          ({row.stateSource === "writer" ? "writer" : row.stateSource ?? "legacy"})
+          (
+          {row.stateSource === "writer"
+            ? "writer"
+            : (row.stateSource ?? "legacy")}
+          )
         </small>
       </span>
     ),
@@ -173,11 +248,14 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
       <span
         title={`Counter unit: ${outcomeUnitLabel(row.outcome.unit)}; source: ${row.outcomeSource ?? "legacy-derived"}`}
       >
-        {numberOrDash(row.outcome.attempted)} / {numberOrDash(row.outcome.successful)} /{" "}
-        {numberOrDash(row.outcome.unchanged)} / {numberOrDash(row.outcome.rolledBack)}{" "}
-        · {numberOrDash(row.outcome.uniqueRowsChanged)}{" "}
+        {numberOrDash(row.outcome.attempted)} /{" "}
+        {numberOrDash(row.outcome.successful)} /{" "}
+        {numberOrDash(row.outcome.unchanged)} /{" "}
+        {numberOrDash(row.outcome.rolledBack)} ·{" "}
+        {numberOrDash(row.outcome.uniqueRowsChanged)}{" "}
         <small style={MUTED_STYLE}>
-          ({outcomeUnitLabel(row.outcome.unit)} · {row.outcomeSource ?? "legacy-derived"})
+          ({outcomeUnitLabel(row.outcome.unit)} ·{" "}
+          {row.outcomeSource ?? "legacy-derived"})
         </small>
       </span>
     ),
@@ -204,11 +282,12 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
   },
   {
     key: "model",
-    header: "Model / tokens",
+    header: "Model / tokens / cost",
     render: (row) => (
       <span title={row.modelId ?? undefined}>
         {row.modelId ?? "deterministic"} ·{" "}
-        {numberOrDash((row.tokensIn ?? 0) + (row.tokensOut ?? 0))}
+        {numberOrDash((row.tokensIn ?? 0) + (row.tokensOut ?? 0))} ·{" "}
+        {usd(row.costUsd)}
       </span>
     ),
   },
@@ -220,7 +299,8 @@ const RUN_COLUMNS: TableColumn<WorkItemAdmissionRun>[] = [
   {
     key: "reason",
     header: "Failure / blocked reason",
-    render: (row) => row.outcome.failureReason ?? row.outcome.blockedReason ?? "—",
+    render: (row) =>
+      row.outcome.failureReason ?? row.outcome.blockedReason ?? "—",
   },
   { key: "started", header: "Started", render: (row) => when(row.startedAt) },
 ];
@@ -255,14 +335,17 @@ export default function AdmissionRunsClient() {
     [payload],
   );
   const outcomeUnitSummary = useMemo(() => {
-    const entries = (Object.entries(summary?.runCounts.byUnit ?? {}) as Array<
-      [string, AdmissionRunOutcomeTotals]
-    >).filter(([, counts]) => counts.runs > 0);
+    const entries = (
+      Object.entries(summary?.runCounts.byUnit ?? {}) as Array<
+        [string, AdmissionRunOutcomeTotals]
+      >
+    ).filter(([, counts]) => counts.runs > 0);
     return {
       count: entries.length,
       detail: entries
-        .map(([unit, counts]) =>
-          `${unit}: ${counts.successful.toLocaleString()}/${counts.attempted.toLocaleString()} · ${counts.uniqueRowsChanged.toLocaleString()} unique row change(s) · ${counts.unchanged.toLocaleString()} unchanged · ${counts.rolledBack.toLocaleString()} rolled back`,
+        .map(
+          ([unit, counts]) =>
+            `${unit}: ${counts.successful.toLocaleString()}/${counts.attempted.toLocaleString()} · ${counts.uniqueRowsChanged.toLocaleString()} unique row change(s) · ${counts.unchanged.toLocaleString()} unchanged · ${counts.rolledBack.toLocaleString()} rolled back`,
         )
         .join(" · "),
     };
@@ -318,6 +401,165 @@ export default function AdmissionRunsClient() {
         </div>
       ) : null}
 
+      {summary?.readiness ? (
+        <section
+          aria-label="Queue readiness"
+          style={{ ...PANEL_STYLE, display: "grid", gap: 12 }}
+        >
+          <div>
+            <strong style={{ fontSize: 13 }}>
+              Issue-family readiness stock
+            </strong>
+            <div style={{ ...MUTED_STYLE, fontSize: 11, marginTop: 3 }}>
+              One non-overlapping headline per row. Partition precedence:
+              terminal → active → revision → review → held → build-ready →
+              unknown.
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))",
+              gap: 10,
+            }}
+          >
+            {HEADLINE_COHORTS.map(([key, label]) => (
+              <Stat
+                key={key}
+                label={label}
+                value={summary.readiness!.headline[key].toLocaleString()}
+              />
+            ))}
+          </div>
+
+          <div>
+            <strong style={{ fontSize: 12 }}>Availability axes</strong>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                gap: 10,
+                marginTop: 8,
+              }}
+            >
+              <Stat
+                label="Corpus"
+                value={availabilityLabel(summary.readiness.availability.corpus)}
+              />
+              <Stat
+                label="Writer readiness"
+                value={availabilityLabel(
+                  summary.readiness.availability.writerReady,
+                )}
+              />
+              <Stat
+                label="Claim spec"
+                value={availabilityLabel(
+                  summary.readiness.availability.claimSpec,
+                )}
+              />
+              <Stat
+                label="Fleet control / pause"
+                value={availabilityLabel(
+                  summary.readiness.availability.fleetControl,
+                )}
+              />
+            </div>
+            <p style={{ ...MUTED_STYLE, fontSize: 11, margin: "8px 0 0" }}>
+              {summary.readiness.availability.note}
+            </p>
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: 10,
+            }}
+          >
+            <Stat
+              label="Never claimed"
+              value={summary.readiness.aging.neverClaimed.count.toLocaleString()}
+              detail={`oldest ${age(summary.readiness.aging.neverClaimed.oldestAgeMs)}`}
+            />
+            <Stat
+              label="Awaiting review age"
+              value={summary.readiness.aging.awaitingReview.count.toLocaleString()}
+              detail={`oldest ${age(summary.readiness.aging.awaitingReview.oldestAgeMs)}`}
+            />
+            <Stat
+              label="Awaiting revision age"
+              value={summary.readiness.aging.awaitingRevision.count.toLocaleString()}
+              detail={`oldest ${age(summary.readiness.aging.awaitingRevision.oldestAgeMs)}`}
+            />
+            <Stat
+              label={`Arrivals · ${summary.readiness.flow.windowDays}d`}
+              value={summary.readiness.flow.arrivals.toLocaleString()}
+            />
+            <Stat
+              label={`Verified completions · ${summary.readiness.flow.windowDays}d`}
+              value={summary.readiness.flow.verifiedCompletionsInWindow.toLocaleString()}
+              detail={`${summary.readiness.flow.terminalInWindow.toLocaleString()} terminal row(s)`}
+            />
+            <Stat
+              label={`Current approvals · ${summary.readiness.flow.windowDays}d`}
+              value={summary.readiness.flow.currentApprovalsUpdatedInWindow.toLocaleString()}
+            />
+            <Stat
+              label={`Actionable revisions · ${summary.readiness.flow.windowDays}d`}
+              value={summary.readiness.flow.currentRevisionRequestsUpdatedInWindow.toLocaleString()}
+            />
+            <Stat
+              label={`Retained reopens · ${summary.readiness.flow.windowDays}d`}
+              value={summary.readiness.flow.retainedReopenEventsInWindow.toLocaleString()}
+              detail={`${summary.readiness.flow.reopenedItemsInWindow.toLocaleString()} item(s)`}
+            />
+            <Stat
+              label={`Duplicate occurrences · ${summary.readiness.flow.windowDays}d`}
+              value={summary.readiness.flow.recurrence.duplicateOccurrences.toLocaleString()}
+              detail={`${summary.readiness.flow.recurrence.rawOccurrences.toLocaleString()} raw occurrence(s) across ${summary.readiness.flow.recurrence.canonicalClusters.toLocaleString()} canonical cluster(s)`}
+            />
+            <Stat
+              label="Build-ready expected cost"
+              value={
+                summary.readiness.flow.readyExpectedCost.cents == null
+                  ? "Partially priced"
+                  : usd(summary.readiness.flow.readyExpectedCost.cents / 100)
+              }
+              detail={`${summary.readiness.flow.readyExpectedCost.coveredRows.toLocaleString()}/${summary.readiness.flow.readyExpectedCost.totalRows.toLocaleString()} row(s) priced · known subtotal ${usd(summary.readiness.flow.readyExpectedCost.pricedSubtotalCents / 100)}`}
+            />
+          </div>
+
+          <div>
+            <strong style={{ fontSize: 12 }}>Overlapping reason facets</strong>
+            <p style={{ ...MUTED_STYLE, fontSize: 11, margin: "3px 0 8px" }}>
+              Reason facets overlap by design and must not be summed as a second
+              population.
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+              {REASON_FACETS.map(([key, label]) => (
+                <span
+                  key={key}
+                  style={{
+                    border:
+                      "1px solid var(--border, rgba(125, 211, 252, 0.18))",
+                    borderRadius: 999,
+                    padding: "4px 8px",
+                    fontSize: 11,
+                  }}
+                >
+                  {label}: {summary.readiness!.reasons[key].toLocaleString()}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : (
+        <div role="status" style={PANEL_STYLE}>
+          Readiness projection unavailable.
+        </div>
+      )}
+
       <div
         style={{
           display: "grid",
@@ -361,6 +603,17 @@ export default function AdmissionRunsClient() {
           value={`${outcomeUnitSummary.count} unit${outcomeUnitSummary.count === 1 ? "" : "s"}`}
           detail={outcomeUnitSummary.detail || "No outcome counters yet"}
         />
+        {summary?.usage ? (
+          <Stat
+            label="Model cost (shown runs)"
+            value={
+              summary.usage.modelRuns > 0 && summary.usage.costUsd == null
+                ? "Partially priced"
+                : usd(summary.usage.costUsd)
+            }
+            detail={`${summary.usage.pricedRuns}/${summary.usage.modelRuns} model run(s) priced · known subtotal ${usd(summary.usage.pricedSubtotalUsd)} · ${(summary.usage.inputTokens + summary.usage.outputTokens).toLocaleString()} tokens`}
+          />
+        ) : null}
       </div>
 
       <div style={PANEL_STYLE}>

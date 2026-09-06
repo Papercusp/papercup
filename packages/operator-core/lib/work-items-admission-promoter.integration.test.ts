@@ -46,6 +46,10 @@ const DDL = `
     item_kind text,
     parent_id text,
     taken_by text,
+    -- Mirrors the live union view's same-named lifecycle column. The
+    -- readiness reader must not pull this through a star beside its derived
+    -- payload claim-hold signal or downstream references become ambiguous.
+    claim_hold boolean,
     admission text,
     admitted_at timestamptz,
     first_claimed_at timestamptz,

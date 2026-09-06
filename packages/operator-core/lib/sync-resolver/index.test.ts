@@ -1,11 +1,5 @@
 import { describe, expect, it, vi, beforeEach, beforeAll, afterAll } from 'vitest';
-import {
-  knownQueryNamesV2,
-  isRegisteredV2,
-  resolveNamedQueryV2,
-  NAME_NOT_FOUND,
-  jsonSafeRows,
-} from './index';
+import { knownQueryNamesV2, isRegisteredV2, resolveNamedQueryV2, NAME_NOT_FOUND, jsonSafeRows } from './index';
 import { readWorkItemAdmissionSnapshot } from '../work-items-admission-promoter';
 
 describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query serializer)', () => {
@@ -64,10 +58,27 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
           tokens_in: 100n,
           tokens_out: 20n,
           latency_ms: 1_000,
-          detail: { status: 'complete' },
+          detail: { status: 'complete', modelCostUsd: 0.0125 },
         },
       ],
       [{ pending: '9', unreviewed: '3', latency_sample_size: '5', p50_ms: '1200', p95_ms: '9400' }],
+      [
+        {
+          population: '7',
+          non_terminal: '6',
+          terminal: '1',
+          active: '1',
+          awaiting_revision: '1',
+          awaiting_review: '1',
+          held: '1',
+          ready: '1',
+          unknown: '1',
+          never_claimed: '4',
+          ready_cost_covered: '1',
+          ready_cost_cents: '250',
+        },
+      ],
+      [{ canonical_clusters: '1', raw_occurrences: '2', duplicate_occurrences: '1' }],
       [
         {
           id: 'run-new',
@@ -87,7 +98,21 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
         },
       ],
     ];
-    const fakeSql = vi.fn(async (..._args: unknown[]) => responses.shift() ?? []);
+    const executedSql: unknown[][] = [];
+    const fakeSql = Object.assign(
+      vi.fn((...args: unknown[]) => {
+        const strings = args[0] as TemplateStringsArray;
+        const statement = Array.isArray(strings) ? strings.join(' ') : '';
+        // postgres.js invokes the same callable for composable SQL fragments and
+        // executed statements. Only top-level statements consume a fixture row.
+        if (!/\b(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b/i.test(statement)) return {};
+        executedSql.push(args);
+        return Promise.resolve(responses.shift() ?? []);
+      }),
+      {
+        unsafe: vi.fn((value: string) => value),
+      },
+    );
     const snapshot = await readWorkItemAdmissionSnapshot({
       workspaceId: 'ws-active',
       harnessSlug: 'papercusp',
@@ -97,14 +122,15 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
       sql: fakeSql as never,
     });
 
-    expect(fakeSql).toHaveBeenCalledTimes(3);
-    expect(fakeSql.mock.calls[0]?.slice(1)).toEqual(
+    expect(executedSql).toHaveLength(5);
+    expect(executedSql[0]?.slice(1)).toEqual(
       expect.arrayContaining(['ws-active', 'papercusp', 'promoter-tick', 'complete', 200]),
     );
     expect(snapshot.runs[0]).toMatchObject({
       id: 'run-new',
       tokensIn: 100,
       tokensOut: 20,
+      costUsd: 0.0125,
       censusDelta: 1,
     });
     expect(snapshot.summary).toMatchObject({
@@ -112,6 +138,14 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
       unreviewed: 3,
       promotedToFirstClaim: { sampleSize: 5, p50Ms: 1200, p95Ms: 9400 },
       latestCensusRise: { runId: 'run-new', delta: 1 },
+      readiness: {
+        headline: { population: 7, ready: 1, unknown: 1 },
+        flow: {
+          recurrence: { canonicalClusters: 1, rawOccurrences: 2, duplicateOccurrences: 1 },
+          readyExpectedCost: { coveredRows: 1, totalRows: 1, pricedSubtotalCents: 250, cents: 250 },
+        },
+      },
+      usage: { modelRuns: 1, pricedRuns: 1, unpricedRuns: 0, costUsd: 0.0125 },
     });
     expect(snapshot.censusTrend.map((point) => point.runId)).toEqual(['run-old', 'run-new']);
   });
@@ -180,10 +214,7 @@ describe('sync-resolver v2 registry', () => {
 
     it('includes batch 6 migrated names', () => {
       const names = knownQueryNamesV2();
-      for (const expected of [
-        'harnessSmokeTest.byHarness',
-        'harnessBrainstorm.byHarness',
-      ]) {
+      for (const expected of ['harnessSmokeTest.byHarness', 'harnessBrainstorm.byHarness']) {
         expect(names).toContain(expected);
       }
     });
@@ -230,9 +261,7 @@ describe('sync-resolver v2 registry', () => {
     //  migration 192 — proposalsShared remains.)
     it('includes batch 10 migrated names', () => {
       const names = knownQueryNamesV2();
-      for (const expected of [
-        'proposalsShared.byHarness',
-      ]) {
+      for (const expected of ['proposalsShared.byHarness']) {
         expect(names).toContain(expected);
       }
     });
@@ -279,14 +308,16 @@ describe('sync-resolver v2 registry', () => {
 
     it('includes every Conversations list/detail query (messages retired — retire-work-item-mail-surface-2026-07-26 P-004)', () => {
       const names = knownQueryNamesV2();
-      expect(names).toEqual(expect.arrayContaining([
-        'conversations.questionsList',
-        'conversations.questionDetail',
-        'conversations.deliberationList',
-        'conversations.deliberationDetail',
-        'conversations.agentChatList',
-        'conversations.agentChatDetail',
-      ]));
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'conversations.questionsList',
+          'conversations.questionDetail',
+          'conversations.deliberationList',
+          'conversations.deliberationDetail',
+          'conversations.agentChatList',
+          'conversations.agentChatDetail',
+        ]),
+      );
       expect(names).not.toContain('conversations.messageList');
       expect(names).not.toContain('conversations.messageDetail');
     });
@@ -316,9 +347,7 @@ describe('sync-resolver v2 registry', () => {
 
     it('userActions.byKind rejects missing kind', async () => {
       const { resolveNamedQueryV2: r } = await import('./index');
-      await expect(
-        r('userActions.byKind', { harnessSlug: 'x', workspaceId: 'y' }),
-      ).rejects.toThrow();
+      await expect(r('userActions.byKind', { harnessSlug: 'x', workspaceId: 'y' })).rejects.toThrow();
     });
 
     it('operatorBudget.byWorkspace takes an OPTIONAL workspaceId (request-scoped when omitted) and still rejects a non-string', async () => {
@@ -442,8 +471,7 @@ describe('sync-resolver v2 registry', () => {
     // deterministically. The per-resolver dispatch tests below (with mocked
     // data) cover routing + arg-validation behavior for the entries that matter.
     it('every registered entry has a callable resolve and a valid argsSchema', async () => {
-      const { knownQueryNamesV2: known, getRegistryEntryV2: entryOf } =
-        await import('./index');
+      const { knownQueryNamesV2: known, getRegistryEntryV2: entryOf } = await import('./index');
       const names = known();
       expect(names.length).toBeGreaterThan(40); // sanity: we have ~123 today
 
@@ -462,10 +490,7 @@ describe('sync-resolver v2 registry', () => {
         }
         // argsSchema is optional; when present it must be an ArgsValidator
         // (a zod schema, or anything exposing a `.parse(input)` method).
-        if (
-          entry.argsSchema !== undefined &&
-          typeof (entry.argsSchema as { parse?: unknown }).parse !== 'function'
-        ) {
+        if (entry.argsSchema !== undefined && typeof (entry.argsSchema as { parse?: unknown }).parse !== 'function') {
           malformed.push({
             name,
             reason: 'argsSchema present but has no .parse() (not a validator)',
@@ -572,7 +597,10 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
 
   it('p2p.settings tags baked defaults as unavailable on read failure — never a false CLEAR or a 500', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const baked = { optIn: { mode: 'off', fleets: [], maxConcurrentForeign: 2, windows: [] }, killSwitch: { engaged: false } };
+    const baked = {
+      optIn: { mode: 'off', fleets: [], maxConcurrentForeign: 2, windows: [] },
+      killSwitch: { engaged: false },
+    };
     vi.doMock('../p2p/settings', () => ({
       readP2pSettings: vi.fn(async () => {
         throw Object.assign(new Error('relation "p2p_settings" does not exist'), { code: '42P01' });
@@ -647,13 +675,19 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-      getOrgPg: () => ({ sql: async () => members }) }));
+      getOrgPg: () => ({ sql: async () => members }),
+    }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
     expect(out[0]).toEqual({ kind: 'identity', githubUserId: 279242982, devicePubkey: 'DEV-THIS' });
     const dev = out.find((row) => row.kind === 'device');
-    expect(dev).toMatchObject({ potHomeSlug: 'papercusp', devicePubkey: 'DEV-THIS', isThisDevice: true, revoked: false });
+    expect(dev).toMatchObject({
+      potHomeSlug: 'papercusp',
+      devicePubkey: 'DEV-THIS',
+      isThisDevice: true,
+      revoked: false,
+    });
     expect(out.some((row) => row.kind === 'missing')).toBe(false); // this device is live → no RED
     vi.doUnmock('../harness/usage-actor');
     vi.doUnmock('@papercusp/db-org');
@@ -672,7 +706,8 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-      getOrgPg: () => ({ sql: async () => members }) }));
+      getOrgPg: () => ({ sql: async () => members }),
+    }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
@@ -798,7 +833,9 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
 
   // ── p2p.audit — p2p:*-prefixed audit rows (default limit 50) ──
   it('p2p.audit returns p2p-prefixed audit rows and applies the argsSchema default limit (50)', async () => {
-    const rows = [{ id: 'a1', ts: 1_700_000_000_000, actor: 'owner', action: 'p2p:kill-switch', subject: 'host', details: {} }];
+    const rows = [
+      { id: 'a1', ts: 1_700_000_000_000, actor: 'owner', action: 'p2p:kill-switch', subject: 'host', details: {} },
+    ];
     const captured: { args: unknown[] } = { args: [] };
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -920,9 +957,7 @@ describe('resolveNamedQueryV2 — plansDrafts.bySlug (P-029)', () => {
         updated: fm.updated ?? null,
       },
       items,
-      now: nowStateM
-        ? { state: nowStateM[1].trim(), next: nowNextM?.[1].trim() ?? null }
-        : null,
+      now: nowStateM ? { state: nowStateM[1].trim(), next: nowNextM?.[1].trim() ?? null } : null,
     };
   }
 
@@ -1007,9 +1042,22 @@ updated: 2026-05-22
 
   it('returns draft plans only — skips active/archived', async () => {
     mockPlansDeps([
-      { slug: 'my-plan-2026-05-24', filePath: '/fake/plans/my-plan-2026-05-24.md', content: DRAFT_PLAN('my-plan-2026-05-24') },
-      { slug: 'active-2026-05-20', filePath: '/fake/plans/active-2026-05-20.md', content: ACTIVE_PLAN('active-2026-05-20') },
-      { slug: 'archived-2026-05-10', filePath: '/fake/plans/archive/archived-2026-05-10.md', archived: true, content: DRAFT_PLAN('archived-2026-05-10') },
+      {
+        slug: 'my-plan-2026-05-24',
+        filePath: '/fake/plans/my-plan-2026-05-24.md',
+        content: DRAFT_PLAN('my-plan-2026-05-24'),
+      },
+      {
+        slug: 'active-2026-05-20',
+        filePath: '/fake/plans/active-2026-05-20.md',
+        content: ACTIVE_PLAN('active-2026-05-20'),
+      },
+      {
+        slug: 'archived-2026-05-10',
+        filePath: '/fake/plans/archive/archived-2026-05-10.md',
+        archived: true,
+        content: DRAFT_PLAN('archived-2026-05-10'),
+      },
     ]);
     const { resolveNamedQueryV2: r } = await import('./index');
     const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
@@ -1023,8 +1071,16 @@ updated: 2026-05-22
 
   it('derives source: scoper for scoper-proposal-* slug, user otherwise', async () => {
     mockPlansDeps([
-      { slug: 'my-feature-2026-05-24', filePath: '/fake/plans/my-feature-2026-05-24.md', content: DRAFT_PLAN('my-feature-2026-05-24', 'user') },
-      { slug: 'scoper-proposal-gap-2026-05-24', filePath: '/fake/plans/scoper-proposal-gap-2026-05-24.md', content: DRAFT_PLAN('scoper-proposal-gap-2026-05-24', 'scoper') },
+      {
+        slug: 'my-feature-2026-05-24',
+        filePath: '/fake/plans/my-feature-2026-05-24.md',
+        content: DRAFT_PLAN('my-feature-2026-05-24', 'user'),
+      },
+      {
+        slug: 'scoper-proposal-gap-2026-05-24',
+        filePath: '/fake/plans/scoper-proposal-gap-2026-05-24.md',
+        content: DRAFT_PLAN('scoper-proposal-gap-2026-05-24', 'scoper'),
+      },
     ]);
     const { resolveNamedQueryV2: r } = await import('./index');
     const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
@@ -1038,7 +1094,11 @@ updated: 2026-05-22
 
   it('returns itemCount matching parsed items', async () => {
     mockPlansDeps([
-      { slug: 'two-items-2026-05-24', filePath: '/fake/plans/two-items-2026-05-24.md', content: DRAFT_PLAN('two-items-2026-05-24') },
+      {
+        slug: 'two-items-2026-05-24',
+        filePath: '/fake/plans/two-items-2026-05-24.md',
+        content: DRAFT_PLAN('two-items-2026-05-24'),
+      },
     ]);
     const { resolveNamedQueryV2: r } = await import('./index');
     const rows = (await r('plansDrafts.bySlug', { harnessSlug: 'myharn' })) as Array<{
@@ -1431,7 +1491,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
    * a wider consumer set. The old resolver comment claimed the two mirrored each
    * other exactly, which is how `summary` survived `.bySlug` dropping it.
    */
-  it('projects exactly PotContentPanel\'s five declared columns — no summary, no bare select', async () => {
+  it("projects exactly PotContentPanel's five declared columns — no summary, no bare select", async () => {
     const captured: { cols: string[] } = { cols: [] };
     vi.doMock('../harness-registry', () => ({
       hiveMemberHarnessScopes: vi.fn(() => ['hive-home']),
@@ -1472,9 +1532,7 @@ describe('resolveNamedQueryV2 — featuresConsolidated.byHive (WI-259 P-006 cros
     await r('featuresConsolidated.byHive', { potHomeSlug: 'hive-home' });
 
     // KEPT — exactly PotFeatureRow (PotContentPanel.tsx).
-    expect(new Set(captured.cols)).toEqual(
-      new Set(['harnessSlug', 'featureId', 'title', 'status', 'updatedTs']),
-    );
+    expect(new Set(captured.cols)).toEqual(new Set(['harnessSlug', 'featureId', 'title', 'status', 'updatedTs']));
     // DROPPED — named individually so a regression says WHICH column came back.
     for (const gone of [
       'summary',
@@ -1514,7 +1572,8 @@ describe('resolveNamedQueryV2 — plans.byHive (WI-259 P-006 cross-member plan r
     // Skip attribution enrichment (flag off) so the rows pass through unchanged.
     vi.doMock('@papercusp/flags/server', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
-      getFlag: vi.fn(async () => false) }));
+      getFlag: vi.fn(async () => false),
+    }));
 
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('plans.byHive', { potHomeSlug: 'hive-home' })) as unknown[];

@@ -63,6 +63,7 @@ function payload(
         modelId: "model-a",
         tokensIn: 100,
         tokensOut: 20,
+        costUsd: 0.0125,
         latencyMs: 1_000,
         outcome: {
           unit: "items",
@@ -142,6 +143,120 @@ function payload(
           },
         },
       },
+      readiness: {
+        schemaVersion: "work-item-readiness-projection-v1",
+        measuredAt: "2026-08-26T15:00:00.000Z",
+        scope: {
+          workspaceId: "papercusp-workspace",
+          harnessSlug: "papercusp",
+          itemKinds: ["bug", "change", "task"],
+          population:
+            "root issue-family rows excluding observation-lane records",
+        },
+        headline: {
+          population: 10,
+          nonTerminal: 8,
+          terminal: 2,
+          active: 1,
+          awaitingRevision: 2,
+          awaitingReview: 1,
+          held: 2,
+          ready: 1,
+          unknown: 1,
+        },
+        reasons: {
+          admissionPending: 2,
+          admissionUnreviewed: 1,
+          pendingAgentReview: 1,
+          revisionRequestedAgentReview: 3,
+          legacyRevisionException: 1,
+          readinessAbsentLegacy: 4,
+          readinessReady: 3,
+          readinessUnknown: 1,
+          readinessNotReady: 2,
+          readinessMalformed: 1,
+          activeClaim: 1,
+          blockedStatus: 1,
+          claimHold: 2,
+          needsOwnerAction: 1,
+          activeExternalBlocker: 1,
+          activeDependency: 2,
+          remoteOrigin: 1,
+          terminalWithoutCommittedEvidence: 1,
+        },
+        aging: {
+          neverClaimed: { count: 5, oldestAgeMs: 3 * 24 * 60 * 60_000 },
+          awaitingReview: { count: 1, oldestAgeMs: 2 * 60 * 60_000 },
+          awaitingRevision: { count: 2, oldestAgeMs: 4 * 60 * 60_000 },
+        },
+        flow: {
+          windowDays: 30,
+          since: "2026-07-27T15:00:00.000Z",
+          arrivals: 8,
+          currentApprovalsUpdatedInWindow: 3,
+          currentRevisionRequestsUpdatedInWindow: 2,
+          terminalInWindow: 2,
+          verifiedCompletionsInWindow: 1,
+          retainedReopenEventsInWindow: 2,
+          reopenedItemsInWindow: 1,
+          recurrence: {
+            canonicalClusters: 2,
+            rawOccurrences: 5,
+            duplicateOccurrences: 3,
+            units: {
+              canonicalClusters:
+                "distinct canonical work-item ids with occurrences",
+              rawOccurrences: "append-only report rows",
+              duplicateOccurrences: "report rows not creating a canonical item",
+            },
+            writer: "harness_shared.work_item_occurrences",
+          },
+          readyExpectedCost: {
+            coveredRows: 1,
+            totalRows: 1,
+            pricedSubtotalCents: 250,
+            cents: 250,
+          },
+        },
+        availability: {
+          corpus: "nonempty",
+          writerReady: "ready",
+          claimSpec: "not-evaluated",
+          fleetControl: "not-evaluated",
+          note: "Corpus stock, writer readiness, claim-spec matching, and fleet pause are separate axes. This workspace/harness projection never calls a paused or spec-empty lane drained.",
+        },
+        contract: {
+          precedence: [
+            "terminal",
+            "active",
+            "awaitingRevision",
+            "awaitingReview",
+            "held",
+            "ready",
+            "unknown",
+          ],
+          headline: "non-overlapping",
+          reasons: "overlapping",
+          readinessWriter:
+            "payload.implementationReadiness + payload.agentReview + work-item lifecycle columns",
+          recurrenceWriter: "harness_shared.work_item_occurrences",
+          reopenWriter:
+            "payload.reopenHistory (newest five retained by the writer)",
+          truncation:
+            "none for stock/flow SQL; reopen history is writer-bounded to five entries per item",
+        },
+      },
+      usage: {
+        scope: "shown runs after kind/state filters and limit",
+        cap: 100,
+        modelRuns: 1,
+        inputTokens: 100,
+        outputTokens: 20,
+        pricedRuns: 1,
+        unpricedRuns: 0,
+        costUsd: 0.0125,
+        pricedSubtotalUsd: 0.0125,
+      },
     },
     ...overrides,
   };
@@ -192,10 +307,37 @@ describe("AdmissionRunsClient", () => {
       screen.getByRole("img", { name: /Unadjudicated census trend/ }),
     ).toBeTruthy();
     expect(screen.getByText("promoter-tick")).toBeTruthy();
-    expect(screen.getByText("model-a · 120")).toBeTruthy();
+    expect(screen.getByText("model-a · 120 · $0.0125")).toBeTruthy();
     expect(screen.getByText("Run states (shown)")).toBeTruthy();
     expect(screen.getByText("1/1")).toBeTruthy();
     expect(screen.getByText(/3 unique row change/)).toBeTruthy();
+    expect(screen.getByText("Model cost (shown runs)")).toBeTruthy();
+  });
+
+  it("renders the readiness partition, overlapping reasons, stock/flow evidence, and independent availability axes", () => {
+    syncResult = { data: [payload()], loading: false, error: null };
+    renderClient();
+
+    const readiness = screen.getByRole("region", { name: "Queue readiness" });
+    expect(readiness.textContent).toContain(
+      "Partition precedence: terminal → active → revision → review → held → build-ready → unknown",
+    );
+    expect(readiness.textContent).toContain("Build-ready1");
+    expect(readiness.textContent).toContain("Never claimed5oldest 3.0d");
+    expect(readiness.textContent).toContain("Verified completions · 30d1");
+    expect(readiness.textContent).toContain("Duplicate occurrences · 30d3");
+    expect(readiness.textContent).toContain("Build-ready expected cost$2.50");
+    expect(readiness.textContent).toContain("Reason facets overlap by design");
+    expect(readiness.textContent).toContain("Revision requested: 3");
+    expect(readiness.textContent).toContain("Legacy revision exception: 1");
+    expect(readiness.textContent).toContain("CorpusNonempty");
+    expect(readiness.textContent).toContain("Claim specNot evaluated");
+    expect(readiness.textContent).toContain(
+      "Fleet control / pauseNot evaluated",
+    );
+    expect(readiness.textContent).toContain(
+      "never calls a paused or spec-empty lane drained",
+    );
   });
 
   it("passes URL-backed kind and run-state filters to the single sync query", () => {
