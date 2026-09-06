@@ -667,6 +667,14 @@ beforeEach(() => {
   });
 });
 
+// A timed-out fake-clock case can skip its local `finally` while Vitest moves
+// on to the next test in this 180-case file. Always restore the worker clock at
+// the file boundary so one regression cannot turn every later launch into a
+// misleading timeout cascade.
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('fleet:launch-on-plan GOAL pot sovereignty fence (EI-22180799091614070)', () => {
   it('refuses a different active goal owner before promotion, fleet writes, or terminal spawn', async () => {
     goalLaunchReadMock.mockResolvedValueOnce({
@@ -3210,12 +3218,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       }>((resolve) => {
         resolveVerification = resolve;
       });
-      let verificationStarted!: () => void;
-      const verifierStarted = new Promise<void>((resolve) => {
-        verificationStarted = resolve;
-      });
       launchTransaction.verify.mockImplementation((..._args: unknown[]) => {
-        verificationStarted();
         return verification;
       });
 
@@ -3241,11 +3244,16 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         {} as never,
         null,
       );
-      // The handler performs several asynchronous preflight steps before it calls the verifier.
-      // Let that promise chain reach the response race first; otherwise advancing the fake clock
-      // here moves time forward before the race's deadline timer is created, leaving the timer in
-      // the future and this test waiting forever when it is run with -t.
-      await verifierStarted;
+      // The handler performs several asynchronous and potentially timer-backed
+      // preflight steps before it calls the verifier. Waiting on a raw promise
+      // while fake time is frozen can therefore strand the very transition the
+      // promise represents. vi.waitFor both yields microtasks and advances the
+      // fake clock; the observable mock call proves the response race is live
+      // before we advance its deadline.
+      await vi.waitFor(() => expect(launchTransaction.verify).toHaveBeenCalledTimes(1), {
+        timeout: 5_000,
+        interval: 10,
+      });
       await vi.advanceTimersByTimeAsync(LAUNCH_RESPONSE_DEADLINE_MS);
 
       const response = await responsePromise;
@@ -3267,13 +3275,17 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       ]);
 
       resolveVerification({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
-      await vi.advanceTimersByTimeAsync(0);
-      const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
-        transaction: { transactionId: string; state: string };
-      };
-      expect(persisted.transaction).toMatchObject({
-        transactionId: payload.launchTransaction.transactionId,
-        state: 'verified',
+      await vi.waitFor(() => {
+        const persisted = launchTransaction.persist.mock.calls.at(-1)?.[0] as {
+          transaction: { transactionId: string; state: string };
+        } | undefined;
+        expect(persisted?.transaction).toMatchObject({
+          transactionId: payload.launchTransaction.transactionId,
+          state: 'verified',
+        });
+      }, {
+        timeout: 5_000,
+        interval: 10,
       });
     } finally {
       vi.useRealTimers();
