@@ -1,0 +1,29 @@
+PROBE_START 20260906T004147Z base=http://127.0.0.1:3081
+backend-3801 pid=2407637 release=releases/zsbDNiN5utSCRh2AV2Xdk-20260906004051562-2350753-a2e10e88
+health-3081: 200
+=== A dev tab=pg
+goto: http://127.0.0.1:3081/?app=dev&tab=pg
+url: http://127.0.0.1:3081/?app=dev&tab=pg
+title: Papercusp Portal
+active: rail-item active compact | DEV || pc-dev-tab is-active | PGconnections
+=== B dev tab=terminal
+goto: http://127.0.0.1:3081/?app=dev&tab=terminal
+url: http://127.0.0.1:3081/?app=dev&tab=terminal
+title: Papercusp Portal
+active: rail-item active compact | DEV || pc-dev-tab is-active | Terminalxterm.js shell
+=== C cloud step=connect
+goto: http://127.0.0.1:3081/?app=cloud&step=connect
+url: http://127.0.0.1:3081/?app=cloud&step=connect&connection=byoc-canary-gcp
+title: Papercusp Portal
+active: rail-item active compact | Cloud || pc-btn cloud-workspaces_railStep__MkdqE | 01ConnectBYOC bounded canary · invalid
+=== D desktops pin
+goto: http://127.0.0.1:3081/?app=desktops
+url: http://127.0.0.1:3081/?app=desktops&step=operate&tab=desktops&connection=byoc-canary-gcp
+title: Papercusp Portal
+active: rail-item active | Desktops || pc-btn cloud-workspaces_railStep__MkdqE | 03Operate12 workspaces · 1 needs attention
+=== E hop dev(tab=pg) -> Home rail clears tab
+before-url: http://127.0.0.1:3081/?app=dev&tab=pg
+home-click: clicked:BUTTON:Home
+after-url: http://127.0.0.1:3081/
+=== console (errors)
+PROBE_END 20260906T004445Z
