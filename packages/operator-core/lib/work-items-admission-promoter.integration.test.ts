@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -46,10 +47,11 @@ const DDL = `
     item_kind text,
     parent_id text,
     taken_by text,
-    -- Mirrors the live union view's same-named lifecycle column. The
-    -- readiness reader must not pull this through a star beside its derived
-    -- payload claim-hold signal or downstream references become ambiguous.
-    claim_hold boolean,
+    -- Mirrors migration 1110's stored payload projections. The readiness
+    -- reader consumes these physical booleans without repeatedly detoasting
+    -- the polymorphic payload.
+    claim_hold boolean GENERATED ALWAYS AS ((payload ->> '_claimHold') = 'true') STORED,
+    needs_owner_action boolean GENERATED ALWAYS AS ((payload ->> 'needsOwnerAction') = 'true') STORED,
     admission text,
     admitted_at timestamptz,
     first_claimed_at timestamptz,
@@ -1700,6 +1702,26 @@ describe('work-item admission promoter (real Postgres)', () => {
         projection.headline.ready +
         projection.headline.unknown,
     ).toBe(projection.headline.population);
+  });
+
+  it('keeps workspace-wide readiness set-based, primary-key indexable, and payload-narrow', () => {
+    const source = readFileSync(new URL('./work-items-admission-promoter.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export async function readWorkItemReadinessProjection');
+    const end = source.indexOf('export async function readWorkItemAdmissionSnapshot', start);
+    const reader = source.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(reader).toContain('WITH active_dependency_refs AS MATERIALIZED');
+    expect(reader).toContain("blocker.harness_slug = split_part(d.blocker_ref, '#', 1)");
+    expect(reader).toContain("blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)");
+    expect(reader).toContain('LEFT JOIN active_dependency_refs dependency');
+    expect(reader).toContain('LEFT JOIN LATERAL jsonb_to_record');
+    expect(reader).toContain('COALESCE(wi.claim_hold, FALSE)');
+    expect(reader).toContain('COALESCE(wi.needs_owner_action, FALSE)');
+    expect(reader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
+    expect(reader).not.toMatch(/^\s*wi\.payload,\s*$/m);
+    expect(reader).not.toContain("COALESCE(s.payload, '{}'::jsonb)");
   });
 
   it('uses writer status over finished_at and keeps outcome totals unit-separated', async () => {

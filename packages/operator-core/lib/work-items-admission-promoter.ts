@@ -22,7 +22,6 @@ import { admissionIdentity } from './harness/improvements/digest';
 import {
   IMPLEMENTATION_READINESS_SCHEMA_VERSION,
   LEGACY_AGENT_REVIEW_SUBMITTER,
-  agentReviewNormalExclusionSql,
   hasStrictOwnerAction,
   readAgentReviewState,
   readImplementationReadiness,
@@ -31,7 +30,7 @@ import { readIssueOccurrenceCounts, selectCanonicalIssue, recordIssueOccurrence 
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
-import { admittedWhereSqlWi, DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
+import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
 import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 
@@ -2302,12 +2301,52 @@ export async function readWorkItemReadinessProjection(opts: {
   type ProjectionRow = Record<string, number | string | null>;
   const [rows, recurrence] = await Promise.all([
     sql<ProjectionRow[]>`
-      WITH scoped AS MATERIALIZED (
-        -- Project only the writer fields this aggregate consumes. The work_items
-        -- is a schema-evolving union view and now exposes a physical
-        -- claim_hold column; selecting every view column beside the derived payload
-        -- signal below produced two same-named CTE columns and made the live
-        -- workspace read fail with an ambiguous-column error.
+      WITH active_dependency_refs AS MATERIALIZED (
+        -- Resolve every dependency endpoint once, then join the small distinct
+        -- blocked-ref set into the workspace rollup. The old per-item EXISTS
+        -- joined through work_items with an OR plus a concatenated
+        -- harness_slug || '#' || feature_id predicate; at workspace scope that
+        -- repeated an unindexable blocker scan for every one of tens of thousands
+        -- of candidates. This is the same split-key shape established by DB
+        -- migrations 1087/1101 for the canonical claim-floor reader.
+        SELECT d.blocked_ref
+          FROM harness_shared.work_item_deps d
+          JOIN harness_shared.work_items blocker
+            ON position('#' in d.blocker_ref) = 0
+           AND blocker.workspace_id = ${opts.workspaceId}
+           AND blocker.feature_id = d.blocker_ref
+         WHERE d.workspace_id = 'default'
+           AND d.dep_type = 'blocks'
+           AND (
+             (d.satisfaction = 'success' AND blocker.status <> ALL(${successfulStates}::text[]))
+             OR (
+               d.satisfaction IS DISTINCT FROM 'success'
+               AND blocker.status <> ALL(${terminalStates}::text[])
+             )
+           )
+        UNION
+        SELECT d.blocked_ref
+          FROM harness_shared.work_item_deps d
+          JOIN harness_shared.work_items blocker
+            ON position('#' in d.blocker_ref) > 0
+           AND blocker.workspace_id = ${opts.workspaceId}
+           AND blocker.harness_slug = split_part(d.blocker_ref, '#', 1)
+           AND blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)
+         WHERE d.workspace_id = 'default'
+           AND d.dep_type = 'blocks'
+           AND (
+             (d.satisfaction = 'success' AND blocker.status <> ALL(${successfulStates}::text[]))
+             OR (
+               d.satisfaction IS DISTINCT FROM 'success'
+               AND blocker.status <> ALL(${terminalStates}::text[])
+             )
+           )
+      ), scoped_payload AS MATERIALIZED (
+        -- Detoast the large polymorphic payload once per row and retain only the
+        -- four small subdocuments this projection owns. Re-reading nested paths
+        -- from the full payload throughout classification was the dominant live
+        -- workspace cost (millions of shared-buffer hits). The two hot booleans
+        -- already have generated columns maintained by migration 1110.
         SELECT wi.feature_id,
                wi.status,
                wi.admission,
@@ -2317,7 +2356,11 @@ export async function readWorkItemReadinessProjection(opts: {
                wi.authority,
                wi.expected_cost_cents,
                wi.origin,
-               wi.payload,
+               payload_parts."agentReview" AS agent_review,
+               payload_parts."implementationReadiness" AS implementation_readiness,
+               (wi.payload ? 'implementationReadiness') AS readiness_enrolled,
+               payload_parts."reopenHistory" AS reopen_history,
+               payload_parts."externalBlockers" AS external_blockers,
                (
                  wi.status = ANY(${terminalStates}::text[])
                  OR (wi.terminal_owner IS NOT NULL AND wi.terminal_completion_ref IS NOT NULL)
@@ -2327,64 +2370,70 @@ export async function readWorkItemReadinessProjection(opts: {
                  AND btrim(wi.taken_by) <> ''
                  AND lower(btrim(wi.taken_by)) <> 'unassigned'
                ) AS has_active_claim,
-               (COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,status}' = 'pending') AS review_pending,
-               (
-                 COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,status}' = 'revision-requested'
-                 AND COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,submittedBy}'
-                       IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
-               ) AS review_revision,
-               (
-                 COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,status}' = 'revision-requested'
-                 AND COALESCE(wi.payload, '{}'::jsonb) #>> '{agentReview,submittedBy}'
-                       = ${LEGACY_AGENT_REVIEW_SUBMITTER}
-               ) AS legacy_revision,
-               (COALESCE(wi.payload, '{}'::jsonb) ? 'implementationReadiness') AS readiness_enrolled,
-               (
-                 COALESCE(wi.payload, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}'
-                   = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
-                 AND COALESCE(wi.payload, '{}'::jsonb) #>> '{implementationReadiness,status}'
-                   = ANY(ARRAY['ready','unknown','not-ready']::text[])
-               ) AS readiness_known,
-               (${admittedWhereSqlWi(sql)}) AS admission_ready,
-               (${agentReviewNormalExclusionSql(sql)}) AS review_ready,
-               COALESCE(COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' = 'true', FALSE) AS claim_hold,
-               COALESCE(COALESCE(wi.payload, '{}'::jsonb) ->> 'needsOwnerAction' = 'true', FALSE) AS owner_action,
-               EXISTS (
-                 SELECT 1
-                   FROM jsonb_path_query(
-                     COALESCE(wi.payload, '{}'::jsonb),
-                     '$.externalBlockers[*]'::jsonpath
-                   ) blocker
-                  WHERE lower(COALESCE(blocker ->> 'status', '')) = 'active'
-               ) AS external_blocker,
-               EXISTS (
-                 SELECT 1
-                   FROM harness_shared.work_item_deps d
-                   JOIN harness_shared.work_items blocker
-                     ON blocker.workspace_id = wi.workspace_id
-                    AND (
-                      (position('#' in d.blocker_ref) = 0 AND blocker.feature_id = d.blocker_ref)
-                      OR blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref
-                    )
-                  WHERE d.workspace_id = 'default'
-                    AND d.dep_type = 'blocks'
-                    AND d.blocked_ref = wi.feature_id
-                    AND (
-                      (d.satisfaction = 'success' AND blocker.status <> ALL(${successfulStates}::text[]))
-                      OR (
-                        d.satisfaction IS DISTINCT FROM 'success'
-                        AND blocker.status <> ALL(${terminalStates}::text[])
-                      )
-                    )
-               ) AS active_dependency
+               COALESCE(wi.claim_hold, FALSE) AS claim_hold,
+               COALESCE(wi.needs_owner_action, FALSE) AS owner_action
           FROM harness_shared.work_items wi
+          LEFT JOIN LATERAL jsonb_to_record(COALESCE(wi.payload, '{}'::jsonb)) AS payload_parts(
+            "agentReview" jsonb,
+            "implementationReadiness" jsonb,
+            "reopenHistory" jsonb,
+            "externalBlockers" jsonb
+          ) ON TRUE
          WHERE wi.workspace_id = ${opts.workspaceId}
            AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})
            AND wi.item_kind IN ('bug', 'change', 'task')
            AND (wi.parent_id IS NULL OR wi.parent_id = '')
            AND wi.lane IS DISTINCT FROM 'observation'
+      ), scoped AS MATERIALIZED (
+        SELECT p.*,
+               (p.agent_review ->> 'status' = 'pending') AS review_pending,
+               (
+                 p.agent_review ->> 'status' = 'revision-requested'
+                 AND p.agent_review ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+               ) AS review_revision,
+               (
+                 p.agent_review ->> 'status' = 'revision-requested'
+                 AND p.agent_review ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER}
+               ) AS legacy_revision,
+               (
+                 p.implementation_readiness ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+                 AND p.implementation_readiness ->> 'status'
+                   = ANY(ARRAY['ready','unknown','not-ready']::text[])
+               ) AS readiness_known,
+               (p.admission IS DISTINCT FROM 'pending') AS admission_ready,
+               (
+                 (
+                   COALESCE(p.agent_review ->> 'status' = 'revision-requested', FALSE)
+                   AND COALESCE(
+                     p.agent_review ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER},
+                     FALSE
+                   )
+                 )
+                 OR (
+                   p.agent_review ->> 'status' IS DISTINCT FROM 'pending'
+                   AND p.agent_review ->> 'status' IS DISTINCT FROM 'revision-requested'
+                   AND (
+                     NOT p.readiness_enrolled
+                     OR (
+                       p.implementation_readiness ->> 'schemaVersion'
+                         = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+                       AND p.implementation_readiness ->> 'status' = 'ready'
+                     )
+                   )
+                 )
+               ) AS review_ready,
+               EXISTS (
+                 SELECT 1
+                   FROM jsonb_path_query(
+                     COALESCE(p.external_blockers, '[]'::jsonb),
+                     '$[*]'::jsonpath
+                   ) blocker
+                  WHERE lower(COALESCE(blocker ->> 'status', '')) = 'active'
+               ) AS external_blocker
+          FROM scoped_payload p
       ), signals AS (
         SELECT s.*,
+               (dependency.blocked_ref IS NOT NULL) AS active_dependency,
                (
                  NOT s.is_terminal
                  AND NOT s.has_active_claim
@@ -2394,7 +2443,7 @@ export async function readWorkItemReadinessProjection(opts: {
                  AND NOT s.claim_hold
                  AND NOT s.owner_action
                  AND NOT s.external_blocker
-                 AND NOT s.active_dependency
+                 AND dependency.blocked_ref IS NULL
                  AND (s.origin IS NULL OR s.origin = 'local')
                ) AS writer_ready,
                (
@@ -2403,14 +2452,16 @@ export async function readWorkItemReadinessProjection(opts: {
                  OR s.claim_hold
                  OR s.owner_action
                  OR s.external_blocker
-                 OR s.active_dependency
+                 OR dependency.blocked_ref IS NOT NULL
                  OR (s.origin IS NOT NULL AND s.origin <> 'local')
                  OR (
                    s.readiness_known
-                   AND COALESCE(s.payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'not-ready'
+                   AND s.implementation_readiness ->> 'status' = 'not-ready'
                  )
                ) AS known_hold
           FROM scoped s
+          LEFT JOIN active_dependency_refs dependency
+            ON dependency.blocked_ref = s.feature_id
       ), classified AS (
         SELECT signals.*,
                CASE
@@ -2429,8 +2480,8 @@ export async function readWorkItemReadinessProjection(opts: {
           FROM classified c
           CROSS JOIN LATERAL jsonb_array_elements(
             CASE
-              WHEN jsonb_typeof(COALESCE(c.payload, '{}'::jsonb) -> 'reopenHistory') = 'array'
-                THEN COALESCE(c.payload, '{}'::jsonb) -> 'reopenHistory'
+              WHEN jsonb_typeof(c.reopen_history) = 'array'
+                THEN c.reopen_history
               ELSE '[]'::jsonb
             END
           ) event
@@ -2448,21 +2499,21 @@ export async function readWorkItemReadinessProjection(opts: {
              (count(*) FILTER (WHERE admission = 'unreviewed'))::int AS admission_unreviewed,
              (count(*) FILTER (WHERE review_pending))::int AS reason_review_pending,
              (count(*) FILTER (
-               WHERE COALESCE(payload, '{}'::jsonb) #>> '{agentReview,status}' = 'revision-requested'
+               WHERE agent_review ->> 'status' = 'revision-requested'
              ))::int AS reason_review_revision,
              (count(*) FILTER (WHERE legacy_revision))::int AS legacy_revision_exception,
              (count(*) FILTER (WHERE NOT readiness_enrolled))::int AS readiness_absent,
              (count(*) FILTER (
                WHERE readiness_known
-                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'ready'
+                 AND implementation_readiness ->> 'status' = 'ready'
              ))::int AS readiness_ready,
              (count(*) FILTER (
                WHERE readiness_known
-                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'unknown'
+                 AND implementation_readiness ->> 'status' = 'unknown'
              ))::int AS readiness_unknown,
              (count(*) FILTER (
                WHERE readiness_known
-                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'not-ready'
+                 AND implementation_readiness ->> 'status' = 'not-ready'
              ))::int AS readiness_not_ready,
              (count(*) FILTER (WHERE readiness_enrolled AND NOT readiness_known))::int AS readiness_malformed,
              (count(*) FILTER (WHERE has_active_claim AND NOT is_terminal))::int AS active_claim,
@@ -2476,18 +2527,18 @@ export async function readWorkItemReadinessProjection(opts: {
                AS terminal_without_committed,
              (count(*) FILTER (WHERE NOT is_terminal AND first_claimed_at IS NULL))::int AS never_claimed,
              MIN(created_ts) FILTER (WHERE NOT is_terminal AND first_claimed_at IS NULL) AS never_claimed_oldest_ts,
-             MIN(payload #>> '{implementationReadiness,updatedAt}') FILTER (WHERE review_pending)
+             MIN(implementation_readiness ->> 'updatedAt') FILTER (WHERE review_pending)
                AS review_oldest_at,
-             MIN(payload #>> '{implementationReadiness,updatedAt}') FILTER (WHERE review_revision)
+             MIN(implementation_readiness ->> 'updatedAt') FILTER (WHERE review_revision)
                AS revision_oldest_at,
              (count(*) FILTER (WHERE created_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}))::int AS arrivals,
              (count(*) FILTER (
-               WHERE COALESCE(payload, '{}'::jsonb) #>> '{agentReview,status}' = 'approved'
-                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,updatedAt}' >= ${since}
+               WHERE agent_review ->> 'status' = 'approved'
+                 AND implementation_readiness ->> 'updatedAt' >= ${since}
              ))::int AS approvals_in_window,
              (count(*) FILTER (
                WHERE review_revision
-                 AND COALESCE(payload, '{}'::jsonb) #>> '{implementationReadiness,updatedAt}' >= ${since}
+                 AND implementation_readiness ->> 'updatedAt' >= ${since}
              ))::int AS revisions_in_window,
              (count(*) FILTER (
                WHERE is_terminal AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
