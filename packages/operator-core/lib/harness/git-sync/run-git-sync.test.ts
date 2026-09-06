@@ -652,6 +652,58 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
+  it('EI-22435583452728403: refreshes live locks at the commit seam before staging', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const refreshLiveLockHoldings = vi.fn(async () => [{
+      path: 'file.txt',
+      owner: 'su-peer',
+      intent: 'lock acquired after the initial git-sync census',
+    }]);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings,
+    });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledOnce();
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toEqual([{
+      scope: 'superproject',
+      path: 'file.txt',
+      owner: 'su-peer',
+      intent: 'lock acquired after the initial git-sync census',
+    }]);
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('deliberately-protected mutation\n');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+  });
+
+  it('EI-22435583452728403: fails closed when the commit-time live-lock refresh rejects', async () => {
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      throw new Error('live lock store unavailable during staging');
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings,
+    });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledOnce();
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors.map((error) => error.message).join('\n')).toContain(
+        'live lock refresh failed (fail-closed): live lock store unavailable during staging',
+      );
+    }
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
+  });
+
   it('EI-21267378554087084: an ignored scratch exclusion does not strand legitimate tracked work', async () => {
     const ignoredPath = '.papercusp/scratch';
     const ignoredArtifact = join(repo, ignoredPath, 'transient-artifact');
@@ -2500,6 +2552,37 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
     expect(readFileSync(join(repo, 'super-protected.txt'), 'utf8')).toBe('protected root mutation\n');
     expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('protected submodule mutation\n');
     expect(git(repo, 'status', '--porcelain', '--', 'super-protected.txt')).toMatch(/super-protected\.txt/);
+    expect(git(join(repo, 'libs/subA'), 'status', '--porcelain', '--', 'subA.txt')).toMatch(/subA\.txt/);
+  });
+
+  it('EI-22435583452728403: maps refreshed root-relative locks into each submodule before staging', async () => {
+    writeFileSync(join(repo, 'super-normal.txt'), 'normal root work\n');
+    writeFileSync(join(repo, 'libs/subA', 'subA.txt'), 'protected submodule mutation\n');
+    writeFileSync(join(repo, 'libs/subB', 'subB-new.txt'), 'normal submodule work\n');
+    const refreshedHoldings = [{
+      path: 'libs/subA/subA.txt',
+      owner: 'su-peer',
+      intent: 'submodule lock acquired after the initial census',
+    }];
+    const refreshLiveLockHoldings = vi.fn(async () => refreshedHoldings);
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      refreshLiveLockHoldings,
+    });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(3);
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({
+      scope: 'libs/subA',
+      path: 'subA.txt',
+      owner: 'su-peer',
+      intent: 'submodule lock acquired after the initial census',
+    });
+    expect(git(subAOrigin, 'show', 'main:subA.txt')).toBe('subA-v1');
+    expect(git(subBOrigin, 'show', 'main:subB-new.txt')).toBe('normal submodule work');
+    expect(git(superOrigin, 'show', 'main:super-normal.txt')).toBe('normal root work');
+    expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('protected submodule mutation\n');
     expect(git(join(repo, 'libs/subA'), 'status', '--porcelain', '--', 'subA.txt')).toMatch(/subA\.txt/);
   });
 });
