@@ -775,6 +775,35 @@
   border-right: 1px solid var(--border, rgba(255, 255, 255, 0.08));
 }
 
+/* ── Split rows: the spec's compact three-line silhouette
+   (inbox-three-column-resolver-states-2026-09-06 D-004; split only, D-001) ──
+   State 1 of the merged spec draws EIGHT rows in the 1280×720 list. The stack
+   row — 14.5px title clamped to two lines, 12px padding, an 82px minimum —
+   sits at ~108px of pitch and showed five (measured 2026-09-06 on real data:
+   the column had 597px, the spec's 586px, so the SPACE was right and only the
+   density was not). In split the title is ONE line, ellipsised — the aside's
+   h2 (P-008) carries it in full — and the row tightens to ~65px so eight whole
+   rows fit. The stack row is untouched. */
+.op-inbox--split .op-inbox__rowbtn {
+  min-height: 0;
+  gap: 3px;
+  padding: 7px 30px 7px 50px;
+}
+.op-inbox--split .op-inbox__row-icon {
+  left: 10px;
+  width: 30px;
+  height: 30px;
+}
+.op-inbox--split .op-inbox__rowbtn .op-inbox__title {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-line-clamp: unset;
+}
+
 /* ── COLUMN 1 · the rail (inbox-three-column-resolver-states-2026-09-06 P-002;
    split only, D-001) ─────────────────────────────────────────────────────
    The masthead (collapsed to `Inbox` + count), the tier scopes, the kind
