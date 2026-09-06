@@ -39,6 +39,7 @@ import {
   renderCarryDoc,
 } from './carry-doc';
 import { deriveLaunchPromptText, type LaunchPlanRef } from './agent-tools/plans/launch-prompt';
+import { getLoopCarryNoteWithMeta, shortCarryHash, type LoopCarryNoteWithMeta } from './carry-note';
 
 /** The two artifacts a successor respawn delivers, plus the boundary gate. */
 export interface RespawnLaunchSpec {
@@ -83,6 +84,93 @@ export interface RespawnLaunchSpec {
    * reports both kinds of open owner work to its caller.
    */
   openOwnerAskCount?: number;
+  /** Final carry-note freshness verdict when the live adapter performed its
+   * delivery-boundary re-read. */
+  carryNoteFreshness?: CarryNoteFreshness;
+}
+
+export interface CarryNoteSnapshotIdentity {
+  /** The short hash of the full note body, or null for a confirmed empty note. */
+  bodyHash: string | null;
+  /** The note's committed write instant, when available. */
+  updatedAtMs: number | null;
+  /** True only when the note reader failed rather than finding an empty note. */
+  readFailed: boolean;
+}
+
+export type CarryNoteFreshnessStatus = 'equal' | 'superseded' | 'unable-to-verify';
+
+export interface CarryNoteFreshness {
+  status: CarryNoteFreshnessStatus;
+  snapshot: CarryNoteSnapshotIdentity;
+  live: CarryNoteSnapshotIdentity;
+  /** Identity fields that differed between the two reads. */
+  changedFields: string[];
+}
+
+/**
+ * Normalize a carry-note read to the identity used at the delivery boundary.
+ * Hashing keeps the comparison independent of the clipped text that may be
+ * rendered into the prompt, while readFailed remains distinct from a confirmed
+ * empty note.
+ */
+export function carryNoteSnapshotIdentity(
+  meta: LoopCarryNoteWithMeta | null | undefined,
+): CarryNoteSnapshotIdentity {
+  const readFailed = meta?.readFailed === true;
+  const body = !readFailed && typeof meta?.note === 'string' && meta.note.length > 0 ? meta.note : null;
+  const updatedAtMs =
+    typeof meta?.updatedAtMs === 'number' && Number.isFinite(meta.updatedAtMs) ? meta.updatedAtMs : null;
+  return {
+    bodyHash: body === null ? null : shortCarryHash(body),
+    updatedAtMs,
+    readFailed,
+  };
+}
+
+/** Compare the carry-note captured while building a document with its final
+ * delivery-boundary read. Any confirmed identity change is conservative
+ * SUPERSEDED guidance; either read failure is unable-to-verify guidance. */
+export function compareCarryNoteFreshness(
+  snapshot: CarryNoteSnapshotIdentity,
+  live: CarryNoteSnapshotIdentity,
+): CarryNoteFreshness {
+  const changedFields: string[] = [];
+  if (snapshot.bodyHash !== live.bodyHash) changedFields.push('bodyHash');
+  if (snapshot.updatedAtMs !== live.updatedAtMs) changedFields.push('updatedAtMs');
+  if (snapshot.readFailed !== live.readFailed) changedFields.push('readFailed');
+  const equal = changedFields.length === 0;
+  const status: CarryNoteFreshnessStatus =
+    live.readFailed || snapshot.readFailed ? 'unable-to-verify' : equal ? 'equal' : 'superseded';
+  return { status, snapshot, live, changedFields };
+}
+
+function formatCarryNoteSnapshotIdentity(identity: CarryNoteSnapshotIdentity): string {
+  return `bodyHash=${identity.bodyHash ?? 'null'}, updatedAtMs=${identity.updatedAtMs ?? 'null'}, ` +
+    `readStatus=${identity.readFailed ? 'failed' : 'ok'}`;
+}
+
+/** Render the minimum high-priority guidance needed when a carry-note snapshot
+ * is no longer safe to present as authoritative. */
+export function renderCarryNoteFreshnessWarning(freshness?: CarryNoteFreshness): string {
+  if (!freshness || freshness.status === 'equal') return '';
+  if (freshness.status === 'unable-to-verify') {
+    const cause = freshness.live.readFailed
+      ? 'the final live loop:checkpoint read failed'
+      : 'the carry-note snapshot was unreadable';
+    return (
+      `⚠ CARRIED LOOP CHECKS UNABLE-TO-VERIFY — ${cause}; this is NOT confirmation that the ` +
+      `embedded checks are absent or current. Do not act on any carried check until you read ` +
+      `loop:checkpoint directly and reconcile the live state.`
+    );
+  }
+  return (
+    `⚠ CARRIED LOOP CHECKS SUPERSEDED — the live loop:checkpoint differs from the snapshot used ` +
+    `to build this carry document (changed: ${freshness.changedFields.join(', ') || 'unknown'}; ` +
+    `snapshot: ${formatCarryNoteSnapshotIdentity(freshness.snapshot)}; live: ` +
+    `${formatCarryNoteSnapshotIdentity(freshness.live)}). Read the live loop:checkpoint before ` +
+    `acting on any embedded check; the carried checks may be stale or contradicted.`
+  );
 }
 
 export interface BuildRespawnLaunchSpecInput {
@@ -103,6 +191,8 @@ export interface BuildRespawnLaunchSpecInput {
    *  pointer to the first prompt (deriveLaunchPromptText), so a plan-bound
    *  successor never has to recover the slug from context. */
   plan?: LaunchPlanRef | null;
+  /** Optional delivery-boundary comparison produced by the live adapter. */
+  carryNoteFreshness?: CarryNoteFreshness;
 }
 
 /** Live adapter inputs. The deterministic assembly remains in
@@ -118,6 +208,12 @@ export interface BuildOwnerRespawnLaunchSpecOpts
   buildOpts?: BuildCarryDocOpts;
   /** Test seam. */
   buildFn?: (ownerId: string, opts?: BuildCarryDocOpts) => Promise<CarryDoc>;
+  /** Delivery-boundary live re-read. Defaults to the canonical reader when the
+   * canonical document builder is used; custom builders should inject this seam
+   * when they exercise loop-note freshness. */
+  refreshLoopCarryNoteWithMetaFn?: (
+    ref: Parameters<typeof getLoopCarryNoteWithMeta>[0],
+  ) => Promise<LoopCarryNoteWithMeta>;
 }
 
 /**
@@ -131,7 +227,16 @@ export function buildRespawnLaunchSpec(input: BuildRespawnLaunchSpecInput): Resp
   const autoMode = input.autoMode ?? true;
 
   const budgetChars = carryDocBudgetChars(effectiveWindowTokens);
-  const systemPromptAddendum = renderCarryDoc(doc, now, { budgetChars });
+  const freshnessWarning = renderCarryNoteFreshnessWarning(input.carryNoteFreshness);
+  // Keep the warning inside the same constant budget as the carry document. The
+  // aging ladder sheds lower-priority slots to make room for this safety signal.
+  const renderBudget = freshnessWarning
+    ? Math.max(1, budgetChars - freshnessWarning.length - 2)
+    : budgetChars;
+  const renderedCarryDoc = renderCarryDoc(doc, now, { budgetChars: renderBudget });
+  const systemPromptAddendum = freshnessWarning
+    ? `${freshnessWarning}\n\n${renderedCarryDoc}`
+    : renderedCarryDoc;
   const openOwnerQuestion = gateOpenOwnerQuestion(doc.continuation);
   const openOwnerAskCount = doc.asks.length;
 
@@ -144,6 +249,7 @@ export function buildRespawnLaunchSpec(input: BuildRespawnLaunchSpecInput): Resp
     openOwnerQuestion,
     openOwnerAskCount,
     retractedContinuationRefs: doc.retractedContinuationRefs ?? [],
+    ...(input.carryNoteFreshness ? { carryNoteFreshness: input.carryNoteFreshness } : {}),
   };
 }
 
@@ -165,12 +271,34 @@ export async function buildOwnerRespawnLaunchSpec(
     };
     if (opts.role !== undefined) buildOpts.role = opts.role;
     const doc = await build(ownerId.trim(), buildOpts);
+    let carryNoteFreshness: CarryNoteFreshness | undefined;
+    const loop = doc.brief.loop;
+    const refreshLoopCarryNoteWithMeta =
+      opts.refreshLoopCarryNoteWithMetaFn ??
+      opts.buildOpts?.getLoopCarryNoteWithMetaFn ??
+      (opts.buildFn ? null : getLoopCarryNoteWithMeta);
+    if (loop && refreshLoopCarryNoteWithMeta) {
+      const snapshot = carryNoteSnapshotIdentity({
+        note: loop.carryNoteReadFailed ? null : loop.carryNote,
+        updatedAtMs: loop.carryNoteReadFailed ? null : loop.carryNoteUpdatedAtMs,
+        readFailed: loop.carryNoteReadFailed === true,
+      });
+      const liveMeta = await refreshLoopCarryNoteWithMeta({
+        harness: loop.harness,
+        ownerId: ownerId.trim(),
+        workspaceId: doc.brief.workspaceId ?? opts.buildOpts?.workspaceId,
+      }).catch(
+        (): LoopCarryNoteWithMeta => ({ note: null, updatedAtMs: null, readFailed: true }),
+      );
+      carryNoteFreshness = compareCarryNoteFreshness(snapshot, carryNoteSnapshotIdentity(liveMeta));
+    }
     return buildRespawnLaunchSpec({
       doc,
       effectiveWindowTokens: opts.effectiveWindowTokens,
       now: opts.now,
       autoMode: opts.autoMode,
       plan: opts.plan,
+      carryNoteFreshness,
     });
   } catch {
     return null;

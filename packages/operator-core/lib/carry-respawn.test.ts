@@ -2,7 +2,7 @@
  *  producer→consumer bridge that turns a built CarryDoc into a respawn launch spec
  *  — the renderCarryDoc({budgetChars}) handoff + the open-owner-message first
  *  prompt (P-010) + the open-owner-question boundary gate. */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { CarryBrief } from './carry-brief';
 import {
   renderCarryDoc,
@@ -13,9 +13,12 @@ import {
   type CarryDocContinuation,
 } from './carry-doc';
 import {
+  carryNoteSnapshotIdentity,
+  compareCarryNoteFreshness,
   buildOwnerRespawnLaunchSpec,
   buildRespawnLaunchSpec,
   deriveRespawnFirstPrompt,
+  renderCarryNoteFreshnessWarning,
 } from './carry-respawn';
 
 const NOW = 1_800_000_000_000;
@@ -99,6 +102,22 @@ describe('buildRespawnLaunchSpec — assembly', () => {
     const spec = buildRespawnLaunchSpec({ doc: bigTail, effectiveWindowTokens: 1000, now: NOW });
     expect(spec.budgetChars).toBe(carryDocBudgetChars(1000)); // floors at 8*4000
     expect(spec.systemPromptAddendum.length).toBeLessThanOrEqual(spec.budgetChars);
+  });
+
+  it('keeps a superseded carry-check warning inside the constant budget', () => {
+    const snapshot = carryNoteSnapshotIdentity({ note: 'old', updatedAtMs: NOW, readFailed: false });
+    const live = carryNoteSnapshotIdentity({ note: 'new', updatedAtMs: NOW + 1, readFailed: false });
+    const freshness = compareCarryNoteFreshness(snapshot, live);
+    const spec = buildRespawnLaunchSpec({
+      doc: doc(NO_OWNER),
+      effectiveWindowTokens: 1000,
+      now: NOW,
+      carryNoteFreshness: freshness,
+    });
+    expect(freshness.status).toBe('superseded');
+    expect(renderCarryNoteFreshnessWarning(freshness)).toContain('SUPERSEDED');
+    expect(spec.systemPromptAddendum.length).toBeLessThanOrEqual(spec.budgetChars);
+    expect(spec.systemPromptAddendum).toContain('CARRIED LOOP CHECKS SUPERSEDED');
   });
 });
 
@@ -253,6 +272,64 @@ describe('buildOwnerRespawnLaunchSpec — live fail-soft adapter', () => {
       buildFn,
     });
     expect(out?.openOwnerQuestion.crossesOpenOwnerMessage).toBe(false);
+  });
+
+  it('quietly accepts an equal final loop-note snapshot', async () => {
+    const note = '## Next\ngo';
+    const finalRead = vi.fn(async () => ({ note, updatedAtMs: NOW, readFailed: false }));
+    const out = await buildOwnerRespawnLaunchSpec('su-1', {
+      effectiveWindowTokens: 400_000,
+      buildFn: async () => {
+        const base = doc(NO_OWNER);
+        return {
+          ...base,
+          brief: {
+            ...base.brief,
+            loop: {
+              ...base.brief.loop!,
+              carryNote: note,
+              carryNoteUpdatedAtMs: NOW,
+              carryNoteReadFailed: false,
+            },
+          },
+        };
+      },
+      refreshLoopCarryNoteWithMetaFn: finalRead,
+    });
+    expect(finalRead).toHaveBeenCalledOnce();
+    expect(out?.carryNoteFreshness?.status).toBe('equal');
+    expect(out?.systemPromptAddendum).not.toContain('CARRIED LOOP CHECKS SUPERSEDED');
+    expect(out?.systemPromptAddendum).not.toContain('UNABLE-TO-VERIFY');
+  });
+
+  it('marks newer or hash-different final loop-note state SUPERSEDED', async () => {
+    const out = await buildOwnerRespawnLaunchSpec('su-1', {
+      effectiveWindowTokens: 400_000,
+      buildFn: async () => doc(NO_OWNER),
+      refreshLoopCarryNoteWithMetaFn: async () => ({
+        note: '## Next\nnewer',
+        updatedAtMs: NOW + 1,
+        readFailed: false,
+      }),
+    });
+    expect(out?.carryNoteFreshness?.status).toBe('superseded');
+    expect(out?.carryNoteFreshness?.changedFields).toEqual(expect.arrayContaining(['bodyHash', 'updatedAtMs']));
+    expect(out?.systemPromptAddendum).toContain('CARRIED LOOP CHECKS SUPERSEDED');
+    expect(out?.systemPromptAddendum).toContain('Read the live loop:checkpoint before');
+  });
+
+  it('marks a failed final loop-note read unable-to-verify without dropping the spec', async () => {
+    const out = await buildOwnerRespawnLaunchSpec('su-1', {
+      effectiveWindowTokens: 400_000,
+      buildFn: async () => doc(NO_OWNER),
+      refreshLoopCarryNoteWithMetaFn: async () => {
+        throw new Error('carry store unavailable');
+      },
+    });
+    expect(out?.carryNoteFreshness?.status).toBe('unable-to-verify');
+    expect(out?.systemPromptAddendum).toContain('CARRIED LOOP CHECKS UNABLE-TO-VERIFY');
+    expect(out?.systemPromptAddendum).toContain('NOT confirmation');
+    expect(out?.systemPromptAddendum).toContain('loop:checkpoint');
   });
 
   it('returns null for a blank owner or any builder failure', async () => {
