@@ -947,6 +947,33 @@ export async function listActiveAwaits(subscriberId: string): Promise<AwaitRow[]
   return withEffectiveDeadlines(rows.map(mapAwait), { workspaceId: ws });
 }
 
+/**
+ * Bounded delivery history for one class of lifecycle-bound awaits.
+ *
+ * Auto-armed coordination adapters need to distinguish pending rows from an
+ * episode that already fired or was explicitly operator-cancelled. Reuse the
+ * event_awaits receipt ledger for that decision instead of creating a parallel
+ * reminder cursor.
+ */
+export async function listLifecycleBoundAwaits(
+  subscriberId: string,
+  bindingKind: string,
+  limit = 500,
+): Promise<AwaitRow[]> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const rows = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND policy <> 'announce'
+       AND bound_to->>'kind' = ${bindingKind}
+     ORDER BY created_at DESC
+     LIMIT ${Math.max(1, Math.min(Math.floor(limit) || 500, 1_000))}
+  `;
+  return withEffectiveDeadlines(rows.map(mapAwait), { workspaceId: ws });
+}
+
 /** Active awaits whose key starts with a prefix — source-side reconciliation
  *  (e.g. the lock-grant bridge sweeping `lock:grant:%` against waiter status). */
 export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<AwaitRow[]> {
@@ -975,8 +1002,9 @@ export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
  * key is PARKED (benched awaiting a pushed event), not abandoned. Excludes the
  * always-armed `coord:inbox-wake:%` self-await (see INBOX_WAKE_KEY_PREFIX), the
  * PLATFORM-ARMED bindings that are registered FOR an agent rather than BY it —
- * `work-item-claim` (defensive claim-release interest) and `fleet-leadership`
- * (a leader's transition watches, armed on taking the fleet) — and rows already
+ * `work-item-claim` (defensive claim-release interest), `fleet-leadership`
+ * (a leader's transition watches, armed on taking the fleet), and
+ * `agent-obligation` (agenda change/deadline reminders) — and rows already
  * past their deadline (the sweeper may not have fired them yet).
  *
  * The distinction that matters to every caller: a park means "this agent chose to
@@ -999,8 +1027,8 @@ export async function listParkedAwaitsForSubscribers(
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
        AND policy <> 'announce'
-       -- PLATFORM-ARMED interests are not deliberate parks. Two kinds qualify, and
-       -- both are armed FOR the agent rather than BY it:
+       -- PLATFORM-ARMED interests are not deliberate parks. These are armed FOR
+       -- the agent rather than BY it:
        --   work-item-claim  a holder's claim-release interest is defensive: it wakes
        --                    if the claim disappears, but it never means the holder is
        --                    waiting for a capability.
@@ -1011,10 +1039,12 @@ export async function listParkedAwaitsForSubscribers(
        --                    them as parks silenced the loop a leader supervises WITH,
        --                    from the moment it took the fleet, ~5 rows per fleet
        --                    (EI-21295379735880011).
+       --   agent-obligation  one-shot agenda change/deadline reminders. They notify
+       --                    ongoing work; they never mean the owner chose to park.
        -- Keep other lifecycle-bound interests visible (for example, a blocked
        -- work-item or a hard-blocked consultation); this predicate is intentionally
        -- narrow so an unknown binding still fails open toward visibility.
-       AND COALESCE(bound_to->>'kind', '') NOT IN ('work-item-claim', 'fleet-leadership')
+       AND COALESCE(bound_to->>'kind', '') NOT IN ('work-item-claim', 'fleet-leadership', 'agent-obligation')
        AND (expires_ts IS NULL OR expires_ts > now())
      ORDER BY created_at DESC
      LIMIT 500

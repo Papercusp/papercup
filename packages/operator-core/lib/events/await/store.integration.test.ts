@@ -48,6 +48,7 @@ const {
   retireLifecycleBoundWatches,
   retireLifecycleBoundWatchesForOwners,
   listActiveAwaits,
+  listLifecycleBoundAwaits,
   listActiveAwaitsForKey,
   fireAwaitsForKey,
   listParkedAwaitsForSubscribers,
@@ -64,6 +65,8 @@ const {
   settleVerifiedAwaitTimeout,
   FLEET_BENCH_NOTE_PREFIX,
 } = await import('./store');
+const { reconcileAgentObligationReminders } = await import('../../agent-obligation-reminders');
+const { defineAgentObligation, evaluateAgentObligations } = await import('../../agent-obligations');
 const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
 const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
 import type { ProducerHealthCertificate } from './verified-wait';
@@ -927,6 +930,73 @@ describe('await-event store (PG)', () => {
     expect(history.filter((row) => row.cancelled_at == null)).toHaveLength(1);
   });
 
+  it('round-trips an obligation episode through the real await ledger and cancels it when it leaves scope', async () => {
+    const ownerId = 'sub-obligation-roundtrip';
+    const now = new Date();
+    const deadlineAt = new Date(now.getTime() + 60_000).toISOString();
+    const obligation = defineAgentObligation({
+      ruleId: 'plan-independent-verification',
+      ruleRevision: 'v1',
+      family: 'independent-verification',
+      title: 'Plan needs an independent verifier',
+      scope: { workspaceId: 'default', ownerId, planSlug: 'plan-a' },
+      responsibleOwnerId: ownerId,
+      episode: 'acceptance_ungraded:rev-1',
+      status: 'due',
+      authority: { kind: 'policy', sourceRef: 'plan-acceptance-gate', revision: 'v1' },
+      reason: 'the canonical gate is ungraded',
+      priority: 'high',
+      causalRank: 2,
+      applicableDemand: 1,
+      sourceGeneration: 'rev-1',
+      evidence: [],
+      action: { kind: 'delegate', summary: 'route an independent verifier' },
+      clearsWhen: {
+        id: 'accepted',
+        summary: 'the canonical acceptance gate passes',
+        evidenceKind: 'verdict',
+        sourceRef: 'plan-acceptance-gate',
+      },
+      changeSignal: {
+        event: 'plan:acceptance:plan-a',
+        nextDeadlineAt: deadlineAt,
+        cancellationRef: 'plan:plan-a',
+      },
+    });
+    const deps = {
+      captureHandle: vi.fn(async () => ({ handle: null, note: 'integration probe' })),
+      listHistory: listLifecycleBoundAwaits,
+      register: registerAwait,
+      cancel: cancelAwait,
+    };
+
+    const first = await reconcileAgentObligationReminders(
+      { ownerId, agenda: evaluateAgentObligations([obligation], now.toISOString()), now },
+      deps,
+    );
+    expect(first).toMatchObject({ desired: 1, registered: 1, retained: 0, cancelled: 0 });
+    const registered = await listLifecycleBoundAwaits(ownerId, 'agent-obligation');
+    expect(registered).toHaveLength(1);
+    expect(registered[0]).toMatchObject({
+      eventKey: 'plan:acceptance:plan-a',
+      once: true,
+      boundTo: { kind: 'agent-obligation', ref: obligation.id },
+    });
+
+    const warm = await reconcileAgentObligationReminders(
+      { ownerId, agenda: evaluateAgentObligations([obligation], now.toISOString()), now },
+      deps,
+    );
+    expect(warm).toMatchObject({ desired: 1, registered: 0, retained: 1, cancelled: 0 });
+
+    const cleared = await reconcileAgentObligationReminders(
+      { ownerId, agenda: evaluateAgentObligations([], now.toISOString()), now },
+      deps,
+    );
+    expect(cleared).toMatchObject({ desired: 0, registered: 0, retained: 0, cancelled: 1 });
+    expect((await listLifecycleBoundAwaits(ownerId, 'agent-obligation'))[0]?.cancelledAt).not.toBeNull();
+  });
+
   it('events:await supersession retires only one-shot rows and preserves the standing inbox wake', async () => {
     const subscriberId = 'sub-once-only-supersede';
     const eventKey = `coord:inbox-wake:${subscriberId}`;
@@ -1164,12 +1234,18 @@ describe('await-event store (PG)', () => {
     expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
   });
 
-  it('excludes defensive work-item claim-release auto-arms but keeps genuine lifecycle waits', async () => {
+  it('excludes platform-armed claim and obligation reminders but keeps genuine lifecycle waits', async () => {
     await registerAwait({
       subscriberId: 'sub-a',
       eventKey: 'claim:released:WI-1',
       note: 'claim-holder auto-arm for WI-1',
       boundTo: { kind: 'work-item-claim', ref: 'WI-1' },
+    });
+    await registerAwait({
+      subscriberId: 'sub-a',
+      eventKey: 'plan:acceptance:plan-a',
+      note: 'agent-obligation reminder for plan-a',
+      boundTo: { kind: 'agent-obligation', ref: 'obligation-1' },
     });
     await registerAwait({
       subscriberId: 'sub-a',
