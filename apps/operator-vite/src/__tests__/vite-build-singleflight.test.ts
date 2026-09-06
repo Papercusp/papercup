@@ -40,6 +40,9 @@ function launch(env: Record<string, string>): ChildProcess {
       // ambient environment happens to set. The tests that care about the default
       // regime override this back to '' / '1' themselves.
       PAPERCUSP_RETAIN_DIST_CHUNKS: '0',
+      // Keep the shared reservation ledger out of the live host ledger. The
+      // script's preflight still runs against the real temp filesystem.
+      PAPERCUSP_DISK_RESERVATION_DIR: join(tmp, 'disk-reservations'),
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -138,6 +141,22 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
     const ok = launch({ VITE_BUILD_CMD: 'true' });
     const { exited } = collect(ok);
     expect(await exited).toBe(0);
+  }, 10_000);
+
+  it('refuses before invoking Vite when the target filesystem lacks headroom', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const attempted = join(tmp, 'vite-was-invoked');
+    const blocked = launch({
+      PAPERCUSP_VITE_BUILD_MIN_FREE_GB: '99999999',
+      VITE_BUILD_CMD: `touch "${attempted}"; exit 0`,
+    });
+    const io = collect(blocked);
+
+    expect(await io.exited).toBe(28);
+    expect(existsSync(attempted)).toBe(false);
+    expect(io.stderr()).toContain('insufficient disk');
+    expect(io.stderr()).toContain('operator-vite dist build');
+    expect(io.stderr()).toContain(tmp);
   }, 10_000);
 
   it('propagates a failing build command status instead of masking it', async () => {
