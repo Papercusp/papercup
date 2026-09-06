@@ -160,6 +160,7 @@ import {
 } from "./desktop-perf-gate";
 import { runDeltaGate, deltaGatePolicyFromEnv } from "./delta-gate";
 import { heldGateAlert } from "./held-gate-alarm";
+import { longestCleanPrefix } from "./longest-clean-prefix";
 import {
   createSetupStretchStamps,
   formatDominantPhaseClause,
@@ -8402,33 +8403,38 @@ async function tryLongestGreenPrefix(
   let declineGranularity: "FILE" | "workspace" = locateByFile
     ? "FILE"
     : "workspace";
-  for (const sha of commits.slice(0, -1)) {
-    // exclude the red tip itself
+  // BISECTION, not a linear scan (see longest-clean-prefix.ts for the measurement). The
+  // per-prefix question is cumulative — `lastReady..sha` — so the walk is monotone and the
+  // boundary costs ⌈log2(n)⌉ probes. The linear scan this replaced cost one probe per
+  // commit: on the 11,544-commit frozen lineage of 2026-09-06 (run 3ce52b07) it held the
+  // gate's singleton run-lock for over an hour AFTER the verdict was known, so the next
+  // hourly cron found the lock held and judged nothing.
+  const walk = commits.slice(0, -1); // exclude the red tip itself
+  const locateStartedMs = Date.now();
+  const located = await longestCleanPrefix(walk, async (sha) => {
     if (locateByFile) {
       const files = await deps.changedFilesForRange!(lastReady, sha);
-      if (!files) {
-        scanStopped = true;
-        break; // can't compute this prefix → stop at the last clean one
-      }
+      if (!files) return null; // can't compute this prefix → cannot extend through it
       // Shape-tolerant match (vitest reports workspace-relative, git repo-relative) —
       // the SAME matcher the lineage note uses, so the two cannot drift.
-      if (matchFailingFilesToChanged(failingPaths, files).length > 0) {
-        scanStopped = true;
-        break;
-      }
-    } else {
-      const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
-      if (!aff) {
-        scanStopped = true;
-        break; // can't compute this prefix → stop at the last clean one
-      }
-      if (aff.some((w) => failingWs.has(w))) {
-        scanStopped = true;
-        break; // this commit (cumulatively) touches a failing ws
-      }
+      return matchFailingFilesToChanged(failingPaths, files).length === 0;
     }
-    prefixTip = sha; // clean so far — extend the prefix
-  }
+    const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
+    if (!aff) return null; // can't compute this prefix → cannot extend through it
+    // clean unless this commit (cumulatively) touches a failing ws
+    return !aff.some((w) => failingWs.has(w));
+  });
+  prefixTip = located.prefixTip;
+  scanStopped = located.stopped;
+  logPartialGreenGate(
+    `partial-green-gate: located the longest clean prefix by bisection — ` +
+      `${located.probes} probe(s) over ${walk.length} commit(s) in ` +
+      `${Math.round((Date.now() - locateStartedMs) / 1000)}s` +
+      (prefixTip
+        ? `; prefix tip ${prefixTip.slice(0, 8)}`
+        : `; the first commit already implicates the failure`) +
+      (scanStopped ? "" : " (no prefix implicated the failure — see the vacuous-prefix guard)"),
+  );
 
   // EI-20840168390311296 — THE VACUOUS MAXIMAL PREFIX. Same hazard the `includes('/')`
   // filter above exists to prevent, reached by a route that filter cannot see.
@@ -8481,15 +8487,16 @@ async function tryLongestGreenPrefix(
             : `Declining — the red localizes to neither a changed file nor a workspace.`),
       );
       if (failingWs.size === 0) return null;
-      // Re-walk at workspace granularity, the same scan the gate-id case falls back to.
+      // Re-walk at workspace granularity, the same scan the gate-id case falls back to
+      // — bisected for the same reason as the walk above.
       declineGranularity = "workspace";
-      prefixTip = null;
-      for (const sha of commits.slice(0, -1)) {
-        const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
-        if (!aff) break;
-        if (aff.some((w) => failingWs.has(w))) break;
-        prefixTip = sha;
-      }
+      prefixTip = (
+        await longestCleanPrefix(walk, async (sha) => {
+          const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
+          if (!aff) return null;
+          return !aff.some((w) => failingWs.has(w));
+        })
+      ).prefixTip;
     }
   }
 
