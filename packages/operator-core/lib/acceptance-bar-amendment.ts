@@ -117,6 +117,12 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     rubricSlug: subject.acceptance_bar_rubric_slug,
     rubricRevision: Number(rubric.version),
     existingTemplateData: { ...parsedRubric.data, criteria: existingBarCriteria },
+    // The source fingerprints above are already proven identical, so this write
+    // changes no BAR meaning and only the subject-revision pin advances. Preserve
+    // the canonical BARs verbatim; re-deriving them from the plan body would revert
+    // amended criterion text to the original seed. The barSetHash equality check
+    // immediately below still gates the update (WI-10000058).
+    preserveExistingBars: true,
   });
   if (!rebuilt.ok || rebuilt.barSetHash !== subject.acceptance_bar_set_hash) return false;
   const rows = await sql`

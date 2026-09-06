@@ -7,6 +7,7 @@ import {
   withAcceptanceBarAmendmentTransaction,
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
+import { normalizeAcceptanceBarCriterion } from './rubrics';
 import {
   ACCEPTANCE_BAR_MEANING_FIELDS,
   acceptanceBarMeaningField,
@@ -210,6 +211,129 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     ).resolves.toBe(true);
 
     expect(sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.harness_plans'))).toBe(true);
+  });
+
+  // WI-10000058. Two defects made the pin repair silently impossible for a real plan.
+  // Both failures returned `false` out of a boolean nobody reads, so the plan write
+  // succeeded, the pin went stale, and ship later refused bar_snapshot_rubric_revision_mismatch.
+  it('derives the mandatory pass rating from the rubric ratingScale instead of hardcoding healthy', async () => {
+    const body = subjectPlan();
+    const healthyScale = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: body, actorId: 'seed-author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 1, planStatus: 'active',
+      rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+    });
+    expect(healthyScale.ok).toBe(true);
+    if (!healthyScale.ok) return;
+    // CALIBRATION: the default scale is healthy-based, so the pre-fix hardcode was
+    // correct HERE. This case must keep passing or the test proves nothing about the fix.
+    expect(healthyScale.criteria[0]!.passRatings).toEqual(['healthy']);
+
+    // A pass/partial/fail/unknown rubric is equally valid and must not be normalised.
+    // subjectPlanRevision deliberately DIFFERS from the stored pin (1) so that
+    // preserveCanonicalBars is false and the criteria are genuinely re-derived — a
+    // matching pin returns the stored criterion verbatim and would make this test
+    // vacuous (caught by mutation probe: the mutant survived until this was fixed).
+    const passScale = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: body, actorId: 'seed-author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active',
+      rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+      // A self-consistent pass-scale rubric: scale AND stored criteria both on 'pass'.
+      existingTemplateData: {
+        ...healthyScale.templateData,
+        ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+        criteria: (healthyScale.criteria as Array<Record<string, unknown>>).map((c) => ({
+          ...c, passRatings: ['pass'],
+        })),
+      },
+    });
+    // Pre-fix this refused bar_rubric_conflict: "mandatory outcome pass rating 'healthy'
+    // is not present in the rubric ratingScale".
+    expect(passScale.ok).toBe(true);
+    if (!passScale.ok) return;
+    expect(passScale.criteria[0]!.passRatings).toEqual(['pass']);
+  });
+
+  it('preserves amended canonical BAR text when advancing the pin, instead of reverting it to the seed', async () => {
+    const before = subjectPlan();
+    const after = subjectPlan({ now: 'the Now block changed' });
+    const seeded = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: before, actorId: 'seed-author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active',
+      rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+    });
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) return;
+
+    // Simulate a rubric AMENDED after seeding: its criterion model is richer than the
+    // text a fresh seed of the same body produces. This is the real shape — an amendment
+    // that removed a factually-false constant from the original seed.
+    const amendedModel = 'The AMENDED canonical promise, corrected after seeding.';
+    const amended = {
+      ...seeded.templateData,
+      // Normalise so barHash is genuinely RECOMPUTED from the amended text. A hand-spread
+      // that leaves the original barHash in place does not move barSetHash, which made an
+      // earlier version of this fixture non-discriminating (caught by mutation probe).
+      criteria: seeded.criteria.map((c) => normalizeAcceptanceBarCriterion({
+        ...c, model: amendedModel,
+      })),
+    };
+
+    // The STORED hash must be the AMENDED set's hash, not the fresh seed's — otherwise a
+    // re-derivation reproduces it and preservation is not discriminating (caught by
+    // mutation probe: the mutant survived until this fixture was corrected).
+    const amendedSeed = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: before, actorId: 'seed-author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active',
+      rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+      existingTemplateData: amended,
+    });
+    expect(amendedSeed.ok).toBe(true);
+    if (!amendedSeed.ok) return;
+    // Sanity: the amendment really did move the hash away from the fresh seed's.
+    expect(amendedSeed.barSetHash).not.toBe(seeded.barSetHash);
+
+    let written: unknown = null;
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT status, acceptance_bar_rubric_slug')) {
+        return [{
+          status: 'active',
+          acceptance_bar_rubric_slug: 'acceptance-subject-plan',
+          acceptance_bar_rubric_revision: 4,
+          acceptance_bar_set_hash: amendedSeed.barSetHash,
+        }];
+      }
+      if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
+      if (statement.includes('SELECT version, template_data')) {
+        // The realistic post-amendment row: amended criteria AND the matching
+        // barSetHash the amendment wrote alongside them.
+        return [{ version: 4, template_data: amendedSeed.templateData }];
+      }
+      if (statement.includes('UPDATE harness_shared.harness_plans')) {
+        written = statement;
+        return [{ plan_slug: 'acceptance-subject-plan' }];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+
+    // Pre-fix, preserveCanonicalBars was false by construction on a pin repair (the
+    // stored pin never equals the incoming revision), so the criteria were re-derived
+    // from the plan body and the barSetHash check then failed — returning false here.
+    await expect(
+      synchronizeAcceptanceBarSubjectRevision(sql as never, {
+        workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'subject-plan',
+        previousBody: before, nextBody: after, previousVersion: 2, nextVersion: 3,
+      }),
+    ).resolves.toBe(true);
+
+    // The UPDATE must touch ONLY the pin — the amended text is never rewritten by it.
+    expect(String(written)).toContain('{barContract,subjectPlanRevision}');
+    expect(String(written)).not.toContain('criteria');
   });
 
   it('does not repair the pin when the Requirements BAR meaning changes', async () => {
