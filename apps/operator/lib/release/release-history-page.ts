@@ -66,6 +66,7 @@ import {
 import { ROBOT_BG_DATA_URI } from './release-bg';
 import { DISCORD_URL, INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
 import { DEMO_VIDEO_LABEL, DEMO_VIDEO_POSTER_DATA_URI, DEMO_VIDEO_SRC } from './release-video';
+import { releaseHistoryStem } from './release-project-history';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
 export interface HydratedRelease {
@@ -957,8 +958,25 @@ function renderRelease(rel: HydratedRelease, isCurrent: boolean): string {
   <p class="meta">${meta.join(' · ')}</p>
   ${renderArtifacts(row.artifacts)}
   ${changelog}
+  <p><a class="detail-link" href="changes/${releaseHistoryStem(row.version, row.channel)}.html">Explore plans, completed work and verification →</a></p>
 ${renderWork(rel)}
 </section>`;
+}
+
+/** Release-scoped shared History, with existing static details as a fallback. */
+export function renderProjectHistoryPage(rel: HydratedRelease, opts: PageOptions): string {
+  const stem = releaseHistoryStem(rel.row.version, rel.row.channel);
+  const fallback = renderWork(rel).replaceAll('href="plans/', 'href="../plans/')
+    .replaceAll('href="work-items/', 'href="../work-items/');
+  return shell(`Papercusp ${rel.row.version} — Changes`, `
+<p><a href="../index.html">← All releases and downloads</a></p>
+<h1>Changes in ${escapeHtml(rel.row.version)}</h1>
+<p>Plans, completed work and their verification evidence for this ${escapeHtml(rel.row.channel)} release. Plan documents show their current ledger state; completed work is limited to this release.</p>
+<section class="build-history-page" id="release-project-history" data-document="${stem}.json"></section>
+<div id="release-history-fallback">${fallback || '<p>No product-facing work items were recorded for this release.</p>'}</div>
+<script type="module" src="../assets/project-history.js"></script>`, '', opts.redact ?? identityLiterals(), {
+    headExtra: '<link rel="stylesheet" href="../assets/project-history.css">',
+  });
 }
 
 /**

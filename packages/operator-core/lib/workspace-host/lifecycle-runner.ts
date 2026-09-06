@@ -1,6 +1,7 @@
 /** Replay-safe production controller for an already-provisioned workspace host. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  assertWorkspaceHostSecretIsolation,
   assertWorkspaceHostReplacement,
   nextWorkspaceHostControllerAction,
   workspaceHostActionInvalidatesInitialization,
@@ -9,6 +10,9 @@ import {
   type WorkspaceHostControllerAuthority,
   type WorkspaceHostDomainState,
   type WorkspaceHostImageRef,
+  type WorkspaceHostInitializationReplayStore,
+  type WorkspaceHostInitializationStepReceipt,
+  type WorkspaceHostModel,
   type WorkspaceHostObservation,
   type WorkspaceHostPlan,
   type WorkspaceHostPlanRequest,
@@ -17,6 +21,7 @@ import {
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
+  type WorkspaceHostRecoveryPlan,
   type WorkspaceHostRuntimeRelease,
   type WorkspaceHostSnapshotRef,
 } from '@papercusp/deployment-driver';
@@ -39,6 +44,10 @@ import {
   WorkspaceHostProvisioningRequestError,
   type WorkspaceHostProvisioningResult,
 } from './provisioning-runner';
+import {
+  WorkspaceHostInitializationReplayInFlightError,
+  createWorkspaceHostInitializationReplayStore,
+} from './initialization-replay-store';
 
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
@@ -73,6 +82,8 @@ export interface RunWorkspaceHostLifecycleInput {
   runtimeRelease?: WorkspaceHostRuntimeRelease;
   /** Test seam for lifecycle actions that must install the controller's current trusted release. */
   renderHostBootstrap?: (hostId: string) => Promise<string>;
+  /** @internal The product wrapper keeps the operation running after provider completion. */
+  providerCompletionMode?: 'terminal' | 'defer-to-product-controller';
 }
 
 export interface WorkspaceHostLifecycleStore {
@@ -84,6 +95,83 @@ export interface WorkspaceHostLifecycleStore {
   upsertCheckpoint: typeof upsertWorkspaceHostResourceCheckpoint;
   appendEvent: typeof appendWorkspaceHostEvent;
   recordObservation: typeof recordWorkspaceHostObservation;
+}
+
+export const WORKSPACE_HOST_PRODUCT_LIFECYCLE_STAGES = [
+  'data-recovery',
+  'runtime-update',
+  'credential-rebind',
+  'initialization',
+  'service-readiness',
+  'reconnect',
+] as const;
+export type WorkspaceHostProductLifecycleStage = (typeof WORKSPACE_HOST_PRODUCT_LIFECYCLE_STAGES)[number];
+export type WorkspaceHostRuntimeTransitionStrategy = 'bootc-stage-reboot' | 'transitional-bundle-update';
+export type WorkspaceHostLifecycleStage = 'provider-complete' | WorkspaceHostProductLifecycleStage | 'workspace-usable';
+
+export interface WorkspaceHostProductStageRequest {
+  readonly stage: WorkspaceHostProductLifecycleStage;
+  readonly workspaceId: string;
+  readonly sourceHostId: string;
+  readonly targetHostId: string;
+  readonly operationId: string;
+  readonly action: 'repair' | 'upgrade' | 'restore';
+  readonly desiredRevision: number;
+  readonly hostModel: WorkspaceHostModel;
+  readonly runtimeStrategy: WorkspaceHostRuntimeTransitionStrategy;
+  /** Present only for data recovery; it is the existing backup/recovery contract, not a new policy. */
+  readonly recoveryPlan?: WorkspaceHostRecoveryPlan;
+}
+
+export interface WorkspaceHostProductStageObservation {
+  readonly observedAt: string;
+  /** Persistable measured facts. The controller validates the required facts per stage. */
+  readonly postconditions: Readonly<Record<string, unknown>>;
+}
+
+/** Host supervision adapter. Implementations delegate to the existing recovery/init/credential seams. */
+export interface WorkspaceHostProductLifecycleOperations {
+  execute(request: WorkspaceHostProductStageRequest): Promise<WorkspaceHostProductStageObservation>;
+}
+
+export interface WorkspaceHostProductStageReceipt {
+  readonly stage: WorkspaceHostProductLifecycleStage;
+  readonly observedAt: string;
+  readonly postconditions: Readonly<Record<string, unknown>>;
+}
+
+interface WorkspaceHostProductLifecycleController {
+  readonly hostModel: WorkspaceHostModel;
+  readonly operations: WorkspaceHostProductLifecycleOperations;
+  readonly recoveryPlan?: WorkspaceHostRecoveryPlan;
+  /** Test/advanced seam; production uses the existing durable initialization replay table. */
+  readonly replayStore?: WorkspaceHostInitializationReplayStore;
+  readonly leaseOwner?: string;
+  readonly leaseTtlMs?: number;
+}
+
+export type RunWorkspaceHostProductLifecycleInput = Omit<
+  RunWorkspaceHostLifecycleInput,
+  'action' | 'providerCompletionMode'
+> &
+  (
+    | {
+        action: 'restore';
+        product: Omit<WorkspaceHostProductLifecycleController, 'recoveryPlan'> & {
+          recoveryPlan: WorkspaceHostRecoveryPlan;
+        };
+      }
+    | {
+        action: 'repair' | 'upgrade';
+        product: Omit<WorkspaceHostProductLifecycleController, 'recoveryPlan'> & {
+          recoveryPlan?: never;
+        };
+      }
+  );
+
+export interface WorkspaceHostLifecycleResult extends WorkspaceHostProvisioningResult {
+  lifecycleStage?: WorkspaceHostLifecycleStage;
+  productStageReceipts?: readonly WorkspaceHostProductStageReceipt[];
 }
 
 const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
@@ -115,6 +203,166 @@ function controllerStore(
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function canonicalProductJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('product lifecycle replay identity contains a non-finite number');
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalProductJson).join(',')}]`;
+  if (!value || typeof value !== 'object') {
+    throw new Error('product lifecycle replay identity contains a non-JSON value');
+  }
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => {
+      if (entry === undefined) throw new Error(`product lifecycle replay identity field '${key}' is undefined`);
+      return `${JSON.stringify(key)}:${canonicalProductJson(entry)}`;
+    })
+    .join(',')}}`;
+}
+
+function productStageFingerprint(request: WorkspaceHostProductStageRequest): string {
+  assertWorkspaceHostSecretIsolation(request, `workspaceHost.productLifecycle.${request.stage}.request`);
+  return createHash('sha256').update(canonicalProductJson(request), 'utf8').digest('hex');
+}
+
+function requiredProductPostconditions(request: WorkspaceHostProductStageRequest): Readonly<Record<string, unknown>> {
+  const common = { workspaceId: request.workspaceId, hostId: request.targetHostId };
+  switch (request.stage) {
+    case 'data-recovery':
+      return {
+        ...common,
+        sourceHostId: request.sourceHostId,
+        dataRetained: true,
+        schemaCompatible: true,
+      };
+    case 'runtime-update':
+      return {
+        ...common,
+        runtimeStrategy: request.runtimeStrategy,
+        signedReleaseVerified: true,
+        transitionCompleted: true,
+      };
+    case 'credential-rebind':
+      return { ...common, credentialsRebound: true };
+    case 'initialization':
+      return { ...common, initialized: true, migrationSucceeded: true };
+    case 'service-readiness':
+      return { ...common, serviceReady: true, healthStatus: 'healthy' };
+    case 'reconnect':
+      return { ...common, reconnected: true };
+  }
+}
+
+function validateProductStageObservation(
+  request: WorkspaceHostProductStageRequest,
+  observation: WorkspaceHostProductStageObservation,
+): void {
+  if (!Number.isFinite(Date.parse(observation.observedAt))) {
+    throw new Error(`product lifecycle stage '${request.stage}' did not return an ISO observedAt`);
+  }
+  if (
+    !observation.postconditions ||
+    typeof observation.postconditions !== 'object' ||
+    Array.isArray(observation.postconditions)
+  ) {
+    throw new Error(`product lifecycle stage '${request.stage}' did not return measured postconditions`);
+  }
+  assertWorkspaceHostSecretIsolation(
+    observation.postconditions,
+    `workspaceHost.productLifecycle.${request.stage}.postconditions`,
+  );
+  for (const [key, expected] of Object.entries(requiredProductPostconditions(request))) {
+    if (observation.postconditions[key] !== expected) {
+      throw new Error(`product lifecycle stage '${request.stage}' did not prove ${key}=${JSON.stringify(expected)}`);
+    }
+  }
+}
+
+async function runProductStage(
+  replayStore: WorkspaceHostInitializationReplayStore,
+  operations: WorkspaceHostProductLifecycleOperations,
+  request: WorkspaceHostProductStageRequest,
+): Promise<WorkspaceHostProductStageReceipt> {
+  const receipt = await replayStore.runOnce(
+    {
+      idempotencyKey:
+        `workspace-host-product:${request.workspaceId}:${request.targetHostId}:` +
+        `${request.operationId}:${request.stage}`,
+      stepFingerprint: productStageFingerprint(request),
+    },
+    async (): Promise<WorkspaceHostInitializationStepReceipt> => {
+      const observation = await operations.execute(request);
+      validateProductStageObservation(request, observation);
+      return {
+        stepId: request.stage,
+        status: 'succeeded',
+        observedAt: observation.observedAt,
+        publicEvidence: observation.postconditions,
+      };
+    },
+  );
+  if (receipt.stepId !== request.stage || receipt.status !== 'succeeded') {
+    throw new Error(`product lifecycle replay receipt for '${request.stage}' has the wrong identity`);
+  }
+  const observation = { observedAt: receipt.observedAt, postconditions: receipt.publicEvidence ?? {} };
+  validateProductStageObservation(request, observation);
+  return { stage: request.stage, ...observation };
+}
+
+function productStageRequests(input: {
+  workspaceId: string;
+  sourceHostId: string;
+  targetHostId: string;
+  operationId: string;
+  action: 'repair' | 'upgrade' | 'restore';
+  desiredRevision: number;
+  product: WorkspaceHostProductLifecycleController;
+}): readonly WorkspaceHostProductStageRequest[] {
+  const hostModel = input.product.hostModel;
+  if (hostModel !== 'bootc-image' && hostModel !== 'ubuntu-release-bundle') {
+    throw new WorkspaceHostProvisioningRequestError([`unsupported product host model '${String(hostModel)}'`]);
+  }
+  const runtimeStrategy: WorkspaceHostRuntimeTransitionStrategy =
+    hostModel === 'bootc-image' ? 'bootc-stage-reboot' : 'transitional-bundle-update';
+  const common = {
+    workspaceId: input.workspaceId,
+    sourceHostId: input.sourceHostId,
+    targetHostId: input.targetHostId,
+    operationId: input.operationId,
+    action: input.action,
+    desiredRevision: input.desiredRevision,
+    hostModel,
+    runtimeStrategy,
+  } as const;
+  const requests: WorkspaceHostProductStageRequest[] = [];
+  if (input.action === 'restore') {
+    const recoveryPlan = input.product.recoveryPlan;
+    if (!recoveryPlan) throw new WorkspaceHostProvisioningRequestError(['restore recoveryPlan is required']);
+    if (
+      recoveryPlan.workspaceId !== input.workspaceId ||
+      recoveryPlan.sourceHostId !== input.sourceHostId ||
+      recoveryPlan.targetHostId !== input.targetHostId
+    ) {
+      throw new WorkspaceHostProvisioningRequestError([
+        'restore recoveryPlan must preserve the exact workspace, source Host, and target Host identities',
+      ]);
+    }
+    requests.push({ ...common, stage: 'data-recovery', recoveryPlan });
+  } else if (input.product.recoveryPlan !== undefined) {
+    throw new WorkspaceHostProvisioningRequestError(['recoveryPlan is valid only for restore']);
+  }
+  requests.push({ ...common, stage: 'runtime-update' });
+  if (input.action === 'restore') requests.push({ ...common, stage: 'credential-rebind' });
+  requests.push(
+    { ...common, stage: 'initialization' },
+    { ...common, stage: 'service-readiness' },
+    { ...common, stage: 'reconnect' },
+  );
+  return requests;
 }
 
 function nonEmpty(value: string, label: string): string {
@@ -275,7 +523,7 @@ async function observe(
 
 export async function runWorkspaceHostLifecycle(
   input: RunWorkspaceHostLifecycleInput,
-): Promise<WorkspaceHostProvisioningResult> {
+): Promise<WorkspaceHostLifecycleResult> {
   const baseStore = input.store ?? DEFAULT_STORE;
   const workspaceId = nonEmpty(input.workspaceId, 'workspaceId');
   const hostId = nonEmpty(input.hostId, 'hostId');
@@ -359,9 +607,7 @@ export async function runWorkspaceHostLifecycle(
       connectionId: target.connectionId,
       desiredRevision,
       observedRevision: target.observedRevision,
-      ...(runtimeRelease ?? target.runtimeRelease
-        ? { runtimeRelease: runtimeRelease ?? target.runtimeRelease }
-        : {}),
+      ...((runtimeRelease ?? target.runtimeRelease) ? { runtimeRelease: runtimeRelease ?? target.runtimeRelease } : {}),
       controllerAuthority,
     };
     assertWorkspaceHostReplacement(
@@ -604,6 +850,35 @@ export async function runWorkspaceHostLifecycle(
        * so gating would replace a premature success with a permanent hang.
        */
       const requiresInitialization = workspaceHostActionInvalidatesInitialization(input.action);
+      if (requiresInitialization && input.providerCompletionMode === 'defer-to-product-controller') {
+        const providerMessage =
+          `Workspace-host ${input.action} provider steps completed; ` +
+          'the durable product controller is continuing to workspace-usable';
+        await store.updateOperation({
+          workspaceId,
+          operationId,
+          status: 'running',
+          percent: 50,
+          message: providerMessage,
+        });
+        await store.appendEvent({
+          workspaceId,
+          hostId: resultHostId,
+          operationId,
+          phase: 'provider-complete',
+          status: 'running',
+          message: providerMessage,
+        });
+        return {
+          status: 'in-progress',
+          operationId,
+          hostId: resultHostId,
+          plan,
+          checkpoints,
+          requiresInitialization: true,
+          lifecycleStage: 'provider-complete',
+        };
+      }
       const message = requiresInitialization
         ? `Workspace-host ${input.action} completed its provider steps, but the host CANNOT SERVE yet: ` +
           `${input.action} invalidated the host's initialized state, so initialization must be run again before use`
@@ -623,7 +898,15 @@ export async function runWorkspaceHostLifecycle(
         status: 'succeeded',
         message,
       });
-      return { status: 'succeeded', operationId, hostId: resultHostId, plan, checkpoints, requiresInitialization };
+      return {
+        status: 'succeeded',
+        operationId,
+        hostId: resultHostId,
+        plan,
+        checkpoints,
+        requiresInitialization,
+        lifecycleStage: requiresInitialization ? 'provider-complete' : 'workspace-usable',
+      };
     }
 
     const reason = action.kind === 'blocked' ? action.reason : action.kind === 'complete' ? action.status : action.kind;
@@ -639,4 +922,151 @@ export async function runWorkspaceHostLifecycle(
   }
 
   throw new Error(`Workspace-host ${input.action} exceeded its bounded controller transition budget`);
+}
+
+/**
+ * Drive an initialization-invalidating lifecycle action through provider-complete to a measured,
+ * replay-safe workspace-usable result under one durable operation identity.
+ */
+export async function runWorkspaceHostProductLifecycle(
+  input: RunWorkspaceHostProductLifecycleInput,
+): Promise<WorkspaceHostLifecycleResult> {
+  const { product, ...lifecycleInput } = input;
+  const baseStore = input.store ?? DEFAULT_STORE;
+  const workspaceId = nonEmpty(input.workspaceId, 'workspaceId');
+  const sourceHostId = nonEmpty(input.hostId, 'hostId');
+  const source = await baseStore.readTarget(workspaceId, sourceHostId);
+  if (!source) {
+    throw new WorkspaceHostProvisioningRequestError([`workspace host '${sourceHostId}' was not found`]);
+  }
+  const targetHostId = input.action === 'restore' ? input.desired!.hostId : sourceHostId;
+  const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
+  const controllerAuthority =
+    input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(source.controllerAuthority);
+  const desiredRevision = input.desiredRevision ?? source.desiredRevision + 1;
+  const requests = productStageRequests({
+    workspaceId,
+    sourceHostId,
+    targetHostId,
+    operationId,
+    action: input.action,
+    desiredRevision,
+    product,
+  });
+
+  const providerResult = await runWorkspaceHostLifecycle({
+    ...lifecycleInput,
+    action: input.action,
+    operationId,
+    controllerAuthority,
+    desiredRevision,
+    providerCompletionMode: 'defer-to-product-controller',
+  });
+  if (providerResult.lifecycleStage !== 'provider-complete') return providerResult;
+
+  const store = controllerStore(baseStore, controllerAuthority, operationId);
+  const replayStore =
+    product.replayStore ??
+    createWorkspaceHostInitializationReplayStore({
+      workspaceId,
+      hostId: targetHostId,
+      leaseOwner: product.leaseOwner ?? `workspace-host-product:${operationId}`,
+      ...(product.leaseTtlMs !== undefined ? { leaseTtlMs: product.leaseTtlMs } : {}),
+    });
+  const receipts: WorkspaceHostProductStageReceipt[] = [];
+  let activeStage: WorkspaceHostProductLifecycleStage = requests[0]!.stage;
+
+  try {
+    for (const [index, request] of requests.entries()) {
+      activeStage = request.stage;
+      const receipt = await runProductStage(replayStore, product.operations, request);
+      receipts.push(receipt);
+      const percent = Math.min(99, 50 + Math.round(((index + 1) / requests.length) * 49));
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'running',
+        percent,
+        message: `Workspace-host ${input.action} product stage '${request.stage}' completed`,
+      });
+      await store.appendEvent({
+        workspaceId,
+        hostId: targetHostId,
+        operationId,
+        occurredAt: receipt.observedAt,
+        phase: `product:${request.stage}`,
+        status: 'running',
+        level: 'info',
+        source: 'controller',
+        message: `Measured product stage '${request.stage}' completed`,
+        details: { postconditions: receipt.postconditions },
+      });
+    }
+  } catch (error) {
+    if (error instanceof WorkspaceHostInitializationReplayInFlightError) {
+      await store.updateOperation({
+        workspaceId,
+        operationId,
+        status: 'running',
+        percent: Math.min(99, 50 + Math.round((receipts.length / requests.length) * 49)),
+        message: `Workspace-host product stage '${activeStage}' is owned by another live controller`,
+      });
+      return {
+        ...providerResult,
+        status: 'in-progress',
+        lifecycleStage: activeStage,
+        productStageReceipts: receipts,
+        retryAfterMs: DEFAULT_RETRY_AFTER_MS,
+      };
+    }
+    await store.updateOperation({
+      workspaceId,
+      operationId,
+      status: 'failed',
+      percent: Math.min(99, 50 + Math.round((receipts.length / requests.length) * 49)),
+      message: `Workspace-host product stage '${activeStage}' failed its measured postconditions`,
+      error,
+    });
+    await store.appendEvent({
+      workspaceId,
+      hostId: targetHostId,
+      operationId,
+      phase: `product:${activeStage}`,
+      status: 'failed',
+      level: 'error',
+      source: 'controller',
+      message: `Product stage '${activeStage}' failed; workspace is not usable`,
+    });
+    return {
+      ...providerResult,
+      status: 'failed',
+      lifecycleStage: activeStage,
+      productStageReceipts: receipts,
+      requiresInitialization: true,
+    };
+  }
+
+  const finalMessage = `Workspace-host ${input.action} reached workspace-usable`;
+  await store.updateOperation({
+    workspaceId,
+    operationId,
+    status: 'succeeded',
+    percent: 100,
+    message: finalMessage,
+  });
+  await store.appendEvent({
+    workspaceId,
+    hostId: targetHostId,
+    operationId,
+    phase: 'workspace-usable',
+    status: 'succeeded',
+    message: finalMessage,
+  });
+  return {
+    ...providerResult,
+    status: 'succeeded',
+    lifecycleStage: 'workspace-usable',
+    productStageReceipts: receipts,
+    requiresInitialization: false,
+  };
 }

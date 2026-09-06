@@ -1,14 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
   fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
+  planWorkspaceHostRecovery,
   type WorkspaceHostApplyResult,
+  type WorkspaceHostInitializationReplayStore,
+  type WorkspaceHostInitializationStepReceipt,
   type WorkspaceHostPlan,
   type WorkspaceHostProvider,
   type WorkspaceHostProviderConnection,
   type WorkspaceHostResourceCheckpoint,
 } from '@papercusp/deployment-driver';
-import { runWorkspaceHostLifecycle, type WorkspaceHostLifecycleStore } from './lifecycle-runner';
+import {
+  runWorkspaceHostLifecycle,
+  runWorkspaceHostProductLifecycle,
+  type WorkspaceHostLifecycleStore,
+  type WorkspaceHostProductLifecycleStage,
+  type WorkspaceHostProductStageRequest,
+} from './lifecycle-runner';
 import { WorkspaceHostProvisioningRequestError } from './provisioning-runner';
 
 const vm = {
@@ -119,6 +129,126 @@ function input(provider: WorkspaceHostProvider, store: WorkspaceHostLifecycleSto
     operationId: 'op-1',
     store,
   };
+}
+
+function successfulProviderResult(): WorkspaceHostApplyResult {
+  return {
+    operationId: 'op-1',
+    stepId: 'start-instance',
+    state: 'applied',
+    observedAt: '2026-08-27T00:00:05Z',
+    resource: vm,
+  };
+}
+
+function restorePlan() {
+  return planWorkspaceHostRecovery({
+    contractVersion: WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
+    recoveryId: 'recovery-1',
+    workspaceId: 'workspace-1',
+    requestedAt: '2026-08-27T00:00:00Z',
+    sourceHost: { hostId: 'host-1', target: 'gcp', resources: [vm] },
+    desired: {
+      ...desired,
+      hostId: 'host-restored',
+      image: { ...desired.image, version: 'v2' },
+    },
+    applicationBackup: {
+      system: '@papercusp/backup',
+      workspaceId: 'workspace-1',
+      snapshotId: 42,
+      kopiaSnapshotId: 'kopia-42',
+      status: 'ok',
+      capturedAt: '2026-08-26T23:30:00Z',
+      verifiedAt: '2026-08-26T23:45:00Z',
+      databaseDumpPath: 'db-dumps/pg-embedded.sql.gz',
+      sources: ['postgres', 'repositories'],
+    },
+    providerSnapshot: {
+      snapshot: {
+        target: 'gcp',
+        providerId: 'snapshot-1',
+        hostId: 'host-1',
+        createdAt: '2026-08-26T23:31:00Z',
+        retainUntil: '2027-08-27T00:00:00Z',
+      },
+      encrypted: true,
+      retentionDays: 365,
+      minimumRestorePoints: 4,
+    },
+    schema: {
+      migrationId: 'workspace-schema-2',
+      sourceSchemaVersion: 1,
+      targetSchemaVersion: 2,
+      compatibleSourceRange: { minimum: 1, maximum: 2 },
+      rollback: {
+        runtime: {
+          image: { id: 'projects/images/global/images/papercusp-v1', version: 'v1' },
+          schemaVersion: 1,
+          compatibleDataRange: { minimum: 1, maximum: 1 },
+        },
+        data: { strategy: 'restore-provider-snapshot' },
+      },
+    },
+    proof: { cadenceDays: 92 },
+  });
+}
+
+function successfulStagePostconditions(request: WorkspaceHostProductStageRequest): Record<string, unknown> {
+  const common = { workspaceId: request.workspaceId, hostId: request.targetHostId };
+  switch (request.stage) {
+    case 'data-recovery':
+      return { ...common, sourceHostId: request.sourceHostId, dataRetained: true, schemaCompatible: true };
+    case 'runtime-update':
+      return {
+        ...common,
+        runtimeStrategy: request.runtimeStrategy,
+        signedReleaseVerified: true,
+        transitionCompleted: true,
+      };
+    case 'credential-rebind':
+      return { ...common, credentialsRebound: true };
+    case 'initialization':
+      return { ...common, initialized: true, migrationSucceeded: true };
+    case 'service-readiness':
+      return { ...common, serviceReady: true, healthStatus: 'healthy' };
+    case 'reconnect':
+      return { ...common, reconnected: true };
+  }
+}
+
+function productHarness(
+  options: {
+    failOnceAt?: WorkspaceHostProductLifecycleStage;
+    invalidAt?: WorkspaceHostProductLifecycleStage;
+  } = {},
+) {
+  const persisted = new Map<string, WorkspaceHostInitializationStepReceipt>();
+  let failedOnce = false;
+  const replayStore: WorkspaceHostInitializationReplayStore = {
+    async runOnce(identity, run) {
+      const prior = persisted.get(identity.idempotencyKey);
+      if (prior) return prior;
+      const receipt = await run();
+      persisted.set(identity.idempotencyKey, receipt);
+      return receipt;
+    },
+  };
+  const operations = {
+    execute: vi.fn(async (request: WorkspaceHostProductStageRequest) => {
+      if (request.stage === options.failOnceAt && !failedOnce) {
+        failedOnce = true;
+        throw new Error(`interrupted at ${request.stage}`);
+      }
+      const postconditions = successfulStagePostconditions(request);
+      if (request.stage === options.invalidAt) {
+        if (request.stage === 'initialization') postconditions.migrationSucceeded = false;
+        if (request.stage === 'service-readiness') postconditions.healthStatus = 'degraded';
+      }
+      return { observedAt: '2026-08-27T00:01:00Z', postconditions };
+    }),
+  };
+  return { operations, replayStore };
 }
 
 describe('runWorkspaceHostLifecycle', () => {
@@ -251,9 +381,10 @@ describe('runWorkspaceHostLifecycle', () => {
       resource: vm,
     });
 
-    await expect(
-      runWorkspaceHostLifecycle({ ...input(provider, store), action: 'repair' }),
-    ).resolves.toMatchObject({ status: 'succeeded', requiresInitialization: true });
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), action: 'repair' })).resolves.toMatchObject({
+      status: 'succeeded',
+      requiresInitialization: true,
+    });
 
     expect(store.updateOperation).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -338,5 +469,149 @@ describe('runWorkspaceHostLifecycle', () => {
         desiredSpec: expect.objectContaining({ hostId: 'host-restored', data: desired.data }),
       }),
     );
+  });
+
+  it.each([
+    ['ubuntu-release-bundle', 'transitional-bundle-update'],
+    ['bootc-image', 'bootc-stage-reboot'],
+  ] as const)(
+    'continues an upgrade from provider-complete to workspace-usable with the %s runtime strategy',
+    async (hostModel, runtimeStrategy) => {
+      const { store } = storeHarness();
+      const { provider, apply } = providerHarness();
+      apply.mockResolvedValue(successfulProviderResult());
+      const product = productHarness();
+
+      const result = await runWorkspaceHostProductLifecycle({
+        ...input(provider, store),
+        action: 'upgrade',
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+        product: { hostModel, ...product },
+      });
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        lifecycleStage: 'workspace-usable',
+        requiresInitialization: false,
+      });
+      expect(result.productStageReceipts?.map(({ stage }) => stage)).toEqual([
+        'runtime-update',
+        'initialization',
+        'service-readiness',
+        'reconnect',
+      ]);
+      expect(product.operations.execute).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: 'runtime-update', hostModel, runtimeStrategy }),
+      );
+      expect(store.updateOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'running', percent: 50, message: expect.stringContaining('provider') }),
+      );
+      expect(store.updateOperation).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: 'succeeded',
+          percent: 100,
+          message: expect.stringContaining('workspace-usable'),
+        }),
+      );
+    },
+  );
+
+  it('resumes interrupted product stages without repeating completed host side effects', async () => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue(successfulProviderResult());
+    const product = productHarness({ failOnceAt: 'initialization' });
+    const request = {
+      ...input(provider, store),
+      action: 'upgrade' as const,
+      image: { id: 'projects/images/global/images/papercusp-v2' },
+      product: { hostModel: 'ubuntu-release-bundle' as const, ...product },
+    };
+
+    await expect(runWorkspaceHostProductLifecycle(request)).resolves.toMatchObject({
+      status: 'failed',
+      lifecycleStage: 'initialization',
+    });
+    await expect(runWorkspaceHostProductLifecycle(request)).resolves.toMatchObject({
+      status: 'succeeded',
+      lifecycleStage: 'workspace-usable',
+    });
+
+    expect(apply).toHaveBeenCalledOnce();
+    const stages = product.operations.execute.mock.calls.map(([stage]) => stage.stage);
+    expect(stages.filter((stage) => stage === 'runtime-update')).toHaveLength(1);
+    expect(stages.filter((stage) => stage === 'initialization')).toHaveLength(2);
+    expect(stages.filter((stage) => stage === 'service-readiness')).toHaveLength(1);
+    expect(stages.filter((stage) => stage === 'reconnect')).toHaveLength(1);
+  });
+
+  it.each([
+    ['initialization', 'migrationSucceeded'],
+    ['service-readiness', 'healthStatus'],
+  ] as const)('fails closed when %s does not prove %s', async (stage, _postcondition) => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue(successfulProviderResult());
+    const product = productHarness({ invalidAt: stage });
+
+    await expect(
+      runWorkspaceHostProductLifecycle({
+        ...input(provider, store),
+        action: 'upgrade',
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+        product: { hostModel: 'ubuntu-release-bundle', ...product },
+      }),
+    ).resolves.toMatchObject({ status: 'failed', lifecycleStage: stage });
+    expect(store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'failed', message: expect.stringContaining(stage) }),
+    );
+  });
+
+  it('chains restore data, runtime, credential rebind, initialization, readiness, and reconnect while retaining identity', async () => {
+    const { store } = storeHarness();
+    const { provider, apply, plan, planProvider } = providerHarness();
+    planProvider.mockResolvedValue({ ...plan, hostId: 'host-restored' });
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: { ...vm, providerId: 'pc-host-restored' },
+    });
+    const product = productHarness();
+    const recoveryPlan = restorePlan();
+
+    const result = await runWorkspaceHostProductLifecycle({
+      ...input(provider, store),
+      action: 'restore',
+      snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
+      desired: { ...desired, hostId: 'host-restored' },
+      product: { hostModel: 'ubuntu-release-bundle', recoveryPlan, ...product },
+    });
+
+    expect(result.productStageReceipts?.map(({ stage }) => stage)).toEqual([
+      'data-recovery',
+      'runtime-update',
+      'credential-rebind',
+      'initialization',
+      'service-readiness',
+      'reconnect',
+    ]);
+    expect(product.operations.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: 'data-recovery',
+        workspaceId: 'workspace-1',
+        sourceHostId: 'host-1',
+        targetHostId: 'host-restored',
+        recoveryPlan,
+      }),
+    );
+    expect(result.productStageReceipts?.[0]?.postconditions).toMatchObject({
+      workspaceId: 'workspace-1',
+      hostId: 'host-restored',
+      sourceHostId: 'host-1',
+      dataRetained: true,
+      schemaCompatible: true,
+    });
   });
 });

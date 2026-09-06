@@ -76,9 +76,11 @@ import {
   renderIndexHtml,
   renderPlanPageHtml,
   renderWorkItemPageHtml,
+  renderProjectHistoryPage,
   workItemPagePath,
   type HydratedRelease,
 } from './release-history-page';
+import { buildReleaseHistoryAssets, releaseHistoryStem, releaseProjectHistory } from './release-project-history';
 
 /** The window we snapshot when there is NO previous release to bound it. Bounded
  *  on purpose: an unbounded lower bound would sweep the entire history of the
@@ -966,6 +968,13 @@ export async function generateSite(
   const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS };
   fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
+  fs.mkdirSync(path.join(outDir, 'changes'), { recursive: true });
+  await buildReleaseHistoryAssets(outDir);
+  for (const release of hydratedAll) {
+    const stem = releaseHistoryStem(release.row.version, release.row.channel);
+    fs.writeFileSync(path.join(outDir, 'changes', `${stem}.json`), JSON.stringify(releaseProjectHistory(release, scope)));
+    fs.writeFileSync(path.join(outDir, 'changes', `${stem}.html`), renderProjectHistoryPage(release, opts));
+  }
   // ── The hold swaps ONLY index.html. ────────────────────────────────────────
   // history.json and the plan pages are still written, and the installers on the
   // host are untouched, so: the in-app Update Center keeps working (it reads
@@ -989,7 +998,7 @@ export async function generateSite(
   // The machine-readable twin of the page — what the in-app Update Center reads.
   // Same registry, same scrub, published to the same host as latest.json.
   fs.writeFileSync(path.join(outDir, 'history.json'), renderHistoryJson(hydratedAll, opts), 'utf8');
-  let pages = 1;
+  let pages = 1 + hydratedAll.length;
 
   // One page per plan, newest release wins when a plan spans several (it carries
   // the most recent status).
