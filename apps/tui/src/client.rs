@@ -3645,16 +3645,60 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a running operator and a disposable PUI_LIVE_WALL_KEY fact fixture"]
     async fn live_needs_you_standing_wall_round_trips_through_its_owning_verb() {
+        async fn attention_until(
+            client: &OperatorClient,
+            fact_key: &str,
+            should_exist: bool,
+        ) -> Vec<AttentionItem> {
+            // plans:attention intentionally serves a 20s SWR cache for its
+            // append-heavy/mixed source union. Polling here models the PUI's
+            // existing 60s safety refetch without adding a production poller.
+            // A stale read can arrive at the 20s edge while the bounded cache
+            // rebuild itself legitimately consumes up to 45s. Leave margin for
+            // that documented 65s worst-case path on a loaded staging host.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+            loop {
+                let items = client
+                    .attention_typed()
+                    .await
+                    .expect("fetch live attention");
+                let wall_keys: Vec<String> = items
+                    .iter()
+                    .filter(|item| item.kind == "owner-wall")
+                    .filter_map(|item| {
+                        item.reference
+                            .get("factKey")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .take(12)
+                    .collect();
+                let exists = items.iter().any(|item| {
+                    item.reference
+                        .get("factKey")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(fact_key)
+                });
+                if exists == should_exist {
+                    return items;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "live attention did not converge for {fact_key}: expected present={should_exist}; endpoint={}; decoded_items={}; first_wall_keys={wall_keys:?}",
+                    client.endpoint,
+                    items.len(),
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+
         let fact_key = std::env::var("PUI_LIVE_WALL_KEY")
             .expect("set PUI_LIVE_WALL_KEY to the unique disposable standing-wall fact key");
         let client = OperatorClient::from_discovery()
             .await
             .expect("discover live operator");
 
-        let before = client
-            .attention_typed()
-            .await
-            .expect("fetch live attention");
+        let before = attention_until(&client, &fact_key, true).await;
         let item = before
             .iter()
             .find(|item| {
@@ -3675,19 +3719,13 @@ mod tests {
             .await
             .expect("facts:retract through the PUI action router");
 
-        let after = client
-            .attention_typed()
-            .await
-            .expect("refetch live attention after owning mutation");
-        assert!(
-            after.iter().all(|item| {
-                item.reference
-                    .get("factKey")
-                    .and_then(serde_json::Value::as_str)
-                    != Some(fact_key.as_str())
-            }),
-            "retracted wall remained in the refetched attention feed"
-        );
+        let after = attention_until(&client, &fact_key, false).await;
+        assert!(after.iter().all(|item| {
+            item.reference
+                .get("factKey")
+                .and_then(serde_json::Value::as_str)
+                != Some(fact_key.as_str())
+        }));
     }
 
     #[test]
