@@ -35,6 +35,7 @@ import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../../agent-facts/cited-facts";
 import { shapeWorkItemsGet } from "./get-shape";
+import { withBoundedTimeout } from "../../bounded-timeout";
 import {
   CARRY_NOTE_MAX_CHECKS,
   sanitizeCarryRowId,
@@ -73,6 +74,31 @@ import type {
  * thread posts / links). Not on the claim hot path (D-004-safe).
  */
 const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
+
+/**
+ * Whole-call wall-clock ceiling for the keyed read. The old handler bounded neither
+ * the base row/cache build nor the enrichment ladder, so a pool stall could consume
+ * the MCP request window before returning even a not-found/error envelope. One shared
+ * budget also prevents a multi-id call from stacking a fresh timeout for every id.
+ */
+export const WORK_ITEMS_GET_BUDGET_MS = 30_000;
+
+const WORK_ITEMS_GET_TIMEOUT = Symbol("work_items:get:timeout");
+
+function workItemsGetTimeoutResult(id: string, budgetMs: number) {
+  return {
+    ok: false as const,
+    id,
+    error: "timeout" as const,
+    retryable: true as const,
+    phase: "read" as const,
+    budgetMs,
+    message:
+      `work_items:get exceeded its ${budgetMs}ms internal read budget and returned a ` +
+      "retryable unavailable result instead of waiting for the MCP request deadline. " +
+      "The item was not reported as not-found; retry now.",
+  };
+}
 
 /**
  * The effective bound on the diagnostic thread window.
@@ -431,6 +457,7 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
+    const bulkStartedAt = Date.now();
     // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
     // the holder lens, never a cache-key dimension — the per-id `cachedRead`
     // below is deliberately non-principal-scoped, so reader-relative holder
@@ -443,6 +470,8 @@ export default defineTool({
     const env = await runBulk(
       ids,
       async (id) => {
+        const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (Date.now() - bulkStartedAt));
+        const operation = (async () => {
         // Cache the per-id read (cache-expensive-tool-reads P-005). Tagged with the
         // base TABLE `work_items` (the trigger producer — bumped on EVERY work-item
         // write, so a read-after-write is never stale) + the per-row tag `work_items:<id>`
@@ -478,7 +507,9 @@ export default defineTool({
         const sourceReadOptions = checksOnly
           ? { includeBody: false, payloadProjection: 'none' as const }
           : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
-        const workItem = await cachedRead(
+        const workItemRead = await cachedRead<
+          Awaited<ReturnType<typeof getWorkItem>> | typeof WORK_ITEMS_GET_TIMEOUT
+        >(
           ctx as CachedReadCtx,
           {
             tool: 'work_items:get',
@@ -495,6 +526,8 @@ export default defineTool({
               ...(readDetail ? ['coord_links', 'coord_threads', 'coord_thread_posts'] : []),
             ],
             softTtlMs: WORK_ITEMS_GET_SOFT_TTL_MS,
+            deadlineMs: remainingBudgetMs,
+            onDeadline: () => WORK_ITEMS_GET_TIMEOUT,
           },
           () =>
             readDetail
@@ -503,6 +536,8 @@ export default defineTool({
                 ? getWorkItem(id, args.harness, sourceReadOptions)
                 : getWorkItem(id, args.harness),
         );
+        if (workItemRead === WORK_ITEMS_GET_TIMEOUT) return WORK_ITEMS_GET_TIMEOUT;
+        const workItem = workItemRead;
         if (!workItem) {
           return { ok: false as const, id, error: `work_item '${id}' not found` };
         }
@@ -894,6 +929,19 @@ export default defineTool({
           ...(priorAttempts ? { priorAttempts } : {}),
           ...(priorAttemptRefResolution ? { priorAttemptRefResolution } : {}),
         };
+        })();
+        const bounded = await withBoundedTimeout(operation, {
+          fallback: WORK_ITEMS_GET_TIMEOUT,
+          timeoutMs: remainingBudgetMs,
+          label: `work_items:get:${id}`,
+        });
+        if (bounded.degraded && bounded.reason === "error") {
+          throw bounded.error;
+        }
+        if (bounded.degraded || bounded.value === WORK_ITEMS_GET_TIMEOUT) {
+          return workItemsGetTimeoutResult(id, remainingBudgetMs);
+        }
+        return bounded.value;
       },
       { keyOf: (id) => ({ id }) },
     );
