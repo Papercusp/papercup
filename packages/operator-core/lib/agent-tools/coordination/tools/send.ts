@@ -835,11 +835,7 @@ async function sendOne(
   // the schema below enforces the same refusal before an agent request reaches
   // this handler.
   const authoredBodyChars = bodyTextLength(msg.body);
-  if (
-    msg.expects !== 'none' &&
-    authoredBodyChars !== null &&
-    authoredBodyChars > DEFAULT_INBOX_BODY_CAP
-  ) {
+  if (msg.expects !== 'none' && authoredBodyChars !== null && authoredBodyChars > DEFAULT_INBOX_BODY_CAP) {
     return {
       ok: false,
       to: msg.to,
@@ -946,8 +942,7 @@ async function sendOne(
   // when OFF, neither the opt-in is persisted nor a reply fires the wake
   // (today's behavior). Fail-safe to ON on a flag-read error (the new default).
   const wakeOnReplyFlag = await getFlag(FLAGS.COORD_WAKE_ON_REPLY, 'system').catch(() => true);
-  const effectiveWakeOnReply =
-    wakeOnReplyFlag && (msg.wakeOnReply ?? (msg.expects !== 'none' && isDirected(msg.to)));
+  const effectiveWakeOnReply = wakeOnReplyFlag && (msg.wakeOnReply ?? (msg.expects !== 'none' && isDirected(msg.to)));
 
   // Reply-threading honesty (WI-5072): related_msg_id is the edge the ENTIRE
   // reply-wake contract fires on — the asker's wakeOnReply can only match a
@@ -1055,9 +1050,7 @@ async function sendOne(
     try {
       const r = await resolveRecipients(msg.to, identity.workspaceId);
       const closingGoneSender = relatedOriginal?.from ?? null;
-      const goneReplyAliases = closingGoneSender
-        ? r.unknown.filter((id) => isOwnerIdAlias(id, closingGoneSender))
-        : [];
+      const goneReplyAliases = closingGoneSender ? r.unknown.filter((id) => isOwnerIdAlias(id, closingGoneSender)) : [];
       // Canonicalize a resolver-supported short handle/prefix to the full
       // ownerId in the durable reply. Once the session is gone there is no
       // roster left to perform that expansion, but the related message gives
@@ -1085,10 +1078,7 @@ async function sendOne(
           const classified = await classifyUnknownRecipients(trulyUnknown, (ids) =>
             lookupEndedSessions(ids, identity.workspaceId),
           );
-          const senderFleetMembership = await resolvePresenceFleet(
-            identity.ownerId,
-            deriveFleetMembership(),
-          );
+          const senderFleetMembership = await resolvePresenceFleet(identity.ownerId, deriveFleetMembership());
           roleHint = roleAddressingGuidance(classified, senderFleetMembership.fleetSlug) ?? '';
         } catch {
           roleHint = '';
@@ -1120,9 +1110,7 @@ async function sendOne(
       }
       toSend = [...r.resolved, ...goneRepliedTo];
     } catch (e) {
-      console.warn(
-        `[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`,
-      );
+      console.warn(`[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`);
     }
   }
 
@@ -1334,8 +1322,7 @@ async function sendOne(
   // eligibility). A one-section text body is the dominant message shape;
   // gating the scan on fieldStamp.sections silently exempted it (caught by
   // the send.test.ts wiring pin, state-plane-adoption-2026-08-02 C5).
-  const staleQuoteSections =
-    fieldStamp.sections ?? (Array.isArray(msg.body) ? msg.body : undefined);
+  const staleQuoteSections = fieldStamp.sections ?? (Array.isArray(msg.body) ? msg.body : undefined);
   if (staleQuoteSections) {
     try {
       const staleQuoteStamps = await resolveStaleQuoteStamps({
@@ -1488,9 +1475,7 @@ async function sendOne(
   // '*'→@fleet broadcast (bcast.scoped — e.g. a solo/quiet fleet) is a soft warning
   // that keeps ok:true. The row still persisted above (audience history /
   // coord:catch-up), so env.msg_id is returned either way.
-  const audienceSelectors = msg.to.filter(
-    (t) => t.startsWith('@') && parseSlotSelector(t) === null,
-  );
+  const audienceSelectors = msg.to.filter((t) => t.startsWith('@') && parseSlotSelector(t) === null);
   // `expandAudience` deliberately preserves only concrete recipients on the
   // envelope. Keep the selectors that resolved to no one alongside that
   // envelope out-of-band so a valid recipient cannot hide a partial audience
@@ -1498,9 +1483,7 @@ async function sendOne(
   const unresolvedSelectors = [...getUnresolvedAudienceSelectors(env)].filter((selector) =>
     audienceSelectors.includes(selector),
   );
-  let unresolvedAudience:
-    | { selectors: string[]; note: string }
-    | undefined;
+  let unresolvedAudience: { selectors: string[]; note: string } | undefined;
   if (unresolvedSelectors.length > 0) {
     const leaderSelector = unresolvedSelectors.some((s) => s.startsWith('@fleet-leader:'));
     const note = leaderSelector
@@ -1513,14 +1496,10 @@ async function sendOne(
         'verify its subscribers or live presence before assuming the whole audience received the message.';
     unresolvedAudience = { selectors: unresolvedSelectors, note };
   }
-  let unreachableAudienceWarning:
-    | { selectors: string[]; ownerIds: string[]; note: string }
-    | undefined;
+  let unreachableAudienceWarning: { selectors: string[]; ownerIds: string[]; note: string } | undefined;
   let zeroRecipients: { selectors: string[]; note: string } | undefined;
   if (audienceSelectors.length > 0 && env.to.length === 0) {
-    const isFleet = audienceSelectors.some(
-      (s) => s.startsWith('@fleet:') || s.startsWith('@fleet-leader:'),
-    );
+    const isFleet = audienceSelectors.some((s) => s.startsWith('@fleet:') || s.startsWith('@fleet-leader:'));
     // EI-18772330418885814: a `@file:` zero is the one that gets MISREAD as a
     // clearance to edit ("nobody is on this file"). Say what was actually checked —
     // and name the lock plane as the authority — so a reader never treats a coord
@@ -1672,8 +1651,7 @@ async function sendOne(
       // re-fetch only in the rare fail-soft path where that lookup errored.
       const original = relatedOriginal ?? (await getMessageById(relatedMsgIdForSend));
       const originalFrom = original?.from;
-      const optedIn =
-        original != null && (original as { wakeOnReply?: unknown }).wakeOnReply === true;
+      const optedIn = original != null && (original as { wakeOnReply?: unknown }).wakeOnReply === true;
       const expectedLifecycleAck = readExpectedLifecycleAck(original as Record<string, unknown> | null);
       if (
         optedIn &&
@@ -1890,9 +1868,7 @@ async function sendOne(
         // Pass the RAW body: the GUI wrapper has already rewritten the owner's
         // string into a section array by the time it reaches here, so the helper
         // normalises both shapes rather than this call site guessing one.
-        ...(identity.ownerId === ADMIN_COORD_UI_OWNER
-          ? ownerChatWakePayloadFields(msg.body)
-          : {}),
+        ...(identity.ownerId === ADMIN_COORD_UI_OWNER ? ownerChatWakePayloadFields(msg.body) : {}),
       },
     });
     const queued = fan.queued ?? fan.woken;
@@ -1906,16 +1882,15 @@ async function sendOne(
     // was non-wakeable, e.g. '*'/'human' only) is left unset — there was nothing to wake,
     // which is not the "missed" case (a genuinely-addressed target that got no wake).
     if (fan.targets.length > 0) {
-      wake.wakeOutcome =
-        fan.timedOutTargets?.length
-          ? 'unknown'
-          : queued > 0 && fan.staged === 0
-            ? 'queued'
-            : queued > 0 && fan.staged > 0
-              ? 'partial-staged'
-              : queued === 0 && fan.staged > 0
-                ? 'staged-manual-mode'
-                : 'missed';
+      wake.wakeOutcome = fan.timedOutTargets?.length
+        ? 'unknown'
+        : queued > 0 && fan.staged === 0
+          ? 'queued'
+          : queued > 0 && fan.staged > 0
+            ? 'partial-staged'
+            : queued === 0 && fan.staged > 0
+              ? 'staged-manual-mode'
+              : 'missed';
     }
     // EI-5957: a wake that STAGED (target in manual wake-mode) is NOT delivered —
     // the leader-steering failure was a quiet `staged:1` read as success while the
@@ -1936,8 +1911,7 @@ async function sendOne(
         '({ agent, sent_ts }) for messages_shown_ts/read_through_ts before claiming the holder was nudged.';
       wake.note = wake.note ? `${wake.note} ${timeoutNote}` : timeoutNote;
     }
-    const missed =
-      fan.targets.length > 0 && queued === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
+    const missed = fan.targets.length > 0 && queued === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
     if (missed) {
       // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'
       // miss is loud UNLESS the caller consciously declared a durable backstop
@@ -2073,9 +2047,8 @@ async function sendOne(
             );
           }
           wake.note =
-            (optimisticNoBackstop
-              ? `optimistic wake with NO declared backstop MISSED — `
-              : `required wake MISSED — `) + parts.join(' ');
+            (optimisticNoBackstop ? `optimistic wake with NO declared backstop MISSED — ` : `required wake MISSED — `) +
+            parts.join(' ');
         } else {
           wake.note =
             (optimisticNoBackstop
@@ -2156,9 +2129,7 @@ async function sendOne(
   // the SAME predicate, so this PREDICTS the delivered flag instead of offering a
   // second opinion about it.
   const claimText = msg.summary || bodyText || '';
-  const authorityClaim = claimText
-    ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority)
-    : null;
+  const authorityClaim = claimText ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority) : null;
   const { value: dispatchAdvisory } = await withBoundedTimeout(
     () => deriveDispatchAdvisory(msg, bodyText, env.to, harnessSlug),
     {
@@ -2229,9 +2200,7 @@ async function sendOne(
     // DIFFERENT addressee did receive this message. Distinct from unresolved_audience
     // (that selector matched nobody; this one matched a corpse) and invisible to
     // recipients_resolved, which counts the reaped id as a resolved recipient.
-    ...(unreachableAudienceWarning
-      ? { recipients_unreachable: unreachableAudienceWarning }
-      : {}),
+    ...(unreachableAudienceWarning ? { recipients_unreachable: unreachableAudienceWarning } : {}),
     // WI-37972: the durable coord row keeps the full body, but a normal
     // recipient `coord:inbox` read may clip it before the recipient can act.
     // Surface the same authored-vs-visible accounting on the SENDER result so
@@ -2248,9 +2217,7 @@ async function sendOne(
           bodyDeliveredChars: bodyDelivery.bodyDeliveredChars,
           bodyDeliveryCap: bodyDelivery.bodyDeliveryCap,
           bodyCrowdedPageCap: bodyDelivery.bodyCrowdedPageCap,
-          ...(bodyDelivery.bodyMayBeTruncated
-            ? { bodyReadRef: { tool: 'coord:read', msg_id: env.msg_id } }
-            : {}),
+          ...(bodyDelivery.bodyMayBeTruncated ? { bodyReadRef: { tool: 'coord:read', msg_id: env.msg_id } } : {}),
         }
       : {}),
     // EI-18145: the reply was recorded (satisfying unanswered-directed /
@@ -2297,9 +2264,7 @@ async function sendOne(
       : {}),
     ...(dispatchAdvisory ? { dispatchAdvisory } : {}),
     ...(staleBasisStamps.length ? { staleBasis: staleBasisStamps } : {}),
-    ...(goalOwnerReport
-      ? { goalOwnerReport: { status: 'stamped' as const, goalId: goalOwnerReport.goalId } }
-      : {}),
+    ...(goalOwnerReport ? { goalOwnerReport: { status: 'stamped' as const, goalId: goalOwnerReport.goalId } } : {}),
     ...(goalOwnerReportWarning ? { goalOwnerReportWarning } : {}),
   };
 }
