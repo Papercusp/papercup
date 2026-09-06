@@ -220,6 +220,12 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
   const requiredFields = entries.map((entry) => {
     const frozen = ledgerById.get(entry.id);
     const expectedCanonical = frozen?.proposedCanonical ?? null;
+    const canonicalValid =
+      expectedCanonical != null
+        ? entry.canonicalId === expectedCanonical
+        : entry.frozenOutcome === 'candidate-already-implemented'
+          ? entry.canonicalId == null || entry.canonicalId === entry.id
+          : entry.canonicalId == null;
     return {
       id: entry.id,
       valid:
@@ -228,9 +234,7 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
         isNonEmptyString(entry.frozenOutcome) &&
         /^(apply|preserve)(-|$)/.test(entry.recommendation ?? '') &&
         isNonEmptyString(entry.rationale) &&
-        (expectedCanonical == null
-          ? entry.canonicalId == null
-          : entry.canonicalId === expectedCanonical) &&
+        canonicalValid &&
         entry.currentState != null &&
         entry.currentOrigin != null &&
         (entry.currentFingerprint != null ||
