@@ -20,6 +20,7 @@ import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
+import { GENERICALLY_MEASURABLE_METRICS } from '@papercusp/operator-core/lib/goals/tripwire-refresh';
 import { HARNESS_SLUG_RE, isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import {
   GOAL_LAUNCH_DEFAULTS,
@@ -81,7 +82,7 @@ const goalUpdateArgs = z.object({
     .nullable()
     .optional()
     .describe(
-      'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
+      'refresh the structured kill criterion — the metric/label/threshold bars behind it ("$310 of $500"). ⚠ OMIT `current` for a metric the platform measures itself (spend_usd et al): the measured rollup owns it, and for a STANDING goal a hand-written value at or above its threshold KILLS the goal. Supply `current` only for a metric the platform cannot resolve (revenue, users), where you are the only source. Pass null to drop them back to prose-only. Omit to leave untouched.',
     ),
   budgetCents: z
     .number()
@@ -373,6 +374,43 @@ const goalUpdateTool = defineTool({
           degradedReasons: [
             `spentCents refused for goal ${args.id}: supplied ${args.spentCents} does not match the measured goals:pots rollup (${measuredSpendCents} cents); the spend tripwire remains unmeasured`,
           ],
+        };
+      }
+    }
+
+    /* TRIPWIRE PROVENANCE (EI-22512669283419131).
+       The spend-provenance guard above stops a guess reaching `spentCents`. It
+       left the sibling field wide open: `tripwires[].current` accepted any
+       caller-supplied number, and for a `standing` goal the tripwires ARE the
+       stopping condition (see the goals.standing column comment), so a
+       hand-written `current` at or above its threshold is not a decorative bar
+       — it is a kill trigger that the spend rollup executes on its next pass.
+
+       That is precisely the failure the comment above describes, running the
+       other way: there a guess read as enforcement; here a number written FOR
+       display BECAME enforcement. It has fired once in production, killing a
+       live standing goal and winding down its drain fleet on a figure whose own
+       label read "estimated, likely a floor".
+
+       Scope: only metrics the rollup can resolve itself. Most metrics
+       (`species_covered`, revenue, users) live outside this database entirely,
+       and for those the caller is the ONLY source and stays free to report a
+       real breach. For a metric the platform measures, the resolver is the
+       authority — the schema already says so ("omit until first measured").
+       The rollup writes this column with its own UPDATE and never routes
+       through this tool, so this refusal cannot suppress a measured breach. */
+    if (args.tripwires && args.tripwires.length > 0) {
+      const callerOwned = args.tripwires.filter(
+        (t) => t.current !== undefined && GENERICALLY_MEASURABLE_METRICS.includes(t.metric),
+      );
+      if (callerOwned.length > 0) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: callerOwned.map(
+            (t) =>
+              `tripwires refused for goal ${args.id}: \`current\` for metric "${t.metric}" is owned by the measured rollup, not the caller — supplied ${t.current} against threshold ${t.threshold}. Omit \`current\` and the rollup fills it from measurement; a hand-written value at or above the threshold KILLS a standing goal. Put an unmeasured observation in \`label\`.`,
+          ),
         };
       }
     }
