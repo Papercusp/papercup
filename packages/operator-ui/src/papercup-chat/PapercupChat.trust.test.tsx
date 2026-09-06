@@ -244,7 +244,7 @@ describe('PapercupChat — the view over a controller', () => {
     expect(stamps.every((stamp) => /^\d{2}:\d{2}$/.test(stamp.textContent ?? ''))).toBe(true);
     expect(stamps.every((stamp) => stamp.parentElement?.classList.contains('pc-chat__message-line'))).toBe(true);
     expect(root.querySelector('.pc-chat__turn-meta')).toBeNull();
-    expect(root.querySelector('[data-role="assistant"]')?.classList.contains('pc-chat__sr-only')).toBe(true);
+    expect(root.querySelector('.pc-chat__role[data-role="assistant"]')?.classList.contains('pc-chat__sr-only')).toBe(true);
     expect(within(root).queryByText('Ask a question to start.')).toBeNull();
   });
 

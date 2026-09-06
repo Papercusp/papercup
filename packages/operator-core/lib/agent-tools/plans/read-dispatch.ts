@@ -44,8 +44,9 @@ export interface PlansReadOpts {
    *
    * Pass `false` for a DETAIL read that must see the fields the list feed
    * drops — `plans.attentionItem` is the one caller: the list feed clips each
-   * attention item's `body` and drops `actions`, and the detail pane's card
-   * needs both back (slim-plans-attention-sync-payload-2026-07-26 P-004).
+   * attention item's `body` but deliberately keeps `actions` so the selected
+   * row's controls render before detail hydration; the detail pane still needs
+   * the full body back (slim-plans-attention-sync-payload-2026-07-26 P-004).
    * This is NOT a way to opt out of the payload-tier ceiling — that is
    * `payloadTier` above, and it stays `'full'` either way.
    */

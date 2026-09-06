@@ -106,9 +106,11 @@ describe('callPlansReadRaw UI display projection (P-005)', () => {
     expect(data.items[0].item.text).toMatch(/…$/);
   });
 
-  it('applies the plans:attention slim by default (clips body, drops actions)', async () => {
+  it('applies the plans:attention slim by default (clips body, keeps actions)', async () => {
     // SUPERSEDES the old "attention is left unprojected" pin — attention got the
     // list/detail split in slim-plans-attention-sync-payload-2026-07-26 P-003.
+    // Actions were later restored to the list row so its controls render before
+    // the detail hydration round-trip; ui-read-projection.test.ts pins the full set.
     const att = {
       groups: [
         { key: 'g', items: [{ id: 'a', body: 'z'.repeat(2000), actions: [{ id: 'answer' }] }] },
@@ -120,7 +122,7 @@ describe('callPlansReadRaw UI display projection (P-005)', () => {
       .items[0];
     expect((item.body as string).length).toBe(280);
     expect(item.bodyTruncated).toBe(true);
-    expect(item).not.toHaveProperty('actions');
+    expect(item.actions).toEqual([{ id: 'answer' }]);
   });
 
   it('uiProjection:false returns the FULL attention payload — the detail read (P-004)', async () => {

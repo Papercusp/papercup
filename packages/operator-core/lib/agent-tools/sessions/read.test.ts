@@ -375,6 +375,50 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
   });
 
+  it("ignores malformed session ids in self provenance metadata without rejecting the read", async () => {
+    resolveSearchFilters.mockResolvedValueOnce({
+      filters: { owners: ['su-self'] },
+      selfSession: {
+        sourceKind: 'codex',
+        sessionId: 'sess-successor',
+        filePath: '/managed/sess-successor.jsonl',
+      },
+    });
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'self', tail: 1 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-self-malformed-session-id-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex',
+          session_id: null,
+          turn_idx: 0,
+          speaker: 'assistant',
+          owner: 'su-self',
+          ts: null,
+          text: 'turn survives malformed provenance',
+        }]),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      ok: true,
+      session_id: 'sess-successor',
+      session_ids: [],
+      turn_count: 1,
+      turns: [{
+        ref: 'session_turn:codex:sess-successor:0',
+        text: 'turn survives malformed provenance',
+      }],
+    });
+  });
+
   it("uses event chronology rather than turn_idx for session:'self' tail windows", async () => {
     resolveSearchFilters.mockResolvedValueOnce({
       filters: { owners: ['su-self'] },
