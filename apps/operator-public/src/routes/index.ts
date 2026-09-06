@@ -9,6 +9,8 @@ import { creatorDraftsRoute } from './creator-drafts.ts';
 import { commerceRoute } from './commerce.ts';
 import { walletBindingRoute } from './wallet-binding.ts';
 import { prepaidCreditsRoute } from './prepaid-credits.ts';
+import { paymentChannelsRoute } from './payment-channels.ts';
+import type { PaymentChannelFundingAdapter } from '@papercusp/operator-core/lib/p2p/channel-funding.ts';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
 import { prepaidCreditCatalogEvents } from '@papercusp/operator-core/lib/cupboard/prepaid-credits.ts';
 import { appendLedgerEvents, projectLedger } from '../commerce-store.ts';
@@ -27,6 +29,7 @@ export function buildApi(
   options: {
     fetchImpl?: typeof fetch;
     loadOrgs?: (db: D1Database) => Promise<ReadonlyMap<string, Organization>>;
+    paymentChannelAdapter?: PaymentChannelFundingAdapter;
   } = {},
 ): Hono<{ Bindings: Env }> {
   const api = new Hono<{ Bindings: Env }>();
@@ -58,6 +61,7 @@ export function buildApi(
   api.route('/', commerceRoute({ fetchImpl: options.fetchImpl, loadOrgs: options.loadOrgs }));
   api.route('/', walletBindingRoute());
   api.route('/', prepaidCreditsRoute());
+  api.route('/', paymentChannelsRoute({ adapter: options.paymentChannelAdapter }));
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);
