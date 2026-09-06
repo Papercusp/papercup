@@ -3449,6 +3449,199 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 mod tests {
     use super::*;
 
+    fn inbox_action(id: &str) -> crate::models::AttentionAction {
+        crate::models::AttentionAction {
+            id: id.into(),
+            label: id.into(),
+            primary: true,
+        }
+    }
+
+    fn inbox_target(
+        id: &str,
+        kind: &str,
+        action_id: &str,
+        reference: serde_json::Value,
+    ) -> InboxActionTarget {
+        InboxActionTarget {
+            id: id.into(),
+            kind: kind.into(),
+            title: format!("title {id}"),
+            harness_slug: Some("papercusp".into()),
+            plan_slug: Some("plan-alpha".into()),
+            owner_agent_id: Some("su-asker".into()),
+            actions: vec![inbox_action(action_id)],
+            reference,
+        }
+    }
+
+    #[test]
+    fn inbox_action_router_answers_plan_item_in_order_with_exact_coordinates() {
+        let target = inbox_target(
+            "plan:plan-alpha:P-007",
+            "plan-item",
+            "answer",
+            serde_json::json!({
+                "kind": "plan-item",
+                "slug": "plan-alpha",
+                "itemId": "P-007",
+            }),
+        );
+
+        assert_eq!(
+            inbox_action_steps(&target, "answer", Some("  use option B  ")).unwrap(),
+            vec![
+                InboxActionStep::Tool {
+                    name: "plans:add-decision",
+                    args: serde_json::json!({
+                        "slug": "plan-alpha",
+                        "title": "Answer to P-007",
+                        "body": "use option B",
+                        "refs": ["P-007"],
+                        "harness": "papercusp",
+                    }),
+                },
+                InboxActionStep::Tool {
+                    name: "plans:set-status",
+                    args: serde_json::json!({
+                        "slug": "plan-alpha",
+                        "item": "P-007",
+                        "status": "done",
+                        "rationale": "Owner answered from PUI Needs-you",
+                        "harness": "papercusp",
+                    }),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn inbox_action_router_resolves_conversation_with_the_owner_answer() {
+        let target = inbox_target(
+            "conversation:conv-42",
+            "conversation",
+            "answer",
+            serde_json::json!({ "kind": "conversation", "conversationId": "conv-42" }),
+        );
+
+        assert_eq!(
+            inbox_action_steps(&target, "answer", Some(" settled answer ")).unwrap(),
+            vec![InboxActionStep::Tool {
+                name: "conversations:resolve",
+                args: serde_json::json!({
+                    "conversation_id": "conv-42",
+                    "accepted_answer": "settled answer",
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn inbox_action_router_acknowledges_the_exact_coord_message() {
+        let target = inbox_target(
+            "coord:msg-42",
+            "coord-message",
+            "ack",
+            serde_json::json!({ "kind": "coord-message", "msgId": "msg-42" }),
+        );
+
+        assert_eq!(
+            inbox_action_steps(&target, "ack", None).unwrap(),
+            vec![InboxActionStep::Tool {
+                name: "coord:ack",
+                args: serde_json::json!({ "msg_id": "msg-42" }),
+            }]
+        );
+    }
+
+    #[test]
+    fn inbox_action_router_retracts_a_standing_wall_by_its_frozen_fact_ref() {
+        let target = inbox_target(
+            "wall:credential",
+            "owner-wall",
+            "resolve",
+            serde_json::json!({
+                "kind": "owner-wall",
+                "wallSource": "standing-fact",
+                "factScope": "harness",
+                "factScopeRef": "papercusp",
+                "factKey": "wall:credential",
+            }),
+        );
+
+        assert_eq!(
+            inbox_action_steps(&target, "resolve", None).unwrap(),
+            vec![InboxActionStep::Tool {
+                name: "facts:retract",
+                args: serde_json::json!({
+                    "scope": "harness",
+                    "scopeRef": "papercusp",
+                    "key": "wall:credential",
+                    "reason": "Owner cleared this wall from PUI Needs-you",
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn inbox_action_router_delivers_needs_human_answer_before_triage() {
+        let target = inbox_target(
+            "work-item:WI-42",
+            "work-item-needs-human",
+            "answer",
+            serde_json::json!({ "kind": "work-item-needs-human", "workItemId": "WI-42" }),
+        );
+
+        assert_eq!(
+            inbox_action_steps(&target, "answer", Some(" proceed with B ")).unwrap(),
+            vec![
+                InboxActionStep::OwnerReply(serde_json::json!({
+                    "askerId": "su-asker",
+                    "text": "proceed with B",
+                    "summary": "Owner answered your work-item-needs-human (work-item:WI-42)",
+                    "planSlug": "plan-alpha",
+                })),
+                InboxActionStep::Triage {
+                    item_id: "work-item:WI-42".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn inbox_action_router_refuses_unoffered_or_incomplete_actions() {
+        let unoffered = inbox_target(
+            "plan:plan-alpha:P-007",
+            "plan-item",
+            "ack",
+            serde_json::json!({
+                "kind": "plan-item",
+                "slug": "plan-alpha",
+                "itemId": "P-007",
+            }),
+        );
+        let error = inbox_action_steps(&unoffered, "answer", Some("yes")).unwrap_err();
+        assert!(error.to_string().contains("was not offered"), "{error:#}");
+
+        let missing_ref = inbox_target(
+            "coord:missing",
+            "coord-message",
+            "ack",
+            serde_json::json!({ "kind": "coord-message" }),
+        );
+        let error = inbox_action_steps(&missing_ref, "ack", None).unwrap_err();
+        assert!(error.to_string().contains("missing ref.msgId"), "{error:#}");
+
+        let blank = inbox_target(
+            "conversation:conv-42",
+            "conversation",
+            "answer",
+            serde_json::json!({ "kind": "conversation", "conversationId": "conv-42" }),
+        );
+        let error = inbox_action_steps(&blank, "answer", Some("  ")).unwrap_err();
+        assert!(error.to_string().contains("cannot be blank"), "{error:#}");
+    }
+
     #[test]
     fn deferred_su_session_accepts_a_null_native_handle() {
         let deferred = serde_json::json!({ "nativeSession": null });
