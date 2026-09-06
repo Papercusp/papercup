@@ -51,7 +51,7 @@ function makeReport() {
   };
   const secondTurn = turn([{ e: 'b' }, { e: 'c' }]);
   const summary = {
-    runId: RUN_ID, scenarioId: 'sc-1', scenarioVersion: 1, identityHash: 'idh',
+    runId: RUN_ID, scenarioId: 'sc-1', scenarioVersion: 1, scenarioTarget: 'su', identityHash: 'idh',
     matrixIndex: null, sutModel: 'opus', judgeModel: 'sonnet', personaId: 'p1',
     personaTraits: { tone: 'curt' }, workspaceMode: 'isolated', transportMode: 'sse',
     startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z',
@@ -134,12 +134,13 @@ afterAll(async () => {
 describe('persistRunReport (PG)', () => {
   it('inserts the run row with the cross-source findings_count and round-trippable transcript', async () => {
     await persistRunReport(makeReport(), 'rubric-v3', 'scenhash');
-    const runs = await rootSql<{ status: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer; transcript_norm_json: unknown; metadata_json: unknown }[]>`
-      SELECT status, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd, transcript_norm_json, metadata_json
+    const runs = await rootSql<{ status: string; scenario_target: string; findings_count: Record<string, number>; cost_usd: string; cap_breaches: string[]; rubric_version: string; transcript_raw_zstd: Buffer; transcript_norm_json: unknown; metadata_json: unknown }[]>`
+      SELECT status, scenario_target, findings_count, cost_usd, cap_breaches, rubric_version, transcript_raw_zstd, transcript_norm_json, metadata_json
         FROM harness_shared.llm_test_runs WHERE id = ${RUN_ID}`;
     expect(runs).toHaveLength(1);
     const r = runs[0]!;
     expect(r.status).toBe('passed');
+    expect(r.scenario_target).toBe('su');
     expect(r.findings_count).toEqual({ error: 2, warn: 1, info: 1 }); // 1 violation-err + 1 judge-err; 1 warn; 1 info
     expect(Number(r.cost_usd)).toBeCloseTo(1.25, 6);
     expect(r.cap_breaches).toEqual(['cap-x']);

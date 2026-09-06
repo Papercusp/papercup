@@ -84,7 +84,7 @@ async function persistSingleRun(
       transcript_raw_zstd, transcript_norm_json,
       telemetry_json, asserts_json, judge_json, metadata_json
     ) VALUES (
-      ${s.runId}, ${s.scenarioId}, ${s.scenarioVersion}, 'operator', ${scenarioHash},
+      ${s.runId}, ${s.scenarioId}, ${s.scenarioVersion}, ${s.scenarioTarget}, ${scenarioHash},
       ${s.identityHash}, ${matrixGroupId ?? null}, ${s.matrixIndex ?? null},
       ${rubricVersion}, ${s.sutModel}, ${s.judgeModel},
       ${s.personaId}, ${sql.json(s.personaTraits as unknown as JSONValueCompat)},
