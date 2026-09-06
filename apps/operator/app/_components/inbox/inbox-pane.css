@@ -782,12 +782,28 @@
    sits at ~108px of pitch and showed five (measured 2026-09-06 on real data:
    the column had 597px, the spec's 586px, so the SPACE was right and only the
    density was not). In split the title is ONE line, ellipsised — the aside's
-   h2 (P-008) carries it in full — and the row tightens to ~65px so eight whole
-   rows fit. The stack row is untouched. */
+   h2 (P-008) carries it in full — and the row tightens to 64px (6px padding,
+   a 16px head line, 18px title, 14px status, 2px gaps) so eight whole rows fit
+   with ~37px to spare at a 70px pitch. Measured 2026-09-06: with the head left
+   free to grow, an "owner wall" row's head wrapped to 26px and the count fell
+   to seven at 1366×768 — so the head is PINNED to one line here, its chip
+   nowrap and its chat button 16px. The stack row is untouched. */
 .op-inbox--split .op-inbox__rowbtn {
   min-height: 0;
-  gap: 3px;
-  padding: 7px 30px 7px 50px;
+  gap: 2px;
+  padding: 6px 30px 6px 48px;
+}
+.op-inbox--split .op-inbox__rowhead {
+  height: 16px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.op-inbox--split .op-inbox__kind {
+  white-space: nowrap;
+}
+.op-inbox--split .op-inbox__chat-button {
+  width: 16px;
+  height: 16px;
 }
 .op-inbox--split .op-inbox__row-icon {
   left: 10px;

@@ -487,6 +487,46 @@ describe("<InboxPane>", () => {
     });
   });
 
+  /* ── Compact split rows (inbox-three-column-resolver-states-2026-09-06 D-004)
+     The spec's State 1 draws eight rows in the 1280×720 list; the stack row's
+     two-line title + 82px minimum showed five. Split rows carry a one-line
+     ellipsised title (the aside's h2 has the full one) and a tighter box; the
+     stack row keeps its clamp. `e2e/inbox-aside-states.spec.ts` counts the
+     whole rows at all four viewports — jsdom cannot. */
+  describe("compact split row (D-004)", () => {
+    const css = readFileSync(join(__dirname, "inbox-pane.css"), "utf8");
+    const rule = (selector: string): string =>
+      css.match(
+        new RegExp(
+          selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*\\}",
+        ),
+      )?.[0] ?? "";
+
+    it("split rows drop the 82px minimum and tighten their padding; stack rows keep theirs", () => {
+      const split = rule(".op-inbox--split .op-inbox__rowbtn");
+      expect(split).toMatch(/min-height:\s*0\s*;/);
+      expect(split).toMatch(/padding:\s*6px\s+\d+px\s+6px\s+\d+px/);
+      // The head line is pinned: a wrapped chip/meta may not grow the row
+      // (measured 2026-09-06 — an "owner wall" head wrapped to 26px).
+      const head = rule(".op-inbox--split .op-inbox__rowhead");
+      expect(head).toMatch(/height:\s*16px/);
+      expect(head).toMatch(/flex-wrap:\s*nowrap/);
+      // The stack row is untouched (D-001): the 82px floor rule still stands
+      // on the unscoped selector, and the floor test above still reads it.
+      expect(rule(".op-inbox__rowbtn")).toMatch(/min-height:\s*82px/);
+    });
+
+    it("split row titles are one ellipsised line; stack titles keep the two-line clamp", () => {
+      const split = rule(".op-inbox--split .op-inbox__rowbtn .op-inbox__title");
+      expect(split).toMatch(/white-space:\s*nowrap/);
+      expect(split).toMatch(/text-overflow:\s*ellipsis/);
+      expect(split).toMatch(/-webkit-line-clamp:\s*unset/);
+      const stack = rule(".op-inbox__title");
+      expect(stack).toMatch(/-webkit-line-clamp:\s*2\b/);
+      expect(stack).not.toMatch(/white-space:\s*nowrap/);
+    });
+  });
+
   /* ── The rail column (inbox-three-column-resolver-states-2026-09-06 P-002) ──
      CSS contract for the split grid's first column. The DOM half — what
      renders in it — is under the layout="split" tests below. */
