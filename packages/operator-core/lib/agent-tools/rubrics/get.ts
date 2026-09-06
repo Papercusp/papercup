@@ -29,13 +29,26 @@ import { getRubric, readRubricPlanRevision } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
+/**
+ * `coord:send` provenance uses the typed dependency ref `plan:<slug>` for a
+ * rubric read because rubrics are persisted as rubric-template plans. Preserve
+ * the caller's original ref in the keyed result, but strip that dependency
+ * kind before reaching the rubric store, whose public lookup key is the bare
+ * rubric/plan slug.
+ */
+function normalizeRubricLookupRef(ref: string): string {
+  const trimmed = ref.trim();
+  const typed = /^plan:(.+)$/i.exec(trimmed);
+  return typed?.[1]?.trim() || trimmed;
+}
+
 export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). Pass a positive `revision` to select an immutable historical snapshot; successful results expose that snapshot's `rubric.revision` and `rubric.criteriaHash`, while an unavailable snapshot returns an item error without falling back to current. An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; typed `plan:<rubric-slug>` provenance refs are accepted and normalized for lookup; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). Pass a positive `revision` to select an immutable historical snapshot; successful results expose that snapshot's `rubric.revision` and `rubric.criteriaHash`, while an unavailable snapshot returns an item error without falling back to current. An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
   guidance: {
-    when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; for revision-pinned grading, add the exact positive `revision`; legacy single-rubric callers may pass `id`.',
+    when: 'You have one or more rubric refs (from rubrics:list/search or coord provenance) and need their full criteria to grade against — e.g. emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; typed `plan:<rubric-slug>` refs are accepted; for revision-pinned grading, add the exact positive `revision`; legacy single-rubric callers may pass `id`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
     chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. For a frozen audit, use `rubrics:get { rubricRef, revision }` and retain the returned `rubric.revision` + `rubric.criteriaHash`. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest.",
     seeAlso: [
@@ -100,8 +113,9 @@ export default defineTool({
     const env = await runBulk(
       ids,
       async (rubricRef) => {
+        const lookupRef = normalizeRubricLookupRef(rubricRef);
         const rubric =
-          args.revision === undefined ? await getRubric(rubricRef) : await getRubric(rubricRef, args.revision);
+          args.revision === undefined ? await getRubric(lookupRef) : await getRubric(lookupRef, args.revision);
         if (rubric) {
           if (rubric.kind === 'acceptance') {
             const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
@@ -115,7 +129,7 @@ export default defineTool({
         // revision can exist while the requested historical snapshot is absent
         // or malformed, and neither case may look like a successful fallback.
         if (args.revision !== undefined) {
-          const revisionRead = await readRubricPlanRevision(rubricRef);
+          const revisionRead = await readRubricPlanRevision(lookupRef);
           if (!revisionRead.ok) {
             return {
               ok: false as const,
@@ -158,7 +172,7 @@ export default defineTool({
         // the measured stale-reader shape instead of a false ordinary absence.
         // A failed/unversioned revision read stays terse: it cannot establish
         // that a backing row exists, so never claim build skew from it.
-        const revisionRead = await readRubricPlanRevision(rubricRef);
+        const revisionRead = await readRubricPlanRevision(lookupRef);
         if (!revisionRead.ok || revisionRead.revision == null) {
           return { ok: false as const, rubricRef, error: 'rubric not found' };
         }
