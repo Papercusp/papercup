@@ -522,6 +522,13 @@ export interface PapercupChatController {
   loadEarlier: () => Promise<void>;
   /** Stop the streaming turn; what arrived so far is committed. */
   abort: () => void;
+  /**
+   * Append turns that arrived OUTSIDE the text transport — a voice session's
+   * settled STT/TTS segments (both hosts fold these into the same transcript).
+   * They are local until the host persists them; ids must be stable so a
+   * repeat delivery is a no-op.
+   */
+  appendLocalTurns: (turns: readonly ChatTurn[]) => void;
 }
 
 let localIdCounter = 0;
@@ -732,6 +739,15 @@ export function usePapercupChat(options: UsePapercupChatOptions): PapercupChatCo
     abortRef.current?.abort();
   }, []);
 
+  const appendLocalTurns = useCallback((incoming: readonly ChatTurn[]) => {
+    if (incoming.length === 0) return;
+    setTurns((prev) => {
+      const seen = new Set(prev.map((t) => t.id));
+      const fresh = incoming.filter((t) => !seen.has(t.id));
+      return fresh.length === 0 ? prev : [...prev, ...fresh];
+    });
+  }, []);
+
   const retryTarget = askRetryTarget({ hasSurfaceError: surfaceError !== null, chatId: conversationId, unsentQuestion });
 
   const retry = useCallback(async () => {
@@ -766,5 +782,6 @@ export function usePapercupChat(options: UsePapercupChatOptions): PapercupChatCo
     retry,
     loadEarlier,
     abort,
+    appendLocalTurns,
   };
 }

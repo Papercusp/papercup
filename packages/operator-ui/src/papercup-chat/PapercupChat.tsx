@@ -500,8 +500,10 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
   );
 });
 
+// chat-cards' own item-text rendering; a host that wants pills inside report
+// lines passes `renderReport` with its `renderItemText`/`onDrillIn` wired.
 function defaultRenderReport(report: ReportBlock): ReactNode {
-  return <ReportBlockCard report={report} renderItemText={(text) => text} />;
+  return <ReportBlockCard report={report} />;
 }
 
 export function PapercupChat(props: PapercupChatProps) {
