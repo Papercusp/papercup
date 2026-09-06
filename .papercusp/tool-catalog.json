@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 862,
+  "count": 855,
   "tools": [
     {
       "name": "ablation:report",
@@ -4145,7 +4145,7 @@
           "POST"
         ]
       },
-      "description": "Run a multi-step tool-orchestration JS script in one call with tools.ns.verb(args). Only the returned summary/media re-enters context; intermediate results stay in the runtime. Wrong names return typed signatures; dryRun:true previews write effects. Colon-to-dot mapping preserves underscores (`work_items:get` → tools.work_items.get or tools.workItems.get; `tools:invoke` → tools.tools.invoke).",
+      "description": "Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE call, returning only the script's summary (plus explicitly returned image/audio blocks) — collapsing N sequential model turns into one and keeping intermediate payloads out of context. Write the script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` (sessions:read → tools.sessions.read; tools:invoke → tools.tools.invoke, never bare tools.invoke); never invent a fourth spelling.",
       "capabilities": [
         "capability:bash"
       ],
@@ -7413,60 +7413,6 @@
       }
     },
     {
-      "name": "cupboard:bind-wallet",
-      "http": {
-        "path": "/api/agent-tools/cupboard/bind-wallet",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Bind, rotate, inspect, or unbind the authenticated Papercusp principal’s EVM wallet through a short-lived server-issued signed nonce. Use op=challenge, have that wallet personal_sign the exact message, then op=verify. A wallet address alone never identifies a principal; replayed or expired challenges are refused.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "A Cupboard commerce or settlement flow needs a verified EVM wallet for the currently authenticated Papercusp principal.",
-        "notWhen": "Sending a transaction, proving treasury authority, or looking up who owns an arbitrary address. This tool only establishes the principal↔wallet binding.",
-        "chaining": "Call op=challenge with the wallet address, present message to that wallet for personal_sign, then call op=verify with the returned challengeId and signature. A second verified challenge rotates the binding. Use op=unbind to remove it."
-      }
-    },
-    {
-      "name": "cupboard:checkout",
-      "http": {
-        "path": "/api/agent-tools/cupboard/checkout",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Start a Cupboard checkout for a buying organization. One-time/subscription offers return a hosted provider session. Per-use offers bypass Stripe and return a deterministic P2P microcharge preflight with the signed price terms and an escrow-capped channel descriptor. Refuses before transport when the org is unknown, the acting user is not a member, quantity is not 1, or maxSpendMicros is invalid.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "A member of a buying organization wants to purchase a Cupboard offer and needs a payment link.",
-        "notWhen": "Reading what an org already bought (cupboard:commerce-dashboards). Refunding an order (cupboard:refund-request). Diagnosing why an install is blocked (cupboard:support-request).",
-        "chaining": "Pass a stable idempotencyKey and REUSE it on retry — a fresh key creates a second order. Hand the returned url to the buyer; the entitlement appears once the provider webhook settles."
-      }
-    },
-    {
-      "name": "cupboard:commerce-dashboards",
-      "http": {
-        "path": "/api/agent-tools/cupboard/commerce-dashboards",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
-      "capabilities": [
-        "harness:read"
-      ],
-      "guidance": {
-        "when": "You need what an organization bought, what is refundable, or a reproducible audit/export of its commerce state.",
-        "notWhen": "Starting a purchase (cupboard:checkout). Requesting a refund (cupboard:refund-request). Diagnosing one user's install block (cupboard:support-request).",
-        "chaining": "Ask for only the dashboards you need. `audit.integrity.rejections` names events the ledger refused — a non-empty list is a data problem, not a display one."
-      }
-    },
-    {
       "name": "cupboard:install-app",
       "http": {
         "path": "/api/agent-tools/cupboard/install-app",
@@ -7647,24 +7593,6 @@
       }
     },
     {
-      "name": "cupboard:publish-offer",
-      "http": {
-        "path": "/api/agent-tools/cupboard/publish-offer",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Publish or update a Cupboard commerce offer through the hosted append-only ledger. Per-use offers require unitPriceMicros, meterUnit, priceVersion and splitManifestHash; those exact terms are persisted in D1, exposed by the commerce catalog/dashboard, and returned by cupboard:checkout as a P2P microcharge preflight. The authenticated GitHub principal becomes the product creator.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "A creator needs to define an executable Cupboard offer, especially a metered per-use offer.",
-        "notWhen": "Publishing a distributable listing/repository (use the relevant cupboard:publish-* listing tool) or buying an existing offer (cupboard:checkout).",
-        "chaining": "Read it back with cupboard:commerce-dashboards dashboards:[\"catalog\"], then use cupboard:checkout with maxSpendMicros for a per-use offer."
-      }
-    },
-    {
       "name": "cupboard:publish-plan",
       "http": {
         "path": "/api/agent-tools/cupboard/publish-plan",
@@ -7755,24 +7683,6 @@
       }
     },
     {
-      "name": "cupboard:refund-request",
-      "http": {
-        "path": "/api/agent-tools/cupboard/refund-request",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Authorize a refund on a Cupboard order: checks the acting user may act for the buying org, that the order belongs to that org, and that the amount fits the order's REFUNDABLE remainder (amount minus already-settled minus refunds still in flight). Omit amountMinor to request the whole refundable remainder. Returns the authorized amount plus the refund position, including which installations keep running after revocation.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "A buying org wants money back on an order and you need the authorized amount plus the blast radius of revoking it.",
-        "notWhen": "Just reading refund positions without requesting one (cupboard:commerce-dashboards with dashboards:[\"refunds\"]). Starting a purchase (cupboard:checkout).",
-        "chaining": "Read the returned position.intentsSurvivingRevocation before telling a user what they lose — a refund revokes the entitlement but still permits repair, so it is not a kill switch."
-      }
-    },
-    {
       "name": "cupboard:search",
       "http": {
         "path": "/api/agent-tools/cupboard/search",
@@ -7788,24 +7698,6 @@
         "when": "Finding what's available on the public Cupboard — the user asks what plugins/blueprints/templates/apps/packs exist, or wants to search for one to install.",
         "notWhen": "You already have a listing id and want to INSTALL it (cupboard:install-plugin / cupboard:install-blueprint / templates:new-app / knowledge_packs:install). For the kind-specific browse UIs, blueprint:catalog / knowledge_packs:list / templates:list are narrower views of the same store.",
         "chaining": "Search → take a result id → install with the matching installer (cupboard:install-plugin for plugin/pack, cupboard:install-blueprint for blueprint, templates:new-app for template, knowledge_packs:install for a knowledge-pack)."
-      }
-    },
-    {
-      "name": "cupboard:support-request",
-      "http": {
-        "path": "/api/agent-tools/cupboard/support-request",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Diagnose why a user cannot install, update or repair something their organization bought: returns, per entitlement, the seat usage, that user's installation, and the specific blocker (no entitlement, not a member, entitlement revoked, installation released, or no seats available). Refusals are ordered like seat allocation, so an unentitled user is never told to buy more seats.",
-      "capabilities": [
-        "harness:read"
-      ],
-      "guidance": {
-        "when": "A user reports they cannot install/update/repair a purchased unit and you need the specific reason.",
-        "notWhen": "Requesting money back (cupboard:refund-request). Reading org-wide purchase totals (cupboard:commerce-dashboards).",
-        "chaining": "Read findings[].blocked.code — \"no-seats-available\" means buy or release a seat; \"entitlement-revoked\" usually means a refund; \"not-entitled\" means the user is not in the buying org."
       }
     },
     {
@@ -10456,7 +10348,7 @@
           "POST"
         ]
       },
-      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (compatibility aliases `pattern`/`query`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`query`/`family`.",
+      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.",
       "capabilities": [
         "events:read"
       ],
@@ -10474,7 +10366,7 @@
       ],
       "guidance": {
         "when": "Before polling for a deploy, gate, peer work-item, or service recovery; to check whether an event exists or who is listening.",
-        "notWhen": "You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`query`/`family`.",
+        "notWhen": "You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.",
         "chaining": "events:catalog → events:await { event: <key> } (or sugar) → end your turn."
       }
     },
@@ -14495,7 +14387,7 @@
           "POST"
         ]
       },
-      "description": "Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Dedup matches are annotated on the created row; only checkDuplicatesOnly skips persistence. lane:\"observation\" stays outside the work queue.",
+      "description": "Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Search-first dedup declines obvious matches unless force. lane:\"observation\" stays outside the work queue.",
       "capabilities": [
         "coord:write"
       ],
@@ -14563,44 +14455,6 @@
         "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Pot's ideas. `total` is the TRUE corpus count (never bounded by `limit`); `returned`/`windowed` say how much of it you actually got back — read `likelyDuplicatesScope` before trusting an empty `likelyDuplicates` at a small `limit` (dedup only scans what was returned).",
         "notWhen": "You want one improvement in full — work_items:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.",
         "chaining": "improvements:digest → work_items:get / work_items:claim on a queued item → fix it self/inline (or improvements:capture to add more)."
-      }
-    },
-    {
-      "name": "improvements:filing-classes",
-      "http": {
-        "path": "/api/agent-tools/improvements/filing-classes",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Per-surface defect CLASSES over the ungraded filing population: groups structured toolFailure filings by the tool their report names, ranks the concentrated head, and can file ONE class work-item that CITES its members. Read-only unless mode:\"file\"; members are never merged or closed.",
-      "capabilities": [
-        "coord:read"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "documenter",
-        "curator",
-        "cup",
-        "mug",
-        "papercup",
-        "papercup-deep",
-        "kettle",
-        "doc-steward",
-        "release-fixer",
-        "content-fixer"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "To see whether a surface is drawing repeat tool-contract filings — the aggregate no individual filer can see — and to turn one such surface into a single actionable item instead of N instance nits. Read `classedMembers` vs `totalMembers` for the aggregation's reach.",
-        "notWhen": "You want the captured papercusp-improvement backlog — improvements:digest. You want one filing — work_items:get { id }. You want to file one — improvements:capture. You want to grade one — blender:grade-idea.",
-        "chaining": "improvements:filing-classes → pick a surface from `classes` → improvements:filing-classes { mode:\"file\", toolName } → work_items:claim the class item; its `relates` links reach every member filing."
       }
     },
     {
@@ -14787,7 +14641,7 @@
           "POST"
         ]
       },
-      "description": "Triage turn: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier's lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Before routing, a deployment-staleness screen diverts a tool-failure filing whose tool source differs from the serving build to land-the-deploy, not a code fix (P-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.",
+      "description": "Triage turn: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier's lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.",
       "capabilities": [
         "coord:write"
       ],
@@ -25037,7 +24891,7 @@
       "guidance": {
         "when": "You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to \"is my background job still alive\" for anything started through managedSpawn.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
-        "chaining": "Pass `taskId` to inspect one exact ledger row, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
+        "chaining": "Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
       }
     },
     {
@@ -26459,7 +26313,7 @@
           "POST"
         ]
       },
-      "description": "Amend one criterion field, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
+      "description": "Amend one criterion prose field, structural evidence plane, rubric methodRef, or unpinned composition refs. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
       "capabilities": [
         "coord:write"
       ],
@@ -26484,8 +26338,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.",
-        "notWhen": "Adding/removing criteria on a standard rubric, renaming stored keys, or changing rating scales — use rubrics:propose. Complete `criteria` here is acceptance-kind only and must preserve every stored key unless the canonical amendment rules explicitly support its removal.",
+        "when": "A targeted rubric improvement: fold a new replication-drill variant into one criterion, sharpen one model/driftMarkers paragraph, or point methodRef at a runbook — without resubmitting the whole document.",
+        "notWhen": "Adding/removing criteria, renaming keys, or changing rating scales — those reshape grading history: use rubrics:propose (whole-document) so the loss-guards see the full picture.",
         "chaining": "rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` and `replicationSqlCheck` like propose/ratify."
       }
     },
@@ -30745,7 +30599,7 @@
           "POST"
         ]
       },
-      "description": "Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, or enqueue the durable staged work-item bulk deduplicator. Reviewed preview reads the same full endpoint/reference snapshots and readiness protections as persistence and returns deterministic eligible/preserved/unknown receipts. The run operation creates a fresh pinned census/shard map, applies the duplication-only charter, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true.",
+      "description": "Enqueue the durable staged work-item bulk deduplicator for one harness and return immediately. The one-shot system action creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.",
       "capabilities": [
         "work_items:write"
       ],
@@ -30770,9 +30624,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A reviewed historical cohort needs a current evidence/readiness preflight, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.",
+        "when": "A reviewed bulk-dedup plan is ready to execute and its current corpus must converge under the admission census ratchet.",
         "notWhen": "Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.",
-        "chaining": "work_items:bulk_dedup { op:\"preview-reviewed\", reviewedEntries:[...], harness, confirm:true } → inspect deterministic receipts → centralized owner applies only eligible entries; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the durable model-backed run."
+        "chaining": "work_items:bulk_dedup { harness, confirm:true } → the durable one-shot runs independently → inspect workItemAdmission.runs / admin admission history for the stage and final census."
       }
     },
     {
@@ -30842,8 +30696,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer",
-        "judge"
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31000,7 +30853,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
-        "notWhen": "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list. `includeObservations` is intentionally unsupported: observation-lane rows are never claimable. Curate them with work_items:list/work_items:search { includeObservations:true }, or pass sampleExcluded here to inspect them under the observationLane exclusion floor.",
+        "notWhen": "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list.",
         "chaining": "→ work_items:claim { id } (take a surfaced row) · scheduler:get_next (top-ranked pick)."
       }
     },
@@ -31071,8 +30924,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer",
-        "judge"
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31110,8 +30962,7 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer",
-        "judge"
+        "content-fixer"
       ],
       "profile": "engineer",
       "guidance": {
@@ -31165,7 +31016,7 @@
           "POST"
         ]
       },
-      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
+      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member's claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
       "capabilities": [
         "work_items:write"
       ],
