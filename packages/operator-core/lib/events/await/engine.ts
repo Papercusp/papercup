@@ -1096,16 +1096,17 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
               `wake #${headline.id} exhausted ${MAX_ATTEMPTS} parked attempts → degraded to inbox for ${subscriberId} ` +
                 `(last park: ${outcome.reason})`,
             );
-            continue;
-          }
-          await markDeliveryDropped(headline.id, degraded.reason);
+              continue;
+            }
+          const dropReason = degraded.kind === 'error' ? degraded.error : degraded.reason;
+          await markDeliveryDropped(headline.id, dropReason);
           stats.dropped++;
           for (const d of siblings) {
             await markDeliveryDropped(d.id, `subscriber park exhausted (coalesced with #${headline.id})`);
             stats.dropped++;
           }
           log(
-            `wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} parked attempts → ${subscriberId}: ${degraded.reason}`,
+            `wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} parked attempts → ${subscriberId}: ${dropReason}`,
           );
           continue;
         }
