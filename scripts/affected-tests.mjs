@@ -63,7 +63,10 @@ import {
 } from "./lib/related-tests.mjs";
 import {
   decideRetry,
+  deriveRetryBudget,
+  formatRetryBudgetLine,
   formatRetryDecisionLine,
+  formatRetryPoolLine,
 } from "./lib/retry-failure-shape.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
@@ -611,9 +614,12 @@ process.on("unhandledRejection", (reason) => {
   if (!isTransientPgError(reason)) throw reason;
   observedTransientPgErrors += 1;
   const msg = reason && typeof reason === "object" && "message" in reason ? reason.message : String(reason);
-  process.stderr.write(
+  // errSync, never process.stderr.write: every runner-emitted line goes through the synchronous
+  // fd helper so it stays ordered with child output AND lands in the run's own log
+  // (affected-tests-stdout-ordering.test.ts detects a raw write on the AST).
+  errSync(
     `[affected-tests] non-fatal transient pg error (unhandled rejection #${observedTransientPgErrors}, ` +
-      `bookkeeping only — the run continues): ${String(msg).split("\n")[0]}\n`,
+      `bookkeeping only — the run continues): ${String(msg).split("\n")[0]}`,
   );
 });
 process.on("exit", (code) => {
@@ -5512,22 +5518,37 @@ function runCapturedTask(
   // collapses the timeout to the floor and turns it into a coin flip against
   // the honest slow mode. Ordering (estimateMs at runBudgetedTasks) keeps the EWMA.
   const taskDurationMs = timeoutDurationEstimate(durationHistory, spawnTaskKey);
-  const taskTimeoutMs = resolveTaskTimeoutMs({
-    overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
-    floorMs: BATCH_TIMEOUT_FLOOR_MS,
-    durationMs: taskDurationMs,
-    headroomMultiplier: BATCH_TIMEOUT_HEADROOM_MULTIPLIER,
-    quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
-    maxMs: BATCH_TIMEOUT_MAX_MS,
-  });
+  // P-004 (gate-latency-selection-and-retry-policy-2026-09-06): a RETRY carries its own budget,
+  // derived by deriveRetryBudget from the first pass this runner just measured (and the task's
+  // history), floored and capped. It replaces the history watchdog outright and is also the
+  // progress-extension ceiling below, so the budget is a HARD bound: a retry that keeps emitting
+  // past it is still killed. The initial pass is untouched — `__retry` is only ever set by the
+  // retry pool.
+  const retryBudgetMs =
+    Number.isFinite(context.__retry?.budgetMs) && context.__retry.budgetMs > 0
+      ? context.__retry.budgetMs
+      : null;
+  const taskTimeoutMs =
+    retryBudgetMs ??
+    resolveTaskTimeoutMs({
+      overrideMs: BATCH_TIMEOUT_OVERRIDE_MS,
+      floorMs: BATCH_TIMEOUT_FLOOR_MS,
+      durationMs: taskDurationMs,
+      headroomMultiplier: BATCH_TIMEOUT_HEADROOM_MULTIPLIER,
+      quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
+      maxMs: BATCH_TIMEOUT_MAX_MS,
+    });
   const taskTimeoutSource =
-    BATCH_TIMEOUT_OVERRIDE_MS != null
-      ? "override"
-      : taskDurationMs == null || taskTimeoutMs === BATCH_TIMEOUT_FLOOR_MS
-        ? "floor"
-        : taskTimeoutMs === BATCH_TIMEOUT_MAX_MS
-          ? "history-capped"
-          : "history";
+    retryBudgetMs != null
+      ? "retry-budget"
+      : BATCH_TIMEOUT_OVERRIDE_MS != null
+        ? "override"
+        : taskDurationMs == null || taskTimeoutMs === BATCH_TIMEOUT_FLOOR_MS
+          ? "floor"
+          : taskTimeoutMs === BATCH_TIMEOUT_MAX_MS
+            ? "history-capped"
+            : "history";
+  const watchdogCeilingMs = retryBudgetMs ?? BATCH_TIMEOUT_MAX_MS;
   const {
     cmd,
     argv,
@@ -5965,7 +5986,9 @@ function runCapturedTask(
     // ceiling) live in decideWatchdogExpiry, unit-tested with these measured numbers.
     const watchdog = createProgressAwareWatchdog({
       timeoutMs: taskTimeoutMs,
-      maxMs: BATCH_TIMEOUT_MAX_MS,
+      // P-004: a retry's ceiling IS its budget (see retryBudgetMs above); the initial pass keeps
+      // the gate-wide BATCH_TIMEOUT_MAX_MS so its extension policy is byte-identical to before.
+      maxMs: watchdogCeilingMs,
       stallWindowMs: BATCH_TIMEOUT_QUANTUM_MS,
       extensionMs: BATCH_TIMEOUT_QUANTUM_MS,
       onExtend: () => emitProgress("watchdog-extended"),
@@ -6499,6 +6522,207 @@ try {
   );
 }
 
+// ── Retry planning (phase A) ────────────────────────────────────────────────────────────────
+// Three phases where there used to be one loop. The old loop DECIDED, RAN and REPORTED each
+// task's retry inline, so retries executed strictly one after another — each through its own
+// single-task scheduler pool which, being alone, assumed the entire worker budget. Under P-004
+// (gate-latency-selection-and-retry-policy-2026-09-06) every retry is decided first (P-003's
+// failure-shape classifier plus a time budget), then ALL of them run through ONE budgeted pool
+// under the same allocation model as the initial pass, and only then does the reporting loop
+// replay them in declaration order. The replay is what preserves the synchronous stdout
+// ordering affected-tests-stdout-ordering.test.ts pins: no child output is written to the
+// console until its workspace header has been.
+const isWatchdogTimedOutResult = (r) =>
+  r.__watchdogTimedOut === true ||
+  (r.__watchdogTimedOut == null &&
+    isWatchdogTimeout(
+      { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
+      { killSignal: BATCH_KILL_SIGNAL, timeoutMs: r.__timeoutMs },
+    ));
+/**
+ * The retry invocation for one decision, PC_TEST_LANE-aware (plan gate-suite-speedup-2026-08-12,
+ * P-003).
+ *
+ * MEASURED 2026-08-13: a `test:lane-pure` leg failed 14 files; 10 of them passed when
+ * re-run isolated, i.e. they were artifacts of the lane's own fork reuse, not defects.
+ * The retry used to re-run them by re-invoking THE SAME SCRIPT, so `PC_TEST_LANE=pure`
+ * was still set, the files ran non-isolated again, and the pollution reproduced — the
+ * retry could not absorb the one class it was best placed to absorb.
+ *
+ * That is not merely a wasted retry. A surviving lane artifact is counted as a failing
+ * FILE, and both this script's FRESH_RETRY_MAX_FILES and green-checkpoint's
+ * ISOLATION_MAX_FILES are 15 — past which a red is declared a real regression and the
+ * gate's isolation rescue is skipped entirely. So lane artifacts spend a budget that
+ * exists to absorb genuine load flakes, and 10 of 15 is most of it.
+ *
+ * Fix: for a lane leg, retry the failed files under the DEFAULT `test` script. It sets
+ * no lane env, so it resolves the default config and is ISOLATED BY CONSTRUCTION — the
+ * same property the gate's own isolation and confirming co-execution re-runs rely on
+ * (resolveWorkspaceTestInvocation). A genuine failure still fails this isolated re-run
+ * exactly as it would with no lane split at all, so nothing is absorbed that shouldn't be.
+ * A whole-workspace retry re-invokes the task's own script with no file list, exactly as
+ * before.
+ */
+const retryInvocationFor = (t, decision, failedFiles) =>
+  decision.mode === "fresh-files"
+    ? hasLaneSplit(t.ws)
+      ? { extraArgs: failedFiles, scriptOverride: "test" }
+      : { extraArgs: failedFiles, scriptOverride: null }
+    : { extraArgs: [], scriptOverride: null };
+
+/** Per initial-pool index: everything the reporting loop needs to know about the retry. */
+const retryPrep = new Map();
+const retryPoolTasks = [];
+for (const scheduled of initialPool.results) {
+  const { t, isQuarantined } = scheduled.task;
+  const r = scheduled.value;
+  const prep = {
+    watchdogTimedOut: isWatchdogTimedOutResult(r),
+    gating: false,
+    failedFiles: [],
+    retryDecision: null,
+    budget: null,
+  };
+  retryPrep.set(scheduled.index, prep);
+  // A watchdog kill is reported, never retried — the reasoning is with the report in phase C.
+  if (prep.watchdogTimedOut || !retryFailed) continue;
+  // EI-20107132436867486: retry ONLY what this run would actually count against itself.
+  // This used to read `r.status !== 0 && retryFailed && !isQuarantined`, which re-ran a
+  // task the reporting branch below was about to forgive as non-gating — announcing a
+  // WORKSPACE-shaped "FAILED — retrying once" for one guard that examined nothing, on
+  // every run against a git-sync-swept tree (i.e. the normal case). Same predicate as the
+  // reporting branch, so the two cannot drift apart again.
+  if (
+    !isGatingFailure(
+      classifyTaskExit({
+        status: r.status,
+        notCheckedExitCode: EXIT_NOT_CHECKED,
+        notCheckedIsNonGating: t.notCheckedIsNonGating,
+        quarantined: isQuarantined,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        capturedBytes: r.__capturedBytes,
+        elapsedMs: r.__elapsedMs,
+        durationEstimateMs: r.__durationEstimateMs,
+      }),
+    )
+  )
+    continue;
+  prep.gating = true;
+  const firstPassOutput = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const failedFiles = parseFailedFiles(firstPassOutput);
+  // P-003 (gate-latency-selection-and-retry-policy-2026-09-06): the retry exists to absorb
+  // LOAD FLAKES, so it now fires only when the first pass's own output has a flake-class
+  // signature (timeout, dropped connection, port conflict, late console, worker crash,
+  // transform race), or when the red is tiny enough that a re-run costs seconds. A broad
+  // deterministic red — 36 assertion diffs in gate run e70cd139 — re-ran the whole workspace
+  // for 34 minutes and reproduced itself exactly; that pass is now skipped, and the decision
+  // is one greppable AFFECTED_RETRY_DECISION / AFFECTED_RETRY_SKIPPED line either way. The
+  // classifier is pure (scripts/lib/retry-failure-shape.mjs) and pinned by
+  // affected-tests-retry-failure-shape.test.ts.
+  const retryDecision = decideRetry({
+    failedFiles,
+    output: firstPassOutput,
+    maxFiles: FRESH_RETRY_MAX_FILES,
+  });
+  prep.failedFiles = failedFiles;
+  prep.retryDecision = retryDecision;
+  if (!retryDecision.retry) continue;
+  // P-004: the budget comes from what THIS run just measured (the first pass) and the task's
+  // duration history, with headroom, floored and capped — never from the 45–90m suite watchdog
+  // the retry used to inherit. runCapturedTask reads `__retry.budgetMs` as both its timeout
+  // and its progress-extension ceiling, so the bound is hard.
+  const budget = deriveRetryBudget({
+    firstPassElapsedMs: r.__elapsedMs,
+    durationEstimateMs: r.__durationEstimateMs,
+  });
+  prep.budget = budget;
+  retryPoolTasks.push({
+    ...scheduled.task,
+    __retry: {
+      index: scheduled.index,
+      mode: retryDecision.mode,
+      budgetMs: budget.budgetMs,
+      ...retryInvocationFor(t, retryDecision, failedFiles),
+    },
+  });
+}
+
+// ── Retry execution (phase B): ONE pool ─────────────────────────────────────────────────────
+// Never `Promise.all` over single-task pools: each such pool assumes the whole worker budget,
+// so N of them in flight would admit N× the configured ceiling. One pool gives every retry the
+// same global envelope the initial pass had, and the retries overlap exactly as far as that
+// envelope allows.
+const retryResults = new Map();
+if (retryPoolTasks.length > 0) {
+  const budgetSumMs = retryPoolTasks.reduce((sum, task) => sum + task.__retry.budgetMs, 0);
+  errSync(formatRetryPoolLine({ phase: "start", tasks: retryPoolTasks.length, budgetSumMs }));
+  const retryPoolStartedAt = Date.now();
+  try {
+    const retryPool = await runBudgetedTasks(retryPoolTasks, {
+      ...SCHEDULER_CONFIG,
+      readMemAvailableMb,
+      // Ordering only (longest-first in the primary lane). A fresh-files re-run has no history
+      // of its own and is short by construction, so it is left unknown and packs shortest-first.
+      estimateMs: (context) =>
+        context.__retry.mode === "whole-workspace"
+          ? durationEstimate(durationHistory, taskKey(context.t))
+          : null,
+      onAdmissionNotice: (line) => errSync(line),
+      admissionIntent,
+      runTask: async (context, allocation) => {
+        // WI-1734042: capture immediately before THIS child starts. This brackets the two
+        // attempts without treating files written by the retry itself as input drift, and
+        // makes the snapshot timing independent of the retry shape — and of its siblings.
+        const retryStartTree = snapshotRetryTree(ROOT);
+        const value = await runCapturedTask(
+          context,
+          allocation,
+          context.__retry.extraArgs,
+          context.__retry.scriptOverride,
+          "retry",
+        );
+        // WI-38300: sampled IMMEDIATELY after the re-run, deliberately. loadavg()[0] is a
+        // TRAILING 1-minute average, so a post-sample describes the load the RE-RUN itself
+        // experienced — the thing in question. A pre-sample describes the first pass, which is
+        // already known to have been high (it is what enabled absorption) and therefore
+        // discriminates nothing. ⚠ Keep this line IMMEDIATELY after the re-run —
+        // affected-tests-load-suspect.test.ts pins the adjacency — and never hoist it to the
+        // reporting loop, which runs only after EVERY retry has settled.
+        const load1AtRerun = loadavg()[0];
+        recordLeg(context.t, value.__elapsedMs);
+        return { ...value, __retryStartTree: retryStartTree, __load1AtRerun: load1AtRerun };
+      },
+    });
+    for (const entry of retryPool.results) retryResults.set(entry.task.__retry.index, entry);
+    errSync(
+      formatRetryPoolLine({
+        phase: "done",
+        tasks: retryPoolTasks.length,
+        budgetSumMs,
+        wallMs: Date.now() - retryPoolStartedAt,
+        settled: retryResults.size,
+      }),
+    );
+  } catch (error) {
+    // Fail-safe: a pool that could not run (admission starvation, a scheduler fault) leaves
+    // every initial failure standing exactly as measured. This used to be an unhandled
+    // rejection that ended the run with no AFFECTED_TESTS_RESULT line at all — a LOST RUN to
+    // the gate — which is strictly worse than a red with its verdict.
+    errSync(
+      formatRetryPoolLine({
+        phase: "aborted",
+        tasks: retryPoolTasks.length,
+        budgetSumMs,
+        wallMs: Date.now() - retryPoolStartedAt,
+        settled: retryResults.size,
+        detail: String(error?.message ?? error),
+      }),
+    );
+  }
+}
+
+// ── Reporting (phase C): declaration order ──────────────────────────────────────────────────
 for (const scheduled of initialPool.results) {
   const { t, isQuarantined, guardArgs } = scheduled.task;
   const initialTaskOutput = `${scheduled.value.stdout ?? ""}${scheduled.value.stderr ?? ""}`;
@@ -6511,52 +6735,9 @@ for (const scheduled of initialPool.results) {
     );
   }
   emitCapturedTaskOutput(t, scheduled.value, scheduled.allocation);
-  // Retries intentionally begin only here, after `initialPool` has drained. A retry gets the
-  // same global envelope through the same scheduler, but because it is the only admitted task
-  // it can use the full effective worker budget without exceeding either ceiling.
-  const run = async (extraArgs = [], scriptOverride = null) => {
-    const retryPool = await runBudgetedTasks([scheduled.task], {
-      ...SCHEDULER_CONFIG,
-      readMemAvailableMb,
-      onAdmissionNotice: (line) => errSync(line),
-      runTask: (context, allocation) =>
-        runCapturedTask(
-          context,
-          allocation,
-          extraArgs,
-          scriptOverride,
-          "retry",
-        ),
-    });
-    const retry = retryPool.results[0];
-    recordLeg(t, retry.value.__elapsedMs);
-    emitCapturedTaskOutput(t, retry.value, retry.allocation, "retry");
-    return retry.value;
-  };
-  /**
-   * The fresh-process retry, PC_TEST_LANE-aware (plan gate-suite-speedup-2026-08-12, P-003).
-   *
-   * MEASURED 2026-08-13: a `test:lane-pure` leg failed 14 files; 10 of them passed when
-   * re-run isolated, i.e. they were artifacts of the lane's own fork reuse, not defects.
-   * The retry below re-ran them by re-invoking THE SAME SCRIPT, so `PC_TEST_LANE=pure`
-   * was still set, the files ran non-isolated again, and the pollution reproduced — the
-   * retry could not absorb the one class it was best placed to absorb.
-   *
-   * That is not merely a wasted retry. A surviving lane artifact is counted as a failing
-   * FILE, and both this script's FRESH_RETRY_MAX_FILES and green-checkpoint's
-   * ISOLATION_MAX_FILES are 15 — past which a red is declared a real regression and the
-   * gate's isolation rescue is skipped entirely. So lane artifacts spend a budget that
-   * exists to absorb genuine load flakes, and 10 of 15 is most of it.
-   *
-   * Fix: for a lane leg, retry the failed files under the DEFAULT `test` script. It sets
-   * no lane env, so it resolves the default config and is ISOLATED BY CONSTRUCTION — the
-   * same property the gate's own isolation and confirming co-execution re-runs rely on
-   * (resolveWorkspaceTestInvocation). A genuine failure still fails this isolated re-run
-   * exactly as it would with no lane split at all, so nothing is absorbed that shouldn't be.
-   */
-  const runFreshRetry = async (files) =>
-    hasLaneSplit(t.ws) ? run(files, "test") : run(files);
   let r = scheduled.value;
+  const prep = retryPrep.get(scheduled.index);
+  const { watchdogTimedOut } = prep;
   // WI-38300: absorption state, read by the reporting branch far below to decide whether a
   // surviving failure is a confident red or load-suspect residue. Declared out here because
   // the retry branch and the reporting branch are separate statements over the same task.
@@ -6564,42 +6745,6 @@ for (const scheduled of initialPool.results) {
   let load1AtRerun = null;
   let residualFiles = [];
   let retryProvenance = null;
-  const runRetryWithProvenance = async (retryCall) => {
-    // Capture immediately before the child starts. This brackets the two
-    // attempts without treating files written by the retry itself as input
-    // drift, and makes the snapshot timing independent of the retry shape.
-    const retryStartTree = snapshotRetryTree(ROOT);
-    r = await retryCall();
-    retryProvenance = classifyRetryTreeProvenance(
-      RUN_START_RETRY_TREE,
-      retryStartTree,
-    );
-    if (r.status === 0 && retryProvenance.classification !== "flake") {
-      errSync(
-        `${formatRetryTreeProvenanceNotice({
-          workspace: t.ws.name,
-          ...retryProvenance,
-        })} — retry passed, retaining the initial failure rather than claiming FLAKE absorption.`,
-      );
-      // Keep the retry output for diagnostics, but restore a failing status so
-      // the first attempt remains gating when the tree was not comparable.
-      r = {
-        ...r,
-        status:
-          typeof scheduled.value.status === "number" && scheduled.value.status !== 0
-            ? scheduled.value.status
-            : 1,
-      };
-    }
-    return r;
-  };
-  const watchdogTimedOut =
-    r.__watchdogTimedOut === true ||
-    (r.__watchdogTimedOut == null &&
-      isWatchdogTimeout(
-        { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
-        { killSignal: BATCH_KILL_SIGNAL, timeoutMs: r.__timeoutMs },
-      ));
   if (watchdogTimedOut) {
     // Not retried: a wedge that reproduces once burns the exact same window again, turning
     // one bounded stall back into an unbounded-feeling one. Report it plainly and move on —
@@ -6640,90 +6785,87 @@ for (const scheduled of initialPool.results) {
         `stopped; captured output without timing must not be used to assert a spin ` +
         `(EI-19370814345784324).`,
     );
-  } else if (
-    retryFailed &&
-    // EI-20107132436867486: retry ONLY what this run would actually count against itself.
-    // This used to read `r.status !== 0 && retryFailed && !isQuarantined`, which re-ran a
-    // task the reporting branch below was about to forgive as non-gating — announcing a
-    // WORKSPACE-shaped "FAILED — retrying once" for one guard that examined nothing, on
-    // every run against a git-sync-swept tree (i.e. the normal case). Same predicate as the
-    // reporting branch, so the two cannot drift apart again.
-    isGatingFailure(
-      classifyTaskExit({
-        status: r.status,
-        notCheckedExitCode: EXIT_NOT_CHECKED,
-        notCheckedIsNonGating: t.notCheckedIsNonGating,
-        quarantined: isQuarantined,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        capturedBytes: r.__capturedBytes,
-        elapsedMs: r.__elapsedMs,
-        durationEstimateMs: r.__durationEstimateMs,
-      }),
-    )
-  ) {
-    const firstPassOutput = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    const failedFiles = parseFailedFiles(firstPassOutput);
-    // P-003 (gate-latency-selection-and-retry-policy-2026-09-06): the retry exists to absorb
-    // LOAD FLAKES, so it now fires only when the first pass's own output has a flake-class
-    // signature (timeout, dropped connection, port conflict, late console, worker crash,
-    // transform race), or when the red is tiny enough that a re-run costs seconds. A broad
-    // deterministic red — 36 assertion diffs in gate run e70cd139 — re-ran the whole workspace
-    // for 34 minutes and reproduced itself exactly; that pass is now skipped, and the decision
-    // is one greppable AFFECTED_RETRY_DECISION / AFFECTED_RETRY_SKIPPED line either way. The
-    // classifier is pure (scripts/lib/retry-failure-shape.mjs) and pinned by
-    // affected-tests-retry-failure-shape.test.ts.
-    const retryDecision = decideRetry({
-      failedFiles,
-      output: firstPassOutput,
-      maxFiles: FRESH_RETRY_MAX_FILES,
-    });
+  } else if (prep.gating) {
+    // The decision and budget were made in phase A and the retry (if any) ran in phase B;
+    // this branch only REPLAYS them, in declaration order, so the log reads exactly as the
+    // serial version did: decision → budget → the re-run's own output → its verdict.
+    const { failedFiles, retryDecision, budget } = prep;
     errSync(formatRetryDecisionLine(t.ws.name, retryDecision));
     if (!retryDecision.retry) {
       // Deliberately NOT retried; `absorptionRan` stays false so the reporting branch treats
       // the surviving failure as a confident red rather than load-suspect residue.
-    } else if (retryDecision.mode === "fresh-files") {
-      errSync(
-        `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(", ")}`,
-      );
-      await runRetryWithProvenance(() => runFreshRetry(failedFiles));
-      absorptionRan = true;
-      // WI-38300: sampled AFTER the re-run, deliberately. loadavg()[0] is a TRAILING 1-minute
-      // average, so a post-sample describes the load the RE-RUN itself experienced — the thing
-      // in question. A pre-sample describes the first pass, which is already known to have been
-      // high (it is what enabled absorption) and therefore discriminates nothing.
-      load1AtRerun = loadavg()[0];
-      // ⚠ Keep the line above IMMEDIATELY after the re-run — affected-tests-load-suspect.test.ts
-      // pins the two within 500 chars, because a trailing average sampled late stops describing
-      // the run it is meant to describe. Add prose BELOW this point, never between them.
-      // The residue is what SURVIVED the re-run, not what entered it. This used to be
-      // assigned `failedFiles` — the PRE-retry set — while formatLoadSuspectNotice states
-      // the files "failed the first pass AND the fresh-process re-run". Measured
-      // 2026-08-13: a lane leg failed 14 files, the re-run left 4, and the notice named
-      // all 14 — pointing gate triage at 10 files that had just passed. Re-parse the
-      // RE-RUN's own output; fall back to the pre-retry set only when nothing parses, so
-      // an unparseable failure still names something rather than silently naming none.
-      const rerunFailedFiles = parseFailedFiles(
-        `${r.stdout ?? ""}${r.stderr ?? ""}`,
-      );
-      residualFiles =
-        rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
-      if (r.status === 0 && retryProvenance?.classification === "flake")
-        errSync(
-          `>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`,
-        );
     } else {
+      errSync(formatRetryBudgetLine(t.ws.name, budget));
       errSync(
-        `\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`,
+        retryDecision.mode === "fresh-files"
+          ? `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(", ")}`
+          : `\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`,
       );
-      await runRetryWithProvenance(() => run());
-      absorptionRan = true;
-      // Post-sample for the same reason as the scoped arm above.
-      load1AtRerun = loadavg()[0];
-      if (r.status === 0 && retryProvenance?.classification === "flake")
+      const retried = retryResults.get(scheduled.index);
+      if (!retried) {
+        // The pool aborted before this retry settled (AFFECTED_RETRY_POOL phase=aborted above).
+        // `absorptionRan` stays false: nothing was absorbed, and the first pass stands.
         errSync(
-          `>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`,
+          `>>> ${t.ws.name} retry did not settle — retaining the initial failure.`,
         );
+      } else {
+        emitCapturedTaskOutput(t, retried.value, retried.allocation, "retry");
+        r = retried.value;
+        absorptionRan = true;
+        load1AtRerun = retried.value.__load1AtRerun ?? null;
+        if (isWatchdogTimedOutResult(r)) {
+          errSync(
+            `>>> ${t.ws.name} retry WATCHDOG-KILLED at its retry budget after ${(r.__elapsedMs / 60000).toFixed(1)}m ` +
+              `(budgetMs=${budget.budgetMs} source=${budget.source} killReason=${r.__watchdogKillReason ?? "unknown"}) — ` +
+              `a re-run that cannot finish inside twice its own reference is not a flake absorption; the failure stands.`,
+          );
+        }
+        // WI-1734042: a passing fresh-process retry is only a FLAKE when the two attempts
+        // observed the same candidate tree.
+        retryProvenance = classifyRetryTreeProvenance(
+          RUN_START_RETRY_TREE,
+          retried.value.__retryStartTree,
+        );
+        if (r.status === 0 && retryProvenance.classification !== "flake") {
+          errSync(
+            `${formatRetryTreeProvenanceNotice({
+              workspace: t.ws.name,
+              ...retryProvenance,
+            })} — retry passed, retaining the initial failure rather than claiming FLAKE absorption.`,
+          );
+          // Keep the retry output for diagnostics, but restore a failing status so
+          // the first attempt remains gating when the tree was not comparable.
+          r = {
+            ...r,
+            status:
+              typeof scheduled.value.status === "number" && scheduled.value.status !== 0
+                ? scheduled.value.status
+                : 1,
+          };
+        }
+        if (retryDecision.mode === "fresh-files") {
+          // The residue is what SURVIVED the re-run, not what entered it. This used to be
+          // assigned `failedFiles` — the PRE-retry set — while formatLoadSuspectNotice states
+          // the files "failed the first pass AND the fresh-process re-run". Measured
+          // 2026-08-13: a lane leg failed 14 files, the re-run left 4, and the notice named
+          // all 14 — pointing gate triage at 10 files that had just passed. Re-parse the
+          // RE-RUN's own output; fall back to the pre-retry set only when nothing parses, so
+          // an unparseable failure still names something rather than silently naming none.
+          const rerunFailedFiles = parseFailedFiles(
+            `${r.stdout ?? ""}${r.stderr ?? ""}`,
+          );
+          residualFiles =
+            rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
+          if (r.status === 0 && retryProvenance?.classification === "flake")
+            errSync(
+              `>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`,
+            );
+        } else if (r.status === 0 && retryProvenance?.classification === "flake") {
+          errSync(
+            `>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`,
+          );
+        }
+      }
     }
   }
   // EI-18653696921091778: an exit code of 0 does NOT imply "no reds" — vitest can

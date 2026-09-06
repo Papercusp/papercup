@@ -146,3 +146,126 @@ export function formatRetryDecisionLine(workspace, decision) {
     `reason=${decision.reason}`
   );
 }
+
+// ── P-004: the retry BUDGET ──────────────────────────────────────────────────────────────────
+//
+// A retry used to inherit the first pass's watchdog: the history-derived bound, floored at 45
+// minutes and capped at 90. That bound exists to catch a synchronously-spinning worker in a
+// FULL suite; a retry is a re-run of something the runner has just measured, so it has a far
+// better estimate than the floor — the first pass's own elapsed time and the task's duration
+// history. The budget below is derived from those, given headroom, and CAPPED so that a retry
+// can never again spend the 34 minutes gate run e70cd139 spent re-running a whole workspace.
+//
+// Fail-safe direction (the property the retry protects is "a genuine load flake must not hold
+// the gate red"): with NO reference at all the budget is the CAP, not the floor — a task of
+// unknown duration killed at 60s would turn a flake into a red, which is the wrong error.
+
+/** No retry, however short its reference, gets less than this. */
+export const RETRY_BUDGET_FLOOR_MS = 60_000;
+/** No retry, however long its reference, gets more than this (e70cd139's retry took 34m). */
+export const RETRY_BUDGET_CAP_MS = 20 * 60_000;
+/** Headroom over the reference: a re-run under load may legitimately take longer than pass 1. */
+export const RETRY_BUDGET_HEADROOM = 2;
+
+const finitePositive = (n) => (Number.isFinite(n) && n > 0 ? Number(n) : null);
+
+/**
+ * Derive the time budget for one task's retry.
+ *
+ * @param {object} o
+ * @param {number|null|undefined} o.firstPassElapsedMs   `__elapsedMs` of the failed first pass
+ * @param {number|null|undefined} o.durationEstimateMs  `__durationEstimateMs` — the task's history
+ * @param {number} [o.floorMs]
+ * @param {number} [o.capMs]
+ * @param {number} [o.headroomMultiplier]
+ * @returns {{
+ *   budgetMs: number,
+ *   source: 'reference' | 'floor' | 'cap' | 'cap-no-reference',
+ *   referenceMs: number | null,
+ *   referenceSource: 'history' | 'first-pass' | 'none',
+ *   firstPassElapsedMs: number | null,
+ *   durationEstimateMs: number | null,
+ *   floorMs: number,
+ *   capMs: number,
+ *   headroomMultiplier: number,
+ * }}
+ */
+export function deriveRetryBudget({
+  firstPassElapsedMs,
+  durationEstimateMs,
+  floorMs = RETRY_BUDGET_FLOOR_MS,
+  capMs = RETRY_BUDGET_CAP_MS,
+  headroomMultiplier = RETRY_BUDGET_HEADROOM,
+}) {
+  if (!Number.isFinite(floorMs) || floorMs <= 0) {
+    throw new TypeError("floorMs must be a positive finite number");
+  }
+  if (!Number.isFinite(capMs) || capMs < floorMs) {
+    throw new TypeError("capMs must be a finite number greater than or equal to floorMs");
+  }
+  if (!Number.isFinite(headroomMultiplier) || headroomMultiplier < 1) {
+    throw new TypeError("headroomMultiplier must be a finite number greater than or equal to 1");
+  }
+  const first = finitePositive(firstPassElapsedMs);
+  const history = finitePositive(durationEstimateMs);
+  const base = {
+    firstPassElapsedMs: first,
+    durationEstimateMs: history,
+    floorMs,
+    capMs,
+    headroomMultiplier,
+  };
+  // The LARGER of the two references: history is a peak-aware estimate that already absorbed
+  // the task's bimodal runs, and the first pass is what this very box just measured. Taking
+  // the smaller would trust whichever of them happened to be optimistic.
+  let referenceMs = null;
+  let referenceSource = "none";
+  if (history != null && (first == null || history >= first)) {
+    referenceMs = history;
+    referenceSource = "history";
+  } else if (first != null) {
+    referenceMs = first;
+    referenceSource = "first-pass";
+  }
+  if (referenceMs == null) {
+    return { ...base, budgetMs: capMs, source: "cap-no-reference", referenceMs, referenceSource };
+  }
+  const raw = referenceMs * headroomMultiplier;
+  const budgetMs = Math.min(capMs, Math.max(floorMs, raw));
+  const source = raw > capMs ? "cap" : raw < floorMs ? "floor" : "reference";
+  return { ...base, budgetMs, source, referenceMs, referenceSource };
+}
+
+/**
+ * The greppable line the runner emits for every retry it actually schedules.
+ *
+ * @param {string} workspace
+ * @param {ReturnType<typeof deriveRetryBudget>} budget
+ */
+export function formatRetryBudgetLine(workspace, budget) {
+  return (
+    `AFFECTED_RETRY_BUDGET ws=${workspace} budgetMs=${budget.budgetMs} source=${budget.source} ` +
+    `referenceMs=${budget.referenceMs ?? "unknown"} referenceSource=${budget.referenceSource} ` +
+    `firstPassMs=${budget.firstPassElapsedMs ?? "unknown"} ` +
+    `durationEstimateMs=${budget.durationEstimateMs ?? "unknown"} ` +
+    `floorMs=${budget.floorMs} capMs=${budget.capMs}`
+  );
+}
+
+/**
+ * The retry POOL's bracketing lines. Retries used to run one at a time, each through its own
+ * single-task scheduler pool that assumed the whole worker budget; they now run through ONE
+ * pool under the same allocation model as the initial pass, and these two lines bound the
+ * stretch in the log so its wall time is attributable.
+ *
+ * @param {{ phase: 'start' | 'done' | 'aborted', tasks: number, budgetSumMs?: number,
+ *   wallMs?: number, settled?: number, detail?: string }} o
+ */
+export function formatRetryPoolLine({ phase, tasks, budgetSumMs, wallMs, settled, detail }) {
+  const parts = [`AFFECTED_RETRY_POOL phase=${phase} tasks=${tasks}`];
+  if (Number.isFinite(budgetSumMs)) parts.push(`budgetSumMs=${Math.round(budgetSumMs)}`);
+  if (Number.isFinite(wallMs)) parts.push(`wallMs=${Math.round(wallMs)}`);
+  if (Number.isFinite(settled)) parts.push(`settled=${settled}`);
+  if (detail) parts.push(`detail=${JSON.stringify(detail)}`);
+  return parts.join(" ");
+}

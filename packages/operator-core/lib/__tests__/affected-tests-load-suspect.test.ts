@@ -230,15 +230,21 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // first pass, which is already known-high (it is what enabled absorption) and would
     // therefore label essentially EVERY residual failure load-suspect. That failure is
     // invisible in output — the notice still renders, with a plausible number.
-    // `runFreshRetry` is the scoped arm's entry point (P-003): for a lane-split workspace it
-    // re-runs the failed files under the DEFAULT `test` script so the re-run is ISOLATED,
-    // otherwise it delegates to `run`. It is still THE re-run this sample must follow, so the
-    // alternation keeps this guard pointed at both arms rather than silently dropping to one.
-    const sites = [...src.matchAll(/load1AtRerun = loadavg\(\)\[0\];/g)];
-    expect(sites).toHaveLength(2); // both arms: scoped fresh-process re-run, and whole-workspace retry
-    const beforeSamples = sites.map((site) => src.slice(Math.max(0, (site.index ?? 0) - 800), site.index));
-    expect(beforeSamples.some((before) => /runFreshRetry\(failedFiles\)/.test(before))).toBe(true);
-    expect(beforeSamples.some((before) => /runRetryWithProvenance\(\(\) => run\(\)\)/.test(before))).toBe(true);
+    // P-004 (gate-latency-selection-and-retry-policy-2026-09-06): both arms — the scoped
+    // fresh-process re-run and the whole-workspace retry — now run through ONE retry pool, so
+    // there is exactly ONE re-run site and ONE sample site: inside the pool's runTask,
+    // immediately after the child settles. The reporting loop runs only once EVERY retry has
+    // settled, so a sample taken there would describe the load of nothing in particular; it
+    // must READ the pool's sample, never take its own.
+    const sites = [...src.matchAll(/const load1AtRerun = loadavg\(\)\[0\];/g)];
+    expect(sites).toHaveLength(1);
+    // (`src` has its double quotes normalised to single quotes — see its definition above.)
+    expect(src).toMatch(
+      /await runCapturedTask\(\s*context,\s*allocation,\s*context\.__retry\.extraArgs,\s*context\.__retry\.scriptOverride,\s*'retry',\s*\);\s*(?:\/\/[^\n]*\n\s*)*const load1AtRerun = loadavg\(\)\[0\];/,
+    );
+    expect(src).toMatch(/load1AtRerun = retried\.value\.__load1AtRerun \?\? null;/);
+    // No stray sample in the reporting loop (the hoisting failure this guard exists for).
+    expect(src).not.toMatch(/load1AtRerun = loadavg\(\)\[0\];[\s\S]*retryPrep\.get\(scheduled\.index\)/);
   });
 
   it("re-runs a LANE workspace's failed files under the DEFAULT `test` script, so the retry is ISOLATED", () => {
@@ -258,11 +264,16 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // `test` sets no lane env, so it resolves the default config and is isolated BY
     // CONSTRUCTION — the same property resolveWorkspaceTestInvocation relies on for the gate's
     // own isolation and confirming co-execution re-runs.
-    expect(src).toMatch(/const runFreshRetry = async \(files\) =>\s*hasLaneSplit\(t\.ws\) \? run\(files, 'test'\) : run\(files\);/);
-    // …and it is the function the scoped arm actually calls. Pinned separately because the
+    // P-004: the invocation is now a pure per-decision builder (the retry itself runs in the
+    // shared pool), but the lane rule is unchanged: a fresh-files re-run of a lane workspace
+    // goes through the default `test` script.
+    expect(src).toMatch(
+      /const retryInvocationFor = \(t, decision, failedFiles\) =>\s*decision\.mode === 'fresh-files'\s*\?\s*hasLaneSplit\(t\.ws\)\s*\?\s*\{ extraArgs: failedFiles, scriptOverride: 'test' \}\s*:\s*\{ extraArgs: failedFiles, scriptOverride: null \}/,
+    );
+    // …and it is the function the retry plan actually uses. Pinned separately because the
     // helper could be defined correctly and simply not wired in — a passing definition beside
-    // a bare `run(failedFiles)` call site would look right and behave exactly as before.
-    expect(src).toMatch(/runRetryWithProvenance\(\(\) => runFreshRetry\(failedFiles\)\)/);
+    // a bare file-list spread would look right and behave exactly as before.
+    expect(src).toMatch(/\.\.\.retryInvocationFor\(t, retryDecision, failedFiles\),/);
     expect(src).not.toMatch(/\n\s*r = await run\(failedFiles\);/);
   });
 

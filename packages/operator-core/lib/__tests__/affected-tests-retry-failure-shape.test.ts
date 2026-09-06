@@ -2,16 +2,27 @@
 // first pass's failure SHAPE. Pins the four branches and the fail-safe direction: a flake
 // signature always earns a retry; a broad deterministic red never does.
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
+  RETRY_BUDGET_CAP_MS,
+  RETRY_BUDGET_FLOOR_MS,
+  RETRY_BUDGET_HEADROOM,
   RETRY_FLAKE_CLASSES,
   RETRY_SMALL_RED_FILES,
   decideRetry,
+  deriveRetryBudget,
+  formatRetryBudgetLine,
   formatRetryDecisionLine,
+  formatRetryPoolLine,
   matchRetryFlakeClasses,
 } from '../../../../scripts/lib/retry-failure-shape.mjs';
 
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const MAX = 15;
+const MIN = 60_000;
 const files = (n: number) => Array.from({ length: n }, (_, i) => `lib/f${i}.test.ts`);
 const ASSERTION_RED = [
   'FAIL lib/f0.test.ts > renders',
@@ -81,5 +92,122 @@ describe('decideRetry', () => {
   it('keeps the conservative whole-workspace retry when nothing parsed (unattributed failure)', () => {
     const d = decideRetry({ failedFiles: [], output: 'npm ERR! something else entirely', maxFiles: MAX });
     expect(d).toMatchObject({ retry: true, mode: 'whole-workspace', reason: 'unattributed-failure' });
+  });
+});
+
+// P-004: the retry BUDGET. Derived from what the runner just measured, with headroom, floored
+// and capped — never the 45–90m suite watchdog the retry used to inherit.
+describe('deriveRetryBudget', () => {
+  it('pins the policy constants the runner relies on', () => {
+    expect(RETRY_BUDGET_FLOOR_MS).toBe(1 * MIN);
+    expect(RETRY_BUDGET_CAP_MS).toBe(20 * MIN);
+    expect(RETRY_BUDGET_HEADROOM).toBe(2);
+  });
+
+  it('takes the LARGER of history and the first pass as its reference, with headroom', () => {
+    const fromHistory = deriveRetryBudget({ firstPassElapsedMs: 4 * MIN, durationEstimateMs: 5 * MIN });
+    expect(fromHistory).toMatchObject({ budgetMs: 10 * MIN, source: 'reference', referenceMs: 5 * MIN, referenceSource: 'history' });
+    const fromFirstPass = deriveRetryBudget({ firstPassElapsedMs: 6 * MIN, durationEstimateMs: 5 * MIN });
+    expect(fromFirstPass).toMatchObject({ budgetMs: 12 * MIN, source: 'reference', referenceMs: 6 * MIN, referenceSource: 'first-pass' });
+  });
+
+  it('CAPS the e70cd139 shape — a 40-minute first pass no longer buys a 34-minute re-run', () => {
+    const b = deriveRetryBudget({ firstPassElapsedMs: 40 * MIN, durationEstimateMs: 45 * MIN });
+    expect(b).toMatchObject({ budgetMs: RETRY_BUDGET_CAP_MS, source: 'cap', referenceMs: 45 * MIN, referenceSource: 'history' });
+  });
+
+  it('FLOORS a tiny reference — a 10s guard still gets a minute', () => {
+    const b = deriveRetryBudget({ firstPassElapsedMs: 10_000, durationEstimateMs: null });
+    expect(b).toMatchObject({ budgetMs: RETRY_BUDGET_FLOOR_MS, source: 'floor', referenceMs: 10_000, referenceSource: 'first-pass' });
+  });
+
+  it('falls back to the CAP, not the floor, when it has no reference at all (fail-safe for flakes)', () => {
+    for (const absent of [undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const b = deriveRetryBudget({ firstPassElapsedMs: absent, durationEstimateMs: absent });
+      expect(b).toMatchObject({ budgetMs: RETRY_BUDGET_CAP_MS, source: 'cap-no-reference', referenceMs: null, referenceSource: 'none' });
+    }
+  });
+
+  it('honours caller overrides and refuses an inverted floor/cap or sub-unit headroom', () => {
+    const b = deriveRetryBudget({ firstPassElapsedMs: 2 * MIN, durationEstimateMs: null, floorMs: 30_000, capMs: 3 * MIN, headroomMultiplier: 3 });
+    expect(b).toMatchObject({ budgetMs: 3 * MIN, source: 'cap', floorMs: 30_000, capMs: 3 * MIN, headroomMultiplier: 3 });
+    expect(() => deriveRetryBudget({ firstPassElapsedMs: MIN, durationEstimateMs: null, floorMs: 5 * MIN, capMs: MIN })).toThrow(/capMs/);
+    expect(() => deriveRetryBudget({ firstPassElapsedMs: MIN, durationEstimateMs: null, headroomMultiplier: 0.5 })).toThrow(/headroomMultiplier/);
+    expect(() => deriveRetryBudget({ firstPassElapsedMs: MIN, durationEstimateMs: null, floorMs: 0 })).toThrow(/floorMs/);
+  });
+
+  it('renders one greppable budget line per scheduled retry', () => {
+    const b = deriveRetryBudget({ firstPassElapsedMs: 4 * MIN, durationEstimateMs: 5 * MIN });
+    expect(formatRetryBudgetLine('@papercusp/operator-core', b)).toBe(
+      'AFFECTED_RETRY_BUDGET ws=@papercusp/operator-core budgetMs=600000 source=reference ' +
+        'referenceMs=300000 referenceSource=history firstPassMs=240000 durationEstimateMs=300000 ' +
+        'floorMs=60000 capMs=1200000',
+    );
+    const none = deriveRetryBudget({ firstPassElapsedMs: null, durationEstimateMs: null });
+    expect(formatRetryBudgetLine('ws', none)).toMatch(
+      /^AFFECTED_RETRY_BUDGET ws=ws budgetMs=1200000 source=cap-no-reference referenceMs=unknown referenceSource=none firstPassMs=unknown durationEstimateMs=unknown /,
+    );
+  });
+
+  it('brackets the retry pool with start/done/aborted lines', () => {
+    expect(formatRetryPoolLine({ phase: 'start', tasks: 3, budgetSumMs: 1_500_000 })).toBe(
+      'AFFECTED_RETRY_POOL phase=start tasks=3 budgetSumMs=1500000',
+    );
+    expect(formatRetryPoolLine({ phase: 'done', tasks: 3, budgetSumMs: 1_500_000, wallMs: 123_456.7, settled: 3 })).toBe(
+      'AFFECTED_RETRY_POOL phase=done tasks=3 budgetSumMs=1500000 wallMs=123457 settled=3',
+    );
+    expect(formatRetryPoolLine({ phase: 'aborted', tasks: 2, settled: 0, detail: 'admission "starved"' })).toBe(
+      'AFFECTED_RETRY_POOL phase=aborted tasks=2 settled=0 detail="admission \\"starved\\""',
+    );
+  });
+});
+
+// The wiring in scripts/affected-tests.mjs is reachable by no unit test (every branch runs only
+// once a task has already FAILED — on a healthy tree, never), so the structural properties that
+// make P-004 safe are pinned as source assertions, the same way the load-suspect and
+// stdout-ordering suites pin theirs.
+describe('affected-tests.mjs retry pool wiring (P-004)', () => {
+  const src = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+
+  it('runs every retry through ONE budgeted pool — never Promise.all over single-task pools', () => {
+    // A single-task pool assumes the whole worker budget; N of them in flight would admit N×
+    // the configured ceiling. One pool keeps the retries inside the same global envelope the
+    // initial pass had.
+    expect(src).toMatch(/await runBudgetedTasks\(retryPoolTasks, \{/);
+    expect(src).not.toMatch(/runBudgetedTasks\(\[scheduled\.task\]/);
+    expect(src).not.toMatch(/Promise\.all\([^\n]*retry/i);
+  });
+
+  it('decides and budgets EVERY retry (phase A) before ANY retry runs (phase B), then reports in order (phase C)', () => {
+    const decide = src.indexOf('const retryDecision = decideRetry({');
+    const budget = src.indexOf('const budget = deriveRetryBudget({');
+    const pool = src.indexOf('await runBudgetedTasks(retryPoolTasks');
+    const report = src.indexOf('const prep = retryPrep.get(scheduled.index);');
+    expect(decide).toBeGreaterThan(0);
+    expect(budget).toBeGreaterThan(decide);
+    expect(pool).toBeGreaterThan(budget);
+    expect(report).toBeGreaterThan(pool);
+    // Both lines reach the log, in that order, per retried workspace.
+    const decisionLine = src.indexOf('errSync(formatRetryDecisionLine(t.ws.name, retryDecision));');
+    const budgetLine = src.indexOf('errSync(formatRetryBudgetLine(t.ws.name, budget));');
+    expect(decisionLine).toBeGreaterThan(pool);
+    expect(budgetLine).toBeGreaterThan(decisionLine);
+    expect(src).toContain('formatRetryPoolLine({');
+  });
+
+  it('gives the retry child its budget as BOTH the watchdog timeout and the extension ceiling', () => {
+    // The progress-aware watchdog extends a still-emitting child up to `maxMs`; with the
+    // budget as the ceiling the bound is hard. The initial pass keeps BATCH_TIMEOUT_MAX_MS.
+    expect(src).toMatch(/const taskTimeoutMs =\s*retryBudgetMs \?\?\s*resolveTaskTimeoutMs\(\{/);
+    expect(src).toMatch(/const watchdogCeilingMs = retryBudgetMs \?\? BATCH_TIMEOUT_MAX_MS;/);
+    expect(src).toMatch(/maxMs: watchdogCeilingMs,/);
+    expect(src).toMatch(/retryBudgetMs != null\s*\?\s*"retry-budget"/);
+  });
+
+  it('keeps a retry pool failure from becoming a LOST RUN: the initial failures stand and the run still reports', () => {
+    const poolCall = src.indexOf('await runBudgetedTasks(retryPoolTasks');
+    const aborted = src.indexOf('phase: "aborted"', poolCall);
+    expect(aborted).toBeGreaterThan(poolCall);
+    expect(src).toContain('retry did not settle — retaining the initial failure.');
   });
 });
