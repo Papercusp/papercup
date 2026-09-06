@@ -14,7 +14,7 @@ async function writeExecutable(path: string, body: string) {
 }
 
 async function runWrapper(cwd: string, args: string[], extraEnv: Record<string, string> = {}) {
-  const env = { ...process.env, TMPDIR: cwd, ...extraEnv };
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: cwd, ...extraEnv };
   delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_COPIED;
   delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_DIR;
 

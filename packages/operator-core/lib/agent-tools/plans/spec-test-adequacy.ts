@@ -288,13 +288,16 @@ function riskFloorRating(
     };
   }
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));
-  const meetsL3 = detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
-  const meetsL4 = detailRows.some(
+  const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
+    details.coverageRungs?.l4 === true ||
+    ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+      details.targeted === true &&
+      SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''));
+  const meetsL4 = detailRows.some(isL4Proof);
+  const meetsL3 = meetsL4 || detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
+  const meetsL3Rows = detailRows.filter(
     ({ row, details }) =>
-      details.coverageRungs?.l4 === true ||
-      ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-        details.targeted === true &&
-        SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')),
+      details.coverageRungs?.l3 === true || isL4Proof({ row, details }),
   );
   if (floor === 'l4') {
     if (meetsL4) {
@@ -304,15 +307,7 @@ function riskFloorRating(
           rating: 'pass',
           evidence: evidenceWithBindings(
             `Targeted L4 proof meets the ${clauseIdentity(clause)} floor.`,
-            detailRows
-              .filter(
-                ({ row, details }) =>
-                  details.coverageRungs?.l4 === true ||
-                  ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-                    details.targeted === true &&
-                    SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')),
-              )
-              .map(({ row }) => row),
+            detailRows.filter(isL4Proof).map(({ row }) => row),
           ),
         },
       };
@@ -354,8 +349,8 @@ function riskFloorRating(
       ? {
           rating: 'pass',
           evidence: evidenceWithBindings(
-            `Targeted L3 intent proof meets the ${clauseIdentity(clause)} floor.`,
-            detailRows.filter(({ details }) => details.coverageRungs?.l3 === true).map(({ row }) => row),
+            `Targeted L3 or stronger proof meets the ${clauseIdentity(clause)} floor.`,
+            meetsL3Rows.map(({ row }) => row),
           ),
         }
       : {

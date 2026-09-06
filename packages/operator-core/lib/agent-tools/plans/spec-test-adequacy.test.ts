@@ -237,6 +237,40 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(expired.ratings['plan-class-risk-floor'].rating).toBe('fail');
   });
 
+  it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {
+    const counterexample = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:reject-future-window',
+      details: {
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: true,
+          testLayer: 'integration',
+          pathReachable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'pass',
+          targeted: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [counterexample],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.requiredProofFloor).toBe('l3');
+    expect(result.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'pass' });
+    expect(result.ratings['plan-class-risk-floor'].evidence).toContain(
+      'counterexample:reject-future-window',
+    );
+    expect(result.verdict).toBe('pass');
+  });
+
   it('fails stale proof and reports unknown metadata without converting it to pass', () => {
     const stale = evidence({
       currentness: {
