@@ -82,7 +82,7 @@ const goalUpdateArgs = z.object({
     .nullable()
     .optional()
     .describe(
-      'refresh the structured kill criterion — the metric/label/threshold bars behind it ("$310 of $500"). ⚠ OMIT `current` for a metric the platform measures itself (spend_usd et al): the measured rollup owns it, and for a STANDING goal a hand-written value at or above its threshold KILLS the goal. Supply `current` only for a metric the platform cannot resolve (revenue, users), where you are the only source. Pass null to drop them back to prose-only. Omit to leave untouched.',
+      'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). ⚠ You may NOT hand-write a `current` AT OR ABOVE its threshold for a metric the platform measures itself (spend_usd et al): for a STANDING goal that is a kill trigger, not a bar, and it must come from the measured rollup — omit `current` and the rollup fills it in. Below-threshold values, and any metric the platform cannot resolve, are yours as before. Pass null to drop them back to prose-only. Omit to leave untouched.',
     ),
   budgetCents: z
     .number()
@@ -392,24 +392,36 @@ const goalUpdateTool = defineTool({
        live standing goal and winding down its drain fleet on a figure whose own
        label read "estimated, likely a floor".
 
-       Scope: only metrics the rollup can resolve itself. Most metrics
-       (`species_covered`, revenue, users) live outside this database entirely,
-       and for those the caller is the ONLY source and stays free to report a
-       real breach. For a metric the platform measures, the resolver is the
-       authority — the schema already says so ("omit until first measured").
-       The rollup writes this column with its own UPDATE and never routes
-       through this tool, so this refusal cannot suppress a measured breach. */
+       Scope is deliberately narrow, on BOTH axes, because advancing a bar by
+       hand is a designed and tested behaviour ("$310 of $500") that this guard
+       must not revoke:
+
+         - METRIC: only ones the rollup can resolve itself. Most metrics
+           (`species_covered`, revenue, users) live outside this database
+           entirely, and there the caller is the ONLY source and stays free to
+           report even a breach.
+         - VALUE: only a `current` AT OR ABOVE its threshold — the kill trigger.
+           A below-threshold bar is an honest progress report and still moves
+           the way it always did.
+
+       So what is refused is exactly one thing: hand-writing a KILL for a metric
+       the platform measures for itself. The rollup writes this column with its
+       own UPDATE and never routes through this tool, so a real measured breach
+       is unaffected — it simply has to come from the measurement. */
     if (args.tripwires && args.tripwires.length > 0) {
-      const callerOwned = args.tripwires.filter(
-        (t) => t.current !== undefined && GENERICALLY_MEASURABLE_METRICS.includes(t.metric),
+      const handWrittenKill = args.tripwires.filter(
+        (t) =>
+          t.current !== undefined &&
+          t.current >= t.threshold &&
+          GENERICALLY_MEASURABLE_METRICS.includes(t.metric),
       );
-      if (callerOwned.length > 0) {
+      if (handWrittenKill.length > 0) {
         return {
           data: null,
           degraded: true,
-          degradedReasons: callerOwned.map(
+          degradedReasons: handWrittenKill.map(
             (t) =>
-              `tripwires refused for goal ${args.id}: \`current\` for metric "${t.metric}" is owned by the measured rollup, not the caller — supplied ${t.current} against threshold ${t.threshold}. Omit \`current\` and the rollup fills it from measurement; a hand-written value at or above the threshold KILLS a standing goal. Put an unmeasured observation in \`label\`.`,
+              `tripwires refused for goal ${args.id}: supplied current ${t.current} for metric "${t.metric}" is at or above its threshold ${t.threshold}, which for a STANDING goal is a KILL TRIGGER rather than a display value — and "${t.metric}" is measured by the rollup, so a breach must come from that measurement, not from the caller. Omit \`current\` (the rollup fills it in), or report a below-threshold value. Put an unmeasured estimate in \`label\`.`,
           ),
         };
       }

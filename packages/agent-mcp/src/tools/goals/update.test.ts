@@ -275,6 +275,81 @@ describe('goals:update — partial writes preserve untouched state', () => {
     expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
   });
 
+  /*
+   * TRIPWIRE PROVENANCE (EI-22512669283419131) — the sibling of the spentCents
+   * refusals directly above, and the class that actually fired.
+   *
+   * On 2026-09-06 an agent attached a tripwire to a live STANDING goal for
+   * VISIBILITY, hand-writing current:1165.2 — its own diagnostic estimate,
+   * labelled "estimated, likely a floor". For a standing goal the tripwires ARE
+   * the stopping condition, so the rollup read that number as a breach and
+   * killed the goal, winding down a whole drain fleet. No measured breach had
+   * occurred: the authoritative pot scope was 0 against a 10000c budget.
+   *
+   * The numbers below are that incident's, so this fails if the guard is ever
+   * loosened back to accepting a caller-written `current`.
+   */
+  const spendTripwire = (current?: number) => [
+    {
+      metric: 'spend_usd',
+      label: 'Spend $1,165 vs $100/7d ceiling (11.6x) — estimated, likely a floor',
+      threshold: 100,
+      ...(current === undefined ? {} : { current }),
+      unit: 'usd',
+    },
+  ];
+
+  it('refuses a hand-written `current` for a metric the rollup owns — the kill that fired', async () => {
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', tripwires: spendTripwire(1165.2) }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+    expect(res.data).toBeNull();
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.join(' ')).toContain('KILL TRIGGER');
+    // The write must not reach the row: a stored breaching `current` is what
+    // the rollup executes on, so refusing after the UPDATE would be no guard.
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
+  });
+
+  it('still ACCEPTS a rollup-owned `current` BELOW its threshold — the bars must keep moving', async () => {
+    // The guard is deliberately not "provenance, always": advancing a bar by
+    // hand ("$310 of $500") is designed, tested behaviour further down this
+    // file, and a guard that revoked it would be a wider change than the defect
+    // it fixes. Only the KILL TRIGGER is refused.
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', tripwires: spendTripwire(42) }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean };
+    expect(res.degraded).not.toBe(true);
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(true);
+  });
+
+  it('ACCEPTS a `current` for a metric the platform cannot resolve', async () => {
+    // Most metrics live outside this database, and for those the caller is the
+    // only source. Over-tightening the guard would break the designed use.
+    const res = (await tool.handler(
+      tool.args.parse({
+        id: 'g1',
+        tripwires: [
+          { metric: 'species_covered', label: '7 of 20 species', threshold: 20, current: 7 },
+        ],
+      }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean };
+    expect(res.degraded).not.toBe(true);
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(true);
+  });
+
+  it('ACCEPTS a rollup-owned tripwire when `current` is omitted — the correct setup path', async () => {
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', tripwires: spendTripwire() }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean };
+    expect(res.degraded).not.toBe(true);
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(true);
+  });
+
   it('revising the kill criterion does NOT clear previously reported spend', async () => {
     // ⚠ THE INCOMING CRITERION MUST BE ≥ KILL_CRITERION_MIN_CHARS (12) — do not
     // shorten these fixtures back to 'old'/'new'. The handler validates
