@@ -1419,13 +1419,26 @@ const remoteDefaultBranch = async (runGit: RunGit, repo: string, remote: string)
   return ref.startsWith(`${remote}/`) ? ref.slice(remote.length + 1) : ref;
 };
 
+/**
+ * Retained installer-seed snapshot refs (`origin/papercusp-seed-snapshot-<uuid>`), cut by
+ * the git seed provider at depth=1 (seed-provider-git.ts). One always points at the
+ * synthetic one-commit seed root, so it is the TRIGGER for `transplantInstallerSeedSnapshot`
+ * below — never a preservation branch git-sync may reconcile against. Reading it as
+ * "HEAD is already preserved at origin/<branch>" short-circuits the conversion into a
+ * no-op `nothing` and leaves every seeded install wedged on its synthetic root
+ * (measured 2026-09-06: seed-provider-git.test.ts red at tip for exactly this).
+ */
+const SEED_SNAPSHOT_REF_PREFIX = 'papercusp-seed-snapshot-';
+const isSeedSnapshotRef = (branch: string): boolean => branch.startsWith(SEED_SNAPSHOT_REF_PREFIX);
+
 /** Remote-tracking branches whose tip is exactly the checked-out HEAD.
  *
  * A detached submodule can be intentionally preserved on a non-default branch
  * (for example `origin/restart-pin-<sha>`), while its dormant local `main` has
  * unrelated work. Exact-tip proof lets git-sync continue the preserved branch
  * without moving or merging either history. `origin/HEAD` is a symbolic alias,
- * not a branch target, and is deliberately excluded.
+ * not a branch target, and is deliberately excluded — as is a retained
+ * installer-seed snapshot ref, which is conversion input, not a branch to follow.
  */
 const remoteBranchesPointingAtHead = async (
   runGit: RunGit,
@@ -1442,7 +1455,7 @@ const remoteBranchesPointingAtHead = async (
       refs.stdout
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .filter((branch) => branch.length > 0 && branch !== 'HEAD'),
+        .filter((branch) => branch.length > 0 && branch !== 'HEAD' && !isSeedSnapshotRef(branch)),
     ),
   ].sort();
 };
@@ -1637,7 +1650,7 @@ async function transplantInstallerSeedSnapshot(
   }
 
   const snapshotRefs = await runGit(
-    ['for-each-ref', '--format=%(objectname)', `refs/remotes/${remote}/papercusp-seed-snapshot-*`],
+    ['for-each-ref', '--format=%(objectname)', `refs/remotes/${remote}/${SEED_SNAPSHOT_REF_PREFIX}*`],
     repo,
   );
   if (snapshotRefs.code !== 0 || !snapshotRefs.stdout.split('\n').some((sha) => sha.trim() === seedRoot)) {
