@@ -12,3 +12,12 @@ state: {"tabs":["Prompts","Brainstorm","Docs*"],"pane":false,"bsbar":false,"ifra
 iframe-doc: {"sameOrigin":true,"title":"Search docs","hasSearch":true,"ready":"complete"}
 screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-quick-panel-palette-2026-09-06/screenshot-panel-docs.png
 === D'' deep link with qptab=docs opens straight on the docs tab
+url: http://127.0.0.1:3081/?app=home&panel=quick&qptab=docs
+state: {"tabs":["Prompts","Brainstorm","Docs*"],"pane":false,"bsbar":false,"iframe":{"src":"/internal/docs/search-palette.html","w":790,"h":480},"empty":[]}
+=== G' no key collision: dev console keeps tab=pg while the palette switches to Brainstorm (D-003)
+activate: activated:Brainstorm
+url: http://127.0.0.1:3081/?app=dev&tab=pg&panel=quick&qptab=brainstorm&qpbs=pot-verify
+state: {"tabs":["Prompts","Brainstorm*","Docs"],"pane":true,"bsbar":true,"iframe":null,"empty":[]}
+dev-active: ["PGconnections","Brainstorm","write"]
+=== console (errors)
+PROBE2_END 20260906T015143Z

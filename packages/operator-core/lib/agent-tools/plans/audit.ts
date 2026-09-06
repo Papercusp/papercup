@@ -173,6 +173,41 @@ interface Problem {
   detail: string;
 }
 
+/**
+ * A carried-forward item keeps the blob provenance from the pass that actually
+ * inspected it. If a fresh item in the same pass cites that path with a
+ * different blobSha, the pass is internally contradictory: the path cannot
+ * represent two file contents in one audit snapshot. Refuse the whole pass
+ * rather than recording a mixed row that will fail later at ship time.
+ */
+function divergentCitationBlobShaProblems(entries: AuditItemEntry[]): Problem[] {
+  const byPath = new Map<string, Map<string, Set<string>>>();
+
+  for (const entry of entries) {
+    for (const citation of entry.citations) {
+      if (!isVerifyingCitation(citation) || !citation.path || !citation.blobSha) continue;
+      const path = citation.path.trim();
+      if (!path) continue;
+      const bySha = byPath.get(path) ?? new Map<string, Set<string>>();
+      const itemIds = bySha.get(citation.blobSha) ?? new Set<string>();
+      itemIds.add(entry.itemId);
+      bySha.set(citation.blobSha, itemIds);
+      byPath.set(path, bySha);
+    }
+  }
+
+  return [...byPath.entries()]
+    .filter(([, bySha]) => bySha.size > 1)
+    .map(([path, bySha]) => ({
+      code: 'citation_blob_sha_conflict',
+      detail:
+        `citation path '${path}' has divergent blobSha values in this audit pass: ` +
+        `${[...bySha.entries()]
+          .map(([blobSha, itemIds]) => `${blobSha} (${[...itemIds].join(', ')})`)
+          .join('; ')}. Re-audit every listed item against one tree snapshot; nothing was recorded.`,
+    }));
+}
+
 /** Best-effort local HEAD. An audit whose sha cannot be resolved is still a real
  *  audit, so this never throws — the column is nullable for exactly this case. */
 function resolveHeadSha(repoRoot: string): string | null {
@@ -894,6 +929,19 @@ export default defineTool({
     const carriedItemIds = effectiveEntries
       .filter((entry) => !submittedIds.has(entry.itemId))
       .map((entry) => entry.itemId);
+
+    const provenanceProblems = divergentCitationBlobShaProblems(effectiveEntries);
+    if (provenanceProblems.length > 0) {
+      return { data: {
+        ok: false as const,
+        slug: args.slug,
+        error: 'audit_invalid',
+        problems: [...problems, ...provenanceProblems],
+        message:
+          'The audit pass is internally inconsistent: one or more cited paths carry multiple blobSha values. ' +
+          'Nothing was recorded; re-audit every listed item against one tree snapshot.',
+      } };
+    }
 
     const audit = await recordPlanAudit({
       planSlug: args.slug,

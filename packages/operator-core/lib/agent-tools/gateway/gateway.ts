@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
 import { trackDetached } from '../../detached-imports';
@@ -285,9 +286,22 @@ export const gatewayOwnerReportTool = defineTool({
   args: z.object({
     agent: z.string().min(1).optional().describe("The target agent's owner/spawn id (x-papercusp-owner). Omit for the top-erroring-owners overview."),
   }),
-  async handler(args) {
+  async handler(args, ctx) {
+    let owner = args.agent;
+    if (owner === 'self') {
+      try {
+        owner = resolveAgentIdentity(ctx as ResolveIdentityCtx).ownerId;
+      } catch {
+        // `self` is a caller-relative alias, not a gateway owner id. Do not send the
+        // literal through: the gateway would return a valid-looking zero report.
+        return fail({
+          error: 'unknown_agent',
+          message: 'gateway:owner_report agent:"self" requires an attributable caller identity',
+        });
+      }
+    }
     try {
-      const q = args.agent ? `?owner=${encodeURIComponent(args.agent)}` : '';
+      const q = owner ? `?owner=${encodeURIComponent(owner)}` : '';
       const r = await fetch(`${gwBase()}/admin/owner-report${q}`, { signal: AbortSignal.timeout(5000) });
       const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
       return r.ok ? ok(b) : fail({ error: `gateway /admin/owner-report → ${r.status}`, ...b });

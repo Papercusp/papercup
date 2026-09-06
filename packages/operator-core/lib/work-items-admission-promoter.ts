@@ -235,6 +235,46 @@ export interface ReviewedAdmissionCleanupPreview {
   }>;
 }
 
+export type ReviewedAdmissionCleanupApplyReason =
+  | 'applied'
+  | 'preview-hash-mismatch'
+  | 'no-eligible-entries'
+  | 'transactional-revalidation-refused';
+
+export interface ReviewedAdmissionCleanupApplyResult {
+  schemaVersion: 'reviewed-admission-cleanup-apply-v1';
+  workspaceId: string;
+  harnessSlug: string;
+  runId: string;
+  inputHash: string;
+  requestedPreviewHash: string;
+  currentPreviewHash: string;
+  applied: boolean;
+  mutates: boolean;
+  modelCalled: false;
+  reason: ReviewedAdmissionCleanupApplyReason;
+  counts: ReviewedAdmissionCleanupPreview['counts'] & {
+    merged: number;
+    replayed: number;
+    retained: number;
+  };
+  entries: ReviewedAdmissionCleanupPreview['entries'];
+  guardRefusals: AdmissionMergeGuardRefusal[];
+  persistence: AdmissionPlanPersistenceResult | null;
+}
+
+interface ReviewedAdmissionCleanupBinding {
+  schemaVersion: 'reviewed-admission-cleanup-binding-v1';
+  previewHash: string;
+  inputHash: string;
+  evidence: {
+    status: 'ready';
+    ref: string;
+    reason: string;
+    sourceSha256: string | null;
+  };
+}
+
 export interface PromoterPair {
   pairKey: string;
   a: PromoterItem;
@@ -2531,22 +2571,10 @@ function retainedAdmissionObligations(snapshot: AdmissionMergeSnapshot): Reviewe
   };
 }
 
-/**
- * Read-only historical-cleanup preflight over an explicitly reviewed ledger.
- * It deliberately reuses the same endpoint/reference reader and protection
- * classifier as persistence. A `ready` ledger entry may supply the affirmative
- * current evidence for a legacy row with no readiness payload, but it can never
- * override an enrolled unknown/not-ready/malformed verdict.
- */
-export async function previewReviewedAdmissionCleanup(
-  sql: OrgSql,
-  input: {
-    workspaceId: string;
-    harnessSlug: string;
-    proposals: readonly ReviewedAdmissionCleanupProposal[];
-  },
-): Promise<ReviewedAdmissionCleanupPreview> {
-  const proposals = input.proposals
+function normalizeReviewedAdmissionCleanupProposals(
+  input: readonly ReviewedAdmissionCleanupProposal[],
+): ReviewedAdmissionCleanupProposal[] {
+  const proposals: ReviewedAdmissionCleanupProposal[] = input
     .map((proposal) => ({
       itemId: proposal.itemId.trim(),
       action: proposal.action,
@@ -2568,13 +2596,54 @@ export async function previewReviewedAdmissionCleanup(
     if (proposal.action === 'merge' && !proposal.canonicalId) {
       throw new Error(`reviewed cleanup merge ${proposal.itemId} requires canonicalId`);
     }
+    if (proposal.action === 'merge' && proposal.canonicalId === proposal.itemId) {
+      throw new Error(`reviewed cleanup merge ${proposal.itemId} cannot name itself as canonical`);
+    }
     if (proposal.action === 'preserve' && proposal.canonicalId) {
       throw new Error(`reviewed cleanup preserve ${proposal.itemId} must not name canonicalId`);
     }
     if (!proposal.evidence.ref || !proposal.evidence.reason) {
       throw new Error(`reviewed cleanup proposal ${proposal.itemId} requires evidence ref and reason`);
     }
+    if (proposal.evidence.sourceSha256 && !/^[a-f0-9]{64}$/i.test(proposal.evidence.sourceSha256)) {
+      throw new Error(`reviewed cleanup proposal ${proposal.itemId} carries an invalid evidence sourceSha256`);
+    }
   }
+  const mergeLosers = new Set(
+    proposals.filter((proposal) => proposal.action === 'merge').map((proposal) => proposal.itemId),
+  );
+  for (const proposal of proposals) {
+    if (proposal.action === 'merge' && proposal.canonicalId && mergeLosers.has(proposal.canonicalId)) {
+      throw new Error(
+        `reviewed cleanup canonical ${proposal.canonicalId} is also scheduled as a merge loser in the same ledger`,
+      );
+    }
+  }
+  return proposals;
+}
+
+interface BuiltReviewedAdmissionCleanupPreview {
+  preview: ReviewedAdmissionCleanupPreview;
+  snapshots: Map<string, AdmissionMergeSnapshot>;
+}
+
+/**
+ * Read-only historical-cleanup preflight over an explicitly reviewed ledger.
+ * It deliberately reuses the same endpoint/reference reader and protection
+ * classifier as persistence. A `ready` ledger entry may supply the affirmative
+ * current evidence for a legacy row with no readiness payload, but it can never
+ * override an enrolled unknown/not-ready/malformed verdict.
+ */
+async function buildReviewedAdmissionCleanupPreview(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    proposals: readonly ReviewedAdmissionCleanupProposal[];
+  },
+  options: { lockRows?: boolean } = {},
+): Promise<BuiltReviewedAdmissionCleanupPreview> {
+  const proposals = normalizeReviewedAdmissionCleanupProposals(input.proposals);
   const ids = proposals.flatMap((proposal) => [
     proposal.itemId,
     ...(proposal.canonicalId ? [proposal.canonicalId] : []),
@@ -2583,6 +2652,7 @@ export async function previewReviewedAdmissionCleanup(
     workspaceId: input.workspaceId,
     harnessSlug: input.harnessSlug,
     ids,
+    lockRows: options.lockRows,
   });
   const entries: ReviewedAdmissionCleanupPreview['entries'] = proposals.map((proposal) => {
     const item = snapshots.get(proposal.itemId);
@@ -2646,23 +2716,49 @@ export async function previewReviewedAdmissionCleanup(
     };
   });
   const inputHash = createHash('sha256').update(JSON.stringify(proposals)).digest('hex');
-  const previewHash = createHash('sha256').update(JSON.stringify({ inputHash, entries })).digest('hex');
+  const schemaVersion = 'reviewed-admission-cleanup-preview-v1' as const;
+  const previewHash = createHash('sha256')
+    .update(
+      JSON.stringify({
+        schemaVersion,
+        workspaceId: input.workspaceId,
+        harnessSlug: input.harnessSlug,
+        inputHash,
+        entries,
+      }),
+    )
+    .digest('hex');
   return {
-    schemaVersion: 'reviewed-admission-cleanup-preview-v1',
-    workspaceId: input.workspaceId,
-    harnessSlug: input.harnessSlug,
-    inputHash,
-    previewHash,
-    mutates: false,
-    modelCalled: false,
-    counts: {
-      total: entries.length,
-      eligible: entries.filter((entry) => entry.outcome === 'eligible').length,
-      preserved: entries.filter((entry) => entry.outcome === 'preserved').length,
-      unknown: entries.filter((entry) => entry.outcome === 'unknown').length,
+    snapshots,
+    preview: {
+      schemaVersion,
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      inputHash,
+      previewHash,
+      mutates: false,
+      modelCalled: false,
+      counts: {
+        total: entries.length,
+        eligible: entries.filter((entry) => entry.outcome === 'eligible').length,
+        preserved: entries.filter((entry) => entry.outcome === 'preserved').length,
+        unknown: entries.filter((entry) => entry.outcome === 'unknown').length,
+      },
+      entries,
     },
-    entries,
   };
+}
+
+/** Read-only historical-cleanup preflight over an explicitly reviewed ledger. */
+export async function previewReviewedAdmissionCleanup(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    proposals: readonly ReviewedAdmissionCleanupProposal[];
+  },
+): Promise<ReviewedAdmissionCleanupPreview> {
+  return (await buildReviewedAdmissionCleanupPreview(sql, input)).preview;
 }
 
 interface AdmissionMergeMutableRow {
@@ -2754,6 +2850,7 @@ async function persistApprovedAdmissionMerge(
     mergeAnyAdmission: boolean;
     loserSnapshot: AdmissionMergeSnapshot;
     canonicalSnapshot: AdmissionMergeSnapshot;
+    reviewedCleanupBinding?: ReviewedAdmissionCleanupBinding;
   },
 ): Promise<void> {
   const [loserPrior] = await sql<AdmissionMergeMutableRow[]>`
@@ -2774,6 +2871,7 @@ async function persistApprovedAdmissionMerge(
     runId: input.runId,
     actor: input.actor,
     mergedAtMs: input.nowMs,
+    ...(input.reviewedCleanupBinding ? { reviewedCleanup: input.reviewedCleanupBinding } : {}),
   };
   const eligibility = input.mergeAnyAdmission
     ? sql`(status IS NULL OR NOT (status = ANY(${terminal}::text[])))`
@@ -2886,6 +2984,7 @@ async function persistApprovedAdmissionMerge(
         runId: input.runId,
         actor: input.actor,
         mergedAtMs: input.nowMs,
+        ...(input.reviewedCleanupBinding ? { reviewedCleanup: input.reviewedCleanupBinding } : {}),
       });
       sourceEntryAdded = true;
     }
@@ -3102,6 +3201,7 @@ async function persistApprovedAdmissionMerge(
     runId: input.runId,
     actor: input.actor,
     mergedAtMs: input.nowMs,
+    ...(input.reviewedCleanupBinding ? { reviewedCleanup: input.reviewedCleanupBinding } : {}),
     judgmentIdentity: {
       loser: input.loserSnapshot.fingerprint,
       canonical: input.canonicalSnapshot.fingerprint,
@@ -3211,6 +3311,7 @@ interface PersistAdmissionPlanInput {
    * supply it only for legacy endpoints where the payload key is absent. */
   requireImplementationReadiness?: boolean;
   reviewedReadyIds?: readonly string[];
+  reviewedCleanupBindings?: ReadonlyMap<string, ReviewedAdmissionCleanupBinding>;
   actor?: string;
 }
 
@@ -3348,6 +3449,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       mergeAnyAdmission,
       loserSnapshot,
       canonicalSnapshot,
+      reviewedCleanupBinding: input.reviewedCleanupBindings?.get(disposition.itemId),
     });
   }
 }
@@ -3540,6 +3642,7 @@ async function persistAdmissionPlanInTransaction(
     plan: safePlan,
     promoteUnmerged: input.promoteUnmerged,
     mergeAnyAdmission: input.mergeAnyAdmission,
+    reviewedCleanupBindings: input.reviewedCleanupBindings,
     actor,
     mergeSnapshots: liveById,
   });
@@ -3629,6 +3732,222 @@ export async function persistAdmissionPlan(
 ): Promise<AdmissionPlanPersistenceResult> {
   if (input.withinTransaction) return persistAdmissionPlanInTransaction(sql, input);
   return sql.begin((rawTx) => persistAdmissionPlanInTransaction(rawTx as unknown as OrgSql, input));
+}
+
+class ReviewedAdmissionCleanupApplyRollback extends Error {
+  readonly result: ReviewedAdmissionCleanupApplyResult;
+
+  constructor(result: ReviewedAdmissionCleanupApplyResult) {
+    super('reviewed admission cleanup transactional revalidation refused');
+    this.name = 'ReviewedAdmissionCleanupApplyRollback';
+    this.result = result;
+  }
+}
+
+/**
+ * Apply only the eligible mutations represented by an exact prior preview.
+ * The whole cohort is re-read under endpoint locks and its scope-bound hash is
+ * compared before the shared writer runs. Any later reference/dependency drift
+ * found by the writer aborts and rolls back the complete cohort.
+ */
+export async function applyReviewedAdmissionCleanup(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    proposals: readonly ReviewedAdmissionCleanupProposal[];
+    previewHash: string;
+    runId: string;
+    actor: string;
+    nowMs: number;
+  },
+): Promise<ReviewedAdmissionCleanupApplyResult> {
+  const requestedPreviewHash = input.previewHash.trim().toLowerCase();
+  const runId = input.runId.trim();
+  const actor = input.actor.trim();
+  if (!/^[a-f0-9]{64}$/.test(requestedPreviewHash)) {
+    throw new Error('reviewed cleanup apply requires a 64-character previewHash');
+  }
+  if (!runId) throw new Error('reviewed cleanup apply requires runId');
+  if (!actor) throw new Error('reviewed cleanup apply requires actor');
+  if (!Number.isFinite(input.nowMs)) throw new Error('reviewed cleanup apply requires finite nowMs');
+
+  const buildResult = (
+    preview: ReviewedAdmissionCleanupPreview,
+    values: Pick<
+      ReviewedAdmissionCleanupApplyResult,
+      'applied' | 'mutates' | 'reason' | 'guardRefusals' | 'persistence'
+    > & { merged?: number; replayed?: number },
+  ): ReviewedAdmissionCleanupApplyResult => {
+    const merged = values.merged ?? 0;
+    const replayed = values.replayed ?? 0;
+    return {
+      schemaVersion: 'reviewed-admission-cleanup-apply-v1',
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      runId,
+      inputHash: preview.inputHash,
+      requestedPreviewHash,
+      currentPreviewHash: preview.previewHash,
+      applied: values.applied,
+      mutates: values.mutates,
+      modelCalled: false,
+      reason: values.reason,
+      counts: {
+        ...preview.counts,
+        merged,
+        replayed,
+        retained: preview.counts.total - merged - replayed,
+      },
+      entries: preview.entries,
+      guardRefusals: values.guardRefusals,
+      persistence: values.persistence,
+    };
+  };
+
+  try {
+    return await sql.begin(async (rawTx) => {
+      const tx = rawTx as unknown as OrgSql;
+      const { preview, snapshots } = await buildReviewedAdmissionCleanupPreview(tx, input, { lockRows: true });
+      if (preview.previewHash !== requestedPreviewHash) {
+        return buildResult(preview, {
+          applied: false,
+          mutates: false,
+          reason: 'preview-hash-mismatch',
+          guardRefusals: [],
+          persistence: null,
+        });
+      }
+
+      const eligible = preview.entries.filter(
+        (entry): entry is typeof entry & { action: 'merge'; canonicalId: string; outcome: 'eligible' } =>
+          entry.action === 'merge' && entry.canonicalId !== null && entry.outcome === 'eligible',
+      );
+      if (eligible.length === 0) {
+        return buildResult(preview, {
+          applied: false,
+          mutates: false,
+          reason: 'no-eligible-entries',
+          guardRefusals: [],
+          persistence: null,
+        });
+      }
+
+      const plan: PromoterPlan = {
+        dispositions: eligible.map((entry) => ({
+          itemId: entry.itemId,
+          action: 'merge',
+          canonicalId: entry.canonicalId,
+        })),
+        adjudications: eligible.map((entry) => ({
+          pairKey: admissionPairKey(entry.itemId, entry.canonicalId),
+          a: entry.itemId,
+          b: entry.canonicalId,
+          verdict: 'r-finding-merge',
+          reason: `reviewed cleanup ${entry.evidence.ref}: ${entry.evidence.reason}`,
+          canonical: entry.canonicalId,
+          signals: [],
+          cosine: null,
+        })),
+        relatedPairs: eligible.map((entry) => ({ a: entry.itemId, b: entry.canonicalId })),
+      };
+      const reviewedReadyIds = [...new Set(eligible.flatMap((entry) => [entry.itemId, entry.canonicalId]))].sort();
+      const reviewedCleanupBindings = new Map<string, ReviewedAdmissionCleanupBinding>(
+        eligible.map((entry) => [
+          entry.itemId,
+          {
+            schemaVersion: 'reviewed-admission-cleanup-binding-v1',
+            previewHash: preview.previewHash,
+            inputHash: preview.inputHash,
+            evidence: {
+              status: 'ready',
+              ref: entry.evidence.ref,
+              reason: entry.evidence.reason,
+              sourceSha256: entry.evidence.sourceSha256 ?? null,
+            },
+          },
+        ]),
+      );
+      const persistence = await persistAdmissionPlan(tx, {
+        workspaceId: input.workspaceId,
+        harnessSlug: input.harnessSlug,
+        runId,
+        modelId: 'reviewed-cleanup-ledger-v1',
+        nowMs: input.nowMs,
+        pending: [],
+        plan,
+        snapshots: [...snapshots.values()],
+        withinTransaction: true,
+        promoteUnmerged: false,
+        mergeAnyAdmission: true,
+        requireImplementationReadiness: true,
+        reviewedReadyIds,
+        reviewedCleanupBindings,
+        actor,
+      });
+
+      const expectedIds = eligible.map((entry) => entry.itemId).sort();
+      const appliedIds = [...persistence.mergedIds, ...persistence.replayedIds].sort();
+      const storedPairKeys = new Set(
+        persistence.adjudications
+          .filter((entry) => entry.verdict === 'r-finding-merge')
+          .map((entry) => admissionPairKey(entry.a, entry.b)),
+      );
+      const transactionalRefusals = [...persistence.guardRefusals];
+      for (const entry of eligible) {
+        if (!appliedIds.includes(entry.itemId)) {
+          transactionalRefusals.push({
+            itemId: entry.itemId,
+            canonicalId: entry.canonicalId,
+            reason: 'conditional-write-miss',
+            detail: `reviewed cleanup did not persist merge ${entry.itemId} -> ${entry.canonicalId}`,
+          });
+        }
+        if (!storedPairKeys.has(admissionPairKey(entry.itemId, entry.canonicalId))) {
+          transactionalRefusals.push({
+            itemId: entry.itemId,
+            canonicalId: entry.canonicalId,
+            reason: 'conditional-write-miss',
+            detail: `reviewed cleanup did not persist adjudication ${entry.itemId} -> ${entry.canonicalId}`,
+          });
+        }
+      }
+      for (const itemId of appliedIds) {
+        if (!expectedIds.includes(itemId)) {
+          transactionalRefusals.push({
+            itemId,
+            canonicalId: null,
+            reason: 'conditional-write-miss',
+            detail: `reviewed cleanup persisted unexpected merge ${itemId}`,
+          });
+        }
+      }
+      if (transactionalRefusals.length > 0) {
+        throw new ReviewedAdmissionCleanupApplyRollback(
+          buildResult(preview, {
+            applied: false,
+            mutates: false,
+            reason: 'transactional-revalidation-refused',
+            guardRefusals: transactionalRefusals,
+            persistence: null,
+          }),
+        );
+      }
+
+      return buildResult(preview, {
+        applied: true,
+        mutates: true,
+        reason: 'applied',
+        merged: persistence.mergedIds.length,
+        replayed: persistence.replayedIds.length,
+        guardRefusals: [],
+        persistence,
+      });
+    });
+  } catch (error) {
+    if (error instanceof ReviewedAdmissionCleanupApplyRollback) return error.result;
+    throw error;
+  }
 }
 
 export async function runWorkItemAdmissionPromoter(opts: {

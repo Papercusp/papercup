@@ -29,6 +29,12 @@ export function isThemeToken(value: unknown): value is ThemeToken {
 export const BUILTIN_THEME_IDS = ['frost', 'black', 'honeycomb', 'portal-light', 'portal-dark'] as const;
 export type BuiltinThemeId = (typeof BUILTIN_THEME_IDS)[number];
 
+export function isBuiltinThemeId(value: unknown): value is BuiltinThemeId {
+  return typeof value === 'string' && (BUILTIN_THEME_IDS as readonly string[]).includes(value);
+}
+
+export type ThemeColorScheme = 'light' | 'dark';
+
 /** Frost is the `:root` default — the base semantic layer in `_semantic.css`. */
 export const DEFAULT_THEME_ID: BuiltinThemeId = 'frost';
 
@@ -56,6 +62,19 @@ export interface CustomTheme {
   id: string;
   label: string;
   tokens: Partial<Record<ThemeToken, string>>;
+  /** Installed packages may inherit one of the generated built-in semantic
+   * layers before applying their own overrides. Local themes omit this and
+   * retain the historical frost-base behaviour. */
+  baseTheme?: BuiltinThemeId;
+  colorScheme?: ThemeColorScheme;
+  /** Present only for a Cupboard-installed package. The local editor's
+   * validator intentionally drops these fields so package provenance cannot be
+   * forged through the ordinary custom-theme PUT route. */
+  installed?: boolean;
+  packageRef?: string;
+  version?: string;
+  source?: string;
+  description?: string;
 }
 
 export function isCustomThemeId(value: unknown): value is string {

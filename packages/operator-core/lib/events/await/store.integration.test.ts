@@ -687,6 +687,40 @@ describe('await-event store (PG)', () => {
     expect(again).toEqual([]); // one-shot already consumed — exactly-once holds even with a filter
   });
 
+  it('fires a grading-integrity await with the legacy eq filter for the exact scorecard subject', async () => {
+    const subjectRef = 'EI-22437875427583069';
+    const awaitRow = await registerAwait({
+      subscriberId: 'grading-integrity-waiter',
+      eventKey: 'scorecard:emitted:grading-integrity',
+      once: true,
+      // Await 152428 persisted this predicate before the shared rules matcher
+      // standardized on `equals`; retain the row shape so this guards the live
+      // historical failure rather than only the canonical spelling.
+      payloadFilter: { subjectRef: { eq: subjectRef } },
+    });
+
+    const wrongSubject = await fireAwaitsForKey({
+      eventKey: 'scorecard:emitted:grading-integrity',
+      payload: { issueId: 'EI-other-card', rubricRef: 'grading-integrity', subjectRef: 'EI-other-subject' },
+    });
+    expect(wrongSubject).toEqual([]);
+    expect((await listActiveAwaitsForKey('scorecard:emitted:grading-integrity')).map((a) => a.id)).toEqual([awaitRow.id]);
+
+    const exactSubject = await fireAwaitsForKey({
+      eventKey: 'scorecard:emitted:grading-integrity',
+      payload: { issueId: 'EI-22439061823369551', rubricRef: 'grading-integrity', subjectRef },
+    });
+    expect(exactSubject.map((a) => a.id)).toEqual([awaitRow.id]);
+    expect(await listActiveAwaitsForKey('scorecard:emitted:grading-integrity')).toEqual([]);
+
+    const persisted = await rootSql<{ fired_reason: string | null; fired_payload: unknown }[]>`
+      SELECT fired_reason, fired_payload
+        FROM harness_shared.event_awaits
+       WHERE id = ${awaitRow.id}
+    `;
+    expect(persisted[0]).toMatchObject({ fired_reason: 'event', fired_payload: null });
+  });
+
   it('a filter-less once row on the SAME key is unaffected by a sibling filtered row (fast path untouched)', async () => {
     await registerAwait({ subscriberId: 'plain', eventKey: 'k:mixed', once: true });
     await registerAwait({ subscriberId: 'filtered', eventKey: 'k:mixed', once: true, payloadFilter: { ok: true } });

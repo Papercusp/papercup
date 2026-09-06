@@ -263,6 +263,43 @@ describe('plans:audit D-008 writer contract', () => {
     );
   });
 
+  it('refuses divergent blob provenance for one path across fresh and carried entries', async () => {
+    mockItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' },
+      { itemId: 'P-002', status: 'done', itemText: 'ship the second gate' },
+    ]);
+    mockPrevious.mockResolvedValue([{
+      entry: {
+        itemId: 'P-001',
+        verdict: 'implemented',
+        citations: [{
+          kind: 'code',
+          path: 'src/gate.ts',
+          blobSha: 'abcdefabcdefabcdefabcdefabcdefabcdefabcd',
+        }],
+        auditedSha: 'old-head',
+        auditedAt: '2026-08-20T12:00:00.000Z',
+        itemTextHash: 'a'.repeat(64),
+      },
+      auditSeq: 4,
+    }]);
+
+    const result = await body([
+      { itemId: 'P-002', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts' }] },
+    ]);
+
+    expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(result.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'citation_blob_sha_conflict',
+        detail: expect.stringContaining('src/gate.ts'),
+      }),
+    ]));
+    expect(result.problems[0].detail).toContain('P-001');
+    expect(result.problems[0].detail).toContain('P-002');
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
   it('reports an unresolvable citation separately from a harness-root failure', async () => {
     mockContext.mockResolvedValue({
       kind: 'citation_unresolvable',

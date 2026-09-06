@@ -3,6 +3,7 @@ import {
   customThemeCss,
   CustomThemeValidationError,
   isCustomThemeId,
+  isBuiltinThemeId,
   isSafeCssValue,
   isValidThemeId,
   slugifyThemeId,
@@ -20,6 +21,8 @@ describe('theme id helpers', () => {
     expect(isValidThemeId('rainbow')).toBe(false);
     expect(isValidThemeId(42)).toBe(false);
     expect(isValidThemeId(null)).toBe(false);
+    expect(isBuiltinThemeId('portal-light')).toBe(true);
+    expect(isBuiltinThemeId('custom:portal-light')).toBe(false);
   });
 
   it('slugifies labels safely', () => {

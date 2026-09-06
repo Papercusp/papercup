@@ -12,8 +12,112 @@
     "D-014"
   ],
   "mutationBoundary": {
-    "state": "closed-pending-centralized-mechanism-proof",
-    "reason": "The exact ledger is complete, but no live candidate mutation is authorized until the centralized mechanism dry-run proves all per-row preservation requirements and D-014 add-before-transition ordering."
+    "state": "partial-apply-four-exact-duplicates-complete-implemented-proof-pending",
+    "reason": "The four exact-duplicate pairs passed the exact reviewed preview and were applied through the transactional reversible writer after D-014 links were redirected and verified. Shared-root, blocked-plan-run, review-gated, and changed-source rows remain preserved. Eighteen byte-identical implementation candidates remain closed to mutation until completion reversal adequacy and current per-row reference floors are proven."
+  },
+  "executionReceipts": {
+    "schemaVersion": "feature-change-p004-execution-receipts-v1",
+    "recordedAt": "2026-09-06T01:54:30.000Z",
+    "ledgerInputSha256": "b44379fc7dc73427ac3d912b6210cec8bd16dd1ecc401600df2d0af8a024971e",
+    "implementedReobservation": {
+      "requested": 19,
+      "exported": 19,
+      "missing": [],
+      "byteIdentical": 18,
+      "preservedChanged": [
+        {
+          "id": "WI-38027",
+          "change": "payload.brief gained the explicit owner:Avi attribution marker; the prior frozen/current byte identity no longer holds",
+          "action": "preserve-pending-current-item-specific-review"
+        }
+      ],
+      "eligiblePendingCompletionProof": 18
+    },
+    "exactDuplicateLinks": {
+      "candidates": 4,
+      "baseline": "four historical predecessor-to-candidate duplicate edges; no candidate-to-canonical or predecessor-to-canonical edge",
+      "added": 8,
+      "addFailures": 0,
+      "removedSuperseded": 4,
+      "removeFailures": 0,
+      "finalExpected": 8,
+      "finalObservedOut": 8,
+      "finalObservedIn": 8,
+      "exactBidirectionalMatch": true,
+      "ordering": "all canonical redirects and candidate-to-canonical edges were added and verified before the four superseded edges were removed and before any candidate terminal transition"
+    },
+    "exactDuplicatePreview": {
+      "endpoint": "staging operator :3170",
+      "schemaVersion": "reviewed-admission-cleanup-preview-v1",
+      "inputHash": "c266a6c0a14d695a5a664900ee39ff31eb230a98af6d6db200fe7bfd2d16e173",
+      "previewHash": "0b3af2e83fa90e3e40b06e74f049484784d8c9329f914f1ed04d610d21394e7e",
+      "total": 4,
+      "eligible": 4,
+      "preserved": 0,
+      "unknown": 0,
+      "mutates": false,
+      "modelCalled": false
+    },
+    "focusedApplyVerification": {
+      "command": "npm exec vitest run --hookTimeout=60000 packages/operator-core/lib/agent-tools/work_items/bulk_dedup.test.ts packages/operator-core/lib/work-items-admission-promoter.integration.test.ts",
+      "filesPassed": 2,
+      "testsPassed": 41,
+      "defaultTimeoutRun": "41 assertions passed but command exited 1 because afterAll database cleanup exceeded 10000ms",
+      "cleanupTimeoutDefect": "EI-22475082350614905"
+    },
+    "exactDuplicateApply": {
+      "appliedAt": "2026-09-06T01:53:04.580Z",
+      "endpoint": "staging operator :3170",
+      "schemaVersion": "reviewed-admission-cleanup-apply-v1",
+      "runId": "p004-exact-duplicate-reviewed-apply-v1",
+      "transportIdempotencyKey": "77f4f5e3-1a59-4ee5-b18d-d9e29663706e",
+      "requestedPreviewHash": "0b3af2e83fa90e3e40b06e74f049484784d8c9329f914f1ed04d610d21394e7e",
+      "currentPreviewHash": "0b3af2e83fa90e3e40b06e74f049484784d8c9329f914f1ed04d610d21394e7e",
+      "applied": true,
+      "mutates": true,
+      "modelCalled": false,
+      "merged": 4,
+      "replayed": 0,
+      "retained": 0,
+      "guardRefusals": 0,
+      "candidateReceipts": [
+        {
+          "id": "EI-20630508400046931",
+          "canonicalId": "EI-22377526107135174",
+          "sourceSha256": "f9b56a154fd821bdf815c719583ee70d516c02a2bd46a767eb383141f1dbfb64"
+        },
+        {
+          "id": "EI-20630508792138742",
+          "canonicalId": "EI-22377527698094986",
+          "sourceSha256": "da665bbb569243a72b0de55a1a31505ebec5606ea5144f7fc5f6d41cdd0aa17c"
+        },
+        {
+          "id": "EI-20633190285018439",
+          "canonicalId": "EI-22419356078158280",
+          "sourceSha256": "e7bee6f5d7fd18f4c664384ef454b236415a34ed11e33d84d3d7cd19b69754c0"
+        },
+        {
+          "id": "EI-20633190770661743",
+          "canonicalId": "EI-22419357754929586",
+          "sourceSha256": "9bf7829a5adb8bd799950a0697cfe5ad9dc58016241cca71fd4c74714c65eef7"
+        }
+      ]
+    },
+    "postApplyVerification": {
+      "candidateStates": {
+        "dropped": 4
+      },
+      "canonicalStates": {
+        "open": 4
+      },
+      "completeAdmissionMergeReceipts": 4,
+      "transactionRequiredReversalReceipts": 4,
+      "canonicalAdmissionMergeSourceReceipts": 4,
+      "preservedCanonicalWatchdogIdentities": 4,
+      "finalD014OutEdges": 8,
+      "finalD014InEdges": 8,
+      "finalD014Exact": true
+    }
   },
   "sources": {
     "p003Ledger": {

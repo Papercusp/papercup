@@ -9,7 +9,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gatewayStatusTool, gatewayReloadTool, quarantineLegacyCapacityFields } from './gateway';
+import {
+  gatewayStatusTool,
+  gatewayReloadTool,
+  gatewayOwnerReportTool,
+  quarantineLegacyCapacityFields,
+} from './gateway';
 
 let server: http.Server | undefined;
 const prevPort = process.env.PAPERCUSP_GATEWAY_PORT;
@@ -54,6 +59,40 @@ test('gateway:status reads /admin/config; gateway:reload POSTs /admin/reload (B-
   assert.equal(rl.version, 4);
   assert.deepEqual(rl.accounts, ['a', 'b', 'c']);
   assert.equal(reloadHit, true, 'gateway:reload actually POSTed /admin/reload');
+});
+
+test('gateway:owner_report resolves agent:self to the caller owner id', async () => {
+  let requestedUrl = '';
+  server = http.createServer((req, res) => {
+    requestedUrl = req.url ?? '';
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      owner: 'su-test',
+      ledger: { requests: 1, ok: 1 },
+      stageTelemetry: { ownerId: 'su-test', finalized: 1 },
+    }));
+  });
+  await new Promise<void>((r) => server!.listen(0, '127.0.0.1', () => r()));
+  process.env.PAPERCUSP_GATEWAY_PORT = String((server!.address() as { port: number }).port);
+
+  const report = body(await gatewayOwnerReportTool.handler(
+    { agent: 'self' } as never,
+    { isSuperuser: true, uiClientId: 'su-test', workspaceId: 'ws-test' } as never,
+  ));
+  assert.equal(requestedUrl, '/admin/owner-report?owner=su-test');
+  assert.equal(report.ok, true);
+  assert.equal(report.owner, 'su-test');
+  assert.equal(report.stageTelemetry.ownerId, 'su-test');
+});
+
+test('gateway:owner_report refuses agent:self without an attributable caller', async () => {
+  const report = body(await gatewayOwnerReportTool.handler(
+    { agent: 'self' } as never,
+    {} as never,
+  ));
+  assert.equal(report.ok, false);
+  assert.equal(report.error, 'unknown_agent');
+  assert.match(report.message, /requires an attributable caller identity/);
 });
 
 // ── P-003: legacy capacity fields are quarantined, never silently level with canonical ──

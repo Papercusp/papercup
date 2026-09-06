@@ -13,6 +13,9 @@ const tool = (await import('./bulk_dedup')).default;
 beforeEach(() => {
   vi.clearAllMocks();
   query.mockResolvedValue([]);
+  Object.assign(query, {
+    begin: async (callback: (tx: typeof query) => Promise<unknown>) => callback(query),
+  });
   upsert.mockResolvedValue({
     id: 'rt-bulk-1',
     nextFireAt: new Date('2026-08-26T21:00:00.000Z'),
@@ -51,6 +54,50 @@ describe('work_items:bulk_dedup handler', () => {
       modelCalled: false,
       counts: { total: 1, eligible: 0, preserved: 0, unknown: 1 },
       entries: [{ itemId: 'EI-missing', outcome: 'unknown' }],
+    });
+  });
+
+  it('routes apply-reviewed through the scope-bound preview without enqueuing', async () => {
+    const reviewedEntries = [
+      {
+        itemId: 'EI-missing',
+        action: 'preserve' as const,
+        evidence: {
+          status: 'unknown' as const,
+          ref: 'ledger#EI-missing',
+          reason: 'no current evidence establishes a safe mutation',
+        },
+      },
+    ];
+    const preview = (await tool.handler(
+      { op: 'preview-reviewed', harness: 'papercusp', confirm: true, reviewedEntries },
+      { workspaceId: 'ctx-ws', ownerId: 'su-reviewer', role: 'su' } as never,
+    )) as { data: Record<string, unknown> };
+    const out = (await tool.handler(
+      {
+        op: 'apply-reviewed',
+        harness: 'papercusp',
+        confirm: true,
+        reviewedEntries,
+        previewHash: String(preview.data.previewHash),
+        runId: 'reviewed-apply-1',
+      },
+      { workspaceId: 'ctx-ws', ownerId: 'su-reviewer', role: 'su' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(out.data).toMatchObject({
+      ok: false,
+      mode: 'apply-reviewed',
+      schemaVersion: 'reviewed-admission-cleanup-apply-v1',
+      runId: 'reviewed-apply-1',
+      requestedPreviewHash: preview.data.previewHash,
+      currentPreviewHash: preview.data.previewHash,
+      applied: false,
+      mutates: false,
+      modelCalled: false,
+      reason: 'no-eligible-entries',
+      counts: { total: 1, eligible: 0, merged: 0, retained: 1 },
     });
   });
 

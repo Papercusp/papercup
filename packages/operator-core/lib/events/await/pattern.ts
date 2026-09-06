@@ -95,6 +95,58 @@ export function keyMatchesPattern(pattern: string, firedKey: string): boolean {
 }
 
 /**
+ * Normalize the compact comparison aliases used by the older predicate-watch
+ * surface before evaluating a persisted event-await filter.  `event_awaits`
+ * rows predate the shared rules vocabulary and some durable rows therefore
+ * carry `{ eq: value }` / `{ ne: value }`, while `evaluateDataCondition` only
+ * recognizes the canonical `{ equals: value }` / `{ notEquals: value }` form.
+ * Keep this compatibility at the await boundary instead of widening the
+ * generic rules vocabulary; new callers should continue to use the canonical
+ * names documented by `dataConditionSchema`.
+ */
+function normalizeLegacyPayloadFilter(filter: unknown): unknown {
+  if (Array.isArray(filter)) return filter.map(normalizeLegacyPayloadFilter);
+  if (!isPlainObject(filter)) return filter;
+
+  const keys = Object.keys(filter);
+  if (keys.length === 1) {
+    const key = keys[0]!;
+    const value = filter[key];
+    if (key === 'all' || key === 'any') {
+      return { [key]: Array.isArray(value) ? value.map(normalizeLegacyPayloadFilter) : value };
+    }
+    if (key === 'not') return { not: normalizeLegacyPayloadFilter(value) };
+    if (key === 'some' && isPlainObject(value)) {
+      const spec = { ...value };
+      if (Array.isArray(spec.of)) spec.of = spec.of.map(normalizeLegacyPayloadFilter);
+      return { some: spec };
+    }
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [path, test] of Object.entries(filter)) {
+    if (isPlainObject(test) && ('eq' in test || 'ne' in test)) {
+      const leaf = { ...test } as Record<string, unknown>;
+      if ('eq' in leaf && !('equals' in leaf)) {
+        leaf.equals = leaf.eq;
+        delete leaf.eq;
+      }
+      if ('ne' in leaf && !('notEquals' in leaf)) {
+        leaf.notEquals = leaf.ne;
+        delete leaf.ne;
+      }
+      normalized[path] = leaf;
+    } else {
+      // Match-map values are opaque payload values unless they are an explicit
+      // combinator; traversing them would change a legitimate object equality
+      // test into a different condition.
+      normalized[path] = test;
+    }
+  }
+  return normalized;
+}
+
+/**
  * Does an emitted PAYLOAD satisfy a watch's payload_filter (EI-8998)? Reuses
  * `evaluateDataCondition` — the SAME MatchMap/`all`/`any`/`some`/`not` vocabulary
  * an ECA rule's `when` evaluates (incl. the P-001 `some:{require,of}` k-of-n) — so
@@ -115,7 +167,7 @@ export function payloadMatchesFilter(filter: unknown, payload: unknown): boolean
   // string's character indices) as paths and can vacuously "match" nothing-to-fail-on.
   if (!isPlainObject(filter)) return false;
   try {
-    return evaluateDataCondition(filter as DataCondition, payload);
+    return evaluateDataCondition(normalizeLegacyPayloadFilter(filter) as DataCondition, payload);
   } catch {
     return false;
   }

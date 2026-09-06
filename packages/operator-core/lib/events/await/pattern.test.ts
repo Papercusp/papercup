@@ -90,6 +90,21 @@ describe('payloadMatchesFilter (EI-8998 — predicate/payload watches)', () => {
     expect(payloadMatchesFilter({ queue_depth: { lt: 5 } }, { queue_depth: 3 })).toBe(true);
     expect(payloadMatchesFilter({ queue_depth: { lt: 5 } }, { queue_depth: 9 })).toBe(false);
   });
+  it('matches legacy eq/ne aliases on a grading-integrity scorecard event payload', () => {
+    const subjectRef = 'EI-22437875427583069';
+    const emitted = {
+      issueId: 'EI-22439061823369551',
+      rubricRef: 'grading-integrity',
+      subjectRef,
+    };
+
+    // This is the durable shape from await 152428. It must fire for the exact
+    // subject instead of timing out, while a neighboring subject stays quiet.
+    expect(payloadMatchesFilter({ subjectRef: { eq: subjectRef } }, emitted)).toBe(true);
+    expect(payloadMatchesFilter({ subjectRef: { eq: subjectRef } }, { ...emitted, subjectRef: 'other' })).toBe(false);
+    expect(payloadMatchesFilter({ subjectRef: { ne: 'other' } }, emitted)).toBe(true);
+    expect(payloadMatchesFilter({ subjectRef: { ne: subjectRef } }, emitted)).toBe(false);
+  });
   it('supports the all/any/not combinators (same vocabulary as an ECA rule when)', () => {
     const filter = { all: [{ status: 'red' }, { severity: { gte: 3 } }] };
     expect(payloadMatchesFilter(filter, { status: 'red', severity: 4 })).toBe(true);

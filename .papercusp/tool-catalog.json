@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 862,
+  "count": 863,
   "tools": [
     {
       "name": "ablation:report",
@@ -7755,6 +7755,24 @@
       }
     },
     {
+      "name": "cupboard:publish-theme",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-theme",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Export one locally-authored theme as theme.json + listing.json and list it on the Cupboard's Themes tab. The public GitHub mirror and listing ref identify the package. Pass exportOnly to materialize the package before pushing it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a theme from Personalization so another workspace can install and select it.",
+        "notWhen": "Creating/editing a local theme, selecting a theme, or installing an existing theme listing.",
+        "chaining": "Export first, push the returned directory to the named public mirror, then publish the listing; consumers use cupboard:install-theme."
+      }
+    },
+    {
       "name": "cupboard:refund-request",
       "http": {
         "path": "/api/agent-tools/cupboard/refund-request",
@@ -7780,7 +7798,7 @@
           "POST"
         ]
       },
-      "description": "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with cupboard:install-plugin / cupboard:install-blueprint (or the kind-specific installers) to install one.",
+      "description": "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal · theme). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with the matching kind-specific installer.",
       "capabilities": [
         "harness:read"
       ],

@@ -10,6 +10,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const {
   admissionPairKey,
+  applyReviewedAdmissionCleanup,
   judgedPairsMissingAdjudication,
   persistAdmissionPlan,
   previewReviewedAdmissionCleanup,
@@ -276,6 +277,265 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(preview.previewHash).toMatch(/^[a-f0-9]{64}$/);
     expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
     expect(await db.sql`SELECT feature_id FROM harness_shared.work_items WHERE status <> 'open'`).toHaveLength(0);
+  });
+
+  it('binds a reviewed preview hash to its workspace and harness scope', async () => {
+    const proposals = [
+      {
+        itemId: 'WI-missing',
+        action: 'preserve' as const,
+        evidence: { status: 'unknown' as const, ref: 'ledger#missing', reason: 'no current row' },
+      },
+    ];
+    const local = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+    });
+    const neighbouringHarness = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: 'email',
+      proposals,
+    });
+    const neighbouringWorkspace = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: 'another-workspace',
+      harnessSlug: HARNESS,
+      proposals,
+    });
+
+    expect(neighbouringHarness.inputHash).toBe(local.inputHash);
+    expect(neighbouringWorkspace.inputHash).toBe(local.inputHash);
+    expect(neighbouringHarness.previewHash).not.toBe(local.previewHash);
+    expect(neighbouringWorkspace.previewHash).not.toBe(local.previewHash);
+  });
+
+  it('applies only the exact eligible reviewed preview and persists its evidence binding', async () => {
+    for (const id of ['WI-a', 'WI-b', 'WI-preserve']) {
+      await seedItem({ id, admission: 'admitted', conditionKey: 'watch:clone', payload: {} });
+    }
+    const proposals = [
+      {
+        itemId: 'WI-a',
+        action: 'merge' as const,
+        canonicalId: 'WI-b',
+        evidence: {
+          status: 'ready' as const,
+          ref: 'ledger#WI-a',
+          reason: 'current full-body equivalence verified',
+          sourceSha256: 'a'.repeat(64),
+        },
+      },
+      {
+        itemId: 'WI-preserve',
+        action: 'preserve' as const,
+        evidence: {
+          status: 'unknown' as const,
+          ref: 'ledger#WI-preserve',
+          reason: 'no current candidate signal',
+        },
+      },
+    ];
+    const preview = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+    });
+
+    const applied = await applyReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+      previewHash: preview.previewHash,
+      runId: 'reviewed-apply-exact',
+      actor: 'su:review-owner',
+      nowMs: NOW,
+    });
+
+    expect(applied).toMatchObject({
+      schemaVersion: 'reviewed-admission-cleanup-apply-v1',
+      requestedPreviewHash: preview.previewHash,
+      currentPreviewHash: preview.previewHash,
+      applied: true,
+      mutates: true,
+      modelCalled: false,
+      reason: 'applied',
+      counts: { total: 2, eligible: 1, preserved: 1, unknown: 0, merged: 1, replayed: 0, retained: 1 },
+      guardRefusals: [],
+      persistence: { mergedIds: ['WI-a'], uniqueRowsChanged: 1 },
+    });
+    const rows = await db.sql<
+      Array<{ feature_id: string; status: string; payload: Record<string, any>; terminal_owner: string | null }>
+    >`
+      SELECT feature_id, status, payload, terminal_owner
+        FROM harness_shared.work_items
+       ORDER BY feature_id`;
+    expect(rows.find((row) => row.feature_id === 'WI-a')).toMatchObject({
+      status: 'dropped',
+      terminal_owner: 'su:review-owner',
+      payload: {
+        admissionMerge: {
+          state: 'complete',
+          canonicalId: 'WI-b',
+          runId: 'reviewed-apply-exact',
+          reviewedCleanup: {
+            schemaVersion: 'reviewed-admission-cleanup-binding-v1',
+            previewHash: preview.previewHash,
+            inputHash: preview.inputHash,
+            evidence: {
+              status: 'ready',
+              ref: 'ledger#WI-a',
+              reason: 'current full-body equivalence verified',
+              sourceSha256: 'a'.repeat(64),
+            },
+          },
+        },
+      },
+    });
+    expect(rows.find((row) => row.feature_id === 'WI-b')).toMatchObject({ status: 'open' });
+    expect(rows.find((row) => row.feature_id === 'WI-preserve')).toMatchObject({ status: 'open', payload: {} });
+    const adjudications = await db.sql<Array<{ verdict: string; canonical: string; run_id: string }>>`
+      SELECT verdict, canonical, run_id FROM harness_shared.dedup_adjudications`;
+    expect(adjudications).toEqual([{ verdict: 'r-finding-merge', canonical: 'WI-b', run_id: 'reviewed-apply-exact' }]);
+  });
+
+  it('rejects a stale cohort hash before applying any otherwise eligible merge', async () => {
+    for (const id of ['WI-a', 'WI-b', 'WI-c', 'WI-d']) {
+      await seedItem({ id, admission: 'admitted', conditionKey: 'watch:clone', payload: {} });
+    }
+    const proposals = [
+      {
+        itemId: 'WI-a',
+        action: 'merge' as const,
+        canonicalId: 'WI-b',
+        evidence: { status: 'ready' as const, ref: 'ledger#a', reason: 'reviewed pair a/b' },
+      },
+      {
+        itemId: 'WI-c',
+        action: 'merge' as const,
+        canonicalId: 'WI-d',
+        evidence: { status: 'ready' as const, ref: 'ledger#c', reason: 'reviewed pair c/d' },
+      },
+    ];
+    const preview = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET summary = 'changed after review'
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-c'`;
+
+    const refused = await applyReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+      previewHash: preview.previewHash,
+      runId: 'reviewed-apply-stale',
+      actor: 'su:review-owner',
+      nowMs: NOW,
+    });
+
+    expect(refused).toMatchObject({
+      applied: false,
+      mutates: false,
+      modelCalled: false,
+      reason: 'preview-hash-mismatch',
+      requestedPreviewHash: preview.previewHash,
+      counts: { eligible: 2, merged: 0, replayed: 0, retained: 2 },
+      persistence: null,
+    });
+    expect(refused.currentPreviewHash).not.toBe(preview.previewHash);
+    expect(await db.sql`SELECT feature_id FROM harness_shared.work_items WHERE status <> 'open'`).toHaveLength(0);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+  });
+
+  it('rolls back the whole reviewed apply when its adjudication cannot be persisted', async () => {
+    for (const id of ['WI-a', 'WI-b']) {
+      await seedItem({ id, admission: 'admitted', conditionKey: 'watch:clone', payload: {} });
+    }
+    const proposals = [
+      {
+        itemId: 'WI-a',
+        action: 'merge' as const,
+        canonicalId: 'WI-b',
+        evidence: { status: 'ready' as const, ref: 'ledger#a', reason: 'current equivalence review' },
+      },
+    ];
+    const preview = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+    });
+    await db.sql`
+      INSERT INTO harness_shared.dedup_adjudications
+        (workspace_id, harness_slug, a, b, verdict, canonical, judged_by, run_id, evidence)
+      VALUES (${WS}, ${HARNESS}, 'WI-a', 'WI-b', 'r-remedy-keep', NULL,
+              'prior-reviewer', 'prior-review', '{}'::jsonb)`;
+
+    const refused = await applyReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+      previewHash: preview.previewHash,
+      runId: 'reviewed-apply-conflict',
+      actor: 'su:review-owner',
+      nowMs: NOW,
+    });
+
+    expect(refused).toMatchObject({
+      applied: false,
+      mutates: false,
+      reason: 'transactional-revalidation-refused',
+      counts: { eligible: 1, merged: 0, replayed: 0, retained: 1 },
+      guardRefusals: [
+        {
+          itemId: 'WI-a',
+          canonicalId: 'WI-b',
+          reason: 'conditional-write-miss',
+          detail: expect.stringContaining('did not persist adjudication'),
+        },
+      ],
+      persistence: null,
+    });
+    const rows = await db.sql<
+      Array<{ feature_id: string; status: string; payload: Record<string, unknown>; see_also: string[] | null }>
+    >`
+      SELECT feature_id, status, payload, see_also
+        FROM harness_shared.work_items
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'WI-a', status: 'open', payload: {}, see_also: null },
+      { feature_id: 'WI-b', status: 'open', payload: {}, see_also: null },
+    ]);
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+    const adjudications = await db.sql<Array<{ verdict: string; run_id: string }>>`
+      SELECT verdict, run_id FROM harness_shared.dedup_adjudications`;
+    expect(adjudications).toEqual([{ verdict: 'r-remedy-keep', run_id: 'prior-review' }]);
+  });
+
+  it('rejects a reviewed merge graph whose canonical is also a cohort loser', async () => {
+    await expect(
+      previewReviewedAdmissionCleanup(db.sql, {
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        proposals: [
+          {
+            itemId: 'WI-a',
+            action: 'merge',
+            canonicalId: 'WI-b',
+            evidence: { status: 'ready', ref: 'ledger#a', reason: 'first link' },
+          },
+          {
+            itemId: 'WI-b',
+            action: 'merge',
+            canonicalId: 'WI-c',
+            evidence: { status: 'ready', ref: 'ledger#b', reason: 'second link' },
+          },
+        ],
+      }),
+    ).rejects.toThrow('canonical WI-b is also scheduled as a merge loser');
   });
 
   it('replays six vitest clones: one promotes and five merge into one canonical', async () => {
