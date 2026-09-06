@@ -668,6 +668,7 @@ export default defineTool({
               urgency: row.urgency,
               expires_ts: row.expiresTs,
               on_timeout: row.timeoutBehavior,
+              ...(args.payload_filter !== undefined ? { payload_filter: args.payload_filter } : {}),
             },
             wake_handle: handleNote,
             advice: once
