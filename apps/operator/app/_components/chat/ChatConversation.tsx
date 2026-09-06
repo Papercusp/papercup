@@ -821,23 +821,25 @@ export function ChatConversation(props: ChatConversationProps) {
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
   useEffect(() => { fetchInFlightRef.current = !!loadingEarlier; }, [loadingEarlier]);
+  const requestEarlier = useCallback(() => {
+    if (!onLoadEarlier || !hasMoreEarlier || fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+    onLoadEarlier();
+  }, [onLoadEarlier, hasMoreEarlier]);
   useEffect(() => {
-    if (!onLoadEarlier) return;
+    if (!requestEarlier) return;
     const el = topSentinelRef.current;
     if (!el) return;
     const obs = new IntersectionObserver((entries) => {
       for (const e of entries) {
         if (!e.isIntersecting) continue;
         if (!userScrolledRef.current) continue;
-        if (!hasMoreEarlier) continue;
-        if (fetchInFlightRef.current) continue;
-        fetchInFlightRef.current = true;
-        onLoadEarlier();
+        requestEarlier();
       }
     }, { root: scrollerRef.current ?? null, rootMargin: '120px 0px 0px 0px' });
     obs.observe(el);
     return () => obs.disconnect();
-  }, [onLoadEarlier, hasMoreEarlier]);
+  }, [requestEarlier]);
 
   const InputIconComp = inputIcon ?? emptyState.icon;
   const EmptyIconComp = emptyState.icon;
@@ -1044,7 +1046,10 @@ export function ChatConversation(props: ChatConversationProps) {
   const [focusIndex, setFocusIndex] = useState(-1);
   const focusedForRef = useRef<string | null>(null);
   const focusFramesRef = useRef(0);
-  const focusLoopActiveRef = useRef(false);
+  // Each click owns a generation. A newer T# request invalidates the old rAF
+  // closure immediately; otherwise an in-flight correction loop keeps
+  // scrolling its OLD index while the new request is silently discarded.
+  const focusGenerationRef = useRef(0);
   const exactIndex = typeof focusIndexProp === 'number' && focusIndexProp >= 0 ? focusIndexProp : -1;
   // One key for "which focus request is this", so a change in ANY input
   // re-focuses and an unchanged request never re-steals the user's scroll.
@@ -1054,6 +1059,8 @@ export function ChatConversation(props: ChatConversationProps) {
   const focusKey = exactIndex >= 0 ? `#${exactIndex}${nonceSuffix}` : (focusAnchor ?? null);
   useEffect(() => {
     if (!focusKey) {
+      focusGenerationRef.current += 1;
+      programmaticScrollRef.current = false;
       focusedForRef.current = null;
       setFocusIndex(-1);
       return;
@@ -1070,16 +1077,29 @@ export function ChatConversation(props: ChatConversationProps) {
     setFocusIndex(idx);
     followRef.current = false; // suspend the tail pin (see 3 above)
     focusFramesRef.current = 45; // same ~750ms convergence budget as pinToBottom
-    if (focusLoopActiveRef.current) return;
-    focusLoopActiveRef.current = true;
+    const generation = ++focusGenerationRef.current;
     const step = () => {
-      if (!scrollerRef.current || focusFramesRef.current <= 0 || followRef.current) {
-        focusLoopActiveRef.current = false;
+      if (
+        generation !== focusGenerationRef.current
+        || !scrollerRef.current
+        || focusFramesRef.current <= 0
+        || followRef.current
+      ) {
+        if (generation === focusGenerationRef.current) programmaticScrollRef.current = false;
         return;
       }
       focusFramesRef.current -= 1;
+      // scrollToIndex emits a scroll event. Mark it before the call so the
+      // transcript's user-scroll listener cannot read a near-bottom target as
+      // a request to resume tail-follow and cancel the other 44 correction
+      // frames. Clear on the next frame even when the virtualizer made no move,
+      // so a later real user scroll is never swallowed by a stale boolean.
+      programmaticScrollRef.current = true;
       virtualizer.scrollToIndex(idx, { align: 'start' });
-      requestAnimationFrame(step);
+      requestAnimationFrame(() => {
+        if (generation === focusGenerationRef.current) programmaticScrollRef.current = false;
+        step();
+      });
     };
     requestAnimationFrame(step);
   }, [focusKey, exactIndex, focusAnchor, messages, virtualizer]);
@@ -1133,9 +1153,16 @@ export function ChatConversation(props: ChatConversationProps) {
         {onLoadEarlier && messages.length > 0 && (
           <>
             <div ref={topSentinelRef} aria-hidden="true" style={{ height: 1 }} />
-            {hasMoreEarlier && loadingEarlier && (
+            {hasMoreEarlier && (
               <div className="oracle-load-earlier" aria-live="polite">
-                <span>Loading earlier…</span>
+                <button
+                  type="button"
+                  className="pc-button oracle-load-earlier-button"
+                  onClick={requestEarlier}
+                  disabled={loadingEarlier}
+                >
+                  {loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}
+                </button>
               </div>
             )}
             {!hasMoreEarlier && (

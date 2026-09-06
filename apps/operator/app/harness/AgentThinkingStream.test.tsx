@@ -183,6 +183,18 @@ describe('useAgentThinkingStream (shared live thinking-stream hook)', () => {
     act(() => { captured!.handlers.thinking!(JSON.stringify({ active: false })); });
     await waitFor(() => expect(result.current.thinking).toBe(false));
   });
+
+  it('publishes stable-owner history pagination metadata without changing timeline entries', () => {
+    const { result } = renderHook(() => useAgentThinkingStream('my-harness', 'production', 'run-1'));
+    act(() => { captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'current page' }])); });
+    act(() => { captured!.handlers.history!(JSON.stringify({ hasMore: true, cursor: 'opaque-cursor' })); });
+    expect(result.current.history).toEqual({ hasMore: true, cursor: 'opaque-cursor' });
+    expect(result.current.events).toEqual([{ kind: 'text', text: 'current page' }]);
+
+    // A hasMore claim without the cursor needed to act on it is ignored.
+    act(() => { captured!.handlers.history!(JSON.stringify({ hasMore: true, cursor: null })); });
+    expect(result.current.history).toEqual({ hasMore: true, cursor: 'opaque-cursor' });
+  });
 });
 
 describe('Entry (timeline entry renderer)', () => {

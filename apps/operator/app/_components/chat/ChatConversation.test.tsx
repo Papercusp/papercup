@@ -208,6 +208,66 @@ describe('ChatConversation', () => {
     expect(scrollToIndexSpy).toHaveBeenCalledWith(2, { align: 'end' });
   });
 
+  it('lets a newer T# focus request supersede an in-flight virtualizer correction loop', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'T1 question' },
+      { role: 'assistant', content: 'T1 answer' },
+      { role: 'user', content: 'T2 question' },
+      { role: 'assistant', content: 'T2 answer' },
+    ];
+    const base = {
+      messages,
+      busy: false,
+      error: null,
+      emptyState: { title: 'Oracle', body: 'Ask me anything', icon: Icon },
+      inputValue: '',
+      onInputChange: vi.fn(),
+      onSubmit: vi.fn(),
+    } satisfies ChatConversationProps;
+    const view = render(<ChatConversation {...base} focusIndex={1} focusNonce={1} />);
+    // Click T2 before T1's 45-frame correction has completed. The old
+    // active-loop boolean dropped this request and kept targeting index 1.
+    view.rerender(<ChatConversation {...base} focusIndex={3} focusNonce={2} />);
+    scrollToIndexSpy.mockClear();
+    const pending = frames.splice(0);
+    act(() => { for (const frame of pending) frame(0); });
+    expect(scrollToIndexSpy).toHaveBeenCalledWith(3, { align: 'start' });
+    expect(scrollToIndexSpy.mock.calls.at(-1)?.[0]).toBe(3);
+  });
+
+  it('keeps correcting the same T# after its programmatic scroll event fires', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    let region: HTMLElement | null = null;
+    scrollToIndexSpy.mockImplementation(() => {
+      region?.dispatchEvent(new Event('scroll'));
+    });
+    renderChat({
+      messages: [
+        { role: 'user', content: 'T1 question' },
+        { role: 'assistant', content: 'T1 answer' },
+      ],
+      focusIndex: 1,
+      focusNonce: 1,
+    });
+    region = screen.getByRole('region', { name: 'Conversation messages' });
+    scrollToIndexSpy.mockClear();
+    act(() => { frames.shift()?.(0); });
+    act(() => { frames.shift()?.(16); });
+    // Before the fix, the first programmatic event set followRef=true and the
+    // second frame aborted, so a first-frame estimate miss made this T# click
+    // work only sometimes.
+    expect(scrollToIndexSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('shows the thinking row and disables input while busy', () => {
     renderChat({ busy: true, messages: [{ role: 'user', content: 'hi' }] });
     expect(screen.getByText(/Oracle is thinking/)).toBeTruthy();
@@ -430,8 +490,20 @@ describe('ChatConversation', () => {
     renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: false });
     expect(screen.getByText('Beginning of conversation')).toBeTruthy();
     cleanup();
+    renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: true });
+    expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeTruthy();
+    cleanup();
     renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: true, loadingEarlier: true });
     expect(screen.getByText('Loading earlier…')).toBeTruthy();
+  });
+
+  it('guards the manual load-earlier action against synchronous double clicks', () => {
+    const onLoadEarlier = vi.fn();
+    renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier, hasMoreEarlier: true });
+    const button = screen.getByRole('button', { name: 'Load earlier messages' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
   });
 });
 

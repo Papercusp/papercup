@@ -12,6 +12,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSessionStreamUrl,
+  buildOwnerHistoryPageUrl,
+  fetchOwnerHistoryPage,
   deliveryFromSendResponse,
   sessionTargetFromRoster,
   resolveOwnerSession,
@@ -50,16 +52,17 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE));
     expect(p.get('sessionId')).toBe('s-live');
     expect(p.get('owner')).toBe('su-a');
+    expect(p.get('historyOwner')).toBe('su-a');
   });
 
   it('uses the native Codex and OMP stream keys instead of the Claude key', () => {
     const codex = { ...LIVE, source_kind: 'codex', session_id: 'rollout-1', stream_key: 'codexRolloutId' as const };
     const omp = { ...LIVE, source_kind: 'omp', session_id: 'thread-1', stream_key: 'ompThreadId' as const };
     expect(buildSessionStreamUrl('su-codex', codex)).toBe(
-      '/api/adv/session/thinking?codexRolloutId=rollout-1',
+      '/api/adv/session/thinking?codexRolloutId=rollout-1&historyOwner=su-codex',
     );
     expect(buildSessionStreamUrl('su-omp', omp)).toBe(
-      '/api/adv/session/thinking?ompThreadId=thread-1',
+      '/api/adv/session/thinking?ompThreadId=thread-1&historyOwner=su-omp',
     );
   });
 
@@ -78,7 +81,7 @@ describe('buildSessionStreamUrl', () => {
       },
     });
     expect(buildSessionStreamUrl('su-codex', target)).toBe(
-      '/api/adv/session/thinking?codexSessionKey=9444',
+      '/api/adv/session/thinking?codexSessionKey=9444&historyOwner=su-codex',
     );
   });
 
@@ -115,6 +118,7 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE, { focusSessionId: 's-older' }));
     expect(p.get('sessionId')).toBe('s-older');
     expect(p.get('ended')).toBe('1');
+    expect(p.get('historyOwner')).toBeNull();
   });
 
   /* popup-agent-state-coverage-2026-08-18 P-012 — the THIRD route to the same
@@ -149,6 +153,40 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE, { focusTerm: 'red gate', focusAnchorTs: '2026-08-09T00:00:00Z' }));
     expect(p.get('find')).toBe('red gate');
     expect(p.get('anchorTs')).toBe('2026-08-09T00:00:00Z');
+  });
+});
+
+describe('owner history page loading', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('builds a same-route JSON page URL only from an owner-scoped stream', () => {
+    expect(buildOwnerHistoryPageUrl(
+      '/api/adv/session/thinking?codexRolloutId=current&historyOwner=su-a',
+      'opaque cursor',
+    )).toBe('/api/adv/session/thinking?historyPage=1&historyOwner=su-a&historyCursor=opaque+cursor');
+    expect(buildOwnerHistoryPageUrl('/api/adv/session/thinking?codexRolloutId=current', 'cursor')).toBeNull();
+    expect(buildOwnerHistoryPageUrl('/api/adv/session/thinking?historyOwner=su-a', null)).toBeNull();
+  });
+
+  it('fetches and validates an older timeline page', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      entries: [{ kind: 'prompt', text: 'prior epoch' }],
+      hasMore: false,
+      cursor: null,
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchOwnerHistoryPage(
+      '/api/adv/session/thinking?sessionId=current&historyOwner=su-a',
+      'page-2',
+    )).resolves.toEqual({
+      entries: [{ kind: 'prompt', text: 'prior epoch' }],
+      hasMore: false,
+      cursor: null,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/adv/session/thinking?historyPage=1&historyOwner=su-a&historyCursor=page-2',
+      { headers: { accept: 'application/json' } },
+    );
   });
 });
 

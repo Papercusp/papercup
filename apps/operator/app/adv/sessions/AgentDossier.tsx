@@ -712,6 +712,7 @@ export default function AgentDossier({
   sessionEndedAt = null,
   unknownSession = false,
   zoneTitle = false,
+  headerControl,
 }: {
   ownerId: string;
   entry: RosterEntry | null;
@@ -740,6 +741,7 @@ export default function AgentDossier({
    *  name; in the /adv two-pane it is the detail pane of a board that already
    *  says what it is, where a second title bar is noise. */
   zoneTitle?: boolean;
+  headerControl?: React.ReactNode;
 }): React.JSX.Element {
   const lex = useLexicon();
   const { detail, error, loading } = useAgentDetail(ownerId);
@@ -860,10 +862,12 @@ export default function AgentDossier({
           two columns read as a pair: told on the left, doing on the right. */}
       {zoneTitle ? (
         <header className="pc-zone-title" data-testid="dossier-zone-title">
+          {headerControl ?? <>
           <span>Activity</span>
           {/* "they", not "it" — the same voice the Orders rail uses [owner
               2026-08-02]. */}
           <span className="pc-zone-title__sub">— what they’re doing</span>
+          </>}
         </header>
       ) : null}
       <header className="pc-dossier__head">
@@ -880,9 +884,9 @@ export default function AgentDossier({
             <span className="pc-roster__chip pc-roster__chip--warn">revoked</span>
           ) : null}
         </div>
-        <button type="button" className="pc-dossier__close" onClick={onClose} aria-label="Close detail">
+        {!headerControl && <button type="button" className="pc-dossier__close" onClick={onClose} aria-label="Close detail">
           ✕
-        </button>
+        </button>}
       </header>
 
       <div className="pc-dossier__title" title={ownerId}>

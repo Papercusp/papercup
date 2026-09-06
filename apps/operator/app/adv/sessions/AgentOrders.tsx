@@ -97,6 +97,7 @@ export interface AgentOrdersProps {
    */
   ownerKnown?: boolean;
   onClose?: () => void;
+  headerControl?: React.ReactNode;
 }
 
 export default function AgentOrders({
@@ -104,6 +105,7 @@ export default function AgentOrders({
   enabled = true,
   ownerKnown,
   onClose,
+  headerControl,
 }: AgentOrdersProps): React.JSX.Element {
   const unknownOwner = ownerKnown === false;
   const { orders, error, loading } = useAgentOrders(ownerId || null, enabled && !unknownOwner);
@@ -128,6 +130,7 @@ export default function AgentOrders({
           which are named by an inline cap inside their existing row. It is
           sticky, so the column never scrolls away from its own name. */}
       <header className="pc-orders__tag pc-zone-title">
+        {headerControl ?? <>
         <span className="pc-orders__tag-name">Orders</span>
         {/* "they", not "it" [owner 2026-08-02]: an agent is referred to as a
             person throughout this UI, and the singular they keeps that voice
@@ -144,6 +147,7 @@ export default function AgentOrders({
             ✕
           </button>
         ) : null}
+        </>}
       </header>
 
       {/* The whole payload is new on the wire (see use-agent-orders.ts): an
