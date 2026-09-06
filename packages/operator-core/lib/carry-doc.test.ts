@@ -31,6 +31,7 @@ import {
   type CarryDocContinuation,
   type CarryDocSlotKind,
 } from './carry-doc';
+import type { ProjectedTool } from '@papercusp/tooldef';
 
 const NOW = 1_800_000_000_000;
 
@@ -115,6 +116,19 @@ function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   };
 }
 
+function projectedTool(
+  name: string,
+  over: Partial<Pick<ProjectedTool, 'agentRoles' | 'capabilities' | 'effect'>> = {},
+): ProjectedTool {
+  return {
+    expose: { mcp: { name } },
+    inputSchema: {},
+    capabilities: [],
+    effect: 'write',
+    ...over,
+  } as ProjectedTool;
+}
+
 describe('flagAsksAgainstFacts (WI-5682 — decided-directive-re-asked guard)', () => {
   it('flags an open ask that re-litigates a decided standing fact', () => {
     const asks: CarryDocAsk[] = [{
@@ -170,6 +184,98 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
 
     const judgeDoc = await buildCarryDoc('su-1', { ...base, role: 'judge' });
     expect(judgeDoc.identity.role).toBe('judge');
+  });
+
+  it('records role-infeasible mutating carry references without changing the live text', async () => {
+    const projectedTools = [
+      projectedTool('work_items:complete', { agentRoles: ['worker'] }),
+      projectedTool('git-sync:run', { agentRoles: ['worker'] }),
+      projectedTool('code:run', { agentRoles: ['judge', 'worker'], capabilities: ['capability:bash'] }),
+      projectedTool('coord:declare-intent', { agentRoles: ['judge', 'worker'] }),
+      projectedTool('work_items:get', { agentRoles: ['judge', 'worker'], effect: 'read' }),
+    ];
+    const carried = brief({
+      loop: {
+        harness: 'papercusp',
+        active: true,
+        intervalSec: 60,
+        goal: null,
+        carryNote: 'Next: work_items:complete, then git-sync:run and code:run.',
+        carryNoteUpdatedAtMs: NOW,
+      },
+      heldItems: [
+        {
+          id: 'EI-unsafe',
+          title: 'finish with work_items:complete',
+          body: 'git-sync:run after the code:run verification',
+          harness: 'papercusp',
+          checkpoint: 'coord:declare-intent { items: [] }',
+        },
+        {
+          id: 'EI-safe',
+          title: 'read current state with work_items:get',
+          body: 'coord:declare-intent is an allowed control for this role',
+          harness: 'papercusp',
+          checkpoint: 'preserve the evidence',
+        },
+      ],
+    });
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      role: 'judge',
+      projectedToolsFn: () => projectedTools,
+      buildCarryBriefFn: async () => carried,
+    });
+
+    expect(doc.roleSafety).toEqual({
+      role: 'judge',
+      blockedToolNames: ['code:run', 'git-sync:run', 'work_items:complete'],
+      heldItemIds: ['EI-unsafe'],
+      deferredItemIds: [],
+      sources: ['held-item', 'loop'],
+    });
+    const text = renderCarryDoc(doc, NOW);
+    expect(text).toContain('Routed/stranded carry handoff (role-infeasible)');
+    expect(text).toContain('EI-unsafe');
+    expect(text).toContain('EI-safe');
+    expect(text).toContain('coord:declare-intent');
+    for (const forbidden of ['work_items:complete', 'git-sync:run', 'code:run']) {
+      expect(text).not.toContain(forbidden);
+    }
+  });
+
+  it('preserves the same carried controls for a write-capable non-judge role', async () => {
+    const projectedTools = [
+      projectedTool('work_items:complete', { agentRoles: ['worker'] }),
+      projectedTool('git-sync:run', { agentRoles: ['worker'] }),
+      projectedTool('code:run', { agentRoles: ['judge', 'worker'], capabilities: ['capability:bash'] }),
+      projectedTool('coord:declare-intent', { agentRoles: ['judge', 'worker'] }),
+    ];
+    const carried = brief({
+      heldItems: [
+        {
+          id: 'EI-worker',
+          title: 'finish with work_items:complete',
+          body: 'git-sync:run after code:run',
+          harness: 'papercusp',
+          checkpoint: 'coord:declare-intent { items: [] }',
+        },
+      ],
+    });
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      role: 'worker',
+      projectedToolsFn: () => projectedTools,
+      buildCarryBriefFn: async () => carried,
+    });
+
+    expect(doc.roleSafety).toBeNull();
+    const text = renderCarryDoc(doc, NOW);
+    expect(text).toContain('work_items:complete');
+    expect(text).toContain('git-sync:run');
+    expect(text).toContain('code:run');
+    expect(text).toContain('coord:declare-intent');
+    expect(text).not.toContain('Routed/stranded carry handoff');
   });
 
   it('builds one automatic recovery from the already-read carry held-items snapshot', async () => {
