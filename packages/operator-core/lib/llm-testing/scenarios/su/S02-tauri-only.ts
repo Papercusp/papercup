@@ -20,7 +20,7 @@ import { TAURI_APP_VERIFICATION_CONTEXT } from './_overrides';
 
 export const SU_S02_TAURI_ONLY: Scenario = {
   id: 'su-S02-tauri-only',
-  version: 5,
+  version: 6,
   target: 'su',
   transport: 'in-process',
   description:
