@@ -6,23 +6,22 @@
  *
  * Origin: session-chat-popup-timestamps-and-modes-2026-08-09 P-001. [owner
  * 2026-08-09] "In the conversation popup in the HUD tab add timestamp to the
- * user and agent messages in the gui", answered "Both" to absolute-vs-relative
- * (plan D-001), so a stamp reads `23:14 · 4m ago`.
+ * user and agent messages in the gui". Papercup-chat-one-component-one-
+ * contract-2026-09-06 D-011 supersedes the old absolute+relative rendering:
+ * the compact stamp is now time-only today and shorthand date+time otherwise.
  *
- * Absolute first, relative second, and the order is load-bearing: the absolute
- * half is the one that can be lined up against a log line, a gate verdict or a
- * journalctl window, so it is what you scan for; the relative half is the one
- * that reads fastest on a session you are watching right now. The date is
- * prepended once the message is not from today, because `23:14` alone silently
- * becomes a lie on a transcript you scrolled back through.
+ * The absolute stamp can be lined up against a log line, a gate verdict or a
+ * journalctl window. The date is prepended once the message is not from today,
+ * because `23:14` alone silently becomes a lie on a transcript you scrolled
+ * back through. The full ISO instant remains in `dateTime` and the hover title.
  *
  * ── WHY THIS IS ITS OWN LEAF COMPONENT (do not inline it into the row) ────────
  *
- * The relative half has to tick, and the transcript row is a typing-lag memo
- * boundary (WI-6502) — the one that exists because every keystroke in the
- * composer re-renders the transcript. Threading a `nowMs` prop down to the row
- * would re-render every visible row's whole body (markdown content, tool rows,
- * cards) on every tick, quietly undoing that fix.
+ * The today/older boundary has to tick across local midnight, and the transcript
+ * row is a typing-lag memo boundary (WI-6502) — the one that exists because
+ * every keystroke in the composer re-renders the transcript. Threading a
+ * `nowMs` prop down to the row would re-render every visible row's whole body
+ * (markdown content, tool rows, cards) on every tick, quietly undoing that fix.
  *
  * A `useSyncExternalStore` SUBSCRIPTION does not: React re-renders the
  * subscribing component itself and skips memoized ancestors, so a tick repaints
@@ -124,8 +123,6 @@ export function formatAge(sec: number | null): string {
 export interface MessageStamp {
   /** `23:14`, or `Aug 8 · 23:14` once the message is not from today. */
   absolute: string;
-  /** `4m ago` — null when there is no clock to measure against. */
-  relative: string | null;
   /** The full instant, for the hover title + the machine-readable `dateTime`. */
   iso: string;
 }
@@ -147,10 +144,10 @@ function sameLocalDay(a: Date, b: Date): boolean {
  * carry times"; a `—` would read as "this message has no time", which is a claim
  * about the message rather than about the feed.
  *
- * `nowMs` null (no clock yet) drops the relative half AND forces the date into
- * the absolute half: without a clock we cannot know whether "today" is true, and
- * a bare `23:14` that turns out to be from last week is the one failure mode
- * this whole stamp exists to prevent.
+ * `nowMs` null (no clock yet) forces the date into the absolute stamp: without a
+ * clock we cannot know whether "today" is true, and a bare `23:14` that turns
+ * out to be from last week is the one failure mode this whole stamp exists to
+ * prevent.
  */
 export function formatMessageStamp(ts: string | number | null | undefined, nowMs: number | null): MessageStamp | null {
   if (ts == null || ts === '') return null;
@@ -161,13 +158,6 @@ export function formatMessageStamp(ts: string | number | null | undefined, nowMs
   const isToday = nowMs != null && sameLocalDay(d, new Date(nowMs));
   return {
     absolute: isToday ? clockText : `${MONTHS[d.getMonth()]} ${d.getDate()} · ${clockText}`,
-    relative:
-      nowMs == null
-        ? null
-        // Clamped at 0: a message stamped slightly in the FUTURE is normal here
-        // (the agent's host clock and this one are different machines), and
-        // "-3s ago" reads as a bug in the UI rather than as clock skew.
-        : `${formatAge(Math.max(0, Math.round((nowMs - t) / 1000)))} ago`,
     iso: d.toISOString(),
   };
 }
@@ -176,8 +166,6 @@ export interface MessageTimestampProps {
   ts?: string | number | null;
   /** Element class; the operator's legacy transcript passes `oracle-msg-time`. */
   className?: string;
-  /** Class of the relative-half span. */
-  relClassName?: string;
 }
 
 /**
@@ -187,7 +175,6 @@ export interface MessageTimestampProps {
 export function MessageTimestamp({
   ts,
   className = 'pc-chat__time',
-  relClassName = 'pc-chat__time-rel',
 }: MessageTimestampProps) {
   const now = useChatClock();
   const stamp = formatMessageStamp(ts, now);
@@ -195,7 +182,6 @@ export function MessageTimestamp({
   return (
     <time className={className} dateTime={stamp.iso} title={stamp.iso} data-testid="chat-message-time">
       {stamp.absolute}
-      {stamp.relative ? <span className={relClassName}> · {stamp.relative}</span> : null}
     </time>
   );
 }

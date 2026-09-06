@@ -326,22 +326,20 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(sidebarRule).toContain('top: var(--pc-env-bar-h, 0px)');
   });
 
-  it('keeps the header on ONE line: name truncates, controls hug the right, the mic never stretches (WI-4738)', async () => {
+  it('keeps the header on ONE line: icon-only chat identity, controls hug the right, the mic never stretches (D-011)', async () => {
     render(<OperatorChatSidebar />);
     await waitFor(() => {
       expect(document.body.classList.contains('has-op-chat')).toBe(true);
     });
-    // Structure: the Papercup identity toggle, controls, and collapse toggle
+    // Structure: the icon-only Papercup identity toggle, controls, and collapse toggle
     // are all DIRECT siblings on the single .op-chat-header-main row (no
-    // title-row/copy column wrappers left to wrap onto a second line). The
-    // wordmark now lives INSIDE the Papercup toggle (WI-4793: it shares the
-    // 🫖 button's flat pill chrome).
+    // title-row/copy column wrappers left to wrap onto a second line).
     const main = document.querySelector('.op-chat-header-main');
     expect(main).toBeTruthy();
     const childClasses = Array.from(main!.children).map((c) => c.className);
     expect(childClasses.some((c) => String(c).includes('op-chat-papercup-toggle'))).toBe(true);
     expect(childClasses.some((c) => String(c).includes('op-chat-controls'))).toBe(true);
-    expect(document.querySelector('.op-chat-papercup-toggle .op-chat-wordmark')).toBeTruthy();
+    expect(document.querySelector('.op-chat-papercup-toggle .op-chat-wordmark')).toBeNull();
     expect(document.querySelector('.op-chat-header-copy')).toBeNull();
     expect(document.querySelector('.op-chat-header-title-row')).toBeNull();
     const css = Array.from(document.querySelectorAll('style'))
@@ -353,11 +351,9 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(voiceControlRule).toContain('flex: 0 0 auto');
     const controlsRule = css.match(/\.op-chat-controls\s*\{[^}]*\}/)?.[0] ?? '';
     expect(controlsRule).toContain('margin-left: auto');
-    const titleRule = css.match(/\.op-chat-header-main \.op-chat-wordmark-title\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(titleRule).toContain('text-overflow: ellipsis');
   });
 
-  it('the header is ALWAYS the Papercup identity — no Mug/Kettle mark, even with a docked rail (WI-4778 reverts WI-4739)', async () => {
+  it('the header identity is always the Papercup icon — no visible name or Mug/Kettle mark (D-011)', async () => {
     // Rail docked (the old WI-4739 trigger) → still Papercup: Papercup is the
     // one persona you talk to; the 🎯 toggle swaps the body for the pot's
     // goals / agents / throughput view instead.
@@ -366,7 +362,9 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     await waitFor(() => {
       expect(document.body.classList.contains('has-op-chat')).toBe(true);
     });
-    expect(screen.getByText('Papercup')).toBeTruthy();
+    const papercup = screen.getByRole('button', { name: 'Papercup chat' });
+    expect(papercup.querySelector('.op-chat-papercup-mark')).toBeTruthy();
+    expect(papercup.querySelector('.op-chat-wordmark')).toBeNull();
     expect(screen.queryByText('Mug')).toBeNull();
     expect(document.querySelector('.op-chat-header-mark')).toBeNull();
   });
@@ -382,7 +380,7 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(document.querySelector('.op-pot-status')).toBeNull();
   });
 
-  it('the 🫖 toggle carries its own "Pot Health" wordmark-style label beside the Papercup identity (WI-4789)', async () => {
+  it('the 🫖 toggle carries its own "Pot Health" label beside the icon-only Papercup identity (D-011)', async () => {
     render(<OperatorChatSidebar />);
     await waitFor(() => {
       expect(document.body.classList.contains('has-op-chat')).toBe(true);
@@ -399,15 +397,14 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(potIdx).toBe(papercupIdx + 1);
   });
 
-  it('the Papercup identity is a FLAT peer toggle sharing the 🫖 pill chrome, lit while chat shows, no raised orb (WI-4793)', async () => {
+  it('the Papercup identity is an icon-only flat peer toggle, lit while chat shows, no raised orb (D-011)', async () => {
     render(<OperatorChatSidebar />);
     await waitFor(() => {
       expect(document.body.classList.contains('has-op-chat')).toBe(true);
     });
-    // The Papercup identity is its own button carrying the Papercup wordmark +
-    // a flat brand glyph — the peer of the 🫖 "Pot Health" pill.
+    // The icon carries the visible identity; the accessible name survives.
     const papercup = screen.getByRole('button', { name: 'Papercup chat' });
-    expect(papercup.querySelector('.op-chat-wordmark-title')?.textContent).toBe('Papercup');
+    expect(papercup.querySelector('.op-chat-wordmark')).toBeNull();
     expect(papercup.querySelector('.op-chat-papercup-mark')).toBeTruthy();
     // Chat is the default face → the Papercup pill is lit (is-on), the 🫖 isn't.
     expect(papercup.className).toContain('is-on');

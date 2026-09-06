@@ -8,8 +8,8 @@
  * surface mounts it. This module is the operator's historical import surface:
  * it re-exports the implementation and pins the operator's legacy class names
  * (`oracle-msg-time`, styled in globals.css) onto the shared stamp, so the
- * not-yet-migrated transcript (ChatConversation, retired by P-012) is
- * byte-identical to before.
+ * not-yet-migrated transcript (ChatConversation, retired by P-012) follows the
+ * same compact D-011 clock while that compatibility surface still exists.
  */
 import {
   MessageTimestamp as SharedMessageTimestamp,
@@ -24,5 +24,5 @@ export {
 } from '@papercusp/operator-ui/papercup-chat/message-timestamp';
 
 export function MessageTimestamp({ ts }: Pick<MessageTimestampProps, 'ts'>) {
-  return <SharedMessageTimestamp ts={ts} className="oracle-msg-time" relClassName="oracle-msg-time__rel" />;
+  return <SharedMessageTimestamp ts={ts} className="oracle-msg-time" />;
 }

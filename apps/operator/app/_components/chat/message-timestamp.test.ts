@@ -16,11 +16,11 @@ import { formatMessageStamp } from './message-timestamp';
 const AT = new Date(2026, 7, 9, 23, 14, 7).getTime();
 
 describe('formatMessageStamp', () => {
-  it('renders BOTH halves, absolute first (plan D-001)', () => {
+  it('renders only the compact clock for a message from today (plan D-011)', () => {
     const s = formatMessageStamp(new Date(AT).toISOString(), AT + 4 * 60_000);
     expect(s).not.toBeNull();
     expect(s!.absolute).toBe('23:14');
-    expect(s!.relative).toBe('4m ago');
+    expect(s).not.toHaveProperty('relative');
   });
 
   it('omits the date while the message is from TODAY and adds it once it is not', () => {
@@ -49,34 +49,11 @@ describe('formatMessageStamp', () => {
     }
   });
 
-  it('drops the relative half AND forces the date when there is no clock yet', () => {
+  it('forces the shorthand date when there is no clock yet', () => {
     // Without a clock we cannot know whether "today" holds, so the date is
     // always shown. A bare `23:14` that turns out to be last week's is exactly
     // the failure this stamp exists to prevent.
     const s = formatMessageStamp(new Date(AT).toISOString(), null);
-    expect(s!.relative).toBeNull();
     expect(s!.absolute).toBe('Aug 9 · 23:14');
-  });
-
-  it('clamps a FUTURE timestamp to "0s ago" instead of rendering negative age', () => {
-    // Routine here, not exotic: the agent's host and this browser are different
-    // machines. "-3s ago" reads as a UI bug; "0s ago" reads as just-now.
-    const s = formatMessageStamp(new Date(AT + 3_000).toISOString(), AT);
-    expect(s!.relative).toBe('0s ago');
-  });
-
-  it('escalates the relative unit the way the rest of the HUD does', () => {
-    // Shares hud-board-model's formatAge rather than re-deriving a vocabulary,
-    // so an age reads the same here as on a HUD card.
-    const cases: Array<[number, string]> = [
-      [45 * 1000, '45s ago'],
-      [90 * 1000, '1m ago'],
-      [3 * 3600 * 1000, '3h ago'],
-      [50 * 3600 * 1000, '2d ago'],
-    ];
-    for (const [elapsedMs, expected] of cases) {
-      const s = formatMessageStamp(new Date(AT).toISOString(), AT + elapsedMs);
-      expect(s!.relative).toBe(expected);
-    }
   });
 });

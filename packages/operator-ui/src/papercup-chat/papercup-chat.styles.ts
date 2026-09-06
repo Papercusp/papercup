@@ -23,11 +23,13 @@ export const PAPERCUP_CHAT_CSS = `
 .pc-chat__load-earlier { display: block; margin: 4px auto 8px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--pc-chat-border, rgba(127, 127, 127, 0.3)); background: transparent; color: var(--pc-chat-fg-mute, #6b7280); font: inherit; font-size: 11px; cursor: pointer; }
 .pc-chat__placeholder { margin: 24px 8px; text-align: center; color: var(--pc-chat-fg-mute, #6b7280); }
 .pc-chat__turn { box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 6px 4px; }
-.pc-chat__turn-meta { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.pc-chat__turn--user .pc-chat__turn-meta { justify-content: flex-end; }
-.pc-chat__role { font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--pc-chat-fg-mute, #6b7280); }
-.pc-chat__time { font-size: 10px; color: var(--pc-chat-fg-mute, #6b7280); font-variant-numeric: tabular-nums; }
-.pc-chat__time-rel { opacity: 0.85; }
+.pc-chat__message-line { display: flex; align-items: flex-start; gap: 6px; min-width: 0; width: 100%; }
+.pc-chat__turn--user .pc-chat__message-line { justify-content: flex-end; }
+.pc-chat__message-content { display: flex; flex: 0 1 auto; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
+.pc-chat__turn--user .pc-chat__message-content { align-items: flex-end; }
+.pc-chat__avatar { flex: 0 0 auto; }
+.pc-chat__sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.pc-chat__time { flex: 0 0 auto; align-self: flex-start; margin-top: 9px; font-size: 9.5px; line-height: 1; text-align: left; white-space: nowrap; color: var(--pc-chat-fg-mute, #6b7280); font-variant-numeric: tabular-nums; }
 .pc-chat__body { max-width: var(--pc-chat-bubble-max, 100%); padding: 8px 10px; border-radius: var(--pc-chat-bubble-radius, 10px); background: var(--pc-chat-bubble-assistant, #f7f7f8); color: var(--pc-chat-bubble-assistant-fg, inherit); overflow-wrap: anywhere; }
 .pc-chat__turn--user .pc-chat__body { align-self: flex-end; background: var(--pc-chat-bubble-user, #eef2ff); color: var(--pc-chat-bubble-user-fg, inherit); }
 .pc-chat__turn--system .pc-chat__body { background: transparent; border: 1px dashed var(--pc-chat-border, rgba(127, 127, 127, 0.3)); }

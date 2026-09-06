@@ -69,8 +69,6 @@ import { useOperatorConversation } from './OperatorConversationProvider';
 import { useShortcutAction } from '@/lib/hotkeys';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { OperatorLogoMark } from './OperatorLogoMark';
-import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
-import { useLexiconPackId } from '@/lib/useLexicon';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
 import { AudienceModeSelector } from './AudienceModeSelector';
@@ -183,14 +181,6 @@ function readStoredWidth(): number {
  *   `body.has-op-chat` layout reservation (nothing shares that document).
  */
 export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: readonly OpChatFace[]; docked?: boolean } = {}) {
-  // WI-4478 D-001: OperatorWordmarkLockup's classic-pack default now reads
-  // "Papercusp" (product identity, matching the Tauri window title). This
-  // toggle is the ASSISTANT identity ("Papercup chat" tooltip/aria-label,
-  // hardcoded below) — override the wordmark back to "Papercup" for the
-  // classic pack so the two stay in sync; the-hive pack keeps its own
-  // lexicon swap (no override) so Hive mode is unaffected.
-  const lexiconPackId = useLexiconPackId();
-  const chatWordmarkTitle = lexiconPackId === 'the-hive' ? undefined : 'Papercup';
   const [chatOpen, setChatOpen] = useQueryState(
     OPERATOR_CHAT_OPEN_QUERY_KEY,
     parseAsBoolean.withDefault(true),
@@ -713,13 +703,6 @@ export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: re
                 <span className="op-chat-papercup-mark" aria-hidden="true">
                   <OperatorLogoMark className="op-chat-papercup-logo" />
                 </span>
-                <OperatorWordmarkLockup
-                  className="op-chat-wordmark"
-                  titleClassName="op-chat-wordmark-title"
-                  subtitleClassName="op-chat-wordmark-subtitle"
-                  title={chatWordmarkTitle}
-                  subtitle=""
-                />
               </button>
             </Tooltip>
             {/* WI-4778/WI-4789: the Pot Health toggle — chat ⇄ the full-height
