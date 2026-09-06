@@ -54,7 +54,9 @@
     "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
-    "@types/react": "^19.2.15"
+    "@papercusp/test-config": "*",
+    "@types/react": "^19.2.15",
+    "vitest": "^4.1.4"
   },
   "dependencies": {
     "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
