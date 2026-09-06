@@ -1107,7 +1107,7 @@ export const ALL_ISSUE_CLAIM_FLOORS_PASS = ISSUE_CLAIM_FLOORS.map((f) => f.ok).j
  * a row projection) can reference any base column; the aggregate wrapper ignores the extra
  * columns (a pure `count(*)` is unaffected).
  *
- * `filterPushdown` is an opt-in optimization for `readIssueClaimability`'s snapshot
+ * `filterPushdown` bounds single-spec aggregates and `readIssueClaimability`'s snapshot
  * materialization. When present, the compiled filter is applied in this subquery's base
  * `WHERE`, and `spec_match` is the literal `TRUE` because every materialized row already
  * passed that filter. Other callers deliberately omit it so they can retain a broader
@@ -1129,7 +1129,7 @@ export function issueClaimCandidateSubquery(
     /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
     claimSpecReferencesGoal?: boolean;
     /** Apply this compiled filter while materializing candidates instead of projecting it
-     *  as `spec_match`; only the single-spec claimability snapshot uses this pushdown. */
+     *  as `spec_match`; single-spec aggregates and snapshots can share this pushdown. */
     filterPushdown?: SqlFragment;
     /** Keep the shared snapshot narrow: the base table has 80+ columns (including large
      *  summary/search/embedding fields), while the sibling claimability reads consume only
@@ -1210,10 +1210,10 @@ export function issueClaimCandidateSubquery(
   // inline the filtered relation and evaluate the correlated claim-floor
   // expressions while scanning the whole issue-family table (the exact fleet
   // read measured ~13s in work_item_claim_floors_v14 before this barrier). The
-  // snapshot caller is deliberately the only current user of this path, and
-  // its narrow projection makes the intermediate relation cheap to materialize.
+  // single-spec readers use a narrow projection to keep this intermediate
+  // relation cheap to materialize.
   // Keep broad/non-pushed callers unchanged: delta reads need a population wide
-  // enough to cover both filters, and standalone callers retain their existing
+  // enough to cover both filters, and unfiltered callers retain their existing
   // SQL shape.
   const baseWhere = sql`
     wi.item_kind IN ('bug', 'change', 'task')
@@ -1361,6 +1361,12 @@ async function aggregateIssueClaimExclusionsOn(
   const cooldown = releaseCooldownSec();
   const sub = issueClaimCandidateSubquery(sql, {
     compiled,
+    // Every aggregate below counts only spec_match rows. Materialize that same
+    // population before evaluating correlated claim floors, as the snapshot
+    // reader already does. Otherwise an exact-plan launch can time out while
+    // evaluating floors for unrelated issues. Do not push down any claim floor:
+    // matched and exclusion counters must still include every matching row.
+    ...(filter ? { filterPushdown: compiled, projection: 'claimability-snapshot' as const } : {}),
     assignee,
     cooldown,
     harness: opts.harness,
