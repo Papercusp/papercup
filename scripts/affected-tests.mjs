@@ -61,6 +61,10 @@ import {
   unitExcludedVitestTest,
   writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
+import {
+  decideRetry,
+  formatRetryDecisionLine,
+} from "./lib/retry-failure-shape.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
 // EI-21082046676950143: the lint:declared-consumed guard entry below keys on the guard's OWN
@@ -6658,8 +6662,27 @@ for (const scheduled of initialPool.results) {
       }),
     )
   ) {
-    const failedFiles = parseFailedFiles(`${r.stdout ?? ""}${r.stderr ?? ""}`);
-    if (failedFiles.length > 0 && failedFiles.length <= FRESH_RETRY_MAX_FILES) {
+    const firstPassOutput = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const failedFiles = parseFailedFiles(firstPassOutput);
+    // P-003 (gate-latency-selection-and-retry-policy-2026-09-06): the retry exists to absorb
+    // LOAD FLAKES, so it now fires only when the first pass's own output has a flake-class
+    // signature (timeout, dropped connection, port conflict, late console, worker crash,
+    // transform race), or when the red is tiny enough that a re-run costs seconds. A broad
+    // deterministic red — 36 assertion diffs in gate run e70cd139 — re-ran the whole workspace
+    // for 34 minutes and reproduced itself exactly; that pass is now skipped, and the decision
+    // is one greppable AFFECTED_RETRY_DECISION / AFFECTED_RETRY_SKIPPED line either way. The
+    // classifier is pure (scripts/lib/retry-failure-shape.mjs) and pinned by
+    // affected-tests-retry-failure-shape.test.ts.
+    const retryDecision = decideRetry({
+      failedFiles,
+      output: firstPassOutput,
+      maxFiles: FRESH_RETRY_MAX_FILES,
+    });
+    errSync(formatRetryDecisionLine(t.ws.name, retryDecision));
+    if (!retryDecision.retry) {
+      // Deliberately NOT retried; `absorptionRan` stays false so the reporting branch treats
+      // the surviving failure as a confident red rather than load-suspect residue.
+    } else if (retryDecision.mode === "fresh-files") {
       errSync(
         `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(", ")}`,
       );
