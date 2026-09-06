@@ -111,10 +111,15 @@ export const RECURRING_MEMBER_HYDRATION_CAP = 2000;
  * was not wrong — it was OUTGROWN, ~5× in three weeks. Deriving it is what stops it
  * being outgrown a third time.
  *
- * Floor-divided by the threshold because ≥3 members is the smallest qualifying group,
- * so this bound can never bind before the member budget does.
+ * CEIL-divided by the threshold, because ≥3 members is the smallest qualifying group
+ * and we need the smallest cap for which `cap × threshold ≥ budget` — i.e. a slate
+ * that can always hold enough minimum-size groups to exhaust the member budget. Floor
+ * is the tempting operator and is wrong by exactly one group: ⌊2000/3⌋ = 666 admits
+ * 1,998 members, so the signature cap would still cut two members before the budget
+ * did. The guard test asserts this product relation rather than the number, so the
+ * off-by-one cannot come back.
  */
-export const RECURRING_SIGNATURE_SCAN_CAP = Math.floor(
+export const RECURRING_SIGNATURE_SCAN_CAP = Math.ceil(
   RECURRING_MEMBER_HYDRATION_CAP / RECURRENCE_ESCALATION_THRESHOLD,
 );
 

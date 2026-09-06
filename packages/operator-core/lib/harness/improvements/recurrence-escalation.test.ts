@@ -338,6 +338,31 @@ describe('selectRecurringSignatures — actionable-first slicing (EI-21889809467
     ).toHaveLength(RECURRING_SIGNATURE_SCAN_CAP);
   });
 
+  it('derives the scan cap from the member budget, so it can never bind first (EI-20587312505064997)', () => {
+    // RECURRING_MEMBER_HYDRATION_CAP is the real cost bound and truncates by
+    // ACCUMULATED members; a second fixed cap on SIGNATURES is redundant with it and,
+    // because the slate is count-desc, excludes permanently. The slate must therefore
+    // be able to hold enough minimum-size groups to exhaust the member budget — if it
+    // cannot, the signature cap cuts first and low-count groups are never hydrated.
+    // Re-hardcoding this to a constant (it was 50) fails here.
+    expect(RECURRING_SIGNATURE_SCAN_CAP * RECURRENCE_ESCALATION_THRESHOLD).toBeGreaterThanOrEqual(
+      RECURRING_MEMBER_HYDRATION_CAP,
+    );
+  });
+
+  it('admits the whole measured actionable population, not just the first 50 (EI-20587312505064997)', () => {
+    // Measured 2026-09-06 on harness:papercusp's observation lane: 243 actionable
+    // signatures (≥3 members, ≥1 open) holding 1,408 members, inside the 2,000-member
+    // budget. The old fixed cap of 50 discarded 193 of them (79.4%) and raised the
+    // effective threshold from the documented 3 to 7, while the budget it duplicated
+    // sat 70% idle. Under that cap this returns 50.
+    const MEASURED_ACTIONABLE_GROUPS = 243;
+    const all = Array.from({ length: MEASURED_ACTIONABLE_GROUPS }, (_, i) =>
+      group(`sig${i}`, RECURRENCE_ESCALATION_THRESHOLD, 1),
+    ).flat();
+    expect(selectRecurringSignatures(all)).toHaveLength(MEASURED_ACTIONABLE_GROUPS);
+  });
+
   it('fills the cap with exhausted signatures when actionable ones do not fill it', () => {
     const actionable = Array.from({ length: 2 }, (_, i) => group(`open${i}`, 4, 1)).flat();
     const exhausted = Array.from({ length: RECURRING_SIGNATURE_SCAN_CAP }, (_, i) =>
