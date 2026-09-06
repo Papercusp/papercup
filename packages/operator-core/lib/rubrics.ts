@@ -2474,6 +2474,8 @@ export interface AmendRubricInput {
   criterionEvidencePlane?: { key: string; evidencePlane: 'tree' | 'deployed' | 'live' };
   /** Set/replace the rubric-level runbook slug (agent-insights). */
   methodRef?: string;
+  /** Bind a missing acceptance class without replacing the BAR contract. Existing classes cannot change here. */
+  classRef?: string;
   /**
    * Replace the rubric's unpinned composition references. Omit to preserve the
    * stored composition. The refs are normalized (trimmed + de-duplicated) and
@@ -2516,10 +2518,11 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     !input.criterionClass &&
     !input.criterionEvidencePlane &&
     input.methodRef === undefined &&
+    input.classRef === undefined &&
     input.composes === undefined
   ) {
     throw new Error(
-      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, and/or composes',
+      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, classRef, and/or composes',
     );
   }
   if (
@@ -2537,6 +2540,16 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     throw new Error(
       'invalid_args: amendRubric: complete criteria replacement is acceptance-kind only; use rubrics:propose for a standard rubric revision',
     );
+  }
+
+  const classRef = input.classRef?.trim();
+  if (input.classRef !== undefined) {
+    if (stored.kind !== 'acceptance' || !classRef) {
+      throw new Error('invalid_args: amendRubric: classRef requires an acceptance rubric and a non-empty class reference');
+    }
+    if (stored.classRef && stored.classRef !== classRef) {
+      throw new Error('invalid_args: amendRubric: an existing acceptance class cannot be replaced through this amendment');
+    }
   }
 
   let criteria: ProposeRubricCriterion[] = input.criteria
@@ -2632,7 +2645,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(stored.kind !== 'standard' ? { kind: stored.kind } : {}),
     ...(stored.subjectPlan ? { subjectPlan: stored.subjectPlan } : {}),
     ...(stored.subjectGoal ? { subjectGoal: stored.subjectGoal } : {}),
-    ...(stored.classRef ? { classRef: stored.classRef } : {}),
+    ...(classRef || stored.classRef ? { classRef: classRef ?? stored.classRef! } : {}),
     ...(input.composes !== undefined
       ? { composes: normalizeRubricCompositionRefs(input.composes) }
       : stored.composes

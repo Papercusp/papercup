@@ -79,6 +79,15 @@ export const rubricsAmendArgs = z
       .max(200)
       .optional()
       .describe('set/replace the agent-insights runbook slug for the rubric-level method'),
+    classRef: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'acceptance-kind only: bind a missing class to an existing standard rubric while preserving every BAR and criterion; an existing class may be repeated but not replaced',
+      ),
     composes: z
       .array(z.string().trim().min(1))
       .min(1)
@@ -164,7 +173,7 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Amend one criterion field, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
+    "Amend one criterion field, bind a missing acceptance class, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
   guidance: {
     when: 'A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.',
     notWhen:
@@ -207,6 +216,7 @@ export default defineTool({
       ...(args.criterionClass ? { criterionClass: args.criterionClass } : {}),
       ...(args.criterionEvidencePlane ? { criterionEvidencePlane: args.criterionEvidencePlane } : {}),
       ...(args.methodRef !== undefined ? { methodRef: args.methodRef } : {}),
+      ...(args.classRef !== undefined ? { classRef: args.classRef } : {}),
       ...(args.composes !== undefined ? { composes: args.composes } : {}),
       ...(args.allowMethodShrink !== undefined ? { allowMethodShrink: args.allowMethodShrink } : {}),
       ...(args.shrinkReason !== undefined ? { shrinkReason: args.shrinkReason } : {}),

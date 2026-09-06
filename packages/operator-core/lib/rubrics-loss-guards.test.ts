@@ -509,6 +509,54 @@ describe('releaseGating + criterion window end-to-end (EI-12146/EI-12149)', () =
 import { applyRubricAmendment } from './rubrics';
 
 describe('applyRubricAmendment kind round-trip (acceptance-rubrics-on-every-plan-2026-08-11)', () => {
+  it('binds a missing acceptance class without losing BARs, checks, lifecycle or authorship', () => {
+    const stored = rubric([crit({ key: 'r-1', check: { kind: 'tests', files: ['guard.test.ts'] } })], {
+      kind: 'acceptance',
+      subjectPlan: 'grading-study',
+      status: 'active',
+      barSetHash: 'a'.repeat(64),
+      barContract: {
+        adoptionEpoch: 'test-epoch',
+        cohort: 'post-epoch',
+        subjectPlanRevision: 4,
+      } as Rubric['barContract'],
+    });
+    const out = applyRubricAmendment(stored, {
+      rubricId: stored.rubricId,
+      classRef: ' plan-class-investigation ',
+    });
+    expect(out.classRef).toBe('plan-class-investigation');
+    expect(out.criteria).toEqual(stored.criteria);
+    expect(out.barSetHash).toBe(stored.barSetHash);
+    expect(out.barContract).toEqual(stored.barContract);
+    expect(out.subjectPlan).toBe(stored.subjectPlan);
+    expect(out.status).toBe(stored.status);
+    expect(out.by).toBe(stored.createdBy);
+    expect(() => assertNoSilentRubricLoss(stored, out)).not.toThrow();
+  });
+
+  it('allows the same acceptance class but refuses a replacement', () => {
+    const stored = rubric([crit({ key: 'k1' })], {
+      kind: 'acceptance', subjectPlan: 'grading-study', classRef: 'plan-class-bugfix',
+    });
+    expect(applyRubricAmendment(stored, {
+      rubricId: stored.rubricId, classRef: 'plan-class-bugfix',
+    }).classRef).toBe('plan-class-bugfix');
+    expect(() => applyRubricAmendment(stored, {
+      rubricId: stored.rubricId, classRef: 'plan-class-investigation',
+    })).toThrow(/existing acceptance class cannot be replaced/);
+  });
+
+  it('refuses a class binding on a standard rubric and refuses an empty reference', () => {
+    const standard = rubric([crit({ key: 'k1' })]);
+    expect(() => applyRubricAmendment(standard, {
+      rubricId: standard.rubricId, classRef: 'plan-class-investigation',
+    })).toThrow(/requires an acceptance rubric/);
+    expect(() => applyRubricAmendment({ ...standard, kind: 'acceptance' }, {
+      rubricId: standard.rubricId, classRef: '   ',
+    })).toThrow(/non-empty class reference/);
+  });
+
   it('carries kind/subjectPlan/classRef through an amendment (identity fields, WI-4287 loss class)', () => {
     const stored = rubric([crit({ key: 'k1' })], {
       kind: 'acceptance',

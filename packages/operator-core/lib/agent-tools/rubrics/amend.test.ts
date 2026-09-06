@@ -33,6 +33,16 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     if (parsed.success) expect(parsed.data.criteria?.[0]?.bar).toBe(criterion.bar);
   });
 
+  it('retains a missing-class binding without requiring replacement criteria', () => {
+    const parsed = rubricsAmendArgs.parse({
+      rubricRef: 'acceptance-example',
+      classRef: ' plan-class-investigation ',
+    });
+    expect(parsed.classRef).toBe('plan-class-investigation');
+    expect(parsed.criteria).toBeUndefined();
+    expect(rubricsAmendArgs.safeParse({ rubricRef: 'acceptance-example', classRef: '  ' }).success).toBe(false);
+  });
+
   it('refuses an ambiguous full-set plus single-criterion patch', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',
