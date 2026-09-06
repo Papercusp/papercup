@@ -629,6 +629,7 @@ export interface ProvenanceLintMatch {
     | 'unverified-dialog-answer-claim'
     | 'possible-owner-tag-mention'
     | 'quote-mismatch'
+    | 'unresolved-turn-ref'
     | 'unverified-action-claim'
     | 'unverified-mechanism-claim'
     | 'hedged-mechanism-claim';
@@ -760,6 +761,12 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
   return { flagged: matches.length > 0, matches };
 }
 
+/** The source instruction that keeps agents from constructing a plausible-looking
+ *  ref out of a wake-pump nonce or an adjacent timestamp. */
+export const TURN_REF_SOURCE_GUIDANCE =
+  'For an already-recorded turn, copy the exact `turnProvenance.writtenDuring.ref` value from a recent tool response; ' +
+  'do NOT construct a ref from a wake-pump nonce or any adjacent-looking timestamp.';
+
 /** The advisory note a consumer tool folds into its response when flagged. */
 export const PROVENANCE_LINT_NOTE =
   'provenance_lint: this carry-surface write contains an owner-attributed directive and/or a claimed COMPLETED ' +
@@ -768,7 +775,7 @@ export const PROVENANCE_LINT_NOTE =
   'against your own transcript and stamps owner-vs-agent origin — P-014). For the turn you are writing FROM, ' +
   'write the sentinel [turn:self] and the platform expands it to the real ref at write time — do NOT hand-guess ' +
   'a timestamp: no field in any wake, orient, or tool result states your current turn ts, so the adjacent-looking ' +
-  'ones are all subtly wrong and store an anchor that resolves to nothing (EI-19425644478222007). ' +
+  `ones are all subtly wrong and store an anchor that resolves to nothing (EI-19425644478222007). ${TURN_REF_SOURCE_GUIDANCE} ` +
   'A hand-written [owner:…] tag alone ' +
   'asserts but does not prove. A checkpoint that NARRATES an action ("I did X") is only valid AFTER X\'s tool ' +
   'call returned ok in the SAME turn — a specific artifact id (post/msg/WI ref) is NOT proof it happened ' +
@@ -793,7 +800,7 @@ export const PROVENANCE_LINT_DIALOG_NOTE =
   're-tagging the claim (without verifying it) is what let it survive further compaction hops undetected. Before ' +
   "restating this, verify with sessions:search { session:'self', mode:'verbatim', query:'<the claimed answer text>' } " +
   "that a REAL owner-typed turn (provenance verdict 'owner-typed' or 'owner-dialog', never 'agent-injected') " +
-  'actually answered it. If verified, anchor with [turn:<session>@<iso-ts>]; if NOT, write "UNANSWERED DIALOG: ' +
+  `actually answered it. If verified, ${TURN_REF_SOURCE_GUIDANCE} If NOT, write "UNANSWERED DIALOG: ` +
   '<question>" instead of an owner tag. See WI-3532 / EI-9091 / EI-21918777703977266.';
 
 /**

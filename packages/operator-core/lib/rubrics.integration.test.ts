@@ -1624,6 +1624,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
       rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: 'Require integration proof of the outcome.',
       requirement: { key, acceptance: { requiredTestLayers: ['integration'] } },
     };
+    const proofDepthPreview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(proofDepthPreview!.changes).toContainEqual(expect.objectContaining({
+      barKey: 'R-1', kinds: ['bar-meaning'], fields: ['requiredTestLayers'],
+    }));
     await expect(rubrics.amendRubric(amendment)).rejects.toThrow('acceptance_bar_approval_required');
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
     const changed = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;

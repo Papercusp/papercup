@@ -3088,6 +3088,7 @@ async function amendAcceptanceBarRubric(
                 mandatory: criterion.mandatory ?? null,
                 requiredScope: criterion.requiredScope ?? [],
                 evidencePlane: criterion.evidencePlane ?? null,
+                requiredTestLayers: criterion.requiredTestLayers ?? [],
                 passRatings: criterion.passRatings ?? [],
                 coversBarKeys: criterion.coversBarKeys ?? [],
                 provenance: criterion.barProvenance ?? null,

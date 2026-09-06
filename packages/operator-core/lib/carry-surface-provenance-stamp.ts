@@ -57,6 +57,17 @@ export const QUOTE_MISMATCH_NOTE =
   'turns into one stronger directive and re-stamped it at the wrong turn). Re-read the cited turn verbatim ' +
   "(sessions:search { mode:'verbatim' } or dev:claude_session) before treating the claim as authorized.";
 
+/** Advisory note for an anchor whose lookup did not produce a real turn.
+ *  `checked:false` means the session/transcript could not be inspected, not that
+ *  the ref is absent; the warning must make that distinction explicit. */
+export const UNRESOLVED_TURN_REF_NOTE =
+  'provenance_lint: this carry-surface write includes a [turn:<session>@<ts>] anchor that did not resolve to a ' +
+  'recorded turn. This is ADVISORY and the write succeeded. `found:false` with `checked:false` means the referenced ' +
+  'session/transcript could not be checked; even `checked:true` only means the searched transcript had no matching ' +
+  'timestamp — neither state proves the claimed action or directive never happened. For the turn you are writing ' +
+  'from, copy the exact `turnProvenance.writtenDuring.ref` from a recent tool response or write `[turn:self]`; do ' +
+  'NOT construct a ref from the wake-pump nonce or an adjacent-looking timestamp.';
+
 export interface CarryProvenanceStamp {
   /** The pure lint result (unchanged shape) — absent when clean. */
   lint?: { flagged: true; note: string; matches: ProvenanceLintMatch[] };
@@ -105,6 +116,44 @@ export function mergeQuoteMismatchesIntoLint(
     note: quoteMismatches.length ? QUOTE_MISMATCH_NOTE : lint!.note,
     matches: [...(lint?.matches ?? []), ...quoteMismatches],
   };
+}
+
+/**
+ * Fold unresolved ref verdicts into the same flagged/matches surface consumers
+ * already read for provenance warnings. This is deliberately fail-soft:
+ * verification state is preserved verbatim in `turnProvenance.refs[]`, while
+ * this extra match only makes the unresolved anchor visible at write time.
+ */
+export function mergeUnresolvedTurnRefsIntoLint(
+  lint: { flagged: true; note: string; matches: ProvenanceLintMatch[] } | undefined,
+  text: string | null | undefined,
+  verified: readonly TurnRefVerdict[],
+): { flagged: true; note: string; matches: ProvenanceLintMatch[] } | undefined {
+  const unresolved = verified.filter((v) => !v.found);
+  if (unresolved.length === 0) return lint;
+
+  const matches = unresolved.map((v) => {
+    const sourceLine =
+      (text ?? '')
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.includes(v.ref)) ?? v.ref;
+    const status = v.checked
+      ? 'the referenced transcript was checked but no turn matched this timestamp'
+      : 'the referenced session/transcript could not be checked';
+    return {
+      line: `${sourceLine} — ${status} (found:false; checked:${v.checked})`.slice(0, 400),
+      kind: 'unresolved-turn-ref' as const,
+    };
+  });
+
+  const note =
+    lint === undefined
+      ? UNRESOLVED_TURN_REF_NOTE
+      : lint.note.includes(UNRESOLVED_TURN_REF_NOTE)
+        ? lint.note
+        : `${lint.note} ${UNRESOLVED_TURN_REF_NOTE}`;
+  return { flagged: true, note, matches: [...(lint?.matches ?? []), ...matches] };
 }
 
 /**
@@ -440,7 +489,8 @@ export async function stampCarrySurfaceProvenance(
   const { lint: effectiveLint, ownerTagsAutoVerified } = applyOwnerTurnAutoVerify(lint, writtenDuring);
 
   const stamp: CarryProvenanceStamp = {};
-  const mergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, completeRefs);
+  const quoteMergedLint = mergeQuoteMismatchesIntoLint(effectiveLint, completeRefs);
+  const mergedLint = mergeUnresolvedTurnRefsIntoLint(quoteMergedLint, text, completeRefs);
   if (mergedLint) stamp.lint = mergedLint;
   if (slotLint) stamp.slotLint = slotLint;
   if (completeRefs.length) stamp.refs = completeRefs;

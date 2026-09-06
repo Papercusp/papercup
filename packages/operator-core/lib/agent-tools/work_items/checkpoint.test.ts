@@ -3560,6 +3560,22 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
     expect(result.retainedProvenance?.matches.map((match: { line: string }) => match.line)).toEqual([retained]);
   });
 
+  it('surfaces an unresolved turn ref as provenance lint without changing checked:false', async () => {
+    const ref = '[turn:wakepump@2026-09-05T21:26:41Z]';
+    getWorkItem.mockResolvedValue({ id: 'WI-PROVENANCE-UNRESOLVED', harness: 'papercup' });
+    const stored = `The wake-pump action is recorded at ${ref}.`;
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-PROVENANCE-UNRESOLVED', checkpoint: stored });
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches.some((match: { kind: string }) => match.kind === 'unresolved-turn-ref')).toBe(
+      true,
+    );
+    expect(result.turnProvenance?.refs?.[0]).toMatchObject({ ref, found: false, checked: false });
+  });
+
   it('EI-21306957457076433: does not retain a factual timeout classification as bare imperative lint', async () => {
     const current = 'Fresh checkpoint evidence for the next wake.';
     const retained =
