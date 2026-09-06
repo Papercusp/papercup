@@ -540,12 +540,12 @@ export function OtherDetail({
    *  hosts retain the shared card's plain-text question presentation. */
   bodyPresentation?: 'plain' | 'item-open';
 }) {
-  // The row arrives from the SLIMMED list feed (body clipped, `actions` dropped
-  // — slim-plans-attention-sync-payload-2026-07-26 P-003), so the detail pane
-  // fetches the full item back. Hydrating HERE rather than in each host keeps
-  // all three call sites (InboxPane, PlansClient, PreviewPanel) unchanged, and
-  // guarantees every action dispatched below acts on the full row.
-  const { item, hydrated } = useHydratedAttentionItem(listItem);
+  // The row arrives from the SLIMMED list feed with a clipped body and retained
+  // action descriptors (item-open P-003 / D-002). The detail fetch still merges
+  // the full body over it, but current rows can paint and dispatch their actions
+  // immediately. A legacy/partial row gets the fixed-height fallback until its
+  // matching detail response settles.
+  const { item, actionsReady } = useHydratedAttentionItem(listItem);
   // The per-item why-line copy of the retired deep-link (P-011 / D-021) is gone
   // with the tier flag (P-068/D-098), so this component no longer reads a flag.
   const [discussOpen, setDiscussOpen] = useState(false);
@@ -644,7 +644,7 @@ export function OtherDetail({
     }
   };
 
-  const actions = hydrated ? (
+  const actions = actionsReady ? (
     <QueueCardActions
       options={spec.options}
       answered={answered}
@@ -684,10 +684,9 @@ export function OtherDetail({
               {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
             </>
           ) : null}
-          {/* #4: actions live in the toolbar, not in the card body.
-              Held back until the detail fetch lands: `actions` is dropped from the
-              list feed, so rendering the bar early would show ZERO buttons — which
-              reads as "this item has no actions" rather than "still loading". */}
+          {/* #4: actions live in the toolbar, not in the card body. Current list
+              rows carry them at pane paint; only a legacy/partial row holds this
+              slot with the fixed-height loading affordance. */}
           {toolbarActions}
         </div>
       ) : null}

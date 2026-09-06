@@ -174,12 +174,10 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
   const escOpts = escalationOptions(item);
   const options: AskChoiceOption[] = [];
 
-  // `?? []` is NOT defensive noise — the LIST FEED DELIBERATELY DROPS `actions`
-  // (see PlanOtherList's toolbar comment: "actions is dropped from the list feed,
-  // so rendering the bar early would show ZERO buttons"), and they only arrive
-  // once the per-item DETAIL fetch lands. So between first paint and that fetch
-  // resolving, this function is legitimately called with an item that has no
-  // `actions` — and an unguarded for-of over undefined THROWS, which React turns
+  // `?? []` is NOT defensive noise. The current LIST feed retains `actions` so
+  // the selected pane can paint them immediately (item-open P-003 / D-002), but
+  // older snapshots and partial producers can still omit the optional field.
+  // An unguarded for-of over undefined THROWS, which React turns
   // into a crashed HUD tab ("undefined is not an object (evaluating
   // 'item.actions')" — owner-visible 2026-07-28, whole tab replaced by an error
   // panel). The toolbar was already held back for exactly this reason; this call
@@ -187,10 +185,11 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
   //
   // The declared type USED to say `actions: AttentionAction[]` (non-optional) —
   // a TYPE LIE the list feed violated at runtime, and the reason tsc never
-  // flagged this. That is now fixed: `AttentionItem.actions` is optional, so tsc
-  // forces this guard at every consumer instead of leaving the next one to
-  // rediscover the crash. `attention-list-feed-shape.test.ts` holds the line by
-  // driving the REAL projection rather than a hand-written fixture.
+  // flagged this. `AttentionItem.actions` stays optional, so tsc forces this
+  // guard at every consumer instead of leaving the next one to rediscover the
+  // crash. `attention-list-feed-shape.test.ts` holds both the retention and
+  // omission paths by driving the REAL projection rather than a hand-written
+  // list-row fixture.
   for (const a of item.actions ?? []) {
     // Escalation with named options: expand the generic `resolve` action into
     // one terminal option per named choice (each carries the option id the

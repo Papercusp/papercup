@@ -33,14 +33,20 @@
  *     dropping it silently empties the session-chat escalation cards. KEPT.
  *   - `report` — read by InboxPane's `buildDiscussDraft`, and it measured 0
  *     bytes in practice (no live item carries one). KEPT: no win, real risk.
- * So only `actions` is dropped (88KB, read solely by attention-card.ts at
- * detail time) and `body` is clipped (609KB → ~256KB; median 336B, p90 1282B,
- * max 6431B over 1097 items). `body` is CLIPPED rather than dropped because it
+ * P-003 later restored `actions` to the list projection: the Resolution Inbox
+ * must paint its action strip from the selected list row rather than wait for a
+ * second `plans.attentionItem` round-trip. The measured cost is 59,477 bytes in
+ * a 1,033,734-byte 500-item response (5.8%, about 12KB at the normal 100-item
+ * page), while removing the hydration stall from every action-bearing row.
+ * `body` remains clipped (609KB → ~256KB; median 336B, p90 1282B, max 6431B
+ * over 1097 items). `body` is CLIPPED rather than dropped because it
  * is not purely detail-tier either — InboxPane's client-side search haystack,
  * AdvOverviewTab's row tooltip and attention-card's question fallback all read
  * it, and dropping it would silently degrade inbox search to title-only.
- * The full `body` + `actions` come back on selection via the `plans.attentionItem`
- * resolver, which bypasses this projection (`uiProjection: false`).
+ * The full `body` comes back on selection via the `plans.attentionItem`
+ * resolver, which bypasses this projection (`uiProjection: false`) and merges
+ * over the list row. Its `actions` field may merge too, but buttons no longer
+ * depend on that detail response.
  *
  * The attention feed additionally OMITS NULL-VALUED KEYS at the item + group top
  * level (no-http-anywhere-2026-07-28 D-025 / WI-7039) — 154,971 B of a live
@@ -166,13 +172,6 @@ const ITEM_DROP = [
  */
 export const UI_ATTENTION_BODY_PREVIEW_MAX = 280;
 
-/**
- * DETAIL-tier fields on an attention item — dropped from the list feed and
- * re-supplied by `plans.attentionItem`. Deliberately short: see the header for
- * why `ref` and `report` are NOT in here despite looking like they belong.
- */
-const ATTENTION_ITEM_DROP = ['actions'] as const;
-
 function clipPreview(v: unknown, n: number): unknown {
   if (typeof v !== 'string') return v;
   return v.length > n ? `${v.slice(0, n - 1)}…` : v;
@@ -286,8 +285,9 @@ function projectList(data: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * Slim the attention feed to its LIST shape: drop the detail-tier fields, clip
- * `body` to a search/tooltip preview, and omit null-valued keys (see
+ * Slim the attention feed to its LIST shape: retain the small action
+ * descriptors needed at pane paint, clip `body` to a search/tooltip preview,
+ * and omit null-valued keys (see
  * {@link omitNullValues} — 14.6% of this payload). A clipped item is stamped
  * `bodyTruncated: true` so a consumer can tell "short body" from "clipped body"
  * without re-measuring the string.
@@ -301,7 +301,7 @@ function projectAttention(data: Record<string, unknown>): Record<string, unknown
     if (!Array.isArray(g.items)) return omitNullValues(g);
     const items = g.items.map((item) => {
       if (!item || typeof item !== 'object') return item;
-      const it = omitNullValues(omit(item as Record<string, unknown>, ATTENTION_ITEM_DROP));
+      const it = omitNullValues(item as Record<string, unknown>);
       const body = it.body;
       if (typeof body === 'string' && body.length > UI_ATTENTION_BODY_PREVIEW_MAX) {
         it.body = clipPreview(body, UI_ATTENTION_BODY_PREVIEW_MAX);

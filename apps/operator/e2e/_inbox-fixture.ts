@@ -79,7 +79,15 @@ export function mkInboxItems(
     triageNote: null,
     triagedBy: null,
     triagedAt: null,
-    actions: [{ id: "ack", label: "Acknowledge", primary: true }],
+    // Four descriptors exercise item-open P-003's single-row action strip.
+    // They are never dispatched by the geometry spec; the labels and count are
+    // deliberately wide enough to catch wrapping at 1280px.
+    actions: [
+      { id: "ack", label: "Acknowledge", primary: true },
+      { id: "message-owner", label: "Message owner", primary: false },
+      { id: "open", label: "Open source", primary: false },
+      { id: "dismiss", label: "Dismiss", primary: false },
+    ],
     ref: { kind: "coord-message", msgId: idPrefix + "msg-" + i },
   }));
 }

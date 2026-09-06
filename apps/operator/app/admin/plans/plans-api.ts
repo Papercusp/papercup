@@ -385,14 +385,12 @@ export interface AttentionItem {
   triageNote?: string;
   triagedBy?: string;
   triagedAt?: string;
-  /** DETAIL-tier (WI-6551): the `plans.attention` LIST feed drops this — see
-   *  `ATTENTION_ITEM_DROP` in operator-core's ui-read-projection.ts — and it is
-   *  re-supplied by the `plans.attentionItem` detail fetch. It is therefore
-   *  ABSENT between first paint and hydration, so it MUST stay optional: when it
-   *  was declared `AttentionAction[]`, the type asserted a guarantee the wire
-   *  format does not provide, tsc stayed silent, and `attentionItemToCardSpec`
-   *  iterated `undefined` and took down the whole HUD tab. Guard every read
-   *  (`item.actions ?? []`) rather than trusting the declaration. */
+  /** Retained on the `plans.attention` LIST feed so item-open actions paint
+   *  immediately (inbox-item-open-spec-parity P-003 / D-002). It remains
+   *  optional because older snapshots and producers may genuinely omit it;
+   *  when it was declared required, `attentionItemToCardSpec` iterated an
+   *  unexpected `undefined` and took down the whole HUD tab. Guard every read
+   *  (`item.actions ?? []`) rather than trusting producer completeness. */
   actions?: AttentionAction[];
   ref: { kind: AttentionKind } & Record<string, unknown>;
   /** Structured report payload — the shared ReportBlock the detail pane
@@ -1864,10 +1862,10 @@ export function useAttentionRefs(enabled = true): {
  * (slim-plans-attention-sync-payload-2026-07-26 P-004/P-005).
  *
  * The `plans.attention` list feed is slimmed at the sync boundary — each item's
- * `body` is clipped to a preview and `actions` is dropped — because it was the
- * fattest UI read at 1490KB. This fetches the ONE selected item back at full
- * fidelity. Cheap: the resolver rides the plans:attention tool's own warm read
- * cache, which the list feed just populated.
+ * `body` is clipped to a preview, while its small `actions` array is retained so
+ * controls paint immediately. This fetches the ONE selected item back at full
+ * body fidelity. Cheap: the resolver rides the plans:attention tool's own warm
+ * read cache, which the list feed just populated.
  *
  * Consumers should not call this directly — {@link useHydratedAttentionItem}
  * merges the result over the list row, which is what `OtherDetail` uses.
@@ -1893,11 +1891,11 @@ export function usePlanAttentionItem(
  * A list-feed attention row with its detail-tier fields filled back in.
  *
  * Returns the LIST row immediately (so the detail pane paints its title, tier,
- * badges and layout with no spinner) and merges the full row over it when it
- * arrives — the clipped `body` becomes the full body and `actions` reappears.
- * `hydrated` is false until then, which is what gates rendering the action card:
- * a card built from a row with no `actions` would render as a question with no
- * buttons, which reads as "this item has no actions" rather than "still loading".
+ * badges, layout and retained actions with no spinner) and merges the full row
+ * over it when it arrives — principally replacing the clipped `body`.
+ * `actionsReady` is independent of full hydration: a current list row with an
+ * array is ready immediately; a legacy/partial row keeps the fixed-height
+ * fallback until its matching detail response settles.
  *
  * A failed detail fetch degrades to the list row rather than blanking the pane —
  * the preview body and every non-action affordance still work.
@@ -1905,15 +1903,27 @@ export function usePlanAttentionItem(
 export function useHydratedAttentionItem(item: AttentionItem | null): {
   item: AttentionItem | null;
   hydrated: boolean;
+  actionsReady: boolean;
 } {
   const detail = usePlanAttentionItem(item?.id ?? null);
   const full = detail.data;
   return useMemo(() => {
-    if (!item) return { item: null, hydrated: false };
+    if (!item) return { item: null, hydrated: false, actionsReady: false };
     // Only accept a detail row for the item we actually asked about — an
     // in-flight selection change can otherwise merge the previous item's body.
-    if (!full || full.id !== item.id) return { item, hydrated: false };
-    return { item: { ...item, ...full }, hydrated: true };
+    if (!full || full.id !== item.id) {
+      return {
+        item,
+        hydrated: false,
+        actionsReady: Array.isArray(item.actions),
+      };
+    }
+    return {
+      item: { ...item, ...full },
+      hydrated: true,
+      // A settled full row with no actions means "no actions", not "loading".
+      actionsReady: true,
+    };
   }, [item, full]);
 }
 

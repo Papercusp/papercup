@@ -1,21 +1,16 @@
 // @vitest-environment node
 /**
- * WI-6551 — the LIST-FEED SHAPE regression.
+ * P-003 / D-002 — the LIST-FEED action-retention contract.
  *
- * The `plans.attention` list feed is slimmed at the sync boundary: it DROPS
- * `actions`, which is re-supplied only when the per-item `plans.attentionItem`
- * detail fetch lands. Between first paint and that fetch, every consumer sees an
- * item with NO `actions` — and `attentionItemToCardSpec` iterated it unguarded,
- * threw, and React replaced the ENTIRE HUD tab with an error panel
- * ("undefined is not an object (evaluating 'item.actions')", owner-visible).
+ * The `plans.attention` list feed still clips the large body, but it RETAINS the
+ * small `actions` array so the selected pane can paint its controls without
+ * waiting for the per-item `plans.attentionItem` detail fetch. The field remains
+ * optional because legacy snapshots and partial producers can omit it.
  *
  * WHY THIS FILE EXISTS SEPARATELY FROM attention-card.test.ts:
- * nothing failed when that bug shipped. Every existing fixture — including
- * `item()` in attention-card.test.ts — is FULLY POPULATED (`actions: []`), so no
- * test had ever rendered the list-feed shape. A fixture that hand-omits the field
- * would be an improvement but still just an assertion about a hand-written
- * object; if the projection later dropped a DIFFERENT field, the fixture would
- * happily keep passing.
+ * nothing failed when the original omission bug shipped because every card
+ * fixture was fully populated. A hand-written list row would repeat that blind
+ * spot, so these tests drive the REAL projection and consume what it emits.
  *
  * So these tests drive the REAL projection (`projectPlansReadForUi`, the same
  * function the sync boundary calls) and consume WHAT IT ACTUALLY EMITS. The
@@ -51,6 +46,8 @@ function producerItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     actions: [
       { id: 'mark-done', label: 'Resolve', primary: true },
       { id: 'chat', label: 'Chat' },
+      { id: 'open', label: 'Open' },
+      { id: 'drop', label: 'Drop' },
     ],
     ref: { kind: 'plan-item' },
     ...overrides,
@@ -66,58 +63,35 @@ function throughListFeed(item: AttentionItem): Record<string, unknown> {
 }
 
 describe('the plans.attention LIST feed shape', () => {
-  it('really does drop `actions` (guards this whole file against going vacuous)', () => {
-    // If the projection ever stops dropping `actions`, every test below would
-    // still pass while testing NOTHING — they would be handed a fully-populated
-    // item. This asserts the precondition the rest of the file depends on.
+  it('retains all four action descriptors through the real list projection', () => {
     const row = throughListFeed(producerItem());
-    expect('actions' in row).toBe(false);
-    expect(row.actions).toBeUndefined();
-    // …and that it is a slim of a REAL item, not an empty object.
+    expect(row.actions).toEqual([
+      { id: 'mark-done', label: 'Resolve', primary: true },
+      { id: 'chat', label: 'Chat' },
+      { id: 'open', label: 'Open' },
+      { id: 'drop', label: 'Drop' },
+    ]);
     expect(row.id).toBe('x');
     expect(row.title).toBe('Title');
   });
 
-  it('the projected row is genuinely the CRASHING shape (non-vacuity)', () => {
-    // The tests below assert "does not throw". That is only meaningful if the
-    // input would throw under the ORIGINAL unguarded code — otherwise they pass
-    // while proving nothing, which is precisely how the outage shipped green.
-    // Reproduce the original `for (const a of item.actions)` here: it MUST still
-    // throw on this row. If it ever stops, the fixture has drifted off the real
-    // list-feed shape and every "does not throw" below has quietly gone vacuous.
-    const row = throughListFeed(producerItem());
-    expect(() => {
-      for (const _a of row.actions as unknown as Iterable<unknown>) {
-        /* the exact unguarded read that took down the HUD tab */
-      }
-    }).toThrow();
+  it('turns the projected list row into all four options immediately', () => {
+    const row = throughListFeed(producerItem()) as unknown as AttentionItem;
+    expect(attentionItemToCardSpec(row).options.map((o) => o.id)).toEqual([
+      'mark-done',
+      'chat',
+      'open',
+      'drop',
+    ]);
   });
 
-  it('attentionItemToCardSpec does not throw on a list-feed row (the HUD crash)', () => {
-    const row = throughListFeed(producerItem()) as unknown as AttentionItem;
+  it('still tolerates a producer that genuinely omits the optional field', () => {
+    const row = throughListFeed(producerItem({ actions: undefined })) as unknown as AttentionItem;
     expect(() => attentionItemToCardSpec(row)).not.toThrow();
+    expect(attentionItemToCardSpec(row).options).toEqual([]);
   });
 
-  it('a list-feed row yields no action-derived options, rather than crashing', () => {
-    const row = throughListFeed(producerItem()) as unknown as AttentionItem;
-    const spec = attentionItemToCardSpec(row);
-    // The producer had 2 actions; post-projection they are simply not here yet.
-    // Correct behaviour is an empty/actionless card, NOT an exception.
-    const ids = spec.options.map((o) => o.id);
-    expect(ids).not.toContain('mark-done');
-    expect(ids).not.toContain('chat');
-  });
-
-  it('the SAME item hydrated (detail fetch landed) does produce its actions', () => {
-    // The complement of the test above: proves the empty result is a property of
-    // the LIST shape, not of attentionItemToCardSpec being broken for everyone.
-    const spec = attentionItemToCardSpec(producerItem());
-    expect(spec.options.map((o) => o.id)).toContain('chat');
-  });
-
-  it('survives an escalation row whose actions the feed dropped', () => {
-    // The escalation path expands `resolve`/`mark-done` into per-option buttons,
-    // a second read of `actions` — regression-cover it on the list shape too.
+  it('expands an escalation action directly from the projected list row', () => {
     const row = throughListFeed(
       producerItem({
         kind: 'coord-escalation',
@@ -128,15 +102,14 @@ describe('the plans.attention LIST feed shape', () => {
         },
       }),
     ) as unknown as AttentionItem;
-    expect(() => attentionItemToCardSpec(row)).not.toThrow();
+    expect(attentionItemToCardSpec(row).options.map((o) => o.id)).toContain('opt-a');
   });
 });
 
 /**
- * COMPILE-TIME half of the guard. `actions` must stay OPTIONAL on `AttentionItem`:
- * the moment it goes back to required, a list-feed row (which lacks it) stops
- * being a valid `AttentionItem` and this function fails to typecheck — which is
- * exactly the type lie that let the original crash through tsc unnoticed.
+ * COMPILE-TIME half of the guard. `actions` stays OPTIONAL on `AttentionItem`
+ * because producer absence remains legal even though the projection now keeps
+ * the field whenever it is present.
  */
 type ListFeedRow = Omit<AttentionItem, 'actions'>;
 export const _actionsMustStayOptional = (row: ListFeedRow): AttentionItem => row;

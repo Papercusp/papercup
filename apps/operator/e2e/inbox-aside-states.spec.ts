@@ -38,6 +38,7 @@ const VIEWPORTS = [
   { width: 1280, height: 720, rows: 8 },
   { width: 1366, height: 768, rows: 8 },
   { width: 1440, height: 810, rows: 8 },
+  { width: 1600, height: 1020, rows: 8 },
   { width: 1920, height: 1080, rows: 8 },
 ] as const;
 
@@ -151,6 +152,16 @@ function measureSelected(page: Page) {
       (c) => c !== head && c !== rail,
     );
     if (!(card instanceof HTMLElement)) throw new Error("missing detail card");
+    const actionGroup = card.querySelector(".pc-items__detail-actions");
+    if (!(actionGroup instanceof HTMLElement)) {
+      throw new Error("missing immediate detail actions");
+    }
+    const actionButtons = Array.from(
+      actionGroup.querySelectorAll(".pc-items__action"),
+    );
+    const actionTops = actionButtons.map((button) => rect(button).top);
+    const actionRect = rect(actionGroup);
+    const cardRect = rect(card);
     // 58ch in the card's own font: a 58-zero span measured in place.
     const probe = document.createElement("span");
     probe.textContent = "0".repeat(58);
@@ -175,6 +186,18 @@ function measureSelected(page: Page) {
       railWidth: rect(rail).width,
       cardWidth: rect(card).width,
       ch58,
+      actionCount: actionButtons.length,
+      actionLabels: actionButtons.map((button) => button.textContent),
+      actionTopSpread:
+        actionTops.length > 0
+          ? Math.max(...actionTops) - Math.min(...actionTops)
+          : null,
+      actionsInsideMeasure:
+        actionRect.left >= cardRect.left - 0.5 &&
+        actionRect.right <= cardRect.right + 0.5,
+      actionsLoading: !!card.querySelector(
+        '[data-testid="detail-actions-loading"]',
+      ),
       rowsWhole: rows.filter(
         (r) => r.top >= lr.top - 0.5 && r.bottom <= lr.bottom + 0.5,
       ).length,
@@ -255,6 +278,16 @@ for (const vp of VIEWPORTS) {
       ]);
       expect(sel.railWidth).toBeCloseTo(190, 0);
       expect(sel.cardWidth).toBeLessThanOrEqual(sel.ch58 + 1);
+      expect(sel.actionCount).toBe(4);
+      expect(sel.actionLabels).toEqual([
+        "Acknowledge",
+        "Message owner",
+        "Open source",
+        "Dismiss",
+      ]);
+      expect(sel.actionTopSpread).toBeLessThanOrEqual(1);
+      expect(sel.actionsInsideMeasure).toBe(true);
+      expect(sel.actionsLoading).toBe(false);
       expect(sel.briefingMounted).toBe(false);
       // The list is not disturbed by the selection: same rows, the selected
       // one on screen, its title on one line.

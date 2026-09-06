@@ -385,8 +385,8 @@ export default function HudView({
         planSlug: i.planSlug,
         harnessSlug: i.harnessSlug,
         // WI-6742: the STRUCTURED destination. Carried through the slimming
-        // (ui-read-projection drops only `actions` and clips `body`), so
-        // routing needs no extra fetch.
+        // (ui-read-projection clips `body` but retains both `ref` and the small
+        // action descriptors), so routing needs no extra fetch.
         ref: (i as { ref?: { kind: string; slug?: string | null } | null }).ref ?? null,
       }));
   }, [attention.items, scopedHarnessSlugs]);

@@ -4,14 +4,14 @@
  * split (slim-plans-attention-sync-payload-2026-07-26 P-005).
  *
  * The `plans.attention` list feed is slimmed at the sync boundary (body clipped
- * to 280, `actions` dropped), so `OtherDetail` merges the full item back over
- * its list row. Everything that can go wrong with that merge is here:
+ * to 280, action descriptors retained), so `OtherDetail` paints actions from
+ * the list row and merges the full item back over it. Everything that can go
+ * wrong with that merge is here:
  *
  *   - the pane must PAINT from the list row immediately (no spinner), so the
  *     hook returns the list row while the detail is in flight;
- *   - `hydrated` must stay false until the full row lands — it is what gates
- *     the action bar, and a bar rendered from a row with no `actions` shows
- *     ZERO buttons, which reads as "no actions" rather than "loading";
+ *   - `actionsReady` is true immediately for a current list row and remains
+ *     false for a legacy/partial row until the full row lands;
  *   - a detail response for a DIFFERENT id must never be merged: selection can
  *     change while a fetch is in flight, and merging the previous item's body
  *     onto the new row is a silent, plausible-looking corruption;
@@ -37,7 +37,7 @@ const listRow = (over: Partial<AttentionItem> = {}): AttentionItem =>
     id: 'a1',
     kind: 'coord-escalation',
     title: 'Needs a decision',
-    // The slimmed list shape: clipped body, NO actions.
+    // The slimmed list shape: clipped body. Callers opt into an actions array.
     body: 'clipped preview…',
     bodyTruncated: true,
     ...over,
@@ -67,15 +67,29 @@ describe('useHydratedAttentionItem', () => {
     setDetail([]);
     const { result } = renderHook(() => useHydratedAttentionItem(listRow()));
     expect(result.current.hydrated).toBe(false);
+    expect(result.current.actionsReady).toBe(false);
     // Paints immediately from the list row — no null/blank pane.
     expect(result.current.item?.title).toBe('Needs a decision');
     expect(result.current.item?.body).toBe('clipped preview…');
+  });
+
+  it('marks retained list actions ready before the detail response lands', () => {
+    setDetail([]);
+    const { result } = renderHook(() =>
+      useHydratedAttentionItem(
+        listRow({ actions: [{ id: 'resolve', label: 'Resolve' }] }),
+      ),
+    );
+    expect(result.current.hydrated).toBe(false);
+    expect(result.current.actionsReady).toBe(true);
+    expect(result.current.item?.actions).toHaveLength(1);
   });
 
   it('merges the full row over the list row once it lands', () => {
     setDetail([detailRow()]);
     const { result } = renderHook(() => useHydratedAttentionItem(listRow()));
     expect(result.current.hydrated).toBe(true);
+    expect(result.current.actionsReady).toBe(true);
     expect(result.current.item?.body).toBe('the full untruncated body of the escalation');
     expect(result.current.item?.actions).toHaveLength(1);
     expect(result.current.item?.ref).toBeTruthy();
@@ -96,6 +110,7 @@ describe('useHydratedAttentionItem', () => {
     setDetail([detailRow({ id: 'a1' })]);
     const { result } = renderHook(() => useHydratedAttentionItem(listRow({ id: 'a2' })));
     expect(result.current.hydrated).toBe(false);
+    expect(result.current.actionsReady).toBe(false);
     expect(result.current.item?.id).toBe('a2');
     expect(result.current.item?.body).toBe('clipped preview…');
   });
@@ -105,6 +120,7 @@ describe('useHydratedAttentionItem', () => {
     const { result } = renderHook(() => useHydratedAttentionItem(listRow()));
     expect(result.current.item).not.toBeNull();
     expect(result.current.hydrated).toBe(false);
+    expect(result.current.actionsReady).toBe(false);
   });
 
   it('handles a null selection without fetching', () => {
@@ -112,5 +128,6 @@ describe('useHydratedAttentionItem', () => {
     const { result } = renderHook(() => useHydratedAttentionItem(null));
     expect(result.current.item).toBeNull();
     expect(result.current.hydrated).toBe(false);
+    expect(result.current.actionsReady).toBe(false);
   });
 });

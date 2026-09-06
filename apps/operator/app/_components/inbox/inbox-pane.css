@@ -1121,9 +1121,25 @@
   grid-area: discussion;
   min-width: 0;
 }
+.op-inbox__aside .pc-items__detail-actions {
+  flex-wrap: nowrap;
+  width: 100%;
+  min-height: 34px;
+}
+.op-inbox__aside .pc-items__detail-loading {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+}
 .op-inbox__aside .pc-items__action {
-  flex: 0 1 auto;
-  min-width: 120px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: 8px;
+  justify-content: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* ── The briefing (P-005): the aside's unselected state ──────────────────
    Headline count, the four tiles, the last run's readout with its grouped

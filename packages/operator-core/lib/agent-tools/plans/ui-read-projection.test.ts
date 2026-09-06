@@ -251,10 +251,10 @@ describe('projectPlansReadForUi — plans:list', () => {
  * SUPERSEDES the previous "attention passes through byte-identical" pin
  * (slim-plans-attention-sync-payload-2026-07-26 P-003). attention WAS the one
  * fat read left unprojected — 1490KB, 97.9% of it the nested items[] — and it
- * now gets a LIST/DETAIL split. The split is deliberately narrow, and the two
- * KEPT-field tests below are the important ones: both `ref` and `report` look
- * detail-tier but are read from the LIST feed, so dropping them would be a
- * silent regression rather than a saving.
+ * now gets a LIST/DETAIL split. The split is deliberately narrow, and the
+ * KEPT-field tests below are the important ones: `actions` paints the selected
+ * row's controls immediately, while `ref` and `report` have other list-level
+ * consumers. Dropping any of them would be a silent regression.
  */
 describe('projectPlansReadForUi — attention list/detail split', () => {
   const attentionFixture = () => ({
@@ -269,7 +269,12 @@ describe('projectPlansReadForUi — attention list/detail split', () => {
             body: long(2000),
             ref: { kind: 'plan-item', slug: 'p', itemId: 'P-1' },
             report: { title: 'r', plans: [] },
-            actions: [{ id: 'answer', label: 'Answer' }],
+            actions: [
+              { id: 'answer', label: 'Answer' },
+              { id: 'message-owner', label: 'Message owner' },
+              { id: 'open', label: 'Open' },
+              { id: 'dismiss', label: 'Dismiss' },
+            ],
           },
         ],
       },
@@ -279,10 +284,13 @@ describe('projectPlansReadForUi — attention list/detail split', () => {
   const firstItem = (out: unknown) =>
     (out as { groups: Array<{ items: Array<Record<string, unknown>> }> }).groups[0].items[0];
 
-  it('drops `actions` — the only purely detail-tier field (attention-card reads it on selection)', () => {
-    expect(firstItem(projectPlansReadForUi('attention', attentionFixture()))).not.toHaveProperty(
-      'actions',
-    );
+  it('KEEPS all `actions` — the selected pane paints them before detail hydration', () => {
+    expect(firstItem(projectPlansReadForUi('attention', attentionFixture())).actions).toEqual([
+      { id: 'answer', label: 'Answer' },
+      { id: 'message-owner', label: 'Message owner' },
+      { id: 'open', label: 'Open' },
+      { id: 'dismiss', label: 'Dismiss' },
+    ]);
   });
 
   it('KEEPS `ref` — SessionChatModal filters the whole LIST feed by ref.options', () => {

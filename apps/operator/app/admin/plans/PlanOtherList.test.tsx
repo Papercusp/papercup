@@ -215,10 +215,10 @@ describe('PlanOtherList — Queue unification (includePlanItems)', () => {
 });
 
 describe('OtherDetail — host action placement', () => {
-  it('places the action-loading affordance after the body for an inline Inbox host', () => {
+  it('uses the fixed-height fallback after the body when a legacy row has no actions field', () => {
     render(
       <OtherDetail
-        item={item({ body: 'Full owner-visible description' })}
+        item={item({ body: 'Full owner-visible description', actions: undefined })}
         actionsPlacement="after-body"
         onResolved={() => {}}
       />,
@@ -230,6 +230,30 @@ describe('OtherDetail — host action placement', () => {
     expect(body?.contains(loading)).toBe(true);
     expect(body?.textContent).toContain('Full owner-visible description');
     expect(body?.lastElementChild).toBe(loading);
+  });
+
+  it('renders all list-carried actions immediately without waiting for detail hydration', () => {
+    render(
+      <OtherDetail
+        item={item({
+          actions: [
+            { id: 'resolve', label: 'Resolve' },
+            { id: 'chat', label: 'Chat' },
+            { id: 'open', label: 'Open' },
+            { id: 'drop', label: 'Drop' },
+          ],
+        })}
+        actionsPlacement="after-body"
+        onResolved={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('detail-actions-loading')).toBeNull();
+    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Resolve',
+      'Chat',
+      'Open',
+      'Drop',
+    ]);
   });
 });
 
@@ -297,7 +321,12 @@ describe('OtherDetail — host metadata placement (P-008)', () => {
   it('omits the chip toolbar when the host owns the metadata, keeping the body and its after-body actions', () => {
     render(
       <OtherDetail
-        item={item({ body: 'Full owner-visible description', category: 'deploy', importance: 'high' })}
+        item={item({
+          body: 'Full owner-visible description',
+          category: 'deploy',
+          importance: 'high',
+          actions: undefined,
+        })}
         actionsPlacement="after-body"
         metadataPlacement="host"
         onResolved={() => {}}
@@ -314,7 +343,13 @@ describe('OtherDetail — host metadata placement (P-008)', () => {
   });
 
   it('keeps the toolbar for toolbar-placed actions even when the chips move to the host', () => {
-    render(<OtherDetail item={item()} metadataPlacement="host" onResolved={() => {}} />);
+    render(
+      <OtherDetail
+        item={item({ actions: undefined })}
+        metadataPlacement="host"
+        onResolved={() => {}}
+      />,
+    );
     const toolbar = document.querySelector('.pc-items__detail-toolbar');
     expect(toolbar).toBeTruthy();
     expect(toolbar?.querySelector('.pc-tier')).toBeNull();
