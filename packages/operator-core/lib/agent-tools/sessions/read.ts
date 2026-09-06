@@ -295,6 +295,7 @@ export default defineTool({
     const returnedSessions: Array<{ source_kind: string; session_id: string }> = [];
     const returnedSessionKeys = new Set<string>();
     for (const row of rows) {
+      if (typeof row.session_id !== 'string' || !row.session_id) continue;
       const key = `${row.source_kind}\u0000${row.session_id}`;
       if (returnedSessionKeys.has(key)) continue;
       returnedSessionKeys.add(key);
