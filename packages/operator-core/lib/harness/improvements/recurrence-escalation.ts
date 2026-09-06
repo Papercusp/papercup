@@ -50,6 +50,18 @@ export const RECURRENCE_ESCALATION_THRESHOLD = 3;
 export const DEFAULT_MAX_ACTIONS = 10;
 
 /**
+ * Hydration budget for phase 2, in member rows. Groups are taken whole-or-not-at-all
+ * (the loop BREAKS rather than truncating), because a partially hydrated group would
+ * make `sig.count` under-report — and that count is both the ≥3 threshold test and the
+ * number quoted to the owner in "recurred N×".
+ *
+ * Declared BEFORE {@link RECURRING_SIGNATURE_SCAN_CAP} because that cap is derived
+ * from this one; `const` is in the temporal dead zone until initialised, so the
+ * ordering here is load-bearing, not cosmetic.
+ */
+export const RECURRING_MEMBER_HYDRATION_CAP = 2000;
+
+/**
  * WI-1216687 — the two-phase read that makes the recurrence population a SET.
  *
  * Before this, `runRecurrenceEscalation` read `{ windowPerScope: true }` with no
@@ -73,15 +85,38 @@ export const DEFAULT_MAX_ACTIONS = 10;
  * (`classifyIdeaType` hays over `title + body`; `alreadyGym` reads the payload-derived
  * `ideaLifecycle`), so no classification silently drifts.
  */
-export const RECURRING_SIGNATURE_SCAN_CAP = 50;
-
 /**
- * Hydration budget for phase 2, in member rows. Groups are taken whole-or-not-at-all
- * (the loop BREAKS rather than truncating), because a partially hydrated group would
- * make `sig.count` under-report — and that count is both the ≥3 threshold test and the
- * number quoted to the owner in "recurred N×".
+ * Slate-size safety bound — DERIVED from the real cost bound, never tuned by hand.
+ *
+ * {@link RECURRING_MEMBER_HYDRATION_CAP} is what actually bounds phase-2 cost, and it
+ * bounds it correctly: by ACCUMULATED members, whole-group-at-a-time. A second, fixed
+ * cap on the number of SIGNATURES is redundant with it — and because the slate is
+ * ordered `count desc`, it is the redundant one that excludes PERMANENTLY. A group
+ * below the cut is never hydrated, so it never enters the idempotence rotation that
+ * drains the `maxActions` budget (severity bumps stop at major, gym routing skips
+ * already-routed) — not on this run, and not on any future run either.
+ *
+ * Measured on `harness:papercusp`'s observation lane, 2026-09-06: 243 actionable
+ * signatures (≥3 members, ≥1 open) holding 1,408 members in total, against this
+ * 2,000-member budget. The whole actionable population FITS. The fixed cap of 50 was
+ * discarding 193 of those 243 (79.4%) and raising the effective threshold from the
+ * documented 3 to 7 — the count held by the 50th-ranked group — while saving nothing:
+ * the top 50 spent just 597 of the 2,000 members, leaving the real bound 70% idle.
+ *
+ * That is the same cap the partition note above was written against, and this is the
+ * assumption it closes on: "where actionable signatures alone exceed the cap they lose
+ * their slot, which costs only the re-emitted `suggest-promotion` that capture dedup
+ * was discarding anyway." True for the 49 actionable signatures measured then; false
+ * at 243, where what is lost is 193 groups that are never hydrated at all. The bound
+ * was not wrong — it was OUTGROWN, ~5× in three weeks. Deriving it is what stops it
+ * being outgrown a third time.
+ *
+ * Floor-divided by the threshold because ≥3 members is the smallest qualifying group,
+ * so this bound can never bind before the member budget does.
  */
-export const RECURRING_MEMBER_HYDRATION_CAP = 2000;
+export const RECURRING_SIGNATURE_SCAN_CAP = Math.floor(
+  RECURRING_MEMBER_HYDRATION_CAP / RECURRENCE_ESCALATION_THRESHOLD,
+);
 
 /** Phase-1 output: everything decidable from cheap columns alone. */
 export interface RecurringSignatureSlate {
