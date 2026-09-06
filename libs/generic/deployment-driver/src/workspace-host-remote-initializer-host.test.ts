@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,7 +24,15 @@ import {
   buildWorkspaceHostCredentialReference,
   buildWorkspaceHostCredentialRevocationReference,
 } from "./workspace-host-credential-namespace";
-import { workspaceHostCredentialMaterialPath } from "./workspace-host-credential-delivery";
+import {
+  NodeWorkspaceHostCredentialDeliveryFilesystem,
+  WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
+  WorkspaceHostCredentialGenerationConflictError,
+  WorkspaceHostCredentialMaterial,
+  executeWorkspaceHostCredentialDelivery,
+  parseWorkspaceHostCredentialDeliveryRequest,
+  workspaceHostCredentialMaterialPath,
+} from "./workspace-host-credential-delivery";
 import type {
   WorkspaceHostAgentProbeInvocation,
   WorkspaceHostAgentProbeRunner,
@@ -172,6 +185,106 @@ function fixture() {
 }
 
 describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials", () => {
+  it.each(
+    ["approve", "reject"].flatMap((action) =>
+      [false, true].flatMap((scoped) =>
+        [false, true].map((newline) => ({ action, scoped, newline, quoted: false })),
+      ),
+    ).concat([{ action: "approve", scoped: true, newline: false, quoted: true }]),
+  )("keeps delivered bytes immutable after real Git $action (scoped=$scoped, newline=$newline, quoted=$quoted)", async ({ action, scoped, newline, quoted }) => {
+    const directory = await mkdtemp(join(tmpdir(), "workspace-git-"));
+    try {
+      // Exercise shell quoting too: the helper's path is data, never shell code.
+      const materialRoot = join(directory, quoted ? "credential's $(false) store" : "credentials");
+      const materialPath = workspaceHostCredentialMaterialPath(
+        materialRoot,
+        "git-short-lived-delegation",
+        7,
+      );
+      const repositoryPath = "papercupai/private-canary.git";
+      const bytes = Buffer.from(
+        AUTHORIZATION_MATERIAL +
+          (scoped ? `/${repositoryPath}` : "") +
+          (newline ? "\n" : ""),
+      );
+      const request = parseWorkspaceHostCredentialDeliveryRequest({
+        protocolVersion: WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
+        channel: "git",
+        credentialRef: gitBinding().credentialRef.ref,
+        generation: 7,
+        material: bytes.toString("base64"),
+      });
+      const delivery = {
+        filesystem: new NodeWorkspaceHostCredentialDeliveryFilesystem(),
+        materialRoot,
+        now: () => NOW,
+      };
+      await executeWorkspaceHostCredentialDelivery(request, delivery);
+
+      // Only the clone transport is recorded. Delivery and Git's credential protocol use the
+      // real filesystem and executable, without a network or any real authorization material.
+      const system = new RecordingSystem();
+      place(system, materialPath, bytes);
+      system.present.add("/workspaces/repository/.git");
+      const deps = createProductionWorkspaceHostRemoteInitializerDeps({
+        system,
+        workspaceRoot: "/workspaces",
+        credentialMaterialRoot: materialRoot,
+        now: () => NOW,
+      });
+      await deps.credentials.run("bind", gitBinding());
+      await deps.host.cloneRepository({
+        repositoryUrl: `https://github.com/${repositoryPath}`,
+        visibility: "private",
+        destination: "repository",
+        credentialChannel: "git",
+      });
+
+      const ambientPath = join(directory, "ambient-material");
+      const configPath = join(directory, "gitconfig");
+      await writeFile(configPath, `[credential]\n\thelper = store --file=${ambientPath}\n`);
+      const env = {
+        PATH: process.env.PATH,
+        HOME: directory,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: configPath,
+        ...system.commands[0]!.env,
+      };
+      const query = `protocol=https\nhost=github.com\npath=${repositoryPath}\n\n`;
+      const filled = spawnSync("git", ["credential", "fill"], {
+        input: query,
+        encoding: "utf8",
+        env,
+        cwd: directory,
+        timeout: 5_000,
+      });
+      expect(filled.status, filled.stderr).toBe(0);
+      expect(filled.stdout).toContain("username=git-user\n");
+      expect(filled.stdout).toContain("password=private-token-value\n");
+      const result = spawnSync("git", ["credential", action], {
+        input: filled.stdout + "\n",
+        encoding: "utf8",
+        env,
+        cwd: directory,
+        timeout: 5_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(await readFile(materialPath)).toEqual(bytes);
+      expect((await stat(materialPath)).mode & 0o777).toBe(0o600);
+      await expect(stat(ambientPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(executeWorkspaceHostCredentialDelivery(request, delivery)).resolves.toMatchObject({
+        generation: 7,
+        present: true,
+      });
+      await expect(executeWorkspaceHostCredentialDelivery({
+        ...request,
+        material: new WorkspaceHostCredentialMaterial(Buffer.from("different material")),
+      }, delivery)).rejects.toBeInstanceOf(WorkspaceHostCredentialGenerationConflictError);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("consumes only bound git-channel material outside argv and public evidence", async () => {
     const { system, deps } = fixture();
     place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
