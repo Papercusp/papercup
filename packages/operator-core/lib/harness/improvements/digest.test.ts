@@ -302,11 +302,11 @@ describe('buildDigest', () => {
 
   it('counts resolved items in rollups but not in the queues', () => {
     const d = buildDigest(items, { nowMs: NOW });
-    expect(d.total).toBe(5);
-    expect(d.open).toBe(4);
-    expect(d.byState.resolved).toBe(1);
-    expect(d.byKind.bug).toBe(4);
-    expect(d.byKind.change).toBe(1);
+    expect(d.census.total).toBe(5);
+    expect(d.window.open).toBe(4);
+    expect(d.window.byState.resolved).toBe(1);
+    expect(d.window.byKind.bug).toBe(4);
+    expect(d.window.byKind.change).toBe(1);
   });
 
   it('sorts the auto lane by score (critical floats above major)', () => {
@@ -355,7 +355,7 @@ describe('buildDigest', () => {
 
   it('empty input yields an empty but well-formed digest', () => {
     const d = buildDigest([], { nowMs: NOW });
-    expect(d.total).toBe(0);
+    expect(d.census.total).toBe(0);
     expect(d.autoEligible).toEqual([]);
     expect(d.humanQueue).toEqual([]);
     expect(d.likelyDuplicates).toEqual([]);
@@ -415,33 +415,33 @@ describe('buildDigest', () => {
     });
   });
 
-  describe('total / returned / windowed (EI-18790490225750395 D2 — total must not be the window size)', () => {
+  describe('census / window (EI-18790490225750395 D2 — census must not be the window size)', () => {
     it('without corpusTotal: total falls back to candidates.length, unchanged from before this option existed', () => {
       const d = buildDigest(items, { nowMs: NOW });
-      expect(d.total).toBe(items.length);
-      expect(d.returned).toBe(items.length);
-      expect(d.windowed).toBe(false);
+      expect(d.census.total).toBe(items.length);
+      expect(d.window.examined).toBe(items.length);
+      expect(d.window.windowed).toBe(false);
     });
 
     it('with corpusTotal LARGER than what was fetched: total reports the TRUE corpus, returned stays the window size', () => {
       // Exactly the filed repro's shape: limit 30 (fetched 5 here for the test),
       // real corpus far bigger (200+).
       const d = buildDigest(items, { nowMs: NOW, corpusTotal: 4321 });
-      expect(d.total).toBe(4321);
-      expect(d.returned).toBe(items.length);
-      expect(d.windowed).toBe(true);
+      expect(d.census.total).toBe(4321);
+      expect(d.window.examined).toBe(items.length);
+      expect(d.window.windowed).toBe(true);
     });
 
     it('with corpusTotal EQUAL to what was fetched (no real limit in effect): windowed is false', () => {
       const d = buildDigest(items, { nowMs: NOW, corpusTotal: items.length });
-      expect(d.total).toBe(items.length);
-      expect(d.windowed).toBe(false);
+      expect(d.census.total).toBe(items.length);
+      expect(d.window.windowed).toBe(false);
     });
 
     it('clamps a caller-bug corpusTotal SMALLER than candidates.length rather than reporting a negative window', () => {
       const d = buildDigest(items, { nowMs: NOW, corpusTotal: 1 });
-      expect(d.total).toBe(items.length); // clamped up, never below what was actually returned
-      expect(d.windowed).toBe(false);
+      expect(d.census.total).toBe(items.length); // clamped up, never below what was actually examined
+      expect(d.window.windowed).toBe(false);
     });
 
     it('the headline reports "returned of total" and flags (windowed) when they differ', () => {
@@ -458,7 +458,7 @@ describe('buildDigest', () => {
       expect(d.likelyDuplicatesScope).toBeNull();
     });
 
-    it('reports consideredCount/corpusTotal/windowed matching the digest’s own total/returned/windowed', () => {
+    it('reports consideredCount/corpusTotal/windowed matching the digest’s own census/window', () => {
       const d = buildDigest(items, { nowMs: NOW, corpusTotal: 999 });
       expect(d.likelyDuplicatesScope).toEqual({
         consideredCount: items.length,
@@ -581,15 +581,15 @@ describe('buildDigest', () => {
       }
     });
 
-    it('(b) total (corpusTotal) is invariant under limit — it never tracks the window size', () => {
+    it('(b) census.total (corpusTotal) is invariant under limit — it never tracks the window size', () => {
       // Simulates the filed repro table: the SAME true corpus (here: 4321), read
       // through three different window sizes. `total` must report 4321 every time;
-      // `returned` is free to vary with the window, `total` is not.
+        // `window.examined` is free to vary with the window, `census.total` is not.
       const corpusTotal = 4321;
       for (const windowSize of [5, 30, 200]) {
         const window = dupes.slice(0, Math.min(windowSize, dupes.length));
         const d = buildDigest(window, { nowMs: NOW, corpusTotal });
-        expect(d.total).toBe(corpusTotal);
+        expect(d.census.total).toBe(corpusTotal);
       }
     });
   });

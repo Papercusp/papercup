@@ -1218,6 +1218,14 @@ export interface ListIssuesFilter {
   assignee?: string;
   /** Durable delegator filter (collapse-delegate D-002): items this owner assigned. */
   assignedBy?: string;
+  /** Restrict to issue-family rows whose parent work-item id matches exactly. */
+  parent?: string;
+  /**
+   * When explicitly false, keep only top-level issue-family rows. Omitted preserves
+   * the issue surface's historical all-rows behavior; the unified work-item facade
+   * passes an explicit value to apply its top-level-by-default contract.
+   */
+  includeChildren?: boolean;
   severity?: IssueSeverity;
   /** Explicit severity set; `severity` wins when both are supplied. */
   severities?: readonly IssueSeverity[];
@@ -1647,6 +1655,13 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
             OR ${col('payload')} -> 'plan_item' ->> 'plan_slug' = ${filter.sourcePlanSlug}
           )`
         : sql`TRUE`
+    }
+    AND ${
+      filter.parent
+        ? sql`${col('parent_id')} = ${filter.parent}`
+        : filter.includeChildren === false
+          ? sql`(${col('parent_id')} IS NULL OR ${col('parent_id')} = '')`
+          : sql`TRUE`
     }`;
 }
 

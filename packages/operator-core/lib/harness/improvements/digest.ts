@@ -144,30 +144,38 @@ export interface AlreadyDecidedRecall {
   reason?: string;
 }
 
-export interface ImprovementDigest {
-  generatedAt: string;
-  /**
-   * The TRUE corpus total for this filter (EI-18790490225750395 D2) — a real
-   * `COUNT(*)`, never bounded by the caller's `limit`. Falls back to
-   * `candidates.length` (== `returned`) when the caller does not supply
-   * {@link BuildDigestOptions.corpusTotal} (e.g. a caller that already fetched the
-   * FULL corpus with no limit — `total` and `returned` are then identical and
-   * `windowed` is false). NEVER read this as "candidates I got back" — that is
-   * {@link returned}.
-   */
+/** The exact population count for the filter used to build a digest. */
+export interface ImprovementDigestCensus {
   total: number;
-  /** How many candidates this digest actually scored/considered — i.e.
-   *  `candidates.length`. Always the window size when the caller applied a
-   *  `limit`. Compare against `total` to see whether you are looking at the whole
-   *  corpus (`returned === total`) or a slice of it. */
-  returned: number;
-  /** True when `total > returned` — the caller applied a `limit` (or the read
-   *  otherwise capped) and is looking at a SLICE of the corpus, not all of it. */
+}
+
+/**
+ * Rollups over the bounded candidate read. Keeping these beside the number of
+ * examined rows makes it impossible to mistake a window statistic for a
+ * corpus-wide census.
+ */
+export interface ImprovementDigestWindow {
+  examined: number;
   windowed: boolean;
   open: number;
   byKind: Record<string, number>;
   bySeverity: Record<string, number>;
   byState: Record<string, number>;
+}
+
+export interface ImprovementDigest {
+  generatedAt: string;
+  /**
+   * The TRUE corpus total for this filter (EI-18790490225750395 D2) — a real
+   * `COUNT(*)`, never bounded by the caller's `limit`. Falls back to
+   * `candidates.length` when the caller does not supply
+   * {@link BuildDigestOptions.corpusTotal} (e.g. a caller that already fetched the
+   * FULL corpus with no limit). This is deliberately nested away from the
+   * window rollups so a reader cannot lift a bounded number into a census.
+   */
+  census: ImprovementDigestCensus;
+  /** Rollups over the candidates this digest actually scored/considered. */
+  window: ImprovementDigestWindow;
   /** Open + auto-eligible (kind=bug, no protected surface), highest score first. */
   autoEligible: ScoredItem[];
   /** Open + human-tier, highest score first. */
@@ -246,7 +254,7 @@ export interface BuildDigestOptions {
   /**
    * Whether to run the near-dup / exact-signature clustering pass at all
    * (default true — unchanged behavior). Pass `false` when the caller only
-   * reads scalar rollups (`open`, `autoEligible.length`, `humanQueue.length`,
+   * reads scalar rollups (`window.open`, `autoEligible.length`, `humanQueue.length`,
    * `byKind`, `bySeverity`) and never touches `likelyDuplicates` — the O(n²)
    * `findLikelyDuplicates` pass is not called at all, and `likelyDuplicates`
    * comes back `null` rather than `[]` (D-001/D-002: the health tick was
@@ -258,7 +266,7 @@ export interface BuildDigestOptions {
    * (EI-18790490225750395 D2) — typically `countImprovementItems(sameOpts)`, a
    * real `COUNT(*)` unbounded by `limit`. Omit when the caller already fetched
    * the WHOLE corpus (no limit applied) — `total` then falls back to
-   * `candidates.length` and `windowed` is false, unchanged from before this
+   * `candidates.length` and `window.windowed` is false, unchanged from before this
    * option existed. Passing a value SMALLER than `candidates.length` is a caller
    * bug (the count and the read must agree on the same filter) — treated as
    * `candidates.length` rather than reporting a nonsensical negative window.
@@ -787,6 +795,16 @@ export function buildDigest(
   const total = opts.corpusTotal !== undefined ? Math.max(opts.corpusTotal, returned) : returned;
   const windowed = total > returned;
 
+  const window: ImprovementDigestWindow = {
+    examined: returned,
+    windowed,
+    open,
+    byKind,
+    bySeverity,
+    byState,
+  };
+  const census: ImprovementDigestCensus = { total };
+
   const likelyDuplicatesScope =
     dupResult === null
       ? null
@@ -825,13 +843,8 @@ export function buildDigest(
 
   return {
     generatedAt,
-    total,
-    returned,
-    windowed,
-    open,
-    byKind,
-    bySeverity,
-    byState,
+    census,
+    window,
     autoEligible,
     humanQueue,
     likelyDuplicates,
