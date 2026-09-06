@@ -12,6 +12,7 @@ import {
   evaluatePlanAcceptanceGate,
   unfinishedItemsAreAuditedNonCode,
 } from './plan-acceptance-gate';
+import { ACCEPTANCE_GRADING_NO_CLAIM_FACT } from './consult/grading-cascade';
 import {
   getAcceptanceRubricForPlan,
   getAcceptanceRubricsForPlan,
@@ -449,6 +450,11 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_ungraded', rubricId: 'ar-some-plan' });
     expect(v.message).toContain('su-implementer');
     expect(v.message).toContain('scorecards:emit');
+    // EI-20249725405239230: naming the tool is what already FAILED to prevent a
+    // decline. The author must be handed the claim/admission guarantee so they
+    // can state it when routing by hand — the measured peer declined twice on
+    // exactly the constraint this sentence denies.
+    expect(v.message).toContain(ACCEPTANCE_GRADING_NO_CLAIM_FACT);
   });
 
   it('incomplete or synthesized scorecards do NOT satisfy (still acceptance_ungraded)', async () => {
@@ -468,6 +474,9 @@ describe('evaluatePlanAcceptanceGate', () => {
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'self_graded_only', rubricId: 'ar-some-plan' });
     expect(v.message).toContain('su-implementer');
+    // Both author-facing refusals mean "go find a non-implementer", so both owe
+    // the author the same guarantee (EI-20249725405239230).
+    expect(v.message).toContain(ACCEPTANCE_GRADING_NO_CLAIM_FACT);
   });
 
   it('an independent complete grading satisfies the gate and names the grader', async () => {

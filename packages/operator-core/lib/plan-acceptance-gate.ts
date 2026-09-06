@@ -37,6 +37,11 @@ import {
 import { listScorecards, ratingVerdict } from './scorecards';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { rubricVettingConsultHint } from './consult/selection-policies';
+// EI-20249725405239230: the no-claim FACT is single-sourced beside the grader
+// briefs so the author-facing refusal and the grader-facing copy cannot drift
+// into two different statements of what scorecards:emit actually requires.
+// `grading-cascade` is pure (type-only imports), so this adds no runtime edge.
+import { ACCEPTANCE_GRADING_NO_CLAIM_FACT } from './consult/grading-cascade';
 import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
 import {
   evaluatePlanSpecCoverageGate,
@@ -1093,7 +1098,9 @@ export async function evaluatePlanAcceptanceGate(
         `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has no complete ` +
         `grading. A NON-implementer${implementer ? ` (someone other than '${implementer}')` : ''} grades it — ` +
         `scorecards:emit { rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> } } with concrete ` +
-        `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005).`,
+        `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005). ` +
+        `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
+        `declining on a constraint that does not exist (EI-20249725405239230).`,
     };
   }
   // ── the authoritative grading among several (P-004) ──
@@ -1131,7 +1138,9 @@ export async function evaluatePlanAcceptanceGate(
       message:
         `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' is only graded by its ` +
         `own author ('${implementer}')${principalLabel} — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
-        `different agent or the owner must file the grading scorecard.`,
+        `different agent or the owner must file the grading scorecard. ` +
+        `${ACCEPTANCE_GRADING_NO_CLAIM_FACT} Say so when you ask: a peer declining on claim-scope grounds is ` +
+        `declining on a constraint that does not exist (EI-20249725405239230).`,
     };
   }
 
