@@ -5,9 +5,12 @@
  * the frame: copy as text + a labelled button (idle), Stop under the counts
  * with a caption (running), an eyebrow and an optional hint (review).
  */
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import BulkResolverStrip from "./BulkResolverStrip";
+
+afterEach(cleanup);
 
 describe("BulkResolverStrip variant=card", () => {
   it("idle: copy is text, the button carries its own label, and the variant is stamped", () => {
