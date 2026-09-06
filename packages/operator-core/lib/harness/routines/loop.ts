@@ -121,7 +121,7 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '🔁 Loop wake (every ~{intervalSec}s after each turn settles). You are continuing your OWN warm session toward: {goal}',
   '',
   'Each wake:',
-  '1. Decide the next concrete unit(s) of work. If the goal is DONE or there\'s nothing left to do, call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER (your scheduler:get_next / work_items:claim_next came back empty) parks on events instead of polling: register ONE `events:await { event: "work-item:claimable", payload_filter: <your claim spec\'s view>, timeout_sec: 1800 }`, then `loop:end` — the wake re-invokes you; your pull stays the authoritative claim (re-register on a re-miss). If AUTO (or another autonomy-implying mode) remains active without that deliberate await, use `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` so the wake-less safety guard does not refuse the stop.',
+  '1. Decide the next concrete unit(s) of work. If the goal is DONE or there\'s nothing left to do, call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER (your scheduler:get_next / work_items:claim_next came back empty) parks on a standing wake watch instead of polling: register `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <your claim spec\'s view> }`, then `loop:end` — do not pass `targetKind` with `wake:true`; the watch re-invokes you on every matching claimable transition and remains armed after a re-miss, so your pull stays the authoritative claim. If AUTO (or another autonomy-implying mode) remains active without that deliberate wake watch, use `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` so the wake-less safety guard does not refuse the stop.',
   '2. Work it per your persona\'s "Working as a fleet MEMBER — the member operating loop" contract — create + ' +
     'self-assign the unit atomically, pick `kind` by what it IS, finish with `work_items:complete { completion }` ' +
     'evidence (never a bare "done" assertion). harness:{harness}, assign_to:{ownerId}.',
@@ -1811,20 +1811,26 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastFiredAtMs: lastFiredMs,
     lastActiveAtMs: presenceMs,
   });
-  const turnsStalled = computeTurnsStalled({
+  const nextFireAtIso = r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null;
+  const lifecycleBackoff = computeLifecycleBackoff({
     active: Boolean(r.active),
+    lastDeliveryOutcome: r.last_delivery_outcome ?? null,
+    nextFireAtIso,
+  });
+  // EI-224576: a provider usage/rate wall is an expected, self-healing pause, not a
+  // turn-stalled loop. The actor that can disarm loops uses this same backoff signal
+  // as a veto; keep loop:status consistent with that decision while the provider's
+  // retry window is still in the future. Once it has elapsed, preserve the ordinary
+  // turnsStalled verdict so a genuinely wedged retry is still visible.
+  const providerBackoffActive = lifecycleBackoff?.resumesInMs != null && lifecycleBackoff.resumesInMs > 0;
+  const turnsStalled = computeTurnsStalled({
+    active: Boolean(r.active) && !providerBackoffActive,
     fireCount: firesSinceArm,
     lastFiredAtMs: lastFiredMs,
     lastTurnAtMs: lastTurnMs,
     lastLoopTurnAtMs: lastLoopTurnMs,
     lastActiveAtMs: presenceMs,
     intervalSec,
-  });
-  const nextFireAtIso = r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null;
-  const lifecycleBackoff = computeLifecycleBackoff({
-    active: Boolean(r.active),
-    lastDeliveryOutcome: r.last_delivery_outcome ?? null,
-    nextFireAtIso,
   });
   const cadence = computeLoopCadence({
     intervalSec,
