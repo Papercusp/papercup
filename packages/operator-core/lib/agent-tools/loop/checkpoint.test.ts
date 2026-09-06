@@ -1707,6 +1707,24 @@ describe('loop:checkpoint — current-vs-retained provenance (EI-211652356424970
       true,
     );
   });
+
+  it('surfaces an unresolved turn ref as provenance lint without changing checked:false', async () => {
+    const ref = '[turn:wakepump@2026-09-05T21:26:41Z]';
+    setLoopCarryNote.mockImplementation(async (_ref: unknown, note: unknown) => note as string);
+    withBoundedTimeout.mockImplementation(async (_work: unknown, options: unknown) => ({
+      value: (options as { label?: string } | undefined)?.label === 'carry-provenance-stamp' ? [[], null] : undefined,
+      degraded: false,
+      elapsedMs: 0,
+    }));
+
+    const result = body(await call({ note: `The wake-pump action is recorded at ${ref}.` }));
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches.some((match: { kind: string }) => match.kind === 'unresolved-turn-ref')).toBe(
+      true,
+    );
+    expect(result.turnProvenance?.refs?.[0]).toMatchObject({ ref, found: false, checked: false });
+  });
 });
 
 describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {
