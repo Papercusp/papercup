@@ -88,6 +88,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     expect(v.floorMin).toBe(60);
     expect(v.ageMin).toBe(90);
     expect(v.dueInMin).toBe(-30);
+    expect(v.dueAt).toBe(new Date(NOW - 30 * MIN).toISOString());
     expect(v.lastReportAt).toBe(new Date(NOW - 90 * MIN).toISOString());
     expect(v.instruction).toMatch(/^OVERDUE by 30 min/);
     expect(v.instruction).toContain("coord:send { to:['human'] }");
@@ -100,6 +101,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     const v = describeGoalOwnerReportObligation(row, NOW);
     expect(v.obligation).toBe('due-now');
     expect(v.dueInMin).toBe(4);
+    expect(v.dueAt).toBe(new Date(NOW + 4 * MIN).toISOString());
     expect(v.instruction).toMatch(/^DUE NOW \(4 min to the 60-min floor\)/);
     // Not yet overdue for the sweep — the holder is told first, the human second.
     expect(findOverdueReports([row], NOW)).toHaveLength(0);
@@ -111,6 +113,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     const v = describeGoalOwnerReportObligation(row, NOW);
     expect(v.obligation).toBe('not-due');
     expect(v.dueInMin).toBe(50);
+    expect(v.dueAt).toBe(new Date(NOW + 50 * MIN).toISOString());
     expect(v.instruction).toMatch(/^not due: 50 min until the 60-min floor/);
   });
 

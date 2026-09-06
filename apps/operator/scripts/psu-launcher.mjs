@@ -8551,6 +8551,7 @@ export async function acquireSessionResumeWithRecovery(
  * @property {(ms:number)=>Promise<void>} [sleep]
  * @property {()=>number} [now]
  * @property {(message:string)=>any} [onNotice]
+ * @property {string[]} [launchArgv] current resolved psu invocation, sent on finalize only
  */
 async function reportSessionResumeTransition(
   transition,
@@ -8568,6 +8569,7 @@ async function reportSessionResumeTransition(
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now = () => Date.now(),
     onNotice = (message) => process.stderr.write(message),
+    launchArgv = null,
   } = /** @type {ResumeTransitionOptions} */ (opts);
   const verdictField = transition === "finalized" ? "finalized" : "released";
   if (!advSessionId) return { [verdictField]: false, reason: "no-session" };
@@ -8587,6 +8589,9 @@ async function reportSessionResumeTransition(
         body: JSON.stringify({
           advSessionId: Number(advSessionId),
           resumeClaimKey: claimKey,
+          ...(transition === "finalized" && Array.isArray(launchArgv)
+            ? { launchArgv }
+            : {}),
         }),
       },
       {
@@ -8679,6 +8684,75 @@ export function reportSessionResumeReleased(
       resumeClaimKey,
       opts,
     )
+  );
+}
+
+/**
+ * Reconstruct the current psu invocation for a tracked exact resume.
+ *
+ * The prior launch record supplies durable identity/placement flags (fleet,
+ * carry, mode, etc.); model/account and per-invocation backend flags are
+ * replaced with the values actually resolved for this resume. The resulting
+ * argv is only sent after runWrapper reports a concrete child spawn, so a
+ * failed setup never erases the last known-good launch record.
+ */
+export function resumeLaunchArgvRecord(
+  session,
+  {
+    model = null,
+    account,
+    addDir = [],
+    allowSubagents = null,
+    passthrough = [],
+    launchMode = null,
+    brain = false,
+  } = {},
+) {
+  const recorded = Array.isArray(session?.launchArgv) ? session.launchArgv : [];
+  let priorArgs = {};
+  try {
+    priorArgs = parseArgs(
+      recorded[0] === "psu" ? recorded.slice(1) : recorded,
+    );
+  } catch {
+    // A legacy/malformed record must not prevent the resume itself. The
+    // session row below still gives us enough identity to build a safe record.
+  }
+  const effectiveArgs = {
+    ...priorArgs,
+    sessionPortSourceAdvSessionId: session?.id ?? null,
+    agent: session?.agent || priorArgs.agent,
+    workspace: session?.workspaceId ?? priorArgs.workspace ?? null,
+    harness: session?.harnessSlug ?? priorArgs.harness ?? null,
+    plan: session?.planSlug ?? priorArgs.plan ?? null,
+    model,
+    addDir,
+    allowSubagents,
+    passthrough,
+  };
+  if (account !== undefined) {
+    effectiveArgs.account =
+      account?.mode === "auto" || account?.forward === "auto" || account?.auto === true
+        ? "auto"
+        : account?.mode === "pin" && account?.id
+          ? account.id
+          : account?.id || "default";
+  }
+  if (launchMode) {
+    effectiveArgs.mode = launchMode.mode;
+    effectiveArgs.modeSubject = launchMode.subject ?? null;
+    effectiveArgs.modeInstructions = launchMode.instructions ?? null;
+    effectiveArgs.modeOwnerDirected = launchMode.ownerDirected === true;
+  }
+  return psuLaunchArgvRecord(
+    {
+      agent: effectiveArgs.agent,
+      workspace: effectiveArgs.workspace,
+      harness: effectiveArgs.harness,
+      plan: effectiveArgs.plan,
+    },
+    effectiveArgs,
+    { brain },
   );
 }
 
@@ -10616,6 +10690,7 @@ async function launchResume(
   let resumeClaimed = false;
   let resumeClaimKey = null;
   let resumeClaimLegacyReactivation = false;
+  let resumeLaunchArgv = null;
   const cleanupResumeClaim = async () => {
     if (!resumeClaimed || session.id == null || !resumeClaimKey) return;
     // Flip the local guard before the best-effort network call so a future
@@ -10647,10 +10722,9 @@ async function launchResume(
       resumeClaimed = false;
       return;
     }
-    const outcome = await reportSessionResumeFinalized(
-      session.id,
-      resumeClaimKey,
-    );
+    const outcome = await reportSessionResumeFinalized(session.id, resumeClaimKey, {
+      ...(resumeLaunchArgv ? { launchArgv: resumeLaunchArgv } : {}),
+    });
     if (outcome.finalized) {
       resumeClaimed = false;
       return;
@@ -10893,6 +10967,19 @@ async function launchResume(
     // notify-send lockout rides resumeArgsFor for claude already; nothing extra here.
     // Generic `--` passthrough, forwarded verbatim after psu's own resume flags.
     if (passthrough.length) args.push(...passthrough);
+
+    // Build the current launch record only after every resume selection has
+    // resolved. It is sent from finalizeResumeClaim, which runs only after
+    // runWrapper confirms the child/host spawned.
+    resumeLaunchArgv = resumeLaunchArgvRecord(session, {
+      model: resumeModel,
+      account: accountEnv,
+      addDir,
+      allowSubagents,
+      passthrough,
+      launchMode,
+      brain,
+    });
 
     // Surface the successfully resolved account route. Unavailable explicit
     // auto/pin choices already threw, so this can never describe a silent fallback.

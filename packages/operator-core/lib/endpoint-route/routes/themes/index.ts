@@ -20,7 +20,7 @@ import {
   CustomThemeValidationError,
 } from '../../../custom-themes';
 import { removeInstalledTheme } from '../../../cupboard/install-theme-io';
-import { notifySyncInvalidate } from '../../../sync-sse';
+import { notifyThemeCatalogChanged } from '../../../cupboard/theme-catalog-sync';
 
 const list = defineTool({
   method: 'GET',
@@ -51,7 +51,7 @@ const put = defineTool({
     const incoming = { ...(body.theme as Record<string, unknown>), id: ctx.params.id };
     try {
       const saved = await saveCustomTheme(incoming);
-      await notifySyncInvalidate('themes.catalog').catch(() => {});
+      await notifyThemeCatalogChanged().catch(() => {});
       return Response.json(saved);
     } catch (err) {
       if (err instanceof CustomThemeValidationError) {
@@ -73,7 +73,7 @@ const del = defineTool({
     } else {
       await deleteCustomTheme(ctx.params.id);
     }
-    await notifySyncInvalidate('themes.catalog').catch(() => {});
+    await notifyThemeCatalogChanged().catch(() => {});
     return new Response(null, { status: 204 });
   },
 });

@@ -28,7 +28,6 @@ export default defineTool({
     const gate = await gateInstallDoor({
       idOrRef: args.listingId ?? args.listingRef,
       kind: 'theme', subject,
-      ...(args.update ? { operation: 'update' as const } : {}),
     });
     if (!gate.ok) return ok({ ok: false, error: gate.code, detail: gate.detail, refusedBy: 'install-door-gate' });
     const { installThemeFromCupboard } = await import('../../cupboard/install-theme-io');
@@ -39,8 +38,8 @@ export default defineTool({
       ...(args.update ? { update: true } : {}),
     });
     if (!result.ok) return ok({ ok: false, status: result.status, error: result.error, detail: result.detail });
-    const { notifySyncInvalidate } = await import('../../sync-sse');
-    await notifySyncInvalidate('themes.catalog').catch(() => {});
+    const { notifyThemeCatalogChanged } = await import('../../cupboard/theme-catalog-sync');
+    await notifyThemeCatalogChanged().catch(() => {});
     return ok({ ...result.result, activeThemeId: `custom:${result.result.id}`, hint: 'Installed and available. Select it explicitly from the existing theme picker.' });
   },
 });

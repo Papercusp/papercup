@@ -28,17 +28,18 @@
  * validation failure fires nothing. Every filed card passes through that one chokepoint,
  * which is what keeps this a ~1-line emit rather than a derived detector.
  *
- * SCOPE (v1, honest boundary). One family, keyed by rubricRef. A plan-scoped variant
- * (`scorecard:emitted:plan:<slug>`) is a plausible extension but deliberately NOT built:
- * the implementer authored the rubric and therefore always knows its ref, so the extra key
- * would add a second thing to keep truthful in the catalog without answering a question the
- * first one cannot.
+ * SCOPE. The original rubric-scoped key remains the precise public wait. P-005 of
+ * shared-agent-obligations-and-briefs adds `plan:acceptance:<slug>` alongside it for
+ * the platform-armed obligation episode: the shared provider knows the plan before
+ * a rubric necessarily exists, and needs one stable plan-level material-change key.
+ * Both are hints only; every waking consumer re-runs the canonical gate.
  *
  * Fire-and-forget and fail-soft: a failed emit NEVER breaks the scorecard write. The card is
  * the durable truth; the event is only the push notification for it.
  */
 
 import { emitAwaitedEvent } from './events/await/engine';
+import { planAcceptanceChangedKey } from './agent-obligations';
 
 /** The awaitable key for "a scorecard was filed against this rubric". */
 export function scorecardEmittedKey(rubricRef: string): string {
@@ -88,9 +89,9 @@ export interface ScorecardEmittedEventsDeps {
 }
 
 /**
- * Fire `scorecard:emitted:<rubricRef>` for one freshly-filed card. Awaiter-only (no `to`
- * push): the audience is whoever registered interest in this rubric. Never throws — a
- * failed emit must not fail the scorecard write that already succeeded.
+ * Fire `scorecard:emitted:<rubricRef>` and, for a plan subject, the shared
+ * `plan:acceptance:<slug>` change key. Awaiter-only (no `to` push). Never throws —
+ * a failed emit must not fail the scorecard write that already succeeded.
  */
 export async function emitScorecardEmitted(
   payload: ScorecardEmittedPayload,
@@ -99,15 +100,33 @@ export async function emitScorecardEmitted(
   const emit = opts.emit ?? emitAwaitedEvent;
   const subject = payload.subjectRef ? ` on ${payload.subjectRef}` : '';
   const verdict = payload.hasAcceptance ? ' (carries the acceptance verdict)' : '';
-  try {
-    await emit({
+  const events = [
+    {
       key: scorecardEmittedKey(payload.rubricRef),
       payload,
       summary: `scorecard ${payload.issueId} filed against ${payload.rubricRef}${subject} by ${payload.createdBy ?? 'unknown'}${verdict}`,
       source: payload.createdBy ?? 'scorecards:emit',
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-    });
-  } catch (e) {
-    failSoft(e);
+    },
+    ...(payload.subjectKind === 'plan' && payload.subjectRef
+      ? [
+          {
+            key: planAcceptanceChangedKey(payload.subjectRef),
+            payload,
+            summary: `plan acceptance evidence changed: scorecard ${payload.issueId} filed against ${payload.rubricRef}`,
+            source: payload.createdBy ?? 'scorecards:emit',
+            ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+          },
+        ]
+      : []),
+  ];
+  // Each notification is fail-soft independently: losing the rubric-specific
+  // hint must not prevent the plan-level obligation wake (or vice versa).
+  for (const event of events) {
+    try {
+      await emit(event);
+    } catch (e) {
+      failSoft(e);
+    }
   }
 }

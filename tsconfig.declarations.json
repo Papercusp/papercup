@@ -92,6 +92,7 @@
     // red'd on the un-baselined offender and lint:tsc reported the matching TS7016 on
     // the same import, one defect surfacing at two gates.
     "scripts/lib/related-tests.mjs",
+    "scripts/lib/retry-failure-shape.mjs",
     // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
     // Registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure

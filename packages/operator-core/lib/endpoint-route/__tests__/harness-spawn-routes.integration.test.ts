@@ -158,6 +158,18 @@ vi.mock('../../agent-tools/coordination/presence', async (orig) => {
   return { ...actual, writePresence: (...a: unknown[]) => (writePresence as (...args: unknown[]) => unknown)(...a) };
 });
 
+const cleanupMergeResolverAfterFailure = vi.hoisted(() =>
+  vi.fn(async () => ({
+    parsed: true,
+    scopes: [],
+    released: true,
+  })),
+);
+vi.mock('../../harness/merge-resolver-cleanup', () => ({
+  cleanupMergeResolverAfterFailure: (...a: unknown[]) =>
+    cleanupMergeResolverAfterFailure(...a),
+}));
+
 // fs: existsSync→false so the actions-dispatch path short-circuits; readFileSync
 // throws so the SU-bearer read falls back to undefined; writes are no-ops.
 vi.mock('node:fs', async (orig) => {
@@ -206,7 +218,7 @@ vi.mock('node:child_process', async (orig) => {
   return { ...actual, spawn: (...a: unknown[]) => spawnMock(...(a as [])) };
 });
 
-function makeFakeChild(exitCode: number) {
+function makeFakeChild(exitCode: number, options: { delayMs?: number } = {}) {
   const stdoutCbs: Array<(d: unknown) => void> = [];
   const closeCbs: Array<(code: number) => void> = [];
   const child = {
@@ -221,7 +233,7 @@ function makeFakeChild(exitCode: number) {
   setTimeout(() => {
     stdoutCbs.forEach((cb) => cb(Buffer.from('decision line\n')));
     closeCbs.forEach((cb) => cb(exitCode));
-  }, 0);
+  }, options.delayMs ?? 0);
   return child;
 }
 
@@ -244,12 +256,18 @@ const post = (b: unknown = {}) => ({
   headers: { 'content-type': 'application/json' } as Record<string, string>,
 });
 const PROJECT = { slug: 'papercup', path: '/proj' };
+let previousAllowRemoteAdmin: string | undefined;
 
 beforeEach(() => {
   // WI-1499 pins the spawn chokepoint inside a systemd-run scope by default on
   // linux; these tests assert the ROUTING (route → spawnInvokeOnce → argv), so
   // run the direct spawn — the wrapper has its own coverage in
   // dbos/orchestrator-runner-scope.test.ts.
+  // The fleet's agent environment enables the deliberate remote-admin opt-out.
+  // Pin it off here so the D-009 non-loopback assertions exercise the declared
+  // loopback tier rather than inheriting the caller's process environment.
+  previousAllowRemoteAdmin = process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+  delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
   process.env.PAPERCUSP_AGENT_SPAWN_SCOPE = '0';
   resolveProject.mockResolvedValue(PROJECT);
   resolvePhasedProject.mockResolvedValue(PROJECT);
@@ -262,6 +280,12 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks();
   delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+  if (previousAllowRemoteAdmin === undefined) {
+    delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+  } else {
+    process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = previousAllowRemoteAdmin;
+  }
+  previousAllowRemoteAdmin = undefined;
 });
 
 describe('POST /harness/:slug/launch (P-031)', () => {
@@ -420,7 +444,91 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     expect(res.status).toBe(200); // the route succeeds; the *run* failed
     expect(await res.json()).toMatchObject({ ok: false, exitCode: 1 });
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('[dbos-invoke] role=worker exited 1'));
+    expect(cleanupMergeResolverAfterFailure).not.toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+
+  it('cleans up a failed merge-resolver with the route-owned child identity and exact conflict extra', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const extra = [
+      '--git-sync-conflict',
+      JSON.stringify({
+        scopes: ['superproject', 'libs/papercusp'],
+        files: 'superproject: packages/operator-core/lib/a.ts; libs/papercusp: packages/x.ts',
+        authorship: [],
+      }),
+    ];
+    spawnMock.mockImplementation(() => makeFakeChild(1));
+
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=merge-resolver',
+      post({ extra }),
+    );
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: false, exitCode: 1, timedOut: false });
+    expect(cleanupMergeResolverAfterFailure).toHaveBeenCalledTimes(1);
+    const cleanupInput = cleanupMergeResolverAfterFailure.mock.calls[0]?.[0] as {
+      projectPath: string;
+      ownerId: string;
+      extra: string[];
+    };
+    expect(cleanupInput).toEqual({
+      projectPath: '/proj',
+      ownerId: expect.stringMatching(/^s-invoke-[0-9a-f-]{36}$/),
+      extra,
+    });
+    const invokeInput = buildInvokeOnce.mock.calls[0]?.[0] as {
+      extraEnv?: Record<string, string>;
+    };
+    expect(cleanupInput.ownerId).toBe(invokeInput.extraEnv?.PAPERCUSP_SID);
+    errSpy.mockRestore();
+  });
+
+  it('cleans up a timed-out merge-resolver even when the child eventually reports exit 0', async () => {
+    const extra = [
+      '--git-sync-conflict',
+      JSON.stringify({
+        scopes: ['superproject'],
+        files: 'superproject: packages/operator-core/lib/a.ts',
+      }),
+    ];
+    // resolveInvokeTimeoutMs clamps the shortest route timeout to 5s. Let the
+    // fake child close just after that timer so the route observes timedOut=true.
+    spawnMock.mockImplementation(() => makeFakeChild(0, { delayMs: 5_050 }));
+
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=merge-resolver',
+      post({ extra, timeoutMs: 5_000 }),
+    );
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: false, exitCode: 0, timedOut: true });
+    expect(cleanupMergeResolverAfterFailure).toHaveBeenCalledTimes(1);
+    expect(cleanupMergeResolverAfterFailure.mock.calls[0]?.[0]).toEqual({
+      projectPath: '/proj',
+      ownerId: expect.stringMatching(/^s-invoke-[0-9a-f-]{36}$/),
+      extra,
+    });
+  }, 15_000);
+
+  it('does not clean up a successful merge-resolver', async () => {
+    const extra = [
+      '--git-sync-conflict',
+      JSON.stringify({
+        scopes: ['superproject'],
+        files: 'superproject: packages/operator-core/lib/a.ts',
+      }),
+    ];
+
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=merge-resolver',
+      post({ extra }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, exitCode: 0, timedOut: false });
+    expect(cleanupMergeResolverAfterFailure).not.toHaveBeenCalled();
   });
 
   it('returns 404 for an unknown project (no spawn)', async () => {

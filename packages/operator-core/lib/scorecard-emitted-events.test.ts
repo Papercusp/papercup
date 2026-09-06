@@ -43,15 +43,16 @@ describe('scorecardEmittedKey', () => {
 });
 
 describe('emitScorecardEmitted', () => {
-  it('fires the rubric-scoped key and carries the filed card', async () => {
+  it('fires the rubric-scoped key plus the plan acceptance change key and carries the filed card', async () => {
     const emit = vi.fn().mockResolvedValue({ ok: true, key: 'k' });
     await emitScorecardEmitted(basePayload(), { emit: emit as never });
 
-    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(2);
     const opts = emit.mock.calls[0]![0] as { key: string; payload: ScorecardEmittedPayload };
     expect(opts.key).toBe('scorecard:emitted:acceptance-my-plan-2026-08-25');
     expect(opts.payload.issueId).toBe('EI-1');
     expect(opts.payload.subjectRef).toBe('my-plan-2026-08-25');
+    expect((emit.mock.calls[1]![0] as { key: string }).key).toBe('plan:acceptance:my-plan-2026-08-25');
   });
 
   it('carries createdBy + hasAcceptance so a filter can tell an INDEPENDENT card from the implementer own re-emit', async () => {
@@ -65,8 +66,11 @@ describe('emitScorecardEmitted', () => {
       { emit: emit as never },
     );
 
-    const first = emit.mock.calls[0]![0] as { payload: ScorecardEmittedPayload };
-    const second = emit.mock.calls[1]![0] as { payload: ScorecardEmittedPayload };
+    const rubricCalls = emit.mock.calls
+      .map((call) => call[0] as { key: string; payload: ScorecardEmittedPayload })
+      .filter((call) => call.key.startsWith('scorecard:emitted:'));
+    const first = rubricCalls[0]!;
+    const second = rubricCalls[1]!;
     // Both land on the SAME key by design, so the two cards are only separable by
     // payload — which is exactly what an implementer's payload_filter reads.
     expect(first.payload.createdBy).not.toBe(second.payload.createdBy);
@@ -79,9 +83,11 @@ describe('emitScorecardEmitted', () => {
 
     await emitScorecardEmitted(basePayload(), { emit: emit as never, workspaceId: 'ws-1' });
     expect((emit.mock.calls[0]![0] as { workspaceId?: string }).workspaceId).toBe('ws-1');
+    expect((emit.mock.calls[1]![0] as { workspaceId?: string }).workspaceId).toBe('ws-1');
 
     await emitScorecardEmitted(basePayload(), { emit: emit as never });
-    expect('workspaceId' in (emit.mock.calls[1]![0] as object)).toBe(false);
+    expect('workspaceId' in (emit.mock.calls[2]![0] as object)).toBe(false);
+    expect('workspaceId' in (emit.mock.calls[3]![0] as object)).toBe(false);
   });
 
   it('NEVER throws when the emit fails — the card is durable, the event is only its notification', async () => {

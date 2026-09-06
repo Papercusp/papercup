@@ -21,8 +21,8 @@ import {
 
 afterEach(() => resetMcpAdmissionForTests());
 
-const toolsCall = (id: unknown = 7, name = 'plans:get') =>
-  JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: {} } });
+const toolsCall = (id: unknown = 7, name = 'plans:get', args: Record<string, unknown> = {}) =>
+  JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
 
 function post(body: string): Request {
   return new Request('http://127.0.0.1:3070/api/mcp?superuser=1', {
@@ -58,6 +58,40 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     'mcp__papercusp-su__dev_dogfood_substrate_status',
   ])('does NOT shed bounded critical-pressure diagnostic %s', (name) => {
     expect(classifyMcpBody(toolsCall(11, name))).toEqual({ sheddable: false, id: null });
+  });
+
+  it.each([
+    'work_items:get',
+    'work_items_get',
+    'mcp__papercusp-su__work_items_get',
+  ])('does NOT shed a bounded single-item work_items:get under critical pressure: %s', (name) => {
+    const body = toolsCall(11, name, { id: 'EI-22381211295936796' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('keeps bulk/detail/thread work_items:get reads sheddable under critical pressure', () => {
+    for (const args of [
+      { ids: ['EI-1', 'EI-2'] },
+      { id: 'EI-1', detail: true },
+      { id: 'EI-1', threadLimit: 1 },
+    ]) {
+      expect(classifyMcpBody(toolsCall(12, 'work_items:get', args))).toEqual({ sheddable: true, id: 12 });
+    }
+  });
+
+  it('recognizes the bounded work_items:get through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 13,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp-su__work_items_get', args: { id: 'EI-1' } },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
   // The CONTROL for the case above: the exemption must stay an allowlist, not a prefix rule.
@@ -271,6 +305,23 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     // The body must survive the peek unconsumed, exactly as the pg_query case asserts.
     expect(JSON.parse(await req.text()).params.name).toBe('dev:dogfood_substrate_status');
+  });
+  it('admits a bounded single-item work_items:get under critical pressure so a drain can inspect its claim', async () => {
+    const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('still sheds an unbounded work_items:get read under critical pressure', async () => {
+    const shed = await evaluateAdmission(
+      post(toolsCall(9, 'work_items:get', { ids: ['EI-1', 'EI-2'] })),
+      'critical',
+      true,
+    );
+    expect(shed).not.toBeNull();
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('CONTROL: still sheds an unlisted dev tool under critical pressure with reason loop_pressure_critical', async () => {
     const shed = await evaluateAdmission(post(toolsCall(8, 'dev:pipeline_position')), 'critical', true);

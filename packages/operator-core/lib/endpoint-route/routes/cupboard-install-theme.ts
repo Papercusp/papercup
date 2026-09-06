@@ -1,6 +1,6 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { installThemeFromCupboard } from '../../cupboard/install-theme-io';
-import { notifySyncInvalidate } from '../../sync-sse';
+import { notifyThemeCatalogChanged } from '../../cupboard/theme-catalog-sync';
 
 export default defineTool({
   method: 'POST',
@@ -18,7 +18,7 @@ export default defineTool({
       ...(body.update === true ? { update: true } : {}),
     });
     if (!result.ok) return Response.json({ ok: false, error: result.error, detail: result.detail }, { status: result.status });
-    await notifySyncInvalidate('themes.catalog').catch(() => {});
+    await notifyThemeCatalogChanged().catch(() => {});
     return Response.json({ ...result.result, activeThemeId: `custom:${result.result.id}` });
   },
 });

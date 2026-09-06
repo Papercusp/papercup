@@ -1036,8 +1036,10 @@ describe('affected-tests scheduler wiring', () => {
     expect(AFFECTED_TESTS_SRC).toMatch(
       /initialPool = await runBudgetedTaskShards\(TASK_CONTEXT_SHARD_PLAN[\s\S]{0,500}?\n\s*readMemAvailableMb,/,
     );
+    // P-004 (gate-latency-selection-and-retry-policy-2026-09-06): the retries run through ONE
+    // pool now, so this is the second — and only other — budgeted pool in the runner.
     expect(AFFECTED_TESTS_SRC).toMatch(
-      /const retryPool = await runBudgetedTasks\(\[scheduled\.task\][\s\S]{0,500}?\n\s*readMemAvailableMb,/,
+      /const retryPool = await runBudgetedTasks\(retryPoolTasks, \{[\s\S]{0,500}?\n\s*readMemAvailableMb,/,
     );
   });
 
@@ -1075,16 +1077,20 @@ describe('affected-tests scheduler wiring', () => {
     );
   });
 
-  it('drains the initial pool before reporting and reuses the same scheduler for retries', () => {
+  it('drains the initial pool, then the retry pool, before reporting — and reuses the same scheduler for retries', () => {
     // WI-1490656 wrapped this await in a try/catch so an admission-starvation throw becomes a
     // reported refusal rather than an uncaught top-level rejection, so the declaration is now
     // `let initialPool;` above the assignment.
+    // P-004 (gate-latency-selection-and-retry-policy-2026-09-06): retries are DECIDED (phase A)
+    // and RUN through one pool (phase B) before the reporting loop (phase C) replays them in
+    // declaration order — so the retry pool now sits BETWEEN the initial pool and reporting,
+    // where it used to be inline inside the reporting loop and therefore serial.
     const pool = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
-    const reporting = AFFECTED_TESTS_SRC.indexOf('for (const scheduled of initialPool.results) {');
-    const retry = AFFECTED_TESTS_SRC.indexOf('const retryPool = await runBudgetedTasks([scheduled.task]');
+    const retry = AFFECTED_TESTS_SRC.indexOf('const retryPool = await runBudgetedTasks(retryPoolTasks');
+    const reporting = AFFECTED_TESTS_SRC.indexOf('const prep = retryPrep.get(scheduled.index);');
     expect(pool).toBeGreaterThan(-1);
-    expect(reporting).toBeGreaterThan(pool);
-    expect(retry).toBeGreaterThan(reporting);
+    expect(retry).toBeGreaterThan(pool);
+    expect(reporting).toBeGreaterThan(retry);
   });
 });
 

@@ -13,14 +13,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 const { themeMod } = vi.hoisted(() => ({
   themeMod: {
     isSafe: (v: string) => /^#|rgb|hsl|^[a-z]+$/i.test(v),
-    save: vi.fn(async (t: { id: string; label: string }) => ({ ...t })),
+    save: vi.fn(async (t: { id: string; label: string; tokens?: Record<string, string> }) => ({ ...t })),
   },
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/theme', () => ({
   isSafeCssValue: (v: string) => themeMod.isSafe(v),
-  saveCustomTheme: (t: { id: string; label: string }) => themeMod.save(t),
+  saveCustomTheme: (t: { id: string; label: string; tokens?: Record<string, string> }) => themeMod.save(t),
   slugifyThemeId: (label: string) => label.toLowerCase().replace(/\s+/g, '-'),
 }));
 

@@ -140,19 +140,57 @@ export function resetMcpAdmissionForTests(): void {
  * this list is about.
  *
  * ⚠ Know what listing a tool actually grants — it is BOTH legs, not just the pressure one.
- * `isCriticalPressureDiagnostic` is read by `classifyMcpBody` (⇒ never pressure-shed) AND by
+ * `isCriticalPressureDiagnosticCall` is read by `classifyMcpBody` (⇒ never pressure-shed) AND by
  * `classifyMcpRequest` (⇒ classified 'diagnostic', which `shouldShedForCapacity` returns false
  * for). `diagnosticReserve` is a floor carved out of the ORDINARY ceiling for diagnostics, NOT a
  * cap on them, so a listed tool is bounded only by the global `maxInFlight`. Do not add anything
- * here whose per-call cost you have not read.
+ * here whose per-call cost you have not read. `work_items:get` is admitted only for one item with
+ * the default shallow read; bulk, detail, and thread reads remain shed under critical pressure.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
-  ['dev:service_health', 'dev:pg_query', 'dev:dogfood_substrate_status'].map(normalizeMcpName),
+  ['dev:service_health', 'dev:pg_query', 'dev:dogfood_substrate_status', 'work_items:get'].map(normalizeMcpName),
 );
+const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
+const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 
-function isCriticalPressureDiagnostic(toolName: unknown): boolean {
-  return typeof toolName === 'string'
-    && CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalizeMcpName(toolName));
+function isBoundedWorkItemsGetArgs(args: unknown): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const record = args as {
+    id?: unknown;
+    ids?: unknown;
+    detail?: unknown;
+    threadLimit?: unknown;
+  };
+  const singleId = typeof record.id === 'string' && record.id.trim().length > 0 && record.ids === undefined;
+  const singleIds = Array.isArray(record.ids)
+    && record.ids.length === 1
+    && typeof record.ids[0] === 'string'
+    && record.id === undefined;
+  if (!singleId && !singleIds) return false;
+  if (record.detail !== undefined && record.detail !== false) return false;
+  if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
+  return true;
+}
+
+function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown): boolean {
+  if (typeof toolName !== 'string') return false;
+  const normalized = normalizeMcpName(toolName);
+  if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
+  return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
+}
+
+function isCriticalPressureDiagnosticCall(message: unknown): boolean {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const params = (message as { params?: { name?: unknown; arguments?: unknown } }).params;
+  if (!params || typeof params.name !== 'string') return false;
+  const normalizedName = normalizeMcpName(params.name);
+  if (normalizedName === TOOLS_INVOKE_NAME) {
+    const invokeArgs = params.arguments;
+    if (!invokeArgs || typeof invokeArgs !== 'object' || Array.isArray(invokeArgs)) return false;
+    const target = (invokeArgs as { name?: unknown; args?: unknown }).name;
+    return isCriticalPressureDiagnostic(target, (invokeArgs as { args?: unknown }).args);
+  }
+  return isCriticalPressureDiagnostic(params.name, params.arguments);
 }
 
 const MCP_HANDSHAKE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
@@ -188,8 +226,7 @@ export function classifyMcpBody(bodyText: string): { sheddable: boolean; id: str
   let sheddable = false;
   for (const m of msgs) {
     if (m && typeof m === 'object' && (m as { method?: unknown }).method === 'tools/call') {
-      const params = (m as { params?: { name?: unknown } }).params;
-      if (isCriticalPressureDiagnostic(params?.name)) continue;
+      if (isCriticalPressureDiagnosticCall(m)) continue;
       sheddable = true;
       const mid = (m as { id?: unknown }).id;
       if (id === null && (typeof mid === 'string' || typeof mid === 'number')) id = mid;
@@ -230,8 +267,7 @@ export function classifyMcpRequest(bodyText: string, requestUrl?: string): McpAd
     if (MCP_HANDSHAKE_METHODS.has(method)) continue;
     handshake = false;
     if (method !== 'tools/call') continue;
-    const name = (message as { params?: { name?: unknown } }).params?.name;
-    if (isCriticalPressureDiagnostic(name)) diagnosticToolCall = true;
+    if (isCriticalPressureDiagnosticCall(message)) diagnosticToolCall = true;
     else ordinaryToolCall = true;
   }
   if (ordinaryToolCall) return 'ordinary';

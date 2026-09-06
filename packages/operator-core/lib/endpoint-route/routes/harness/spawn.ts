@@ -813,6 +813,38 @@ const invoke = defineTool({
     );
     const workerRuntimeMs = Date.now() - spawnStartMs;
 
+    // A failed/timed-out merge-resolver can leave MERGE_HEAD plus owner-scoped
+    // git-sync leases behind after this route's timeout kill. The cleanup helper
+    // is intentionally lazy (like the runner above) so route registration does
+    // not pull the lock store into every harness route, and it receives the
+    // superproject path + exact route-owned child identity/extra payload.
+    if (canonicalRole === 'merge-resolver' && (r.timedOut === true || r.exitCode !== 0)) {
+      try {
+        const { cleanupMergeResolverAfterFailure } = await import(
+          '../../../harness/merge-resolver-cleanup'
+        );
+        const cleanup = await cleanupMergeResolverAfterFailure({
+          projectPath: project.path,
+          ownerId: childOwnerId,
+          extra,
+        });
+        if (!cleanup.released) {
+          console.warn(
+            `[invoke ${project.slug}/${role}] merge-resolver cleanup did not release owner ${childOwnerId}` +
+              (cleanup.releaseError ? `: ${cleanup.releaseError}` : ''),
+          );
+        }
+      } catch (error) {
+        // Cleanup is recovery bookkeeping; never turn a child failure into a
+        // route failure, and keep the original invoke result visible.
+        console.warn(
+          `[invoke ${project.slug}/${role}] merge-resolver cleanup failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
     // Worker-exit back-edge for the auto-implement lane (EI-404 + EI-406): a
     // dispatched implement worker that exits WITHOUT calling improvements:resolve
     // (crash, non-zero exit, or exited 0 forgetting to resolve) is recorded on its

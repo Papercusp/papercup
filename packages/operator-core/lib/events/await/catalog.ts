@@ -441,7 +441,8 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     params: [{ name: 'id', required: true, describe: 'the code work-item id' }],
     describe:
       'A terminal code work item was durably upgraded from proposed to committed after every declared file matched the exact git-sync commit. Partial commits, stale generations, and replays do not fire this key.',
-    emitter: 'completion-settlement-reconciler (packages/operator-core/lib/harness/git-sync/completion-settlement-reconciler.ts)',
+    emitter:
+      'completion-settlement-reconciler (packages/operator-core/lib/harness/git-sync/completion-settlement-reconciler.ts)',
     exists: true,
   },
   {
@@ -638,6 +639,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
   },
   {
+    family: 'plan-acceptance-changed',
+    keyTemplate: 'plan:acceptance:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the subject plan slug' }],
+    describe:
+      'Acceptance evidence for this plan materially changed. This is a wake hint only: re-run the canonical plan acceptance gate before acting; the event itself never proves acceptance.',
+    emitter:
+      'coordination/plan-events for acceptance-relevant plan mutations, plus scorecard-emitted-events for every freshly filed plan-subject scorecard',
+    exists: true,
+    replacesPoll: 'polling the plan acceptance gate while waiting for grading evidence',
+  },
+  {
     family: 'fleet-drained',
     keyTemplate: 'fleet:drained:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
@@ -745,6 +757,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       'goal-drain-fleet-watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts, defaultEmitDrainDead)',
     exists: true,
     replacesPoll: 'polling goals:get / fleet:status to notice the drain fleet vanished',
+  },
+  {
+    family: 'goal-plan-placement-changed',
+    keyTemplate: 'goal:plan-placement:<goalId>',
+    params: [{ name: 'goalId', required: true, describe: 'the active goal id' }],
+    describe:
+      'The canonical goal plan-placement classifier found an actionable placement state. This is a wake hint only; re-read the shared obligation agenda before launching or repairing anything.',
+    emitter:
+      'goal-drain-fleet-watchdog — emitted from the same alert/classifier pass that owns plan-fleet placement evidence',
+    exists: true,
+    replacesPoll: 'polling the goal portfolio / plan-fleet cohort for placement gaps',
   },
   {
     family: 'goal-edit-claim',

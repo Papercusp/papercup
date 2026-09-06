@@ -235,7 +235,7 @@ export function useThemeCatalog(): { themes: CustomTheme[]; error: unknown; inva
   const liveThemes = Array.isArray(query.data) ? query.data as CustomTheme[] : null;
   const themes = useMemo(
     () => liveThemes ?? readCachedThemeCatalog(),
-    [query.data],
+    [liveThemes],
   );
   useEffect(() => {
     if (liveThemes === null) return;

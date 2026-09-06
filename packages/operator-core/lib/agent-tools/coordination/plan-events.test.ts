@@ -10,10 +10,18 @@ import type { CoordEnvelope } from '@papercusp/coordination/core';
 
 vi.mock('./log', () => ({ coordLog: { appendLine: vi.fn(), readLines: vi.fn(), readLinesBounded: vi.fn() } }));
 vi.mock('./identity', () => ({ resolveAgentIdentity: vi.fn() }));
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 
-import { emitPlanEvent, emitPlanEventForCaller, readPlanEvents, READ_PLAN_EVENTS_BOUND } from './plan-events';
+import {
+  emitPlanEvent,
+  emitPlanEventForCaller,
+  planEventChangesAcceptance,
+  readPlanEvents,
+  READ_PLAN_EVENTS_BOUND,
+} from './plan-events';
 import { coordLog } from './log';
 import { resolveAgentIdentity } from './identity';
+import { emitAwaitedEvent } from '../../events/await/engine';
 
 const mockLog = coordLog as unknown as {
   appendLine: ReturnType<typeof vi.fn>;
@@ -21,6 +29,7 @@ const mockLog = coordLog as unknown as {
   readLinesBounded: ReturnType<typeof vi.fn>;
 };
 const mockResolve = resolveAgentIdentity as unknown as ReturnType<typeof vi.fn>;
+const mockAwaitedEvent = emitAwaitedEvent as unknown as ReturnType<typeof vi.fn>;
 
 /** The envelope passed to coordLog.appendLine on the most recent call. */
 function lastEnv(): CoordEnvelope {
@@ -89,6 +98,9 @@ describe('emitPlanEventForCaller — best-effort', () => {
     await emitPlanEventForCaller({} as never, { planSlug: 'p', event: 'created' });
     expect(mockResolve).toHaveBeenCalledTimes(1);
     expect(lastEnv().from).toBe('caller-1');
+    expect(mockAwaitedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'plan:acceptance:p', source: 'caller-1' }),
+    );
   });
 
   it('swallows an identity-resolution failure and emits as system', async () => {
@@ -101,6 +113,14 @@ describe('emitPlanEventForCaller — best-effort', () => {
     mockResolve.mockReturnValue({ ownerId: 'caller-1', workspaceId: 'ws' });
     mockLog.appendLine.mockRejectedValueOnce(new Error('pg down'));
     await expect(emitPlanEventForCaller({} as never, { planSlug: 'p', event: 'created' })).resolves.toBeUndefined();
+    expect(mockAwaitedEvent).toHaveBeenCalledWith(expect.objectContaining({ key: 'plan:acceptance:p' }));
+  });
+
+  it('does not mislabel goal-only property/package traffic as a plan acceptance change', async () => {
+    expect(planEventChangesAcceptance('property_changed')).toBe(false);
+    expect(planEventChangesAcceptance('package_updated')).toBe(false);
+    await emitPlanEventForCaller({} as never, { planSlug: 'goal-id', event: 'property_changed' });
+    expect(mockAwaitedEvent).not.toHaveBeenCalled();
   });
 });
 

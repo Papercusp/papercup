@@ -60,6 +60,7 @@
  *    dedup — cluster-safe, no new state surface.
  */
 import type { Sql } from 'postgres';
+import { goalPlanPlacementChangedKey } from '../agent-obligations';
 
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
@@ -663,7 +664,8 @@ export interface GoalDrainFleetSweepDeps {
     pairs: { workspaceId: string; fleetSlug: string; goalId: string }[],
   ) => Promise<Map<string, DrainFleetSpecScope>>;
   escalate: (alert: GoalDrainAlert) => Promise<void>;
-  /** Emit goal:drain-dead:<goalId> for a DECLARED-but-gone fleet. Fail-soft. */
+  /** Emit the shared placement-change key for every actionable classifier
+   * result, plus the legacy drain-dead key for a declared-gone fleet. */
   emitDrainDead: (alert: GoalDrainAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
@@ -1220,21 +1222,31 @@ async function defaultEscalateRelaunchExhausted(alert: GoalDrainAlert, attemptsI
 }
 
 async function defaultEmitDrainDead(alert: GoalDrainAlert): Promise<void> {
-  // Only a DECLARED-but-gone fleet emits: the goal agent parked on this key is
-  // waiting to hear its fleet died, not to be nagged about paperwork — and a
-  // mis-SCOPED fleet (D-005) is alive, so it escalates but never emits here.
-  if (alert.reason !== 'drain-fleet-not-found' && alert.reason !== 'drain-fleet-dead') return;
   const { emitAwaitedEvent } = await import('../events/await/engine');
-  await emitAwaitedEvent({
-    key: `goal:drain-dead:${alert.goalId}`,
-    workspaceId: alert.workspaceId,
-    source: 'goal-drain-fleet-watchdog',
-    payload: {
-      goalId: alert.goalId,
-      drainFleet: alert.drainFleet,
-      reason: alert.reason,
-    },
-  });
+  const payload = { goalId: alert.goalId, drainFleet: alert.drainFleet, reason: alert.reason };
+  const emits = [
+    emitAwaitedEvent({
+      key: goalPlanPlacementChangedKey(alert.goalId),
+      workspaceId: alert.workspaceId,
+      source: 'goal-drain-fleet-watchdog',
+      payload,
+      summary: `goal plan-placement classifier requires re-evaluation (${alert.reason})`,
+    }),
+  ];
+  // Preserve the narrower public key for callers explicitly waiting on a
+  // declared fleet's death. A mis-scoped/alive fleet still emits only the
+  // broader placement-change signal.
+  if (alert.reason === 'drain-fleet-not-found' || alert.reason === 'drain-fleet-dead') {
+    emits.push(
+      emitAwaitedEvent({
+        key: `goal:drain-dead:${alert.goalId}`,
+        workspaceId: alert.workspaceId,
+        source: 'goal-drain-fleet-watchdog',
+        payload,
+      }),
+    );
+  }
+  await Promise.all(emits);
 }
 
 function sweepDeps(sql: Sql, overrides: Partial<GoalDrainFleetSweepDeps>): GoalDrainFleetSweepDeps {

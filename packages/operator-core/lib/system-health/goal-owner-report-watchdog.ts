@@ -238,6 +238,9 @@ export interface GoalOwnerReportObligation {
   floorMin: number;
   /** Minutes until the floor is crossed; negative once overdue. */
   dueInMin: number;
+  /** Exact cadence boundary from the canonical reference + floor. Unlike the
+   * rounded display minutes, this is stable across repeated reminder reads. */
+  dueAt: string;
   standing: boolean;
   obligation: 'overdue' | 'due-now' | 'not-due';
   /** One imperative line the contract tells the holder to obey before any other work. */
@@ -262,6 +265,7 @@ export function describeGoalOwnerReportObligation(
   const referenceTsMs = Math.max(row.baselineTsMs, row.lastReportTsMs ?? row.baselineTsMs);
   const silentMs = nowMs - referenceTsMs;
   const dueInMs = floorMs - silentMs;
+  const dueAt = new Date(referenceTsMs + floorMs).toISOString();
   const obligation: GoalOwnerReportObligation['obligation'] =
     silentMs > floorMs ? 'overdue' : dueInMs <= dueSoonMarginMs ? 'due-now' : 'not-due';
   const toMin = (ms: number): number => Math.round(ms / 60_000);
@@ -282,6 +286,7 @@ export function describeGoalOwnerReportObligation(
     ageMin: toMin(silentMs),
     floorMin: toMin(floorMs),
     dueInMin: toMin(dueInMs),
+    dueAt,
     standing: row.standing,
     obligation,
     instruction,

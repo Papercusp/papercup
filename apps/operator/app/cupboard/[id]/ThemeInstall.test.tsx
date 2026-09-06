@@ -99,8 +99,8 @@ describe('findInstalledThemeForListing', () => {
 
 describe('<ThemeInstall />', () => {
   it('installs without forcing selection and exposes the validated preview immediately', async () => {
-    const response = installed({ ok: true } as Partial<CustomTheme>);
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const response = installed();
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({
       ...response,
       ok: true,
       operation: 'install',
@@ -144,7 +144,7 @@ describe('<ThemeInstall />', () => {
 
   it('sends explicit update and leaves the active preference unchanged', async () => {
     h.themes = [installed()];
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({
       ...installed({ version: '1.1.0' }),
       ok: true,
       operation: 'update',
@@ -164,7 +164,7 @@ describe('<ThemeInstall />', () => {
   it('removing the active package falls back through writeActiveTheme', async () => {
     h.themes = [installed()];
     h.active = 'custom:installed:abc';
-    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(null, { status: 204 }));
     vi.stubGlobal('fetch', fetchMock);
     render(<ThemeInstall listing={listing()} />);
 

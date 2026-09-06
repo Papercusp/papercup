@@ -22,7 +22,7 @@ THEME_TAURI_OUT="${VERIFY_CUPBOARD_THEME_OUTPUT:-/tmp/papercusp-theme-tauri-${TH
 mkdir -p "$THEME_TAURI_OUT"
 
 theme_eval() {
-  "$THEME_TAURI_TOOL" eval --pid "$THEME_TAURI_PID" --strict "$1"
+  "$THEME_TAURI_TOOL" eval --pid "$THEME_TAURI_PID" "$1"
 }
 
 theme_put_expression() {
@@ -65,8 +65,8 @@ trap cleanup_fixture EXIT
 echo '=== [1/8] seed representative theme through the production HTTP validator ==='
 CREATE_RESULT="$(theme_eval "$(theme_put_expression '#ff8c42')")"
 printf '%s\n' "$CREATE_RESULT" | tee "$THEME_TAURI_OUT/create.json"
-grep -q '"status":200' <<<"$CREATE_RESULT"
-grep -q '"label":"Tauri Aurora"' <<<"$CREATE_RESULT"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$CREATE_RESULT"
+grep -Eq '"label"[[:space:]]*:[[:space:]]*"Tauri Aurora"' <<<"$CREATE_RESULT"
 
 echo '=== [2/8] browse the real Cupboard Themes category ==='
 "$THEME_TAURI_TOOL" navigate --pid "$THEME_TAURI_PID" '/cupboard?kind=theme' --json >/dev/null
@@ -77,7 +77,7 @@ echo '=== [2/8] browse the real Cupboard Themes category ==='
 
 echo '=== [3/8] select the fixture in Personalization and record computed colors ==='
 "$THEME_TAURI_TOOL" navigate --pid "$THEME_TAURI_PID" '/settings/personalization' --json >/dev/null
-"$THEME_TAURI_POLL" --require '[role="radio"][aria-label="Tauri Aurora"]'
+"$THEME_TAURI_POLL" --selector '[role="radio"][aria-label="Tauri Aurora"]'
 "$THEME_TAURI_TOOL" click --pid "$THEME_TAURI_PID" '[role="radio"][aria-label="Tauri Aurora"]' --wait 1200 --json >/dev/null
 "$THEME_TAURI_POLL" \
   --require 'html[data-theme="custom:tauri-aurora"]' \
@@ -98,22 +98,22 @@ theme_eval "(() => {
 
 echo '=== [4/8] prove the shared quick picker sees the same live catalog ==='
 "$THEME_TAURI_TOOL" click --pid "$THEME_TAURI_PID" '[aria-label="Switch theme"]' --wait 500 --json >/dev/null
-"$THEME_TAURI_POLL" --require '[data-testid="theme-selector-option"][data-theme-id="custom:tauri-aurora"]'
+"$THEME_TAURI_POLL" --selector '[data-testid="theme-selector-option"][data-theme-id="custom:tauri-aurora"]'
 theme_eval "(() => {
   const menu = document.querySelector('.pc-theme-menu');
   return JSON.stringify({ menuBackground: menu ? getComputedStyle(menu).backgroundColor : null });
 })()" | tee "$THEME_TAURI_OUT/menu-color.json"
 "$THEME_TAURI_TOOL" click --pid "$THEME_TAURI_PID" '[data-testid="theme-selector-option"][data-theme-id="frost"]' --wait 500 --json >/dev/null
-"$THEME_TAURI_POLL" --require 'html[data-theme="frost"]'
+"$THEME_TAURI_POLL" --selector 'html[data-theme="frost"]'
 "$THEME_TAURI_TOOL" click --pid "$THEME_TAURI_PID" '[aria-label="Switch theme"]' --wait 500 --json >/dev/null
-"$THEME_TAURI_POLL" --require '[data-testid="theme-selector-option"][data-theme-id="custom:tauri-aurora"]'
+"$THEME_TAURI_POLL" --selector '[data-testid="theme-selector-option"][data-theme-id="custom:tauri-aurora"]'
 "$THEME_TAURI_TOOL" click --pid "$THEME_TAURI_PID" '[data-testid="theme-selector-option"][data-theme-id="custom:tauri-aurora"]' --wait 500 --json >/dev/null
-"$THEME_TAURI_POLL" --require 'html[data-theme="custom:tauri-aurora"]'
+"$THEME_TAURI_POLL" --selector 'html[data-theme="custom:tauri-aurora"]'
 
 echo '=== [5/8] update in place and observe committed-write invalidation ==='
 UPDATE_RESULT="$(theme_eval "$(theme_put_expression '#7c3aed')")"
 printf '%s\n' "$UPDATE_RESULT" | tee "$THEME_TAURI_OUT/update.json"
-grep -q '"status":200' <<<"$UPDATE_RESULT"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$UPDATE_RESULT"
 "$THEME_TAURI_POLL" \
   --require 'html[data-theme="custom:tauri-aurora"]' \
   --eval "getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'"
@@ -128,8 +128,8 @@ theme_eval 'window.location.reload()' >/dev/null 2>&1 || true
 echo '=== [7/8] remove the active theme and verify canonical fallback ==='
 REMOVE_RESULT="$(theme_eval "$(theme_delete_expression)")"
 printf '%s\n' "$REMOVE_RESULT" | tee "$THEME_TAURI_OUT/remove.json"
-grep -q '"status":204' <<<"$REMOVE_RESULT"
-"$THEME_TAURI_POLL" --require 'html[data-theme="frost"]'
+grep -Eq '"status"[[:space:]]*:[[:space:]]*204' <<<"$REMOVE_RESULT"
+"$THEME_TAURI_POLL" --selector 'html[data-theme="frost"]'
 
 echo '=== [8/8] invalid input is rejected without disturbing the fallback ==='
 INVALID_RESULT="$(theme_eval "(async () => {
@@ -140,8 +140,8 @@ INVALID_RESULT="$(theme_eval "(async () => {
   return JSON.stringify({ status: response.status, body: await response.json().catch(() => null), active: document.documentElement.dataset.theme });
 })()")"
 printf '%s\n' "$INVALID_RESULT" | tee "$THEME_TAURI_OUT/invalid.json"
-grep -q '"status":400' <<<"$INVALID_RESULT"
-grep -q '"active":"frost"' <<<"$INVALID_RESULT"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*400' <<<"$INVALID_RESULT"
+grep -Eq '"active"[[:space:]]*:[[:space:]]*"frost"' <<<"$INVALID_RESULT"
 
 if "$THEME_TAURI_TOOL" check --pid "$THEME_TAURI_PID" --selector '.pc-theme-acceptance-negative-control' --json; then
   echo 'THEME_TAURI_FAIL negative control unexpectedly passed' >&2

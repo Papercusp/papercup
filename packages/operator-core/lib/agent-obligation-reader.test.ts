@@ -83,6 +83,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
         ageMin: 75,
         floorMin: 60,
         dueInMin: -15,
+        dueAt: '2026-09-05T18:45:00.000Z',
         standing: true,
         obligation: 'overdue',
         instruction: 'report now',

@@ -36,6 +36,20 @@ export interface EmitPlanEventOpts {
   detail?: string;
 }
 
+/** Plan mutations that can change the canonical acceptance verdict. Goal-only
+ * property/package events share this log but deliberately do not qualify. */
+export function planEventChangesAcceptance(event: PlanEventType): boolean {
+  return (
+    event === 'created' ||
+    event === 'decision_added' ||
+    event === 'decision_ratified' ||
+    event === 'item_added' ||
+    event === 'item_status_changed' ||
+    event === 'status_changed' ||
+    event === 'plan_audited'
+  );
+}
+
 /** Append one plan_event line. Throws on fs failure — prefer
  *  emitPlanEventForCaller() from a plans:* write verb. */
 export async function emitPlanEvent(opts: EmitPlanEventOpts): Promise<void> {
@@ -63,8 +77,8 @@ export async function emitPlanEventForCaller(
   ctx: ResolveIdentityCtx,
   details: Omit<EmitPlanEventOpts, 'identity'>,
 ): Promise<void> {
+  let identity: AgentIdentity | null = null;
   try {
-    let identity: AgentIdentity | null = null;
     try {
       identity = resolveAgentIdentity(ctx);
     } catch {
@@ -73,6 +87,28 @@ export async function emitPlanEventForCaller(
     await emitPlanEvent({ ...details, identity });
   } catch {
     // Best-effort. Observability, not state.
+  }
+
+  if (!planEventChangesAcceptance(details.event)) return;
+  try {
+    const [{ emitAwaitedEvent }, { planAcceptanceChangedKey }] = await Promise.all([
+      import('../../events/await/engine'),
+      import('../../agent-obligations'),
+    ]);
+    await emitAwaitedEvent({
+      key: planAcceptanceChangedKey(details.planSlug),
+      payload: {
+        planSlug: details.planSlug,
+        event: details.event,
+        ...(details.before !== undefined ? { before: details.before } : {}),
+        ...(details.after !== undefined ? { after: details.after } : {}),
+        ...(details.detail !== undefined ? { detail: details.detail } : {}),
+      },
+      summary: `plan acceptance inputs changed (${details.event})`,
+      source: identity?.ownerId ?? 'system',
+    });
+  } catch {
+    // The plan event/write is durable truth; this is only its push hint.
   }
 }
 
