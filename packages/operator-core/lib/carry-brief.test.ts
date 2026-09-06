@@ -11,12 +11,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCarryBrief,
+  assessHeldItemOwnership,
   readHeldWorkItems,
   readCurrentSessionStartedAtMs,
   readDeferredWorkItems,
   renderCarryBriefFocus,
   renderCarryBriefColdExtras,
   renderCarryBriefText,
+  renderHeldItemOwnershipWarning,
   renderDeferredWorkItems,
   detectIdleNoteGuard,
   deriveCarryQueryHandles,
@@ -44,7 +46,16 @@ import {
 import { shortCarryHash } from './carry-note';
 
 /** Minimal tagged-template `sql` stub returning fixed `engineer_issues` rows. */
-function fakeIssuesSql(rows: Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>) {
+function fakeIssuesSql(
+  rows: Array<{
+    issue_id: string;
+    title: string | null;
+    body: string | null;
+    scope: string;
+    taken_by?: string | null;
+    workspace_id?: string | null;
+  }>,
+) {
   return ((_strings: TemplateStringsArray, ..._vals: unknown[]) => Promise.resolve(rows)) as unknown as never;
 }
 
@@ -679,10 +690,94 @@ describe('unverifiedFocusRefs / renderFocusIntegrityWarning (EI-2213122758449948
   });
 });
 
+describe('held-item ownership proof (EI-22416393595299704)', () => {
+  it('accepts only an exact concrete owner/workspace proof', () => {
+    const item = {
+      holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' },
+    };
+    expect(assessHeldItemOwnership('owner-x', 'ws-1', item)).toEqual({
+      verified: true,
+      holderOwnerId: 'owner-x',
+      holderWorkspaceId: 'ws-1',
+    });
+    expect(assessHeldItemOwnership('owner-x', 'ws-1', {})).toMatchObject({
+      verified: false,
+      failure: 'missing-proof',
+    });
+    expect(assessHeldItemOwnership('owner-x', 'ws-1', {
+      holderProof: { ownerId: 'other-owner', workspaceId: 'ws-1' },
+    })).toMatchObject({
+      verified: false,
+      failure: 'owner-mismatch',
+    });
+    expect(assessHeldItemOwnership('owner-x', 'ws-1', {
+      holderProof: { ownerId: 'owner-x', workspaceId: 'other-workspace' },
+    })).toMatchObject({
+      verified: false,
+      failure: 'workspace-mismatch',
+    });
+  });
+
+  it('downgrades an unverified focus item to a read-only pointer', () => {
+    const brief: CarryBrief = {
+      ownerId: 'owner-x',
+      workspaceId: 'ws-1',
+      loop: null,
+      heldItems: [{
+        id: 'WI-unsafe',
+        title: 'another agent private title',
+        body: 'another agent private body',
+        harness: 'h',
+        checkpoint: 'another agent private checkpoint',
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+    const focus = renderCarryBriefFocus(brief);
+    expect(focus).toContain('unverified carried work-items WI-unsafe');
+    expect(focus).not.toContain('held work-items WI-unsafe');
+  });
+
+  it('renders only a warning for an owner-mismatched cold item and leaks no carried content', () => {
+    const brief: CarryBrief = {
+      ownerId: 'owner-x',
+      workspaceId: 'ws-1',
+      loop: null,
+      heldItems: [{
+        id: 'WI-unsafe',
+        title: 'another agent private title',
+        body: 'another agent private body',
+        harness: 'h',
+        checkpoint: 'another agent private checkpoint',
+        holderProof: { ownerId: 'other-owner', workspaceId: 'ws-1' },
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('UNVERIFIED CARRIED WORK');
+    expect(out).toContain("holder proof names owner 'other-owner'");
+    expect(out).toContain(renderHeldItemOwnershipWarning('owner-x', 'ws-1', brief.heldItems[0]!));
+    expect(out).not.toContain('You HELD these work-items');
+    expect(out).not.toContain('another agent private title');
+    expect(out).not.toContain('another agent private body');
+    expect(out).not.toContain('another agent private checkpoint');
+  });
+});
+
 describe('renderCarryBriefColdExtras — the cold-anchor sections after the note', () => {
   it('warns when a held checkpoint carries a predecessor exec handle across a carry-respawn', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [{
         id: 'EI-21309858082119709',
@@ -690,6 +785,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         body: null,
         harness: 'papercusp',
         checkpoint: 'run npm run lint:tsc; poll write_stdin(session_id=59998) for the verdict',
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
       }],
       directives: [],
       directivesTotalOpen: 0,
@@ -711,6 +807,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('warns for the live Markdown-wrapped typecheck-session checkpoint shape', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [{
         id: 'EI-21548341570090165',
@@ -718,6 +815,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         body: null,
         harness: 'papercusp',
         checkpoint: 'poll the operator-core typecheck session `11400` for the verdict',
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
       }],
       directives: [],
       directivesTotalOpen: 0,
@@ -736,6 +834,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('does not warn for a checkpoint that only names a stable native session', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [{
         id: 'WI-1',
@@ -743,6 +842,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         body: null,
         harness: 'papercusp',
         checkpoint: 'resume native agent session 59998 after the carry-respawn; no transient exec handle is carried',
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
       }],
       directives: [],
       directivesTotalOpen: 0,
@@ -984,8 +1084,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('renders open walls FIRST, as verbatim rows with re-check commands (P-006)', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
-      heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: null }],
+      heldItems: [{
+        id: 'WI-1',
+        title: null,
+        body: null,
+        harness: 'h',
+        checkpoint: null,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
       directives: [],
       directivesTotalOpen: 0,
       walls: [
@@ -1006,10 +1114,25 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('caps a long checkpoint and flags a missing one', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [
-        { id: 'WI-1', title: null, body: null, harness: 'h', checkpoint: 'y'.repeat(2000) },
-        { id: 'WI-2', title: null, body: null, harness: 'h', checkpoint: null },
+        {
+          id: 'WI-1',
+          title: null,
+          body: null,
+          harness: 'h',
+          checkpoint: 'y'.repeat(2000),
+          holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+        },
+        {
+          id: 'WI-2',
+          title: null,
+          body: null,
+          harness: 'h',
+          checkpoint: null,
+          holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+        },
       ],
       directives: [],
       directivesTotalOpen: 0,
@@ -1041,8 +1164,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     const checkpoint = `## Did\ncheckpoint narrative\n\n## Checks\n${checks}`;
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
-      heldItems: [{ id: 'WI-3496', title: null, body: null, harness: 'h', checkpoint }],
+      heldItems: [{
+        id: 'WI-3496',
+        title: null,
+        body: null,
+        harness: 'h',
+        checkpoint,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
       directives: [],
       directivesTotalOpen: 0,
       walls: [],
@@ -1074,8 +1205,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     const checkpoint = `## Did\ncheckpoint narrative\n\n## Checks\n${checks}`;
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
-      heldItems: [{ id: 'WI-3496', title: null, body: null, harness: 'h', checkpoint }],
+      heldItems: [{
+        id: 'WI-3496',
+        title: null,
+        body: null,
+        harness: 'h',
+        checkpoint,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
       directives: [],
       directivesTotalOpen: 0,
       walls: [],
@@ -1103,8 +1242,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     const checkpoint = `## Did\nshort\n\n## Checks\n- ? [#only] one row — re-check: echo one`;
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
-      heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint }],
+      heldItems: [{
+        id: 'WI-1',
+        title: null,
+        body: null,
+        harness: 'h',
+        checkpoint,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
       directives: [],
       directivesTotalOpen: 0,
       walls: [],
@@ -1123,8 +1270,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('omits the cross-reference when no held item carries checks', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
-      heldItems: [{ id: 'WI-2', title: null, body: null, harness: 'h', checkpoint: '## Did\nno checks here' }],
+      heldItems: [{
+        id: 'WI-2',
+        title: null,
+        body: null,
+        harness: 'h',
+        checkpoint: '## Did\nno checks here',
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
       directives: [],
       directivesTotalOpen: 0,
       walls: [],
@@ -1143,6 +1298,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   it('labels checkpoint paths with the held harness root after a cold resume', () => {
     const brief: CarryBrief = {
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [{
         id: 'EI-20467754551087390',
@@ -1150,6 +1306,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         body: null,
         harness: 'sidestage',
         checkpoint: 'Inspect apps/web/src/auction.css and apps/web/src/auction.test.tsx.',
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
       }],
       directives: [],
       directivesTotalOpen: 0,
@@ -1168,6 +1325,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   describe('EI-20375177522112122 — the held-item line must resolve the declare-intent namespace', () => {
     const briefWith = (held: Partial<CarryBriefHeldItem>): CarryBrief => ({
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [{
         id: 'EI-20375177522112122',
@@ -1175,6 +1333,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
         body: null,
         harness: 'papercusp',
         checkpoint: null,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
         ...held,
       } as CarryBriefHeldItem],
       directives: [],
@@ -1253,8 +1412,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
 
       const brief: CarryBrief = {
         ownerId: 'x',
+        workspaceId: 'ws-test',
         loop: null,
-        heldItems: [{ id: 'WI-37110', title: null, body: null, harness: 'h', checkpoint: CHECKPOINT }],
+        heldItems: [{
+          id: 'WI-37110',
+          title: null,
+          body: null,
+          harness: 'h',
+          checkpoint: CHECKPOINT,
+          holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+        }],
         directives: [],
         directivesTotalOpen: 0,
         walls: [],
@@ -1271,8 +1438,16 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     it('still truncates — this is preservation, not a budget bypass', () => {
       const brief: CarryBrief = {
         ownerId: 'x',
+        workspaceId: 'ws-test',
         loop: null,
-        heldItems: [{ id: 'WI-37110', title: null, body: null, harness: 'h', checkpoint: CHECKPOINT }],
+        heldItems: [{
+          id: 'WI-37110',
+          title: null,
+          body: null,
+          harness: 'h',
+          checkpoint: CHECKPOINT,
+          holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+        }],
         directives: [],
         directivesTotalOpen: 0,
         walls: [],
@@ -1309,6 +1484,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     const now = Date.parse('2026-07-26T05:30:00.000Z');
     const brief = (checkpointUpdatedAtMs: number | null): CarryBrief => ({
       ownerId: 'x',
+      workspaceId: 'ws-test',
       loop: null,
       heldItems: [
         {
@@ -1318,6 +1494,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
           harness: 'h',
           checkpoint: 'ZERO CODE HAS BEEN WRITTEN. No file is edited.',
           checkpointUpdatedAtMs,
+          holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
         },
       ],
       directives: [],
@@ -1519,6 +1696,31 @@ describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)'
     expect(held).toEqual([
       { id: 'EI-8810', title: 't', body: 'b', harness: null, checkpoint: 'the real checkpoint', checkpointUpdatedAtMs: null },
     ]);
+  });
+
+  it('propagates concrete read-time holder proof from taken_by/workspace_id', async () => {
+    const held = await readHeldWorkItems('owner-x', 'ws-test', {
+      sql: fakeIssuesSql([
+        {
+          issue_id: 'WI-proof',
+          title: 'proof-bearing row',
+          body: 'b',
+          scope: 'harness:papercusp',
+          taken_by: 'owner-x',
+          workspace_id: 'ws-test',
+        },
+      ]),
+      getWorkItemCheckpointFn: async () => 'checkpoint',
+    });
+    expect(held).toEqual([{
+      id: 'WI-proof',
+      title: 'proof-bearing row',
+      body: 'b',
+      harness: 'papercusp',
+      checkpoint: 'checkpoint',
+      checkpointUpdatedAtMs: null,
+      holderProof: { ownerId: 'owner-x', workspaceId: 'ws-test' },
+    }]);
   });
 });
 
