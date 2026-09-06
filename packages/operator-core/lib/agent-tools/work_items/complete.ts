@@ -1384,31 +1384,46 @@ function completionHasFilesChanged(completion: unknown): boolean {
  * explaining HOW a fix was verified. That is diagnostic provenance, not a
  * terminal deliverable. A loopback URL becomes durability-relevant only when
  * the completion presents it in deliverable-facing prose (`summary` or
- * `whatLanded`). Scratch paths and account-scoped artifact URLs remain suspect
- * anywhere in the persisted evidence because they can make the evidence itself
- * disappear.
+ * `whatLanded`). Scratch paths and account-scoped artifact URLs are likewise
+ * suspect only in deliverable-facing fields; verification and causal prose
+ * routinely quote those references as forensic evidence.
  */
 export function completionEphemeralDeliverableReferences(
   completion: unknown,
   evidence: unknown,
 ) {
-  const all = detectEphemeralDeliverableReferences(JSON.stringify({ completion, evidence }));
-  if (all.every((reference) => reference.kind !== 'loopback-url')) return all;
-  const record = completion && typeof completion === 'object' && !Array.isArray(completion)
-    ? completion as Record<string, unknown>
-    : {};
-  const deliverableText = JSON.stringify({
-    summary: record.summary,
-    whatLanded: record.whatLanded,
-  });
-  const deliverableLoopbacks = new Set(
-    detectEphemeralDeliverableReferences(deliverableText)
-      .filter((reference) => reference.kind === 'loopback-url')
-      .map((reference) => reference.reference.toLowerCase()),
-  );
-  return all.filter(
-    (reference) => reference.kind !== 'loopback-url'
-      || deliverableLoopbacks.has(reference.reference.toLowerCase()),
+  const deliverableTextParts = (value: unknown): string[] => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const record = value as Record<string, unknown>;
+    const verification =
+      record.verification && typeof record.verification === 'object' && !Array.isArray(record.verification)
+        ? record.verification as Record<string, unknown>
+        : {};
+    const strings = (entry: unknown): string[] =>
+      typeof entry === 'string'
+        ? [entry]
+        : Array.isArray(entry)
+          ? entry.filter((part): part is string => typeof part === 'string')
+          : [];
+
+    // These are the fields that can name the durable output itself. Do not scan
+    // testsRun/testResult/verifiedHow, rootCauseVerification, deferred, coordNotes,
+    // or server-generated evidence: those fields routinely quote ephemeral paths
+    // while describing how the result was established.
+    return [
+      ...strings(record.summary),
+      ...strings(record.whatLanded),
+      ...strings(record.filesChanged),
+      ...strings(record.filesDeleted),
+      ...strings(record.migrations),
+      ...strings(record.deploy),
+      ...strings(verification.filesChanged),
+      ...strings(verification.filesDeleted),
+    ];
+  };
+
+  return detectEphemeralDeliverableReferences(
+    [...deliverableTextParts(completion), ...deliverableTextParts(evidence)].join('\n'),
   );
 }
 
