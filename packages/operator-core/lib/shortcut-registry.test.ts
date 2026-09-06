@@ -108,6 +108,18 @@ describe('registry integrity (discord-shortcuts 2026-06-06)', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  // portal-global-shortcuts-2026-09-06 D-002: the quick panel's chord is a
+  // registry row so BOTH hosts list it (cheat sheet, settings/shortcuts). It is
+  // 'global', not 'palette', so the desktop — where no web handler binds it (the
+  // panel is a native popup window) — lets an unhandled Mod+J fall through
+  // instead of swallowing it; the cloud portal binds it to its quick panel.
+  it('lists panel.quick as a global (not palette) row on mod+j, form-tags enabled', () => {
+    const def = getShortcutDef('panel.quick');
+    expect(def?.defaultCombo).toBe('mod+j');
+    expect(def?.category).toBe('global');
+    expect(def?.options?.enableOnFormTags).toEqual(['INPUT', 'TEXTAREA', 'SELECT']);
+  });
+
   it('every defaultCombo parses to at least one alternate', () => {
     for (const s of SHORTCUTS) {
       const parsed = parseCombo(s.defaultCombo);
