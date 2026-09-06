@@ -33,7 +33,7 @@ describe('workspace-host controller forwarding', () => {
 
     const response = await forwardWorkspaceHostRequest(
       '/api/workspace-hosts/provision',
-      { connectionId: 'connection-1' },
+      { connectionId: 'connection-1', operationId: 'provision-1' },
       {
         isRequestOnly: () => true,
         collectControllers: async () => [
@@ -50,7 +50,7 @@ describe('workspace-host controller forwarding', () => {
       'http://127.0.0.1:3271/api/workspace-hosts/provision',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ connectionId: 'connection-1' }),
+        body: JSON.stringify({ connectionId: 'connection-1', operationId: 'provision-1' }),
       }),
     );
   });
@@ -74,7 +74,7 @@ describe('workspace-host controller forwarding', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('bypasses discovery on a local controller and degrades bounded transport failures', async () => {
+  it('bypasses discovery on a local controller', async () => {
     const collectControllers = vi.fn(async () => [row()]);
     const fetchImpl = vi.fn<typeof fetch>(async () => {
       throw new Error('controller unavailable');
@@ -90,17 +90,58 @@ describe('workspace-host controller forwarding', () => {
     expect(collectControllers).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
 
-    await expect(
-      forwardWorkspaceHostRequest(
-        '/api/workspace-hosts/action',
-        { action: 'stop', workspaceId: 'host-1' },
-        {
-          isRequestOnly: () => true,
-          collectControllers: async () => [row()],
-          fetchImpl,
-          timeoutMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS,
+  });
+
+  it('preserves an accepted operation identity when its response times out', async () => {
+    const accepted = new Set<string>();
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      accepted.add(JSON.parse(String(init?.body)).operationId);
+      throw new DOMException('response deadline exceeded', 'TimeoutError');
+    });
+    const response = await forwardWorkspaceHostRequest(
+      '/api/workspace-hosts/action',
+      { action: 'repair', workspaceId: 'host-1', operationId: 'repair-3' },
+      {
+        isRequestOnly: () => true,
+        collectControllers: async () => [row()],
+        fetchImpl,
+        timeoutMs: DEFAULT_WORKSPACE_HOST_CONTROLLER_FORWARD_TIMEOUT_MS,
+      },
+    );
+
+    expect(response?.status).toBe(504);
+    await expect(response?.json()).resolves.toMatchObject({
+      ok: false,
+      outcome: 'unknown',
+      operationId: 'repair-3',
+    });
+    expect(accepted.has('repair-3')).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('returns the generated operation identity after losing an upstream response body', async () => {
+    let submittedOperationId: string | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      submittedOperationId = JSON.parse(String(init?.body)).operationId;
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.error(new Error('connection lost after dispatch'));
         },
-      ),
-    ).resolves.toBeNull();
+      }));
+    });
+    const response = await forwardWorkspaceHostRequest(
+      '/api/workspace-hosts/provision',
+      { connectionId: 'connection-1' },
+      { isRequestOnly: () => true, collectControllers: async () => [row()], fetchImpl },
+    );
+
+    expect(submittedOperationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(response?.status).toBe(504);
+    await expect(response?.json()).resolves.toMatchObject({
+      ok: false,
+      outcome: 'unknown',
+      operationId: submittedOperationId,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });
