@@ -60,6 +60,8 @@ function makeHandle(log: Log) {
     };
   }) as unknown as Record<string, unknown> & ((s: TemplateStringsArray) => unknown);
   handle.unsafe = (text: string) => ({
+    strings: [text],
+    args: [],
     then(resolve: (rows: unknown[]) => void) {
       log.push(text);
       resolve([]);
@@ -137,6 +139,42 @@ describe('aggregateIssueClaimExclusions is bounded server-side (EI-2186319062258
     await aggregateIssueClaimExclusions(undefined, { ...OPTS, statementTimeoutMs: 1_500 });
 
     expect(activePool.txLog.some((s) => s.includes(STATEMENT_TIMEOUT_PREAMBLE))).toBe(true);
+  });
+
+  it('bounds exact-plan floor evaluation to matching rows without discarding excluded matches', async () => {
+    activePool = makePool();
+
+    await aggregateIssueClaimExclusions(
+      { field: 'plan', op: '=', value: 'release-preparation' },
+      { ...OPTS },
+    );
+
+    const aggregate = activePool.txLog.find((s) => s.includes('AS claimable')) ?? '';
+    const cteStart = aggregate.indexOf('WITH filtered_claim_candidates AS MATERIALIZED');
+    const cteEnd = aggregate.indexOf(') SELECT', cteStart);
+    expect(cteStart).toBeGreaterThan(-1);
+    expect(cteEnd).toBeGreaterThan(cteStart);
+    const candidates = aggregate.slice(cteStart, cteEnd);
+    expect(candidates).toContain('source_plan_slug');
+    expect(candidates).not.toContain(' AS ok_');
+    expect(candidates).not.toContain('wi.*');
+    expect(aggregate).toContain('(TRUE) AS spec_match');
+    expect(aggregate.indexOf(' AS ok_untaken')).toBeGreaterThan(cteEnd);
+    expect(aggregate).toContain('FROM filtered_claim_candidates wi');
+    // The same query still reports matches and every exclusion; it has not
+    // filtered the population down to survivors merely to make admission fast.
+    expect(aggregate).toContain('count(*) FILTER (WHERE spec_match)::int AS matched');
+    expect(aggregate).toContain('AS claim_hold');
+  });
+
+  it('keeps unfiltered aggregates broad instead of materializing the entire issue pool', async () => {
+    activePool = makePool();
+
+    await aggregateIssueClaimExclusions(undefined, { ...OPTS });
+
+    const aggregate = activePool.txLog.find((s) => s.includes('AS claimable')) ?? '';
+    expect(aggregate).toContain('FROM harness_shared.work_items wi');
+    expect(aggregate).not.toContain('filtered_claim_candidates');
   });
 
   it('NEGATIVE CONTROL — injected client: no transaction, no cap (the caller already owns both)', async () => {

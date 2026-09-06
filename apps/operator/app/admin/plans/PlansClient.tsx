@@ -1406,7 +1406,11 @@ function usePlanShortcuts({
 }: PlanShortcutSetters) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // A linked work/review popup owns its keys. Escape must close that layer
+      // without also dropping the underlying plan and expanded requirement.
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.target instanceof Element &&
+        event.target.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')) return;
 
       if (event.key === "Escape") {
         if (document.activeElement === search.current) {

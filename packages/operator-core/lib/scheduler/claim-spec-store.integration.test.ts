@@ -106,6 +106,52 @@ afterAll(async () => {
   await db?.cleanup?.();
 });
 
+describe('migration 389 restored after the migration 555 table rename', () => {
+  it('adds id_only to the current base table and refreshes the compatibility view', async () => {
+    const recovery = await createFreshPgDb('claim_spec_389_recovery');
+    try {
+      await recovery.sql.unsafe(mig('372-bee-claim-specs.sql'));
+
+      // Faithfully reproduce the persisted r22 shape: migration 389 was absent from
+      // the package, but migration 555 later renamed the table and installed this
+      // compatibility view. R24 then restored 389 and must converge from here.
+      await recovery.sql.unsafe(
+        'ALTER TABLE harness_shared.bee_claim_specs RENAME TO cup_claim_specs',
+      );
+      await recovery.sql.unsafe(
+        'CREATE VIEW harness_shared.bee_claim_specs AS SELECT * FROM harness_shared.cup_claim_specs',
+      );
+
+      await recovery.sql.unsafe(mig('389-bee-claim-spec-id-only.sql'));
+      await recovery.sql.unsafe(mig('389-bee-claim-spec-id-only.sql'));
+
+      const columns = await recovery.sql<{ relation: string; relkind: string; idOnly: boolean }[]>`
+        SELECT c.relname AS relation,
+               c.relkind::text AS relkind,
+               EXISTS (
+                 SELECT 1
+                   FROM pg_attribute a
+                  WHERE a.attrelid = c.oid
+                    AND a.attname = 'id_only'
+                    AND a.attnum > 0
+                    AND NOT a.attisdropped
+               ) AS "idOnly"
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'harness_shared'
+           AND c.relname IN ('bee_claim_specs', 'cup_claim_specs')
+         ORDER BY c.relname`;
+
+      expect(columns).toEqual([
+        { relation: 'bee_claim_specs', relkind: 'v', idOnly: true },
+        { relation: 'cup_claim_specs', relkind: 'r', idOnly: true },
+      ]);
+    } finally {
+      await recovery.cleanup();
+    }
+  }, 120_000);
+});
+
 describe('cup_claim_specs store (mig 372)', () => {
   it('counts an active/parked claim but ignores terminal claims (EI-11796)', async () => {
     await db.sql`

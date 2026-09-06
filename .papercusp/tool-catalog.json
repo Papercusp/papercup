@@ -31165,7 +31165,7 @@
           "POST"
         ]
       },
-      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member's claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
+      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
       "capabilities": [
         "work_items:write"
       ],

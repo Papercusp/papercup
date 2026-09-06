@@ -19,7 +19,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
+import { Modal } from "../../harness/Modal";
 
 /* ── Data-layer mocks ──────────────────────────────────────────────── */
 // Per-test fixtures for the plans-api hooks.
@@ -238,6 +239,28 @@ describe("PlansClient (Plans admin shell)", () => {
     const detail = screen.getByTestId("plan-detail");
     expect(detail).toBeTruthy();
     expect(detail.textContent).toBe("plan-a");
+  });
+
+  it("Escape dismisses a nested work dialog while preserving the underlying plan", async () => {
+    function WithDialog() {
+      const [open, setOpen] = useState(true);
+      return <>
+        <PlansClient />
+        <Modal open={open} onOpenChange={setOpen} title="Linked work">
+          <button type="button">Review detail</button>
+        </Modal>
+      </>;
+    }
+    render(<NuqsTestingAdapter searchParams="?view=plans&plan=plan-a" hasMemory>
+      <WithDialog />
+    </NuqsTestingAdapter>);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Review detail" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId("plan-detail").textContent).toBe("plan-a");
+    // With the popup gone, the ordinary plan shortcut still works.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("plan-detail")).toBeNull());
   });
 
   it("opens the full PlanDetail when selecting a plan from the Plans rail", async () => {
