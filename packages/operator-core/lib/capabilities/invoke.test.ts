@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { paletteInvokeGuard } from './invoke';
+import { describe, it, expect, vi } from 'vitest';
+import { dispatchPaletteTarget, paletteInvokeGuard } from './invoke';
 import { paletteEligibility } from './safety-filter';
 import type { Capability } from './types';
 
@@ -98,5 +98,57 @@ describe('paletteInvokeGuard — a caller that supplies its own args', () => {
     // tool must stay out of the palette until it grows an arg prompt.
     expect(paletteEligibility(needsArgs)).toBe('exclude');
     expect(paletteEligibility(needsArgs, { argsSupplied: true })).toBe('fire-and-toast');
+  });
+});
+
+describe('tools:invoke on the loopback palette dispatcher', () => {
+  it('re-enters the guarded capability chokepoint with target args, confirmation, and caller attribution', async () => {
+    const body = { content: [{ type: 'text' as const, text: '{"ok":true}' }] };
+    const invoke = vi.fn(async () => ({ ok: true as const, status: 200, body }));
+    const result = await dispatchPaletteTarget(
+      {
+        name: 'work_items:get',
+        args: { id: 'WI-7' },
+        confirmed: true,
+        callerSid: 'pui-123',
+      },
+      invoke,
+    );
+    expect(invoke).toHaveBeenCalledWith({
+      name: 'work_items:get',
+      args: { id: 'WI-7' },
+      confirmed: true,
+      callerSid: 'pui-123',
+    });
+    expect(result).toBe(body);
+  });
+
+  it('returns a nested MCP error instead of weakening a target refusal', async () => {
+    const invoke = vi.fn(async () => ({
+      ok: false as const,
+      status: 409,
+      code: 'confirmation_required',
+      message: 'confirm it',
+    }));
+    const result = await dispatchPaletteTarget(
+      { name: 'danger:write', args: {}, confirmed: false },
+      invoke,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({
+      type: 'text',
+      text: 'confirmation_required: confirm it',
+    });
+  });
+
+  it('blocks direct self-recursion before calling the nested dispatcher', async () => {
+    const invoke = vi.fn();
+    const result = await dispatchPaletteTarget(
+      { name: 'tools:invoke', args: { name: 'tools:find' } },
+      invoke,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining('cannot invoke itself') });
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

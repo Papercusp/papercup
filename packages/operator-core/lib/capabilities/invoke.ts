@@ -76,6 +76,59 @@ export type InvokeResult =
   | { ok: false; status: number; code: string; message: string }
   | { ok: true; status: number; body: unknown };
 
+type PaletteDispatchResult = Awaited<
+  ReturnType<NonNullable<UnifiedToolContext['dispatchTool']>>
+>;
+
+type ServerCapabilityInvoker = (opts: {
+  name: string;
+  args?: unknown;
+  confirmed?: boolean;
+  callerSid?: string;
+}) => Promise<InvokeResult>;
+
+/**
+ * Re-enter the palette capability chokepoint for a `tools:invoke` target.
+ * Dependency injection keeps the forwarding/denial envelope unit-testable
+ * without a live registry, workspace transaction, or MCP server.
+ */
+export async function dispatchPaletteTarget(
+  opts: {
+    name: string;
+    args: unknown;
+    confirmed?: boolean;
+    callerSid?: string;
+  },
+  invoke: ServerCapabilityInvoker = invokeServerCapability,
+): Promise<PaletteDispatchResult> {
+  const target = lookupByMcpName(opts.name);
+  const targetCanonical = target?.expose?.mcp?.name ?? opts.name;
+  if (targetCanonical === 'tools:invoke') {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text' as const,
+          text: 'invalid_target: tools:invoke cannot invoke itself',
+        },
+      ],
+    };
+  }
+  const nested = await invoke(opts);
+  if (!nested.ok) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text' as const,
+          text: `${nested.code}: ${nested.message}`,
+        },
+      ],
+    };
+  }
+  return nested.body as PaletteDispatchResult;
+}
+
 export async function invokeServerCapability(opts: {
   name: string;
   args?: unknown;
@@ -117,7 +170,8 @@ export async function invokeServerCapability(opts: {
   }
 
   const workspaceId = activeWorkspaceId();
-  const body = await withWorkspace(workspaceId, async (tx) => {
+  const canonicalName = projected.expose?.mcp?.name ?? opts.name;
+  const dispatch = async (tx?: UnifiedToolContext['tx']) => {
     // The desktop loopback caller IS the operator (same trust the MCP
     // operator-tier path grants on loopback). The dispatch capability gate is
     // a literal `has(cap)` and does NOT honor the loopback principal's `'*'`,
@@ -147,7 +201,7 @@ export async function invokeServerCapability(opts: {
       progress: () => {},
       emit: () => {},
       signal: new AbortController().signal,
-      tx,
+      ...(tx ? { tx } : {}),
       // The loopback caller IS the operator/brain — carry the brain RBAC role so a
       // `requireRoles:[BRAIN_PRINCIPAL_ROLE]` tool (the spawn-approval gate, P-006)
       // admits it (this path bypasses capability/quota but NOT role).
@@ -161,8 +215,31 @@ export async function invokeServerCapability(opts: {
         roles: new Set([BRAIN_PRINCIPAL_ROLE]),
       },
     };
+    // PUI P-012: the palette itself now fronts tools:find → tools:invoke.
+    // `tools:invoke` is a pure delegator and therefore needs the same
+    // server-side dispatcher the MCP transport installs. Re-enter this
+    // capability chokepoint for the INNER target: that deliberately re-runs
+    // palette eligibility, confirmation, role/capability, authorization,
+    // quota/audit, and opens the target's own workspace transaction. It is not
+    // a privilege bypass and does not hold the outer delegator's transaction
+    // across a slow target.
+    ctx.dispatchTool = async (name, args) =>
+      dispatchPaletteTarget({
+        name,
+        args,
+        confirmed: opts.confirmed,
+        callerSid: opts.callerSid,
+      });
     return dispatchProjectedToolToMcp(projected, opts.name, opts.args ?? {}, ctx, PROJECTED_DEPS);
-  });
+  };
+
+  // tools:invoke declares skipWorkspaceTx: the wrapper never reads `ctx.tx` and
+  // can outlive the 60s idle-transaction timeout. Every inner target re-enters
+  // `invokeServerCapability` above and receives its own transaction when needed.
+  const body =
+    canonicalName === 'tools:invoke'
+      ? await dispatch()
+      : await withWorkspace(workspaceId, async (tx) => dispatch(tx));
 
   return { ok: true, status: 200, body };
 }
