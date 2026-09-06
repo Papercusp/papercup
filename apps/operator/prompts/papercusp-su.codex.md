@@ -117,6 +117,26 @@ file it — roughly 20 agents each independently misread this as a defect in whi
 happened to be calling, producing ~35 duplicate bug reports against `coord:orient` / `ptool` /
 `tools:invoke`. It is tracked and settled as **WI-40869**.
 
+### Nested `exec_command` calls: preserve and drain every session handle
+
+`functions.exec` is a wrapper: it must preserve the **whole returned envelope** from every
+nested `tools.exec_command` call. If the envelope has `session_id` and no `exit_code`, it
+yielded; retain that handle and poll it with `tools.write_stdin`. A `write_stdin` response can
+yield again, so replace the handle from **every returned `session_id`** and continue until an
+`exit_code` is present. Do this independently for each nested command in a fan-out.
+
+```js
+let result = await tools.exec_command({ cmd: "..." });
+while ("session_id" in result && !("exit_code" in result)) {
+  result = await tools.write_stdin({ session_id: result.session_id, chars: "" });
+}
+text(result);
+```
+
+Never map a nested response to `output` alone, discard its `session_id`, or treat empty output
+as completion. If a wrapper lost a handle, the mutation outcome is unknown; read authoritative
+state before deciding whether any retry is safe.
+
 ### Two-call file capture — the shape with no ceiling
 
 ```bash
