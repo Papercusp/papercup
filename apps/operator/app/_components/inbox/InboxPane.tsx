@@ -47,6 +47,7 @@
  * the sort picker. A stale `?opcf=…` deep link is inert.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -377,6 +378,142 @@ function InboxExpandedDetail({
     >
       {children}
     </div>
+  );
+}
+
+/**
+ * The detail pane's head — split mode only (inbox-three-column-resolver-states
+ * P-008 / D-003). Measured live 2026-09-05: the aside rendered OtherDetail's
+ * chips, why-line and body with NO heading, so the selected item's title
+ * appeared nowhere in the pane. This puts the title first as the pane's h2,
+ * then one meta line: kind · owner · plan-or-harness · when. Each segment is
+ * omitted when the item lacks it, never rendered as a blank.
+ */
+function InboxDetailHead({ item }: { item: AttentionItem }) {
+  const rel = formatRelativeDate(item.occurredAt);
+  const abs = formatAbsoluteDate(item.occurredAt);
+  const owner = item.ownerLabel ?? item.ownerAgentId;
+  const where = item.planSlug ?? item.harnessSlug;
+  const segments: Array<{ key: string; node: ReactNode }> = [
+    { key: "kind", node: KIND_LABEL[item.kind] ?? item.kind },
+  ];
+  if (owner) segments.push({ key: "owner", node: owner });
+  if (where) segments.push({ key: "where", node: where });
+  if (rel) {
+    segments.push({
+      key: "when",
+      node: (
+        <time dateTime={item.occurredAt} title={abs ?? undefined}>
+          {rel}
+        </time>
+      ),
+    });
+  }
+  return (
+    <header className="op-inbox__detail-head" data-testid="inbox-detail-head">
+      <h2 className="op-inbox__detail-title" data-testid="inbox-detail-title">
+        {item.title}
+      </h2>
+      <p className="op-inbox__detail-meta" data-testid="inbox-detail-meta">
+        {segments.map((s, idx) => (
+          <Fragment key={s.key}>
+            {idx > 0 ? (
+              <span className="op-inbox__detail-meta-sep" aria-hidden="true">
+                ·
+              </span>
+            ) : null}
+            <span data-testid={`inbox-detail-meta-${s.key}`}>{s.node}</span>
+          </Fragment>
+        ))}
+      </p>
+    </header>
+  );
+}
+
+/**
+ * The metadata rail — split mode only (P-008 / D-003). OtherDetail's six
+ * toolbar chips (tier · kind · category · status · importance · harness) as
+ * LABELLED rows beside the body, at full contrast, instead of a strewn chip
+ * row whose tail washed out at the pane's far edge. OtherDetail is told
+ * `metadataPlacement="host"` so the same facts are not shown twice; the chip
+ * classes ride along on the values so their colour coding is unchanged.
+ */
+function InboxDetailRail({ item }: { item: AttentionItem }) {
+  const rows: Array<{ key: string; label: string; value: ReactNode }> = [
+    {
+      key: "tier",
+      label: "Tier",
+      value: (
+        <span className={`pc-tier pc-tier--${item.tier}`}>
+          {TIER_LABEL[item.tier] ?? item.tier}
+        </span>
+      ),
+    },
+    {
+      key: "kind",
+      label: "Kind",
+      value: (
+        <span className={`pc-kind pc-kind--${item.kind}`}>
+          {KIND_LABEL[item.kind] ?? item.kind}
+        </span>
+      ),
+    },
+  ];
+  if (item.category) {
+    rows.push({
+      key: "category",
+      label: "Category",
+      value: (
+        <span
+          className={`pc-category${item.whyGated === "protected" ? " pc-category--protected" : ""}`}
+          title={`autonomy category: ${item.category}`}
+        >
+          {item.whyGated === "protected" ? "🔒 " : ""}
+          {item.category}
+        </span>
+      ),
+    });
+  }
+  rows.push({
+    key: "status",
+    label: "Status",
+    value: (
+      <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
+    ),
+  });
+  rows.push({
+    key: "importance",
+    label: "Importance",
+    value: (
+      <span className={`pc-imp pc-imp--${item.importance}`}>
+        {item.importance}
+      </span>
+    ),
+  });
+  if (item.harnessSlug) {
+    rows.push({
+      key: "harness",
+      label: "Harness",
+      value: <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span>,
+    });
+  }
+  return (
+    <dl
+      className="op-inbox__detail-rail"
+      data-testid="inbox-detail-rail"
+      aria-label="Item metadata"
+    >
+      {rows.map((r) => (
+        <div
+          key={r.key}
+          className="op-inbox__detail-rail-row"
+          data-testid={`inbox-detail-rail-${r.key}`}
+        >
+          <dt>{r.label}</dt>
+          <dd>{r.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -739,20 +876,31 @@ export default function InboxPane({
         />
       );
     })();
+    // Split (P-008 / D-003): title + meta line lead, the card's body sits at a
+    // ~58ch measure with its six chips re-homed as the labelled rail beside
+    // it, and the discussion spans beneath both (grid areas in inbox-pane.css
+    // under `.op-inbox__aside`). Stack is the unchanged sidebar disclosure.
     return (
       <InboxExpandedDetail
         itemId={i.id}
         landmarkRef={split ? asideRef : masterRef}
       >
+        {split ? <InboxDetailHead item={i} /> : null}
         <OtherDetail
           key={i.id}
           item={i}
           actionsPlacement="after-body"
+          metadataPlacement={split ? "host" : "toolbar"}
           onResolved={onResolved}
           onDiscuss={onDiscuss}
           onNavigate={onNavigate}
         />
-        {discussion}
+        {split ? <InboxDetailRail item={i} /> : null}
+        {split && discussion ? (
+          <div className="op-inbox__detail-discussion">{discussion}</div>
+        ) : (
+          discussion
+        )}
       </InboxExpandedDetail>
     );
   };

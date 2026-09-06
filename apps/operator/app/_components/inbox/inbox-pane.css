@@ -892,15 +892,105 @@
   );
 }
 /* The aside hosts the same drawer subtree a stack row does; flatten the
-   drawer chrome — here it IS the page's detail column, not a row's drawer. */
+   drawer chrome — here it IS the page's detail column, not a row's drawer.
+   ── The detail pane (P-008 / D-003) ───────────────────────────────────────
+   Measured live 2026-09-05: no heading, and the body ran the full 1055px
+   pane width with the six chips strewn across the top, the last of them
+   washed out at the far edge. Now a grid: the title heading + meta line
+   span the top; the card's body is held to a ~58ch measure; the chips are
+   re-homed as a labelled metadata rail beside it (the head + rail render in
+   split ONLY, so the stack disclosure is untouched); the discussion spans
+   beneath both. */
 .op-inbox__aside .op-inbox__detail {
+  display: grid;
+  grid-template-columns: minmax(0, 58ch) 190px;
+  grid-template-areas:
+    "head head"
+    "body rail"
+    "discussion discussion";
+  align-items: start;
+  column-gap: 28px;
+  row-gap: 14px;
   padding: 0;
   border-top: 0;
   border-radius: 0;
   background: transparent;
 }
+.op-inbox__detail-head {
+  grid-area: head;
+  min-width: 0;
+}
+.op-inbox__detail-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.op-inbox__detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__detail-meta-sep {
+  color: var(--fg-mute, #8a8a91);
+  opacity: 0.6;
+}
+.op-inbox__aside .pc-items__detail {
+  grid-area: body;
+  max-width: 58ch;
+  padding-top: 0;
+}
 .op-inbox__aside .pc-items__detail-body {
   padding: 8px 0 4px;
+}
+.op-inbox__detail-rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 14px 15px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 10px;
+  background: var(--bg-2, rgba(0, 0, 0, 0.18));
+}
+.op-inbox__detail-rail-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.op-inbox__detail-rail dt {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__detail-rail dd {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg, #e5e7eb);
+}
+/* The chip classes ride along for their colour coding; at full contrast in a
+   190px column they must truncate rather than overflow the rail. */
+.op-inbox__detail-rail dd > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.op-inbox__detail-discussion {
+  grid-area: discussion;
+  min-width: 0;
 }
 .op-inbox__aside .pc-items__action {
   flex: 0 1 auto;
@@ -1214,6 +1304,21 @@
   }
   .op-inbox--split .op-inbox__aside-back {
     display: inline-flex;
+  }
+  /* The detail pane stacks: head, then the rail as a wrapping strip of
+     labelled facts, then the body at its measure, then the discussion. */
+  .op-inbox__aside .op-inbox__detail {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "rail"
+      "body"
+      "discussion";
+  }
+  .op-inbox__detail-rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px 18px;
   }
 }
 

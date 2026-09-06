@@ -84,17 +84,20 @@ vi.mock("@/app/admin/plans/PlanOtherList", () => ({
     onResolved,
     onNavigate,
     actionsPlacement,
+    metadataPlacement,
   }: {
     item: { id: string };
     onDiscuss?: (i: unknown) => boolean;
     onResolved: () => void;
     onNavigate?: (i: unknown, actionId: "open" | "message-owner") => boolean;
     actionsPlacement?: "toolbar" | "after-body";
+    metadataPlacement?: "toolbar" | "host";
   }) => (
     <div
       data-testid="other-detail"
       data-item={item.id}
       data-actions-placement={actionsPlacement}
+      data-metadata-placement={metadataPlacement}
     >
       <button
         type="button"
@@ -517,6 +520,52 @@ describe("<InboxPane>", () => {
     });
   });
 
+  /* ── The detail pane (inbox-three-column-resolver-states-2026-09-06 P-008 / D-003) ──
+     Measured live 2026-09-05: the aside's detail had NO heading and the body
+     ran the full 1055px pane width, chips strewn across the top. CSS contract
+     for the split aside's grid; the DOM half is under the layout="split" tests. */
+  describe("detail pane (P-008)", () => {
+    const css = readFileSync(join(__dirname, "inbox-pane.css"), "utf8");
+    const rule = (selector: string): string =>
+      css.match(
+        new RegExp(
+          selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*\\}",
+        ),
+      )?.[0] ?? "";
+
+    it("lays the aside's detail out as head / body + rail / discussion, the body held to a 58ch measure beside a 190px rail", () => {
+      const detail = rule(".op-inbox__aside .op-inbox__detail");
+      expect(detail).toMatch(/display:\s*grid/);
+      expect(detail).toMatch(
+        /grid-template-columns:\s*minmax\(0,\s*58ch\)\s+190px/,
+      );
+      expect(detail).toMatch(
+        /"head head"\s*"body rail"\s*"discussion discussion"/,
+      );
+      expect(rule(".op-inbox__aside .pc-items__detail")).toMatch(
+        /grid-area:\s*body[^}]*max-width:\s*58ch/,
+      );
+      expect(rule(".op-inbox__detail-head")).toMatch(/grid-area:\s*head/);
+      expect(rule(".op-inbox__detail-rail")).toMatch(/grid-area:\s*rail/);
+      expect(rule(".op-inbox__detail-discussion")).toMatch(
+        /grid-area:\s*discussion/,
+      );
+    });
+
+    it("at narrow widths stacks head, rail, body, discussion in one column", () => {
+      const narrow = css.slice(css.indexOf("@media (max-width: 900px)"));
+      expect(narrow).toMatch(
+        /\.op-inbox__aside \.op-inbox__detail\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*"head"\s*"rail"\s*"body"\s*"discussion"/,
+      );
+    });
+
+    it("scopes the grid to the aside — the stack disclosure keeps its drawer chrome", () => {
+      const drawer = rule(".op-inbox__detail");
+      expect(drawer).not.toMatch(/display:\s*grid/);
+      expect(drawer).toMatch(/border-top:\s*1px solid/);
+    });
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem("d1"),
@@ -729,6 +778,119 @@ describe("<InboxPane>", () => {
     expect(document.getElementById("inbox-expanded-d2")).toBe(expanded);
     // The unselected row renders nothing extra.
     expect(screen.queryByTestId("inbox-expanded-d1")).toBeNull();
+  });
+
+  /* ── The detail pane (inbox-three-column-resolver-states-2026-09-06 P-008 / D-003) ── */
+  it("split with a selection: the aside leads with the item's title as its heading + a meta line, the six chips re-homed as a labelled rail beside the body, and OtherDetail's own chips suppressed", () => {
+    seedAttention([
+      mkItem("d1"),
+      mkItem("d2", {
+        title: "Approve the key rotation",
+        kind: "coord-escalation",
+        planSlug: "plan-x",
+        category: "deploy",
+        whyGated: "protected",
+        importance: "high",
+        occurredAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      }),
+    ]);
+    renderPane("?opcis=d2", { layout: "split" });
+    const aside = screen.getByTestId("inbox-aside");
+    const expanded = screen.getByTestId("inbox-expanded-d2");
+    const head = screen.getByTestId("inbox-detail-head");
+    const detail = screen.getByTestId("other-detail");
+    const rail = screen.getByTestId("inbox-detail-rail");
+    expect(aside.contains(head)).toBe(true);
+    // The heading IS the item's title — the pane's one h2 (pre-P-008 the
+    // detail rendered no heading element at all; the carried check).
+    const h2 = screen.getByTestId("inbox-detail-title");
+    expect(h2.tagName).toBe("H2");
+    expect(h2.textContent).toBe("Approve the key rotation");
+    expect(expanded.querySelectorAll("h1,h2,h3,h4,h5")).toHaveLength(1);
+    // Meta line: kind · owner · plan-or-harness · when.
+    expect(screen.getByTestId("inbox-detail-meta-kind").textContent).toBe(
+      "escalation",
+    );
+    expect(screen.getByTestId("inbox-detail-meta-owner").textContent).toBe(
+      "su · su-abc",
+    );
+    expect(screen.getByTestId("inbox-detail-meta-where").textContent).toBe(
+      "plan-x",
+    );
+    const when = screen.getByTestId("inbox-detail-meta-when");
+    expect(when.textContent).toBe("5m");
+    expect(when.querySelector("time")?.getAttribute("datetime")).toBeTruthy();
+    expect(when.querySelector("time")?.getAttribute("title")).toBeTruthy();
+    // Source order head → card → rail; the grid places them.
+    const kids = Array.from(expanded.children);
+    expect(kids.indexOf(head)).toBeLessThan(kids.indexOf(detail));
+    expect(kids.indexOf(detail)).toBeLessThan(kids.indexOf(rail));
+    // The rail: the six facts as labelled rows, in the toolbar's order, the
+    // chip classes riding along for their colour coding.
+    expect(rail.tagName).toBe("DL");
+    const rows = Array.from(
+      rail.querySelectorAll(".op-inbox__detail-rail-row"),
+    );
+    expect(rows.map((r) => r.querySelector("dt")?.textContent)).toEqual([
+      "Tier",
+      "Kind",
+      "Category",
+      "Status",
+      "Importance",
+      "Harness",
+    ]);
+    expect(rows.map((r) => r.querySelector("dd")?.textContent)).toEqual([
+      "Decisions",
+      "escalation",
+      "🔒 deploy",
+      "open",
+      "high",
+      "papercusp",
+    ]);
+    expect(rail.querySelector(".pc-tier")?.className).toContain(
+      "pc-tier--decision",
+    );
+    expect(rail.querySelector(".pc-category")?.className).toContain(
+      "pc-category--protected",
+    );
+    // OtherDetail is told the host owns the metadata — no second chip row.
+    expect(detail.getAttribute("data-metadata-placement")).toBe("host");
+  });
+
+  it("split meta line and rail omit what the item lacks — no blank segments, no Category/Harness rows", () => {
+    seedAttention([
+      mkItem("d2", {
+        ownerLabel: undefined,
+        ownerAgentId: undefined,
+        planSlug: undefined,
+        harnessSlug: undefined,
+        occurredAt: undefined,
+      }),
+    ]);
+    renderPane("?opcis=d2", { layout: "split" });
+    expect(screen.getByTestId("inbox-detail-meta").textContent).toBe(
+      "message",
+    );
+    expect(screen.queryByTestId("inbox-detail-meta-owner")).toBeNull();
+    expect(screen.queryByTestId("inbox-detail-meta-where")).toBeNull();
+    expect(screen.queryByTestId("inbox-detail-meta-when")).toBeNull();
+    const rows = Array.from(
+      screen
+        .getByTestId("inbox-detail-rail")
+        .querySelectorAll(".op-inbox__detail-rail-row dt"),
+    ).map((dt) => dt.textContent);
+    expect(rows).toEqual(["Tier", "Kind", "Status", "Importance"]);
+  });
+
+  it("stack keeps the disclosure unchanged — no heading, no rail, OtherDetail's own chips (P-008 is split-only)", () => {
+    seedAttention([mkItem("d1"), mkItem("d2")]);
+    renderPane("?opcis=d2");
+    expect(screen.getByTestId("inbox-expanded-d2")).toBeTruthy();
+    expect(screen.queryByTestId("inbox-detail-head")).toBeNull();
+    expect(screen.queryByTestId("inbox-detail-rail")).toBeNull();
+    expect(
+      screen.getByTestId("other-detail").getAttribute("data-metadata-placement"),
+    ).toBe("toolbar");
   });
 
   /* ── The rail (inbox-three-column-resolver-states-2026-09-06 P-002 / D-001) ── */

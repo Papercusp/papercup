@@ -456,6 +456,7 @@ export function OtherDetail({
   onDiscuss,
   onNavigate,
   actionsPlacement = 'toolbar',
+  metadataPlacement = 'toolbar',
 }: {
   item: AttentionItem | null;
   onResolved: () => void;
@@ -471,6 +472,14 @@ export function OtherDetail({
    *  inline disclosure follows owner-inbox D-012: full body first, actions
    *  immediately beneath it. */
   actionsPlacement?: 'toolbar' | 'after-body';
+  /** Where the item's metadata chips (tier · kind · category · status ·
+   *  importance · harness) render. `toolbar` (default) — this card's own top
+   *  bar, as the Queue shows them. `host` — the HOST renders them: the
+   *  Resolution Inbox's split-page aside lays the same six facts out as a
+   *  labelled rail beside the body (inbox-three-column-resolver-states-2026-09-06
+   *  P-008 / D-003), so the bar is omitted here rather than shown twice.
+   *  Toolbar-placed actions are unaffected — the bar still renders for them. */
+  metadataPlacement?: 'toolbar' | 'host';
 }) {
   // The row arrives from the SLIMMED list feed (body clipped, `actions` dropped
   // — slim-plans-attention-sync-payload-2026-07-26 P-003), so the detail pane
@@ -589,31 +598,40 @@ export function OtherDetail({
     </span>
   );
 
+  const chips = metadataPlacement === 'toolbar';
+  const toolbarActions = actionsPlacement === 'toolbar' ? actions : null;
+
   return (
-    <aside className="pc-items__detail">
-      <div className="pc-items__detail-toolbar">
-        <span className={`pc-tier pc-tier--${item.tier}`} title={TIER_LABEL[item.tier]}>{TIER_LABEL[item.tier]}</span>
-        <span className={`pc-kind pc-kind--${item.kind}`}>{kindLabel}</span>
-        {item.category ? (
-          <span
-            className={`pc-category${item.whyGated === 'protected' ? ' pc-category--protected' : ''}`}
-            title={`autonomy category: ${item.category}`}
-          >
-            {item.whyGated === 'protected' ? '🔒 ' : ''}
-            {item.category}
-          </span>
-        ) : null}
-        <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
-        {item.importance !== 'normal' ? (
-          <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
-        ) : null}
-        {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
-        {/* #4: actions live in the toolbar, not in the card body.
-            Held back until the detail fetch lands: `actions` is dropped from the
-            list feed, so rendering the bar early would show ZERO buttons — which
-            reads as "this item has no actions" rather than "still loading". */}
-        {actionsPlacement === 'toolbar' ? actions : null}
-      </div>
+    <aside className="pc-items__detail" data-metadata-placement={metadataPlacement}>
+      {chips || toolbarActions ? (
+        <div className="pc-items__detail-toolbar">
+          {chips ? (
+            <>
+              <span className={`pc-tier pc-tier--${item.tier}`} title={TIER_LABEL[item.tier]}>{TIER_LABEL[item.tier]}</span>
+              <span className={`pc-kind pc-kind--${item.kind}`}>{kindLabel}</span>
+              {item.category ? (
+                <span
+                  className={`pc-category${item.whyGated === 'protected' ? ' pc-category--protected' : ''}`}
+                  title={`autonomy category: ${item.category}`}
+                >
+                  {item.whyGated === 'protected' ? '🔒 ' : ''}
+                  {item.category}
+                </span>
+              ) : null}
+              <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
+              {item.importance !== 'normal' ? (
+                <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
+              ) : null}
+              {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
+            </>
+          ) : null}
+          {/* #4: actions live in the toolbar, not in the card body.
+              Held back until the detail fetch lands: `actions` is dropped from the
+              list feed, so rendering the bar early would show ZERO buttons — which
+              reads as "this item has no actions" rather than "still loading". */}
+          {toolbarActions}
+        </div>
+      ) : null}
       {/* A1 (P-005): the "why it's here" line — who must sign off + why. The
           autonomy-policy deep-link for queen-eligible items is gone with the tier
           flag it was gated on (P-068/D-098). */}

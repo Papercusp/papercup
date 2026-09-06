@@ -232,3 +232,48 @@ describe('OtherDetail — host action placement', () => {
     expect(body?.lastElementChild).toBe(loading);
   });
 });
+
+/* ── inbox-three-column-resolver-states-2026-09-06 P-008 / D-003 ────────────
+   The Resolution Inbox's split-page aside re-homes the card's six chips as a
+   labelled metadata rail beside the body, so it asks the card NOT to render
+   its own chip toolbar. The default (the Queue) is unchanged. */
+describe('OtherDetail — host metadata placement (P-008)', () => {
+  it('omits the chip toolbar when the host owns the metadata, keeping the body and its after-body actions', () => {
+    render(
+      <OtherDetail
+        item={item({ body: 'Full owner-visible description', category: 'deploy', importance: 'high' })}
+        actionsPlacement="after-body"
+        metadataPlacement="host"
+        onResolved={() => {}}
+      />,
+    );
+    expect(document.querySelector('.pc-items__detail')?.getAttribute('data-metadata-placement')).toBe('host');
+    expect(document.querySelector('.pc-items__detail-toolbar')).toBeNull();
+    for (const chip of ['.pc-tier', '.pc-kind', '.pc-category', '.pc-count', '.pc-imp', '.pc-pill--harness']) {
+      expect(document.querySelector(chip)).toBeNull();
+    }
+    const body = document.querySelector('.pc-items__detail-body');
+    expect(body?.textContent).toContain('Full owner-visible description');
+    expect(body?.contains(screen.getByTestId('detail-actions-loading'))).toBe(true);
+  });
+
+  it('keeps the toolbar for toolbar-placed actions even when the chips move to the host', () => {
+    render(<OtherDetail item={item()} metadataPlacement="host" onResolved={() => {}} />);
+    const toolbar = document.querySelector('.pc-items__detail-toolbar');
+    expect(toolbar).toBeTruthy();
+    expect(toolbar?.querySelector('.pc-tier')).toBeNull();
+    expect(toolbar?.querySelector('.pc-kind')).toBeNull();
+    expect(toolbar?.contains(screen.getByTestId('detail-actions-loading'))).toBe(true);
+  });
+
+  it('default placement is unchanged — the chips render in the card toolbar', () => {
+    render(<OtherDetail item={item({ category: 'deploy' })} onResolved={() => {}} />);
+    expect(document.querySelector('.pc-items__detail')?.getAttribute('data-metadata-placement')).toBe('toolbar');
+    const toolbar = document.querySelector('.pc-items__detail-toolbar');
+    expect(toolbar?.querySelector('.pc-tier')?.textContent).toBe('Alerts');
+    expect(toolbar?.querySelector('.pc-kind')?.textContent).toBe('escalation');
+    expect(toolbar?.querySelector('.pc-category')?.textContent).toBe('deploy');
+    expect(toolbar?.querySelector('.pc-count')?.textContent).toBe('open');
+    expect(toolbar?.querySelector('.pc-pill--harness')?.textContent).toBe('h');
+  });
+});
