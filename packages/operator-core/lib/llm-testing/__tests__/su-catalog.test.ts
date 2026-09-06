@@ -89,6 +89,15 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     }
   });
 
+  it('plans:list advertises the real full-lifecycle switch instead of a synthetic status:all', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'plans:list')!;
+    const properties = (entry.input as { properties?: Record<string, any> }).properties ?? {};
+
+    expect(properties.includeArchived).toMatchObject({ type: 'boolean' });
+    expect(properties.status.enum).not.toContain('all');
+    expect(entry.description).toMatch(/includeArchived:true/);
+  });
+
   it('exposes the PG-canonical docs:author write required by SU-S12', () => {
     const entry = SU_CATALOG.find((candidate) => candidate.name === 'docs:author')!;
     const input = entry.input as { properties?: Record<string, unknown>; required?: string[] };
@@ -187,6 +196,22 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(e.description).toContain('multi-part/full-picture');
     expect(e.description).toContain('single fact such as active/current phase');
     expect(e.description).toContain('direct harness:status call');
+  });
+
+  it('exposes the existing read and activation tools required by the S26/S31 hermetic worlds', () => {
+    for (const name of [
+      'capability:read',
+      'logs:read',
+      'dev:pg_query',
+      'dev:pipeline_position',
+      'git-sync:run',
+      'dev:restart',
+    ]) {
+      expect(names, `${name} should be offered to the SU SUT`).toContain(name);
+    }
+
+    expect(SU_CATALOG.find((entry) => entry.name === 'dev:pg_query')!.description).toMatch(/read-only/i);
+    expect(names).not.toContain('dev:pg_mutate');
   });
 
   it('includes the design-phase group the playbook mandates for UI work', () => {

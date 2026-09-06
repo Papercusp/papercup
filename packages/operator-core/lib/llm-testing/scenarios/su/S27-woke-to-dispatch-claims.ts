@@ -24,7 +24,7 @@ import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type { Scenario, ToolCallEvent, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbids, assertToolMatch } from './_asserts';
+import { assertTextForbids, assertToolCalledWithin, assertToolMatch } from './_asserts';
 
 function canonical(name: string): string {
   return name.replace(/^mcp__agentmcp__/, '').replace(/^mcp__[a-z0-9-]+__/i, '');
@@ -32,14 +32,51 @@ function canonical(name: string): string {
 
 const DISPATCH_PLAN_SLUG = 'fleet-dispatch-wake-clarity-2026-06-22';
 const DISPATCH_ITEMS = [
-  { planItemId: 'P-001', workItemId: 'WI-501', title: 'Presence wake is independently verifiable' },
-  { planItemId: 'P-002', workItemId: 'WI-502', title: 'coord:dispatch assigns, delivers, and wakes atomically' },
-  { planItemId: 'P-003', workItemId: 'WI-503', title: 'Directed wake requires immediate claim and work' },
-  { planItemId: 'P-004', workItemId: 'WI-504', title: 'Pickup confirmation distinguishes delivery from execution' },
+  {
+    planItemId: 'P-001',
+    workItemId: 'WI-501',
+    title: 'Presence wake is independently verifiable',
+    acceptance: 'Document which coord:presence field and follow-up read prove that a recipient actually took a turn.',
+  },
+  {
+    planItemId: 'P-002',
+    workItemId: 'WI-502',
+    title: 'coord:dispatch assigns, delivers, and wakes atomically',
+    acceptance: 'Document the assignment/delivery/wake receipt and the targeted retry when only the real-time wake misses.',
+  },
+  {
+    planItemId: 'P-003',
+    workItemId: 'WI-503',
+    title: 'Directed wake requires immediate claim and work',
+    acceptance: 'Document claim-now behavior plus the narrow claim-conflict and genuine-block exceptions.',
+  },
+  {
+    planItemId: 'P-004',
+    workItemId: 'WI-504',
+    title: 'Pickup confirmation distinguishes delivery from execution',
+    acceptance: 'Document separate evidence for delivered, woken, claimed, started, and completed.',
+  },
 ] as const;
 
 const DISPATCH_PLAN_ITEM_IDS = DISPATCH_ITEMS.map((item) => item.planItemId);
 const DISPATCH_WORK_ITEM_IDS = DISPATCH_ITEMS.map((item) => item.workItemId);
+
+const EXISTING_DISPATCH_DOCS = [
+  {
+    slug: 'playbook/fleet-dispatch',
+    title: 'Fleet dispatch',
+    body:
+      'coord:dispatch assigns a lane and sends a message. The current page calls any woken:1 response ' +
+      '"pickup confirmed" and does not distinguish durable delivery from execution.',
+  },
+  {
+    slug: 'playbook/wake-semantics',
+    title: 'Wake semantics',
+    body:
+      'A sender may request wake:"required". This page does not say which coord:presence transition ' +
+      'independently proves a turn ran, or what to do for recipient_alive_not_wakeable versus recipient_dead.',
+  },
+] as const;
 
 function jsonResult(value: unknown) {
   return { content: [{ text: JSON.stringify(value) }] };
@@ -147,6 +184,7 @@ export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
         items: DISPATCH_ITEMS.map((item) => ({
           id: item.planItemId,
           text: item.title,
+          acceptanceCriteria: item.acceptance,
           status: 'todo',
           workItemId: item.workItemId,
           assignee: 'su-self',
@@ -184,12 +222,47 @@ export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
               plan_slug: DISPATCH_PLAN_SLUG,
               harness_slug: 'papercusp',
             },
+            acceptance: item.acceptance,
           },
         }));
       if (canon === 'work_items:list') return jsonResult({ ok: true, items: workItems });
       return jsonResult({
         ok: true,
         results: workItems.map((workItem) => ({ ok: true, id: workItem.id, workItem })),
+      });
+    }
+    if (canon === 'docs:search') {
+      return jsonResult({
+        ok: true,
+        results: EXISTING_DISPATCH_DOCS.map((doc) => ({
+          slug: doc.slug,
+          title: doc.title,
+          excerpt: doc.body,
+        })),
+      });
+    }
+    if (canon === 'docs:outline') {
+      return jsonResult({
+        ok: true,
+        documents: EXISTING_DISPATCH_DOCS.map((doc) => ({ slug: doc.slug, title: doc.title })),
+      });
+    }
+    if (canon === 'docs:get') {
+      const requested = Array.isArray(input.slugs)
+        ? input.slugs.filter((slug): slug is string => typeof slug === 'string')
+        : [];
+      const documents = EXISTING_DISPATCH_DOCS.filter((doc) =>
+        requested.some((slug) => slug === doc.slug || slug.endsWith(doc.slug.split('/').at(-1)!)),
+      );
+      return jsonResult({ ok: true, documents, count: documents.length });
+    }
+    if (canon === 'docs:author') {
+      return jsonResult({
+        ok: true,
+        slug: input.slug ?? 'playbook/fleet-dispatch-wake-clarity',
+        status: input.status ?? 'active',
+        version: 1,
+        verified: input.verify === true,
       });
     }
     // The claim/pickup verbs all succeed (the agent SHOULD reach one of these this turn).
@@ -240,7 +313,7 @@ export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
 
 export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
   id: 'su-S27-woke-to-dispatch-claims',
-  version: 2,
+  version: 3,
   target: 'su',
   transport: 'in-process',
   description:
@@ -283,6 +356,15 @@ export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
         "su-power/su-engineer playbook 'Woke to a DIRECTED assignment? CLAIM + WORK it': orient → see the lane → " +
         'claim it (coord:orient { planSlug, planItems }, work_items:claim, plan_items:claim, ' +
         'coord:declare-intent { current_plan_slug, items }, or plans:set-status wip) and work it THIS turn.',
+    }),
+    assertToolCalledWithin(['docs:author'], 2, {
+      name: 'starts-the-dispatched-doc-work-without-reparking',
+      claim:
+        'The agent claimed the clarity lane but did not begin its concrete deliverable within the first two ' +
+        'turns. A claim followed by repeated reads and a menu question is still read-and-repark behavior.',
+      suggestion:
+        'Use the plan acceptance criteria and existing two playbook pages, then author the consolidated ' +
+        'fleet-dispatch-wake-clarity page immediately.',
     }),
     assertTextForbids(
       /\b(i'?ll\s+(get to|pick (it|this) up|start)\b[^.?!]{0,40}\b(later|next turn|soon|after)|await(ing)?\s+(further|more)\s+(instruction|direction|detail)|going back to (sleep|idle|park)|re-?park(ing)?|let me know\b[^.?!]{0,40}\bwhen\b)/i,

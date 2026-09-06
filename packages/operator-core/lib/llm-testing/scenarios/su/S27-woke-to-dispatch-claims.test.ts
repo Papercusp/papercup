@@ -20,7 +20,7 @@ describe('SU-S27 directed-dispatch world', () => {
   const workItems = ['WI-501', 'WI-502', 'WI-503', 'WI-504'];
 
   it('bumps the scenario after replacing the contradictory revision-1 world', () => {
-    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.version).toBe(2);
+    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.version).toBe(3);
   });
 
   it('exposes every dispatched item and the exact plan identity at orientation', async () => {
@@ -45,8 +45,39 @@ describe('SU-S27 directed-dispatch world', () => {
 
     expect(plan.slug).toBe(planSlug);
     expect(plan.items.map((item: any) => item.id)).toEqual(planItems);
+    expect(plan.items.every((item: any) => typeof item.acceptanceCriteria === 'string')).toBe(true);
     expect(assigned.items.map((item: any) => item.item)).toEqual(planItems);
     expect(listed.items.map((item: any) => item.id)).toEqual(workItems);
+  });
+
+  it('returns the existing playbook pages and accepts the consolidated deliverable', async () => {
+    const found = await call('docs:search', { query: 'fleet dispatch wake', harness: 'papercusp' });
+    expect(found.results.map((row: any) => row.slug)).toEqual([
+      'playbook/fleet-dispatch',
+      'playbook/wake-semantics',
+    ]);
+
+    const read = await call('docs:get', {
+      slugs: ['playbook/fleet-dispatch', 'playbook/wake-semantics'],
+      harness: 'papercusp',
+    });
+    expect(read.documents).toHaveLength(2);
+    expect(read.documents.map((row: any) => row.body).join('\n')).toMatch(/pickup confirmed/);
+    expect(read.documents.map((row: any) => row.body).join('\n')).toMatch(/coord:presence/);
+
+    const authored = await call('docs:author', {
+      slug: 'playbook/fleet-dispatch-wake-clarity',
+      title: 'Fleet dispatch wake clarity',
+      body: '# consolidated',
+      status: 'active',
+      verify: true,
+    });
+    expect(authored).toMatchObject({
+      ok: true,
+      slug: 'playbook/fleet-dispatch-wake-clarity',
+      status: 'active',
+      verified: true,
+    });
   });
 
   it('returns argument-aware confirmations for both direct and plan claims', async () => {
@@ -68,6 +99,6 @@ describe('SU-S27 directed-dispatch world', () => {
   });
 
   it('passes unrelated tools through', async () => {
-    expect(await S27_DISPATCH_WORLD.override('docs:search', { query: 'x' })).toBe(PASS_THROUGH);
+    expect(await S27_DISPATCH_WORLD.override('audit:list', {})).toBe(PASS_THROUGH);
   });
 });

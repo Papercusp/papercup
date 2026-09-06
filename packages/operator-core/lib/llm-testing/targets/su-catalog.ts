@@ -118,8 +118,20 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   // --- plans (PG-canonical project history, harness-scoped) ---
   {
     name: 'plans:list',
-    description: 'List plans (project history). Entry point for "what is the state of X".',
-    input: obj({ ...HARNESS_ARG }),
+    description:
+      'List plans (project history). By default archived plans are hidden; pass includeArchived:true ' +
+      'for a complete lifecycle census. Use status only to filter to one stored lifecycle state.',
+    input: obj({
+      status: {
+        type: 'string',
+        enum: ['draft', 'ready', 'active', 'awaiting-acceptance', 'shipped', 'superseded'],
+      },
+      includeArchived: {
+        type: 'boolean',
+        description: 'Include archived plans. Default false.',
+      },
+      ...HARNESS_ARG,
+    }),
   },
   {
     name: 'plans:get',
@@ -447,6 +459,91 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     name: 'repomix:pack',
     description: 'Pack a repo (or subset) into one LLM-friendly document for a holistic view.',
     input: obj({ path: { type: 'string' } }),
+  },
+  {
+    name: 'capability:read',
+    description:
+      'Read a local file with bounded line windows. Use file_path plus offset/limit, or tail for the last lines; ' +
+      'raw:true returns undecorated text.',
+    input: obj({
+      file_path: { type: 'string' },
+      offset: { type: 'number' },
+      limit: { type: 'number' },
+      tail: { type: 'number' },
+      raw: { type: 'boolean' },
+    }, ['file_path']),
+  },
+  {
+    name: 'logs:read',
+    description:
+      'Read and server-side-filter host service logs. Empty entries are meaningful only after checking ' +
+      'journalError, unitsUnknown, unitsHistorical, and windowOutsideJournal.',
+    input: obj({
+      unit: {
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'string' } },
+        ],
+      },
+      since: { type: 'string' },
+      until: { type: 'string' },
+      grep: { type: 'string' },
+      limit: { type: 'number' },
+      scope: { type: 'string', enum: ['user', 'system', 'all'] },
+    }),
+  },
+  {
+    name: 'dev:pg_query',
+    description:
+      'Run one bounded READ-ONLY PostgreSQL SELECT/WITH/EXPLAIN. Pass positiveControlSql when zero rows ' +
+      'would support an absence claim; this tool cannot mutate data.',
+    input: obj({
+      sql: { type: 'string' },
+      describe: { type: 'string' },
+      maxRows: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      positiveControlSql: { type: 'string' },
+      allowUnscoped: { type: 'boolean' },
+    }),
+  },
+  {
+    name: 'dev:pipeline_position',
+    description:
+      'Read where an edit is: working tree, committed on staging, promoted to main, and deployed. ' +
+      'For a path it also identifies the process that runs the code and the exact activation/restart call.',
+    input: obj({
+      path: { type: 'string' },
+      sha: { type: 'string' },
+      marker: { type: 'string' },
+    }),
+  },
+  {
+    name: 'git-sync:run',
+    description:
+      'FIRE git-sync NOW instead of waiting for its cron tick. dryRun:true previews; a real call runs the ' +
+      'same locked commit/push action as the background routine and reports local commit separately from remote egress.',
+    input: obj({
+      installSlug: { type: 'string' },
+      harness: { type: 'string' },
+      dryRun: { type: 'boolean' },
+      reason: { type: 'string' },
+    }),
+  },
+  {
+    name: 'dev:restart',
+    description:
+      'Coordinated audited restart for operator services. target:"staging" reloads :3170; dry-run unless ' +
+      'confirm:true, and authorize:true records the deliberate restart when the runtime gate requires it.',
+    input: obj({
+      target: {
+        type: 'string',
+        enum: ['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'desktop-dev'],
+      },
+      confirm: { type: 'boolean' },
+      authorize: { type: 'boolean' },
+      max_drain_sec: { type: 'number' },
+      reason: { type: 'string' },
+    }),
   },
   // --- code execution / tool orchestration (code-execution-tool-orchestration B-CX) ---
   // Descriptions mirror the real `code:run` / `code:tools` defineTool descriptions verbatim so the
