@@ -78,10 +78,10 @@ const TREASURY_ELIGIBLE_SHARES: readonly RevenueShare[] = ['dao', 'reserve', 'ta
 
 async function authenticate(
   request: Request,
-): Promise<{ ok: true; principalId: string } | { ok: false; reason: AuthError['reason'] }> {
+): Promise<{ ok: true; principalId: string; userId: number } | { ok: false; reason: AuthError['reason'] }> {
   try {
     const user = await resolveGithubBearer(request);
-    return { ok: true, principalId: `gh:${user.id}` };
+    return { ok: true, principalId: `gh:${user.id}`, userId: user.id };
   } catch (error) {
     if (error instanceof AuthError) return { ok: false, reason: error.reason };
     throw error;
@@ -219,7 +219,14 @@ export function resolveTreasuryConfig(env: Env, adapter: SafeTreasuryAdapter): T
   };
 }
 
-/** Rebuild the settlement receipt from its durable row, for re-reconciliation. */
+/**
+ * Rebuild the settlement receipt from its durable row, for re-reconciliation.
+ *
+ * `receiptHash` is carried through from the row rather than recomputed here on
+ * purpose: `reconcileSettlement` recomputes it and compares, so recomputing it
+ * on the way IN would make that comparison compare a value with itself and
+ * always agree.
+ */
 function receiptFromBatch(batch: StoredSettlementBatch): SettlementReceipt {
   const allocationsMicros = {} as Record<RevenueShare, bigint>;
   for (const share of REVENUE_SHARES) allocationsMicros[share] = BigInt(batch.allocationsMicros[share]);
@@ -232,6 +239,7 @@ function receiptFromBatch(batch: StoredSettlementBatch): SettlementReceipt {
     allocationsMicros,
     daoTreasury: batch.daoTreasury,
     splitManifestHash: batch.splitManifestHash,
+    receiptHash: batch.receiptHash,
   };
 }
 
@@ -277,14 +285,10 @@ export function treasuryRoute(
   route.post('/commerce/treasury/safe-deployments', async (c) => {
     const auth = await authenticate(c.req.raw);
     if (!auth.ok) return c.json({ error: 'unauthorized', reason: auth.reason }, 401);
-    let operator: boolean;
-    try {
-      operator = await isCupboardOperator(c.req.raw, c.env);
-    } catch (error) {
-      if (error instanceof AuthError) return c.json({ error: 'unauthorized', reason: error.reason }, 401);
-      throw error;
-    }
-    if (!operator) return c.json({ error: 'forbidden' }, 403);
+    // An empty CUPBOARD_OPERATOR_GITHUB_IDS means no operators, so this
+    // endpoint 403s by default rather than accepting a deployment record from
+    // any authenticated caller.
+    if (!isCupboardOperator(auth.userId, c.env)) return c.json({ error: 'forbidden' }, 403);
 
     const body = await jsonObject(c.req.raw);
     if (!body) return c.json({ error: 'invalid_request' }, 400);
@@ -378,7 +382,7 @@ export function treasuryRoute(
     }
 
     const reconciled = reconcileSettlement({
-      receipt: { ...receiptFromBatch(batch), receiptHash: batch.receiptHash },
+      receipt: receiptFromBatch(batch),
       splitManifest: split.manifest,
     });
     if (!reconciled.ok) {
