@@ -1438,6 +1438,200 @@ export function processAgeMs(pid: number, procRoot = '/proc', nowMs: number = Da
 }
 
 // ---------------------------------------------------------------------------
+// WI-2146015 / D-008 — ADOPTING a routine-launched analyze across a bg-host restart.
+//
+// The analyze child runs in its own systemd scope (managedSpawn), so it SURVIVES the host
+// that spawned it — but the `ok in` line, the canary and the gitnexus_health record lived
+// in that host's awaiting promise and died with it. Measured 2026-09-05: the 18:32Z and
+// 22:36Z routine ticks BOTH completed (meta.json indexedAt 20:19:38Z / 01:17:06Z) and
+// NEITHER was recorded, because peers restarted bg-host mid-run (19:16Z, 03:32Z; restarts
+// landed every 3–222 min that day against a ~107-min run). WI-2146606 taught the next host
+// to YIELD to that writer; this teaches it to FINISH the tick the dead host started.
+//
+// The discriminator is an env stamp the routine puts on every analyze it spawns and reads
+// back off `/proc/<pid>/environ`: a stamped writer is ours to adopt (wait inside the fire
+// budget, judge the result off meta.json, run the same finish path); an unstamped one is a
+// manual `gitnexus analyze` and is still only yielded to.
+// ---------------------------------------------------------------------------
+
+/** Env stamp (epoch ms of the spawn) the routine puts on every analyze it launches. */
+export const GITNEXUS_REINDEX_SPAWN_MARKER_ENV = 'PAPERCUSP_GITNEXUS_REINDEX_SPAWNED_AT_MS';
+
+/** How long past the child's own scope deadline an adopting tick keeps waiting before it
+ *  hands the residue to the next preflight. The scope kills the child AT the deadline, so
+ *  this only covers kill latency. */
+export const GITNEXUS_ADOPT_GRACE_MS = 60_000;
+
+/** Read the spawn stamp back off a live process, or null when it is unstamped/unreadable. */
+export function readRoutineSpawnMarker(pid: number, procRoot = '/proc'): number | null {
+  try {
+    const environ = readFileSync(`${procRoot}/${pid}/environ`, 'utf8');
+    const prefix = `${GITNEXUS_REINDEX_SPAWN_MARKER_ENV}=`;
+    for (const kv of environ.split('\0')) {
+      if (!kv.startsWith(prefix)) continue;
+      const v = Number(kv.slice(prefix.length));
+      return Number.isFinite(v) && v > 0 ? v : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export interface AdoptableWriter {
+  pid: number;
+  spawnedAtMs: number;
+  /** false ⇒ recognised by argv only (spawned before the stamp existed); spawn time is then
+   *  the process age, which is exact to the tick, not to the ms. */
+  stamped: boolean;
+}
+
+/** Read a live process's argv off `/proc/<pid>/cmdline` (NUL-separated), or null. */
+export function readProcessArgv(pid: number, procRoot = '/proc'): string[] | null {
+  try {
+    const argv = readFileSync(`${procRoot}/${pid}/cmdline`, 'utf8').split('\0');
+    if (argv.length && argv[argv.length - 1] === '') argv.pop();
+    return argv.length ? argv : null;
+  } catch {
+    return null;
+  }
+}
+
+/** PURE — is this argv the routine's OWN analyze invocation for `root` (the pinned CLI
+ *  followed by exactly buildAnalyzeArgs)? The fallback discriminator for a writer spawned by
+ *  a host that predates the env stamp; a hand-typed `gitnexus analyze` does not match. */
+export function argvIsRoutineAnalyze(
+  argv: readonly string[] | null,
+  root: string,
+  repoName: string,
+  cliPath: string = analyzeCliPath(),
+): boolean {
+  if (!argv) return false;
+  const want = buildAnalyzeArgs(root, repoName);
+  const at = argv.indexOf(cliPath);
+  if (at < 0) return false;
+  const tail = argv.slice(at + 1);
+  return tail.length === want.length && tail.every((a, i) => a === want[i]);
+}
+
+/**
+ * PURE over injected readers — the EARLIEST writer that is OURS to adopt: env-stamped, or
+ * (fallback) running the routine's exact argv, in which case the spawn time is derived from
+ * the process age. Null when every writer is a manual analyze: yield to it, never adopt it.
+ */
+export function findAdoptableWriter(
+  pids: readonly number[],
+  readMarker: (pid: number) => number | null = readRoutineSpawnMarker,
+  fallback?: { isRoutineArgv: (pid: number) => boolean; ageMs: (pid: number) => number | null; nowMs?: number },
+): AdoptableWriter | null {
+  let best: AdoptableWriter | null = null;
+  for (const pid of pids) {
+    let candidate: AdoptableWriter | null = null;
+    const stamp = readMarker(pid);
+    if (stamp != null) {
+      candidate = { pid, spawnedAtMs: stamp, stamped: true };
+    } else if (fallback?.isRoutineArgv(pid)) {
+      const age = fallback.ageMs(pid);
+      if (age != null) candidate = { pid, spawnedAtMs: (fallback.nowMs ?? Date.now()) - age, stamped: false };
+    }
+    if (candidate && (!best || candidate.spawnedAtMs < best.spawnedAtMs)) best = candidate;
+  }
+  return best;
+}
+
+/** Signal-0 liveness. EPERM means "alive, not ours" — still alive. */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Poll a pid until it exits or `deadlineMs` (epoch) passes. Every clock/sleep/liveness seam
+ *  is injectable so the policy is testable without a real process. */
+export async function waitForPidExit(
+  pid: number,
+  deadlineMs: number,
+  opts: {
+    pollMs?: number;
+    isAlive?: (pid: number) => boolean;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<{ exited: boolean; waitedMs: number }> {
+  const pollMs = opts.pollMs ?? 5_000;
+  const isAlive = opts.isAlive ?? isPidAlive;
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const startedAt = now();
+  for (;;) {
+    if (!isAlive(pid)) return { exited: true, waitedMs: now() - startedAt };
+    const t = now();
+    if (t >= deadlineMs) return { exited: false, waitedMs: t - startedAt };
+    await sleep(Math.min(pollMs, Math.max(1, deadlineMs - t)));
+  }
+}
+
+/**
+ * PURE — did an ADOPTED analyze finish cleanly? gitnexus writes meta.json (`indexedAt`
+ * advanced, `incrementalInProgress` cleared) as its LAST act, so a completed run leaves an
+ * indexedAt at or after its spawn and no marker; anything else is a death mid-run. The exit
+ * code itself is unobservable from a different host, which is why the artifact is judged.
+ */
+export function judgeAdoptedRun(
+  spawnedAtMs: number,
+  meta: { indexedAt: string | null } | null,
+  stranded: GitnexusIncompleteIndex | null,
+): { code: 0 | 1; reason: string } {
+  if (stranded !== null) {
+    return { code: 1, reason: 'meta.json still carries incrementalInProgress — the adopted analyze died mid-run' };
+  }
+  const indexedMs = meta?.indexedAt ? Date.parse(meta.indexedAt) : Number.NaN;
+  if (!Number.isFinite(indexedMs)) {
+    return { code: 1, reason: 'meta.json has no readable indexedAt after the adopted analyze exited' };
+  }
+  if (indexedMs < spawnedAtMs) {
+    return {
+      code: 1,
+      reason:
+        `meta.json indexedAt ${meta!.indexedAt} predates the adopted spawn ` +
+        `${new Date(spawnedAtMs).toISOString()} — it never completed`,
+    };
+  }
+  return { code: 0, reason: `meta.json indexedAt ${meta!.indexedAt} postdates the spawn — completed` };
+}
+
+/**
+ * Stats for the health record from whichever of registry.json / meta.json records the LATER
+ * completed analyze — the same rule pickIndexFreshness applies to cadence (D-005). A
+ * routine-launched run's registry write is exactly what goes missing with the host that
+ * spawned it, and an adopted run must not report the PREVIOUS run's embedding count.
+ */
+export function readIndexStatsForHealth(
+  root: string,
+  repoName: string,
+): { files: number | null; embeddings: number | null; source: 'registry' | 'meta' | 'none' } {
+  type Stats = { files?: number; embeddings?: number };
+  const reg = readRegistryEntry(registryPath(), repoName) as (GitnexusRegistryEntry & { stats?: Stats }) | null;
+  let meta: { indexedAt: string | null; stats: Stats | null } | null = null;
+  try {
+    const m = JSON.parse(readFileSync(gitnexusMetaPath(root), 'utf8')) as Record<string, unknown>;
+    meta = {
+      indexedAt: typeof m.indexedAt === 'string' ? m.indexedAt : null,
+      stats: typeof m.stats === 'object' && m.stats !== null ? (m.stats as Stats) : null,
+    };
+  } catch {
+    meta = null;
+  }
+  const pick = pickIndexFreshness(reg, meta ? { indexedAt: meta.indexedAt, lastCommit: null } : null);
+  const src = pick.source === 'meta' ? meta?.stats : reg?.stats;
+  const n = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return { files: n(src?.files), embeddings: n(src?.embeddings), source: pick.source };
+}
+
+// ---------------------------------------------------------------------------
 // WI-35532 (b) — the failure alarm.
 //
 // This action is deliberately fail-soft (a wedged/failing indexer must never wedge the
@@ -1960,7 +2154,8 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
         // payload remains bounded even if this operator process dies mid-run.
         spawnOptions: {
           cwd: root,
-          env: analyzeEnv(process.env),
+          // The spawn stamp is what lets a LATER host incarnation adopt this run (WI-2146015).
+          env: { ...analyzeEnv(process.env), [GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(Date.now()) },
           detached: true,
         },
       },
@@ -2150,6 +2345,51 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
       return age == null ? String(p) : `${p} (${Math.round(age / 60_000)} min old)`;
     });
     const overBudget = writer.pids.some((p) => (processAgeMs(p) ?? 0) > timeoutMs);
+    const adoptable = overBudget
+      ? null
+      : findAdoptableWriter(writer.pids, readRoutineSpawnMarker, {
+          isRoutineArgv: (p) => argvIsRoutineAnalyze(readProcessArgv(p), root, repoName),
+          ageMs: processAgeMs,
+        });
+    if (adoptable) {
+      // WI-2146015 / D-008 — OUR run, spawned by a host incarnation that is gone. Finish
+      // its tick instead of skipping ours: wait inside this fire's budget (the child's own
+      // scope deadline bounds the wait, +grace for kill latency), judge the artifact, then
+      // run the very same canary/health/ok-line path a same-host completion takes.
+      const spawnedAt = new Date(adoptable.spawnedAtMs).toISOString();
+      const deadlineMs = adoptable.spawnedAtMs + timeoutMs + GITNEXUS_ADOPT_GRACE_MS;
+      const how = adoptable.stamped ? 'env-stamped' : 'unstamped, matched by the routine argv; spawn time from process age';
+      console.log(
+        `[gitnexus-reindex] adopting live analyze pid ${adoptable.pid} (spawned ${spawnedAt} by a previous host ` +
+          `incarnation — ${how}; ${writer.files.join(' + ')} held for write) — waiting up to ` +
+          `${Math.max(0, Math.round((deadlineMs - Date.now()) / 60_000))} min for it to finish (WI-2146015)`,
+      );
+      const waited = await waitForPidExit(adoptable.pid, deadlineMs);
+      if (!waited.exited) {
+        console.warn(
+          `[gitnexus-reindex] adopted analyze pid ${adoptable.pid} is still alive past its scope deadline ` +
+            `(${spawnedAt} + ${Math.round(timeoutMs / 60_000)} min) — leaving it to the scope's own kill; ` +
+            `the next tick's preflight recovers any residue`,
+        );
+        return;
+      }
+      const verdict = judgeAdoptedRun(adoptable.spawnedAtMs, readIndexMetaFreshness(root), readStrandedIncompleteIndex(root));
+      const elapsedSec = Math.round((Date.now() - adoptable.spawnedAtMs) / 1000);
+      console.log(
+        `[gitnexus-reindex] adopted analyze pid ${adoptable.pid} exited (waited ${Math.round(waited.waitedMs / 1000)}s) — ${verdict.reason}`,
+      );
+      await finishAnalyzeTick({
+        ctx,
+        root,
+        repoName,
+        dbAlertRatio,
+        timeoutMs,
+        elapsedSec,
+        adopted: { pid: adoptable.pid, spawnedAt },
+        r: { code: verdict.code, stdout: '', stderr: verdict.code === 0 ? '' : verdict.reason, timedOut: false },
+      });
+      return;
+    }
     const line =
       `[gitnexus-reindex] skip: an analyze writer is ALIVE on ${root} — pid(s) ${ages.join(', ')} hold ` +
       `${writer.files.join(' + ')} open for write; not cleaning residue, not spawning (WI-2146606)`;
@@ -2246,6 +2486,29 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   console.log(`[gitnexus-reindex] running analyze (${decision.reason}) — root=${root} name=${repoName}`);
   const r = await runGitnexusAnalyze(root, repoName, timeoutMs);
   const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+  await finishAnalyzeTick({ ctx, root, repoName, dbAlertRatio, timeoutMs, r, elapsedSec, adopted: null });
+}, { routineTimeoutMs: GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS });
+
+interface FinishAnalyzeTickInput {
+  ctx: SystemActionCtx;
+  root: string;
+  repoName: string;
+  dbAlertRatio: number;
+  timeoutMs: number;
+  r: AnalyzeRunResult;
+  /** Wall seconds from the SPAWN — for an adopted run, the previous host's spawn. */
+  elapsedSec: number;
+  /** Set when this tick did not spawn the run it is finishing (WI-2146015). */
+  adopted: { pid: number; spawnedAt: string } | null;
+}
+
+/**
+ * The post-run half of a tick — canary, capacity refresh, the `ok in` / `exited` / `TIMED
+ * OUT` line, and the gitnexus_health record — shared by a same-host completion and an
+ * ADOPTED one, so the two can never diverge in what they record.
+ */
+async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
+  const { ctx, root, repoName, dbAlertRatio, timeoutMs, r, elapsedSec } = i;
   const ranClean = !r.timedOut && r.code === 0;
 
   // P-004: a clean exit says the INDEXER ran, not that the GRAPH answers. Those came
@@ -2256,12 +2519,10 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   let vectorSearch: GitnexusVectorSearchHealth | null = null;
   if (ranClean) {
     try {
-      const after = readRegistryEntry(registryPath(), repoName) as
-        | (GitnexusRegistryEntry & { stats?: { files?: number; embeddings?: number } })
-        | null;
-      const embeddingsAfter = after?.stats?.embeddings ?? null;
+      const after = readIndexStatsForHealth(root, repoName);
+      const embeddingsAfter = after.embeddings;
       const embeddingsExpected = analyzeEmbeddingsExpected(buildAnalyzeArgs(root, repoName));
-      canary = await runCanary(root, after?.stats?.files ?? null, embeddingsAfter, embeddingsExpected);
+      canary = await runCanary(root, after.files, embeddingsAfter, embeddingsExpected);
       vectorSearch = { embeddings: embeddingsAfter, expected: embeddingsExpected, degraded: canary.degraded, checkedAt: Date.now() };
       console.log(`[gitnexus-reindex] ${canary.healthy ? 'canary OK' : 'CANARY FAILED'} — ${canary.summary}`);
       if (canary.degraded) {
@@ -2329,7 +2590,10 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   } else if (r.code !== 0) {
     console.warn(`[gitnexus-reindex] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
   } else {
-    console.log(`[gitnexus-reindex] ok in ${elapsedSec}s — ${(r.stdout || '').trim().split('\n').slice(-1)[0]}`);
+    const adoptedNote = i.adopted
+      ? ` (ADOPTED: pid ${i.adopted.pid} was spawned ${i.adopted.spawnedAt} by a previous host incarnation; elapsed is measured from that spawn)`
+      : '';
+    console.log(`[gitnexus-reindex] ok in ${elapsedSec}s${adoptedNote} — ${(r.stdout || '').trim().split('\n').slice(-1)[0]}`);
   }
 
   // WI-35532 (b): persist the consecutive-failure streak and alert past the threshold.
@@ -2380,4 +2644,4 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   } catch (e) {
     console.warn(`[gitnexus-reindex] health tracking failed: ${e instanceof Error ? e.message : e}`);
   }
-}, { routineTimeoutMs: GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS });
+}

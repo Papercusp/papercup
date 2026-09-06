@@ -80,6 +80,14 @@ import {
   runGitnexusAnalyze,
   type ReindexDecisionInput,
   type GitnexusHealth,
+  GITNEXUS_REINDEX_SPAWN_MARKER_ENV,
+  readRoutineSpawnMarker,
+  findAdoptableWriter,
+  argvIsRoutineAnalyze,
+  readProcessArgv,
+  waitForPidExit,
+  judgeAdoptedRun,
+  readIndexStatsForHealth,
 } from './gitnexus-reindex-action';
 
 const taskManager = vi.hoisted(() => ({
@@ -2346,5 +2354,149 @@ describe('shouldSkipForHive', () => {
   it('treats a blank slug (manual/legacy fire) as operator-home', () => {
     expect(shouldSkipForHive(undefined, 'papercusp').skip).toBe(false);
     expect(shouldSkipForHive('', 'papercusp').skip).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-2146015 / D-008 — a routine-launched analyze is ADOPTED across a bg-host restart.
+// Measured 2026-09-05: two routine ticks (18:32Z, 22:36Z) completed under a host peers had
+// already restarted; both indexes were fine, neither got its `ok in` line, canary or
+// gitnexus_health record. The next host must FINISH that tick, not merely yield to it.
+// ---------------------------------------------------------------------------
+describe('WI-2146015 — a routine-launched analyze is ADOPTED across a bg-host restart (D-008)', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+
+  function fakeProc(entries: Record<number, string | null>): string {
+    const proc = mkdtempSync(join(tmpdir(), 'gitnexus-fakeproc-adopt-'));
+    for (const [pid, environ] of Object.entries(entries)) {
+      mkdirSync(join(proc, pid));
+      if (environ !== null) writeFileSync(join(proc, pid, 'environ'), environ);
+    }
+    return proc;
+  }
+
+  it('readRoutineSpawnMarker reads the stamp off /proc/<pid>/environ; unstamped, garbage and unreadable pids are null', () => {
+    const proc = fakeProc({
+      11: `HOME=/x\0${GITNEXUS_REINDEX_SPAWN_MARKER_ENV}=1788660000000\0PATH=/bin\0`,
+      12: 'HOME=/x\0PATH=/bin\0',
+      13: `${GITNEXUS_REINDEX_SPAWN_MARKER_ENV}=garbage\0`,
+      14: null,
+    });
+    expect(readRoutineSpawnMarker(11, proc)).toBe(1788660000000);
+    expect(readRoutineSpawnMarker(12, proc)).toBeNull();
+    expect(readRoutineSpawnMarker(13, proc)).toBeNull();
+    expect(readRoutineSpawnMarker(14, proc)).toBeNull();
+    expect(readRoutineSpawnMarker(99, proc)).toBeNull();
+  });
+
+  it('findAdoptableWriter: a STAMPED writer is adoptable, the earliest wins, a manual analyze is never adopted', () => {
+    const marks: Record<number, number | null> = { 1: null, 2: 500, 3: 200 };
+    expect(findAdoptableWriter([1, 2, 3], (p) => marks[p] ?? null)).toEqual({ pid: 3, spawnedAtMs: 200, stamped: true });
+    expect(findAdoptableWriter([1], (p) => marks[p] ?? null)).toBeNull();
+    expect(findAdoptableWriter([], () => 1)).toBeNull();
+  });
+
+  it('findAdoptableWriter FALLBACK: an unstamped writer running the routine argv is adopted with its spawn time from process age', () => {
+    const fallback = { isRoutineArgv: (p: number) => p === 5, ageMs: (p: number) => (p === 5 ? 60_000 : null), nowMs: 1_000_000 };
+    expect(findAdoptableWriter([4, 5], () => null, fallback)).toEqual({ pid: 5, spawnedAtMs: 940_000, stamped: false });
+    // argv matches but the age is unreadable ⇒ no deadline can be derived ⇒ not adopted.
+    expect(findAdoptableWriter([5], () => null, { ...fallback, ageMs: () => null })).toBeNull();
+    // A stamp always beats the fallback for the same pid.
+    expect(findAdoptableWriter([5], () => 123, fallback)).toEqual({ pid: 5, spawnedAtMs: 123, stamped: true });
+  });
+
+  it('argvIsRoutineAnalyze matches ONLY the pinned CLI followed by exactly buildAnalyzeArgs — a hand-typed analyze does not', () => {
+    const cli = '/vendor/gitnexus/dist/cli/index.js';
+    const routine = ['/usr/bin/node', '--stack-size=65500', cli, ...buildAnalyzeArgs('/repo', 'papercusp')];
+    expect(argvIsRoutineAnalyze(routine, '/repo', 'papercusp', cli)).toBe(true);
+    expect(argvIsRoutineAnalyze([...routine, '--extra'], '/repo', 'papercusp', cli)).toBe(false);
+    expect(argvIsRoutineAnalyze(['/usr/bin/node', cli, 'analyze'], '/repo', 'papercusp', cli)).toBe(false);
+    expect(argvIsRoutineAnalyze(['gitnexus', 'analyze', '--force'], '/repo', 'papercusp', cli)).toBe(false);
+    expect(argvIsRoutineAnalyze(null, '/repo', 'papercusp', cli)).toBe(false);
+    // readProcessArgv parses the NUL-separated cmdline and drops the trailing empty field.
+    const proc = fakeProc({ 21: null });
+    writeFileSync(join(proc, '21', 'cmdline'), 'node\0--stack-size=1\0/cli.js\0analyze\0');
+    expect(readProcessArgv(21, proc)).toEqual(['node', '--stack-size=1', '/cli.js', 'analyze']);
+    expect(readProcessArgv(22, proc)).toBeNull();
+  });
+
+  it('waitForPidExit resolves when the pid disappears and gives up at the deadline (injected clock + sleep)', async () => {
+    let t = 1_000;
+    const sleep = async (ms: number): Promise<void> => {
+      t += ms;
+    };
+    let polls = 0;
+    const r1 = await waitForPidExit(7, 100_000, { pollMs: 5_000, now: () => t, sleep, isAlive: () => ++polls < 4 });
+    expect(r1).toEqual({ exited: true, waitedMs: 15_000 });
+    t = 1_000;
+    const r2 = await waitForPidExit(7, 12_000, { pollMs: 5_000, now: () => t, sleep, isAlive: () => true });
+    expect(r2).toEqual({ exited: false, waitedMs: 11_000 });
+  });
+
+  it('judgeAdoptedRun: completed ⇔ meta.json indexedAt at/after the spawn with no incrementalInProgress', () => {
+    const spawn = Date.parse('2026-09-05T22:36:19.000Z');
+    // The 22:36Z tick of 2026-09-05: spawned under pid 3408457, host restarted, meta.json written 01:17Z.
+    expect(judgeAdoptedRun(spawn, { indexedAt: '2026-09-06T01:17:06.620Z' }, null).code).toBe(0);
+    // meta.json still describes the PREVIOUS run ⇒ this one died before its final save.
+    expect(judgeAdoptedRun(spawn, { indexedAt: '2026-09-05T20:19:38.667Z' }, null)).toMatchObject({ code: 1 });
+    expect(judgeAdoptedRun(spawn, null, null)).toMatchObject({ code: 1 });
+    // A stranded marker beats a plausible indexedAt: the index is half-written.
+    expect(
+      judgeAdoptedRun(spawn, { indexedAt: '2026-09-06T01:17:06.620Z' }, { phase: 'write', startedAt: spawn, toWriteCount: 0 }),
+    ).toMatchObject({ code: 1 });
+  });
+
+  it('readIndexStatsForHealth reports the LATER completed analyze — meta.json when the registry write was lost with the host', () => {
+    const r = mkdtempSync(join(tmpdir(), 'gitnexus-adopt-stats-'));
+    mkdirSync(join(r, '.gitnexus'));
+    const registry = join(r, 'registry.json');
+    writeFileSync(
+      registry,
+      JSON.stringify([
+        { name: 'papercusp', indexedAt: '2026-09-05T17:07:51.897Z', lastCommit: 'aaa', stats: { files: 100, embeddings: 201_473 } },
+      ]),
+    );
+    writeFileSync(
+      gitnexusMetaPath(r),
+      JSON.stringify({ indexedAt: '2026-09-06T01:17:06.620Z', lastCommit: 'bbb', stats: { files: 23_281, embeddings: 222_515, nodes: 249_917 } }),
+    );
+    const prev = process.env.GITNEXUS_REGISTRY_PATH;
+    process.env.GITNEXUS_REGISTRY_PATH = registry;
+    try {
+      expect(readIndexStatsForHealth(r, 'papercusp')).toEqual({ files: 23_281, embeddings: 222_515, source: 'meta' });
+      // The registry is fresher ⇒ its stats win (the ordinary same-host completion).
+      writeFileSync(gitnexusMetaPath(r), JSON.stringify({ indexedAt: '2026-09-05T16:00:00.000Z', stats: { files: 1, embeddings: 1 } }));
+      expect(readIndexStatsForHealth(r, 'papercusp')).toEqual({ files: 100, embeddings: 201_473, source: 'registry' });
+      // Neither readable ⇒ nulls, never a throw.
+      writeFileSync(gitnexusMetaPath(r), '{not json');
+      writeFileSync(registry, '{not json');
+      expect(readIndexStatsForHealth(r, 'papercusp')).toEqual({ files: null, embeddings: null, source: 'none' });
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_REGISTRY_PATH;
+      else process.env.GITNEXUS_REGISTRY_PATH = prev;
+    }
+  });
+
+  it('the spawn is STAMPED, the live-writer guard ADOPTS before the residue preflight, and a manual writer is still only yielded to', () => {
+    const spawn = src.indexOf('export function runGitnexusAnalyze(');
+    expect(spawn).toBeGreaterThan(0);
+    expect(src.indexOf('[GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(Date.now())', spawn)).toBeGreaterThan(spawn);
+
+    const handler = src.indexOf("registerSystemAction('gitnexus-reindex'");
+    const guard = src.indexOf('const writer = detectLiveAnalyzeWriter(root);', handler);
+    const adopt = src.indexOf('findAdoptableWriter(writer.pids,', guard);
+    const finish = src.indexOf('await finishAnalyzeTick({', adopt);
+    const residue = src.indexOf('const residue = cleanCrashResidue(root);', handler);
+    expect(adopt).toBeGreaterThan(guard);
+    expect(finish).toBeGreaterThan(adopt);
+    expect(finish).toBeLessThan(residue);
+    // An over-budget writer is never adopted — its scope deadline is about to kill it.
+    expect(/overBudget\s*\?\s*null\s*:\s*findAdoptableWriter\(/.test(src.slice(guard, residue))).toBe(true);
+    // The unstamped (manual) writer keeps the WI-2146606 skip line and RETURNS before the preflight.
+    const manualSkip = src.indexOf('not cleaning residue, not spawning (WI-2146606)', adopt);
+    expect(manualSkip).toBeGreaterThan(finish);
+    expect(manualSkip).toBeLessThan(residue);
+    // ONE finish path for the same-host completion and the adopted one — they cannot diverge.
+    expect(src.split('await finishAnalyzeTick(').length - 1).toBe(2);
   });
 });
