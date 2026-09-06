@@ -445,7 +445,7 @@ function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric:
   };
 }
 
-function nextRepair(
+export function nextRepair(
   codes: AcceptanceBarSnapshotCode[],
   bars: AcceptanceBarTrace[],
 ): AcceptanceBarContractSnapshot['readiness']['nextRepair'] {
@@ -530,8 +530,14 @@ function nextRepair(
     bar_snapshot_check_missing: 'Add a runnable structured check or explicit manual instrument contract.',
     bar_snapshot_check_invalid: 'Repair the structured check or provide an explicit manual replication contract.',
     bar_snapshot_proof_uncertain: 'Re-bind evidence with complete currentness/fingerprint metadata.',
-    bar_snapshot_proof_depth_missing: 'Declare requiredTestLayers in the requirement Acceptance section through rubrics:amend.',
-    bar_snapshot_proof_inadequate: 'Run plans:evaluate-spec-test-adequacy for the mapped outcome with current fingerprints; fix every fail/unknown proof obligation before ship.',
+    bar_snapshot_proof_depth_missing:
+      'Declare requiredTestLayers through rubrics:amend AND bind evidence carrying a matching details.adequacy.testLayer. '
+      + 'Declaring layers alone does not clear this — it trades it for the strictly harder bar_snapshot_proof_inadequate, '
+      + 'and a top-level details.testLayer is not read (only the nested details.adequacy is).',
+    bar_snapshot_proof_inadequate:
+      'Run plans:evaluate-spec-test-adequacy for the mapped outcome with current fingerprints; fix every fail/unknown proof obligation before ship. '
+      + 'A read-only shipReadiness probe supplies no current fingerprints, so freshness rates unknown and this code can persist however good the evidence is — '
+      + 'supply current fingerprints before concluding the evidence itself is at fault.',
     bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
   };
   return { code, barKey: bar?.barKey ?? null, action: actions[code] };
