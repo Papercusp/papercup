@@ -927,6 +927,46 @@ describe("<InboxPane>", () => {
     ).toBe("toolbar");
   });
 
+  /* ── One total in the list column (inbox-three-column-resolver-states-2026-09-06 P-009) ──
+     The 31 Aug board's note: "Four totals, 400 pixels — 100 need you, 143 still
+     open, 158 assessed, 1540 attention items — different populations, stacked
+     with nothing saying so." In split the list column keeps ONE number, the
+     rows in the current scope; need-you / tracked live in the rail head and
+     the briefing. Stack keeps its "N of M shown" (pinned above). */
+  it("split: the list column carries one total — the rows in scope — while the briefing carries need-you and tracked", () => {
+    seedPagedAttention(
+      [
+        mkItem("d1"),
+        mkItem("d2"),
+        mkItem("a1", { tier: "alert", needsHuman: false, kind: "coord-escalation" }),
+      ],
+      1540,
+    );
+    renderPane("", { layout: "split" });
+    const scope = screen.getByTestId("inbox-visible-scope");
+    expect(scope.textContent).toBe("2 items");
+    expect(scope.textContent?.match(/\d+/g)).toHaveLength(1);
+    // The list column's own chrome (search + sort + rows) shows no other total:
+    // the window strip and the foot are in the aside (P-004), and the rail
+    // holds the need-you count (P-002).
+    const master = screen.getByTestId("inbox-master");
+    expect(master.querySelector(".op-inbox__window")).toBeNull();
+    expect(master.querySelector(".op-inbox__foot")).toBeNull();
+    expect(master.contains(screen.getByTestId("inbox-masthead-count"))).toBe(
+      false,
+    );
+    const briefing = screen.getByTestId("inbox-briefing");
+    expect(briefing.textContent).toContain("1540");
+  });
+
+  it("split: the one total is singular for a single row", () => {
+    seedAttention([mkItem("d1")]);
+    renderPane("", { layout: "split" });
+    expect(screen.getByTestId("inbox-visible-scope").textContent).toBe(
+      "1 item",
+    );
+  });
+
   /* ── The rail (inbox-three-column-resolver-states-2026-09-06 P-002 / D-001) ── */
   it("split renders the rail FIRST — scopes, facets and the collapsed masthead leave the list column", () => {
     seedAttention([mkItem("d1"), mkItem("d2")]);
