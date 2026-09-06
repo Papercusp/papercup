@@ -14,7 +14,11 @@ import {
   REPEATED_TOOL_ERROR_PREFIX,
   parseRepeatedToolErrorKey,
 } from './improvements/watchdog-key-migration';
-import { toolErrorSignalKey, type ToolErrorClass } from './improvements/tool-error-classifier';
+import {
+  toolErrorFingerprint,
+  toolErrorSignalKey,
+  type ToolErrorClass,
+} from './improvements/tool-error-classifier';
 
 const HOUR = 60 * 60 * 1000;
 const WINDOW = 6 * HOUR;
@@ -102,7 +106,12 @@ describe('decideStructuralAutoResolve (pure)', () => {
 function makeFakeDeps(
   items: OpenStructuralItem[],
   errorsByTool: Record<string, number>,
-  opts: { throwCountFor?: string; invocationsByTool?: Record<string, number>; defaultInvocations?: number } = {},
+  opts: {
+    throwCountFor?: string;
+    errorsByWatchdogKey?: Record<string, number>;
+    invocationsByTool?: Record<string, number>;
+    defaultInvocations?: number;
+  } = {},
 ): StructuralVerifierDeps & { resolved: string[] } {
   const resolved: string[] = [];
   const defaultInvocations = opts.defaultInvocations ?? 1;
@@ -111,9 +120,9 @@ function makeFakeDeps(
     async selectOpenStructuralItems() {
       return items;
     },
-    async countRecentToolErrors(tool) {
+    async countRecentToolErrors(tool, watchdogKey) {
       if (opts.throwCountFor && tool === opts.throwCountFor) throw new Error('telemetry read failed');
-      return errorsByTool[tool] ?? 0;
+      return opts.errorsByWatchdogKey?.[watchdogKey] ?? errorsByTool[tool] ?? 0;
     },
     async countRecentToolInvocations(tool) {
       return opts.invocationsByTool?.[tool] ?? defaultInvocations;
@@ -124,11 +133,16 @@ function makeFakeDeps(
   };
 }
 
-const item = (issueId: string, tool: string, ageMs: number): OpenStructuralItem => ({
+const item = (
+  issueId: string,
+  tool: string,
+  ageMs: number,
+  fingerprint: string | null = null,
+): OpenStructuralItem => ({
   workspaceId: 'ws',
   issueId,
   tool,
-  watchdogKey: `repeated-tool-error:${tool}:structural`,
+  watchdogKey: `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(tool, 'structural', fingerprint)}`,
   ageMs,
 });
 
@@ -192,6 +206,33 @@ describe('runStructuralErrorVerifierOnce (orchestration)', () => {
 
     expect(r).toEqual({ checked: 2, resolved: 1, kept: 1, errored: 0 });
     expect(deps.resolved).toEqual(['EI-busy']);
+  });
+
+  /**
+   * The load-bearing half-repair case from EI-22437036851108668: two distinct
+   * structural fingerprints share one tool, but only one contract has been fixed.
+   * Recurrence lookup MUST use the complete watchdogKey; a tool-wide count would
+   * either keep the repaired filing open forever or close the still-failing sibling.
+   */
+  it('keeps a still-failing same-tool fingerprint open while resolving its repaired sibling', async () => {
+    const tool = 'shared:tool';
+    const repairedFingerprint = toolErrorFingerprint('column "ownerId" does not exist')!;
+    const stillFailingFingerprint = toolErrorFingerprint('column "limit" does not exist')!;
+    const repaired = item('EI-repaired', tool, 9 * HOUR, repairedFingerprint);
+    const stillFailing = item('EI-still-failing', tool, 9 * HOUR, stillFailingFingerprint);
+    const deps = makeFakeDeps(
+      [repaired, stillFailing],
+      {},
+      {
+        errorsByWatchdogKey: { [stillFailing.watchdogKey]: 1 },
+        invocationsByTool: { [tool]: 12 },
+      },
+    );
+
+    const r = await runStructuralErrorVerifierOnce(deps, { windowMs: WINDOW });
+
+    expect(r).toEqual({ checked: 2, resolved: 1, kept: 1, errored: 0 });
+    expect(deps.resolved).toEqual(['EI-repaired']);
   });
 });
 

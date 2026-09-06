@@ -27,6 +27,10 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { setIssueState } from '../issues-engineer';
+import {
+  toolErrorClassSqlCase,
+  toolErrorFingerprintSqlCase,
+} from './improvements/tool-error-classifier';
 import { parseRepeatedToolErrorKey } from './improvements/watchdog-key-migration';
 
 /**
@@ -63,11 +67,11 @@ export function decideStructuralAutoResolve(input: {
   );
 }
 
-/** A selected OPEN structural-error item, with its tool parsed out of the watchdogKey. */
+/** A selected OPEN structural-error item, with its exact watchdogKey parsed for the tool. */
 export interface OpenStructuralItem {
   workspaceId: string;
   issueId: string;
-  /** the offending tool, parsed from `repeated-tool-error:<tool>:structural`. */
+  /** the offending tool, parsed from `repeated-tool-error:<tool>:structural[:fingerprint]`. */
   tool: string;
   watchdogKey: string;
   ageMs: number;
@@ -76,8 +80,15 @@ export interface OpenStructuralItem {
 /** Injected I/O seam — concrete PG impl in `makePgStructuralVerifierDeps`; fakes in tests. */
 export interface StructuralVerifierDeps {
   selectOpenStructuralItems(): Promise<OpenStructuralItem[]>;
-  /** count error/timeout/refused-status `tool_invocations` for `tool` in `workspaceId` over the trailing windowMs. */
-  countRecentToolErrors(tool: string, workspaceId: string, windowMs: number): Promise<number>;
+  /**
+   * Count error/timeout/refused-status `tool_invocations` for the exact structural
+   * watchdogKey in `workspaceId` over the trailing windowMs.
+   *
+   * The key is part of the seam deliberately: two structural fingerprints under
+   * one tool are distinct filings and one repaired fingerprint must not be hidden
+   * by a still-failing sibling.
+   */
+  countRecentToolErrors(tool: string, watchdogKey: string, workspaceId: string, windowMs: number): Promise<number>;
   /**
    * EI-21905244571119790 positive control: count `tool_invocations` for `tool` in
    * `workspaceId` over the trailing windowMs, ANY status. Zero means the tool was never
@@ -117,7 +128,7 @@ export async function runStructuralErrorVerifierOnce(
   for (const item of items) {
     try {
       const [recentRecurrences, recentTotalInvocations] = await Promise.all([
-        deps.countRecentToolErrors(item.tool, item.workspaceId, windowMs),
+        deps.countRecentToolErrors(item.tool, item.watchdogKey, item.workspaceId, windowMs),
         deps.countRecentToolInvocations(item.tool, item.workspaceId, windowMs),
       ]);
       if (
@@ -127,7 +138,7 @@ export async function runStructuralErrorVerifierOnce(
         await deps.resolveItem(
           item.workspaceId,
           item.issueId,
-          `auto-resolved (EI-1747 structural-error verifier): \`${item.tool}\` had ${recentTotalInvocations} invocation(s) but emitted no error/timeout/refused status in the deployed operator's telemetry for ≥${hrs}h, so the structural error is fixed on the deployed sha. Reopens automatically if the watchdog re-files on recurrence. (EI-21905244571119790: this close required a positive-control invocation count — see that item if the underlying defect returns a well-formed ok:false result rather than an error/timeout/refused status, which this window cannot see regardless of recurrence.)`,
+          `auto-resolved (EI-1747 structural-error verifier): structural watchdog key \`${item.watchdogKey}\` for \`${item.tool}\` had ${recentTotalInvocations} invocation(s) but emitted no matching error/timeout/refused status in the deployed operator's telemetry for ≥${hrs}h, so this exact structural error is fixed on the deployed sha. Reopens automatically if the watchdog re-files on recurrence. (EI-21905244571119790: this close required a positive-control invocation count — see that item if the underlying defect returns a well-formed ok:false result rather than an error/timeout/refused status, which this window cannot see regardless of recurrence.)`,
         );
         resolved++;
       } else {
@@ -201,7 +212,17 @@ export function makePgStructuralVerifierDeps(
       return out;
     },
 
-    async countRecentToolErrors(tool: string, workspaceId: string, windowMs: number): Promise<number> {
+    async countRecentToolErrors(
+      tool: string,
+      watchdogKey: string,
+      workspaceId: string,
+      windowMs: number,
+    ): Promise<number> {
+      const parsed = parseRepeatedToolErrorKey(watchdogKey);
+      // The selector is the first line of defense, but keep the injected seam
+      // fail-closed if a caller supplies a malformed or mismatched key.
+      if (!parsed || parsed.klass !== 'structural' || parsed.tool !== tool) return 0;
+
       const { sql } = getPg();
       const sinceIso = new Date(now() - windowMs).toISOString();
       // 'refused' included per EI-21905244571119790: it is the documented status for a
@@ -211,12 +232,27 @@ export function makePgStructuralVerifierDeps(
       // missed this whole class, drifting from the tool-error-classifier's own convention
       // that a refused call is a real, non-quota-neutral failure.
       const rows = await sql<{ n: string }[]>`
+        WITH classified AS (
+          SELECT tool_name,
+                 ${toolErrorClassSqlCase(sql)} AS class,
+                 error_message
+            FROM harness_shared.tool_invocations
+           WHERE tool_name = ${tool}
+             AND workspace_id = ${workspaceId}
+             AND status IN ('error', 'timeout', 'refused')
+             AND invoked_at > ${sinceIso}
+        ),
+        tagged AS (
+          SELECT tool_name,
+                 class,
+                 ${toolErrorFingerprintSqlCase(sql)} AS fingerprint
+            FROM classified
+        )
         SELECT COUNT(*)::text AS n
-        FROM harness_shared.tool_invocations
-        WHERE tool_name = ${tool}
-          AND workspace_id = ${workspaceId}
-          AND status IN ('error', 'timeout', 'refused')
-          AND invoked_at > ${sinceIso}
+          FROM tagged
+         WHERE tool_name = ${tool}
+           AND class = 'structural'
+           AND fingerprint IS NOT DISTINCT FROM ${parsed.fingerprint}
       `;
       return Number(rows[0]?.n ?? 0);
     },
