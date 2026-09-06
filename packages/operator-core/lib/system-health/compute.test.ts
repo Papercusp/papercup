@@ -425,6 +425,9 @@ describe('overwatchScorecardSkipped — monitor-the-monitor (hive-loop-supervisi
   it('NOT skipped when fresh', () => {
     expect(overwatchScorecardSkipped({ ...base, freshnessStatus: 'fresh' })).toBe(false);
   });
+  it('NOT skipped for an unknown rubric reference', () => {
+    expect(overwatchScorecardSkipped({ ...base, freshnessStatus: 'unknown-rubric' })).toBe(false);
+  });
   it('NOT skipped within the grace (turn may still be in flight — no mid-turn false positive)', () => {
     expect(overwatchScorecardSkipped({ ...base, now: base.lastWakeAt + 60_000 })).toBe(false);
   });
