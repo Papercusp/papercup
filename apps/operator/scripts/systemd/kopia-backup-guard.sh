@@ -322,14 +322,79 @@ run_scheduled_command() {
   return "$child_rc"
 }
 
+# Resolve the pressure files that describe THIS BACKUP rather than the whole box.
+#
+# cgroup v2 publishes per-cgroup PSI beside the host-wide files.  The unified
+# hierarchy line in /proc/self/cgroup is "0::<path>", and this cgroup's own
+# pressure lives at /sys/fs/cgroup<path>/{memory,io}.pressure.  snapshot-all.sh
+# launches Kopia with a plain `sudo -n`, NOT `systemd-run`, so the root-owned
+# Kopia process inherits this same cgroup -- which is also why the unit's
+# MemoryHigh/MemoryMax/MemorySwapMax actually bind it.  Reading our own cgroup
+# therefore measures the backup, Kopia included.
+own_cgroup_psi_dir() {
+  local rel base
+  rel=$(awk -F: '$1 == "0" && $2 == "" { print $3; exit }' /proc/self/cgroup 2>/dev/null) || return 1
+  [ -n "$rel" ] || return 1
+  base="/sys/fs/cgroup${rel}"
+  # Both files must be readable, or this is not a usable scope: falling back to
+  # the host-wide files is strictly better than gating on a half-present signal.
+  [ -r "$base/memory.pressure" ] && [ -r "$base/io.pressure" ] || return 1
+  printf '%s' "$base"
+}
+
 if [ "$mode" = scheduled ]; then
   if ! flock -n 9; then
     guard_log "result=deferred reason=lock-held"
     exit 0
   fi
 
-  memory_path="${KOPIA_BACKUP_MEM_PSI_PATH:-/proc/pressure/memory}"
-  io_path="${KOPIA_BACKUP_IO_PSI_PATH:-/proc/pressure/io}"
+  # WHY THE CGROUP AND NOT /proc/pressure -- measured on this host 2026-09-05.
+  #
+  # The host-wide files do not measure this backup.  They measure the box, and
+  # this box runs a large agent fleet: sampled at 2s for 2.7 minutes with ZERO
+  # kopia processes running, /proc/pressure/memory full avg10 swung 0.02 -> 41.91
+  # and sat AT OR ABOVE the limit of 5 for 52.4% of samples, at load average 162
+  # across 128 cores with 79 agent processes alive.
+  #
+  # The mid-run gate aborts on the FIRST sample at or above the limit, so a run
+  # survives only on an unbroken sub-limit streak lasting its whole duration.
+  # Required: 1024s and 2332s -- the two runtimes that actually completed.
+  # Longest sub-limit window observed: 40 SECONDS.  That 25-58x gap is why 19 of
+  # 19 ordinary cycles died on 2026-09-05 (10s-426s each) while the only two
+  # successes were both staleness-override-armed: the escape hatch had become
+  # the schedule.
+  #
+  # Raising the limit was rejected above for the right reason (a larger constant
+  # has the same unbounded shape).  Hysteresis was considered and rejected too:
+  # the crossings are real and sustained, not transient hair-crossings, so
+  # smoothing cannot help when the signal itself is the wrong one.  The defect is
+  # that the backup was CANCELLED for pressure it did not create, cannot relieve,
+  # and is already isolated from -- it runs at nice 19, ionice idle, capped by the
+  # unit at MemoryHigh=8G/MemoryMax=12G with MemorySwapMax=0.  Those caps, not a
+  # host-wide reading, are what protect the host from the backup.  The question
+  # the gate should ask is "is THIS BACKUP thrashing", and the cgroup answers it.
+  psi_dir=$(own_cgroup_psi_dir) || psi_dir=
+  if [ -n "$psi_dir" ]; then
+    psi_scope=cgroup
+    default_memory_path="$psi_dir/memory.pressure"
+    default_io_path="$psi_dir/io.pressure"
+  else
+    # No delegated cgroup PSI (older kernel, no delegation, unreadable files).
+    # Keep the previous host-wide behaviour rather than running ungated.
+    psi_scope=host
+    default_memory_path=/proc/pressure/memory
+    default_io_path=/proc/pressure/io
+  fi
+  memory_path="${KOPIA_BACKUP_MEM_PSI_PATH:-$default_memory_path}"
+  io_path="${KOPIA_BACKUP_IO_PSI_PATH:-$default_io_path}"
+  # Report the scope we ACTUALLY read, not the one we would have picked.  An
+  # explicit override (the test harness, or a host-specific unit drop-in) means
+  # the reading is neither this cgroup's nor the host's, and a log line claiming
+  # otherwise would be a label that does not mean what it says.
+  if [ "$memory_path" != "$default_memory_path" ] || [ "$io_path" != "$default_io_path" ]; then
+    psi_scope=override
+  fi
+  guard_log "result=psi-scope scope=$psi_scope memory_path=$memory_path io_path=$io_path"
   # Evaluate every admission signal first, then take ONE deferral decision, so
   # the staleness floor applies to all of them.  An unreadable PSI file defers
   # exactly like real pressure and so must escalate exactly like it: otherwise a

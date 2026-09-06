@@ -116,6 +116,51 @@ describe('Kopia global backup guard', () => {
     expect(result.stdout).toContain('result=started mode=scheduled');
   });
 
+  // Measured 2026-09-05: /proc/pressure/memory on this host swung 0.02 -> 41.91 and
+  // sat at or above the limit of 5 for 52.4% of samples with ZERO kopia processes
+  // running (79 agents, load average 162). The mid-run gate aborts on the FIRST
+  // sample at or above the limit, so a run survives only on an unbroken sub-limit
+  // streak lasting its whole duration -- 1024s and 2332s for the two runs that ever
+  // completed, against a longest observed sub-limit window of 40 SECONDS. 19 of 19
+  // ordinary cycles died that day; the only successes were staleness-override-armed.
+  // The host-wide files do not measure this backup, so they must not cancel it.
+  it("gates on this backup's own cgroup pressure rather than the whole host", () => {
+    const { dir, env } = fixture();
+    const { KOPIA_BACKUP_MEM_PSI_PATH: _memory, KOPIA_BACKUP_IO_PSI_PATH: _io, ...noOverride } = env;
+    const result = run(['--mode', 'scheduled', '--label', 'scope', '--', 'touch', join(dir, 'ran')], noOverride);
+
+    // Emitted before the admission decision, so this holds whether the cycle is
+    // admitted or deferred by whatever real pressure the test host happens to have.
+    const line = result.stdout.split('\n').find((entry) => entry.includes('result=psi-scope'));
+    expect(line, result.stdout).toBeDefined();
+
+    const scope = /scope=(\S+)/.exec(line!)?.[1];
+    const memoryPath = /memory_path=(\S+)/.exec(line!)?.[1];
+    expect(scope).not.toBe('override');
+
+    if (scope === 'cgroup') {
+      expect(memoryPath).toMatch(/^\/sys\/fs\/cgroup\//);
+      expect(existsSync(memoryPath!)).toBe(true);
+    } else {
+      // The documented fallback, and the ONLY acceptable alternative: a kernel or
+      // delegation that exposes no readable per-cgroup PSI. Never silently ungated.
+      expect(scope).toBe('host');
+      expect(memoryPath).toBe('/proc/pressure/memory');
+    }
+  });
+
+  it('lets an explicit pressure-path override win, and reports the scope it actually read', () => {
+    const { dir, env } = fixture();
+    const result = run(['--mode', 'scheduled', '--label', 'override', '--', 'touch', join(dir, 'ran')], env);
+
+    const line = result.stdout.split('\n').find((entry) => entry.includes('result=psi-scope'));
+    expect(line, result.stdout).toBeDefined();
+    // An override is neither this cgroup's reading nor the host's. Labelling it
+    // 'cgroup' would be a field that does not mean what its name says.
+    expect(line).toContain('scope=override');
+    expect(line).toContain(`memory_path=${join(dir, 'memory.pressure')}`);
+  });
+
   it('parses the complete guard before starting work so a live source update cannot tear it', async () => {
     const { dir, env } = fixture();
     const canonicalGuard = join(dir, 'canonical-guard.sh');
