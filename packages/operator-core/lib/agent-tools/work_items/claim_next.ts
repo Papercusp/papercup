@@ -28,7 +28,10 @@ import {
   diagnoseFleetScopeCooldownMiss,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
-import { fetchContextPressure } from '../coordination/context-pressure';
+import {
+  fetchContextPressure,
+  resolveContextPressureRecoveryPath,
+} from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 import { decideGoalStewardGate, goalStewardRefusalResult } from '../../scheduler/goal-steward-claim-gate';
 import { readGoalHolderAuthority } from '../../goals/holder-authority';
@@ -133,11 +136,16 @@ export default defineTool({
             .then((m) => m.get(ident.ownerId) ?? null)
             .catch(() => null)
         : null;
+      const recovery =
+        bucket === 'critical' && args.ignoreContextPressure !== true
+          ? await resolveContextPressureRecoveryPath(ident.ownerId, ident.workspaceId).catch(() => null)
+          : null;
       const gate = decideContextPressureGate({
         bucket,
         override: args.ignoreContextPressure === true,
         enabled: gateEnabled,
         overrideArg: 'ignoreContextPressure',
+        recovery,
       });
       if (gate.refuse) {
         return {

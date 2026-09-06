@@ -68,7 +68,10 @@ import {
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
-import { fetchContextPressure } from '../coordination/context-pressure';
+import {
+  fetchContextPressure,
+  resolveContextPressureRecoveryPath,
+} from '../coordination/context-pressure';
 import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import { autoBenchContextCriticalCaller as autoBenchContextCriticalCallerCore } from '../../fleet/context-critical-bench';
@@ -1266,11 +1269,16 @@ export default defineTool({
               .then((m) => m.get(ident.ownerId) ?? null)
               .catch(() => null)
           : null;
+        const contextRecovery =
+          contextBucket === 'critical' && rawArgs.ignoreContextPressure !== true
+            ? await resolveContextPressureRecoveryPath(ident.ownerId, ident.workspaceId).catch(() => null)
+            : null;
         const contextGate = decideContextPressureGate({
           bucket: contextBucket,
           override: rawArgs.ignoreContextPressure === true,
           enabled: gateEnabled,
           overrideArg: 'ignoreContextPressure',
+          recovery: contextRecovery,
         });
         if (contextGate.refuse) {
           // P-009: the auto-bench is deliberately NOT armed here. This closure is the
