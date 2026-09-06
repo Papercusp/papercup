@@ -46,6 +46,14 @@ export const SU_S17_ORIENT_BOOTSTRAP: Scenario = {
   description:
     "A developer tells the engineer: you're starting your shift — get oriented before picking anything up. What are you assigned, what's claimable, any unread messages, what plans changed, and recall anything relevant to the gateway-retry work you're about to do — and declare that you're on it. This ask spans the claimable backlog and a mem0 recall — neither of which the turn-start orientation fold carries — so the full read is genuinely required here. The engineer should do it in ONE coord:orient { intent } call (which folds assignments + claimable + inbox + plan-events + a memory recall + the declare) rather than fanning out fleet:assignments + work_items:list + coord:inbox + coord:plan-events + memory:search + coord:declare-intent separately.",
   persona: BRIEF_ADMIN,
+  simUserContext:
+    'You are a brief admin starting an engineer shift. Ask once for the engineer to orient on assignments, ' +
+    'claimable work, unread inbox, recent plan events, and memory relevant to gateway-retry, and to declare ' +
+    'that they are continuing the assigned gateway-retry lane. The needed outcome is one coord:orient call ' +
+    'whose intent names gateway-retry, followed by an accurate concise summary and an unambiguous statement ' +
+    'that the engineer is continuing WI-512. A prose summary faithfully grounded in the tool result satisfies ' +
+    'you; do not demand raw JSON, unsupported recall/include parameters, or a separate memory:search / ' +
+    'coord:declare-intent call. Once the one-call result and WI-512 continuation are clear, declare success.',
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 6, maxWallSecs: 180, maxCostUsd: 1.5 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
