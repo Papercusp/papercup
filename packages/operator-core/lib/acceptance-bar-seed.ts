@@ -333,10 +333,26 @@ export function parseBarMappings(planContent: string, requirementKeys: ReadonlyS
   return problems.length ? { ok: false, problems } : { ok: true, mappings };
 }
 
+/** The mandatory-outcome pass vocabulary is {healthy, pass}, and BOTH are legitimate:
+ *  acceptance rubrics are overwhelmingly on healthy/degraded/broken/unknown, but a
+ *  pass/partial/fail/unknown rubric is equally valid. So DERIVE which token this
+ *  rubric's scale actually uses rather than hardcoding one — these scales must never
+ *  be normalised into each other. Hardcoding made rubric-template validation reject
+ *  every rebuilt seed on a pass-scale rubric ("mandatory outcome pass rating 'healthy'
+ *  is not present in the rubric ratingScale"), which silently returned false out of
+ *  synchronizeAcceptanceBarSubjectRevision and left the subject-revision pin stale
+ *  until ship refused with bar_snapshot_rubric_revision_mismatch (WI-10000058). */
+function barPassRatings(ratingScale: readonly string[] | undefined): string[] {
+  const matched = (ratingScale ?? DEFAULT_RATING_SCALE)
+    .filter((rating) => ['healthy', 'pass'].includes(rating.trim().toLowerCase()));
+  return matched.length > 0 ? [...matched] : ['healthy'];
+}
+
 function seededCriterion(
   bar: ParsedRequirementBar,
   mapping: ParsedBarMapping,
   input: Pick<AcceptanceBarSeedBuildInput, 'actorId' | 'declaredAt' | 'cohort' | 'backfilled'>,
+  ratingScale?: readonly string[],
 ): ProposeRubricCriterion {
   const criterion = normalizeAcceptanceBarCriterion({
     key: bar.barKey.toLowerCase(),
@@ -350,7 +366,7 @@ function seededCriterion(
     mandatory: true,
     requiredScope: [mapping.evidencePlane],
     evidencePlane: mapping.evidencePlane,
-    passRatings: ['healthy'],
+    passRatings: barPassRatings(ratingScale),
     // Unified input already names the exact promise, falsifier and method.
     // Never concatenate its title or manufacture an alternative promise.
     ...(bar.criterion ?? {}),
@@ -433,7 +449,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   }
 
   const criteria = requirements.bars.map((bar) => {
-    const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input);
+    const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input, existing?.ratingScale);
     const legacy = legacyMap && existing?.criteria.find((criterion) => criterion.key === legacyMap[bar.barKey]);
     if (legacy) {
       // Keep the graded identity, full outcome, falsifier and METHOD intact.
@@ -442,8 +458,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       return normalizeAcceptanceBarCriterion({ ...legacy,
         barKey: bar.barKey, role: 'outcome', mandatory: true,
         requiredScope: seeded.requiredScope, evidencePlane: seeded.evidencePlane,
-        passRatings: legacy.passRatings ?? (legacy.ratingScale ?? existing!.ratingScale ?? DEFAULT_RATING_SCALE)
-          .filter((rating) => ['healthy', 'pass'].includes(rating.trim().toLowerCase())),
+        passRatings: legacy.passRatings ?? barPassRatings(legacy.ratingScale ?? existing!.ratingScale),
         barProvenance: seeded.barProvenance,
       });
     }
