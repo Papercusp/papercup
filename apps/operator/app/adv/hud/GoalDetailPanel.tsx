@@ -98,6 +98,7 @@ import SubGoalsSection from './SubGoalsSection';
 // section above — it owns a WRITE (goals:update) and the form model behind it.
 import GoalSettingsSection from './GoalSettingsSection';
 import GoalEndsSection from './GoalEndsSection';
+import GoalModeStateSection from './GoalModeStateSection';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
 import { LiveSessionChat } from '@/app/_components/chat/SessionChatModal';
@@ -1126,6 +1127,13 @@ export default function GoalDetailPanel({
                 ) : null
               }
             />
+
+            {/* P-009 (shared-agent-obligations-and-briefs-2026-09-05): one
+                read-only rendering of the exact turn-start projection the
+                goal holder receives. It belongs in the existing Brief zone,
+                directly after the stop conditions, rather than becoming an
+                eighth independent rail or a client-side policy engine. */}
+            <GoalModeStateSection state={data?.goalModeState} />
 
             {/* ── 2. WAITING ON YOU ───────────────────────────────────────
                 Above pots and activity because it is the only section the

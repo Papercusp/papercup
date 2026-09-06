@@ -250,11 +250,6 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   zIndex: 5,
 };
 
-/* DOSSIER_TOGGLE_STYLE was here. The detail toggle moved into the shared
-   maximize toolbar (CHAT_TOOLBAR_STYLE below) so the popup has ONE cluster of
-   window controls rather than a lone button in the corner and two more beside
-   it — session-chat-popup-direction-d-2026-08-02 P-001. */
-
 /** Narrow-viewport breakpoint below which the dossier rail stops sitting
  *  side-by-side and becomes a collapsible overlay drawer instead — same
  *  matchMedia + useEffect pattern BrainstormFull.tsx already uses for its own
@@ -425,41 +420,6 @@ function useIsNarrowViewport(query: string): boolean {
  * [owner 2026-08-02, verbatim] "lets actually make the left panel and right
  * panel and bottom and top panel all show in both full screen views"
  */
-
-/** The toolbar lives INSIDE the conversation region, pinned to its top-right.
- *  Since D-007 the fullscreen target is the popup container (which contains the
- *  conversation, so this rides along either way) — but the placement still has
- *  to keep the EXIT control on screen in every mode, which is why it is anchored
- *  to a region that is always painted rather than to popup chrome that is not. */
-const CHAT_TOOLBAR_STYLE: React.CSSProperties = {
-  position: 'absolute',
-  top: 8,
-  right: 8,
-  zIndex: 6,
-  display: 'flex',
-  gap: 4,
-  alignItems: 'center',
-};
-
-/** The Orders toggle's own cluster, pinned to the conversation's LEFT edge
- *  [owner 2026-08-02: "Move the orders show/hide button to the left side"].
- *
- *  Each panel toggle now sits on the side its panel opens from — Orders left,
- *  Activity right — so the control points at the thing it moves instead of both
- *  living in one right-hand pile where the left panel's button read as belonging
- *  to the right one. Same absolute-positioning contract as the right cluster
- *  (both are children of the conversation region, so both ride along wherever it
- *  goes — including inside a maximized popup, which since D-007 keeps every
- *  panel, and therefore needs every panel's toggle). */
-const CHAT_TOOLBAR_LEFT_STYLE: React.CSSProperties = {
-  position: 'absolute',
-  top: 8,
-  left: 8,
-  zIndex: 6,
-  display: 'flex',
-  gap: 4,
-  alignItems: 'center',
-};
 
 /* The panel-toggle chevron and the compact toolbar button both live in
    PanelToggleButton now (2026-08-10) — two copies of this grammar is how the
@@ -825,22 +785,11 @@ function SessionStateHeader({
       : 'Open the agent detail panel to this section';
 
   return (
-    /* `--with-toolbars`: the two toolbar clusters are absolutely positioned over
-       this band's row (they must be, to stay inside the conversation region that
-       D-002 maximizes), so the band reserves the gutters they occupy instead of
-       letting the first chip render UNDERNEATH the Orders button. Before the
-       Orders toggle moved left [owner 2026-08-02] only the right gutter was
-       needed, and it was free — the chips are left-aligned and never reached
-       that far. The left gutter is not free, so it is now declared. */
     <div
-      className="pc-ctl-band pc-ctl-band--status pc-ctl-band--with-toolbars"
+      className="pc-ctl-band pc-ctl-band--status"
       data-testid="session-chat-state-header"
     >
-      {/* The zone cap. It sits AFTER the reserved left gutter, not before it:
-          the Orders toggle is absolutely positioned over that gutter [owner
-          2026-08-02: keep it on the left], so the leading edge of the band's
-          own row is where this lands. Nothing here is a verb — this zone is
-          facts that change on their own, plus the window controls. */}
+      {/* Panel controls live on their rails, leaving the identity band clear. */}
       <span className="pc-zone-cap">Status</span>
       {/* The popup's TITLE (P-008) — see SessionNameField for why the name is
           here rather than on the invisible Radix dialog title. It leads the
@@ -1789,7 +1738,7 @@ export default function SessionChatModal({
   const [dossierParam, setDossierOpen] = useQueryState('chatDossier', parseAsBoolean);
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
   const dossierOpen = dossierParam ?? !isNarrow;
-  const [fleetLaunchOpen, setFleetLaunchOpen] = useQueryState('chatLaunchFleet', parseAsBoolean.withDefault(false));
+  const [fleetLaunchOpen, setFleetLaunchOpen] = useQueryState('chatLaunchFleet', parseAsBoolean.withDefault(true));
 
   /* ── chat-popup-fleet-peers-rail-2026-08-09: the FLEET rail ────────────────
      Derived HERE rather than inside the rail because the answer is load-bearing
@@ -1977,6 +1926,37 @@ export default function SessionChatModal({
      `agentOrders.byOwner` runs the carry-brief gather, so a closed panel must
      cost nothing. */
   const ordersVisible = open && ordersOpen;
+  // Moving between the edge strip and header remounts the control. Keep
+  // keyboard focus on that same action after its URL state changes.
+  const panelFocusRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const testId = panelFocusRef.current;
+    if (!testId) return;
+    popupRef.current?.querySelector<HTMLButtonElement>('[data-testid="' + testId + '"]')?.focus({ preventScroll: true });
+    panelFocusRef.current = null;
+  }, [ordersOpen, dossierOpen, fleetOpen, popupRef]);
+
+  const panelToggle = (panel: 'orders' | 'activity' | 'fleet') => {
+    const { label, describe, side, visible, setOpen, testId } = {
+      orders: { label: 'Orders', describe: 'agent orders', side: 'left' as const, visible: ordersOpen, setOpen: setOrdersOpen, testId: 'session-chat-orders-toggle' },
+      activity: { label: 'Activity', describe: 'agent activity', side: 'right' as const, visible: dossierOpen, setOpen: setDossierOpen, testId: 'session-chat-dossier-toggle' },
+      fleet: { label: 'Fleet', describe: 'fleet peers', side: 'right' as const, visible: fleetOpen, setOpen: setFleetOpen, testId: 'session-chat-fleet-toggle' },
+    }[panel];
+    return (
+      <PanelToggleButton
+        label={label}
+        describe={describe}
+        side={side}
+        open={visible}
+        placement={visible ? 'panel' : 'edge'}
+        onToggle={() => {
+          panelFocusRef.current = testId;
+          void setOpen(!visible);
+        }}
+        data-testid={testId}
+      />
+    );
+  };
 
   /* ── how wide the popup has to be ─────────────────────────────────────────
      Replaces the nested ternary that enumerated the rail COMBINATIONS: with
@@ -1993,9 +1973,9 @@ export default function SessionChatModal({
      comfortable width, which is what this whole scheme protects — the popup
      grows to make room for a rail rather than the transcript shrinking. */
   const railColumns =
-    (ordersVisible && !isOrdersNarrow ? 272 + 16 : 0) +
-    (dossierOpen && !isNarrow ? 300 + 16 : 0) +
-    (peersVisible && !isPeersNarrow ? 248 + 16 : 0) +
+    (ordersVisible && !isOrdersNarrow ? 272 + 16 : 36) +
+    (dossierOpen && !isNarrow ? 300 + 16 : 36) +
+    (fleetPeers || fleetUnknownSession ? (peersVisible && !isPeersNarrow ? 248 + 16 : 36) : 0) +
     /* The turn rail contributes at BOTH densities, because unlike the other
        three it never overlays (D-003) — it always takes a column, just a
        narrower one once space runs out. */
@@ -2227,13 +2207,18 @@ export default function SessionChatModal({
             "excluded from maximize": the fullscreen target moved UP to the
             popup container that holds this rail, the conversation and the
             Activity rail alike, so a sibling is INCLUDED by construction. ── */}
+        {open && (isOrdersNarrow || !ordersVisible) ? (
+          <div className="pc-zone pc-zone--orders pc-panel-dock" data-testid="session-chat-orders-dock">
+            {!ordersVisible ? panelToggle('orders') : null}
+          </div>
+        ) : null}
         {ordersVisible ? (
           <div
             /* `pc-zone` is what carries the Framed vocabulary into the rail: it
                defines --pc-zone-rule (used by this element's own border, above)
                and scopes the framed-card treatment to the POPUP, so the same
                AgentDossier rendered in the /adv two-pane is untouched. */
-            className="pc-zone pc-zone--orders"
+            className="pc-zone pc-zone--orders pc-panel-surface"
             data-testid="session-chat-orders-rail"
             style={isOrdersNarrow ? ORDERS_RAIL_OVERLAY_STYLE : ORDERS_RAIL_SIDE_STYLE}
           >
@@ -2242,6 +2227,7 @@ export default function SessionChatModal({
               enabled={ordersVisible}
               ownerKnown={unknownSession ? false : rosterReady ? agentKnown : undefined}
               onClose={() => void setOrdersOpen(false)}
+              headerControl={panelToggle('orders')}
             />
           </div>
         ) : null}
@@ -2305,35 +2291,17 @@ export default function SessionChatModal({
             position: 'relative',
           }}
         >
-        {/* ── the LEFT toolbar: the Orders toggle, and only ever that ─────────
-            [owner 2026-08-02: "Move the orders show/hide button to the left
-            side"]. It is its own absolutely-positioned cluster rather than a
-            flex item at the head of the right-hand toolbar, because the right
-            toolbar is pinned to `right: 8` and grows leftward — anything put at
-            its head still lands in the top-RIGHT corner. Pinning to `left: 8` is
-            the only placement that actually reaches the left edge.
-
-            Shown in EVERY mode since D-007: its panel is now present while
-            maximized, so a toggle that vanished there would leave the user
-            unable to close a panel they can see. */}
-        {open ? (
-          <div style={CHAT_TOOLBAR_LEFT_STYLE} data-testid="session-chat-toolbar-left">
-            {/* `side="left"` is the whole chevron decision: this panel lives on
-                the LEFT, so open ⇒ its inner edge travels left to close (chevron
-                leads, pointing left) and closed ⇒ it expands rightward (chevron
-                trails, pointing right). See PanelToggleButton's header. */}
-            <PanelToggleButton
-              label="Orders"
-              describe="agent orders"
-              side="left"
-              open={ordersOpen}
-              onToggle={() => void setOrdersOpen(!ordersOpen)}
-              data-testid="session-chat-orders-toggle"
-            />
-          </div>
+        <div className="pc-chat-heading">
+        {actionRosterEntry ? (
+          <SessionStateHeader
+            entry={actionRosterEntry}
+            onOpenDetail={scrollToDossierSection}
+            onRename={actionCtx ? handleRename : undefined}
+            onRenamingChange={setRenaming}
+          />
         ) : null}
         {open ? (
-          <div style={CHAT_TOOLBAR_STYLE} data-testid="session-chat-toolbar">
+          <div className="pc-chat-window-actions" data-testid="session-chat-toolbar">
             {/* Tooltip, not a `title=` attribute: these are ICON-ONLY buttons, so
                 the hover text is the only place their meaning is written for a
                 sighted user — and a native title is unreachable by keyboard and
@@ -2373,33 +2341,6 @@ export default function SessionChatModal({
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
-            {/* Shown in EVERY mode since D-007 — maximized now HAS the rail, so
-                the control that opens and closes it has to be there too.
-                `side="right"`: open ⇒ the panel's inner edge travels RIGHT to
-                close, so the chevron trails pointing that way; closed ⇒ it
-                arrives from the right, so the chevron leads pointing left. */}
-            <PanelToggleButton
-              label="Activity"
-              describe="agent activity"
-              side="right"
-              open={dossierOpen}
-              onToggle={() => void setDossierOpen(!dossierOpen)}
-              data-testid="session-chat-dossier-toggle"
-            />
-            {/* The FLEET rail's toggle. Rendered ONLY when this agent is in a
-                fleet: a solo agent has no rail to open, and a control that
-                opens an empty column saying "not in a fleet" is chrome
-                pretending to be information. */}
-            {fleetPeers || fleetUnknownSession ? (
-              <PanelToggleButton
-                label="Fleet"
-                describe="fleet peers"
-                side="right"
-                open={fleetOpen}
-                onToggle={() => void setFleetOpen(!fleetOpen)}
-                data-testid="session-chat-fleet-toggle"
-              />
-            ) : null}
             {/* Maximized covers the backdrop, and in fullscreen Esc is spoken
                 for — so without an explicit ✕ there is no way out but the
                 maximize toggles. */}
@@ -2419,19 +2360,7 @@ export default function SessionChatModal({
             ) : null}
           </div>
         ) : null}
-        {/* ── P-004: Direction D's STATUS BAND. Above the transcript, because
-            C's spatial rule is that description sits above and operation below;
-            inside the conversation region, because these facts are what the
-            transcript means — a maximized conversation that no longer says
-            whether the agent is alive has lost the more useful half. ── */}
-        {actionRosterEntry ? (
-          <SessionStateHeader
-            entry={actionRosterEntry}
-            onOpenDetail={scrollToDossierSection}
-            onRename={actionCtx ? handleRename : undefined}
-            onRenamingChange={setRenaming}
-          />
-        ) : null}
+        </div>
         {resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>
         ) : resolveError ? (
@@ -2733,11 +2662,18 @@ export default function SessionChatModal({
             D-007 means it is INSIDE the fullscreen target (the popup container
             above), so it shows in both maximize modes. `dossierOpen` is the
             user's own choice and the only thing that hides it. */}
+        {open && (isNarrow || !dossierOpen) ? (
+          <div className="pc-zone pc-zone--activity pc-panel-dock" data-testid="session-chat-activity-dock">
+            {!dossierOpen ? panelToggle('activity') : null}
+          </div>
+        ) : null}
         {open && dossierOpen ? (
           <div
-            className="pc-zone pc-zone--activity"
+            className="pc-zone pc-zone--activity pc-panel-surface"
             data-testid="session-chat-dossier-rail"
-            style={isNarrow ? DOSSIER_RAIL_OVERLAY_STYLE : DOSSIER_RAIL_SIDE_STYLE}
+            style={isNarrow
+              ? { ...DOSSIER_RAIL_OVERLAY_STYLE, ...(fleetPeers || fleetUnknownSession ? { right: 36, width: 'min(320px, calc(100% - 36px))' } : {}) }
+              : DOSSIER_RAIL_SIDE_STYLE}
           >
             <AgentDossier
               ownerId={sessionOwnerId ?? ''}
@@ -2760,6 +2696,7 @@ export default function SessionChatModal({
               sessionEndedAt={endedEntry?.endedAt ?? null}
               unknownSession={unknownSession}
               onClose={() => void setDossierOpen(false)}
+              headerControl={panelToggle('activity')}
             />
           </div>
         ) : null}
@@ -2771,9 +2708,14 @@ export default function SessionChatModal({
             the layout contract P-015's guard asserts — and since D-007 that is
             what INCLUDES it in both maximize modes for free, with no hide-list
             to keep. Do NOT move it inside the conversation element. ── */}
+        {open && (fleetPeers || fleetUnknownSession) && (isPeersNarrow || !peersVisible) ? (
+          <div className="pc-zone pc-zone--peers pc-panel-dock" data-testid="session-chat-fleet-dock">
+            {!peersVisible ? panelToggle('fleet') : null}
+          </div>
+        ) : null}
         {peersVisible ? (
           <div
-            className="pc-zone pc-zone--peers"
+            className="pc-zone pc-zone--peers pc-panel-surface"
             data-testid="session-chat-peers-rail"
             style={isPeersNarrow ? PEERS_RAIL_OVERLAY_STYLE : PEERS_RAIL_SIDE_STYLE}
           >
@@ -2783,6 +2725,7 @@ export default function SessionChatModal({
                 alerts={leaderBriefAlerts}
                 onSelectPeer={onSelectPeer}
                 onClose={() => void setFleetOpen(false)}
+                headerControl={panelToggle('fleet')}
               />
             ) : (
               /* EI-19968489971947616: the id in view matches nothing in the
@@ -2790,15 +2733,7 @@ export default function SessionChatModal({
                  rather than rendering an empty column with no explanation. */
               <div className="pc-peers pc-peers--unknown" data-testid="fleet-peers-unknown-session">
                 <header className="pc-zone-title">
-                  <span>Fleet</span>
-                  <button
-                    type="button"
-                    className="pc-zone-title__close"
-                    onClick={() => void setFleetOpen(false)}
-                    aria-label="Hide fleet peers"
-                  >
-                    ✕
-                  </button>
+                  {panelToggle('fleet')}
                 </header>
                 <div className="pc-peers__empty" role="status">
                   No agent with this id was found in the current roster or session history, so

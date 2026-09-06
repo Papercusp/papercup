@@ -92,6 +92,7 @@ vi.mock('../../adv/sessions/AgentDossier', () => ({
     lastAgentDossierProps = props;
     return (
       <div data-testid="agent-dossier-stub" data-owner={props.ownerId}>
+        <header>{props.headerControl}</header>
         <button type="button" data-testid="dossier-stub-close" onClick={props.onClose} />
       </div>
     );
@@ -109,6 +110,7 @@ vi.mock('../../adv/sessions/AgentOrders', () => ({
     lastAgentOrdersProps = props;
     return (
       <div data-testid="agent-orders-stub" data-owner={props.ownerId}>
+        <header>{props.headerControl}</header>
         <button type="button" data-testid="orders-stub-close" onClick={props.onClose} />
       </div>
     );
@@ -160,6 +162,12 @@ const H = vi.hoisted(() => ({
 }));
 const attentionInvalidate = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  ORIGIN_SCHEDULER_CLASSES: [
+    'interactive-control',
+    'foreground-read',
+    'background-sync',
+    'bulk',
+  ],
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     H.results[queryName] ?? { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() },
@@ -281,7 +289,7 @@ describe('SessionChatModal', () => {
     );
 
     await waitFor(() => expect(captured).not.toBeNull());
-    expect(captured!.url).toBe('/api/adv/session/thinking?ompThreadId=omp-1');
+    expect(captured!.url).toBe('/api/adv/session/thinking?ompThreadId=omp-1&historyOwner=su-live-1');
     expect(screen.getByText('Chat — su · live-1')).toBeTruthy();
   });
 
@@ -303,7 +311,7 @@ describe('SessionChatModal', () => {
     });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
     await waitFor(() => expect(captured).not.toBeNull());
-    expect(captured!.url).toBe('/api/adv/session/thinking?sessionId=claude-ended&owner=su-live-1&ended=1');
+    expect(captured!.url).toBe('/api/adv/session/thinking?sessionId=claude-ended&owner=su-live-1&historyOwner=su-live-1&ended=1');
   });
 
   it('does NOT append ended for an active/live session (no regression)', async () => {
@@ -362,7 +370,7 @@ describe('SessionChatModal', () => {
 
     await waitFor(() => expect(captured).not.toBeNull());
     expect(captured!.url).toBe(
-      '/api/adv/session/thinking?codexRolloutId=019f-rollout-1',
+      '/api/adv/session/thinking?codexRolloutId=019f-rollout-1&historyOwner=su-live-1',
     );
     expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalledWith(
@@ -393,7 +401,7 @@ describe('SessionChatModal', () => {
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
     await waitFor(() => expect(captured).not.toBeNull());
-    expect(captured!.url).toBe('/api/adv/session/thinking?ompThreadId=019f-thread-1');
+    expect(captured!.url).toBe('/api/adv/session/thinking?ompThreadId=019f-thread-1&historyOwner=su-live-1');
     expect(screen.getByPlaceholderText(/Reply|Type to wake/i)).toBeTruthy();
   });
 
@@ -2027,9 +2035,22 @@ describe('SessionChatModal', () => {
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(screen.getByTestId('session-chat-dossier-toggle')).toBeTruthy();
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
-      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(false);
+      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(true);
+      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+      nuqsSetters.chatLaunchFleet.mockClear();
       fireEvent.click(screen.getByText('Launch a fleet'));
-      expect(nuqsSetters.chatLaunchFleet).toHaveBeenCalledWith(true);
+      expect(nuqsSetters.chatLaunchFleet).toHaveBeenCalledWith(false);
+    });
+
+    it('respects an explicit ?chatLaunchFleet=false URL choice while defaulting open', async () => {
+      nuqs.chatLaunchFleet = false;
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+
+      expect(screen.getByText('Launch a fleet').closest('details')?.open).toBe(false);
+      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
     });
 
     it('mounts the dossier rail by default when the viewport has room for it', async () => {
@@ -2096,6 +2117,39 @@ describe('SessionChatModal', () => {
       expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
     });
 
+    it.each([
+      ['orders', 'session-chat-orders-toggle', 'session-chat-orders-rail', 'chatOrders'],
+      ['activity', 'session-chat-dossier-toggle', 'session-chat-dossier-rail', 'chatDossier'],
+      ['fleet', 'session-chat-fleet-toggle', 'session-chat-peers-rail', 'chatFleet'],
+    ])('keeps %s reachable at its edge and preserves keyboard focus when closing and reopening', async (panel, toggleId, railId, queryKey) => {
+      seedRoster([
+        { ownerId: 'su-live-1', fleetSlug: 'popup-fleet', fleetRole: 'leader', claims: [], modes: [], currentFiles: [] },
+        { ownerId: 'su-peer-1', fleetSlug: 'popup-fleet', fleetRole: 'member', claims: [], modes: [], currentFiles: [] },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      const toggle = await screen.findByTestId(toggleId);
+      expect(screen.getByTestId(railId).contains(toggle)).toBe(true);
+      toggle.focus();
+      fireEvent.click(toggle);
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      expect(nuqs[queryKey]).toBe(false);
+      expect(screen.queryByTestId(railId)).toBeNull();
+      const edge = within(screen.getByTestId('session-chat-' + panel + '-dock')).getByTestId(toggleId);
+      expect(edge.getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(edge);
+      expect(screen.getAllByTestId(toggleId)).toHaveLength(1);
+      expect(screen.getByTestId('session-chat-conversation').contains(edge)).toBe(false);
+
+      fireEvent.click(edge);
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      const reopened = within(screen.getByTestId(railId)).getByTestId(toggleId);
+      expect(reopened.getAttribute('aria-expanded')).toBe('true');
+      expect(document.activeElement).toBe(reopened);
+      expect(screen.getAllByTestId(toggleId)).toHaveLength(1);
+    });
+
     /* ── WI-7110: the owner's own words about these two controls ─────────────
        Every assertion below was un-covered when the owner filed it, which is
        why each was silently wrong in shipped UI. They are asserted on the
@@ -2143,23 +2197,17 @@ describe('SessionChatModal', () => {
       }
     });
 
-    it('WI-7110: the Orders toggle sits in the LEFT toolbar cluster, not the right one', async () => {
+    it('keeps Orders and Activity controls on their own surfaces, outside the conversation', async () => {
       seedRoster([{ ownerId: 'su-live-1' }]);
       mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
       await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
 
-      // [owner 2026-08-02] "Move the orders show/hide button to the left side".
-      // Containment is the assertion: the right cluster is pinned to `right: 8`
-      // and grows leftward, so merely being FIRST among its children still
-      // renders in the top-right corner — the bug this replaced.
-      const left = screen.getByTestId('session-chat-toolbar-left');
-      const right = screen.getByTestId('session-chat-toolbar');
-      expect(within(left).getByTestId('session-chat-orders-toggle')).toBeTruthy();
-      expect(within(right).queryByTestId('session-chat-orders-toggle')).toBeNull();
-      // The Activity toggle stays on the right, beside the maximize controls —
-      // each toggle on the side its own panel opens from.
-      expect(within(right).getByTestId('session-chat-dossier-toggle')).toBeTruthy();
+      const conversation = screen.getByTestId('session-chat-conversation');
+      expect(within(conversation).queryByTestId('session-chat-orders-toggle')).toBeNull();
+      expect(within(conversation).queryByTestId('session-chat-dossier-toggle')).toBeNull();
+      expect(within(screen.getByTestId('session-chat-orders-rail')).getByTestId('session-chat-orders-toggle')).toBeTruthy();
+      expect(within(screen.getByTestId('session-chat-dossier-rail')).getByTestId('session-chat-dossier-toggle')).toBeTruthy();
     });
 
     /* ── The Framed look: six NAMED zones (owner-approved 2026-08-02, artifact
@@ -2408,7 +2456,7 @@ describe('SessionChatModal', () => {
       // The toggle stays with it — a panel you can see but cannot close is worse
       // than one that was never there.
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
-      expect(screen.getByTestId('session-chat-toolbar-left')).toBeTruthy();
+      expect(within(screen.getByTestId('session-chat-orders-rail')).getByTestId('session-chat-orders-toggle')).toBeTruthy();
       expect(screen.getByPlaceholderText(/Type to wake/)).toBeTruthy();
     });
 

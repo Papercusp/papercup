@@ -177,6 +177,33 @@ function detail(over: Partial<GoalDetailInput> = {}): GoalDetailInput {
     spendByDay: [],
     spendLabel: 'fleet spend',
     spendNote: 'Goal spend figures do not sum.',
+    goalModeState: {
+      schemaVersion: 'agent-goal-mode-state-v1',
+      status: 'known',
+      ownerId: 'su-goal',
+      observedAt: '2026-08-09T12:00:00.000Z',
+      portfolio: {
+        goal: { id: 'goal-1', title: 'Ship a paid app', status: 'active' },
+        queue: { total: 0, inFlight: 0, blocked: 0, needsHuman: 0, claimable: 0 },
+        priorities: [],
+      },
+      obligations: {
+        sourceGeneration: 'agenda-clean',
+        projection: {
+          entries: [],
+          receipt: {
+            sink: 'turn-start',
+            entriesAvailable: 0,
+            entriesDelivered: 0,
+            entriesOmitted: 0,
+            bodyTruncated: false,
+            refused: false,
+          },
+        },
+        detailRef: 'coord:orient for the complete obligation agenda',
+      },
+      degradedReasons: [],
+    },
     ...over,
   };
 }
@@ -227,6 +254,50 @@ describe('GoalDetailPanel', () => {
     expect(screen.getByTestId('goal-kill-criterion').textContent).toBe(
       'Stop if no paying user by day 30.',
     );
+  });
+
+  it('places the goal agent’s shared obligation projection in the existing brief zone', () => {
+    renderPanel(
+      detail({
+        goalModeState: {
+          status: 'known',
+          ownerId: 'su-goal',
+          observedAt: '2026-08-09T12:00:00.000Z',
+          portfolio: { goal: { id: 'goal-1', title: 'Ship a paid app', status: 'active' } },
+          obligations: {
+            sourceGeneration: 'agenda-17',
+            projection: {
+              entries: [
+                {
+                  id: 'obligation-1',
+                  title: 'Report to Avi',
+                  status: 'due',
+                  applicableDemand: 1,
+                  sourceGeneration: 'report-4',
+                  action: { summary: 'Send the evidence-backed report' },
+                },
+              ],
+              receipt: { entriesAvailable: 1, entriesDelivered: 1, entriesOmitted: 0 },
+            },
+            detailRef: 'coord:orient for the complete obligation agenda',
+          },
+        },
+      }),
+    );
+
+    const brief = screen.getByTestId('goal-brief-rail');
+    expect(brief.contains(screen.getByTestId('goal-mode-state'))).toBe(true);
+    expect(screen.getByTestId('goal-mode-primary-action').textContent).toContain(
+      'Send the evidence-backed report',
+    );
+    expect(screen.getByTestId('goal-mode-provenance').textContent).toContain('agenda agenda-17');
+  });
+
+  it('surfaces an absent goal-mode payload as unknown rather than hiding the section', () => {
+    renderPanel(detail({ goalModeState: null }));
+    expect(screen.getByTestId('goal-mode-state').getAttribute('data-status')).toBe('unknown');
+    expect(screen.getByTestId('goal-mode-unknown').textContent).toContain('not included');
+    expect(screen.queryByTestId('goal-mode-no-demand')).toBeNull();
   });
 
   it('shouts when NO kill criterion is set', () => {
