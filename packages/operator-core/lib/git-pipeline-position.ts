@@ -1464,6 +1464,12 @@ export interface PipelinePosition {
     } | null;
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
     /**
+     * P-025: preserve the persisted queue read disposition beside the normalized queue.
+     * `repairQueue: null` is compatible with both true absence and a present row whose
+     * schema this build cannot parse; this field keeps those cases distinct.
+     */
+    repairQueueRead?: GitPipelineSnapshot['gate']['repairQueueRead'];
+    /**
      * WI-2141736 P-004 — IS FREEZE-AND-CONVERGE ACTUALLY ON RIGHT NOW, AND IF NOT WHY NOT.
      *
      * The question `repairQueue` structurally cannot answer: a null queue is equally
@@ -5597,29 +5603,33 @@ export async function gitPipelinePosition(
     checkpointRunLockLivePromise,
     gateOwnershipPromise,
   ]);
-  // WI-1702869: the failing-files-on-the-frozen-candidate answer. It cannot join the
-  // Promise.all above because it is the only leg that DEPENDS on `snap` — the candidate
-  // and repairHead it judges come from the frozen repair queue, which git-pipeline-stats
-  // resolves. No repair queue means no frozen candidate to answer about, and rather than
-  // manufacture a reading from the checkout HEAD (the exact inference that made
-  // `run-probe` non-authoritative on the sibling candidate cell) this stays `null`.
-  const candidateFailures = snap.gate.repairQueue
-    ? await (deps.readGateCandidateFailures ?? readGateCandidateFailures)({
-        candidateSha: snap.gate.repairQueue.frozenCandidate ?? snap.gate.repairQueue.candidate,
-        repairHeadSha: snap.gate.repairQueue.repairHead,
-        root,
-        submodulePaths: await submodulePaths(git, root),
-        // WI-2143253: already parsed by git-pipeline-stats (a second key off the same
-        // `gate_health` blob it loaded, never a second query) — thread it through so
-        // `gate.candidateFailures.nonTestLegs` can name which lint/perf/desktop/delta
-        // leg is failing, instead of the bare `postSuiteMeasured` tri-state boolean.
-        repairTickLegs: snap.gate.repairTickLegs ?? null,
-        // P-003: the cycle's per-leg LIFECYCLE, distinct from the tick measurement above.
-        // One tick says what it just ran; only the lifecycle says whether a leg's own
-        // re-run has since passed — which is the half "did its fix land" needs.
-        queueLegs: snap.gate.repairQueue.legs ?? null,
-      })
-    : null;
+  // WI-1702869 / WI-2146319: the failing-files-on-the-frozen-candidate answer. This
+  // projection must ALWAYS return a stable object. A true absent queue is an explicit
+  // `no-frozen-candidate` reading; a present-but-unreadable row is `unmeasured` and
+  // carries its raw candidate/repairHead/phase identity. Returning null here drops the
+  // cell's declared evidence paths and makes a newer writer look like "nothing frozen".
+  const persistedQueue = snap.gate.repairQueue ?? null;
+  const unreadableQueue = snap.gate.repairQueueRead?.status === 'unreadable' ? snap.gate.repairQueueRead : null;
+  const candidateFailures = await (deps.readGateCandidateFailures ?? readGateCandidateFailures)({
+    candidateSha:
+      persistedQueue?.frozenCandidate ??
+      persistedQueue?.candidate ??
+      unreadableQueue?.candidate ??
+      null,
+    repairHeadSha: persistedQueue?.repairHead ?? unreadableQueue?.repairHead ?? null,
+    root,
+    submodulePaths: persistedQueue ? await submodulePaths(git, root) : [],
+    repairQueueRead: snap.gate.repairQueueRead ?? null,
+    // WI-2143253: already parsed by git-pipeline-stats (a second key off the same
+    // `gate_health` blob it loaded, never a second query) — thread it through so
+    // `gate.candidateFailures.nonTestLegs` can name which lint/perf/desktop/delta
+    // leg is failing, instead of the bare `postSuiteMeasured` tri-state boolean.
+    repairTickLegs: snap.gate.repairTickLegs ?? null,
+    // P-003: the cycle's per-leg LIFECYCLE, distinct from the tick measurement above.
+    // One tick says what it just ran; only the lifecycle says whether a leg's own
+    // re-run has since passed — which is the half "did its fix land" needs.
+    queueLegs: persistedQueue?.legs ?? null,
+  });
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
   // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
   // authoritative answer sat one field away from the inferred one. Passing it makes the
@@ -5705,6 +5715,7 @@ export async function gitPipelinePosition(
     // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
     inconclusive: snap.gate.inconclusive,
     repairQueue: snap.gate.repairQueue ?? null,
+    repairQueueRead: snap.gate.repairQueueRead ?? { status: 'absent' },
     // WI-2141736 P-004. Also beside `repairQueue`, and for the opposite reason to
     // candidateFailures below: this is the answer for when there IS no queue. `repairQueue:
     // null` cannot distinguish "the owner switched the freeze off", "the gate just retired a
