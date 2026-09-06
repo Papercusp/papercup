@@ -130,6 +130,12 @@ import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { DEFAULT_INBOX_BODY_CAP, senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
 import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
+import {
+  GOAL_OWNER_REPORT_FIELD,
+  parseGoalOwnerReport,
+  stampGoalOwnerReport,
+  type GoalOwnerReportStamp,
+} from '../../../goal-owner-report';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -867,6 +873,61 @@ async function sendOne(
     }
   }
 
+  // P-006 / A-05: a GOAL owner report is a mechanically complete operation,
+  // not any message that happens to reach the human. Parse only the body and
+  // only on the owner-facing rail: ordinary human notes, peer messages, and
+  // diagnostic/remediation traffic remain unchanged unless they deliberately
+  // use one of the four report headings.
+  //
+  // The subject is NEVER caller-authored. Resolve the sender's active GOAL row
+  // at this write boundary so a stale prompt, wrong goal id, or copied report
+  // cannot stamp evidence for another subject. The mode import stays lazy: the
+  // dominant ordinary-send path must not acquire a DB/module dependency merely
+  // because this optional evidence class exists.
+  let goalOwnerReport: GoalOwnerReportStamp | null = null;
+  let goalOwnerReportWarning: string | null = null;
+  if (msg.to.includes('human')) {
+    const parsed = parseGoalOwnerReport(msg.body);
+    if (parsed.attempted) {
+      let goalId: string | null = null;
+      if (!identity.workspaceId || identity.workspaceId === '*') {
+        goalOwnerReportWarning =
+          'GOAL owner-report validation was unavailable because this sender has no concrete workspace; the message was delivered but does not carry canonical report evidence.';
+      } else {
+        try {
+          const { getModeSubject } = await import('../../../modes/store');
+          goalId = await getModeSubject(identity.workspaceId, identity.ownerId, 'goal');
+        } catch (error) {
+          goalOwnerReportWarning =
+            'GOAL owner-report validation was unavailable at send time; the message was delivered without canonical report evidence. ' +
+            `Retry after the active GOAL subject is readable (${error instanceof Error ? error.message : String(error)}).`;
+        }
+      }
+      // No active GOAL row means this is ordinary owner-facing prose, even if
+      // its headings resemble the GOAL contract. Do not manufacture authority.
+      if (goalId) {
+        if (!parsed.complete) {
+          return {
+            ok: false,
+            to: msg.to,
+            error: 'goal-owner-report-incomplete',
+            goalId,
+            missing: parsed.missing,
+            empty: parsed.empty,
+            duplicate: parsed.duplicate,
+            message:
+              `GOAL owner report for ${goalId} is incomplete; nothing was sent. ` +
+              'Provide exactly one non-empty body section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
+              'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value. ' +
+              `Missing: ${parsed.missing.join(', ') || 'none'}; empty: ${parsed.empty.join(', ') || 'none'}; ` +
+              `duplicate: ${parsed.duplicate.join(', ') || 'none'}.`,
+          };
+        }
+        goalOwnerReport = stampGoalOwnerReport(goalId, parsed);
+      }
+    }
+  }
+
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
   // backstop (silent miss). Legacy boolean coerces: true → 'required' (the safe
@@ -1116,6 +1177,14 @@ async function sendOne(
   // coord-message source stamps it onto the inbox item, which renders it as a
   // 📋 ReportBlockCard in the owner's Inbox detail pane.
   if (reportBlock) extra.report = reportBlock;
+  // P-006: server-authored proof that this exact delivered envelope contains
+  // all four normalized fields for the sender's CURRENT GOAL subject. Readers
+  // trust this stamp (or their explicitly bounded legacy compatibility arm),
+  // never the mere fact that a message reached the human.
+  if (goalOwnerReport) extra[GOAL_OWNER_REPORT_FIELD] = goalOwnerReport;
+  if (goalOwnerReportWarning) {
+    extra.goalOwnerReportValidation = { status: 'unknown', reason: goalOwnerReportWarning };
+  }
   // P-013: the declared side effect rides the envelope so the ACTUATION probe
   // (directive-effect.ts, read by fleet:leader-brief) can find it later without a
   // side table. Deliberately NOT normalized against live state at send time: the
@@ -2228,6 +2297,10 @@ async function sendOne(
       : {}),
     ...(dispatchAdvisory ? { dispatchAdvisory } : {}),
     ...(staleBasisStamps.length ? { staleBasis: staleBasisStamps } : {}),
+    ...(goalOwnerReport
+      ? { goalOwnerReport: { status: 'stamped' as const, goalId: goalOwnerReport.goalId } }
+      : {}),
+    ...(goalOwnerReportWarning ? { goalOwnerReportWarning } : {}),
   };
 }
 
