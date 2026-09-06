@@ -233,14 +233,19 @@ describe("sessions:read session:'self' resolver integration (EI-2159293118197497
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const structured = dispatched.result?.structuredContent as {
       ok: boolean;
-      session_id: string;
+      session_id: string | null;
+      session_ids?: Array<{ source_kind: string; session_id: string }>;
       note?: string;
       turn_count: number;
       turns: Array<{ ref: string; session_id?: string; text: string }>;
     };
     expect(structured).toMatchObject({
       ok: true,
-      session_id: SUCCESSOR,
+      session_id: null,
+      session_ids: [
+        { source_kind: 'codex', session_id: PREDECESSOR },
+        { source_kind: 'codex', session_id: SUCCESSOR },
+      ],
       note: `resolved self → codex:${SUCCESSOR}`,
       turn_count: 2,
     });
