@@ -26551,7 +26551,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; typed `plan:<rubric-slug>` provenance refs are accepted and normalized for lookup; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). Pass a positive `revision` to select an immutable historical snapshot; successful results expose that snapshot's `rubric.revision` and `rubric.criteriaHash`, while an unavailable snapshot returns an item error without falling back to current. An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
+      "description": "Read one OR many rubrics in full — criteria (key + model + method + drift markers + rating scale), default rating scale, method_ref runbook, and acceptance-rubric vetting status. Pass `rubricRef` (one) or `rubricRefs` (several); `plan:<rubric-slug>` refs are normalized; `ref`/`slug`/`id` are single-rubric compatibility aliases (rubricRef wins). A positive `revision` reads an immutable snapshot (results expose rubric.revision + rubric.criteriaHash; an unavailable snapshot is an item error, never a fallback to current). `harness` is accepted but does not filter. Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not position.",
       "capabilities": [
         "coord:read"
       ],
@@ -26577,9 +26577,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have one or more rubric refs (from rubrics:list/search or coord provenance) and need their full criteria to grade against — e.g. emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; typed `plan:<rubric-slug>` refs are accepted; for revision-pinned grading, add the exact positive `revision`; legacy single-rubric callers may pass `id`.",
+        "when": "You hold rubric refs (from rubrics:list/search or coord provenance) and need full criteria to grade against — a scorecard or a structured observation. Pass every ref at once via `rubricRefs`; add `revision` for pinned grading.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
-        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. For a frozen audit, use `rubrics:get { rubricRef, revision }` and retain the returned `rubric.revision` + `rubric.criteriaHash`. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
+        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key). For a frozen audit pass { rubricRef, revision } and retain rubric.revision + rubric.criteriaHash. One failed ref never fails the rest."
       }
     },
     {
@@ -31219,7 +31219,7 @@
           "POST"
         ]
       },
-      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
+      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue; chunk is retired (rejected). If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31244,7 +31244,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). The retired `chunk` kind is history, not an option. A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.",
+        "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.",
         "notWhen": "NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing peer question → coord:send with expects:\"answer\". A validator finding inside a live pipeline run → the validator pipeline, not here.",
         "chaining": "work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
       }

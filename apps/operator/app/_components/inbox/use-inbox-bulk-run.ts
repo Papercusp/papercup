@@ -24,7 +24,7 @@
  * bookkeeping write failed is a stale counter, while a recorded acceptance whose
  * resolve failed is a LIE about something done on the owner's behalf.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import {
@@ -708,5 +708,133 @@ export function useBulkRunOps(): {
     reconcileItem,
     undoItem,
     acceptRecommendation,
+  };
+}
+
+/**
+ * The owner's GESTURES over one run — stop, restart, resume, reclassify — as
+ * handlers that carry their own busy flag and report back through ONE notice
+ * line. Extracted from InboxBulkStrip so the rail card and the aside's run
+ * views (inbox-three-column-resolver-states-2026-09-06 P-006 / P-007, D-002)
+ * fire the SAME ops with the SAME copy. Each mount keeps its own notice: a
+ * surface reports the outcome of the gesture made ON it, not on its twin.
+ */
+export interface BulkRunActions {
+  /** Passed through for the idle state's Start, which needs the pane's seed. */
+  start: ReturnType<typeof useBulkRunOps>["start"];
+  stop: () => void;
+  /** Relaunches the resolver on the SAME run with its click-time settings;
+   *  completed outcomes are never reset (`restartRun` in bulk-run-store). */
+  restart: () => Promise<void>;
+  /** Requeues only the `unreached` rows (pending / skipped / failed). */
+  resume: () => Promise<void>;
+  reclassify: () => Promise<void>;
+  restarting: boolean;
+  resuming: boolean;
+  classifying: boolean;
+  notice: string | null;
+  setNotice: (notice: string | null) => void;
+}
+
+const NO_UNREACHED: readonly BulkRunItem[] = [];
+
+export function useBulkRunActions(
+  run: BulkRun | null,
+  unreached: readonly BulkRunItem[] = NO_UNREACHED,
+): BulkRunActions {
+  // The individual ops are stable callbacks; the object that carries them is
+  // not, so destructure rather than depend on it.
+  const {
+    start,
+    stop: stopOp,
+    restart: restartOp,
+    resume: resumeOp,
+    reclassify: reclassifyOp,
+  } = useBulkRunOps();
+  const [restarting, setRestarting] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const runId = run?.runId ?? null;
+
+  const stop = useCallback(() => {
+    if (runId) void stopOp(runId);
+  }, [runId, stopOp]);
+
+  const restart = useCallback(async () => {
+    if (!runId || restarting) return;
+    setRestarting(true);
+    setNotice(null);
+    try {
+      const result = await restartOp(runId);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not restart the resolver");
+      } else if (!result.launched) {
+        setNotice(
+          `resolver could not restart${result.launchError ? `: ${result.launchError}` : ""}`,
+        );
+      } else {
+        setNotice(
+          `Resolver restarted · ${result.preservedOutcomes ?? 0} completed outcome${result.preservedOutcomes === 1 ? "" : "s"} preserved`,
+        );
+      }
+    } finally {
+      setRestarting(false);
+    }
+  }, [restartOp, restarting, runId]);
+
+  const resume = useCallback(async () => {
+    if (!runId || resuming || unreached.length === 0) return;
+    const itemIds = unreached.map((item) => item.itemId);
+    setResuming(true);
+    setNotice(null);
+    try {
+      const result = await resumeOp(runId, itemIds);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not continue the remaining items");
+      } else if (!result.launched) {
+        setNotice(
+          `resolver could not continue${result.launchError ? `: ${result.launchError}` : ""}`,
+        );
+      } else {
+        const preserved = result.preservedOutcomes ?? 0;
+        setNotice(
+          `Continuing ${itemIds.length} remaining · ${preserved} prior outcome${preserved === 1 ? "" : "s"} preserved`,
+        );
+      }
+    } finally {
+      setResuming(false);
+    }
+  }, [resumeOp, resuming, runId, unreached]);
+
+  const reclassify = useCallback(async () => {
+    if (!runId || classifying) return;
+    setClassifying(true);
+    setNotice(null);
+    try {
+      const result = await reclassifyOp(runId);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not classify legacy skipped rows");
+      } else {
+        setNotice(
+          `Classified ${result.preservedOutcomes ?? 0} legacy rows; no outcomes changed`,
+        );
+      }
+    } finally {
+      setClassifying(false);
+    }
+  }, [classifying, reclassifyOp, runId]);
+
+  return {
+    start,
+    stop,
+    restart,
+    resume,
+    reclassify,
+    restarting,
+    resuming,
+    classifying,
+    notice,
+    setNotice,
   };
 }
