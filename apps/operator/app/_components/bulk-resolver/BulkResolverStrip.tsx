@@ -26,10 +26,20 @@ export interface BulkResolverNotice {
   dismissLabel?: string;
 }
 
+/**
+ * `strip` (default) is the full-width band between a masthead and a toolbar.
+ * `card` is the same three states as a compact card for a ~210px rail
+ * (inbox-three-column-resolver-states-2026-09-06 P-003): an eyebrow, the copy
+ * as text rather than inside the button, full-width actions stacked, and the
+ * running state's Stop under its counts. Same test ids, same handlers.
+ */
+export type BulkResolverStripVariant = "strip" | "card";
+
 interface BulkResolverStripBaseProps {
   settings: ReactNode;
   testId?: string;
   notice?: BulkResolverNotice | null;
+  variant?: BulkResolverStripVariant;
 }
 
 export interface BulkResolverIdleStripProps extends BulkResolverStripBaseProps {
@@ -41,6 +51,10 @@ export interface BulkResolverIdleStripProps extends BulkResolverStripBaseProps {
   disabled: boolean;
   title: ReactNode;
   subtitle: ReactNode;
+  /** Card only: the button's own label (the strip's button IS the title). */
+  actionLabel?: ReactNode;
+  /** Card only: the eyebrow above the copy. */
+  eyebrow?: ReactNode;
   onStart: () => void;
 }
 
@@ -56,6 +70,8 @@ export interface BulkResolverRunningStripProps extends BulkResolverStripBaseProp
     ariaLabel: string;
     ariaValueText?: string;
   };
+  /** One line under the bar ("98 of 158 decided"). */
+  caption?: ReactNode;
   metrics: readonly BulkResolverMetric[];
   metricsTestId: string;
 }
@@ -63,6 +79,8 @@ export interface BulkResolverRunningStripProps extends BulkResolverStripBaseProp
 export interface BulkResolverReviewStripProps extends BulkResolverStripBaseProps {
   state: "review";
   icon?: ReactNode;
+  /** Card only: the eyebrow above the headline ("Review ready"). */
+  eyebrow?: ReactNode;
   headline: ReactNode;
   headlineTestId: string;
   elapsed?: string | null;
@@ -70,7 +88,7 @@ export interface BulkResolverReviewStripProps extends BulkResolverStripBaseProps
   metricsTestId: string;
   metricsAriaLabel: string;
   actions: ReactNode;
-  hint: ReactNode;
+  hint?: ReactNode;
 }
 
 export type BulkResolverStripProps =
@@ -137,37 +155,77 @@ function Notice({ notice }: { notice: BulkResolverNotice }) {
 }
 
 export default function BulkResolverStrip(props: BulkResolverStripProps) {
+  const variant: BulkResolverStripVariant = props.variant ?? "strip";
+  const card = variant === "card";
+
   if (props.state === "idle") {
+    const spinnerOrIcon = props.busy ? (
+      <span className="op-inbox__bulk-spin">
+        <Loader2 size={card ? 14 : 17} />
+      </span>
+    ) : (
+      props.icon
+    );
     return (
       <div
-        className="op-inbox__bulk-slot"
+        className={`op-inbox__bulk-slot${card ? " op-inbox__bulk-slot--card" : ""}`}
         data-testid={props.testId}
         data-bulk-resolver-strip-state="idle"
+        data-bulk-resolver-strip-variant={variant}
       >
         {props.settings}
-        <button
-          type="button"
-          className="op-inbox__bulk-start"
-          data-testid={props.actionTestId}
-          disabled={props.disabled}
-          aria-label={props.ariaLabel}
-          onClick={props.onStart}
-        >
-          <span className="op-inbox__bulk-icon" aria-hidden="true">
-            {props.busy ? (
-              <span className="op-inbox__bulk-spin">
-                <Loader2 size={17} />
-              </span>
-            ) : (
-              props.icon
-            )}
-          </span>
-          <span className="op-inbox__bulk-start-copy">
-            <span className="op-inbox__bulk-start-title">{props.title}</span>
-            <span className="op-inbox__bulk-start-sub">{props.subtitle}</span>
-          </span>
-          <ChevronRight size={16} aria-hidden="true" />
-        </button>
+        {card ? (
+          <>
+            {/* Card: the copy is text and the button is a button — a 210px
+                column cannot carry a two-line label INSIDE a button. */}
+            {props.eyebrow ? (
+              <p className="op-inbox__bulk-card-hd">
+                <span className="op-inbox__bulk-icon" aria-hidden="true">
+                  {props.icon}
+                </span>
+                {props.eyebrow}
+              </p>
+            ) : null}
+            <span className="op-inbox__bulk-start-copy">
+              <span className="op-inbox__bulk-start-title">{props.title}</span>
+              <span className="op-inbox__bulk-start-sub">{props.subtitle}</span>
+            </span>
+            <button
+              type="button"
+              className="op-inbox__bulk-start op-inbox__bulk-start--card"
+              data-testid={props.actionTestId}
+              disabled={props.disabled}
+              aria-label={props.ariaLabel}
+              onClick={props.onStart}
+            >
+              {props.busy ? (
+                <span className="op-inbox__bulk-icon" aria-hidden="true">
+                  {spinnerOrIcon}
+                </span>
+              ) : null}
+              {props.actionLabel ?? props.title}
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="op-inbox__bulk-start"
+            data-testid={props.actionTestId}
+            disabled={props.disabled}
+            aria-label={props.ariaLabel}
+            onClick={props.onStart}
+          >
+            <span className="op-inbox__bulk-icon" aria-hidden="true">
+              {spinnerOrIcon}
+            </span>
+            <span className="op-inbox__bulk-start-copy">
+              <span className="op-inbox__bulk-start-title">{props.title}</span>
+              <span className="op-inbox__bulk-start-sub">{props.subtitle}</span>
+            </span>
+            <ChevronRight size={16} aria-hidden="true" />
+          </button>
+        )}
         {props.notice ? <Notice notice={props.notice} /> : null}
       </div>
     );
@@ -176,29 +234,33 @@ export default function BulkResolverStrip(props: BulkResolverStripProps) {
   if (props.state === "running") {
     const progressWidth =
       props.progress.width ?? `${props.progress.percent ?? 0}%`;
+    const stop = (
+      <button
+        type="button"
+        className={`op-inbox__bulk-ghost${card ? " op-inbox__bulk-stop--card" : ""}`}
+        data-testid={props.stopTestId}
+        disabled={props.stopDisabled}
+        onClick={props.onStop}
+      >
+        <Square size={11} aria-hidden="true" />
+        Stop
+      </button>
+    );
     return (
       <div
-        className="op-inbox__bulk op-inbox__bulk--running"
+        className={`op-inbox__bulk op-inbox__bulk--running${card ? " op-inbox__bulk--card" : ""}`}
         data-testid={props.testId}
         data-bulk-resolver-strip-state="running"
+        data-bulk-resolver-strip-variant={variant}
       >
         {props.settings}
         <div className="op-inbox__bulk-head">
           <span className="op-inbox__bulk-spin" aria-hidden="true">
-            <Loader2 size={15} />
+            <Loader2 size={card ? 13 : 15} />
           </span>
           <span className="op-inbox__bulk-title">{props.title}</span>
           <span className="op-inbox__bulk-spacer" />
-          <button
-            type="button"
-            className="op-inbox__bulk-ghost"
-            data-testid={props.stopTestId}
-            disabled={props.stopDisabled}
-            onClick={props.onStop}
-          >
-            <Square size={11} aria-hidden="true" />
-            Stop
-          </button>
+          {card ? null : stop}
         </div>
         <div
           className="op-inbox__bulk-track"
@@ -214,7 +276,13 @@ export default function BulkResolverStrip(props: BulkResolverStripProps) {
             style={{ width: progressWidth }}
           />
         </div>
+        {props.caption ? (
+          <p className="op-inbox__bulk-caption">{props.caption}</p>
+        ) : null}
         <MetricList metrics={props.metrics} testId={props.metricsTestId} />
+        {/* Card: Stop is the card's last, full-width control — the head has no
+            room for it beside the title. */}
+        {card ? stop : null}
         {props.notice ? <Notice notice={props.notice} /> : null}
       </div>
     );
@@ -222,18 +290,32 @@ export default function BulkResolverStrip(props: BulkResolverStripProps) {
 
   return (
     <div
-      className="op-inbox__bulk op-inbox__bulk--review"
+      className={`op-inbox__bulk op-inbox__bulk--review${card ? " op-inbox__bulk--card" : ""}`}
       data-testid={props.testId}
       data-bulk-resolver-strip-state="review"
+      data-bulk-resolver-strip-variant={variant}
     >
       {props.settings}
+      {card && props.eyebrow ? (
+        <p className="op-inbox__bulk-card-hd">
+          <span
+            className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
+            aria-hidden="true"
+          >
+            {props.icon ?? <Sparkles size={13} />}
+          </span>
+          {props.eyebrow}
+        </p>
+      ) : null}
       <div className="op-inbox__bulk-head">
-        <span
-          className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
-          aria-hidden="true"
-        >
-          {props.icon ?? <Sparkles size={16} />}
-        </span>
+        {card && props.eyebrow ? null : (
+          <span
+            className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
+            aria-hidden="true"
+          >
+            {props.icon ?? <Sparkles size={16} />}
+          </span>
+        )}
         <span
           className="op-inbox__bulk-title"
           data-testid={props.headlineTestId}
@@ -252,7 +334,7 @@ export default function BulkResolverStrip(props: BulkResolverStripProps) {
         accounting
       />
       <div className="op-inbox__bulk-actions">{props.actions}</div>
-      <p className="op-inbox__bulk-hint">{props.hint}</p>
+      {props.hint ? <p className="op-inbox__bulk-hint">{props.hint}</p> : null}
       {props.notice ? <Notice notice={props.notice} /> : null}
     </div>
   );

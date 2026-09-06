@@ -42,6 +42,7 @@ export { formatRunElapsed } from "../review-report/bulk-run-time";
 import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
 import BulkResolverStrip, {
   type BulkResolverMetric,
+  type BulkResolverStripVariant,
 } from "../bulk-resolver/BulkResolverStrip";
 import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings";
 import { PERF_INTERACTIONS, beginInteraction } from "../perf/perf-marks";
@@ -61,6 +62,14 @@ export interface InboxBulkStripProps {
   onRunStarted: (runId: string) => void;
   /** Open the grouped review for this exact persisted run (`?opcbr=<runId>`). */
   onReview: (runId: string) => void;
+  /**
+   * WHERE it renders (inbox-three-column-resolver-states-2026-09-06 P-003,
+   * D-002): `strip` (default) is the band in the list column — stack mode;
+   * `card` is the compact summary at the foot of the split page's rail. The
+   * ops, the run and its persistence are identical; only the copy and the
+   * frame change.
+   */
+  variant?: BulkResolverStripVariant;
 }
 
 /** The seed the run is created from — the pane's own snapshot of each row. */
@@ -85,7 +94,9 @@ export default function InboxBulkStrip({
   isReview,
   onRunStarted,
   onReview,
+  variant = "strip",
 }: InboxBulkStripProps) {
+  const card = variant === "card";
   const { start, stop, restart, resume, reclassify } = useBulkRunOps();
   const resolverSettings = useBulkResolverSettings("inbox-resolve");
   const [starting, setStarting] = useState(false);
@@ -207,6 +218,7 @@ export default function InboxBulkStrip({
     return (
       <BulkResolverStrip
         state="running"
+        variant={variant}
         testId="inbox-bulk-running"
         settings={
           <BulkResolverSettingsControl
@@ -218,13 +230,20 @@ export default function InboxBulkStrip({
             restartBusy={restarting}
           />
         }
-        title="Papercup is resolving…"
+        title={card ? "Resolving…" : "Papercup is resolving…"}
         stopTestId="inbox-bulk-stop"
         onStop={() => void stop(run.runId)}
         progress={{
           percent: counts.percent,
           ariaLabel: `Bulk resolve progress: ${counts.decided} of ${counts.total} decided`,
         }}
+        caption={
+          card ? (
+            <span data-testid="inbox-bulk-decided">
+              {counts.decided} of {counts.total} decided
+            </span>
+          ) : undefined
+        }
         metrics={[
           {
             id: "resolved",
@@ -235,7 +254,7 @@ export default function InboxBulkStrip({
           {
             id: "review",
             value: counts.forReview,
-            label: "for review",
+            label: card ? "review" : "for review",
             tone: "review",
           },
           { id: "left", value: counts.left, label: "left" },
@@ -321,9 +340,18 @@ export default function InboxBulkStrip({
           ]
         : []),
     ];
+    // The card carries the two numbers its buttons act on; the full accounting
+    // is the aside's readout (plan P-006/P-007), not a 210px column's.
+    const cardMetrics = reviewMetrics.filter(
+      (m) =>
+        m.id === "recommendations" ||
+        m.id === "retry-needed" ||
+        m.id === "failed",
+    );
     return (
       <BulkResolverStrip
         state="review"
+        variant={variant}
         testId="inbox-bulk-review"
         settings={
           <BulkResolverSettingsControl
@@ -332,15 +360,22 @@ export default function InboxBulkStrip({
             effective={run.launchSnapshot ?? {}}
           />
         }
+        eyebrow={card ? "Review ready" : undefined}
         headline={
-          <>
-            {counts.total} assessed · {counts.resolved} auto-resolved ·{" "}
-            {counts.unresolved} still open
-          </>
+          card ? (
+            <>
+              {counts.unresolved} unresolved · {retryable} retryable
+            </>
+          ) : (
+            <>
+              {counts.total} assessed · {counts.resolved} auto-resolved ·{" "}
+              {counts.unresolved} still open
+            </>
+          )
         }
         headlineTestId="inbox-bulk-review-headline"
         elapsed={elapsed}
-        metrics={reviewMetrics}
+        metrics={card ? cardMetrics : reviewMetrics}
         metricsTestId="inbox-bulk-accounting"
         metricsAriaLabel="Bulk resolve accounting"
         actions={
@@ -352,7 +387,8 @@ export default function InboxBulkStrip({
               disabled={counts.unresolved === 0 || resuming || classifying}
               onClick={openReview}
             >
-              Review {counts.unresolved} unresolved
+              Review {counts.unresolved}
+              {card ? "" : " unresolved"}
               <ChevronRight size={14} aria-hidden="true" />
             </button>
             {retryable > 0 ? (
@@ -389,12 +425,16 @@ export default function InboxBulkStrip({
           </>
         }
         hint={
-          <>
-            Review opens every unresolved row with its proposed next step.
-            Continue retries only rows whose detail was unavailable or whose
-            resolver attempt failed; recommendations, owner actions, cleanup
-            candidates, and terminal outcomes stay preserved.
-          </>
+          card ? (
+            <>Nothing applies without your gesture.</>
+          ) : (
+            <>
+              Review opens every unresolved row with its proposed next step.
+              Continue retries only rows whose detail was unavailable or whose
+              resolver attempt failed; recommendations, owner actions, cleanup
+              candidates, and terminal outcomes stay preserved.
+            </>
+          )
         }
         notice={notice ? { message: notice, role: "status" } : null}
       />
@@ -407,6 +447,7 @@ export default function InboxBulkStrip({
   return (
     <BulkResolverStrip
       state="idle"
+      variant={variant}
       settings={
         <BulkResolverSettingsControl
           kind="inbox-resolve"
@@ -414,16 +455,30 @@ export default function InboxBulkStrip({
         />
       }
       actionTestId="inbox-bulk-start"
-      ariaLabel={`Bulk resolve ${n} filtered item${n === 1 ? "" : "s"}`}
-      icon={<Sparkles size={17} />}
+      ariaLabel={
+        card
+          ? `Review bulk recommendation for ${n} filtered item${n === 1 ? "" : "s"}`
+          : `Bulk resolve ${n} filtered item${n === 1 ? "" : "s"}`
+      }
+      icon={<Sparkles size={card ? 13 : 17} />}
       busy={starting}
       disabled={n === 0 || starting || !resolverSettings.ready}
+      eyebrow={card ? "Bulk resolve" : undefined}
       title={
         starting
           ? "Starting…"
-          : `Bulk resolve ${n} filtered item${n === 1 ? "" : "s"}`
+          : card
+            ? `${n} row${n === 1 ? "" : "s"} can be reviewed together`
+            : `Bulk resolve ${n} filtered item${n === 1 ? "" : "s"}`
       }
-      subtitle="Papercup resolves what it can · the rest come back pre-recommended"
+      subtitle={
+        card
+          ? "Papercup pre-recommends each one · nothing applies without your gesture"
+          : "Papercup resolves what it can · the rest come back pre-recommended"
+      }
+      actionLabel={
+        card ? (starting ? "Starting…" : "Review bulk recommendation") : undefined
+      }
       onStart={() => void onStart()}
       notice={
         failureNotice
