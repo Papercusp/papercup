@@ -96,11 +96,34 @@ interface OutboxRow {
   harness_slug: string;
 }
 
-async function latestOutbox(key: string): Promise<OutboxRow | undefined> {
+/**
+ * Look up the outbox row for one issue write.
+ *
+ * The issue-family outbox key is HARNESS-QUALIFIED — the live function assigns
+ * `v_key := v_rec.harness_slug || '/' || v_rec.feature_id` (migration 829,
+ * harness-qualify-engineer-issue-op-identity). Two subtleties that make this
+ * worth stating rather than inlining:
+ *
+ *  - it qualifies with the RAW written `harness_slug` (for an operator write,
+ *    `operator:<ws>`), NOT the canonical pot home slug that migration 452
+ *    resolves into the row's `harness_slug` COLUMN. For an operator-scoped write
+ *    those two values deliberately differ, so the key prefix is not recoverable
+ *    from the row you are asserting on — pass the slug you actually wrote.
+ *  - looking up by the bare `feature_id` (the pre-829 scheme) returns undefined
+ *    for EVERY row. That does not merely break the positive cases: it also makes
+ *    the `toBeUndefined()` assertions below unfalsifiable, so they would keep
+ *    passing even if the gap branch started inserting a row.
+ */
+async function latestOutbox(writtenSlug: string, featureId: string): Promise<OutboxRow | undefined> {
   const [r] = await sql<OutboxRow[]>`
     SELECT table_name, harness_slug FROM harness_shared.substrate_outbox
-     WHERE key = ${key} ORDER BY id DESC LIMIT 1`;
+     WHERE key = ${`${writtenSlug}/${featureId}`} ORDER BY id DESC LIMIT 1`;
   return r;
+}
+
+/** The raw `harness_slug` an operator-scoped write is stored under. */
+function operatorSlug(ws: string): string {
+  return `operator:${ws}`;
 }
 
 /** Collects 'substrate_outbox_gap' notify payloads received during `fn()`. */
@@ -151,7 +174,7 @@ describe('capture_work_items_outbox operator-scope gap signal (migration 454, WI
       await insertOperatorIssue(ws, id);
     });
     expect(payloads).toEqual([`${ws}::operator::0`]);
-    expect(await latestOutbox(id)).toBeUndefined();
+    expect(await latestOutbox(operatorSlug(ws), id)).toBeUndefined();
   });
 
   it('>1 Hive homes: fires substrate_outbox_gap and does NOT insert an outbox row', async () => {
@@ -163,7 +186,7 @@ describe('capture_work_items_outbox operator-scope gap signal (migration 454, WI
       await insertOperatorIssue(ws, id);
     });
     expect(payloads).toEqual([`${ws}::operator::2`]);
-    expect(await latestOutbox(id)).toBeUndefined();
+    expect(await latestOutbox(operatorSlug(ws), id)).toBeUndefined();
   });
 
   it('exactly 1 Hive home: unchanged — captures + federates, NO gap signal', async () => {
@@ -174,7 +197,10 @@ describe('capture_work_items_outbox operator-scope gap signal (migration 454, WI
       await insertOperatorIssue(ws, id);
     });
     expect(payloads).toEqual([]);
-    const row = await latestOutbox(id);
+    // The key is qualified by the RAW written slug (`operator:<ws>`) while the
+    // row's harness_slug COLUMN carries the canonical pot home slug resolved by
+    // migration 452 — asserting both together is what pins that distinction.
+    const row = await latestOutbox(operatorSlug(ws), id);
     expect(row?.table_name).toBe('engineer_issues');
     expect(row?.harness_slug).toBe('the-one-home');
   });
@@ -189,6 +215,10 @@ describe('capture_work_items_outbox operator-scope gap signal (migration 454, WI
         VALUES (${ws}, 'some-real-hive', ${id}, 'harness scoped', 'body', 'open', 'bug', 'local')`;
     });
     expect(payloads).toEqual([]);
-    expect((await latestOutbox(id))?.harness_slug).toBe('some-real-hive');
+    // A non-operator write is not canonicalized, so key prefix and stored
+    // harness_slug agree here — unlike the operator case above.
+    const row = await latestOutbox('some-real-hive', id);
+    expect(row?.table_name).toBe('engineer_issues');
+    expect(row?.harness_slug).toBe('some-real-hive');
   });
 });
