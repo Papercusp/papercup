@@ -3052,10 +3052,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  accountRateHints) can disagree: a 7d 429 parks an account here for days, while the store's next
    *  reading — taken AFTER the park, by a probe or a peer gateway's traffic — shows the window rolled.
    *  Before this the park won until it expired or a transport probe blindly cleared it. Now a reading
-   *  NEWER than the park (readingAt > parkedAt) that reports the account serviceable (hintRecoveryAt
-   *  undefined) readmits it with reason 'store'; a reading that predates the park, or one that still
-   *  reports a wall, leaves the park alone. Runs after every hint refresh and at every absorb re-entry,
-   *  so a re-pick honours the freshest availability the system has. Returns the readmitted count. */
+   *  NEWER than the park (readingAt > parkedAt) that reports the account serviceable (the shared
+   *  accountHealthKey is finite) readmits it with reason 'store'; a reading that predates the park, or
+   *  one that still reports a wall, leaves the park alone. Do not infer serviceability from an absent
+   *  recovery timestamp: SHED/full readings can be walls whose reset is unknown. Runs after every hint
+   *  refresh and at every absorb re-entry, so a re-pick honours the freshest availability the system
+   *  has. Returns the readmitted count. */
   const reconcileParksWithStore = (at: number = Date.now()): number => {
     let readmitted = 0;
     for (const providerPool of providerPools()) {
@@ -3065,7 +3067,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (!park || park.until <= at) continue;
         const h = accountRateHints.get(entry.accountId);
         if (!h || h.readingAt === undefined || h.readingAt <= park.parkedAt) continue;
-        if (hintRecoveryAt(entry.accountId, at) !== undefined) continue;
+        if (accountHealthKey(entry, at) === Infinity) continue;
         if (providerPool.readmit(entry.accountId, { reason: 'store' })) {
           readmitted++;
           log(

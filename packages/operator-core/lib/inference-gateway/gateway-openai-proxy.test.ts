@@ -2444,9 +2444,19 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
       { accountId: 'cdx-1', utilization7d: 1, windowResetAt7d: parkedAt + 86_400_000, readingAt: parkedAt + 1_000 },
     ]);
     expect(codexPool.parkState!('cdx-1')).toBeDefined();
-    // (3) A fresh reading reporting capacity — the system that knows which accounts are available
+    // (3) A fresh SHED or exhausted reading remains a wall even when its recovery time is unknown.
+    //     An absent reset is not evidence that the account is serviceable.
+    gw!.setAccountRateHints([
+      { accountId: 'cdx-1', burnAction: 'shed', readingAt: parkedAt + 2_000 },
+    ]);
+    expect(codexPool.parkState!('cdx-1')).toBeDefined();
+    gw!.setAccountRateHints([
+      { accountId: 'cdx-1', utilization7d: 1, readingAt: parkedAt + 3_000 },
+    ]);
+    expect(codexPool.parkState!('cdx-1')).toBeDefined();
+    // (4) A fresh reading reporting capacity — the system that knows which accounts are available
     //     says this one is — clears the park, and routing sees it again.
-    gw!.setAccountRateHints([{ accountId: 'cdx-1', utilization7d: 0.1, readingAt: parkedAt + 1_000 }]);
+    gw!.setAccountRateHints([{ accountId: 'cdx-1', utilization7d: 0.1, readingAt: parkedAt + 4_000 }]);
     expect(codexPool.parkState!('cdx-1')).toBeUndefined();
     expect(codexPool.healthyCount!()).toBe(2);
     expect(codexPool.msSinceReadmit!('cdx-1')).toBeLessThan(5_000);
