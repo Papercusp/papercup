@@ -562,6 +562,43 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   });
 
+  it('bounds a stalled fuser holder diagnostic instead of wedging the heavy queue', async () => {
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '1',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+      PC_HEAVY_FUSER_TIMEOUT_SEC: '0.1',
+    };
+    const fakeBin = join(dir, 'slow-fuser-bin');
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'fuser'), '#!/usr/bin/env bash\nsleep 60\n', { mode: 0o755 });
+
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
+      const startedAt = Date.now();
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
+        { env: baseEnv({ ...env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` }), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
+
+      expect(await barrierExit).toBe(75);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(barrierErr.text()).toContain('holder could not be identified');
+    } finally {
+      killGroup(holder);
+      if (barrier) killGroup(barrier);
+    }
+  });
+
   it('WI-41318: every ordinary holder yields its whole child group to an exclusive materializer by default', async () => {
     const workloadPidFile = join(dir, 'preemptible-workload.pid');
     const terminatedFile = join(dir, 'preemptible-workload.terminated');

@@ -1586,11 +1586,18 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
     return r.stdout.trim();
   };
 
-  function runRefresh(): {
+  function runRefresh(fuserScript?: string): {
     status: number | null;
     stdout: string;
     stderr: string;
   } {
+    let path = process.env.PATH ?? '';
+    if (fuserScript != null) {
+      const fakeBin = join(quarantineRoot, 'fake-bin');
+      mkdirSync(fakeBin, { recursive: true });
+      writeFileSync(join(fakeBin, 'fuser'), `#!/usr/bin/env bash\n${fuserScript}`, { mode: 0o755 });
+      path = `${fakeBin}:${path}`;
+    }
     const wrapper = [
       'set -uo pipefail',
       'log() { printf "[test] %s\\n" "$*"; }',
@@ -1606,6 +1613,8 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
         RELEASE_ROOT: releaseRoot,
         TARGET_SHA: targetSha,
         TMPDIR: quarantineRoot,
+        PATH: path,
+        INDEX_LOCK_HOLDER_PROBE_TIMEOUT_SEC: '0.1',
       },
       encoding: 'utf8',
     });
@@ -1642,7 +1651,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
 
   it('moves an old unowned lock to recoverable quarantine, retries once, and lands TARGET_SHA', () => {
     const lockPath = createIndexLock(10 * 60_000);
-    const result = runRefresh();
+    const result = runRefresh('exit 1\n');
 
     expect(result.status).toBe(0);
     expect(existsSync(lockPath)).toBe(false);
@@ -1666,7 +1675,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
     const lockPath = createIndexLock(10 * 60_000);
     const fd = openSync(lockPath, 'r');
     try {
-      const result = runRefresh();
+      const result = runRefresh('exit 0\n');
       expect(result.status).not.toBe(0);
       expect(existsSync(lockPath)).toBe(true);
       expect(git('rev-parse', 'HEAD')).toBe(firstSha);
@@ -1674,6 +1683,18 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
     } finally {
       closeSync(fd);
     }
+  });
+
+  it('fails closed promptly when the live-holder probe stalls', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    const startedAt = Date.now();
+    const result = runRefresh('sleep 60\n');
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(git('rev-parse', 'HEAD')).toBe(firstSha);
+    expect(result.stdout).toContain('live-holder probe was unavailable');
   });
 });
 

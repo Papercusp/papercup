@@ -187,11 +187,22 @@ log() { echo "[setup-release] $*"; }
 # owned lock remains a hard stop. The stale file is MOVED to a recoverable temp
 # quarantine rather than deleted, so the incident evidence survives.
 index_lock_has_live_holder() {
-  local lock_path="$1"
+  local lock_path="$1" probe_status
 
   if command -v fuser >/dev/null 2>&1; then
-    fuser "$lock_path" >/dev/null 2>&1
-    return $?
+    # `fuser` walks the whole process table. On a busy fleet host that walk can
+    # wedge for minutes, pinning release setup before Git gets a chance to
+    # recover. Bound the probe and preserve the safety contract: 0 = owned,
+    # 1 = proven unowned, every other outcome = unknown/fail closed.
+    command -v timeout >/dev/null 2>&1 || return 2
+    if timeout --signal=TERM --kill-after=1s "${INDEX_LOCK_HOLDER_PROBE_TIMEOUT_SEC:-2}" \
+      fuser "$lock_path" >/dev/null 2>&1; then
+      return 0
+    else
+      probe_status=$?
+    fi
+    [ "$probe_status" -eq 1 ] && return 1
+    return 2
   fi
 
   # The release host is Linux. Keep the standalone script fail-closed if the
@@ -210,7 +221,7 @@ index_lock_has_live_holder() {
 }
 
 quarantine_stale_worktree_index_lock() {
-  local lock_path lock_mtime now age quarantine_dir quarantine_path
+  local lock_path lock_mtime now age quarantine_dir quarantine_path holder_probe_status
 
   lock_path="$(git -C "$RELEASE_ROOT" rev-parse --git-path index.lock 2>/dev/null || true)"
   [ -n "$lock_path" ] || return 1
@@ -231,6 +242,12 @@ quarantine_stale_worktree_index_lock() {
   if index_lock_has_live_holder "$lock_path"; then
     log "refusing to reclaim Git index lock held by a live process: $lock_path"
     return 1
+  else
+    holder_probe_status=$?
+    if [ "$holder_probe_status" -ne 1 ]; then
+      log "refusing to reclaim Git index lock because its live-holder probe was unavailable: $lock_path"
+      return 1
+    fi
   fi
 
   quarantine_dir="${TMPDIR:-/tmp}/papercusp-stale-git-locks"
