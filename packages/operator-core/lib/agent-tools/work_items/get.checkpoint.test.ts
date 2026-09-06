@@ -121,6 +121,12 @@ it('EI-21885040199084336: accepts detail as the boolean-or-string-enum conventio
   expect((parse({ id: 'WI-detail' }) as { detail?: boolean }).detail).toBeUndefined();
   expect(() => parse({ id: 'WI-detail', detail: 'verbose' })).toThrow();
 });
+
+it('accepts checksOnly as the narrow checkpoint-ledger read switch', () => {
+  expect((parse({ id: 'WI-checks-only-schema', checksOnly: true }) as { checksOnly?: boolean }).checksOnly).toBe(true);
+  expect((parse({ id: 'WI-checks-only-schema', checksOnly: false }) as { checksOnly?: boolean }).checksOnly).toBe(false);
+});
+
 const env = async (x: unknown) => {
   const res = (await get.handler(parse(x) as never, ctx)) as Out;
   return res.data;
@@ -151,6 +157,88 @@ beforeEach(() => {
 });
 
 describe('work_items:get — checkpoint field', () => {
+  it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-checks-only',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'checkpoint ledger',
+      state: 'open',
+      summary: 'S'.repeat(10_000),
+      payload: { giant: 'P'.repeat(10_000) },
+    });
+    const checkpoint = withCarryNoteChecks(
+      'private narrative that must not cross the checksOnly boundary',
+      [
+        { id: 'Gate Green', claim: 'gate is green', recheck: 'probe gate' },
+        { claim: 'main points at the tested commit', recheck: 'git rev-parse HEAD' },
+      ],
+    );
+    const updatedAtMs = Date.now() - 2_000;
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint, updatedAtMs });
+
+    const r = await one({ id: 'WI-checks-only', detail: true, threadLimit: 5, checksOnly: true });
+
+    expect(getWorkItem).toHaveBeenCalledWith(
+      'WI-checks-only',
+      undefined,
+      { includeBody: false, payloadProjection: 'none' },
+    );
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+    expect(getClaimTimePriorWorkHint).not.toHaveBeenCalled();
+    expect(getWorkItemCheckpointWithMeta).toHaveBeenCalledWith({
+      harness: 'papercup',
+      workItemId: 'WI-checks-only',
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      id: 'WI-checks-only',
+      __checksOnly: true,
+      checkpointChecks: {
+        count: 2,
+        cap: CARRY_NOTE_MAX_CHECKS,
+        remaining: CARRY_NOTE_MAX_CHECKS - 2,
+        rows: [
+          { id: 'gate-green', claim: 'gate is green' },
+          { claim: 'main points at the tested commit' },
+        ],
+      },
+      checkpointUpdatedAtMs: updatedAtMs,
+      checkpointContentHash: shortCarryHash(checkpoint),
+    });
+    expect(r).not.toHaveProperty('checkpoint');
+    expect(r).not.toHaveProperty('workItem');
+  });
+
+  it('checksOnly reports a checkpoint-store failure without inventing an empty ledger', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-checks-only-failed',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'checkpoint ledger',
+      state: 'open',
+    });
+    getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
+
+    const r = await one({ id: 'WI-checks-only-failed', checksOnly: true });
+
+    expect(r).toMatchObject({
+      ok: true,
+      id: 'WI-checks-only-failed',
+      __checksOnly: true,
+      checkpointChecks: null,
+      checkpointAgeMs: null,
+      checkpointUpdatedAtMs: null,
+      checkpointContentHash: null,
+      checkpointReadFailed: true,
+    });
+    expect(r).not.toHaveProperty('checkpoint');
+    expect(r).not.toHaveProperty('workItem');
+  });
+
   it('emits completion evidence through the result-level alias', async () => {
     const completion = {
       summary: 'implemented the completion-evidence read path',
