@@ -79,7 +79,10 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(evidence).not.toMatch(/\bverdict\b|\bxdg-open\b/i);
     expect(evidence).toContain('/adv?tab=harnesses&slug=<slug>');
     expect(evidence).toContain('location.pathname');
-    expect(SU_S02_TAURI_ONLY.version).toBe(5);
+    expect(evidence).toContain('window.__TSR_ROUTER__?.navigate');
+    expect(textOf(search)).not.toContain('verify-ui-via-staging-3170');
+    expect(textOf(stagingPage)).toContain('only for a dedicated staging/:3170 webview');
+    expect(SU_S02_TAURI_ONLY.version).toBe(6);
   });
 
   it('gives S02 a truthful capability check and enforces docs scope', () => {
@@ -96,15 +99,24 @@ describe('SU S01/S02 populated scenario worlds', () => {
     const harnesses = TAURI_APP_VERIFICATION_CONTEXT.override('harness:list', {
       workspace: 'papercusp-workspace',
     });
+    const status = TAURI_APP_VERIFICATION_CONTEXT.override('harness:status', {
+      slug: 'layout-test-harness',
+    });
+    const batch = TAURI_APP_VERIFICATION_CONTEXT.override('code:run', {
+      script: 'return await tools.harness.status({ slug: "layout-test-harness" });',
+    });
 
     expect(textOf(find)).toContain('"count":0');
     expect(textOf(find)).toContain('Do not offer or claim');
     expect(textOf(catalog)).toContain('"tools"');
-    expect(textOf(catalog)).toContain('No process launcher');
+    expect(textOf(catalog)).toContain('no process launcher');
+    expect(textOf(catalog)).toContain('code:run');
     expect(textOf(unscopedDocs)).toContain('harness_required');
     expect(textOf(orient)).toContain('papercusp-workspace');
     expect(textOf(orient)).toContain('layout-test-harness');
     expect(textOf(harnesses)).toContain('/adv?tab=harnesses&slug=layout-test-harness');
+    expect(textOf(status)).toContain('"status":"active"');
+    expect(textOf(batch)).toContain('"available":false');
   });
 
   it('passes unrelated tools through to the target default', () => {

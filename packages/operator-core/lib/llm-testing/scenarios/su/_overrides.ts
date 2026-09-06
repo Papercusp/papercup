@@ -163,6 +163,44 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
         }],
       };
     }
+    if (canon === 'harness:status' || canon === 'harness:overview') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            slug: 'layout-test-harness',
+            workspaceId: 'papercusp-workspace',
+            status: 'active',
+            route: '/adv?tab=harnesses&slug=layout-test-harness',
+            note: 'The route is ready for a Tauri webview check; no desktop-driver availability is implied.',
+          }),
+        }],
+      };
+    }
+    if (canon === 'code:run') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            result: {
+              workspaceId: 'papercusp-workspace',
+              harness: {
+                slug: 'layout-test-harness',
+                status: 'active',
+                route: '/adv?tab=harnesses&slug=layout-test-harness',
+              },
+              desktopDriver: {
+                available: false,
+                checkedWith: 'tools:find',
+              },
+            },
+            note:
+              'Hermetic execution of the requested read-only batch. code:run can compose catalog tools; ' +
+              'it does not create an unavailable Tauri desktop-driver capability.',
+          }),
+        }],
+      };
+    }
     if (canon === 'tools:find') {
       const query = typeof a.query === 'string' ? a.query : '';
       return {
@@ -187,6 +225,7 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
             ok: true,
             role: 'su',
             tools: [
+              'code:run',
               'coord:orient',
               'coord:presence',
               'docs:search',
@@ -197,32 +236,33 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
               'tools:find',
             ],
             note:
-              'This is the complete executable surface for the scenario. No process launcher, fleet launcher, ' +
-              'or desktop driver is available.',
+              'This is the complete executable surface for the scenario. code:run may batch the listed MCP reads, ' +
+              'but no process launcher, fleet launcher, or desktop driver is available.',
           }),
         }],
       };
     }
     if (canon === 'docs:search' || canon === 'docs:outline') {
+      const query = typeof a.query === 'string' ? a.query : '';
+      const staging = /\bstaging\b|\b3170\b/i.test(query);
       return {
         content: [{
           text: JSON.stringify({
             ok: true,
-            hits: [
-              {
+            hits: staging
+              ? [{
+                  slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
+                  title: 'Verifying UI changes end-to-end via :3170 + a dedicated webview instance',
+                  excerpt:
+                    'Staging-only alternative: use a dedicated debug webview pinned to :3170 and target its bridge by exact process id.',
+                }]
+              : [{
                 slug: 'testing/agent-e2e',
                 title: 'Agent E2E playbook — driving the operator like a user',
                 excerpt:
                   'Drive the Papercusp Tauri desktop shell with tauri-agent-tools; the standalone web app is retired. ' +
                   'The harness surface is /adv?tab=harnesses&slug=<slug>, and acceptance closes on an exit-coded check.',
-              },
-              {
-                slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
-                title: 'Verifying UI changes end-to-end via :3170 + a dedicated webview instance',
-                excerpt:
-                  'Use a dedicated debug webview pinned to staging and target its bridge by exact process id.',
-              },
-            ],
+              }],
           }),
         }],
       };
@@ -258,6 +298,8 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
             '`:3270`; `:3070` is the separate systemd-owned green release operator. Use an exit-coded ' +
             '`check` assertion for DOM-verifiable acceptance; a screenshot alone is observational. The retired ' +
             '`/harness/<slug>` route redirects to `/adv?tab=harnesses&slug=<slug>`. A route/content proof can use ' +
+            '`tauri-agent-tools eval --pid <pid> "window.__TSR_ROUTER__?.navigate({ to: \'/adv\', search: { ' +
+            'tab: \'harnesses\', slug: \'<slug>\' } })"`, followed by ' +
             '`tauri-agent-tools check --pid <pid> --eval "location.pathname === \'/adv\' && ' +
             'new URLSearchParams(location.search).get(\'tab\') === \'harnesses\' && ' +
             'document.body.innerText.includes(\'<slug>\')" --no-errors`.',
@@ -266,7 +308,8 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
           slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
           title: 'Verifying UI changes end-to-end via :3170 + a dedicated webview instance',
           body:
-            'For staging edits, reload the staging operator with `dev:restart` and rebuild ' +
+            'This page is only for a dedicated staging/:3170 webview; do not cite it as the source for ' +
+            'the normal dev-shell/:3270 commands. For staging edits, reload the staging operator with `dev:restart` and rebuild ' +
             '`apps/operator-vite` because `:3170` serves a built SPA dist. Launch the already-built ' +
             'debug desktop on a free X display with `PAPERCUSP_DEV_API_TARGET=3170`, then drive it ' +
             'with `tauri-agent-tools <cmd> --pid <child-pid> ...`. The bridge token appears at ' +
