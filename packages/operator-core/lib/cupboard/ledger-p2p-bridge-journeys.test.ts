@@ -121,7 +121,14 @@ function perUseStream(options: { readonly reversed?: boolean } = {}): CommerceEv
 
 function orgs(): ReadonlyMap<string, Organization> {
   return new Map<string, Organization>([
-    [ORG_ID, { orgId: ORG_ID, name: 'Acme', memberUserIds: ['gh:1'] } as Organization],
+    [
+      ORG_ID,
+      {
+        orgId: ORG_ID,
+        displayName: 'Acme',
+        memberships: [{ userId: 'gh:1', role: 'owner', addedAtMs: 0 }],
+      },
+    ],
   ]);
 }
 
@@ -268,14 +275,23 @@ describe('install door — a per-use purchase entitles the install (P-035)', () 
           releaseVersion: RELEASE_VERSION,
         },
       }),
-      loadReleaseChain: (): DoorReleaseChain =>
-        ({
-          releaseRef: RELEASE,
-          graph: { [RELEASE]: [] },
-          installed: new Map(),
-          entitlements: { grants: new Map(), unusable: [] },
-          signedPackage: {} as DoorReleaseChain['signedPackage'],
-        }) as DoorReleaseChain,
+      loadReleaseChain: (): DoorReleaseChain => ({
+        releaseRef: RELEASE,
+        graph: { edges: new Map<string, readonly string[]>([[RELEASE, []]]) },
+        installed: new Map(),
+        entitlements: { grants: new Map(), unusable: [] },
+        signedPackage: {
+          // The manifest is deliberately not a real one: this journey asserts
+          // that the chain RESOLVED and the entitlement overlay ran, and the
+          // package leg has no production publisher-key wiring to exercise.
+          manifest: { releaseRef: RELEASE },
+          expected: {
+            listingKind: 'plugin',
+            listingRef: LISTING_REF,
+            releaseVersion: RELEASE_VERSION,
+          },
+        },
+      }),
       gateDeps: (context) => ({
         ...installDoorGateDeps(context),
         // The one seam with no production wiring (no publisher-key resolver);
