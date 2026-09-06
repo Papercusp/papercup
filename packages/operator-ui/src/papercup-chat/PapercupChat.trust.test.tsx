@@ -239,7 +239,12 @@ describe('PapercupChat — the view over a controller', () => {
     expect(root.querySelector('strong')?.textContent).toBe('there');
     expect(within(root).getByText(/Looked at: work_items:get$/)).toBeTruthy();
     expect(within(root).getByText(/Answered by loop · claude-sonnet-5/)).toBeTruthy();
-    expect(root.querySelectorAll('[data-testid="chat-message-time"]')).toHaveLength(2);
+    const stamps = [...root.querySelectorAll('[data-testid="chat-message-time"]')];
+    expect(stamps).toHaveLength(2);
+    expect(stamps.every((stamp) => /^\d{2}:\d{2}$/.test(stamp.textContent ?? ''))).toBe(true);
+    expect(stamps.every((stamp) => stamp.parentElement?.classList.contains('pc-chat__message-line'))).toBe(true);
+    expect(root.querySelector('.pc-chat__turn-meta')).toBeNull();
+    expect(root.querySelector('[data-role="assistant"]')?.classList.contains('pc-chat__sr-only')).toBe(true);
     expect(within(root).queryByText('Ask a question to start.')).toBeNull();
   });
 
