@@ -6,6 +6,19 @@ import {
   delegateDeep,
   type DeepDelegateDeps,
 } from './papercup-deep-delegate';
+import { defaultDeepDelegateDeps } from './papercup-deep-delegate-deps';
+
+vi.mock('../fleet/operator-spawn', () => ({
+  spawnAgentInHarness: vi.fn(async () => ({ ok: true, spawnId: 's-deep' })),
+}));
+
+vi.mock('../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+}));
+
+vi.mock('../work-items', () => ({
+  releaseWorkItem: vi.fn(async () => {}),
+}));
 
 const WS = 'ws-test';
 
@@ -237,5 +250,31 @@ describe('delegateDeep — D-003 live papercup-deep lane', () => {
     );
     expect(out).toEqual({ ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true });
     expect(spies.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('defaultDeepDelegateDeps — fallback spawn wiring', () => {
+  it('uses the spawnable bee role instead of the retired cup role', async () => {
+    const deps = defaultDeepDelegateDeps();
+
+    const out = await deps.spawn({
+      spawnId: 's-deep',
+      workItemId: 'WI-301',
+      harness: 'papercup',
+      brief: 'Answer the delegated question.',
+      timeoutMs: DEEP_TIMEOUT_MS,
+    });
+
+    expect(out).toEqual({ ok: true, spawnId: 's-deep' });
+    const { spawnAgentInHarness } = await import('../fleet/operator-spawn');
+    expect(spawnAgentInHarness).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harness: 'papercup',
+        role: 'bee',
+        tier: 'deep',
+        featureId: 'WI-301',
+        itemId: 'WI-301',
+      }),
+    );
   });
 });

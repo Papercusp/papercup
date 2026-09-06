@@ -154,7 +154,7 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
           spawnCaller: 'papercup/papercup-deep-delegate-deps',
           workspaceId: activeWorkspaceId(),
           harness,
-          role: 'cup',
+          role: 'bee',
           spawnId,
           brief,
           tier: 'deep',
