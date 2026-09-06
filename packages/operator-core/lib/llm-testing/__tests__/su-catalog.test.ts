@@ -148,6 +148,26 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     });
   });
 
+  it('advertises improvements:capture body and nested toolFailure.directEvidence contracts', () => {
+    const entry = SU_CATALOG.find((e) => e.name === 'improvements:capture')!;
+    const properties = (entry.input as { properties?: Record<string, any> }).properties ?? {};
+    const toolFailure = properties.toolFailure as { properties?: Record<string, any> };
+
+    expect(properties).toHaveProperty('body');
+    expect(properties).not.toHaveProperty('summary');
+    expect(toolFailure).toMatchObject({ type: 'object' });
+    const directEvidence = toolFailure?.properties?.directEvidence;
+    expect(directEvidence).toMatchObject({
+      type: 'object',
+      required: ['kind', 'expected', 'actual'],
+      properties: {
+        kind: { type: 'string', enum: ['valid-input-reproduction', 'server-contract-mismatch', 'hard-internal'] },
+        expected: { type: 'string' },
+        actual: { type: 'string' },
+      },
+    });
+  });
+
   it('work_items:set_state is advertised with keyed lifecycle args', () => {
     const e = SU_CATALOG.find((e) => e.name === 'work_items:set_state')!;
     const props = (e.input as { properties?: Record<string, unknown> }).properties ?? {};
