@@ -139,6 +139,46 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     expect(cnt).toBe(1);
   });
 
+  describe.each(['columns', 'payload'] as const)('claimed sibling identity from %s', (identitySource) => {
+    it.each([
+      { label: 'different item in the same plan', siblingPlan: PLAN, siblingItem: 'P-002', expected: 1 },
+      { label: 'same item id in a different plan', siblingPlan: 'another-plan', siblingItem: 'P-001', expected: 1 },
+      { label: 'genuine same-item sibling', siblingPlan: PLAN, siblingItem: 'P-001', expected: 0 },
+    ])('$label preserves candidate correlation', async ({ siblingPlan, siblingItem, expected }) => {
+      await seedItem('WI-candidate', {
+        sourcePlanSlug: PLAN,
+        payload: {
+          plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: H },
+          fleet_slug: 'opencode-omp-research',
+        },
+      });
+      await seedItem('WI-held', {
+        takenBy: 'su-peer',
+        sourcePlanSlug: identitySource === 'columns' ? siblingPlan : null,
+        payload: {
+          plan_item: { plan_slug: siblingPlan, item_id: siblingItem, harness_slug: H },
+          fleet_slug: 'opencode-omp-research',
+        },
+      });
+      if (identitySource === 'columns') {
+        await db.sql`
+          UPDATE harness_shared.work_items SET source_plan_item_ids = ${[siblingItem]}::text[]
+           WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'WI-held'`;
+      }
+
+      const breakdown = await diagnoseFleetScopeFeatureFamilyExclusions({
+        scope: planScopeFor('su-member'),
+        harness: H,
+        workspaceId: WS,
+      });
+
+      // A held row from another item must never shadow the candidate's payload
+      // inside the correlated sibling subquery (EI-22532026672585665).
+      expect(breakdown?.claimable).toBe(expected);
+      expect(breakdown?.excluded.reservedPlanLane).toBe(expected === 1 ? 0 : 1);
+    });
+  });
+
   it('reports pre-floor matches and names a foreign plan-lane reservation', async () => {
     await seedItem('WI-orphan-reservation', {
       sourcePlanSlug: PLAN,

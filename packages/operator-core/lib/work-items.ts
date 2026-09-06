@@ -5809,7 +5809,12 @@ export function reservedPlanLaneExclusionSql(
   // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
   // `'{}'::jsonb ? 'plan_item'` = FALSE ⇒ NOT(FALSE AND …) = TRUE ⇒ the row is INCLUDED
   // (never excluded). A bare `NULL ? 'plan_item'` would yield NULL and wrongly drop the row.
-  const col = sql.unsafe(payloadCol);
+  // The sibling subquery also has a payload column. Qualify the candidate so
+  // feature callers cannot accidentally compare a claimed sibling to itself
+  // and reserve unrelated plan items (EI-22532026672585665).
+  const col = sql.unsafe(
+    payloadCol === 'wi.payload' ? payloadCol : 'harness_shared.harness_features_consolidated.payload',
+  );
   // EI-19409397800537963: the tenant scope for the two subqueries below. Both
   // `harness_plans` and `plan_item_claims` are keyed on (workspace_id, harness_slug,
   // plan_slug[, item_id]) and BOTH subqueries used to match on `plan_slug` ALONE — so a
