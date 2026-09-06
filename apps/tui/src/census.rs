@@ -24,10 +24,11 @@
 //! so the committed table can never claim something the code no longer does. A
 //! JSON twin lands under `target/census/` for tooling.
 //!
-//! The seven non-strip `Tab` variants (pane-only boards + retired shells) get a
-//! second table so P-014 (enum residue cleanup) inherits PROOF rather than a
-//! guess: switch key dead, `from_title` re-pointing to the host destination,
-//! pinned render, and the per-file source-site counts a deletion has to touch.
+//! The non-strip `Tab` variants get a second table so P-014 (enum residue
+//! cleanup) stays exhaustive after deleting the four retired shells. The three
+//! remaining variants are live pane-only boards, with their dead public switch
+//! keys, `from_title` migration targets, pinned renders, and source-site counts
+//! all verified here.
 
 use crate::app::{App, InboxFocus, Tab, TestRunState};
 use crate::event::{Event, MemoryLoadState};
@@ -50,7 +51,7 @@ const H: u16 = 50;
 /// Number of `Tab` variants. The exhaustive `classify` match below forces a
 /// compile error the moment the enum changes; update this constant in the same
 /// edit so the partition check stays honest.
-const TAB_VARIANT_COUNT: usize = 21;
+const TAB_VARIANT_COUNT: usize = 17;
 
 /// The census artifact, relative to the crate root. Committed; pinned by
 /// `census_table_is_current`.
@@ -112,10 +113,6 @@ enum Class {
     /// Not in the strip; rendered only as a pinned dock pane via a `pui
     /// <x>-pane` subcommand (`main.rs` resolves the subcommand to the variant).
     PaneOnly,
-    /// Retired shell: no strip slot, dead switch key, `from_title` re-points
-    /// persisted view-state at the host destination. Kept for compatibility
-    /// only — P-014 deletes these once this census proves nothing reaches them.
-    Retired,
 }
 
 /// Exhaustive on purpose: adding or deleting a `Tab` variant fails to compile
@@ -138,29 +135,15 @@ fn classify(tab: Tab) -> Class {
         | Tab::Voice
         | Tab::Network => Class::Public,
         Tab::Wake | Tab::AgentCtx | Tab::PlansBoard => Class::PaneOnly,
-        Tab::Plugins | Tab::Settings | Tab::Conversations | Tab::Hives => Class::Retired,
     }
 }
 
 /// The non-strip variants with the live door (if any) that reaches them.
-const NON_STRIP: [(Tab, &str); 7] = [
+const NON_STRIP: [(Tab, &str); 3] = [
     (
-        Tab::Plugins,
-        "retired — Cupboard hosts the capability (D-003); `from_title(\"Plugins\")` → Cupboard",
+        Tab::Wake,
+        "pane-only — `pui wake-pane` (main.rs pinned subcommand)",
     ),
-    (
-        Tab::Settings,
-        "retired — Config hosts it (`draw_settings` is Config's lower sub-view); `from_title(\"Settings\")` → Config",
-    ),
-    (
-        Tab::Conversations,
-        "retired — Inbox › Threads sub-view (`InboxFocus::Threads`); `from_title(\"Convos\")` → Inbox",
-    ),
-    (
-        Tab::Hives,
-        "retired — Network destination's right pane (`draw_network_destination`); `from_title(\"Hives\")` → Network",
-    ),
-    (Tab::Wake, "pane-only — `pui wake-pane` (main.rs pinned subcommand)"),
     (
         Tab::AgentCtx,
         "pane-only — `pui prompt-pane` | `mail-pane` | `work-pane` (main.rs pinned subcommand)",
@@ -803,10 +786,10 @@ fn artifact_markdown(rows: &[Row], non_strip: &[NonStripRow]) -> String {
         non_strip.len()
     ));
     md.push_str(
-        "`switch key →` is `app.tab` after pressing the variant's own switch key from a fresh App (the strip dispatch derives from `Tab::ALL`, so a retired key must land elsewhere). \
-         `from_title →` is where persisted view-state naming the variant is re-pointed. \
-         `pinned body` is the non-blank cell count when the variant is force-pinned (its draw arm still exists). \
-         `sites` are `Tab::<Variant>` source occurrences per file — the deletion radius.\n\n",
+        "`switch key →` is `app.tab` after pressing the pane-only variant's nominal key from a fresh App (the strip dispatch derives from `Tab::ALL`, so it must land elsewhere). \
+         `from_title →` is where persisted view-state naming the pane is re-pointed. \
+         `pinned body` is the non-blank cell count when the variant is force-pinned (its live path). \
+         `sites` are `Tab::<Variant>` source occurrences per file — the exhaustive live radius.\n\n",
     );
     md.push_str("| variant | class | live door | switch key → | from_title → | pinned body | sites |\n|---|---|---|---|---|---|---|\n");
     for r in non_strip {
@@ -836,7 +819,7 @@ fn artifact_markdown(rows: &[Row], non_strip: &[NonStripRow]) -> String {
     md.push_str("- **F-1 Sessions has no explicit empty-state text** — an empty `session_browser.rows` renders the facet header and an empty list; the `empty` cell above is verified on the header only.\n");
     md.push_str("- **F-2 Memory's pre-load state is indistinguishable from backend-unavailable** — `MemoryLoadState` has no `Loading` variant, so until the first load returns the tab shows \"(memory backend unavailable — not configured yet)\".\n");
     md.push_str("- **F-3 Operator's only error rendering (` · reconnecting`) is bound to a live SU-session binding** and is not built offline here (the one `✗` cell).\n");
-    md.push_str("- **F-4 Four of the seven non-strip variants are RETIRED shells (Plugins, Settings, Conversations, Hives); three are live PANE-ONLY boards (Wake, AgentCtx, PlansBoard).** P-014's deletion scope is the four retired ones, not all seven.\n");
+    md.push_str("- **F-4 P-014 removed the four retired enum shells (Plugins, Settings, Conversations, Hives).** The remaining non-strip variants are exactly the three live PANE-ONLY boards: Wake, AgentCtx, and PlansBoard. The old titles still migrate through `Tab::from_title` to their capability-complete public parents.\n");
     md
 }
 
@@ -918,12 +901,12 @@ fn census_every_public_destination_renders_in_every_state() {
     }
 }
 
-/// `Tab::ALL` + the non-strip table partition the enum, and every retired
-/// variant is unreachable through the public doors: its switch key lands
-/// elsewhere and `from_title` re-points persisted state at the host. Pane-only
-/// variants must still render when pinned (that IS their live path).
+/// `Tab::ALL` + the non-strip table partition the enum. Every non-strip
+/// variant is pane-only: its nominal switch key lands elsewhere, its title
+/// migrates to Fleet, and its pinned body must remain non-blank (that is its
+/// live path).
 #[test]
-fn census_non_strip_variants_are_classified_and_retired_ones_are_unreachable() {
+fn census_non_strip_variants_are_pane_only_and_unreachable_from_strip() {
     assert_eq!(
         Tab::ALL.len() + NON_STRIP.len(),
         TAB_VARIANT_COUNT,
@@ -937,7 +920,7 @@ fn census_non_strip_variants_are_classified_and_retired_ones_are_unreachable() {
         );
     }
     for row in run_non_strip() {
-        assert_ne!(row.class, Class::Public, "{:?} is not in Tab::ALL", row.tab);
+        assert_eq!(row.class, Class::PaneOnly, "{:?} is pane-only", row.tab);
         assert_ne!(
             row.switch_lands_on, row.tab,
             "{:?}: its switch key `{}` still reaches it",
@@ -946,16 +929,14 @@ fn census_non_strip_variants_are_classified_and_retired_ones_are_unreachable() {
         assert_ne!(
             row.from_title,
             Some(row.tab),
-            "{:?}: from_title still resolves persisted state to the retired/pane-only variant",
+            "{:?}: from_title still resolves persisted state to the pane-only variant",
             row.tab
         );
-        if row.class == Class::PaneOnly {
-            assert!(
-                row.pinned_body_nonblank > 0,
-                "{:?} is pane-only, so its pinned render is the live path and must not be blank",
-                row.tab
-            );
-        }
+        assert!(
+            row.pinned_body_nonblank > 0,
+            "{:?} is pane-only, so its pinned render is the live path and must not be blank",
+            row.tab
+        );
         assert!(
             row.sites.iter().any(|(f, _)| f == "app.rs"),
             "{:?}: the enum definition in app.rs must count as a site",

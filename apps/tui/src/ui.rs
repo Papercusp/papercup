@@ -2,9 +2,8 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{
-    App, CupboardFocus, FleetLauncherField, HarnessFocus, InboxFocus, PluginsFocus,
-    SessionBrowserFacet, Tab, TestingFocus, ToolPalettePhase, SESSION_BROWSER_STATES,
-    SESSION_BROWSER_WHEN,
+    App, CupboardFocus, FleetLauncherField, HarnessFocus, InboxFocus, SessionBrowserFacet, Tab,
+    TestingFocus, ToolPalettePhase, SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
 };
 use crate::models::{
     contribution_count, contribution_names, tier_glyph, tier_label, Notif,
@@ -697,19 +696,12 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         // provider/plugin settings, and feature flags. The former Settings
         // shell is rendered as the lower subview, never as a top-level tab.
         Tab::Config => draw_configuration(f, app, body),
-        Tab::Plugins => draw_plugins(f, app, body),
-        Tab::Settings => draw_settings(f, app, body),
         Tab::Memory => draw_memory(f, app, body),
         // Cupboard owns discovery plus the Installed plugin inventory. The
         // existing list remains the primary pane and advertises the installed
         // capability in its title/detail contract.
         Tab::Cupboard => draw_cupboard(f, app, body),
-        // Retired shell kept only for exhaustiveness + persisted view-state.
-        // The live path to this renderer is Inbox's Threads sub-view, via
-        // `draw_inbox`; nothing reaches this arm.
-        Tab::Conversations => draw_conversations(f, app, body),
         Tab::Voice => crate::voice_ui::draw_voice(f, &app.voice_ui, body),
-        Tab::Hives => crate::hives::draw_hives(f, app, body),
         // Pane-only (EI-312): the pinned `pui wake-pane` staged-wake board.
         Tab::Wake => crate::wake_board::draw_wake_board(f, app, body),
         // Pane-only (dock 4-pane split): the pinned brief/mail/work boards.
@@ -2337,15 +2329,6 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
                 ])),
         );
         f.render_widget(para, rows[1]);
-    }
-}
-
-fn draw_plugins(f: &mut Frame, app: &App, area: Rect) {
-    // Two sub-views, Tab toggles (D-007/D-014): the installed-plugin list
-    // (contributions + settings) and the launchable tui-panes (D-002).
-    match app.plugins_focus {
-        PluginsFocus::List => draw_plugins_list(f, app, area),
-        PluginsFocus::Panes => draw_plugin_panes(f, app, area),
     }
 }
 
@@ -4080,7 +4063,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / s m c a n  switch the 14 destinations (Agent Chat · Inbox · Plans · Fleet · Sessions · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  l/m/e/a/u   conversation · model · effort · account · mode · Sessions n new SU (psu)\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share <pot> [invite|public|private] · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..8 / h s m c a n  switch the 14 destinations (Overview · Agent Chat · Inbox · Plans · Fleet · Sessions · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  l/m/e/a/u   conversation · model · effort · account · mode · Sessions n new SU (psu)\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share <pot> [invite|public|private] · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -6218,7 +6201,11 @@ mod tests {
         assert!(text.contains("Agent Chat"), "Agent Chat stays explicit");
         assert!(text.contains("Colony"), "Fleet→Colony");
         assert!(text.contains("Hives"), "Pots→Hives");
-        assert_eq!(Tab::Hives.label(&app.lexicon), "Swarms", "Nodes→Swarms");
+        assert_eq!(
+            Tab::Network.label(&app.lexicon),
+            "Network",
+            "Network keeps its public product name"
+        );
         assert!(text.contains("Comb"), "Cupboard→Comb");
         // A tab with no lexicon term keeps its classic title.
         assert!(text.contains("Inbox"));
@@ -6356,7 +6343,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_tab_renders_flags() {
+    fn config_renders_settings_flags() {
         let mut app = App::new();
         let mut m = std::collections::BTreeMap::new();
         m.insert("papercusp-oracle".to_string(), false);
@@ -6365,9 +6352,9 @@ mod tests {
             flags: m,
             source: "defaults".into(),
         });
-        app.tab = Tab::Settings;
-        // Taller now that Settings stacks the config overview (P10b) above the flags.
-        let text = render(&app, 90, 22);
+        app.tab = Tab::Config;
+        // Config stacks the operator overview above the retained flags renderer.
+        let text = render(&app, 90, 44);
         assert!(text.contains("feature flags"));
         assert!(text.contains("papercusp-oracle"));
         assert!(text.contains("[x]"));
@@ -6376,10 +6363,10 @@ mod tests {
     }
 
     #[test]
-    fn settings_tab_renders_operator_config_overview() {
+    fn config_renders_operator_config_overview() {
         use crate::models::{AgentConfigInner, AgentConfigResponse, OperatorConfig};
         let mut app = App::new();
-        app.tab = Tab::Settings;
+        app.tab = Tab::Config;
         let mut models = std::collections::BTreeMap::new();
         models.insert("worker".to_string(), "opus".to_string());
         let mut surf = std::collections::BTreeMap::new();
@@ -7180,14 +7167,11 @@ mod tests {
     }
 
     #[test]
-    fn plugins_view_renders_panes() {
-        use crate::app::PluginsFocus;
+    fn cupboard_panes_view_renders_plugin_panes() {
         use crate::models::TuiPaneContribution;
         let mut app = App::new();
-        app.tab = Tab::Plugins;
-        // The Plugins tab now defaults to the List sub-view (D-007); the panes
-        // launcher is the Panes focus (Tab toggles).
-        app.plugins_focus = PluginsFocus::Panes;
+        app.tab = Tab::Cupboard;
+        app.cupboard_focus = CupboardFocus::Panes;
         app.set_panes(vec![TuiPaneContribution {
             plugin_name: "logs-plugin".into(),
             slug: "papercup".into(),
@@ -7205,10 +7189,11 @@ mod tests {
     }
 
     #[test]
-    fn plugins_list_view_renders_contributions_and_settings() {
+    fn cupboard_installed_view_renders_contributions_and_settings() {
         use crate::models::PluginsGlobalResponse;
         let mut app = App::new();
-        app.tab = Tab::Plugins; // List is the default focus (D-007).
+        app.tab = Tab::Cupboard;
+        app.cupboard_focus = CupboardFocus::Installed;
         app.show_presence = false; // full width for the two-column plugins layout
         let resp: PluginsGlobalResponse = serde_json::from_str(
             r#"{"plugins":[{
@@ -7230,10 +7215,11 @@ mod tests {
     }
 
     #[test]
-    fn plugins_list_view_renders_loaded_config() {
+    fn cupboard_installed_view_renders_loaded_config() {
         use crate::models::PluginsGlobalResponse;
         let mut app = App::new();
-        app.tab = Tab::Plugins;
+        app.tab = Tab::Cupboard;
+        app.cupboard_focus = CupboardFocus::Installed;
         app.show_presence = false; // full width for the two-column plugins layout
         let resp: PluginsGlobalResponse = serde_json::from_str(
             r#"{"plugins":[{"name":"github-repo","version":"0.1.0",

@@ -1220,14 +1220,6 @@ pub enum Tab {
     Docs,
     Testing,
     Config,
-    Plugins,
-    /// Retired standalone shell — Configuration (`Tab::Config`) hosts its
-    /// capability after the 21→14 consolidation (D-003). The variant is kept
-    /// deliberately so persisted pane state naming "Settings" still migrates
-    /// (`from_title` resolves it to `Tab::Config`); it is intentionally never
-    /// constructed in the binary, which is what the dead_code warning reports.
-    #[allow(dead_code)]
-    Settings,
     /// Memory browser (D-006 Step 2) — whatever the configured memory backend
     /// holds (mem0 today; the MemoryBackend seam later). Appended; key 'm'.
     Memory,
@@ -1235,28 +1227,11 @@ pub enum Tab {
     /// (harness/blueprint/snapshot/plugin) + per-kind join/fork/install, all
     /// against the existing `/api/cupboard/*` routes. Appended; key 'c'.
     Cupboard,
-    /// Conversations (conversations-tab-2026-06-05, Brief 25) — browse the coord
-    /// conversations substrate (questions/discussions + threads + topics) with
-    /// state/kind/topic filters, a detail thread + accepted answer + linked
-    /// work-item, and promote-to-issue. Appended; key 'd' (Discuss).
-    ///
-    /// RETIRED SHELL — the capability now lives in the Inbox `Threads`
-    /// sub-view (`InboxFocus::Threads`), which is where every keystroke and
-    /// the renderer are wired. The variant is retained only so persisted
-    /// view-state naming this tab still resolves; nothing in the running app
-    /// constructs it, hence the allow. Do NOT re-point live wiring at it.
-    #[allow(dead_code)]
-    Conversations,
     /// Voice (holepunch-voice-channels-2026-06-05 P-008) — P2P user↔user voice
     /// channels over the operator voice node. Appended; key 'a' (audio). The
     /// operator Conv-AI voice MODE (voice-realtime-tui) is a dock toggle, not
     /// this tab — agreed division, coord 2026-06-05.
     Voice,
-    /// Hives — the p2p swarm roster (pui-hives-tab-2026-06-07): every remote
-    /// Papercusp install (machine) that has announced into the Model-B
-    /// substrate (`shared_presence`), grouped by device. Replaces the Cupboard
-    /// in the dock MAIN pane's tab subset; key 'i'.
-    Hives,
     /// Wakes — the fleet-wide staged-wake board (EI-312): every manual-mode
     /// agent's pending wakes, queen first, with release / edit / skip and the
     /// release-all/skip-all drains. PANE-ONLY: not in `ALL` (no tab-strip slot,
@@ -1292,10 +1267,10 @@ impl Tab {
     // audit_log, and the Fleet tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Fleet exactly.
     /// The public workbench registry.  Keep this list capability-oriented: the
-    /// former Plugins, Settings, Conversations, and Hives shells remain valid
-    /// internal enum variants for persisted pane state and compatibility, but
-    /// their capabilities are hosted by Cupboard, Configuration, Inbox, and
-    /// Network respectively (P-006 / D-003).
+    /// former Plugins, Settings, Conversations, and Hives titles remain valid
+    /// migration aliases in `from_title`, while their capabilities are hosted
+    /// by Cupboard, Configuration, Inbox, and Network respectively (P-006 /
+    /// D-003/D-004).
     pub const ALL: [Tab; 14] = [
         Tab::Overview,
         Tab::Operator,
@@ -1326,13 +1301,9 @@ impl Tab {
             Tab::Docs => "Docs",
             Tab::Testing => "Testing",
             Tab::Config => "Config",
-            Tab::Plugins => "Plugins",
-            Tab::Settings => "Settings",
             Tab::Memory => "Memory",
             Tab::Cupboard => "Cupboard",
-            Tab::Conversations => "Convos",
             Tab::Voice => "Voice",
-            Tab::Hives => "Hives",
             Tab::Wake => "Wakes",
             Tab::AgentCtx => "Agent",
             Tab::Network => "Network",
@@ -1354,17 +1325,13 @@ impl Tab {
             // Stable identity remains `Operator` for persisted view-state, but
             // the product surface is Agent Chat regardless of Hive lexicon.
             Tab::Operator => "Agent Chat".to_string(),
-            // The legacy Hives tab presents networked Papercusp installations,
-            // which are Nodes in the public vocabulary.
-            Tab::Hives => lex.lex_plural("node"),
             other => other.title().to_string(),
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
-    /// dispatch in `on_key` derives from it, g1). The ten ORIGINAL lead tabs
-    /// keep the ten digits (1-9, 0); Overview (the landing tab, prepended)
-    /// takes 'h' (home) so the digits don't renumber fleet-wide; other
-    /// appended tabs take a mnemonic letter (Memory → 'm', Cupboard → 'c').
+    /// dispatch in `on_key` derives from it, g1). The eight retained numeric
+    /// destinations keep keys 1-8; the retired 9/0 shells stay unmapped.
+    /// Overview takes 'h' (home), and appended destinations use mnemonics.
     pub fn switch_key(self) -> char {
         match self {
             Tab::Overview => 'h',
@@ -1377,14 +1344,9 @@ impl Tab {
             Tab::Docs => '6',
             Tab::Testing => '7',
             Tab::Config => '8',
-            Tab::Plugins => '9',
-            Tab::Settings => '0',
             Tab::Memory => 'm',
             Tab::Cupboard => 'c',
-            Tab::Conversations => 'd',
             Tab::Voice => 'a',
-            // hIves — 'h' is Overview (home), so the mnemonic falls to 'i'.
-            Tab::Hives => 'i',
             // Pane-only (not in ALL) — unreachable from the strip; the char is
             // never dispatched (from_switch_key scans ALL).
             Tab::Wake => 'W',
@@ -1403,10 +1365,10 @@ impl Tab {
     /// Resolve a tab from its display title (used to restore persisted view-state
     /// by title, so a tab reorder doesn't land the user on the wrong tab).
     pub fn from_title(s: &str) -> Option<Tab> {
-        // Accept the retired shell names when restoring an older view-state,
-        // but resolve them to their capability-complete parent destination.
-        // They are deliberately absent from `ALL`, so this migration path does
-        // not reintroduce a top-level tab.
+        // Accept retired shell names when restoring an older view-state, but
+        // resolve them directly to their capability-complete parent. The old
+        // enum variants were deleted under D-004; these aliases preserve the
+        // wire/persistence migration without reintroducing a top-level tab.
         match s {
             "Plugins" => Some(Tab::Cupboard),
             "Settings" => Some(Tab::Config),
@@ -1678,15 +1640,15 @@ pub enum PluginsFocus {
 /// Which sub-view of the Inbox tab has focus. `Tab` toggles, mirroring
 /// `PluginsFocus` / `TestingFocus`.
 ///
-/// The retired `Tab::Convos` shell was absorbed into Inbox, but only its
-/// *title* moved: `tab_entry_side_effect` fetched conversations on entering
+/// The retired Convos shell was absorbed into Inbox, but initially only its
+/// title moved: `tab_entry_side_effect` fetched conversations on entering
 /// Inbox while no thread list was ever drawn, so the absorbed capability —
 /// the thread list, its seed/accepted-answer/linked-work-item detail, the
 /// state/kind/topic filters, and promote-to-issue — was unreachable from any
 /// keystroke. This focus is what makes the absorbed half reachable again.
 /// Which sub-view of the Cupboard tab has focus. `Tab` cycles.
 ///
-/// Cupboard absorbed the retired `Tab::Plugins` shell, but only its *title*
+/// Cupboard absorbed the retired Plugins shell, but initially only its title
 /// moved: `draw_cupboard` advertised " Browse + Installed ({plugins.len()}) "
 /// while rendering `app.cupboard` (marketplace listings) exclusively, and both
 /// installed-plugin renderers were dead code no keystroke could reach. These
@@ -1986,15 +1948,13 @@ pub struct App {
     /// the selection cursor. Enter launches the selected pane in a mux pane.
     pub panes: Vec<TuiPaneContribution>,
     pub pane_sel: usize,
-    /// Plugins tab (D-007/D-014): the installed plugin manifests + cursor + which
-    /// sub-view is focused (List = manifests/contributions/settings, the new
-    /// default; Panes = the launchable tui-panes, Tab toggles). `plugin_config`
-    /// is the SELECTED plugin's saved per-harness config (loaded on selection /
+    /// Cupboard's installed-plugin views (D-007/D-014): manifests + cursor.
+    /// `plugin_config` is the selected plugin's saved per-harness config
+    /// (loaded on selection /
     /// refreshed after a `:pset`/`:punset` round-trip; the String is the plugin
     /// it belongs to, so a stale fetch never paints another plugin's settings).
     pub plugins: Vec<crate::models::PluginManifest>,
     pub plugin_sel: usize,
-    pub plugins_focus: PluginsFocus,
     /// Which Inbox sub-view is drawn — the attention list, or the absorbed
     /// Convos thread browser. `Tab` toggles.
     pub inbox_focus: InboxFocus,
@@ -2496,7 +2456,6 @@ impl App {
             pane_sel: 0,
             plugins: Vec::new(),
             plugin_sel: 0,
-            plugins_focus: PluginsFocus::List,
             inbox_focus: InboxFocus::NeedsYou,
             inbox_answer: None,
             cupboard_focus: CupboardFocus::Browse,
@@ -10115,11 +10074,11 @@ impl App {
                 self.pane_toggle_focus();
                 Action::Render
             }
-            // Hives tab (p2p-hive-directory P-006): 'J' JOINS a discovered hive —
+            // Network directory (p2p-hive-directory P-006): 'J' JOINS a discovered hive —
             // POST each of its member links to /api/harness/join-link. Picks the
             // first JOINABLE directory hive (one carrying full member links); a
             // topic-only hive lists fine but can't be one-click-joined.
-            KeyCode::Char('J') if self.tab == Tab::Hives => {
+            KeyCode::Char('J') if self.tab == Tab::Network => {
                 if let Some(h) = self
                     .hive_directory
                     .iter()
@@ -10148,19 +10107,12 @@ impl App {
                 };
                 Action::Render
             }
-            // Plugins tab (D-007/D-014): in Panes focus, Enter launches the
-            // selected pane (original D-002 behavior); in List focus, Enter
-            // loads the selected plugin's per-harness config for the settings
-            // view (no-op when the plugin has no configSchema).
             // Pots: no per-item action — Enter just DRILLS IN (so ↑/↓ scroll the
             // focused list); Esc steps back out (two-level nav, owner ask
             // 2026-06-15 #2).
             KeyCode::Enter if self.tab == Tab::Harnesses => {
                 self.pane_entered = true;
                 Action::Render
-            }
-            KeyCode::Enter if self.tab == Tab::Plugins => {
-                self.plugin_view_enter(self.plugins_focus)
             }
             // Enter on the operator pane (outside compose) focuses the composer.
             KeyCode::Enter if self.tab == Tab::Operator => {
@@ -10225,15 +10177,6 @@ impl App {
                 self.testing_focus = match self.testing_focus {
                     TestingFocus::Domains => TestingFocus::Files,
                     TestingFocus::Files => TestingFocus::Domains,
-                };
-                Action::Render
-            }
-            // Plugins sub-view focus (D-007/D-014): Tab hops the installed-plugin
-            // list (contributions + settings) ↔ the launchable tui-panes.
-            KeyCode::Tab if self.tab == Tab::Plugins => {
-                self.plugins_focus = match self.plugins_focus {
-                    PluginsFocus::List => PluginsFocus::Panes,
-                    PluginsFocus::Panes => PluginsFocus::List,
                 };
                 Action::Render
             }
@@ -11020,11 +10963,6 @@ impl App {
                 TestingFocus::Domains => self.testing.len(),
                 TestingFocus::Files => self.testing_files.len(),
             },
-            Tab::Plugins => match self.plugins_focus {
-                PluginsFocus::List => self.plugins.len(),
-                PluginsFocus::Panes => self.panes.len(),
-            },
-            Tab::Settings => self.flags.len(),
             Tab::Fleet => self.visible_roster().len(),
             Tab::Sessions => return,
             Tab::Memory => self.visible_memories().len(),
@@ -11033,8 +10971,6 @@ impl App {
                 CupboardFocus::Installed => self.plugins.len(),
                 CupboardFocus::Panes => self.panes.len(),
             },
-            Tab::Conversations => self.visible_conversations().len(),
-            Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
             // Config has no list, the Voice tab owns its own j/k in voice_ui,
             // and the Wake board / agent-context / network panes own their own
@@ -11066,11 +11002,6 @@ impl App {
                 TestingFocus::Domains => &mut self.testing_sel,
                 TestingFocus::Files => &mut self.testing_file_sel,
             },
-            Tab::Plugins => match self.plugins_focus {
-                PluginsFocus::List => &mut self.plugin_sel,
-                PluginsFocus::Panes => &mut self.pane_sel,
-            },
-            Tab::Settings => &mut self.flag_sel,
             Tab::Fleet => &mut self.fleet.agent_sel,
             Tab::Sessions => return,
             Tab::Memory => &mut self.memory_sel,
@@ -11079,8 +11010,6 @@ impl App {
                 CupboardFocus::Installed => &mut self.plugin_sel,
                 CupboardFocus::Panes => &mut self.pane_sel,
             },
-            Tab::Conversations => &mut self.conversation_sel,
-            Tab::Hives => &mut self.hive_sel,
             Tab::Config
             | Tab::Operator
             | Tab::Voice
@@ -15007,22 +14936,16 @@ mod tests {
     }
 
     #[test]
-    fn plugins_tab_navigates_and_enter_launches_selected_pane() {
+    fn cupboard_plugin_views_navigate_and_enter_launches_selected_pane() {
         let mut a = App::new();
-        // Plugins is now an Installed subview hosted by Cupboard.  Keep the
-        // legacy enum renderer reachable for persisted pane compatibility, but
-        // do not reintroduce it as a public switch key.
+        // Plugins is an Installed subview hosted by Cupboard. The old title
+        // remains a migration alias but there is no retired enum shell.
         assert_eq!(Tab::from_switch_key('9'), None);
         assert_eq!(Tab::from_title("Plugins"), Some(Tab::Cupboard));
-        // NOTE: the Inbox·Threads keymap guard lives in
-        // `inbox_tab_key_reaches_the_absorbed_thread_controls` below.
-        a.tab = Tab::Plugins;
-        assert_eq!(a.tab, Tab::Plugins);
-        // The tab defaults to the List sub-view (D-007); Tab toggles to the
-        // panes launcher this test exercises.
-        assert_eq!(a.plugins_focus, PluginsFocus::List);
+        a.tab = Tab::Cupboard;
+        a.cupboard_focus = CupboardFocus::Installed;
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.plugins_focus, PluginsFocus::Panes);
+        assert_eq!(a.cupboard_focus, CupboardFocus::Panes);
         // Enter with no panes is a no-op.
         assert_eq!(
             a.update(Event::Key(KeyEvent::new(
@@ -16203,7 +16126,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_settings_aliases_to_config_and_internal_flags_remain_compatible() {
+    fn retired_settings_title_aliases_to_config() {
         let mut a = App::new();
         // `0` was the retired Settings shell shortcut; it must not become a
         // second public route.  Persisted/intention-based restores still map
@@ -16219,18 +16142,6 @@ mod tests {
             .unwrap();
         assert_eq!(result, json!({"ok": true, "tab": "Config"}));
         assert_eq!(a.tab, Tab::Config);
-
-        // The retired renderer remains internally testable so its flag cursor
-        // semantics do not regress while Configuration hosts it as a subview.
-        a.tab = Tab::Settings;
-        // Empty list → move clamps to 0 (no panic).
-        a.move_sel(1);
-        assert_eq!(a.flag_sel, 0);
-        a.set_flags(flags(&[("a", true), ("b", false), ("c", true)]));
-        a.move_sel(2);
-        assert_eq!(a.flag_sel, 2);
-        a.move_sel(5); // clamps to last
-        assert_eq!(a.flag_sel, 2);
     }
 
     #[test]
@@ -16755,12 +16666,10 @@ mod tests {
     #[test]
     fn conversations_compatibility_view_browse_filter_and_promote() {
         use crate::models::{ConvCore, ConvDetail, ConvSummary};
-        // Conversations is now an Inbox/Threads capability.  The old enum view
-        // remains available to persisted/internal pane state, but its switch
-        // key is intentionally absent from the public 14-destination registry.
+        // Conversations is now an Inbox/Threads capability. The old title is
+        // a migration alias, and its switch key is absent from the registry.
         assert_eq!(Tab::from_switch_key('d'), None);
         assert_eq!(Tab::from_title("Convos"), Some(Tab::Inbox));
-        assert_eq!(Tab::Conversations.title(), "Convos");
 
         let mut a = App::new();
         // Restoring the legacy title enters Inbox and keeps the thread fetch
@@ -16776,9 +16685,8 @@ mod tests {
         assert!(matches!(*follow_up, Action::FetchConversations { .. }));
         assert_eq!(a.tab, Tab::Inbox);
         // Exercise the absorbed conversation keymap where it is now actually
-        // REACHABLE — the Inbox Threads sub-view. Driving `Tab::Conversations`
-        // directly (as this test used to) proved nothing a user can do: that
-        // tab is out of `Tab::ALL`, so no keystroke reaches it.
+        // REACHABLE — the Inbox Threads sub-view. Driving the deleted shell
+        // directly would prove nothing a user can do.
         let act = a.update(key('d', KeyModifiers::NONE));
         assert_eq!(act, Action::None);
         assert_eq!(a.tab, Tab::Inbox, "'d' is no longer a public switch key");
@@ -17387,9 +17295,8 @@ mod tests {
     #[test]
     fn switch_key_maps_public_destinations_and_hides_retired_shells() {
         // D-002 reorder + P-006 consolidation: the public keymap is derived
-        // solely from the 14-destination registry (g1). Retired shell variants
-        // retain stable enum/title identities for state migration but no longer
-        // own a switch key.
+        // solely from the 14-destination registry (g1). Retired title aliases
+        // migrate persisted state without retaining enum variants or keys.
         assert_eq!(Tab::Operator.switch_key(), '1');
         assert_eq!(Tab::Plans.switch_key(), '3');
         assert_eq!(Tab::Fleet.switch_key(), '4');
@@ -17405,20 +17312,41 @@ mod tests {
         assert_eq!(Tab::from_title("Settings"), Some(Tab::Config));
         assert_eq!(Tab::from_title("Convos"), Some(Tab::Inbox));
         assert_eq!(Tab::from_title("Hives"), Some(Tab::Network));
-        for retired in [Tab::Plugins, Tab::Settings, Tab::Conversations, Tab::Hives] {
-            assert!(
-                !Tab::ALL.contains(&retired),
-                "retired shell leaked into ALL: {retired:?}"
-            );
-        }
         // Every tab's key is unique (the single-keymap invariant).
         for t in Tab::ALL {
             assert_eq!(Tab::from_switch_key(t.switch_key()), Some(t));
         }
     }
 
-    /// The absorbed Convos controls were gated on `Tab::Conversations`, a tab
-    /// retired out of `Tab::ALL` — so no keystroke could reach the thread
+    #[test]
+    fn network_join_key_dispatches_the_first_joinable_hive() {
+        let mut a = App::new();
+        a.tab = Tab::Network;
+        a.hive_directory = vec![
+            crate::models::DiscoveredHiveRow {
+                hive_id: "topics-only".into(),
+                title: "Topics only".into(),
+                ..Default::default()
+            },
+            crate::models::DiscoveredHiveRow {
+                hive_id: "joinable".into(),
+                title: "Joinable".into(),
+                member_links: vec!["papercusp://harness?topic=one".into()],
+                ..Default::default()
+            },
+        ];
+
+        match a.update(key('J', KeyModifiers::SHIFT)) {
+            Action::JoinHive { slug, links } => {
+                assert_eq!(slug, "joinable");
+                assert_eq!(links, vec!["papercusp://harness?topic=one"]);
+            }
+            other => panic!("expected Network J to dispatch JoinHive, got {other:?}"),
+        }
+    }
+
+    /// The absorbed Convos controls were gated on the former Conversations
+    /// shell, so no keystroke could reach the thread
     /// list, its filters, or promote-to-issue. They are now gated on the Inbox
     /// Threads sub-view. The Attention assertions are the negative control:
     /// without them, a guard passes even if the arms fire on the whole tab.
@@ -17890,10 +17818,10 @@ mod tests {
     /// (pui-tui-tab-audit-2026-08-27 D-005) stays reachable after the 21→14
     /// consolidation.
     ///
-    /// D-005's capability-preserving rule: a standalone shell is removed ONLY
-    /// once its capability is hosted by the named parent destination. So every
-    /// audited surface — retained or retired — must still resolve to a tab that
-    /// is actually in `Tab::ALL`. A retired shell that resolves to `None`
+    /// D-005's capability-preserving rule: a standalone shell is removed only
+    /// once its capability is hosted by the named parent destination. Every
+    /// audited surface title must still resolve to a tab in `Tab::ALL`; an old
+    /// title that resolves to `None`
     /// strands a restored view-state on the default tab, which is capability
     /// loss, not consolidation.
     #[test]
@@ -17915,7 +17843,7 @@ mod tests {
             ("Cupboard", Tab::Cupboard),
             ("Voice", Tab::Voice),
             ("Network", Tab::Network),
-            // ── 7 retired shells, each absorbed by its named parent (D-005) ──
+            // ── 7 legacy titles, each absorbed by its named parent (D-005) ──
             ("Settings", Tab::Config),  // → Configuration
             ("Plugins", Tab::Cupboard), // → Cupboard · Installed
             ("Convos", Tab::Inbox),     // → Inbox · Threads
@@ -17942,25 +17870,17 @@ mod tests {
             );
         }
 
-        // Consolidation must not be undone: the 7 retired shells stay OUT of
-        // the top-level strip even though they still resolve.
-        for retired in [
-            Tab::Settings,
-            Tab::Plugins,
-            Tab::Conversations,
-            Tab::Hives,
-            Tab::Wake,
-            Tab::AgentCtx,
-            Tab::PlansBoard,
-        ] {
+        // The three live pane-only variants stay outside the top-level strip;
+        // the four deleted shells are guarded above by their title aliases.
+        for pane_only in [Tab::Wake, Tab::AgentCtx, Tab::PlansBoard] {
             assert!(
-                !Tab::ALL.contains(&retired),
-                "retired shell {} reappeared as a top-level destination",
-                retired.title()
+                !Tab::ALL.contains(&pane_only),
+                "pane-only surface {} appeared as a top-level destination",
+                pane_only.title()
             );
         }
 
-        // 21 audited surfaces = 14 destinations + 7 retired shells, exactly.
+        // 21 audited titles = 14 destinations + 7 migration aliases, exactly.
         assert_eq!(Tab::ALL.len() + 7, MATRIX.len());
     }
 
