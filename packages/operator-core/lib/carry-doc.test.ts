@@ -103,9 +103,17 @@ function automaticRecovery(complete = true): AutomaticCompactionRecovery {
   };
 }
 
+/** The holder proof a carried item must present for a renderer to show its
+ *  title/body/checkpoint as the successor's OWN lane. Absent or mismatched proof
+ *  fails closed to a read-only ownership warning (carry-brief.ts,
+ *  assessHeldItemOwnership) — so a fixture that omits it is asserting the
+ *  warning path, not the checkpoint path. */
+const HOLDER_PROOF = { ownerId: 'su-1', workspaceId: 'ws-1' } as const;
+
 function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   return {
     ownerId: 'su-1',
+    workspaceId: 'ws-1',
     loop: { harness: 'papercusp', active: true, intervalSec: 60, goal: null, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW },
     heldItems: [],
     directives: [],
@@ -212,6 +220,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
           body: 'git-sync:run after the code:run verification',
           harness: 'papercusp',
           checkpoint: 'coord:declare-intent { items: [] }',
+          holderProof: HOLDER_PROOF,
         },
         {
           id: 'EI-safe',
@@ -219,6 +228,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
           body: 'coord:declare-intent is an allowed control for this role',
           harness: 'papercusp',
           checkpoint: 'coord:declare-intent { items: [] }',
+          holderProof: HOLDER_PROOF,
         },
       ],
     });
@@ -261,6 +271,7 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
           body: 'git-sync:run after code:run',
           harness: 'papercusp',
           checkpoint: 'git-sync:run after code:run; coord:declare-intent { items: [] }',
+          holderProof: HOLDER_PROOF,
         },
       ],
     });
@@ -686,6 +697,7 @@ describe('renderCarryDoc (pure)', () => {
               harness: 'papercusp',
               checkpoint: 'ZERO CODE HAS BEEN WRITTEN. No file is edited. Nothing is half-done.',
               checkpointUpdatedAtMs,
+              holderProof: HOLDER_PROOF,
             },
           ],
         }),
@@ -703,7 +715,7 @@ describe('renderCarryDoc (pure)', () => {
       doc({
         brief: brief({
           heldItems: [
-            { id: 'WI-1', title: null, body: null, harness: 'papercusp', checkpoint: 'landed and verified', checkpointUpdatedAtMs },
+            { id: 'WI-1', title: null, body: null, harness: 'papercusp', checkpoint: 'landed and verified', checkpointUpdatedAtMs, holderProof: HOLDER_PROOF },
           ],
         }),
       }),
@@ -1147,7 +1159,7 @@ describe('background tasks slot (EI-21600998523239527)', () => {
       workspaceId: 'ws-1',
       harness: 'papercusp',
       buildCarryBriefFn: async () => brief(),
-      buildAutomaticRecoveryFn: async () => null,
+      buildAutomaticRecoveryFn: async () => automaticRecovery(),
       getModesFn: async () => [],
       getPlanItemsFn: async () => [],
       getAsksFn: async () => [],
