@@ -1,10 +1,13 @@
 /** Replay-safe production controller for an already-provisioned workspace host. */
 import { randomUUID } from 'node:crypto';
 import {
+  assertWorkspaceHostReplacement,
   nextWorkspaceHostControllerAction,
   workspaceHostActionInvalidatesInitialization,
   workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
+  type WorkspaceHostControllerAuthority,
+  type WorkspaceHostDomainState,
   type WorkspaceHostImageRef,
   type WorkspaceHostObservation,
   type WorkspaceHostPlan,
@@ -14,6 +17,7 @@ import {
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
+  type WorkspaceHostRuntimeRelease,
   type WorkspaceHostSnapshotRef,
 } from '@papercusp/deployment-driver';
 import {
@@ -25,10 +29,12 @@ import {
   updateWorkspaceHostOperation,
   upsertWorkspaceHostResourceCheckpoint,
   type StoredWorkspaceHostDestroyTarget,
+  upsertWorkspaceHost,
 } from './observability-store';
 import {
   assertProviderConnectionUsable,
-  renderControllerWorkspaceHostBootstrap,
+  DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY,
+  resolveControllerWorkspaceHostBootstrap,
   WorkspaceHostProvisioningRequestError,
   type WorkspaceHostProvisioningResult,
 } from './provisioning-runner';
@@ -60,12 +66,16 @@ export interface RunWorkspaceHostLifecycleInput {
   actorId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostLifecycleStore;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
+  /** Test/adapter seam; production derives this with the trusted bootstrap profile. */
+  runtimeRelease?: WorkspaceHostRuntimeRelease;
   /** Test seam for lifecycle actions that must install the controller's current trusted release. */
   renderHostBootstrap?: (hostId: string) => Promise<string>;
 }
 
 export interface WorkspaceHostLifecycleStore {
   readTarget: typeof readWorkspaceHostDestroyTarget;
+  upsertHost: typeof upsertWorkspaceHost;
   beginOperation: typeof beginWorkspaceHostOperation;
   updateOperation: typeof updateWorkspaceHostOperation;
   readCheckpoints: typeof readWorkspaceHostResourceCheckpoints;
@@ -76,6 +86,7 @@ export interface WorkspaceHostLifecycleStore {
 
 const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
   readTarget: readWorkspaceHostDestroyTarget,
+  upsertHost: upsertWorkspaceHost,
   beginOperation: beginWorkspaceHostOperation,
   updateOperation: updateWorkspaceHostOperation,
   readCheckpoints: readWorkspaceHostResourceCheckpoints,
@@ -83,6 +94,22 @@ const DEFAULT_STORE: WorkspaceHostLifecycleStore = {
   appendEvent: appendWorkspaceHostEvent,
   recordObservation: recordWorkspaceHostObservation,
 };
+
+function controllerStore(
+  store: WorkspaceHostLifecycleStore,
+  controllerAuthority: WorkspaceHostControllerAuthority,
+  operationId: string,
+): WorkspaceHostLifecycleStore {
+  return {
+    ...store,
+    beginOperation: (input) => store.beginOperation({ ...input, controllerAuthority }),
+    updateOperation: (input) => store.updateOperation({ ...input, controllerAuthority }),
+    upsertCheckpoint: (input) => store.upsertCheckpoint({ ...input, controllerAuthority }),
+    appendEvent: (input) => store.appendEvent({ ...input, controllerAuthority }),
+    recordObservation: (workspaceId, observation) =>
+      store.recordObservation(workspaceId, observation, { operationId, controllerAuthority }),
+  };
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -246,11 +273,11 @@ async function observe(
 export async function runWorkspaceHostLifecycle(
   input: RunWorkspaceHostLifecycleInput,
 ): Promise<WorkspaceHostProvisioningResult> {
-  const store = input.store ?? DEFAULT_STORE;
+  const baseStore = input.store ?? DEFAULT_STORE;
   const workspaceId = nonEmpty(input.workspaceId, 'workspaceId');
   const hostId = nonEmpty(input.hostId, 'hostId');
   const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
-  const target = await store.readTarget(workspaceId, hostId);
+  const target = await baseStore.readTarget(workspaceId, hostId);
   if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);
   if (target.observedState === 'absent') {
     throw new WorkspaceHostProvisioningRequestError(['workspace host is absent']);
@@ -266,8 +293,13 @@ export async function runWorkspaceHostLifecycle(
       'workspace-host provider and connection must match stored target',
     ]);
   }
+  const controllerAuthority =
+    input.controllerAuthority ?? target.controllerAuthority ?? DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY;
+  const desiredRevision = target.desiredRevision + 1;
+  const store = controllerStore(baseStore, controllerAuthority, operationId);
 
   let hostBootstrapScript: string | undefined;
+  let runtimeRelease = input.runtimeRelease;
   if (
     input.provider.capabilities.lifecycle.hostBootstrap &&
     (input.action === 'repair' || input.action === 'upgrade' || input.action === 'restore')
@@ -276,9 +308,14 @@ export async function runWorkspaceHostLifecycle(
     if (!bootstrapHostId) {
       throw new WorkspaceHostProvisioningRequestError(['restore desired host spec is required']);
     }
-    const render = input.renderHostBootstrap ?? renderControllerWorkspaceHostBootstrap;
     try {
-      hostBootstrapScript = await render(bootstrapHostId);
+      if (input.renderHostBootstrap) {
+        hostBootstrapScript = await input.renderHostBootstrap(bootstrapHostId);
+      } else {
+        const resolved = await resolveControllerWorkspaceHostBootstrap(bootstrapHostId);
+        hostBootstrapScript = resolved.script;
+        runtimeRelease = resolved.runtimeRelease;
+      }
     } catch (error) {
       throw new WorkspaceHostProvisioningRequestError([message(error)]);
     }
@@ -308,6 +345,63 @@ export async function runWorkspaceHostLifecycle(
   if (plan.target !== target.target) identityProblems.push('provider lifecycle plan changed target');
   if (identityProblems.length > 0) throw new WorkspaceHostProvisioningRequestError(identityProblems);
 
+  if (input.action === 'restore') {
+    const replacement: WorkspaceHostDomainState = {
+      workspaceId,
+      hostId: resultHostId,
+      hostGeneration: target.hostGeneration + 1,
+      connectionId: target.connectionId,
+      desiredRevision,
+      observedRevision: target.observedRevision,
+      ...(runtimeRelease ?? target.runtimeRelease
+        ? { runtimeRelease: runtimeRelease ?? target.runtimeRelease }
+        : {}),
+      controllerAuthority,
+    };
+    assertWorkspaceHostReplacement(
+      {
+        workspaceId,
+        hostId,
+        hostGeneration: target.hostGeneration,
+        connectionId: target.connectionId,
+        desiredRevision: target.desiredRevision,
+        observedRevision: target.observedRevision,
+        ...(target.runtimeRelease ? { runtimeRelease: target.runtimeRelease } : {}),
+        ...(target.controllerAuthority ? { controllerAuthority: target.controllerAuthority } : {}),
+      },
+      replacement,
+    );
+    if (
+      JSON.stringify(input.desired!.data) !== JSON.stringify(target.desired.data) ||
+      JSON.stringify(input.desired!.credentials) !== JSON.stringify(target.desired.credentials)
+    ) {
+      throw new WorkspaceHostProvisioningRequestError([
+        'restore replacement must preserve workspace data policy and credential permissions',
+      ]);
+    }
+    await store.upsertHost({
+      workspaceId,
+      id: resultHostId,
+      name: input.name?.trim() || target.name,
+      connectionId: target.connectionId,
+      target: input.desired!.target,
+      scopeLabel: input.desired!.scope.id,
+      region: input.desired!.region,
+      size: input.desired!.size,
+      image: input.desired!.image.id,
+      diskGiB: input.desired!.data.volumeGiB,
+      network: 'restored',
+      desiredState: 'provisioning',
+      observedState: 'provisioning',
+      desiredSpec: input.desired!,
+      hostGeneration: replacement.hostGeneration,
+      desiredRevision: replacement.desiredRevision,
+      observedRevision: replacement.observedRevision,
+      ...(replacement.runtimeRelease ? { runtimeRelease: replacement.runtimeRelease } : {}),
+      ...(replacement.controllerAuthority ? { controllerAuthority: replacement.controllerAuthority } : {}),
+    });
+  }
+
   const workflow = {
     identity: {
       workspaceId,
@@ -336,6 +430,7 @@ export async function runWorkspaceHostLifecycle(
     status: 'running',
     message: `Workspace-host ${input.action} started`,
     request: { sourceHostId: hostId, ...(input.name ? { name: input.name } : {}) },
+    desiredRevision,
   });
 
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
@@ -484,11 +579,12 @@ export async function runWorkspaceHostLifecycle(
       /*
        * This branch is generic across every lifecycle action, so on its own it can only ever
        * describe the PROVIDER mutation — never whether the host can serve. For most actions
-       * those coincide. For a boot-disk-replacing action they do not: `upgrade` recreates the
-       * instance from the new image and `restore` builds a distinct host, so everything the
-       * initialization leg installed is gone, and initialization is a SEPARATE operation the
-       * caller must sequence. Saying only "completed" there is what let a ledger row read
-       * succeeded|100 while the host was still minutes away from serving.
+       * those coincide. For an initialization-invalidating action they do not: `upgrade`
+       * recreates the instance, `restore` builds a distinct host, and `repair` installs fresh
+       * startup metadata before resetting the existing instance. In all three cases provider
+       * completion arrives before the initialization leg has re-established a serving host.
+       * Initialization is a SEPARATE operation the caller must sequence; saying only
+       * "completed" is what let a ledger row read succeeded|100 while the host was not ready.
        *
        * Say it instead of probing for it: a readiness gate here would have to ask the provider,
        * and `attestHealth` cannot answer (GCP attests `unknown` — `agentOnline` has no producer),
@@ -497,7 +593,7 @@ export async function runWorkspaceHostLifecycle(
       const requiresInitialization = workspaceHostActionInvalidatesInitialization(input.action);
       const message = requiresInitialization
         ? `Workspace-host ${input.action} completed its provider steps, but the host CANNOT SERVE yet: ` +
-          `${input.action} replaced the boot disk, so initialization must be run again before use`
+          `${input.action} invalidated the host's initialized state, so initialization must be run again before use`
         : `Workspace-host ${input.action} completed`;
       await store.updateOperation({
         workspaceId,

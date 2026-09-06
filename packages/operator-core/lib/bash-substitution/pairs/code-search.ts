@@ -417,7 +417,7 @@ export const gitnexusDefinitionLookup: BashSubstitutionPair = {
     want: 'to find where a symbol is DEFINED (and who calls it)',
     use: '`gitnexus.context { name: "managedSetInterval", kind: "Function" }`',
     insteadOf:
-      '`grep -rn "export function managedSetInterval" --include=*.ts libs packages` (grep gives one matching line; the graph gives the definition plus callers/callees). The durable hourly re-index is cadence/load-gated, so very new code can briefly lag; exhaustive exact-text search is still grep\'s job',
+      '`grep -rn "export function managedSetInterval" --include=*.ts --exclude-dir={node_modules,.vitest-tmp,dist,coverage} --exclude-dir=sidecar libs packages` (generated bundles/caches are not source evidence; exhaustive exact-text search remains grep\'s job)',
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {

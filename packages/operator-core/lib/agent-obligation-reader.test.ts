@@ -1,0 +1,174 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  projectAgentObligationBrief,
+  readAgentObligationAgenda,
+  type AgentObligationReaderDeps,
+} from './agent-obligation-reader';
+import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
+import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
+import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
+
+const NOW = new Date('2026-09-05T20:00:00.000Z');
+
+function portfolio(assembledAt = NOW.toISOString()): GoalPortfolioBrief {
+  return {
+    schemaVersion: 1,
+    assembledAt,
+    goal: {
+      id: 'goal-1',
+      title: 'Goal',
+      status: 'active',
+      body: null,
+      killCriterion: null,
+      standing: true,
+      parentId: null,
+    },
+    worklist: [],
+    pots: [],
+    drainFleet: { slug: null, exists: null, controlState: null, leaderOwnerId: null, live: null, working: null },
+    queue: {
+      total: 0,
+      terminal: 0,
+      inFlight: 0,
+      blocked: 0,
+      needsHuman: 0,
+      claimable: 0,
+      claimabilityScope: 'issue-family',
+    },
+    launch: { settings: null, ceilings: { maxAgents: 10, maxPerFleet: 5 }, headcount: { total: 1, fleet: null } },
+    budget: { budgetCents: null, spentCents: null, spentCentsAt: null, spentCentsSource: null, budgetWindowSec: null },
+    tripwires: [],
+    pending: { blenderIdeas: 0, acceptanceRubric: null },
+    continuity: { checkpoint: null, lastOwnerReportAt: null },
+    priorities: [],
+    degradedReasons: [],
+  };
+}
+
+function launch(): GoalLaunchResolution {
+  return {
+    goalId: 'goal-1',
+    settings: null,
+    goalBrief: null,
+    effective: {},
+    ceilings: { maxAgents: 10, maxPerFleet: 5 },
+    headcount: { total: 1, fleet: null },
+    budget: null,
+    refusal: null,
+    degraded: false,
+    degradedReasons: [],
+  };
+}
+
+function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligationReaderDeps {
+  return {
+    goalSubject: vi.fn(async () => 'goal-1'),
+    planSlugs: vi.fn(async () => ['plan-a']),
+    goalPortfolio: vi.fn(async () => portfolio()),
+    goalLaunch: vi.fn(async () => launch()),
+    planFleet: vi.fn(
+      async (): Promise<GoalPlanFleetObservation> => ({
+        status: 'known',
+        alert: null,
+        applicablePlanCount: 0,
+      }),
+    ),
+    ownerReport: vi.fn(
+      async (): Promise<GoalOwnerReportObligation> => ({
+        lastReportAt: null,
+        ageMin: 75,
+        floorMin: 60,
+        dueInMin: -15,
+        standing: true,
+        obligation: 'overdue',
+        instruction: 'report now',
+      }),
+    ),
+    planAcceptance: vi.fn(
+      async (): Promise<PlanAcceptanceGateVerdict> => ({
+        satisfied: false,
+        code: 'acceptance_rubric_missing',
+        message: 'author the rubric',
+      }),
+    ),
+    ...overrides,
+  };
+}
+
+describe('shared agent obligation reader', () => {
+  it('assembles all applicable canonical providers into one agenda', async () => {
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps(),
+    });
+
+    expect(read.goalId).toBe('goal-1');
+    expect(read.planSlugs).toEqual(['plan-a']);
+    expect(read.agenda.evaluations.map((entry) => [entry.family, entry.status])).toEqual([
+      ['owner-report', 'due'],
+      ['plan-placement', 'not-applicable'],
+      ['independent-verification', 'blocked'],
+    ]);
+    expect(read.agenda.primary[0]?.family).toBe('independent-verification');
+    expect(read.degradedSources).toEqual([]);
+  });
+
+  it('turns a failed canonical source into explicit unknown instead of false no-demand', async () => {
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps({
+        goalPortfolio: vi.fn(async () => {
+          throw new Error('portfolio unavailable');
+        }),
+      }),
+    });
+    const placement = read.agenda.evaluations.find((entry) => entry.family === 'plan-placement');
+    expect(placement).toMatchObject({
+      status: 'unknown',
+      measurementFailure: { code: 'canonical-plan-placement-read-failed' },
+    });
+    expect(read.degradedSources.some((entry) => entry.includes('goal portfolio'))).toBe(true);
+  });
+
+  it('keeps the generation stable when only observation clocks change', async () => {
+    const first = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps(),
+    });
+    const second = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: new Date('2026-09-05T20:01:00.000Z'),
+      deps: deps({ goalPortfolio: vi.fn(async () => portfolio('2026-09-05T20:01:00.000Z')) }),
+    });
+    expect(second.agenda.sourceGeneration).toBe(first.agenda.sourceGeneration);
+  });
+
+  it('projects the same agenda with sink-specific caps and an omission receipt', async () => {
+    const { agenda } = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps(),
+    });
+    const brief = projectAgentObligationBrief({
+      agenda,
+      sink: 'turn-start',
+      detailRef: 'coord:orient',
+      maxEntries: 1,
+      maxChars: 400,
+      maxEstimatedTokens: 100,
+    });
+    expect(brief.sourceGeneration).toBe(agenda.sourceGeneration);
+    expect(brief.projection.receipt).toMatchObject({ entriesDelivered: 1, entriesOmitted: 1, bodyTruncated: true });
+    expect(brief.detailRef).toBe('coord:orient');
+  });
+});

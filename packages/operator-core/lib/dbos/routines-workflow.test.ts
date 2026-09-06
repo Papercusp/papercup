@@ -80,7 +80,7 @@ vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
-  evaluateRoutineDispatchAdmission,
+  evaluateRoutineDispatchEpoch,
   ROUTINE_FIRE_QUEUES,
   ROUTINE_FIRE_TIMEOUT_MS,
   routineFireTimeoutMs,
@@ -89,47 +89,163 @@ import {
 import {
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
+  ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_LOOP_QUEUE,
+  ROUTINES_QUEUE,
   TRIGGER_POLL_ACTIONS,
   queueForRoutine,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { CaplessAdaptiveController } from '../resource-governor/controller';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
   vi.clearAllMocks();
 });
 
-describe('evaluateRoutineDispatchAdmission — capless DBOS fan-out feedback (EI-224330)', () => {
-  it('admits one liveness-floor start per queue without probing', async () => {
-    const probe = vi.fn(async () => 'critical' as const);
-    await expect(evaluateRoutineDispatchAdmission(0, probe)).resolves.toEqual({
-      admitted: true,
-      pressure: null,
+describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (EI-224330)', () => {
+  const START = 1_700_000_000_000;
+  const queue = (epoch: ReturnType<typeof evaluateRoutineDispatchEpoch>, queueName: string) => {
+    const found = epoch.queues.find((item) => item.queueName === queueName);
+    if (!found) throw new Error(`missing ${queueName} decision`);
+    return found;
+  };
+
+  it('bounds a many-clean-probe delayed-signal burst to current feedback credit', () => {
+    const epoch = evaluateRoutineDispatchEpoch({
+      pressure: 'ok',
+      probeMs: 4,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE, ROUTINES_LOOP_QUEUE, ROUTINES_CRITICAL_QUEUE],
+      controller: new CaplessAdaptiveController(),
+      atMs: START,
     });
-    expect(probe).not.toHaveBeenCalled();
+
+    // Live failure admitted 47 shared + 27 loop + 10 critical starts because each
+    // immediate probe ran before its preceding async enqueue materialized. A cold
+    // epoch has one start of feedback credit per active queue, regardless of how
+    // many due rows the loop can enumerate synchronously.
+    expect(queue(epoch, ROUTINES_QUEUE).availableStarts).toBe(1);
+    expect(queue(epoch, ROUTINES_LOOP_QUEUE).availableStarts).toBe(1);
+    expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(1);
+    expect([
+      Math.min(47, queue(epoch, ROUTINES_QUEUE).availableStarts),
+      Math.min(27, queue(epoch, ROUTINES_LOOP_QUEUE).availableStarts),
+      Math.min(10, queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts),
+    ]).toEqual([1, 1, 1]);
   });
 
-  it.each([
-    ['ok', true],
-    ['elevated', false],
-    ['critical', false],
-  ] as const)('uses a fresh %s probe before every additional start', async (pressure, admitted) => {
-    const probe = vi.fn(async () => pressure);
-    await expect(evaluateRoutineDispatchAdmission(1, probe)).resolves.toEqual({ admitted, pressure });
-    expect(probe).toHaveBeenCalledOnce();
+  it('probes upward without a configured maximum after sustained healthy epochs', () => {
+    const controller = new CaplessAdaptiveController({ healthySamplesPerIncrease: 1 });
+    const first = evaluateRoutineDispatchEpoch({
+      pressure: 'ok',
+      probeMs: 3,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE],
+      controller,
+      atMs: START,
+    });
+    const second = evaluateRoutineDispatchEpoch({
+      pressure: 'ok',
+      probeMs: 2,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE],
+      controller,
+      atMs: START + 30_000,
+    });
+    expect(queue(first, ROUTINES_QUEUE).desiredWindow).toBe(2);
+    expect(queue(second, ROUTINES_QUEUE).desiredWindow).toBe(3);
   });
 
-  it('is wired before claim/start and leaves a pressured queue unclaimed for a later tick', () => {
+  it('multiplicatively contracts the database-attributed class on critical feedback', () => {
+    const epoch = evaluateRoutineDispatchEpoch({
+      pressure: 'critical',
+      probeMs: 2_800,
+      inFlightByQueue: { [ROUTINES_QUEUE]: 4 },
+      activeQueues: [ROUTINES_QUEUE],
+      controller: new CaplessAdaptiveController({ initialWindow: 8, contractionCooldownMs: 0 }),
+      atMs: START,
+    });
+    expect(queue(epoch, ROUTINES_QUEUE)).toMatchObject({
+      desiredWindow: 4,
+      effectiveWindow: 4,
+      controllerAvailableStarts: 0,
+      availableStarts: 0,
+      controllerProtected: false,
+    });
+  });
+
+  it('subtracts actual ENQUEUED/PENDING occupancy before admitting this tick', () => {
+    const epoch = evaluateRoutineDispatchEpoch({
+      pressure: 'ok',
+      probeMs: 4,
+      inFlightByQueue: { [ROUTINES_QUEUE]: 3 },
+      activeQueues: [ROUTINES_QUEUE],
+      controller: new CaplessAdaptiveController({ initialWindow: 5, healthySamplesPerIncrease: 99 }),
+      atMs: START,
+    });
+    expect(queue(epoch, ROUTINES_QUEUE)).toMatchObject({
+      desiredWindow: 5,
+      inFlight: 3,
+      availableStarts: 2,
+    });
+  });
+
+  it('keeps exactly one critical liveness floor while retaining database attribution', () => {
+    const controller = new CaplessAdaptiveController({ initialWindow: 16, contractionCooldownMs: 0 });
+    const empty = evaluateRoutineDispatchEpoch({
+      pressure: 'critical',
+      probeMs: 3_000,
+      inFlightByQueue: {},
+      activeQueues: [ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE],
+      controller,
+      atMs: START,
+    });
+    expect(queue(empty, ROUTINES_QUEUE).availableStarts).toBe(0);
+    expect(queue(empty, ROUTINES_CRITICAL_QUEUE)).toMatchObject({
+      availableStarts: 1,
+      controllerProtected: false,
+    });
+
+    const occupied = evaluateRoutineDispatchEpoch({
+      pressure: 'critical',
+      probeMs: 3_100,
+      inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 1 },
+      activeQueues: [ROUTINES_CRITICAL_QUEUE],
+      controller,
+      atMs: START + 30_000,
+    });
+    expect(queue(occupied, ROUTINES_CRITICAL_QUEUE)).toMatchObject({
+      inFlight: 1,
+      availableStarts: 0,
+      controllerProtected: false,
+    });
+    expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBeLessThan(16);
+  });
+
+  it('reads indexed DBOS occupancy and gates feedback credit before claim/start', () => {
     const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
-    const loop = source.split('for (const r of due) {')[1]?.split('// EI-11171 critical-routine floor (cont.):')[0] ?? '';
-    const admission = loop.indexOf('evaluateRoutineDispatchAdmission(startedInQueue)');
-    const claim = loop.indexOf('claimDueRoutine(sql, r)');
-    const start = loop.indexOf('DBOS.startWorkflow');
-    expect(admission).toBeGreaterThan(-1);
-    expect(admission).toBeLessThan(claim);
+    const reader =
+      source.split('export async function readRoutineFireInFlightByQueue')[1]?.split('/** Direct physical')[0] ?? '';
+    expect(reader).toContain('queue_name = ANY(${[...ROUTINE_FIRE_QUEUES]}::text[])');
+    expect(reader).toContain("status IN ('ENQUEUED', 'PENDING')");
+    expect(reader).toContain("name = 'routineFire'");
+    expect(reader).toContain('GROUP BY queue_name');
+
+    const impl = source.split('async function routinesTickImpl(): Promise<void> {')[1] ?? '';
+    const epoch = impl.indexOf("name: 'routine-dispatch-feedback-epoch'");
+    const loop = impl.indexOf('for (const r of due) {');
+    const budget = impl.indexOf('const remainingStarts = remainingStartsByQueue.get(queueName) ?? 0');
+    const claim = impl.indexOf('claimDueRoutine(sql, r)');
+    const start = impl.indexOf('DBOS.startWorkflow');
+    const spend = impl.indexOf('remainingStartsByQueue.set(queueName, remainingStarts - 1)');
+    expect(epoch).toBeGreaterThan(-1);
+    expect(epoch).toBeLessThan(loop);
+    expect(loop).toBeLessThan(budget);
+    expect(budget).toBeLessThan(claim);
     expect(claim).toBeLessThan(start);
-    expect(loop).toContain('pausedQueues.add(queueName)');
-    expect(loop).toContain('startedByQueue.set(queueName, startedInQueue + 1)');
+    expect(start).toBeLessThan(spend);
+    expect(impl).not.toContain('evaluateRoutineDispatchAdmission');
   });
 });
 

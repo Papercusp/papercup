@@ -16,6 +16,7 @@ import {
   classifyGoalDrainFleet,
   classifyGoalPlanFleetCoverage,
   fleetKey,
+  readGoalPlanFleetObservation,
   runGoalDrainFleetSweepOnce,
   scanGoalDrainFleets,
   type DrainFleetLiveness,
@@ -223,6 +224,53 @@ describe('classifyGoalDrainFleet', () => {
   });
 });
 
+describe('readGoalPlanFleetObservation', () => {
+  it('reuses the watchdog cohort and liveness classifier without side effects', async () => {
+    const result = await readGoalPlanFleetObservation(
+      {} as Sql,
+      { workspaceId: 'ws', goalId: 'g-1' },
+      {
+        readGoals: async () => ({ goals: [makeGoal()], holders: [makeHolder()] }),
+        resolveLiveness: async () => verdicts(makeVerdict('su-a', 'live')),
+        resolveFleetLiveness: async () => fleets({}),
+        readCohort: async () => ({
+          status: 'known',
+          plans: [
+            {
+              goalId: 'g-1',
+              workspaceId: 'ws',
+              harnessSlug: 'papercusp',
+              planSlug: 'plan-a',
+              itemIds: ['P-001'],
+              targetingFleets: [],
+            },
+          ],
+        }),
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: 'known',
+      applicablePlanCount: 1,
+      alert: { reason: 'started-plan-no-live-targeting-fleet', planSlug: 'plan-a' },
+    });
+  });
+
+  it('keeps an unreadable cohort unknown instead of manufacturing no demand', async () => {
+    const result = await readGoalPlanFleetObservation(
+      {} as Sql,
+      { workspaceId: 'ws', goalId: 'g-1' },
+      {
+        readGoals: async () => ({ goals: [makeGoal()], holders: [makeHolder()] }),
+        resolveLiveness: async () => verdicts(makeVerdict('su-a', 'live')),
+        resolveFleetLiveness: async () => fleets({}),
+        readCohort: async () => ({ status: 'unknown', plans: [] }),
+      },
+    );
+    expect(result).toEqual({ status: 'unknown', alert: null, applicablePlanCount: null });
+  });
+});
+
 describe('claimSpecFilterConstrainsGoal — the D-005 scope predicate', () => {
   const leaf = { field: 'goal', op: '=', value: 'g-1' };
 
@@ -243,9 +291,7 @@ describe('claimSpecFilterConstrainsGoal — the D-005 scope predicate', () => {
 
   it('an any is scoped only when EVERY branch is (OR widens)', () => {
     expect(claimSpecFilterConstrainsGoal({ any: [leaf, leaf] }, 'g-1')).toBe(true);
-    expect(
-      claimSpecFilterConstrainsGoal({ any: [leaf, { field: 'kind', op: '=', value: 'bug' }] }, 'g-1'),
-    ).toBe(false);
+    expect(claimSpecFilterConstrainsGoal({ any: [leaf, { field: 'kind', op: '=', value: 'bug' }] }, 'g-1')).toBe(false);
   });
 
   it('the WI-37711 trap: a negated or != goal leaf NEVER counts as scoping', () => {
@@ -285,12 +331,27 @@ describe('GOAL plan-fleet obligation classifier', () => {
 
   it('accepts the positive plan =/in claim-spec forms and rejects widening/negative forms', () => {
     expect(claimSpecIsPlanScoped({ view: { filter: { field: 'plan', op: '=', value: 'p-1' } } }, 'p-1')).toBe(true);
-    expect(claimSpecIsPlanScoped({ view: { filter: { field: 'plan', op: 'in', value: ['p-0', 'p-1'] } } }, 'p-1')).toBe(true);
-    expect(claimSpecIsPlanScoped({ view: { filter: { not: { field: 'plan', op: '=', value: 'p-2' } } } }, 'p-1')).toBe(false);
-    expect(claimSpecIsPlanScoped({ view: { filter: { any: [
-      { field: 'plan', op: '=', value: 'p-1' },
-      { field: 'kind', op: '=', value: 'bug' },
-    ] } } }, 'p-1')).toBe(false);
+    expect(claimSpecIsPlanScoped({ view: { filter: { field: 'plan', op: 'in', value: ['p-0', 'p-1'] } } }, 'p-1')).toBe(
+      true,
+    );
+    expect(claimSpecIsPlanScoped({ view: { filter: { not: { field: 'plan', op: '=', value: 'p-2' } } } }, 'p-1')).toBe(
+      false,
+    );
+    expect(
+      claimSpecIsPlanScoped(
+        {
+          view: {
+            filter: {
+              any: [
+                { field: 'plan', op: '=', value: 'p-1' },
+                { field: 'kind', op: '=', value: 'bug' },
+              ],
+            },
+          },
+        },
+        'p-1',
+      ),
+    ).toBe(false);
   });
 
   it('healthy: a live targeting fleet with a live claim on a non-terminal item is silent', () => {
@@ -333,25 +394,26 @@ describe('GOAL plan-fleet obligation classifier', () => {
   it('unknown cohort or targeting-fleet liveness suppresses rather than alarming', () => {
     const args = [makeGoal(), [makeHolder()], verdicts(makeVerdict('su-a', 'live'))] as const;
     expect(classifyGoalPlanFleetCoverage(...args, { status: 'unknown', plans: [] })).toBeNull();
-    expect(classifyGoalPlanFleetCoverage(
-      ...args,
-      cohort(plan('p-unknown', [{ fleetSlug: 'fleet-a', liveness: 'unknown', liveClaimItemIds: [] }])),
-    )).toBeNull();
+    expect(
+      classifyGoalPlanFleetCoverage(
+        ...args,
+        cohort(plan('p-unknown', [{ fleetSlug: 'fleet-a', liveness: 'unknown', liveClaimItemIds: [] }])),
+      ),
+    ).toBeNull();
   });
 
   it('an empty/completed started plan and a goal without a positively-live holder stay silent', () => {
-    expect(classifyGoalPlanFleetCoverage(
-      makeGoal(),
-      [makeHolder()],
-      verdicts(makeVerdict('su-a', 'live')),
-      cohort(plan('p-empty', [], [])),
-    )).toBeNull();
-    expect(classifyGoalPlanFleetCoverage(
-      makeGoal(),
-      [makeHolder()],
-      verdicts(),
-      cohort(plan('p-no-fleet')),
-    )).toBeNull();
+    expect(
+      classifyGoalPlanFleetCoverage(
+        makeGoal(),
+        [makeHolder()],
+        verdicts(makeVerdict('su-a', 'live')),
+        cohort(plan('p-empty', [], [])),
+      ),
+    ).toBeNull();
+    expect(
+      classifyGoalPlanFleetCoverage(makeGoal(), [makeHolder()], verdicts(), cohort(plan('p-no-fleet'))),
+    ).toBeNull();
   });
 
   it('exactly one classifier speaks per goal, deterministically preferring Leg A', () => {
@@ -359,10 +421,7 @@ describe('GOAL plan-fleet obligation classifier', () => {
       makeGoal(),
       [makeHolder()],
       verdicts(makeVerdict('su-a', 'live')),
-      cohort(
-        plan('p-b', [{ fleetSlug: 'fleet-b', liveness: 'alive', liveClaimItemIds: [] }]),
-        plan('p-a'),
-      ),
+      cohort(plan('p-b', [{ fleetSlug: 'fleet-b', liveness: 'alive', liveClaimItemIds: [] }]), plan('p-a')),
     );
     expect(result).toMatchObject({ reason: 'started-plan-no-live-targeting-fleet', planSlug: 'p-a' });
   });
@@ -370,10 +429,7 @@ describe('GOAL plan-fleet obligation classifier', () => {
 
 describe('scanGoalDrainFleets', () => {
   it('classifies each goal independently', () => {
-    const goals = [
-      makeGoal({ goalId: 'g-bad' }),
-      makeGoal({ goalId: 'g-ok', drainFleet: 'drain-ok' }),
-    ];
+    const goals = [makeGoal({ goalId: 'g-bad' }), makeGoal({ goalId: 'g-ok', drainFleet: 'drain-ok' })];
     const holders = [makeHolder({ goalId: 'g-bad' }), makeHolder({ goalId: 'g-ok' })];
     const out = scanGoalDrainFleets(
       goals,
@@ -396,9 +452,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
       holders: [makeHolder()],
     })),
     resolveLiveness: vi.fn(async () => verdicts(makeVerdict('su-a', 'live'))),
-    resolveFleetLiveness: vi.fn(
-      async () => fleets({ [fleetKey('ws', 'drain-1')]: 'dead' as const }),
-    ),
+    resolveFleetLiveness: vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'dead' as const })),
     resolveFleetSpecScopes: vi.fn(async () => scopes()),
     escalate: vi.fn(async () => {}),
     emitDrainDead: vi.fn(async () => {}),
@@ -421,25 +475,18 @@ describe('runGoalDrainFleetSweepOnce', () => {
     expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
     expect(deps.escalate).toHaveBeenCalledTimes(1);
     expect(deps.emitDrainDead).toHaveBeenCalledTimes(1);
-    expect(deps.escalate).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'drain-fleet-dead' }),
-    );
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-dead' }));
   });
 
   it('resolves liveness only for holders of active goals, and fleet liveness only for declared fleets', async () => {
     const deps = baseDeps();
     deps.readGoals = vi.fn(async () => ({
       goals: [makeGoal({ drainFleet: 'drain-1' }), makeGoal({ goalId: 'g-2', drainFleet: null })],
-      holders: [
-        makeHolder(),
-        makeHolder({ goalId: 'g-closed', ownerId: 'su-irrelevant' }),
-      ],
+      holders: [makeHolder(), makeHolder({ goalId: 'g-closed', ownerId: 'su-irrelevant' })],
     }));
     await runGoalDrainFleetSweepOnce(sql, deps);
     expect(deps.resolveLiveness).toHaveBeenCalledWith(['su-a']);
-    expect(deps.resolveFleetLiveness).toHaveBeenCalledWith([
-      { workspaceId: 'ws', fleetSlug: 'drain-1' },
-    ]);
+    expect(deps.resolveFleetLiveness).toHaveBeenCalledWith([{ workspaceId: 'ws', fleetSlug: 'drain-1' }]);
   });
 
   it('a failed escalate is contained and the emit still runs', async () => {
@@ -478,9 +525,7 @@ describe('runGoalDrainFleetSweepOnce', () => {
     // escalations; if classifyGoalDrainFleet ever fired on alive fleets this
     // canary fails, proving the suite can catch that class of defect.
     const deps = baseDeps();
-    deps.resolveFleetLiveness = vi.fn(
-      async () => fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const }),
-    );
+    deps.resolveFleetLiveness = vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const }));
     deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'goal-scoped' as const }));
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
     expect(res).toEqual({ scanned: 1, escalated: 0, skipped: false, relaunched: 0, relaunchCapped: 0 });
@@ -496,15 +541,11 @@ describe('runGoalDrainFleetSweepOnce', () => {
   // ── D-005 ────────────────────────────────────────────────────────────────
   it('escalates drain-fleet-not-goal-scoped for an ALIVE fleet on a pot-wide lane', async () => {
     const deps = baseDeps();
-    deps.resolveFleetLiveness = vi.fn(
-      async () => fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const }),
-    );
+    deps.resolveFleetLiveness = vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const }));
     deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'not-goal-scoped' as const }));
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
     expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
-    expect(deps.escalate).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'drain-fleet-not-goal-scoped' }),
-    );
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-not-goal-scoped' }));
   });
 
   it('spec scopes are resolved ONLY for alive fleets — dead ones already have their verdict', async () => {
@@ -595,7 +636,10 @@ describe('decideGoalDrainFleetRelaunch (pure timing)', () => {
 
 describe('parseGoalDrainRespawnLedger', () => {
   it('reads a well-formed ledger, tolerates numeric strings, and treats junk as no episode', () => {
-    expect(parseGoalDrainRespawnLedger({ deadSinceMs: 5, needsHuman: true })).toEqual({ deadSinceMs: 5, needsHuman: true });
+    expect(parseGoalDrainRespawnLedger({ deadSinceMs: 5, needsHuman: true })).toEqual({
+      deadSinceMs: 5,
+      needsHuman: true,
+    });
     expect(parseGoalDrainRespawnLedger({ deadSinceMs: '7' })).toEqual({ deadSinceMs: 7, needsHuman: false });
     expect(parseGoalDrainRespawnLedger({ attempts: [1, 2] })).toEqual({ deadSinceMs: null, needsHuman: false });
     expect(parseGoalDrainRespawnLedger(null)).toBeNull();
@@ -633,7 +677,10 @@ describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
     expect(deps.markDrainDead).toHaveBeenCalledWith(expect.objectContaining({ goalId: 'g-1' }), NOW);
     expect(deps.reserveRelaunchSlot).toHaveBeenCalledTimes(1);
     expect(deps.relaunchDrainFleet).toHaveBeenCalledTimes(1);
-    const [alert, goal] = (deps.relaunchDrainFleet as ReturnType<typeof vi.fn>).mock.calls[0] as [GoalDrainAlert, GoalDrainRowLike];
+    const [alert, goal] = (deps.relaunchDrainFleet as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      GoalDrainAlert,
+      GoalDrainRowLike,
+    ];
     expect(alert.liveHolders).toEqual(['su-a']);
     expect(goal.installSlug).toBe('papercusp');
     expect(deps.notifyRelaunch).toHaveBeenCalledWith(
@@ -699,7 +746,10 @@ describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
 
   it('an OUTCOME goal (standing:false) keeps the pre-WI-2140699 posture: report + emit, never launch, no ledger writes', async () => {
     const deps = deadStandingDeps();
-    deps.readGoals = vi.fn(async () => ({ goals: [makeGoal({ drainFleet: 'drain-1', standing: false })], holders: [makeHolder()] }));
+    deps.readGoals = vi.fn(async () => ({
+      goals: [makeGoal({ drainFleet: 'drain-1', standing: false })],
+      holders: [makeHolder()],
+    }));
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
     expect(res).toEqual({ scanned: 1, escalated: 1, skipped: false, relaunched: 0, relaunchCapped: 0 });
     expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ standing: false }));
@@ -720,7 +770,10 @@ describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
   it('the flag is read at most once per sweep, and only when some alert is eligible', async () => {
     const deps = deadStandingDeps();
     deps.readGoals = vi.fn(async () => ({
-      goals: [standingGoal(), makeGoal({ goalId: 'g-2', drainFleet: 'drain-2', standing: true, installSlug: 'papercusp' })],
+      goals: [
+        standingGoal(),
+        makeGoal({ goalId: 'g-2', drainFleet: 'drain-2', standing: true, installSlug: 'papercusp' }),
+      ],
       holders: [makeHolder(), makeHolder({ goalId: 'g-2' })],
     }));
     deps.resolveFleetLiveness = vi.fn(async () =>
@@ -753,14 +806,21 @@ describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
     deps.readGoals = vi.fn(async () => ({
       goals: [
         makeGoal({ drainFleet: 'drain-1', standing: true, drainRespawn: { deadSinceMs: NOW - 1, needsHuman: true } }),
-        makeGoal({ goalId: 'g-clean', drainFleet: 'drain-clean', standing: true, drainRespawn: { deadSinceMs: null, needsHuman: false } }),
+        makeGoal({
+          goalId: 'g-clean',
+          drainFleet: 'drain-clean',
+          standing: true,
+          drainRespawn: { deadSinceMs: null, needsHuman: false },
+        }),
       ],
       holders: [makeHolder(), makeHolder({ goalId: 'g-clean' })],
     }));
     deps.resolveFleetLiveness = vi.fn(async () =>
       fleets({ [fleetKey('ws', 'drain-1')]: 'alive' as const, [fleetKey('ws', 'drain-clean')]: 'alive' as const }),
     );
-    deps.resolveFleetSpecScopes = vi.fn(async () => scopes({ 'g-1': 'goal-scoped' as const, 'g-clean': 'goal-scoped' as const }));
+    deps.resolveFleetSpecScopes = vi.fn(async () =>
+      scopes({ 'g-1': 'goal-scoped' as const, 'g-clean': 'goal-scoped' as const }),
+    );
     const res = await runGoalDrainFleetSweepOnce(sql, deps);
     expect(res).toEqual({ scanned: 2, escalated: 0, skipped: false, relaunched: 0, relaunchCapped: 0 });
     expect(deps.clearDrainLedger).toHaveBeenCalledTimes(1);
@@ -770,7 +830,9 @@ describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
   it('an UNKNOWN fleet verdict never clears the ledger (conservative rule holds on the way out too)', async () => {
     const deps = deadStandingDeps();
     deps.readGoals = vi.fn(async () => ({
-      goals: [makeGoal({ drainFleet: 'drain-1', standing: true, drainRespawn: { deadSinceMs: NOW - 1, needsHuman: false } })],
+      goals: [
+        makeGoal({ drainFleet: 'drain-1', standing: true, drainRespawn: { deadSinceMs: NOW - 1, needsHuman: false } }),
+      ],
       holders: [makeHolder()],
     }));
     deps.resolveFleetLiveness = vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'unknown' as const }));

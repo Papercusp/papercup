@@ -55,6 +55,7 @@ import type { Sql } from 'postgres';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
+import type { AgentObligationBrief } from './agent-obligation-reader';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
@@ -222,6 +223,12 @@ export interface OrientationState {
   /** Canonical P-011 executable width; null means inapplicable or unreadable. */
   executableFrontier: OrientationExecutableFrontier | null;
   /**
+   * Shared policy agenda. `null` means measured with no actionable entries;
+   * `undefined` means the optional read was unavailable and preserves the last
+   * cursor token instead of manufacturing a cleared obligation.
+   */
+  obligations?: AgentObligationBrief | null;
+  /**
    * KEYS of the never-drop standing facts (`dead-end:` / `wall:` / `guard-rail:`).
    *
    * These exist to OVERRIDE a stale plan, which is the whole reason they are
@@ -369,6 +376,7 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     !state.loopFireWithheld &&
     state.improvementTriage === null &&
     state.executableFrontier === null &&
+    !state.obligations &&
     state.neverDropFacts.length === 0 &&
     state.toolSurface === null &&
     state.carryBlindWindow === null
@@ -505,6 +513,12 @@ export function fingerprintOrientation(
       : typeof committed?.frontier === 'string'
         ? committed.frontier
         : '',
+    obligations:
+      state.obligations === undefined
+        ? typeof committed?.obligations === 'string'
+          ? committed.obligations
+          : ''
+        : (state.obligations?.sourceGeneration ?? ''),
     // A NEWLY asserted guard-rail / dead-end / wall MUST re-emit the block. It is
     // most valuable on the very turn it first applies, and a fingerprint blind to
     // it would suppress the fold for an agent already mid-mistake — the same
@@ -545,6 +559,7 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.gates === b.gates &&
     a.loop === b.loop &&
     a.loopWithheld === b.loopWithheld &&
+    (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
     // the comparison a newly-landed guard rail is suppressed as "unchanged",
@@ -713,6 +728,14 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
       )} — facts:list before you plan.`,
     );
   }
+  if (state.obligations) {
+    const projectedLines = state.obligations.projection.text.split('\n').filter(Boolean);
+    lines.push(...projectedLines);
+    const omitted = state.obligations.projection.receipt.entriesOmitted;
+    if (omitted > 0) {
+      lines.push(`- obligations: +${omitted} omitted — ${state.obligations.detailRef}`);
+    }
+  }
   const frontierLine = renderExecutableFrontierLine(state.executableFrontier, committed);
   if (frontierLine) lines.push(frontierLine);
   if (state.improvementTriage) {
@@ -820,6 +843,8 @@ export interface OrientationDeps {
   improvementTriage: (workspaceId: string) => Promise<OrientationImprovementTriage | null>;
   /** P-011 exact-plan executable width, or null when paused/unknown/broad. */
   executableFrontier: (ownerId: string, workspaceId: string) => Promise<OrientationExecutableFrontier | null>;
+  /** Same evaluated agenda fleet:leader-brief consumes, projected to this sink's tighter cap. */
+  obligations: (ownerId: string, workspaceId: string) => Promise<AgentObligationBrief | null>;
   /** KEYS of never-drop standing facts in this agent's scopes (workspace + owner). */
   neverDropFacts: (ownerId: string, workspaceId: string) => Promise<string[]>;
   /**
@@ -868,6 +893,7 @@ export async function resolveOrientationState(
     loopFireWithheld,
     improvementTriage,
     executableFrontier,
+    obligations,
     neverDropFacts,
     toolSurface,
     carryBlindWindow,
@@ -882,6 +908,9 @@ export async function resolveOrientationState(
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
     d.executableFrontier(ownerId, workspaceId).catch(() => null),
+    // Undefined is distinct from measured-empty: preserve the prior cursor on
+    // an optional read failure so a transient outage cannot fake resolution.
+    d.obligations(ownerId, workspaceId).catch(() => undefined),
     // Degrades to "say nothing about facts", never to a thrown turn — same rule
     // as every other source here. A failed read must not be able to suppress the
     // block that carries the other agents' warnings.
@@ -910,6 +939,7 @@ export async function resolveOrientationState(
     loopFireWithheld,
     improvementTriage,
     executableFrontier,
+    obligations,
     neverDropFacts,
     toolSurface,
     carryBlindWindow,
@@ -1084,6 +1114,22 @@ export function defaultOrientationDeps(): OrientationDeps {
         },
       );
       return value ? { planSlug: value.planSlug, executableWidth: value.executableWidth } : null;
+    },
+    obligations: async (ownerId, workspaceId) => {
+      const { readAgentObligationAgenda, projectAgentObligationBrief } = await import('./agent-obligation-reader');
+      const { agenda } = await readAgentObligationAgenda({ workspaceId, ownerId });
+      if (agenda.primary.length === 0) return null;
+      return projectAgentObligationBrief({
+        agenda,
+        sink: 'turn-start',
+        detailRef: 'coord:orient for the complete obligation agenda',
+        maxEntries: 3,
+        // The whole orientation remains capped at 600 chars. This sink gets a
+        // stricter slice than the shared 400-token ceiling so it cannot crowd
+        // out direct messages, wake state, or held work.
+        maxChars: 400,
+        maxEstimatedTokens: 100,
+      });
     },
     // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
     // re-derived: `currentSessionEpoch` is already best-effort by contract

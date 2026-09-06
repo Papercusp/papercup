@@ -1268,6 +1268,14 @@ describe('code-search pattern boundaries (WI-6445)', () => {
     expect(result.expression).toBe('gitnexus.context { name: "findLiveHost", kind: "Function" }');
   });
 
+  it('teaches safe exclusions before falling back to exhaustive grep', () => {
+    const guidance = gitnexusDefinitionLookup.routing.insteadOf;
+    expect(guidance).toContain('--exclude-dir={node_modules,.vitest-tmp,dist,coverage}');
+    expect(guidance).toContain('--exclude-dir=sidecar');
+    expect(guidance).toMatch(/generated bundles\/caches are not source evidence/i);
+    expect(guidance).toMatch(/exhaustive exact-text search remains grep's job/i);
+  });
+
   /**
    * `-A n` on a DEFINITION-anchored grep means "show me the body", which
    * `include_content` returns in full. `-B`/`-C` ask for what PRECEDES the

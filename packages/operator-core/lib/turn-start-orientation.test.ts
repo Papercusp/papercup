@@ -68,6 +68,33 @@ const withWork: OrientationState = {
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
 const EPOCH = 3;
 
+function obligationBrief(sourceGeneration = 'agenda-1'): NonNullable<OrientationState['obligations']> {
+  return {
+    schemaVersion: 'agent-obligations-v1',
+    evaluatedAt: '2026-09-05T20:00:00.000Z',
+    sourceGeneration,
+    evaluations: [],
+    primary: [],
+    projection: {
+      text: '- [DUE] Send the owner report — report now',
+      entries: [],
+      receipt: {
+        sink: 'turn-start',
+        mode: 'truncate',
+        entriesAvailable: 2,
+        entriesDelivered: 1,
+        entriesOmitted: 1,
+        bodyDeliveredChars: 44,
+        estimatedTokens: 11,
+        bodyTruncated: true,
+        refused: false,
+        reason: 'entry-cap',
+      },
+    },
+    detailRef: 'coord:orient for the complete obligation agenda',
+  };
+}
+
 describe('turn-start-orientation — when it speaks', () => {
   it('says NOTHING when there is nothing to say (no held work, no mail, no loop)', () => {
     expect(isEmptyOrientation(base)).toBe(true);
@@ -163,6 +190,7 @@ describe('turn-start-orientation — when it speaks', () => {
           top: { id: 'EI-3', title: 'Consume me', lane: 'human' },
         },
       },
+      { ...withWork, obligations: obligationBrief() },
     ] as OrientationState[]) {
       expect(composeOrientationBlock({ state: changed, committed, epoch: EPOCH })).not.toBe('');
     }
@@ -180,6 +208,29 @@ describe('turn-start-orientation — when it speaks', () => {
     });
     expect(out).toContain('WI-1 (wip)'); // unchanged line still present
     expect(out).toContain('engine loop'); // unchanged line still present
+  });
+
+  it('renders the bounded shared agenda with an explicit omission recovery reference', () => {
+    const out = composeOrientationBlock({
+      state: { ...base, loopArmed: true, obligations: obligationBrief() },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('[DUE] Send the owner report');
+    expect(out).toContain('+1 omitted');
+    expect(out).toContain('coord:orient');
+    expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
+  });
+
+  it('preserves an obligation cursor on read failure but re-emits a measured clear', () => {
+    const active: OrientationState = { ...base, obligations: obligationBrief() };
+    const committed = fingerprintOrientation(active, EPOCH);
+    expect(
+      orientationUnchanged(committed, fingerprintOrientation({ ...active, obligations: undefined }, EPOCH, committed)),
+    ).toBe(true);
+    expect(
+      orientationUnchanged(committed, fingerprintOrientation({ ...active, obligations: null }, EPOCH, committed)),
+    ).toBe(false);
   });
 
   it('a held-item STATUS change re-emits, not just an id change', () => {
@@ -339,9 +390,9 @@ describe('turn-start-orientation — what it says', () => {
     expect(isLoopFireWithheld({ active: true, lastFiredAt: null, lastWithheldAt: '2026-08-24T04:00:01.000Z' })).toBe(
       false,
     );
-    expect(isLoopFireWithheld({ active: true, lastFiredAt: 'not-a-time', lastWithheldAt: '2026-08-24T04:00:01.000Z' })).toBe(
-      false,
-    );
+    expect(
+      isLoopFireWithheld({ active: true, lastFiredAt: 'not-a-time', lastWithheldAt: '2026-08-24T04:00:01.000Z' }),
+    ).toBe(false);
   });
 
   it('reads the withheld-fire signal from the shared loop-status discriminator', async () => {
@@ -438,21 +489,17 @@ describe('turn-start-orientation — what it says', () => {
     const humanQueue = [rankedFirst, legacyScoreFirst];
 
     expect(
-      selectOrientationImprovementTriage(
-        { humanQueue, autoEligible: [] },
-        selectUntriaged,
-        { considered: 2, lowerBound: false },
-      ),
+      selectOrientationImprovementTriage({ humanQueue, autoEligible: [] }, selectUntriaged, {
+        considered: 2,
+        lowerBound: false,
+      }),
     ).toEqual({
       pending: 2,
       considered: 2,
       lowerBound: false,
       top: { id: 'EI-ranked-first', title: 'EI-ranked-first', lane: 'human' },
     });
-    expect(humanQueue.map((candidate) => candidate.id)).toEqual([
-      'EI-ranked-first',
-      'EI-legacy-score-first',
-    ]);
+    expect(humanQueue.map((candidate) => candidate.id)).toEqual(['EI-ranked-first', 'EI-legacy-score-first']);
   });
 
   it('keeps no-wake and checkpoint warnings ahead of lower-priority fold content', () => {
@@ -487,6 +534,7 @@ describe('turn-start-orientation — what it says', () => {
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       }),
       executableFrontier: async () => ({ planSlug: 'one-plan', executableWidth: 2 }),
+      obligations: async () => obligationBrief(),
       neverDropFacts: async () => ['guard-rail:some-settled-thing'],
     });
     expect(state).toEqual({
@@ -505,6 +553,7 @@ describe('turn-start-orientation — what it says', () => {
         top: { id: 'EI-9', title: 'Act on this filing', lane: 'human' },
       },
       executableFrontier: { planSlug: 'one-plan', executableWidth: 2 },
+      obligations: obligationBrief(),
       neverDropFacts: ['guard-rail:some-settled-thing'],
       toolSurface: null,
       carryBlindWindow: null,
@@ -548,9 +597,13 @@ describe('turn-start-orientation — what it says', () => {
       executableFrontier: async () => {
         throw new Error('frontier unavailable');
       },
+      obligations: async () => {
+        throw new Error('obligation reader unavailable');
+      },
     });
     expect(state.improvementTriage).toBeNull();
     expect(state.executableFrontier).toBeNull();
+    expect(state.obligations).toBeUndefined();
     expect(composeOrientationBlock({ state, committed: null, epoch: EPOCH })).toBe('');
   });
 });
@@ -575,9 +628,7 @@ describe('turn-start-orientation — what it costs', () => {
     // suppress precisely the transition the reader needs to see.
     const live: OrientationState = { ...base, unansweredDirected: 1, unansweredStale: 0 };
     const died: OrientationState = { ...base, unansweredDirected: 0, unansweredStale: 1 };
-    expect(orientationUnchanged(fingerprintOrientation(live, EPOCH), fingerprintOrientation(died, EPOCH))).toBe(
-      false,
-    );
+    expect(orientationUnchanged(fingerprintOrientation(live, EPOCH), fingerprintOrientation(died, EPOCH))).toBe(false);
   });
 
   it('never exceeds its budget, even with an absurd number of held items', () => {
@@ -828,6 +879,7 @@ describe('carry blind window line', () => {
       loopFireWithheld: async () => false,
       improvementTriage: async () => null,
       executableFrontier: async () => null,
+      obligations: async () => null,
       neverDropFacts: async () => [],
       toolSurface: async () => null,
       carryBlindWindow: async () => {

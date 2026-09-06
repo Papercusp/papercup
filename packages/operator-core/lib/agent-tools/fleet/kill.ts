@@ -669,14 +669,16 @@ export default defineTool({
         await releaseSeatConsumptions(ownerIds);
       },
       repairStaleAdvSessionTerminalMarkers,
-      markSessionEnded: (id, signal) => markAdvSessionEnded(Number(id), null, 'signal', { signal }),
+      markSessionEnded: async (id, signal) => {
+        await markAdvSessionEnded(Number(id), null, 'signal', { signal });
+      },
       audit: (action, subject, details) => writeKillAudit(action, subject, details, workspaceId, actor.ownerId),
     };
 
     const ownerIds = mergeIds(args.owner, args.owners);
     const env = await runBulk(
       ownerIds,
-      async (target) => killOne({ actor: actor.ownerId, target, closeTerminal, reason }, deps),
+      async (target) => ({ ...await killOne({ actor: actor.ownerId, target, closeTerminal, reason }, deps) }),
       { keyOf: (target) => ({ target }) },
     );
 

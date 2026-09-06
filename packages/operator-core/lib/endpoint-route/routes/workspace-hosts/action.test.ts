@@ -15,7 +15,7 @@ const CTX: RouteContext = {
 const desired = {
   hostId: 'host-1',
   target: 'gcp' as const,
-  scope: { kind: 'project', id: 'project-1' },
+  scope: { kind: 'project' as const, id: 'project-1' },
   region: 'us-central1',
   zone: 'us-central1-a',
   size: 'e2-small',
@@ -57,6 +57,9 @@ function harness() {
     connectionId: 'connection-1',
     target: 'gcp',
     observedState: 'running',
+    hostGeneration: 1,
+    desiredRevision: 1,
+    observedRevision: 1,
     desired,
     resources: [],
   }));
@@ -97,6 +100,7 @@ function harness() {
     status: 'succeeded',
     operationId: input.operationId ?? 'op-lifecycle-1',
     hostId: input.action === 'restore' ? input.desired!.hostId : input.hostId,
+    requiresInitialization: ['repair', 'upgrade', 'restore'].includes(input.action),
     plan: {
       planId: `plan-${input.action}-1`,
       operationId: input.operationId ?? 'op-lifecycle-1',
@@ -265,6 +269,27 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
       );
     },
   );
+
+  it('returns a provider-succeeded repair as not yet servable until initialization runs', async () => {
+    const { dependencies } = harness();
+    const response = await post(dependencies, {
+      action: 'repair',
+      workspaceId: 'host-1',
+      operationId: 'op-repair-readiness-1',
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      operationId: 'op-repair-readiness-1',
+      requiresInitialization: true,
+      message: expect.stringContaining('CANNOT SERVE'),
+    });
+    expect(body.message).toContain("repair invalidated the host's initialized state");
+    expect(body.message).not.toContain('replaced the boot disk');
+  });
 
   it('threads explicit upgrade and restore inputs without inventing provider defaults', async () => {
     const { dependencies, startLifecycle } = harness();

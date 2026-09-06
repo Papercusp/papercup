@@ -1,15 +1,18 @@
 import type { WorkspaceHostLifecycleAction } from "./workspace-host-types";
 
 /**
- * The lifecycle actions that REPLACE A HOST'S BOOT DISK, and therefore discard everything
- * the initialization leg installed on it.
+ * The lifecycle actions that INVALIDATE A HOST'S INITIALIZED STATE, and therefore leave the
+ * host unable to serve until the initialization leg runs again.
  *
  * This exists because the lifecycle runner's completion branch is generic across every
  * action: it reports `succeeded` when the PROVIDER steps finish, which describes the cloud
  * mutation and says nothing about whether the host can serve. For most actions those two
- * things coincide — a `stop` is complete when the instance is stopped. For these two they
+ * things coincide — a `stop` is complete when the instance is stopped. For these three they
  * do not:
  *
+ *   - `repair` refreshes the controller-authored startup metadata and resets the instance.
+ *     Provider completion proves that mutation landed, not that the replacement bootstrap
+ *     has finished and re-established the host's initialized state.
  *   - `upgrade` deletes and recreates the instance from the new image, retaining only the
  *     data disk. The boot disk — and every file initialization wrote to it — is gone.
  *   - `restore` plans through the same path as `provision` (it must create a DISTINCT
@@ -20,14 +23,15 @@ import type { WorkspaceHostLifecycleAction } from "./workspace-host-types";
  * needs credential delivery and a concrete capability-declaring host adapter that a
  * provider-generic lifecycle runner does not have. That design is fine; what was missing
  * is that nothing TOLD the caller a second operation had become mandatory. An operator
- * reading `succeeded | 100 | "Workspace-host upgrade completed"` has no way to know the
+ * reading `succeeded | 100 | "Workspace-host repair completed"` has no way to know the
  * host cannot serve yet.
  *
  * Keep this list here, beside the action vocabulary it is derived from, rather than
- * re-deciding it at each call site. It is one fact about what these actions do to a disk,
+ * re-deciding it at each call site. It is one fact about what these actions do to initialized state,
  * and every provider and route must read the same copy of it.
  */
 export const WORKSPACE_HOST_INITIALIZATION_INVALIDATING_ACTIONS = [
+  "repair",
   "upgrade",
   "restore",
 ] as const satisfies readonly WorkspaceHostLifecycleAction[];

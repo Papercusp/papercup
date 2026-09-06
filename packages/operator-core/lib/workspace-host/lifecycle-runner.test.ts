@@ -57,6 +57,7 @@ function providerHarness(hostBootstrap = false) {
   };
   const apply = vi.fn<WorkspaceHostProvider['apply']>();
   const reconcile = vi.fn<WorkspaceHostProvider['reconcile']>();
+  const planProvider = vi.fn(async () => plan);
   const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
     capabilities: fakeWorkspaceHostCapabilities({ lifecycle: { hostBootstrap } }),
@@ -66,7 +67,7 @@ function providerHarness(hostBootstrap = false) {
       warnings: [],
       errors: [],
     })),
-    plan: vi.fn(async () => plan),
+    plan: planProvider,
     apply,
     reconcile,
     observe: vi.fn<WorkspaceHostProvider['observe']>(async (host) => ({
@@ -77,7 +78,7 @@ function providerHarness(hostBootstrap = false) {
       drift: [],
     })),
   });
-  return { provider, apply, reconcile };
+  return { provider, apply, reconcile, plan, planProvider };
 }
 
 function storeHarness() {
@@ -89,9 +90,13 @@ function storeHarness() {
       connectionId: 'connection-1',
       target: 'gcp',
       observedState: 'stopped',
+      hostGeneration: 1,
+      desiredRevision: 1,
+      observedRevision: 1,
       desired,
       resources: [{ resource: vm, registeredAt: '2026-08-26T00:00:00Z' }],
     })),
+    upsertHost: vi.fn(async () => {}),
     beginOperation: vi.fn(async () => {}),
     updateOperation: vi.fn(async () => {}),
     readCheckpoints: vi.fn(async () => checkpoints.map((entry) => ({ ...entry }))),
@@ -232,7 +237,42 @@ describe('runWorkspaceHostLifecycle', () => {
     );
   });
 
-  it('leaves a non-boot-disk action reporting a plain completion', async () => {
+  it('reports repair as provider-succeeded but not servable, in the result AND the ledger', async () => {
+    // WI-2146639: repair refreshes startup metadata and resets the existing VM. Provider success
+    // proves those mutations completed; it does not prove the replacement startup bootstrap has
+    // finished. Preserve both facts instead of either lying about success or claiming readiness.
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: vm,
+    });
+
+    await expect(
+      runWorkspaceHostLifecycle({ ...input(provider, store), action: 'repair' }),
+    ).resolves.toMatchObject({ status: 'succeeded', requiresInitialization: true });
+
+    expect(store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'succeeded',
+        percent: 100,
+        message: expect.stringContaining('CANNOT SERVE'),
+      }),
+    );
+    expect(store.updateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("repair invalidated the host's initialized state"),
+      }),
+    );
+    expect(store.appendEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('CANNOT SERVE') }),
+    );
+  });
+
+  it('leaves an initialization-preserving action reporting a plain completion', async () => {
     // The calibration case. Without it, a predicate stuck at `true` would pass the test above
     // while declaring every stop and restart unusable.
     const { store } = storeHarness();
@@ -266,5 +306,37 @@ describe('runWorkspaceHostLifecycle', () => {
       }),
     ).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
     expect(provider.plan).not.toHaveBeenCalled();
+  });
+
+  it('creates a replacement Host identity while preserving Workspace data and permissions', async () => {
+    const { store } = storeHarness();
+    const { provider, apply, plan, planProvider } = providerHarness();
+    planProvider.mockResolvedValue({ ...plan, hostId: 'host-restored' });
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: { ...vm, providerId: 'pc-host-restored' },
+    });
+
+    await runWorkspaceHostLifecycle({
+      ...input(provider, store),
+      action: 'restore',
+      snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
+      desired: { ...desired, hostId: 'host-restored' },
+    });
+
+    expect(store.upsertHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'workspace-1',
+        id: 'host-restored',
+        hostGeneration: 2,
+        desiredRevision: 2,
+        observedRevision: 1,
+        connectionId: 'connection-1',
+        desiredSpec: expect.objectContaining({ hostId: 'host-restored', data: desired.data }),
+      }),
+    );
   });
 });

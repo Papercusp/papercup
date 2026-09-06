@@ -9,9 +9,9 @@ import {
  * The expected classification of EVERY action in the canonical vocabulary.
  *
  * Written out in full on purpose. The point of this map is not to restate the predicate —
- * it is to fail when a NEW lifecycle action is added and nobody decides whether it destroys
+ * it is to fail when a NEW lifecycle action is added and nobody decides whether it invalidates
  * the host's initialized state. A test that only asserted the current `true` cases would
- * stay green while a new boot-disk-replacing action silently defaulted to "still ready",
+ * stay green while a new initialization-invalidating action silently defaulted to "still ready",
  * which is the exact bug this module exists to prevent, one action later.
  */
 const EXPECTED: Record<string, boolean> = {
@@ -20,7 +20,7 @@ const EXPECTED: Record<string, boolean> = {
   stop: false,
   restart: false, // reboots the SAME boot disk — what was installed is still installed
   snapshot: false,
-  repair: false,
+  repair: true, // refreshes startup metadata and resets the VM; the new bootstrap must finish
   restore: true, // builds a DISTINCT target host that has never been initialized
   upgrade: true, // deletes and recreates the instance from a new image; boot disk is gone
   destroy: false, // the host is going away; readiness is not a question that survives it
@@ -40,16 +40,15 @@ describe("workspaceHostActionInvalidatesInitialization", () => {
     expect(classified).toEqual(EXPECTED);
   });
 
-  it("declares exactly the boot-disk-replacing actions", () => {
-    expect([...WORKSPACE_HOST_INITIALIZATION_INVALIDATING_ACTIONS].sort()).toEqual([
-      "restore",
-      "upgrade",
-    ]);
+  it("declares exactly the initialization-invalidating actions", () => {
+    expect(
+      [...WORKSPACE_HOST_INITIALIZATION_INVALIDATING_ACTIONS].sort(),
+    ).toEqual(["repair", "restore", "upgrade"]);
   });
 
   it("only names actions that exist in the canonical vocabulary", () => {
     // A typo ('upgade') would otherwise sit here classifying nothing, and every host would
-    // keep reporting ready after an upgrade with no test noticing.
+    // keep reporting ready after an invalidating lifecycle action with no test noticing.
     for (const action of WORKSPACE_HOST_INITIALIZATION_INVALIDATING_ACTIONS) {
       expect(WORKSPACE_HOST_LIFECYCLE_ACTIONS).toContain(action);
     }
