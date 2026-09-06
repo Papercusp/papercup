@@ -89,7 +89,7 @@ import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
-import { recordPlanRevision } from './agent-tools/plans/revisions';
+import { getPlanRevisionSnapshot, recordPlanRevision } from './agent-tools/plans/revisions';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
@@ -492,6 +492,27 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
     createdAt: row.created ?? updatedAt,
     updatedAt,
   };
+}
+
+const RUBRIC_REVISION_SNAPSHOT_HEADING = '## Structured rubric data (`template_data`)';
+
+/**
+ * Recover the structured rubric document appended by rubricRevisionSnapshot.
+ * Historical reads fail closed when a legacy/backfilled revision has no
+ * structured snapshot; they must never silently grade the current template_data.
+ */
+export function parseRubricRevisionTemplateData(snapshot: string): unknown | null {
+  const marker = snapshot.lastIndexOf(RUBRIC_REVISION_SNAPSHOT_HEADING);
+  if (marker < 0) return null;
+  const fenced = snapshot
+    .slice(marker + RUBRIC_REVISION_SNAPSHOT_HEADING.length)
+    .match(/~~~json\s*\n([\s\S]*?)\n~~~/);
+  if (!fenced) return null;
+  try {
+    return JSON.parse(fenced[1]);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -902,10 +923,59 @@ export async function getRubricPlanRevision(rubricId: string): Promise<number | 
   return (await readRubricPlanRevision(rubricId)).revision;
 }
 
+/**
+ * Resolve one rubric against an immutable historical plan revision. The current
+ * plan row supplies identity/lifecycle metadata, while the selected revision's
+ * enriched snapshot supplies the grading contract. Missing or malformed history
+ * returns null rather than falling back to the current rubric.
+ */
+async function getRubricAtRevision(rubricId: string, revision: number): Promise<Rubric | null> {
+  if (!Number.isInteger(revision) || revision <= 0) return null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<RubricPlanRow[]>`
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             version, owner, archived, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND plan_slug = ${rubricId}
+       LIMIT 1`;
+    const row = rows.find((candidate) => candidate.plan_slug === rubricId);
+    if (!row) return null;
+
+    const snapshot = await getPlanRevisionSnapshot(rubricId, revision, {
+      workspaceId: row.workspace_id,
+      harnessSlug: row.harness_slug,
+    });
+    if (!snapshot) return null;
+    const parsed = rubricTemplateDataSchema.safeParse(parseRubricRevisionTemplateData(snapshot.contentSnapshot));
+    if (!parsed.success) return null;
+
+    // Preserve current plan-row metadata (title/status/ownership/lifecycle) but
+    // replace both the revision and the structured grading data with the exact
+    // historical snapshot. mapRubricPlanRows also preserves the existing
+    // delegated-class hash semantics.
+    return (
+      (await mapRubricPlanRows([
+        {
+          ...row,
+          version: revision,
+          template_data: parsed.data,
+        },
+      ]))[0] ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch one rubric in full by its slug id — ANY kind: an explicit id is an explicit
  *  opt-in, so the shared grading path resolves acceptance rubrics through the same seam
  *  standards use (plan D-010). Returns null when no rubric carries that id. */
-export async function getRubric(rubricId: string): Promise<Rubric | null> {
+export async function getRubric(rubricId: string, revision?: number): Promise<Rubric | null> {
+  if (revision !== undefined) return getRubricAtRevision(rubricId, revision);
   const std = (await loadAllRubrics()).find((r) => r.rubricId === rubricId);
   if (std) return std;
   // Not in the standard library — a direct id-addressed lookup of any kind (acceptance
