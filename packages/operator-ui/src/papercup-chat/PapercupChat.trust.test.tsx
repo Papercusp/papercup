@@ -15,7 +15,7 @@
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatTurn } from '@papercusp/chat-protocol';
+import type { CardPresentation, ChatTurn, OpenCardSnapshot } from '@papercusp/chat-protocol';
 import { ChatMarkdown, PapercupChat, askTranscriptPlaceholder, lookedAtTools, papercupChatUrlTransform } from './PapercupChat';
 import type { PapercupChatController } from './use-papercup-chat';
 
@@ -300,6 +300,71 @@ describe('PapercupChat — the view over a controller', () => {
     expect(screen.getByText('Which one?')).toBeTruthy();
     screen.getByText('Option A').click();
     expect(chat.answerCard).toHaveBeenCalledWith(expect.objectContaining({ action: 'submit', correlationId: 'c-1' }));
+  });
+
+  const cardPresentations: Array<[string, CardPresentation]> = [
+    ['radio', { kind: 'radio', options: [{ id: 'a', label: 'A' }] }],
+    ['checkbox', { kind: 'checkbox', options: [{ id: 'a', label: 'A' }] }],
+    ['select', { kind: 'select', options: [{ id: 'a', label: 'A' }] }],
+    ['text', { kind: 'text', placeholder: 'Type here' }],
+    ['date', { kind: 'date', min: '2026-01-01', max: '2026-12-31' }],
+    ['slider', { kind: 'slider', min: 0, max: 10, step: 1 }],
+  ];
+
+  it.each(cardPresentations)('renders the %s state-card kind through the one shared tail', (kind, presentation) => {
+    const card: OpenCardSnapshot = {
+      correlationId: `card-${kind}`,
+      prompt: `${kind} question`,
+      createdAt: Date.now(),
+      presentation,
+    };
+    render(<PapercupChat chat={controller({ pendingCards: [card] })} hostTrust="owner" />);
+    expect(screen.getByText(`${kind} question`)).toBeTruthy();
+  });
+
+  it('renders an open persisted ask-choice card and routes its answer with the owning turn identity', () => {
+    const answerPersistedCard = vi.fn(async () => {});
+    const turn: ChatTurn = {
+      id: 'persisted-card-turn',
+      seq: 42,
+      role: 'assistant',
+      text: '',
+      createdAt: Date.now(),
+      tools: [
+        {
+          name: 'chat:ask_choice',
+          input: { question: 'Persisted question?', options: [{ id: 'a', label: 'Persisted A' }] },
+        },
+      ],
+    };
+    render(<PapercupChat chat={controller({ turns: [turn], answerPersistedCard })} hostTrust="owner" />);
+    screen.getByText('Persisted A').click();
+    expect(answerPersistedCard).toHaveBeenCalledWith({
+      turn,
+      toolIndex: 0,
+      picks: [{ option_id: 'a', label: 'Persisted A' }],
+    });
+  });
+
+  it('renders a persisted declined card as settled history, not an answerable duplicate', () => {
+    const answerPersistedCard = vi.fn(async () => {});
+    const turn: ChatTurn = {
+      id: 'declined-card-turn',
+      seq: 43,
+      role: 'assistant',
+      text: '',
+      createdAt: Date.now(),
+      tools: [
+        {
+          name: 'chat:ask_choice',
+          input: { question: 'Old question?', options: [{ id: 'a', label: 'Old A' }] },
+          answered: { picks: [], declined: true, at: Date.now() - 1_000 },
+        },
+      ],
+    };
+    render(<PapercupChat chat={controller({ turns: [turn], answerPersistedCard })} hostTrust="owner" />);
+    expect(screen.getByText('Old question?')).toBeTruthy();
+    expect(answerPersistedCard).not.toHaveBeenCalled();
   });
 
   it('host slots: the action bar and composer chrome render where the IR puts them', () => {
