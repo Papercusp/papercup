@@ -27,10 +27,14 @@ import {
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
+  defaultTestFileRunTimeoutMs,
   testFileRunTimeoutMs,
   vitestRunFailed,
   warnIfInstallInFlight,
   withoutOutputFileArg,
+  DEFAULT_TEST_FILE_RUN_TIMEOUT_MS,
+  MAX_TEST_FILE_RUN_TIMEOUT_MS,
+  TEST_FILE_RUN_TIMEOUT_PER_FILE_MS,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive itself must
@@ -50,7 +54,27 @@ describe('test-files router', () => {
     expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '0' })).toThrow(/between 1 and/);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
-    expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '1800001' })).toThrow(/between 1 and/);
+    expect(() =>
+      testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(MAX_TEST_FILE_RUN_TIMEOUT_MS + 1) }),
+    ).toThrow(/between 1 and/);
+  });
+
+  it('scales the default whole-run budget with the requested file count (gate --related lists)', () => {
+    // A handful of files keeps the flat five-minute floor.
+    expect(defaultTestFileRunTimeoutMs(1)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    expect(testFileRunTimeoutMs({}, 3)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // 235 files — the @papercusp/web `--related` list that a flat 300s budget reaped with two
+    // files completed on every gate run from 2026-09-04 to 2026-09-06 — gets a proportional
+    // ceiling instead of a guaranteed TEST_FILE_NOT_MEASURED exit.
+    expect(testFileRunTimeoutMs({}, 235)).toBe(235 * TEST_FILE_RUN_TIMEOUT_PER_FILE_MS);
+    expect(testFileRunTimeoutMs({}, 235)).toBeGreaterThan(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // The router maximum still caps it.
+    expect(defaultTestFileRunTimeoutMs(100_000)).toBe(MAX_TEST_FILE_RUN_TIMEOUT_MS);
+    // A count that is not a positive integer falls back to the single-file floor.
+    expect(defaultTestFileRunTimeoutMs(0)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    expect(defaultTestFileRunTimeoutMs(Number.NaN)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // An explicit override always wins, whatever the count.
+    expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' }, 235)).toBe(540_000);
   });
 
   it('publishes and cleans the pc-heavy after-ready marker at the execution boundary', () => {

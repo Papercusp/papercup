@@ -1798,18 +1798,42 @@ function run(command, args, options) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
 
-// The supported testing:run surface uses the same five-minute whole-run budget. Keep the direct
-// test:file CLI bounded too: unlike Vitest's per-test timeout, this parent timer can still fire when
-// a fork worker is synchronously spinning and its own event loop cannot run timers.
+// The supported testing:run surface uses the same five-minute whole-run budget for a SHORT list.
+// Keep the direct test:file CLI bounded too: unlike Vitest's per-test timeout, this parent timer
+// can still fire when a fork worker is synchronously spinning and its own event loop cannot run
+// timers.
+//
+// The DEFAULT SCALES WITH THE REQUESTED FILE COUNT. A flat five-minute budget was calibrated for
+// a handful of files, but the green-checkpoint's `--related` narrowing hands this router ONE
+// positional list of a few hundred files per workspace (235 for @papercusp/web on 2026-09-06)
+// under a one-worker allocation. The flat budget reaped that run at 300s with two files completed
+// on EVERY gate run from 2026-09-04 on — a `TEST_FILE_NOT_MEASURED` exit 2 that the gate then
+// held `main` on, with no test-failure verdict behind it. The budget is a CEILING, not a duration:
+// a wedged run is still caught by the caller's stall watchdog (the gate reaps on stalledForSec)
+// and by pc-heavy, so a generous ceiling costs nothing on a healthy run.
 export const DEFAULT_TEST_FILE_RUN_TIMEOUT_MS = 300_000;
-export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 30 * 60_000;
+export const TEST_FILE_RUN_TIMEOUT_PER_FILE_MS = 20_000;
+export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 120 * 60_000;
+
+/** Default whole-run budget for a positional list of `fileCount` files: the flat five-minute
+ * floor, widened by a per-file allowance, capped at the router maximum. A count that is not a
+ * positive integer falls back to the single-file floor. */
+export function defaultTestFileRunTimeoutMs(fileCount = 1) {
+  const count = Number.isSafeInteger(fileCount) && fileCount > 0 ? fileCount : 1;
+  return Math.min(
+    MAX_TEST_FILE_RUN_TIMEOUT_MS,
+    Math.max(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS, count * TEST_FILE_RUN_TIMEOUT_PER_FILE_MS),
+  );
+}
 
 /** Resolve the whole-file watchdog from the CLI environment. Unlike an outer
  * task timeout, this is the deadline that owns and reaps the Vitest process
- * tree, so slow-but-progressing files need a supported way to widen it. */
-export function testFileRunTimeoutMs(env = process.env) {
+ * tree, so slow-but-progressing files need a supported way to widen it. An
+ * explicit PAPERCUSP_TEST_FILE_TIMEOUT_MS always wins; otherwise the budget is
+ * derived from `fileCount` (see defaultTestFileRunTimeoutMs). */
+export function testFileRunTimeoutMs(env = process.env, fileCount = 1) {
   const raw = env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
-  if (raw == null || raw.trim() === '') return DEFAULT_TEST_FILE_RUN_TIMEOUT_MS;
+  if (raw == null || raw.trim() === '') return defaultTestFileRunTimeoutMs(fileCount);
   if (!/^\d+$/.test(raw.trim())) {
     throw new Error('PAPERCUSP_TEST_FILE_TIMEOUT_MS must be a positive integer number of milliseconds');
   }
@@ -2312,7 +2336,7 @@ export async function main(
         owner: `test-files:${cwdLabel}:${process.pid}`,
         idempotencyKey: governedProcessIdempotencyKey('test-files-node', nodeIdentity),
         payloadRef: `test-files:${cwdLabel}`,
-        timeoutMs: TEST_FILE_RUN_TIMEOUT_MS,
+        timeoutMs: testFileRunTimeoutMs(process.env, exact.length),
         demand: nodeDemand,
         metadata: { processKind: 'test-files-node-child', cwd: cwdLabel, fileCount: exact.length },
         env: process.env,
@@ -2490,17 +2514,27 @@ export async function main(
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
     if (!ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
+    // The whole-run budget scales with the positional list (see testFileRunTimeoutMs): a
+    // gate `--related` list of a few hundred files must not inherit the single-file floor.
+    const runTimeoutMs = testFileRunTimeoutMs(process.env, exact.length);
     const result = await runCapturedTestProcessImpl(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
-      { cwd: group.cwd, env: process.env, files: exact, cwdLabel, ...finalizationCallbacks() },
+      {
+        cwd: group.cwd,
+        env: process.env,
+        files: exact,
+        cwdLabel,
+        timeoutMs: runTimeoutMs,
+        ...finalizationCallbacks(),
+      },
     );
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.timedOut) {
       console.error(
         `TEST_FILE_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(exact)} ` +
-          `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped; ` +
+          `timeoutMs=${runTimeoutMs} status=timed-out — owned child tree reaped; ` +
           'NOT MEASURED — no test-failure verdict was produced. Widen with ' +
           'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same npm run test:file command.',
       );
