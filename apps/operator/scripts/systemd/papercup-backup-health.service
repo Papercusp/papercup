@@ -20,4 +20,6 @@ IOSchedulingPriority=7
 Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
 # Detection + escalation ONLY — never re-runs a dump, kills a process, or edits backup
 # config (EI-8901: a health check must not hold mutate authority over what it judges).
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-backup-health-check.sh
+# Snapshot the health probe and its adjacent lib/*.sh sidecars before starting;
+# the probe may run while the shared checkout is edited (EI-22458080342999427).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-backup-health-check.sh
