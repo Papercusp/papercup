@@ -529,6 +529,14 @@ export type FrozenCandidateRepairQueueRead =
       reason: 'schema-newer-than-reader' | 'invalid-shape';
       /** Integer schema observed on the row, or null when the shape did not carry one. */
       schemaVersion: number | null;
+      /**
+       * Best-effort identity from the raw row. A newer writer can add fields this reader
+       * cannot validate, but these stable coordinates still tell operators WHICH frozen
+       * queue was preserved rather than collapsing it to "none".
+       */
+      candidate?: string | null;
+      repairHead?: string | null;
+      phase?: string | null;
     };
 
 /**
@@ -1411,9 +1419,18 @@ export function parseFrozenCandidateRepairQueueRead(
     raw && Number.isSafeInteger(raw.schemaVersion)
       ? (raw.schemaVersion as number)
       : null;
+  const rawString = (key: string): string | null => {
+    const candidate = raw?.[key];
+    return typeof candidate === 'string' && candidate.trim().length > 0 ? candidate.trim() : null;
+  };
+  const identity = {
+    candidate: rawString('candidate'),
+    repairHead: rawString('repairHead'),
+    phase: rawString('phase'),
+  };
   return schemaVersion !== null && schemaVersion > FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
-    ? { status: 'unreadable', reason: 'schema-newer-than-reader', schemaVersion }
-    : { status: 'unreadable', reason: 'invalid-shape', schemaVersion };
+    ? { status: 'unreadable', reason: 'schema-newer-than-reader', schemaVersion, ...identity }
+    : { status: 'unreadable', reason: 'invalid-shape', schemaVersion, ...identity };
 }
 
 /** One bounded, shared explanation for every fail-closed unreadable-queue surface. */
@@ -1421,9 +1438,15 @@ export function describeUnreadableFrozenCandidateRepairQueue(
   read: Extract<FrozenCandidateRepairQueueRead, { status: 'unreadable' }>,
 ): string {
   const schema = read.schemaVersion === null ? 'unknown' : String(read.schemaVersion);
+  const identity = [
+    read.candidate ? `candidate ${read.candidate.slice(0, 12)}` : null,
+    read.repairHead ? `repairHead ${read.repairHead.slice(0, 12)}` : null,
+    read.phase ? `phase ${read.phase}` : null,
+  ].filter((part): part is string => part !== null);
   return (
     `a persisted frozen repair queue is unreadable (${read.reason}, schema ${schema}; ` +
-    `reader supports through ${FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION})`
+    `reader supports through ${FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION})` +
+    (identity.length > 0 ? `; raw identity: ${identity.join(', ')}` : '')
   );
 }
 
