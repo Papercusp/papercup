@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ExternalTriggerSourceRow } from '../../external-triggers/source-store';
+import { GoogleGmailApiError } from '../../external-triggers/google-gmail';
 import type { GooglePubSubReceivedMessage } from '../../external-triggers/google-pubsub';
 import { getSystemAction } from './system-actions';
 import { formatGoogleGmailPollLog, runGoogleGmailPoll } from './google-gmail-poll-action';
@@ -261,6 +262,70 @@ describe('google-gmail-poll system action', () => {
     expect(formatGoogleGmailPollLog(result)).toContain(
       'failures=[{"sourceId":"source-bad","status":"degraded","error":"google_gmail_history_list_503"}]',
     );
+  });
+
+  it('refreshes and retries one Gmail 401 before marking the source terminal', async () => {
+    const current = source('source-refresh', 'refresh@example.com');
+    const updateSource = vi.fn();
+    const syncTokens: string[] = [];
+    let authenticatedCalls = 0;
+    const withAccessTokenRetry = async <T>(
+      _source: ExternalTriggerSourceRow,
+      _installSlug: string,
+      operation: (accessToken: string) => Promise<T>,
+    ): Promise<T> => {
+      authenticatedCalls += 1;
+      try {
+        return await operation('stale-token');
+      } catch (cause) {
+        if (!(cause instanceof GoogleGmailApiError) || cause.status !== 401) throw cause;
+        return operation('fresh-token');
+      }
+    };
+
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => [current]),
+      withAccessTokenRetry,
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureWatch: vi.fn(async (_sql, sourceRow) => ({
+        renewed: false,
+        emailAddress: String(sourceRow.cursor.emailAddress),
+        historyId: String(sourceRow.cursor.historyId),
+        expiration: String(sourceRow.cursor.watchExpiration),
+        source: sourceRow,
+      })),
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () => [doorbell('ack-refresh', 'refresh@example.com')]),
+      syncSource: vi.fn(async (_sql, _sourceRow, accessToken) => {
+        syncTokens.push(accessToken);
+        if (accessToken === 'stale-token') {
+          throw new GoogleGmailApiError(401, 'message_get', 'Invalid Credentials');
+        }
+        return {
+          mode: 'incremental' as const,
+          messages: 1,
+          historyPages: 1,
+          messagePages: 0,
+          historyId: 'next-refresh',
+        };
+      }),
+      acknowledge: vi.fn(async (_workspaceId, ackIds) => ackIds.length),
+      updateSource,
+    });
+
+    expect(result).toMatchObject({ sources: 1, succeeded: 1, failed: 0, acknowledged: 1, messages: 1 });
+    expect(syncTokens).toEqual(['stale-token', 'fresh-token']);
+    expect(authenticatedCalls).toBe(2);
+    expect(updateSource).not.toHaveBeenCalled();
   });
 
   it('isolates a revoked mailbox until an account-targeted reconnect resumes its preserved cursor', async () => {
