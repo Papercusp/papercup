@@ -800,13 +800,38 @@ export const ISSUE_COLS_BODYLESS_PAYLOADLESS = ISSUE_COLS_BODYLESS.replace(
   '$1NULL::jsonb AS payload$2',
 );
 
+/**
+ * Payload dropped EXCEPT for a rebuilt one-field object carrying `watchdogKey`.
+ *
+ * The whole-corpus recurrence census must group on the stable machine-minted
+ * `watchdogKey` (see `recurrenceGroupKey` in harness/improvements/digest.ts), but
+ * payload is the LARGEST column in this table (39 MB against 2.8 MB of title,
+ * measured 2026-08-30) and not parsing it is the entire point of the payload-less
+ * projection. Extracting that one key as text and rebuilding a single-field object
+ * keeps the row SHAPE identical for the candidate mapper — which reads
+ * `payload.watchdogKey` and type-checks it — while reading none of the rest.
+ */
+const WATCHDOG_KEY_ONLY_PAYLOAD = "$1jsonb_build_object('watchdogKey', payload->>'watchdogKey') AS payload$2";
+export const ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY = ISSUE_COLS_BODYLESS.replace(
+  /(^|,\s*)payload(\s*,)/,
+  WATCHDOG_KEY_ONLY_PAYLOAD,
+);
+export const ISSUE_COLS_WATCHDOG_KEY_ONLY = ISSUE_COLS.replace(/(^|,\s*)payload(\s*,)/, WATCHDOG_KEY_ONLY_PAYLOAD);
+
 /** Select the smallest issue row projection requested by a list caller. */
-export function issueListColumns(filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload'>): string {
+export function issueListColumns(
+  filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload' | 'includeWatchdogKey'>,
+): string {
   if (filter.includeBody === false && filter.includePayload === false) {
-    return ISSUE_COLS_BODYLESS_PAYLOADLESS;
+    return filter.includeWatchdogKey === true ? ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY : ISSUE_COLS_BODYLESS_PAYLOADLESS;
   }
   if (filter.includeBody === false) return ISSUE_COLS_BODYLESS;
-  if (filter.includePayload === false) return ISSUE_COLS_PAYLOADLESS;
+  // Honoured on BOTH payload-less branches on purpose: a caller that keeps `body`
+  // but drops payload would otherwise set the flag and silently still get no key —
+  // the same silent-degradation shape `includePayload` itself is documented for.
+  if (filter.includePayload === false) {
+    return filter.includeWatchdogKey === true ? ISSUE_COLS_WATCHDOG_KEY_ONLY : ISSUE_COLS_PAYLOADLESS;
+  }
   return ISSUE_COLS;
 }
 
@@ -1287,6 +1312,15 @@ export interface ListIssuesFilter {
    * backwards compatibility and explicit/detail reads (WI-42508).
    */
   includePayload?: boolean;
+  /**
+   * Keep `payload.watchdogKey` alive across an `includePayload: false` read, as a
+   * rebuilt one-field payload (see {@link ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY}).
+   *
+   * For a whole-corpus pass that must GROUP on the stable signal identity but reads
+   * nothing else from payload — the recurrence census. Ignored when payload is kept
+   * (the key is already there). No effect on the WHERE clause, only the projection.
+   */
+  includeWatchdogKey?: boolean;
   /**
    * P-008 (db-performance-remediation-2026-07-26): author + recency predicates, so a
    * caller wanting "how many did *I* file since T" can COUNT in Postgres instead of

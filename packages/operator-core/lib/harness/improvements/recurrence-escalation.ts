@@ -284,14 +284,21 @@ export async function runRecurrenceEscalation(
 ): Promise<EscalationResult> {
   const maxActions = opts.maxActions ?? DEFAULT_MAX_ACTIONS;
 
-  // PHASE 1 (WI-1216687) — census the WHOLE corpus on cheap columns. A signature is
-  // derived from the title alone, so body and payload are dead weight here (64 MB vs
-  // ~5 MB measured). This replaces the old `{ windowPerScope: true }` read, whose
+  // PHASE 1 (WI-1216687) — census the WHOLE corpus on cheap columns. `body` is dead
+  // weight here (64 MB vs ~5 MB measured), and so is the bulk of `payload` — but NOT
+  // all of it: a signature is derived from the title alone ONLY for a keyless row.
+  // `recurrenceGroupKey` prefers the stable `payload.watchdogKey`, so the census asks
+  // for that one field back (`includeWatchdogKey`, a rebuilt one-key object — it does
+  // not re-read the 39 MB column). Dropping payload wholesale here left
+  // `candidate.watchdogKey` undefined for every row, which is not a type error and so
+  // silently made the census count repeats on free-prose titles alone: 155 groups
+  // reached the threshold where the key finds 538 (measured 2026-09-06).
+  // This replaces the old `{ windowPerScope: true }` read, whose
   // undeclared `limit ?? 500` made the population the newest ~14h rather than a set.
   // WI-9454's concern — that a busy scope must not crowd small ones out of the
   // window — is subsumed rather than dropped: there is no window left to crowd.
   const slate = await deps.scanCorpus(
-    { includeBody: false, includePayload: false },
+    { includeBody: false, includePayload: false, includeWatchdogKey: true },
     {
       maxRows: RECURRING_SIGNATURE_SCAN_CAP,
       project: (items) => selectRecurringSignatures([...items], opts),

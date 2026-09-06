@@ -271,6 +271,17 @@ export interface ReadImprovementOpts {
    * ~5 MB instead of ~64 MB.
    */
   includePayload?: boolean;
+  /**
+   * Keep `watchdogKey` populated on the returned candidates across an
+   * `includePayload: false` read (see `ListIssuesFilter.includeWatchdogKey`).
+   *
+   * A whole-corpus pass that GROUPS by signal identity — the recurrence census —
+   * needs this: without it `candidate.watchdogKey` is `undefined` for every row, so
+   * `recurrenceGroupKey` silently falls back to the title signature for the entire
+   * corpus. That is not a type error (the field is optional), which is exactly how
+   * the census came to count repeats on free prose alone.
+   */
+  includeWatchdogKey?: boolean;
   /** (P-010) Restrict to a specific harness scope. Omit for all scopes (papercusp + all harnesses). */
   harnessSlug?: string;
   /**
@@ -435,6 +446,7 @@ export async function projectImprovementItemsForBoundedRead<T>(
       // `candidate.body` simply omits the flag and is unaffected.
       ...(opts.includeBody === false ? { includeBody: false } : {}),
       ...(opts.includePayload === false ? { includePayload: false } : {}),
+      ...(opts.includeWatchdogKey === true ? { includeWatchdogKey: true } : {}),
       ...(opts.createdBefore ? { createdBefore: opts.createdBefore } : {}),
     },
     {

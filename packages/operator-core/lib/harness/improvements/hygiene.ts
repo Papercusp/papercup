@@ -57,7 +57,7 @@ import {
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ImprovementCandidate, ImprovementSeverity } from './policy';
 import { readImprovementItems } from './read-items';
-import { findLikelyDuplicates, signatureRecurrence, dedupSignature } from './digest';
+import { findLikelyDuplicates, signatureRecurrence, recurrenceGroupKey } from './digest';
 import { initializeIdeaLifecycle, updateIdeaLifecycle } from './lifecycle';
 import { trackDetached } from '../../detached-imports';
 
@@ -114,7 +114,7 @@ export function planHygieneSweep(all: ImprovementCandidate[], opts: PlanHygieneO
     const clusterMembers = cluster.ids.map((id) => byId.get(id)).filter((c): c is ImprovementCandidate => !!c);
     const groups = new Map<string, ImprovementCandidate[]>();
     for (const m of clusterMembers) {
-      const groupKey = m.watchdogKey ? `key:${m.watchdogKey}` : `sig:${dedupSignature(m.title)}`;
+      const groupKey = recurrenceGroupKey(m);
       const arr = groups.get(groupKey) ?? [];
       arr.push(m);
       groups.set(groupKey, arr);
@@ -155,7 +155,11 @@ export function planHygieneSweep(all: ImprovementCandidate[], opts: PlanHygieneO
     if (c.assignee) continue;
     const age = ageDaysOf(c, nowMs);
     if (age < staleDays) continue;
-    if (recurringSigs.has(dedupSignature(c.title))) continue; // active friction never ages out
+    // Must use the SAME key `signatureRecurrence` emitted above — both are plain
+    // strings, so looking this up by the bare title signature typechecks cleanly
+    // while silently matching nothing, aging out exactly the recurring rows this
+    // guard exists to protect.
+    if (recurringSigs.has(recurrenceGroupKey(c))) continue; // active friction never ages out
     acted.add(c.id);
     actions.push({
       id: c.id,

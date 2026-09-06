@@ -161,10 +161,31 @@ describe('runRecurrenceEscalation — glue', () => {
     // holding 96.9% of the corpus. WI-9454's per-scope fairness concern is subsumed:
     // there is no window left for a busy scope to crowd a small one out of.
     const [opts, projection] = scanCorpus.mock.calls[0]!;
-    expect(opts).toEqual({ includeBody: false, includePayload: false });
+    expect(opts).toEqual({ includeBody: false, includePayload: false, includeWatchdogKey: true });
     expect(opts).not.toHaveProperty('windowPerScope');
     expect(opts).not.toHaveProperty('limit');
     expect(projection.maxRows).toBe(RECURRING_SIGNATURE_SCAN_CAP);
+  });
+
+  it('censuses WITH the watchdog key — dropping payload wholesale makes the whole census title-only in silence', async () => {
+    const scanCorpus = vi.fn<EscalationDeps['scanCorpus']>(async () => []);
+    await runRecurrenceEscalation({}, baseDeps({ scanCorpus }));
+
+    // `recurrenceGroupKey` prefers `candidate.watchdogKey` and falls back to the
+    // title signature. `watchdogKey` is optional, so a census that drops payload
+    // gets `undefined` for EVERY row and silently falls back for the whole corpus —
+    // no type error, no failing assertion, just recurrence detection quietly
+    // reverting to free-prose titles (155 groups reaching the threshold where the
+    // key finds 538, measured 2026-09-06 over the 21,338 keyed observation rows).
+    //
+    // This is a projection/behaviour coupling nothing else can catch: the cost
+    // pressure that produced the payload-less read is real and recurring, so the
+    // next optimisation pass must fail HERE rather than silently re-inert the lane.
+    const [opts] = scanCorpus.mock.calls[0]!;
+    expect(
+      opts.includeWatchdogKey,
+      'the recurrence census must ask for watchdogKey back, or it groups on titles alone',
+    ).toBe(true);
   });
 
   it('WI-1216687: hydrates phase 2 by explicit member ids, so counting is a SET read and not a recency window', async () => {

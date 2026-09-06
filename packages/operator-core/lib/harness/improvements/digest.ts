@@ -280,6 +280,31 @@ export function dedupSignature(title: string): string {
 }
 
 /**
+ * The grouping key for recurrence counting: the machine-minted `watchdogKey` when
+ * the filing carries one, else the normalized title signature.
+ *
+ * This is the precedence `hygiene.ts` has always applied when deciding what may
+ * merge ("the key asserts one signal identity" — keyed never merges with keyless,
+ * different keys never merge). `signatureRecurrence` simply did not share it, so
+ * the recurrence/escalation leg counted repeats on free-prose titles alone, which
+ * agent-authored filings almost never collide on.
+ *
+ * Measured on the live observation lane (papercusp-workspace, 2026-09-06) over the
+ * 21,338 rows that carry a key: grouping by title signature reaches the escalation
+ * threshold (3) for 155 groups; grouping by this key reaches it for 538 — 3.5x more
+ * recurrence detected on the SAME rows. Coarsening the key further (dropping its
+ * trailing message slug to group by `<tool>:<class>`) was measured and REJECTED: it
+ * collapses 18,328 groups to 2,451 but moves threshold-reaching groups only 538 →
+ * 539, buying no signal while creating a 953-member bucket.
+ *
+ * The `key:`/`sig:` namespace prefixes are load-bearing — they keep a keyed group
+ * and a keyless group from ever colliding on the same string.
+ */
+export function recurrenceGroupKey(c: Pick<ImprovementCandidate, 'title' | 'watchdogKey'>): string {
+  return c.watchdogKey ? `key:${c.watchdogKey}` : `sig:${dedupSignature(c.title)}`;
+}
+
+/**
  * Server-authored identity persisted on every issue-family admission.
  *
  * `titleKey` reuses the exact normalized signature the duplicate and recurrence
@@ -581,8 +606,11 @@ export function signatureRecurrence(
   const nowMs = opts.nowMs ?? Date.now();
   const bySig = new Map<string, ImprovementCandidate[]>();
   for (const c of candidates) {
-    const sig = dedupSignature(c.title);
-    if (!sig) continue;
+    // A KEYLESS candidate whose title normalizes to nothing has no identity to
+    // group on (the original guard). A KEYED one always has one, so it is never
+    // skipped — `recurrenceGroupKey` would otherwise return a truthy bare `sig:`.
+    if (!c.watchdogKey && !dedupSignature(c.title)) continue;
+    const sig = recurrenceGroupKey(c);
     const arr = bySig.get(sig) ?? [];
     arr.push(c);
     bySig.set(sig, arr);

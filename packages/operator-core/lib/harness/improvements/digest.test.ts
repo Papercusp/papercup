@@ -622,6 +622,52 @@ describe('signatureRecurrence', () => {
     expect(recs[0].resolvedCount).toBe(1);
   });
 
+  it('groups differently-worded filings under one watchdogKey — the case free-prose titles never collide on', () => {
+    // The real shape this fixes: a machine-minted key is stable while the agent
+    // prose around it varies, so the title matcher splits one recurring condition
+    // into N singletons. Measured on the live observation lane (2026-09-06): the
+    // title signature reaches the escalation threshold for 155 groups where the key
+    // reaches it for 538, over the SAME 21,338 keyed rows.
+    const items: ImprovementCandidate[] = [
+      cand({ id: 'k1', title: 'facts:assert rejected measuredAt as too far in the past', watchdogKey: 'repeated-tool-error:facts:assert:caller' }),
+      cand({ id: 'k2', title: 'could not assert a fact — ttlSec required for a volatile subject', watchdogKey: 'repeated-tool-error:facts:assert:caller' }),
+      cand({ id: 'k3', title: 'measuredAt is only meaningful with subjectVolatile', watchdogKey: 'repeated-tool-error:facts:assert:caller' }),
+    ];
+    // Precondition: these titles genuinely do NOT collide on the title matcher, so
+    // the grouping below can only come from the key.
+    expect(new Set(items.map((i) => dedupSignature(i.title))).size).toBe(3);
+
+    const recs = signatureRecurrence(items, { nowMs: NOW });
+    expect(recs).toHaveLength(1);
+    expect(recs[0].count).toBe(3);
+  });
+
+  it('never merges a keyed filing with a keyless one, or two different keys', () => {
+    // hygiene.ts's long-standing rule ("the key asserts one signal identity"): the
+    // `key:`/`sig:` namespaces exist so a key can never collide with a title
+    // signature that happens to normalize to the same string.
+    const items: ImprovementCandidate[] = [
+      cand({ id: 'keyed-a', title: 'same words here', watchdogKey: 'source:alpha' }),
+      cand({ id: 'keyed-b', title: 'same words here', watchdogKey: 'source:beta' }),
+      cand({ id: 'keyless', title: 'same words here' }),
+    ];
+    const recs = signatureRecurrence(items, { nowMs: NOW });
+    expect(recs).toHaveLength(3);
+    expect(recs.every((r) => r.count === 1)).toBe(true);
+  });
+
+  it('still drops a keyless candidate whose title normalizes to nothing', () => {
+    // The pre-existing guard: no title tokens > 2 chars means no identity to group
+    // on. A KEYED row always has one, so it must survive the same guard.
+    const items: ImprovementCandidate[] = [
+      cand({ id: 'empty', title: 'a is on' }),
+      cand({ id: 'empty-but-keyed', title: 'a is on', watchdogKey: 'source:gamma' }),
+    ];
+    expect(dedupSignature('a is on')).toBe('');
+    const recs = signatureRecurrence(items, { nowMs: NOW });
+    expect(recs.map((r) => r.ids[0])).toEqual(['empty-but-keyed']);
+  });
+
   it('sorts most-recurring first, then freshest', () => {
     const items: ImprovementCandidate[] = [
       cand({ id: 's1', title: 'rare friction alpha', updatedAt: daysAgo(1) }),
