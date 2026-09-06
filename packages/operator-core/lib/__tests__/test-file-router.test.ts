@@ -50,7 +50,7 @@ import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 describe('test-files router', () => {
   it('supports a bounded CLI watchdog override for slow-but-progressing files', () => {
-    expect(testFileRunTimeoutMs({})).toBe(300_000);
+    expect(testFileRunTimeoutMs({})).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
     expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '0' })).toThrow(/between 1 and/);
     expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
@@ -60,9 +60,14 @@ describe('test-files router', () => {
   });
 
   it('scales the default whole-run budget with the requested file count (gate --related lists)', () => {
-    // A handful of files keeps the flat five-minute floor.
+    // A handful of files keeps the flat floor.
     expect(defaultTestFileRunTimeoutMs(1)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
     expect(testFileRunTimeoutMs({}, 3)).toBe(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS);
+    // The floor is also the gate's single-file flake-retry budget, and the slowest legitimate
+    // single file (apps/operator/scripts/hooks/cc/__tests__/pc-heavy.test.ts, 153 process-spawning
+    // tests) took 325s under gate load on 2026-09-06 — a 300s floor reaped it NOT MEASURED. Keep
+    // the floor at ten minutes or more unless that file has been made faster.
+    expect(DEFAULT_TEST_FILE_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(600_000);
     // 235 files — the @papercusp/web `--related` list that a flat 300s budget reaped with two
     // files completed on every gate run from 2026-09-04 to 2026-09-06 — gets a proportional
     // ceiling instead of a guaranteed TEST_FILE_NOT_MEASURED exit.
