@@ -26,6 +26,8 @@ import launchOnPlan, {
   isNonP2pDrainFleetSlug,
   mergeKindIntoClaimSpec,
   clampFleetTopUpToCapacity,
+  FLEET_LAUNCH_CANARY_FRESHNESS_MS,
+  hasFreshSameProfileCanary,
   composeMemberLaunchContext,
   renderMemberBaseline,
   distributeRemotePlacement,
@@ -973,6 +975,99 @@ describe('overrideCapacityClamp arg + clamp override (EI-8807)', () => {
     expect(clamp!.openCount).toBe(4);
     expect(clamp!.clamped).toBe(false);
     expect(clamp!.overridden).toBe(false);
+  });
+
+  it('a fresh exact-profile canary bypasses only the stale healthyAccounts:0 gate', () => {
+    const clamp = clampFleetTopUpToCapacity(4, walledPool, {
+      gatewayRouted: true,
+      freshSameProfileCanary: true,
+    });
+    expect(clamp).toMatchObject({
+      openCount: 4,
+      clamped: false,
+      recommendedOpenCount: 4,
+      healthyAccounts: 0,
+    });
+    expect(clamp!.reason).toMatch(/same-profile canary|healthyAccounts=0/);
+  });
+
+  it('keeps dispatchBudget binding when a fresh canary bypasses the zero-account gate', () => {
+    const clamp = clampFleetTopUpToCapacity(
+      20,
+      { ...walledPool, dispatchBudget: 3 },
+      { gatewayRouted: true, freshSameProfileCanary: true },
+    );
+    expect(clamp).toMatchObject({
+      openCount: 3,
+      clamped: true,
+      recommendedOpenCount: 3,
+    });
+  });
+
+  describe('hasFreshSameProfileCanary', () => {
+    const now = 10_000;
+    const profile = {
+      agent: 'claude',
+      model: 'sonnet',
+      account: 'auto',
+      carry: 'warm' as const,
+      headless: false,
+    };
+    const transaction = (overrides: Record<string, unknown> = {}) =>
+      ({
+        version: 1,
+        transactionId: 'tx-1',
+        state: 'verified' as const,
+        requestedAt: now - 1_000,
+        updatedAt: now - 1_000,
+        requestedMemberIds: ['su-canary'],
+        openedMemberIds: ['su-canary'],
+        verifiedMemberIds: ['su-canary'],
+        failed: [],
+        waves: [],
+        recovery: { retryOwnerIds: [], nextAction: 'none' },
+        requestedMembers: [{ index: 0, ownerId: 'su-canary', ...profile }],
+        ...overrides,
+      }) as never;
+
+    it('accepts a fresh verified exact-profile canary', () => {
+      expect(hasFreshSameProfileCanary({ transaction: transaction(), currentProfile: profile, nowMs: now })).toBe(true);
+    });
+
+    it('rejects an unknown or still-launching receipt', () => {
+      expect(hasFreshSameProfileCanary({ transaction: null, currentProfile: profile, nowMs: now })).toBe(false);
+      expect(
+        hasFreshSameProfileCanary({
+          transaction: transaction({ state: 'launching' }),
+          currentProfile: profile,
+          nowMs: now,
+        }),
+      ).toBe(false);
+    });
+
+    it('rejects an unverified, mismatched, or stale receipt', () => {
+      expect(
+        hasFreshSameProfileCanary({
+          transaction: transaction({ verifiedMemberIds: [] }),
+          currentProfile: profile,
+          nowMs: now,
+        }),
+      ).toBe(false);
+      expect(
+        hasFreshSameProfileCanary({
+          transaction: transaction(),
+          currentProfile: { ...profile, model: 'opus' },
+          nowMs: now,
+        }),
+      ).toBe(false);
+      expect(
+        hasFreshSameProfileCanary({
+          transaction: transaction({ updatedAt: now - FLEET_LAUNCH_CANARY_FRESHNESS_MS - 1 }),
+          currentProfile: profile,
+          nowMs: now,
+        }),
+      ).toBe(false);
+    });
   });
 });
 
