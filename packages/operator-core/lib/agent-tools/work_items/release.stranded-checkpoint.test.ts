@@ -267,7 +267,7 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     ]);
 
     const b = await body({ id: ITEM });
-    expect(outboxM).toHaveBeenCalledWith('me');
+    expect(outboxM).toHaveBeenCalledWith('me', {}, expect.objectContaining({ enough: expect.any(Function) }));
     expect(b.results[0].completionAssertionWarning).toMatch(/msg-complete-1/);
     expect(b.results[0].completionAssertionWarning).toMatch(/work_items:complete/);
   });

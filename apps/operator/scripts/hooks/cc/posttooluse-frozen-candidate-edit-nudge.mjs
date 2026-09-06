@@ -45,9 +45,10 @@
 //     `wholeBlob:true, reason` rather than believing it is covered.
 //   - `--self-test` runs the embedded cases (no stdin, no network) and exits non-zero on failure.
 //
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 /** MUST match packages/operator-core/lib/release/frozen-candidate-repair-queue.ts. */
@@ -107,7 +108,17 @@ export function warningFor(marker, editedPath, ledger = null) {
   if (!marker) return null;
   const p = normalizeRepoPath(editedPath);
   if (!p) return null;
-  if (!repairRadius(marker).has(p)) return null;
+  const inRepairRadius = repairRadius(marker).has(p);
+  if (!inRepairRadius) {
+    // A failed ledger write is an attribution loss even when this path is not one
+    // of the paths the gate currently reports as red. Keep this warning separate
+    // from radius admission guidance: there is no judged-path consequence to
+    // explain for an outside-radius edit, only the fact that recording failed.
+    if (ledger?.recorded === false) {
+      return `⚠ Your hunks for ${p} were NOT recorded in the frozen candidate's edit ledger (${ledger.detail ?? 'ledger unavailable'}).`;
+    }
+    return null;
+  }
   const lines = [
     '⛔ THIS FIX WILL NOT REACH THE GATE UNTIL YOU ADMIT IT.',
     `   ${p} is in the frozen candidate's repair radius, and the gate is judging ${String(
@@ -266,21 +277,115 @@ function realpathSafe(p) {
   }
 }
 
-/** Parse the MCP endpoint's JSON or SSE envelope into the inner tool result (or null). */
-export function parseMcpToolResult(rawText) {
+const OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1';
+const SCRATCH_URI_PREFIX = 'papercusp://scratch/';
+const STAGING_OPERATOR_URL = 'http://127.0.0.1:3170';
+
+/**
+ * Filesystem root for result-door spill files. Keep this in lockstep with
+ * apps/operator/scripts/ptool.mjs; the hook is a detached plain Node process,
+ * so it cannot import the TypeScript scratch-uri module.
+ */
+function scratchRootDir(env = process.env) {
+  const override = typeof env.PAPERCUSP_SCRATCH_ROOT === 'string' ? env.PAPERCUSP_SCRATCH_ROOT.trim() : '';
+  return override || join(homedir(), '.papercusp', 'scratch');
+}
+
+/** Map a trusted papercusp://scratch URI to a path below the configured root. */
+export function scratchUriToPath(uri, env = process.env) {
+  if (typeof uri !== 'string' || !uri.startsWith(SCRATCH_URI_PREFIX)) return '';
+  const rest = uri.slice(SCRATCH_URI_PREFIX.length);
+  if (!rest || rest.includes('\0') || /(^|\/)\.\.(\/|$)/.test(rest)) return '';
+  const root = scratchRootDir(env);
+  const candidate = resolve(root, rest);
+  if (candidate !== root && !candidate.startsWith(root + sep)) return '';
+  return candidate;
+}
+
+function tryParseJsonObject(text) {
+  if (typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Result-door spill files contain a magic line, a manifest, then JSON payload. */
+async function readSpilledPayload(path) {
+  const text = await readFile(path, 'utf8');
+  const lines = text.split('\n').filter((line) => line.trim() !== '');
+  if (lines.length === 0) throw new Error(`empty spill file: ${path}`);
+  return JSON.parse(lines[lines.length - 1]);
+}
+
+/**
+ * Unwrap a papercusp.output-envelope/v1 result, including a reference whose
+ * spill payload may put advisory text before the actual JSON result.
+ *
+ * This mirrors ptool.mjs rather than trusting content[0]: result-door may move
+ * advisory items ahead of the payload, and a failed read must leave the
+ * envelope untouched instead of fabricating a refusal or success.
+ */
+export async function unwrapOutputEnvelope(
+  parsed,
+  { readSpill = readSpilledPayload, fileExists = existsSync, env = process.env } = {},
+) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
+  if (!Array.isArray(parsed.content)) return parsed;
+  if (Object.prototype.hasOwnProperty.call(parsed, 'ok')) return parsed;
+
+  for (const part of parsed.content) {
+    const inline = tryParseJsonObject(part?.text);
+    if (inline) {
+      const unwrapped = await unwrapOutputEnvelope(inline, { readSpill, fileExists, env });
+      return unwrapped === inline ? inline : unwrapped;
+    }
+
+    if (part?.kind !== 'reference' && part?.type !== 'reference') continue;
+    const path = scratchUriToPath(part.uri, env);
+    if (!path || !fileExists(path)) continue;
+
+    let spilled;
+    try {
+      spilled = await readSpill(path);
+    } catch {
+      continue;
+    }
+    for (const spilledPart of spilled?.content ?? []) {
+      const candidate = tryParseJsonObject(spilledPart?.text);
+      if (!candidate) continue;
+      const unwrapped = await unwrapOutputEnvelope(candidate, { readSpill, fileExists, env });
+      return unwrapped === candidate ? candidate : unwrapped;
+    }
+  }
+  return parsed;
+}
+
+function resultContentText(result) {
+  return (result?.content ?? [])
+    .map((part) => (part && part.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+    .join(' ')
+    .slice(0, 200);
+}
+
+/**
+ * Parse the MCP endpoint's JSON, SSE, or output-envelope response into the
+ * inner tool result. Async because output-envelope references are recoverable
+ * spill files, not inline text.
+ */
+export async function parseMcpToolResult(rawText, options = {}) {
   let result = null;
   let rpcError = null;
   for (let line of String(rawText ?? '').split('\n')) {
     line = line.trim();
     if (!line || line.startsWith('event:')) continue;
     if (line.startsWith('data:')) line = line.slice(5).trim();
-    let candidate;
-    try {
-      candidate = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!candidate || typeof candidate !== 'object') continue;
+    const candidate = tryParseJsonObject(line);
+    if (!candidate) continue;
     if ('result' in candidate) {
       result = candidate.result;
       break;
@@ -289,34 +394,93 @@ export function parseMcpToolResult(rawText) {
       rpcError = candidate.error;
       break;
     }
+    // A direct CallToolResult/output envelope is also useful in tests and in
+    // older local MCP proxies that omit the JSON-RPC wrapper.
+    if (Array.isArray(candidate.content) || Object.prototype.hasOwnProperty.call(candidate, 'ok')) {
+      result = candidate;
+      break;
+    }
   }
-  if (rpcError) return { ok: false, detail: `rpc: ${rpcError.message ?? JSON.stringify(rpcError)}` };
+  if (rpcError) {
+    return { ok: false, detail: `rpc: ${rpcError.message ?? JSON.stringify(rpcError)}` };
+  }
   if (!result || typeof result !== 'object') return { ok: false, detail: 'no result' };
-  if (result.isError === true) {
-    const text = (result.content ?? []).map((c) => c?.text ?? '').join(' ').slice(0, 200);
-    return { ok: false, detail: `tool error: ${text || 'unknown'}` };
+
+  const unwrapped = await unwrapOutputEnvelope(result, options);
+  if (unwrapped !== result) result = unwrapped;
+  if (result?.isError === true) {
+    return { ok: false, detail: `tool error: ${resultContentText(result) || 'unknown'}` };
+  }
+  if (Object.prototype.hasOwnProperty.call(result, 'ok')) {
+    return { ok: true, inner: result };
   }
   for (const item of result.content ?? []) {
     if (!item || item.type !== 'text') continue;
-    try {
-      const inner = JSON.parse(item.text);
-      if (inner && typeof inner === 'object') return { ok: true, inner };
-    } catch {
-      /* not JSON */
-    }
+    const inner = tryParseJsonObject(item.text);
+    if (!inner) continue;
+    const nested = await unwrapOutputEnvelope(inner, options);
+    return { ok: true, inner: nested };
   }
   return { ok: false, detail: 'no text result' };
 }
 
-/**
- * POST one `record-edit` through the same door the lock hook uses (bearer + ?client=owner so
- * the server attributes the row to the per-session owner). Never throws.
- */
-export async function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, toolUseId, editIndex, atMs, fetchImpl = fetch }) {
-  const url =
-    operatorUrl.replace(/\/+$/, '') +
+function normalizedOperatorOrigin(operatorUrl) {
+  try {
+    const url = new URL(String(operatorUrl));
+    const host = ['localhost', '127.0.0.1', '::1'].includes(url.hostname) ? 'loopback' : url.hostname;
+    return `${url.protocol}//${host}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return String(operatorUrl ?? '').replace(/\/api\/mcp.*$/, '').replace(/\/+$/, '');
+  }
+}
+
+function isUnknownOperationFailure(value) {
+  const texts = [];
+  const collect = (entry) => {
+    if (typeof entry === 'string') {
+      texts.push(entry);
+      return;
+    }
+    if (!entry || typeof entry !== 'object') return;
+    for (const key of ['code', 'reason', 'verdict', 'detail', 'message']) {
+      if (typeof entry[key] === 'string') texts.push(entry[key]);
+    }
+    if (entry.error) collect(entry.error);
+    if (entry.inner) collect(entry.inner);
+  };
+  collect(value);
+  return texts.some((text) => {
+    const lower = text.toLowerCase();
+    return (
+      /^(?:unknown[-\s]?(?:op|operation|tool))$/.test(lower.trim()) ||
+      /\bunknown[-\s]?(?:op|operation|tool)\b/.test(lower) ||
+      /\b(?:op|operation|tool)\b[^.\n]{0,100}\b(?:unknown|not found|not registered|unsupported|unrecognized)\b/.test(lower) ||
+      /\b(?:unknown|not found|not registered|unsupported|unrecognized)\b[^.\n]{0,100}\b(?:op|operation|tool)\b/.test(lower)
+    );
+  });
+}
+
+function recordEditUrl(operatorUrl, owner) {
+  return (
+    String(operatorUrl ?? '').replace(/\/api\/mcp.*$/, '').replace(/\/+$/, '') +
     '/api/mcp?superuser=1&origin=hook&format=json&client=' +
-    encodeURIComponent(owner);
+    encodeURIComponent(owner)
+  );
+}
+
+async function recordAtOperatorUrl({
+  operatorUrl,
+  token,
+  owner,
+  marker,
+  path,
+  hunk,
+  toolUseId,
+  editIndex,
+  atMs,
+  fetchImpl,
+}) {
+  const url = recordEditUrl(operatorUrl, owner);
   const body = JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
@@ -346,15 +510,71 @@ export async function recordOneHunk({ operatorUrl, token, owner, marker, path, h
       signal: AbortSignal.timeout(4000),
     });
     const text = await res.text();
-    if (!res.ok) return { recorded: false, detail: `HTTP ${res.status}` };
-    const parsed = parseMcpToolResult(text);
-    if (!parsed.ok) return { recorded: false, detail: parsed.detail };
+    const parsed = await parseMcpToolResult(text);
+    if (!parsed.ok) {
+      const detail = res.ok ? parsed.detail : `HTTP ${res.status}: ${parsed.detail}`;
+      return { recorded: false, detail, unknownOperation: isUnknownOperationFailure(parsed) };
+    }
     const inner = parsed.inner;
-    if (inner.ok === true && inner.recorded === true) return { recorded: true, inserted: inner.inserted !== false, inner };
-    return { recorded: false, detail: inner.reason ?? inner.verdict ?? 'refused', inner };
+    if (inner.ok === true && inner.recorded === true) {
+      return { recorded: true, inserted: inner.inserted !== false, inner };
+    }
+    const detail = inner.reason ?? inner.verdict ?? inner.detail ?? `HTTP ${res.status}`;
+    return {
+      recorded: false,
+      detail: res.ok ? detail : `HTTP ${res.status}: ${detail}`,
+      inner,
+      unknownOperation: isUnknownOperationFailure(inner),
+    };
   } catch (err) {
-    return { recorded: false, detail: err?.name === 'TimeoutError' ? 'operator timeout' : String(err?.message ?? err).slice(0, 120) };
+    return {
+      recorded: false,
+      detail: err?.name === 'TimeoutError' ? 'operator timeout' : String(err?.message ?? err).slice(0, 120),
+      unknownOperation: false,
+    };
   }
+}
+
+/**
+ * POST one `record-edit` through the same door the lock hook uses (bearer + ?client=owner so
+ * the server attributes the row to the per-session owner). Never throws.
+ */
+export async function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, toolUseId, editIndex, atMs, fetchImpl = fetch }) {
+  const primary = await recordAtOperatorUrl({
+    operatorUrl,
+    token,
+    owner,
+    marker,
+    path,
+    hunk,
+    toolUseId,
+    editIndex,
+    atMs,
+    fetchImpl,
+  });
+  if (
+    !primary.recorded &&
+    primary.unknownOperation &&
+    normalizedOperatorOrigin(operatorUrl) !== normalizedOperatorOrigin(STAGING_OPERATOR_URL)
+  ) {
+    // A release operator can legitimately be older than the hook's record-edit
+    // protocol. Only that explicit unknown-op/unknown-tool response may cross
+    // the two-port boundary; ordinary refusals and transport failures stay
+    // authoritative and must not be retried as a different write.
+    return recordAtOperatorUrl({
+      operatorUrl: STAGING_OPERATOR_URL,
+      token,
+      owner,
+      marker,
+      path,
+      hunk,
+      toolUseId,
+      editIndex,
+      atMs,
+      fetchImpl,
+    });
+  }
+  return primary;
 }
 
 async function readStdin() {
@@ -427,7 +647,7 @@ async function main() {
   if (messages.length) process.stdout.write(`${messages.join('\n\n')}\n`);
 }
 
-function selfTest() {
+async function selfTest() {
   const marker = {
     candidate: 'c'.repeat(40),
     repairHead: 'r'.repeat(40),
@@ -471,12 +691,12 @@ function selfTest() {
   if (hunksFrom({ tool_name: 'Read', tool_input: { file_path: 'x' } }).length !== 0) fail('a read extracts nothing');
   if (!toolCallFailed({ tool_response: { is_error: true } }) || toolCallFailed({ tool_response: { ok: true } })) fail('toolCallFailed');
   // parseMcpToolResult: JSON, SSE, rpc error, isError
-  const okJson = parseMcpToolResult(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true,"recorded":true}' }] } }));
+  const okJson = await parseMcpToolResult(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true,"recorded":true}' }] } }));
   if (!okJson.ok || okJson.inner.recorded !== true) fail('parse JSON envelope');
-  const okSse = parseMcpToolResult('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n');
+  const okSse = await parseMcpToolResult('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}\n');
   if (!okSse.ok) fail('parse SSE envelope');
-  if (parseMcpToolResult('{"jsonrpc":"2.0","id":1,"error":{"message":"nope"}}').ok) fail('rpc error is not ok');
-  if (parseMcpToolResult('{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"bad"}]}}').ok) fail('isError is not ok');
+  if ((await parseMcpToolResult('{"jsonrpc":"2.0","id":1,"error":{"message":"nope"}}')).ok) fail('rpc error is not ok');
+  if ((await parseMcpToolResult('{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"bad"}]}}')).ok) fail('isError is not ok');
   if (ownerIdentity({ session_id: 's1' }, { PAPERCUSP_LOCK_SID: 'lock-1' }, () => '') !== 'lock-1') fail('owner: lock sid wins');
   if (ownerIdentity({ session_id: 's1' }, {}, () => { throw new Error('x'); }) !== 's1') fail('owner: session id fallback');
   process.stdout.write(failures === 0 ? 'self-test OK\n' : `self-test: ${failures} failure(s)\n`);

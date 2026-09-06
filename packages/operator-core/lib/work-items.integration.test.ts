@@ -2194,6 +2194,33 @@ describe('unified work_items surface (real PG)', () => {
     expect(onlyBugs).toHaveLength(1);
   });
 
+  it('list/count apply parent and includeChildren semantics to issue-family children', async () => {
+    const parent = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'issue parent',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const child = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'issue child',
+      harness: 'papercup',
+      createdBy: 'agA',
+      parent: parent.id,
+    });
+
+    const topLevel = await wi.listWorkItems({ harness: 'papercup', kind: 'bug' });
+    expect(topLevel.map((item) => item.id)).toEqual([parent.id]);
+
+    const children = await wi.listWorkItems({ harness: 'papercup', parent: parent.id });
+    expect(children.map((item) => item.id)).toEqual([child.id]);
+    expect(await wi.countWorkItems({ harness: 'papercup', parent: parent.id })).toBe(1);
+    expect(await wi.countWorkItemsByState({ harness: 'papercup', parent: parent.id })).toEqual({ open: 1 });
+
+    const all = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', includeChildren: true });
+    expect(all.map((item) => item.id).sort()).toEqual([child.id, parent.id].sort());
+  });
+
   it('list q matches title and body/summary across both families in SQL', async () => {
     const H = 'q-filter-h';
     const featureTitle = await wi.createWorkItem({

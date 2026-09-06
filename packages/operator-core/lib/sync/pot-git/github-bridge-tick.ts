@@ -29,7 +29,12 @@ import { hiveGitRepoPath, defaultRunGit, type RunGit } from './storage';
 import { ingressOriginBranches, type IngressResult, type IngressInput } from './github-ingress';
 import { admitGithubOriginHead, type AdmissionResult, type AdmissionInput } from './github-ingress-admission';
 import { egressCanonicalRefs, type EgressResult, type EgressInput } from './github-egress';
-import { collectDivergenceSignals, classifyDivergence, recordDivergenceVerdict, type DivergenceVerdict } from './github-divergence';
+import {
+  collectDivergenceSignals,
+  classifyDivergence,
+  recordDivergenceVerdict,
+  type DivergenceVerdict,
+} from './github-divergence';
 import { resolveForkPushTarget, type ForkPushTarget } from '../../harness/git-sync/fork-remote';
 
 /** The URL-scoped helper key used by GitHub checkouts created by Papercusp. */
@@ -49,23 +54,14 @@ const GITHUB_REMOTE_RE = /^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/
  * the checkout-pinned helper gets a chance to answer. Resetting the key first
  * makes the checkout's selected helper authoritative for this one command.
  */
-export function withGithubCredentialHelper(
-  runGit: RunGit,
-  helper: string | null | undefined,
-): RunGit {
+export function withGithubCredentialHelper(runGit: RunGit, helper: string | null | undefined): RunGit {
   const selected = helper?.trim();
   if (!selected || /[\r\n]/.test(selected)) return runGit;
 
   return (args, cwd, opts) => {
     if (!args.some((arg) => GITHUB_REMOTE_RE.test(arg))) return runGit(args, cwd, opts);
     return runGit(
-      [
-        '-c',
-        `${GITHUB_CREDENTIAL_HELPER_KEY}=`,
-        '-c',
-        `${GITHUB_CREDENTIAL_HELPER_KEY}=${selected}`,
-        ...args,
-      ],
+      ['-c', `${GITHUB_CREDENTIAL_HELPER_KEY}=`, '-c', `${GITHUB_CREDENTIAL_HELPER_KEY}=${selected}`, ...args],
       cwd,
       opts,
     );
@@ -87,6 +83,8 @@ export interface BridgeTickInput {
   repoKey: string;
   /** Registry coords: the upstream GitHub remote (read + candidate push). */
   githubRemote?: string;
+  /** Registered full checkout used to repair shallow bare-store ancestry locally. */
+  historySourcePath?: string;
   /** Registry `fork_remote` — when set, egress pushes the fork, never upstream. */
   forkRemote?: string;
   /** Branches to ingress (WITHOUT refs/heads/); e.g. ['main']. */
@@ -180,10 +178,7 @@ async function countStrictlyBehind(
 
 export async function runGithubBridgeTick(input: BridgeTickInput): Promise<BridgeTickOutcome> {
   const errors: string[] = [];
-  const runGit = withGithubCredentialHelper(
-    input.deps?.runGit ?? defaultRunGit,
-    input.githubCredentialHelper,
-  );
+  const runGit = withGithubCredentialHelper(input.deps?.runGit ?? defaultRunGit, input.githubCredentialHelper);
   const repoPath = input.deps?.repoPath ?? hiveGitRepoPath(input.potHomeSlug, input.repoKey);
   const record = input.deps?.record ?? ((h, w, v) => recordDivergenceVerdict(h, w, v));
 
@@ -215,6 +210,7 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
   const ingress = await (input.deps?.ingress ?? ingressOriginBranches)({
     repoPath,
     remoteUrl: input.githubRemote,
+    historySourcePath: input.historySourcePath,
     branches: input.branches,
     runGit,
   });
@@ -328,7 +324,14 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
 
   // 4. DIVERGENCE — fold residues, write/clear the escalation (best-effort).
   const verdict = classifyDivergence(
-    collectDivergenceSignals({ egress, ingress, admissions: admissionResults, canonicalMissing, canonicalStale, remoteUnreachable }),
+    collectDivergenceSignals({
+      egress,
+      ingress,
+      admissions: admissionResults,
+      canonicalMissing,
+      canonicalStale,
+      remoteUnreachable,
+    }),
   );
   await record(input.potHomeSlug, input.workspaceId, verdict);
 

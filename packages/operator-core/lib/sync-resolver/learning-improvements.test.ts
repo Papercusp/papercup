@@ -169,8 +169,8 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     const row = rows[0];
 
     // The digest half is intact (the tool-shared shape).
-    expect(row.total).toBe(2);
-    expect(row.open).toBe(1);
+    expect(row.census.total).toBe(2);
+    expect(row.window.open).toBe(1);
     expect(row.recurringSignatures).toHaveLength(1);
 
     // The flow half: windows + the recurrence pass-through.
@@ -470,7 +470,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
 });
 
 /**
- * WI-39675: `digest.total` is the TRUE corpus total, not the size of the window
+ * WI-39675: `digest.census.total` is the TRUE corpus total, not the size of the window
  * that was read.
  *
  * The defect this pins is a repeat, not a novelty: EI-18790490225750395 already
@@ -481,7 +481,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
  * indistinguishable from a real count at the read site, which is what makes it
  * worth a guard rather than a comment.
  */
-describe('learning.improvements — digest.total is the corpus, not the window (WI-39675)', () => {
+describe('learning.improvements — digest.census.total is the corpus, not the window (WI-39675)', () => {
   const windowRow = (id: string) => ({
     id,
     kind: 'bug',
@@ -500,13 +500,13 @@ describe('learning.improvements — digest.total is the corpus, not the window (
 
     const row = (await computeLearningImprovementsSnapshot({}))[0];
 
-    expect(row.total).toBe(8202);
-    expect(row.returned).toBe(3);
-    // `windowed` is the flag the UI needs to say "3 of 8202" honestly rather than
+    expect(row.census.total).toBe(8202);
+    expect(row.window.examined).toBe(3);
+    // `window.windowed` is the flag the UI needs to say "3 of 8202" honestly rather than
     // implying it is showing everything.
-    expect(row.windowed).toBe(true);
+    expect(row.window.windowed).toBe(true);
     // The regression this file is guarding: total tracking the window size.
-    expect(row.total).not.toBe(3);
+    expect(row.census.total).not.toBe(3);
   });
 
   it('counts over the SAME filter the read used — a count over a different population is the same lie in a new place', async () => {

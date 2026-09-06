@@ -205,6 +205,26 @@ describe('release:cut — constrained root selector', () => {
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_resume_seed_missing/) });
   });
 
+  it('accepts porcelain submodule residue only when its frozen gitlink is independently verified', () => {
+    const head = '{\n  "version": "0.0.17"\n}\n';
+    const input = {
+      superprojectStatus: ' M papercusp-desktop\n',
+      desktopStatus: ' M package.json\n',
+      version: '0.0.18',
+      files: { 'package.json': { head, worktree: head.replace('0.0.17', '0.0.18') } },
+    };
+    expect(validateReleaseResumeResidue(input)).toMatchObject({ ok: false });
+    expect(validateReleaseResumeResidue({ ...input, desktopHeadMatches: false })).toMatchObject({ ok: false });
+    expect(validateReleaseResumeResidue({ ...input, desktopHeadMatches: true })).toEqual({ ok: true });
+    expect(
+      validateReleaseResumeResidue({
+        ...input,
+        desktopHeadMatches: true,
+        files: { 'package.json': { head, worktree: head.replace('0.0.17', '0.0.19') } },
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/changes beyond/) });
+  });
+
   it('rejects the live deploy/checkpoint/staging roots that can move during a cut', async () => {
     expect(isAutoManagedCutWorktree('/workspace/papercup-release')).toBe(true);
     expect(isAutoManagedCutWorktree('/workspace/papercusp-checkpoint')).toBe(true);

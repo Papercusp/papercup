@@ -47,54 +47,69 @@ export interface HaikuTurnResult {
  */
 export async function runHaikuTurn(
   prompt: string,
-  opts: { maxTokens?: number; timeoutMs?: number; attribution?: { role?: string; runId?: string; sessionId?: string; toolName?: string } } = {},
+  opts: {
+    maxTokens?: number;
+    timeoutMs?: number;
+    attribution?: { role?: string; runId?: string; sessionId?: string; toolName?: string };
+  } = {},
 ): Promise<HaikuTurnResult | null> {
   const ac = new AbortController();
-  const killer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 15_000);
-  let out = '';
-  let costUsd = 0;
-  let tokensIn = 0;
-  let tokensOut = 0;
-  let failed = false;
-  try {
-    for await (const ev of runAgentChat({
-      backend: 'anthropic-direct',
-      promptText: prompt,
-      model: HAIKU_MODEL,
-      maxTokens: opts.maxTokens ?? 200,
-      signal: ac.signal,
-      // Default attribution: every haiku utility call is at least labeled 'haiku'
-      // on its usage row instead of anonymous; callers pass a feature-specific
-      // role (+ toolName/runId) to refine.
-      usageAttribution: opts.attribution ?? { role: 'haiku' },
-    })) {
-      // the stateless backend emits a single `delta` with the full final
-      // text (non-streaming round-trip), then a `result` with the
-      // same text. Overwrite — don't accumulate, or you'll double it.
-      if (ev.type === 'delta') out = ev.text;
-      else if (ev.type === 'result') {
-        out = ev.finalText || out;
-        costUsd = ev.costUsd ?? 0;
-        tokensIn = ev.tokensIn ?? 0;
-        tokensOut = ev.tokensOut ?? 0;
-      } else if (ev.type === 'error') {
-        failed = true;
-        console.warn(
-          `[haiku] failed:`,
-          (ev.stderr ?? ev.message).slice(0, 300),
-        );
+  // Cancellation is cooperative: an iterator can be waiting in admission or
+  // setup before it observes the signal. The utility's deadline must still
+  // settle its caller, so a release-note fallback cannot wait indefinitely.
+  let killer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<null>((resolve) => {
+    killer = setTimeout(() => {
+      ac.abort();
+      resolve(null);
+    }, opts.timeoutMs ?? 15_000);
+  });
+  const collect = async (): Promise<HaikuTurnResult | null> => {
+    let out = '';
+    let costUsd = 0;
+    let tokensIn = 0;
+    let tokensOut = 0;
+    let failed = false;
+    try {
+      for await (const ev of runAgentChat({
+        backend: 'anthropic-direct',
+        promptText: prompt,
+        model: HAIKU_MODEL,
+        maxTokens: opts.maxTokens ?? 200,
+        signal: ac.signal,
+        // Default attribution: every haiku utility call is at least labeled 'haiku'
+        // on its usage row instead of anonymous; callers pass a feature-specific
+        // role (+ toolName/runId) to refine.
+        usageAttribution: opts.attribution ?? { role: 'haiku' },
+      })) {
+        // the stateless backend emits a single `delta` with the full final
+        // text (non-streaming round-trip), then a `result` with the
+        // same text. Overwrite — don't accumulate, or you'll double it.
+        if (ev.type === 'delta') out = ev.text;
+        else if (ev.type === 'result') {
+          out = ev.finalText || out;
+          costUsd = ev.costUsd ?? 0;
+          tokensIn = ev.tokensIn ?? 0;
+          tokensOut = ev.tokensOut ?? 0;
+        } else if (ev.type === 'error') {
+          failed = true;
+          console.warn(`[haiku] failed:`, (ev.stderr ?? ev.message).slice(0, 300));
+        }
       }
+    } catch (err) {
+      console.warn('[haiku] threw:', (err as Error).message);
+      return null;
     }
-  } catch (err) {
-    console.warn('[haiku] threw:', (err as Error).message);
-    return null;
+    if (failed) return null;
+    const text = out.trim();
+    if (!text) return null;
+    return { text, model: HAIKU_MODEL, costUsd, tokensIn, tokensOut };
+  };
+  try {
+    return await Promise.race([collect(), deadline]);
   } finally {
-    clearTimeout(killer);
+    clearTimeout(killer!);
   }
-  if (failed) return null;
-  const text = out.trim();
-  if (!text) return null;
-  return { text, model: HAIKU_MODEL, costUsd, tokensIn, tokensOut };
 }
 
 /**
@@ -108,10 +123,7 @@ export async function runHaikuTurn(
  * `maxTokens` flows through to the anthropic-direct backend as `max_tokens`
  * (omp/claude-code ignored it; anthropic-direct honors it).
  */
-export async function runHaiku(
-  prompt: string,
-  maxTokens = 200,
-): Promise<string | null> {
+export async function runHaiku(prompt: string, maxTokens = 200): Promise<string | null> {
   const r = await runHaikuTurn(prompt, { maxTokens });
   return r ? r.text : null;
 }

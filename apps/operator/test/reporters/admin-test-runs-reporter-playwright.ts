@@ -27,7 +27,7 @@ import {
   captureWorktreeSnapshot,
   computeWorktreeDirty,
   type WorktreeGitSnapshot,
-} from '@papercusp/operator-core/lib/testing-run-store';
+} from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
 

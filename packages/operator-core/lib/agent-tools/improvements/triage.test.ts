@@ -82,13 +82,15 @@ describe('improvements:triage tool', () => {
   // without restating every field at each call site.
   const mockDigest = (p: Partial<ImprovementDigest>): ImprovementDigest => ({
     generatedAt: new Date(0).toISOString(),
-    total: 0,
-    returned: 0,
-    windowed: false,
-    open: 0,
-    byKind: { bug: 0, change: 0, feature: 0 },
-    bySeverity: {},
-    byState: {},
+    census: { total: 0 },
+    window: {
+      examined: 0,
+      windowed: false,
+      open: 0,
+      byKind: { bug: 0, change: 0, feature: 0 },
+      bySeverity: {},
+      byState: {},
+    },
     autoEligible: [],
     humanQueue: [],
     likelyDuplicates: [],
@@ -111,7 +113,19 @@ describe('improvements:triage tool', () => {
       const items = [mockItem({ id: '1' })];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockCountImprovementItems.mockResolvedValue(4321);
-      mockBuildDigest.mockReturnValue(mockDigest({ total: 4321, returned: 1, windowed: true, open: 1 }));
+      mockBuildDigest.mockReturnValue(
+        mockDigest({
+          census: { total: 4321 },
+          window: {
+            examined: 1,
+            windowed: true,
+            open: 1,
+            byKind: { bug: 0, change: 0, feature: 0 },
+            bySeverity: {},
+            byState: { open: 1 },
+          },
+        }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'summary' }, ctx)) as any;
@@ -268,7 +282,7 @@ describe('improvements:triage tool', () => {
       const response = JSON.parse(result.content[0].text);
       expect(response.ok).toBe(true);
       expect(response.mode).toBe('summary');
-      expect(response.digest.total).toBe(2);
+      expect(response.digest.census.total).toBe(2);
       expect(response.triageSummary).toBeDefined();
       // The one ranker's registry rides along as data (P-040/P-045, D-005).
       expect(response.ranker).toEqual([{ name: 'blocking-impact', weight: 1, description: 'stub' }]);

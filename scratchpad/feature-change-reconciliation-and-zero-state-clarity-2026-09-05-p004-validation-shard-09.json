@@ -1,0 +1,281 @@
+{
+  "schemaVersion": "p004-validation-shard/v1",
+  "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
+  "planItem": "P-004",
+  "workItem": "WI-2146802",
+  "shard": {
+    "revision": 18,
+    "index": 9,
+    "count": 50,
+    "ledgerCommit": "f70ea2e6c4be8651b4d6488256d3b4886e83b7b6",
+    "ledgerSha256": "57387275469ff54bf367c9271d1e5be785c6e0ba64d573d2c2b0c0de685f18ae"
+  },
+  "governingDecisions": [
+    "feature-change-reconciliation-and-zero-state-clarity-2026-09-05#D-003",
+    "feature-change-reconciliation-and-zero-state-clarity-2026-09-05#D-006",
+    "feature-change-reconciliation-and-zero-state-clarity-2026-09-05#D-009",
+    "feature-change-reconciliation-and-zero-state-clarity-2026-09-05#D-010"
+  ],
+  "inheritedPlanItem": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05#P-004",
+  "readOnlyValidation": true,
+  "validatedAt": "2026-09-06T18:04:27.175Z",
+  "assignedIds": [
+    "EI-21131709831559999",
+    "EI-21133668386986662",
+    "EI-21135031270265661",
+    "EI-21137448934207245",
+    "EI-21137936760355170"
+  ],
+  "assignedIdListSha256": {
+    "algorithm": "sha256",
+    "material": "newline-joined assignedIds in listed order",
+    "value": "7ee5e18b6a574eadb66cbb1a415671292be2abfe0f980643fc40d035d5ff139a"
+  },
+  "validationSummary": {
+    "candidateCount": 5,
+    "preserveCount": 3,
+    "applyCount": 2,
+    "canonicalSurvivorCount": 4,
+    "assignedIdsExactlyOnce": true,
+    "extraIds": [],
+    "frozenAndCurrentSourceHashesMatch": true,
+    "allRowsCurrentOrigin": "local",
+    "allRowsCurrentAssignee": null,
+    "allInboundReferencesEmpty": true,
+    "allOutboundReferencesEmpty": true,
+    "focusedValidation": {
+      "testFiles": 8,
+      "testsPassed": 441,
+      "testsSkipped": 0,
+      "headSha": "30e7a132dc",
+      "testedPathsUncommitted": 0
+    }
+  },
+  "referenceRead": {
+    "tool": "work_items:links",
+    "directions": [
+      "in",
+      "out"
+    ],
+    "limitPerItem": 100,
+    "idsRead": [
+      "EI-21131709831559999",
+      "EI-21235337127214716",
+      "EI-21133668386986662",
+      "EI-21104648883881842",
+      "EI-21135031270265661",
+      "EI-21109974659073335",
+      "EI-21137448934207245",
+      "EI-21115552289743119",
+      "EI-21137936760355170"
+    ],
+    "result": "Both directions returned empty for every candidate and canonical row. No references were mutated."
+  },
+  "entries": [
+    {
+      "id": "EI-21131709831559999",
+      "frozenOutcome": "candidate-shared-root-consolidation",
+      "frozenSourceSha256": "9938b7f9d85e238ac939144e41cb41954eed60f7ddef4c0f19dc24275fb457bf",
+      "currentState": "open",
+      "currentOrigin": "local",
+      "currentAssignee": null,
+      "currentFingerprint/evidence": {
+        "title": "coord:presence include_stale runtime rejection",
+        "payloadSource": "su",
+        "foundDuring": "WI-40546",
+        "frozenAndCurrentSourceShaMatch": true,
+        "producerIdentity": "repeated-tool-error:coord:presence:caller:unrecognized-key-include-stale-use-targeted",
+        "evidenceGroups": [
+          "tool-error-class-002",
+          "tool-field-family-004",
+          "tool-message-family-001"
+        ],
+        "currentClaimHoldBlocker": "none observed",
+        "currentCompletion": "none"
+      },
+      "codePlanCompletionEvidence": {
+        "planLineage": "Inherited P-004 through parent WI-2146348; no duplicate plan-item coverage stamp.",
+        "codeEvidence": "Current coord:presence contract and targeted owner/owners presence tests were re-read; the retired include_stale rejection path is covered by the existing recurrence evidence.",
+        "completionLineage": "Candidate is open with no completion evidence; proposed canonical EI-21235337127214716 is also open with no terminal completion.",
+        "focusedTests": "Included in the clean-HEAD 8-file, 441/441 focused validation pass."
+      },
+      "inboundReferences": [],
+      "outboundReferences": [],
+      "canonicalId": "EI-21235337127214716",
+      "recommendation": "preserve",
+      "proposedRecoverableOperation": "No mutation in this read-only lane. Preserve the row on the family-review floor; any later consolidation must be a centralized apply-lane operation.",
+      "requiredIdentityAndEvidenceTransfers": [
+        "If later consolidated, retain the distinct coord:presence producer identity and every occurrence/reporter record.",
+        "Retain watchdog/admission keys, unique invalid_args/unrecognized-key evidence, and both reference directions.",
+        "Re-prove that EI-21235337127214716 covers this exact subcase before any transition."
+      ],
+      "confidence": "medium",
+      "rationale": "The ledger identifies a shared include_stale root, but D-009/D-010 and the P-004 family-review floor prohibit this worker from treating similarity as mutation authority. Current row and canonical are both local/open/unassigned, with no links or completion evidence; preservation is the safe disposition."
+    },
+    {
+      "id": "EI-21133668386986662",
+      "frozenOutcome": "candidate-shared-root-consolidation",
+      "frozenSourceSha256": "fd7b7f9002a42e4fb07234d450b4d5cc8019110dca349856e5c1185f4be7b26b",
+      "currentState": "open",
+      "currentOrigin": "local",
+      "currentAssignee": null,
+      "currentFingerprint/evidence": {
+        "title": "capability:read spill ceiling rejects oversized reads",
+        "payloadSource": "su",
+        "foundDuring": null,
+        "frozenAndCurrentSourceShaMatch": true,
+        "producerIdentity": "repeated-tool-error:capability:read:caller:byte-limit-rejected-live-schema-caps",
+        "evidenceGroups": [
+          "tool-error-class-009",
+          "tool-field-family-019",
+          "tool-message-family-010"
+        ],
+        "currentClaimHoldBlocker": "none observed",
+        "currentCompletion": "none"
+      },
+      "codePlanCompletionEvidence": {
+        "planLineage": "Inherited P-004 through parent WI-2146348; no duplicate plan-item coverage stamp.",
+        "codeEvidence": "capability:read MAX_BYTE_PAGE=4096 and the byte-page/paging tests were re-read; this candidate is the oversized-read rejection sibling of canonical EI-21104648883881842.",
+        "completionLineage": "Candidate and canonical are open with no terminal completion or implementation receipt.",
+        "focusedTests": "Included in the clean-HEAD 8-file, 441/441 focused validation pass."
+      },
+      "inboundReferences": [],
+      "outboundReferences": [],
+      "canonicalId": "EI-21104648883881842",
+      "recommendation": "preserve",
+      "proposedRecoverableOperation": "No mutation in this read-only lane. Preserve on the family-review floor pending a centralized, current-row apply decision.",
+      "requiredIdentityAndEvidenceTransfers": [
+        "If later consolidated, retain the capability:read producer key and the oversized byte-limit occurrence history.",
+        "Retain unique MAX_BYTE_PAGE/paging evidence and any current hold or admission metadata.",
+        "Resolve both reference directions only after proving the canonical covers this exact rejection subcase."
+      ],
+      "confidence": "medium",
+      "rationale": "The frozen record and current contract align with the capability:read 4096-byte ceiling root, but neither row has completion evidence and both are currently open/local/unassigned. The read-only P-004 result must preserve the occurrence and avoid converting a shared-root proposal into an unverified close."
+    },
+    {
+      "id": "EI-21135031270265661",
+      "frozenOutcome": "candidate-shared-root-consolidation",
+      "frozenSourceSha256": "f1fd19dd6607146af9254490cd2abbb17b6708ee3d86d7752fab5ac73b15c770",
+      "currentState": "open",
+      "currentOrigin": "local",
+      "currentAssignee": null,
+      "currentFingerprint/evidence": {
+        "title": "coord:send premises schema requires ref strings",
+        "payloadSource": "su",
+        "foundDuring": "EI-21128511122311550",
+        "frozenAndCurrentSourceShaMatch": true,
+        "producerIdentity": "repeated-tool-error:coord:send:caller:body-premises-premises-must-be-an",
+        "evidenceGroups": [
+          "tool-error-class-004",
+          "tool-field-family-003",
+          "tool-message-family-002"
+        ],
+        "currentClaimHoldBlocker": "none observed",
+        "currentCompletion": "none"
+      },
+      "codePlanCompletionEvidence": {
+        "planLineage": "Inherited P-004 through parent WI-2146348; no duplicate plan-item coverage stamp.",
+        "codeEvidence": "coord:send premises citation-reference string contract and its focused tests were re-read; the row is a shared-root proposal with canonical EI-21109974659073335.",
+        "completionLineage": "Candidate and canonical are open with no terminal completion or implementation receipt.",
+        "focusedTests": "Included in the clean-HEAD 8-file, 441/441 focused validation pass."
+      },
+      "inboundReferences": [],
+      "outboundReferences": [],
+      "canonicalId": "EI-21109974659073335",
+      "recommendation": "preserve",
+      "proposedRecoverableOperation": "No mutation in this read-only lane. Preserve on the family-review floor; a later centralized apply lane must prove whole-family coverage before consolidation.",
+      "requiredIdentityAndEvidenceTransfers": [
+        "Retain the body.0.premises object-versus-citation-string evidence and the complete 11-member comparison basis.",
+        "Retain watchdogKey, messageFingerprint, reporters/occurrence history, and every unique subcase.",
+        "Preserve both reference directions and current holds/lineage if a later canonical transition is approved."
+      ],
+      "confidence": "medium",
+      "rationale": "The current coord:send contract explains the shared root, but the ledger explicitly calls this a consolidation proposal rather than exact-body equivalence. With both rows open/local/unassigned and no links, the safe P-004 disposition is preservation pending centralized family review."
+    },
+    {
+      "id": "EI-21137448934207245",
+      "frozenOutcome": "candidate-shared-root-consolidation",
+      "frozenSourceSha256": "952f44426b49cf08679a4f490c9bffcc3d76be649aecdc0b21e24ebfb0868f1e",
+      "currentState": "open",
+      "currentOrigin": "local",
+      "currentAssignee": null,
+      "currentFingerprint/evidence": {
+        "title": "release:trace no longer accepts harness-only status reads",
+        "payloadSource": "su",
+        "foundDuring": "WI-40532",
+        "frozenAndCurrentSourceShaMatch": true,
+        "producerIdentity": "release:trace|invalid_args|path-required-unless-sha|harness-unrecognized",
+        "evidenceGroups": [
+          "tool-error-class-013",
+          "tool-field-family-032",
+          "tool-message-family-072"
+        ],
+        "currentClaimHoldBlocker": "none observed",
+        "currentCompletion": "none"
+      },
+      "codePlanCompletionEvidence": {
+        "planLineage": "Inherited P-004 through parent WI-2146348; no duplicate plan-item coverage stamp.",
+        "codeEvidence": "release:trace path-or-sha contract and focused tests were re-read; current live schema treats harness as an obsolete argument and the proposed canonical is EI-21115552289743119.",
+        "completionLineage": "Candidate and canonical are open with no terminal completion or implementation receipt.",
+        "focusedTests": "Included in the clean-HEAD 8-file, 441/441 focused validation pass."
+      },
+      "inboundReferences": [],
+      "outboundReferences": [],
+      "canonicalId": "EI-21115552289743119",
+      "recommendation": "apply",
+      "proposedRecoverableOperation": "Conditional only: the centralized apply lane may consolidate this row into EI-21115552289743119 after a fresh full-row/code/plan/completion/reference recheck. This shard performs no candidate or canonical mutation.",
+      "requiredIdentityAndEvidenceTransfers": [
+        "Carry the release:trace invalid_args producer identity and harness-unrecognized/path-or-sha occurrence history.",
+        "Carry unique path-versus-sha evidence, any admission/watchdog keys, and all plan/completion lineage.",
+        "Redirect or preserve both inbound and outbound references; do not close either row until the canonical coverage proof is recorded."
+      ],
+      "confidence": "medium",
+      "rationale": "P-004 final-ledger evidence marks the F-010 release:trace family conditionally eligible for consolidation. Current code and focused tests support the shared argument-validation root, while the absence of links and completion evidence means the later apply lane must still perform the guarded transition."
+    },
+    {
+      "id": "EI-21137936760355170",
+      "frozenOutcome": "candidate-already-implemented",
+      "frozenSourceSha256": "e320d5c812475c0538b410590de5fee64a0db530457db61708d14c17e0f2f850",
+      "currentState": "done",
+      "currentOrigin": "local",
+      "currentAssignee": null,
+      "currentFingerprint/evidence": {
+        "title": "loop:checkpoint caller used work_items:checkpoint field name",
+        "payloadSource": "su",
+        "foundDuring": "WI-40532",
+        "frozenAndCurrentSourceShaMatch": true,
+        "producerIdentities": [
+          "repeated-tool-error:loop:checkpoint:caller:unrecognized-key-checkpoint-use-note-or",
+          "loop:checkpoint|invalid_args|schema-unknown|field-unknown|runtime-unknown|unrecognized-key-checkpoint-use-note-or"
+        ],
+        "currentClaimHoldBlocker": "none observed",
+        "currentCompletion": {
+          "present": true,
+          "tests": "9/9 implementation files, 351/351 tests; 2/2 reversal files, 96/96 tests",
+          "headSha": "1e8761b5e43cf72a7ea28198f8ccd59bd08bda48",
+          "residue": [],
+          "referenceDirections": "both matched",
+          "implementationEvidence": "projected-tool-registry-v1:9d496291a1dffd8f declares loop:checkpoint compatibility alias checkpoint:string|object|null"
+        }
+      },
+      "codePlanCompletionEvidence": {
+        "planLineage": "Inherited P-004 through parent WI-2146348; no duplicate plan-item coverage stamp.",
+        "codeEvidence": "Current loop:checkpoint compatibility alias and current tool behavior were re-read; focused implementation and reversal suites passed.",
+        "completionLineage": "Current row is already done with fresh structured completion evidence; no product-source mutation was made by the cleanup close.",
+        "focusedTests": "Completion receipt records PASS for 351/351 implementation tests and 96/96 reversal tests."
+      },
+      "inboundReferences": [],
+      "outboundReferences": [],
+      "canonicalId": null,
+      "recommendation": "apply",
+      "proposedRecoverableOperation": "Resolve-as-implemented is already materialized in the current row. The centralized apply lane should retain the done completion receipt and reconcile only the ledger disposition if required; this shard performs no additional mutation.",
+      "requiredIdentityAndEvidenceTransfers": [
+        "Retain both loop:checkpoint producer identities and all occurrence history.",
+        "Retain the compatibility-alias proof, test receipt, head SHA, and empty residue set.",
+        "Retain the empty inbound/outbound reference result and do not invent a canonical survivor."
+      ],
+      "confidence": "high",
+      "rationale": "The current row is done, has fresh completion evidence, and the implementation contract now exposes the requested compatibility alias. The P-004 final-ledger disposition is eligible resolve-as-implemented; this is a no-op retention/ledger reconciliation, not a new product change."
+    }
+  ]
+}

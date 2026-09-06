@@ -268,7 +268,7 @@ describe('P-049.2 — a synthetic-origin row never reaches an organic learner (s
     ];
     expect(everywhere.length).toBeGreaterThan(0); // the arc actually carried items
     for (const id of everywhere) expect(['EI-org', 'EI-legacy']).toContain(id);
-    expect(digest.total).toBe(2); // even the rollup counts never saw the synthetic rows
+    expect(digest.census.total).toBe(2); // even the rollup counts never saw the synthetic rows
   });
 });
 

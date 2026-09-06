@@ -277,6 +277,64 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     ).toBe(false);
   });
 
+  it('allows an explicitly empty passRatings array for disclosure criteria and teaches outcome callers', () => {
+    const disclosure = {
+      ...lightAcceptanceCriterion,
+      bar: 'Report on the outcome BAR.',
+      barKey: 'R-2',
+      role: 'disclosure' as const,
+      mandatory: false,
+      requiredScope: ['tree'],
+      evidencePlane: 'tree' as const,
+      passRatings: [],
+      coversBarKeys: ['R-1'],
+    };
+    expect(
+      rubricsProposeArgs.safeParse({
+        ...base,
+        kind: 'acceptance',
+        subjectPlan: 'release-plan',
+        criteria: [disclosure],
+      }).success,
+    ).toBe(true);
+
+    const invalid = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [{ ...disclosure, role: 'outcome', mandatory: true }],
+    });
+    expect(invalid.success).toBe(false);
+    if (!invalid.success) {
+      expect(invalid.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 0, 'passRatings'],
+            message: expect.stringContaining("role:'disclosure'"),
+          }),
+        ]),
+      );
+    }
+
+    const invalidDisclosure = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [{ ...disclosure, passRatings: ['healthy'] }],
+    });
+    expect(invalidDisclosure.success).toBe(false);
+    if (!invalidDisclosure.success) {
+      expect(invalidDisclosure.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 0, 'passRatings'],
+            message: expect.stringContaining('must be empty'),
+          }),
+        ]),
+      );
+    }
+  });
+
   it('rejects acceptance criteria that omit the meta-rubric falsifier or structured-check floor', () => {
     const missingFalsifier = rubricsProposeArgs.safeParse({
       ...base,

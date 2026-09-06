@@ -174,6 +174,7 @@ export interface SpecTestAdequacyRerunRecipe {
     classRef: string;
     specIds: string[];
     includeDraft: true;
+    current?: SpecTestAdequacyCurrentFingerprint[];
   };
   selection: {
     planSlug: string;
@@ -1134,13 +1135,14 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         schemaVersion: 1,
         evaluator: 'plans:evaluate-spec-test-adequacy',
         classRef: recipe.classRef as string,
-        // Derived from `selection`, never read back from storage, so the submittable
-        // payload cannot drift from the identity it claims to reproduce.
+        // Reconstruct from the validated selection AND currentness inputs, never
+        // from stored args, so readback preserves the original evidence cohort.
         args: {
           slug: selection.planSlug,
           classRef: recipe.classRef as string,
           specIds: [selection.specId],
           includeDraft: true,
+          ...(current.supplied ? { current: fingerprints } : {}),
         },
         selection: {
           planSlug: selection.planSlug,

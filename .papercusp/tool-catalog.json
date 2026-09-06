@@ -14466,7 +14466,7 @@
       ],
       "guidance": {
         "when": "Asking where a hyperbee/peer-log store's bytes went, whether a federated kind's volume is growing, whether a new op kind landed without a retention class (`unclassifiedProducers`), or sizing what an epoch-rotation pass would reclaim (the `rotating` rows). Also the before/after instrument for any retention change.",
-        "notWhen": "Postgres table sizes — dev:pg_table_sizes. Replay cost / op counts alone — dogfood:substrate_status. Whether federation is FLOWING (drain stalls, admitted-set health) — dogfood:substrate_status."
+        "notWhen": "Postgres table sizes — dev:pg_table_sizes. Replay cost / op counts alone — dev:dogfood_substrate_status. Whether federation is FLOWING (drain stalls, admitted-set health) — dev:dogfood_substrate_status."
       }
     },
     {
@@ -14641,7 +14641,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Pot's ideas. `total` is the TRUE corpus count (never bounded by `limit`); `returned`/`windowed` say how much of it you actually got back — read `likelyDuplicatesScope` before trusting an empty `likelyDuplicates` at a small `limit` (dedup only scans what was returned).",
+        "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Pot's ideas. `census.total` is the TRUE corpus count (never bounded by `limit`); `window.examined`/`window.windowed` say how much of it you actually got back, and `window.open`/`window.byKind`/`window.bySeverity` are rollups over that bounded read — read `likelyDuplicatesScope` before trusting an empty `likelyDuplicates` at a small `limit` (dedup only scans what was returned).",
         "notWhen": "You want one improvement in full — work_items:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.",
         "chaining": "improvements:digest → work_items:get / work_items:claim on a queued item → fix it self/inline (or improvements:capture to add more)."
       }

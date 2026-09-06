@@ -16,6 +16,8 @@ import {
   rubricCriterionCheckSchema,
   acceptanceCriterionRoleSchema,
   acceptanceBarProvenanceSchema,
+  acceptancePassRatingsError,
+  acceptancePassRatingsSchema,
   acceptanceEvidencePlaneSchema,
   requirementIntentSchema,
   requirementAcceptanceSchema,
@@ -82,12 +84,7 @@ const criterionFields = {
   evidencePlane: acceptanceEvidencePlaneSchema
     .optional()
     .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
-  passRatings: z
-    .array(z.string().min(1))
-    .min(1)
-    .max(50)
-    .optional()
-    .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
+  passRatings: acceptancePassRatingsSchema,
   coversBarKeys: z
     .array(z.string().min(1))
     .min(1)
@@ -151,7 +148,11 @@ const criterion = z
   ])
   .superRefine((input, ctx) => {
     try {
-      normalizeRequirementSections(input);
+      const normalized = normalizeRequirementSections(input);
+      const passRatingsError = acceptancePassRatingsError(normalized);
+      if (passRatingsError) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['passRatings'], message: passRatingsError });
+      }
     } catch (error) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
     }

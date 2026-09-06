@@ -3,6 +3,8 @@ import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import { evaluateSpecTestAdequacy, requiredProofFloor } from './spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
+import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
+import { asStructuredObservation } from '../../harness/improvements/observation-types';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -385,6 +387,93 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 });
 
 describe('rerunRecipe is submittable to its own evaluator', () => {
+  it.each(['emitted', 'persisted'] as const)(
+    '%s recipe reproduces the current cohort instead of reviving legacy proof',
+    (surface) => {
+      const selected = evidence({ evidenceRef: 'surface:replacement' });
+      const legacy = evidence({ evidenceRef: 'surface:rejected-legacy' });
+      const current: EvidenceCurrentInput[] = [
+        {
+          evidenceKind: selected.evidenceKind,
+          evidenceRef: selected.evidenceRef,
+          ...selected.fingerprints,
+        },
+      ];
+      // Re-run the store's real classifier, as a fresh tool call does. Reusing the
+      // already-classified fixture would conceal a recipe that omitted `current`.
+      const reload = (inputs?: EvidenceCurrentInput[]) =>
+        [selected, legacy].map((row) => ({
+          ...row,
+          currentness: classifySpecEvidenceCurrentness(
+            {
+              spec_is_current: true,
+              source_fingerprint: row.fingerprints.sourceFingerprint,
+              test_fingerprint: row.fingerprints.testFingerprint,
+              fixture_fingerprint: row.fingerprints.fixtureFingerprint,
+              rubric_fingerprint: row.fingerprints.rubricFingerprint,
+              environment_fingerprint: row.fingerprints.environmentFingerprint,
+              coverage_evidence_ref: row.coverageEvidenceRef,
+              coverage_evidence_present: true,
+              test_run_id: row.testRunId,
+              test_run_present: true,
+            },
+            inputs?.find((input) => input.evidenceKind === row.evidenceKind && input.evidenceRef === row.evidenceRef),
+          ),
+        }));
+      const original = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: reload(current),
+        current,
+        classRef: 'plan-class-feature-ship',
+      });
+      const recipe =
+        surface === 'emitted'
+          ? original.scorecardDraft.rerunRecipe
+          : asStructuredObservation({ rerunRecipe: original.scorecardDraft.rerunRecipe })?.rerunRecipe;
+      expect(recipe).toBeDefined();
+      const args = evaluatorArgsSchema.parse(recipe!.args);
+      const rerun = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: reload(args.current),
+        current: args.current,
+        classRef: args.classRef,
+      });
+      expect(original.evidenceRefs).toEqual([selected.evidenceRef]);
+      expect(rerun.evidenceRefs).toEqual(original.evidenceRefs);
+      expect(rerun.ratings).toEqual(original.ratings);
+      expect(rerun.verdict).toBe(original.verdict);
+      const withoutFingerprints = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: reload(),
+        classRef: args.classRef,
+      });
+      expect(withoutFingerprints.evidenceRefs).toContain(legacy.evidenceRef);
+      expect(withoutFingerprints.verdict).not.toBe(original.verdict);
+    },
+  );
+
+  it('preserves an explicitly empty currentness input through emission and readback', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [],
+      current: [],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.scorecardDraft.rerunRecipe.args).toHaveProperty('current', []);
+    expect(
+      asStructuredObservation({ rerunRecipe: result.scorecardDraft.rerunRecipe })?.rerunRecipe?.args,
+    ).toHaveProperty('current', []);
+    const omitted = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(omitted.scorecardDraft.rerunRecipe.args).not.toHaveProperty('current');
+    expect(
+      asStructuredObservation({ rerunRecipe: omitted.scorecardDraft.rerunRecipe })?.rerunRecipe?.args,
+    ).not.toHaveProperty('current');
+  });
+
   function recipeFor(classRef: 'plan-class-feature-ship' | 'plan-class-bugfix' = 'plan-class-feature-ship') {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
@@ -396,7 +485,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     return recipe;
   }
 
-  it('records args that PARSE against the evaluator\'s own schema, classRef included', () => {
+  it("records args that PARSE against the evaluator's own schema, classRef included", () => {
     const recipe = recipeFor();
     expect(recipe.evaluator).toBe('plans:evaluate-spec-test-adequacy');
 

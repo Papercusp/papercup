@@ -78,7 +78,9 @@ function bridgeInput(over: Partial<BridgeTickInput> = {}, seams: Partial<NonNull
     deps: {
       repoPath: '/tmp/fake-bare.git',
       runGit: async (args) =>
-        args[0] === 'rev-parse' ? { code: 0, stdout: `${CANONICAL}\n`, stderr: '' } : { code: 0, stdout: '', stderr: '' },
+        args[0] === 'rev-parse'
+          ? { code: 0, stdout: `${CANONICAL}\n`, stderr: '' }
+          : { code: 0, stdout: '', stderr: '' },
       ingress: async () => cleanIngress(),
       admit: async () => admitClean(),
       egress: async (i) => (egressCalls.push(i), cleanEgress()),
@@ -96,7 +98,11 @@ describe('withGithubCredentialHelper', () => {
     const wrapped = withGithubCredentialHelper(runGit, '!/tmp/gh-credential-aviynw.sh');
     const opts = { timeoutMs: 1234 };
 
-    await wrapped(['fetch', 'https://github.com/acme/shop.git', '+refs/heads/main:refs/ingress/main'], '/tmp/bare.git', opts);
+    await wrapped(
+      ['fetch', 'https://github.com/acme/shop.git', '+refs/heads/main:refs/ingress/main'],
+      '/tmp/bare.git',
+      opts,
+    );
     await wrapped(['rev-parse', '--verify', 'refs/hive/staging'], '/tmp/bare.git', opts);
 
     expect(runGit).toHaveBeenNthCalledWith(
@@ -120,7 +126,10 @@ describe('withGithubCredentialHelper', () => {
     const runGit = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
 
     await withGithubCredentialHelper(runGit, '  \n  ')(['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
-    await withGithubCredentialHelper(runGit, '!bad\nhelper')(['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
+    await withGithubCredentialHelper(runGit, '!bad\nhelper')(
+      ['fetch', 'https://github.com/acme/shop.git'],
+      '/tmp/bare.git',
+    );
 
     expect(runGit).toHaveBeenNthCalledWith(1, ['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
     expect(runGit).toHaveBeenNthCalledWith(2, ['fetch', 'https://github.com/acme/shop.git'], '/tmp/bare.git');
@@ -130,15 +139,17 @@ describe('withGithubCredentialHelper', () => {
 it('threads the selected helper through ingress and egress while leaving canonical reads unmodified', async () => {
   const helper = '!/tmp/gh-credential-aviynw.sh';
   const calls: string[][] = [];
+  let ingressHistorySourcePath: string | undefined;
   const { input } = bridgeInput(
-    { githubCredentialHelper: helper },
+    { githubCredentialHelper: helper, historySourcePath: '/tmp/registered-checkout' },
     {
       runGit: async (args) => {
         calls.push(args);
         if (args[0] === 'rev-parse') return { code: 0, stdout: `${CANONICAL}\n`, stderr: '' };
         return { code: 0, stdout: '', stderr: '' };
       },
-      ingress: async ({ runGit, repoPath, remoteUrl }) => {
+      ingress: async ({ runGit, repoPath, remoteUrl, historySourcePath }) => {
+        ingressHistorySourcePath = historySourcePath;
         await runGit?.(['fetch', remoteUrl, '+refs/heads/main:refs/ingress/main'], repoPath);
         return cleanIngress();
       },
@@ -151,6 +162,7 @@ it('threads the selected helper through ingress and egress while leaving canonic
 
   await runGithubBridgeTick(input);
 
+  expect(ingressHistorySourcePath).toBe('/tmp/registered-checkout');
   expect(calls).toContainEqual([
     '-c',
     `${GITHUB_CREDENTIAL_HELPER_KEY}=`,
@@ -201,8 +213,7 @@ describe('runGithubBridgeTick — an unreachable remote must not read green', ()
     const { input } = bridgeInput(
       {},
       {
-        ingress: async () =>
-          cleanIngress({ errors: [{ branch: 'gone', message: "couldn't find remote ref gone" }] }),
+        ingress: async () => cleanIngress({ errors: [{ branch: 'gone', message: "couldn't find remote ref gone" }] }),
       },
     );
     const out = await runGithubBridgeTick(input);
@@ -296,7 +307,8 @@ describe('runGithubBridgeTick — composition', () => {
             pushed: [],
             remoteErrors: [
               {
-                message: 'push refs/heads/staging: refusing to allow an OAuth App to update workflow without workflow scope',
+                message:
+                  'push refs/heads/staging: refusing to allow an OAuth App to update workflow without workflow scope',
                 transient: false,
               },
             ],
@@ -341,7 +353,10 @@ describe('runGithubBridgeTick — composition', () => {
     // healthy no-op — `egress: null` + verdict 'clear' every tick — so GitHub
     // origin silently froze 8 commits / ~22h behind while the bridge reported
     // green. Nothing may be pushed without a canonical, but it MUST be loud.
-    const { input, recorded, egressCalls } = bridgeInput({}, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
+    const { input, recorded, egressCalls } = bridgeInput(
+      {},
+      { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) },
+    );
     const out = await runGithubBridgeTick(input);
     expect(out.egress).toBeNull();
     expect(egressCalls).toHaveLength(0); // still never pushes a canonical it cannot read
@@ -357,7 +372,10 @@ describe('runGithubBridgeTick — composition', () => {
   });
 
   it('canonical missing is NOT signalled when there is no egress target at all (nothing to freeze)', async () => {
-    const { input } = bridgeInput({ upstreamWrite: false }, { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) });
+    const { input } = bridgeInput(
+      { upstreamWrite: false },
+      { runGit: async () => ({ code: 1, stdout: '', stderr: '' }) },
+    );
     const out = await runGithubBridgeTick(input);
     expect(out.egressTarget).toBe('skipped');
     expect(out.verdict.action).toBe('clear');
@@ -381,7 +399,12 @@ describe('runGithubBridgeTick — composition', () => {
       {},
       {
         ingress: async () => cleanIngress({ updated, upToDate: [] }),
-        admit: async () => ({ ...admitClean(), admit: false, basis: 'blocked', blockedAuthors: [{ githubUserId: 7, commits: [HEAD_A] }] }),
+        admit: async () => ({
+          ...admitClean(),
+          admit: false,
+          basis: 'blocked',
+          blockedAuthors: [{ githubUserId: 7, commits: [HEAD_A] }],
+        }),
       },
     ));
     out = await runGithubBridgeTick(input);
@@ -394,9 +417,20 @@ describe('runGithubBridgeTick — composition', () => {
     const { input, recorded } = bridgeInput(
       {},
       {
-        ingress: async () => cleanIngress({ nonFF: [{ branch: 'main', local: 'l'.repeat(40), remote: 'r'.repeat(40) }], upToDate: [] }),
+        ingress: async () =>
+          cleanIngress({ nonFF: [{ branch: 'main', local: 'l'.repeat(40), remote: 'r'.repeat(40) }], upToDate: [] }),
         egress: async () =>
-          cleanEgress({ pushed: [], rejectedNonFF: [{ remoteRef: BRIDGE_REMOTE_STAGING_REF, remoteSha: 'x'.repeat(40), localSha: CANONICAL, reason: 'diverged' }] }),
+          cleanEgress({
+            pushed: [],
+            rejectedNonFF: [
+              {
+                remoteRef: BRIDGE_REMOTE_STAGING_REF,
+                remoteSha: 'x'.repeat(40),
+                localSha: CANONICAL,
+                reason: 'diverged',
+              },
+            ],
+          }),
       },
     );
     const out = await runGithubBridgeTick(input);
@@ -416,19 +450,15 @@ describe('runGithubBridgeTick — EI-18751829787526583: a stale-but-PRESENT cano
   const WATERMARK = 'e'.repeat(40);
 
   /** merge-base --is-ancestor CANONICAL WATERMARK → 0 (ancestor); rev-list --count → N. */
-  const staleGit = (behindCount: number) =>
-    async (args: string[]) => {
-      if (args[0] === 'rev-parse') return { code: 0, stdout: `${CANONICAL}\n`, stderr: '' };
-      if (args[0] === 'merge-base') return { code: 0, stdout: '', stderr: '' };
-      if (args[0] === 'rev-list') return { code: 0, stdout: `${behindCount}\n`, stderr: '' };
-      return { code: 0, stdout: '', stderr: '' };
-    };
+  const staleGit = (behindCount: number) => async (args: string[]) => {
+    if (args[0] === 'rev-parse') return { code: 0, stdout: `${CANONICAL}\n`, stderr: '' };
+    if (args[0] === 'merge-base') return { code: 0, stdout: '', stderr: '' };
+    if (args[0] === 'rev-list') return { code: 0, stdout: `${behindCount}\n`, stderr: '' };
+    return { code: 0, stdout: '', stderr: '' };
+  };
 
   it('canonical behind the accepted watermark → escalate + egress-canonical-stale, still egresses (publishes the stale content)', async () => {
-    const { input, recorded, egressCalls } = bridgeInput(
-      { expectedCanonicalSha: WATERMARK },
-      { runGit: staleGit(21) },
-    );
+    const { input, recorded, egressCalls } = bridgeInput({ expectedCanonicalSha: WATERMARK }, { runGit: staleGit(21) });
     const out = await runGithubBridgeTick(input);
     expect(out.verdict.action).toBe('escalate');
     expect(out.verdict.needsOwner).toBe(false); // self-heals via the catch-up pin / next integrator publish

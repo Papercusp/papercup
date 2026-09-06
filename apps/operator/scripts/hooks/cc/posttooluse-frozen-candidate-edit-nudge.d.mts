@@ -53,8 +53,27 @@ export function ownerIdentity(payload: any, env?: NodeJS.ProcessEnv, readFile?: 
  * when the file is outside any repository — nothing to attribute to a lineage then.
  */
 export function repoRelativePath(filePath: any, cwd?: string, git?: typeof execFileSync): string | null;
-/** Parse the MCP endpoint's JSON or SSE envelope into the inner tool result (or null). */
-export function parseMcpToolResult(rawText: any): {
+/** Map a trusted papercusp://scratch URI to a path below the configured root. */
+export function scratchUriToPath(uri: any, env?: NodeJS.ProcessEnv): string;
+/**
+ * Unwrap a papercusp.output-envelope/v1 result, including a reference whose
+ * spill payload may put advisory text before the actual JSON result.
+ *
+ * This mirrors ptool.mjs rather than trusting content[0]: result-door may move
+ * advisory items ahead of the payload, and a failed read must leave the
+ * envelope untouched instead of fabricating a refusal or success.
+ */
+export function unwrapOutputEnvelope(parsed: any, { readSpill, fileExists, env }?: {
+    readSpill?: typeof readSpilledPayload | undefined;
+    fileExists?: typeof existsSync | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+}): any;
+/**
+ * Parse the MCP endpoint's JSON, SSE, or output-envelope response into the
+ * inner tool result. Async because output-envelope references are recoverable
+ * spill files, not inline text.
+ */
+export function parseMcpToolResult(rawText: any, options?: {}): Promise<{
     ok: boolean;
     detail: string;
     inner?: undefined;
@@ -62,7 +81,7 @@ export function parseMcpToolResult(rawText: any): {
     ok: boolean;
     inner: any;
     detail?: undefined;
-};
+}>;
 /**
  * POST one `record-edit` through the same door the lock hook uses (bearer + ?client=owner so
  * the server attributes the row to the per-session owner). Never throws.
@@ -81,6 +100,7 @@ export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, t
 }): Promise<{
     recorded: boolean;
     detail: string | undefined;
+    unknownOperation: boolean;
     inserted?: undefined;
     inner?: undefined;
 } | {
@@ -88,10 +108,16 @@ export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, t
     inserted: boolean;
     inner: any;
     detail?: undefined;
+    unknownOperation?: undefined;
 } | {
     recorded: boolean;
     detail: any;
     inner: any;
+    unknownOperation: boolean;
     inserted?: undefined;
 }>;
 import { execFileSync } from 'node:child_process';
+/** Result-door spill files contain a magic line, a manifest, then JSON payload. */
+declare function readSpilledPayload(path: any): Promise<any>;
+import { existsSync } from 'node:fs';
+export {};

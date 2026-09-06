@@ -427,6 +427,9 @@ function rerunRecipeFor(
       classRef,
       specIds: [clause.specId],
       includeDraft: true,
+      // These inputs select the current cohort as well as classify freshness.
+      // Omitting them revives historical bindings on an otherwise valid replay.
+      ...(current !== undefined ? { current: fingerprints } : {}),
     },
     selection: {
       planSlug: clause.planSlug,

@@ -20,11 +20,16 @@
  *   itself writes one fallback row on close. Fail-soft (D-007) — never throws.
  */
 
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
+import {
+  captureWorktreeSnapshot,
+  computeWorktreeDirty,
+  type WorktreeGitSnapshot,
+} from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
   beginSyncEnrolment,
@@ -33,6 +38,9 @@ import {
   syncEnrolmentScopePath,
 } from './task-manager/enroll-sync';
 import type { TaskSpec } from './task-manager/types';
+
+export { captureWorktreeSnapshot, computeWorktreeDirty };
+export type { WorktreeGitSnapshot };
 
 /** A postgres-js-like tagged-template client; injectable so persistence seams are testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
@@ -51,76 +59,6 @@ type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseL
  * re-run. NULL means no monitor was running on this process — absence of
  * signal, never a claim the host was calm.
  */
-/**
- * EI-18795303393201472: a run executed against the SHARED, concurrently-edited
- * working tree (not an isolated checkout) can have its on-disk content change
- * mid-run or between the run finishing and the commit sha being sampled — a
- * torn read. The stamped `commit_sha` then names a commit whose actual content
- * never matches what vitest executed, which is dangerous specifically because
- * `ledgerFilesForCandidate` (why-chain.ts) treats `test_runs` rows matched by
- * `commit_sha` as first-hand evidence for the EXACT candidate under gate
- * verdict — a torn-read row can misattribute a red to an innocent commit.
- *
- * Fail-safe: an unreadable git snapshot (either `commit` is null) is treated
- * as dirty — absence of proof the tree was stable is not proof it was.
- */
-export interface WorktreeGitSnapshot {
-  /** `git rev-parse HEAD`, or null if it couldn't be read. */
-  commit: string | null;
-  /** `git status --porcelain --untracked-files=all` output, or null if unreadable.
-   *  Empty string means clean; non-empty means the shared worktree carries
-   *  uncommitted changes at this snapshot. */
-  porcelain: string | null;
-}
-
-export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: WorktreeGitSnapshot): boolean {
-  if (!before.commit || !after.commit) return true;
-  if (before.commit !== after.commit) return true;
-  if (before.porcelain === null || after.porcelain === null) return true;
-  if (before.porcelain.trim().length > 0) return true;
-  if (after.porcelain.trim().length > 0) return true;
-  return false;
-}
-
-/**
- * Capture the shared worktree's commit and full porcelain status fail-soft.
- *
- * This is intentionally synchronous for the pre-run call: `startRun` must
- * finish the before snapshot before spawning the child, otherwise a fast child
- * could complete before its "before" probe does. A missing/failed probe is
- * returned as null and therefore marks the run dirty via computeWorktreeDirty.
- */
-export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
-  let root = cwd;
-  if (!root) {
-    try {
-      root = resolveAgentWorkspaceRoot({});
-    } catch {
-      return { commit: null, porcelain: null };
-    }
-  }
-
-  const readGit = (args: string[]): string | null => {
-    try {
-      const output = execFileSync('git', args, {
-        cwd: root,
-        encoding: 'utf8',
-        timeout: 2_000,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      if (output == null) return null;
-      return output.trim();
-    } catch {
-      return null;
-    }
-  };
-
-  return {
-    commit: readGit(['rev-parse', 'HEAD']) || null,
-    porcelain: readGit(['status', '--porcelain', '--untracked-files=all']),
-  };
-}
-
 function captureSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
   const lag = currentLoopLag();
   return {

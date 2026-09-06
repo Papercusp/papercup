@@ -128,7 +128,7 @@ export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
    * whose rows all sit past the 500-row cap offered no chip and could not be selected at
    * all (measured live 2026-08-28: `system`, 15 corpus rows, 0 in the window). A filter
    * control's option set is a claim about what EXISTS, so it has to come from an aggregate
-   * over the corpus — the same argument `digest.total` already settled in WI-39675.
+   * over the corpus — the same argument `digest.census.total` already settled in WI-39675.
    *
    * Only the NON-EMPTY sourceRole values appear here: rows with no source are not a
    * selectable option (`sources: ['<blank>']` would render a chip that means "unfiled").
@@ -351,9 +351,11 @@ async function computeFilteredLearningImprovements(
     const projectedItems = projectedRows.flatMap((row) => (row.item ? [row.item] : []));
     digest.autoEligible = projectedItems.filter((item) => item.tier === 'auto');
     digest.humanQueue = projectedItems.filter((item) => item.tier !== 'auto');
-    digest.returned = projectedItems.length;
-    digest.total = matchingCandidates.length;
-    digest.windowed = matchingCandidates.length > projectedItems.length;
+    digest.window = {
+      ...digest.window,
+      examined: projectedItems.length,
+      windowed: matchingCandidates.length > projectedItems.length,
+    };
 
     const projectedIdeaIds = new Set(
       projectedRows.flatMap((row) => (row.idea ? [row.idea.ideaId] : [])),
@@ -415,7 +417,7 @@ export async function computeLearningImprovementsSnapshot(
     ...(a.scope === 'all' ? {} : { loopOutputOnly: true }),
   };
   // WI-39675: the TRUE corpus total, read alongside the (windowed) items over the
-  // SAME filter — so `digest.total`, which the tab renders as "From the loop N",
+  // SAME filter — so `digest.census.total`, which the tab renders as "From the loop N",
   // stops reporting the WINDOW size. This is the same D2 fix EI-18790490225750395
   // made to the `improvements:digest` AGENT TOOL; it was never propagated to this
   // SYNC-RESOLVER path, so the tab's own total silently saturated at the default

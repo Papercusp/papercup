@@ -7,11 +7,12 @@
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/sync/pot-git/github-ingress.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { defaultRunGit, ensurePotGitRepo, listNamespaces, readNamespaceRef } from './storage';
+import { defaultRunGit, ensurePotGitRepo, listNamespaces, readNamespaceRef, type RunGit } from './storage';
 import {
+  INGRESS_QUARANTINE_PREFIX,
   githubOriginDevicePubkey,
   githubOriginNamespaceKey,
   ingressOriginBranches,
@@ -21,10 +22,7 @@ async function commitFile(work: string, path: string, content: string, msg: stri
   await writeFile(join(work, path), content);
   const add = await defaultRunGit(['add', '-A'], work);
   expect(add.code, add.stderr).toBe(0);
-  const c = await defaultRunGit(
-    ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', msg],
-    work,
-  );
+  const c = await defaultRunGit(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', msg], work);
   expect(c.code, c.stderr).toBe(0);
   return (await defaultRunGit(['rev-parse', 'HEAD'], work)).stdout.trim();
 }
@@ -91,6 +89,45 @@ describe('github-ingress (P-002: GitHub-as-a-member via the synthetic namespace)
     expect(r.errors).toEqual([]);
     expect(r.updated).toEqual([{ branch: 'main', from: sha1, to: sha2, forced: false }]);
     expect(await readNamespaceRef(store, devPubkey, 'refs/heads/main')).toBe(sha2);
+  });
+
+  it('deepens a shallow store before classifying a real fast-forward as a rewrite', async () => {
+    const sha3 = await commitFile(work, 'a.txt', 'three\n', 'c3');
+    await pushToOrigin(work, origin);
+
+    // Reproduce the live Papercusp bridge state: the new remote tip is present,
+    // but a retained shallow boundary hides its parent chain from merge-base.
+    const quarantineRef = `${INGRESS_QUARANTINE_PREFIX}/${githubOriginNamespaceKey(origin)}/main`;
+    const fetch = await defaultRunGit(['fetch', origin, `+refs/heads/main:${quarantineRef}`], store);
+    expect(fetch.code, fetch.stderr).toBe(0);
+    await writeFile(join(store, 'shallow'), `${sha3}\n`);
+    const shallowLock = join(store, 'shallow.lock');
+    await writeFile(shallowLock, '');
+    const stale = new Date(Date.now() - 2 * 60_000);
+    await utimes(shallowLock, stale, stale);
+    const before = await defaultRunGit(['merge-base', '--is-ancestor', sha2, sha3], store);
+    expect(before.code).not.toBe(0);
+
+    const commands: string[][] = [];
+    const runGit: RunGit = async (args, cwd, options) => {
+      commands.push([...args]);
+      return defaultRunGit(args, cwd, options);
+    };
+    const r = await ingressOriginBranches({
+      repoPath: store,
+      remoteUrl: origin,
+      historySourcePath: work,
+      branches: ['main'],
+      runGit,
+    });
+    expect(r.errors).toEqual([]);
+    expect(r.nonFF).toEqual([]);
+    expect(r.updated).toEqual([{ branch: 'main', from: sha2, to: sha3, forced: false }]);
+    expect(await readNamespaceRef(store, devPubkey, 'refs/heads/main')).toBe(sha3);
+    expect((await defaultRunGit(['rev-parse', '--is-shallow-repository'], store)).stdout.trim()).toBe('false');
+    await expect(access(shallowLock)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(commands).toContainEqual(['fetch', '--unshallow', work, `+refs/heads/main:${quarantineRef}`]);
+    sha2 = sha3;
   });
 
   it('a non-FF origin rewrite is REPORTED, the namespace does not move (S-4)', async () => {

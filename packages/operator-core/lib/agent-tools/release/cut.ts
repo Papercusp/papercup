@@ -122,6 +122,7 @@ export interface CutRootResolutionDeps {
   status?: (worktreePath: string) => string;
   canonicalPath?: (candidate: string) => string;
   desktopStatus?: (desktopRoot: string) => string;
+  desktopHeadMatches?: (worktreeRoot: string) => boolean;
   headFile?: (desktopRoot: string, relativePath: string) => string;
   readFile?: (absolutePath: string) => string;
   exists?: (absolutePath: string) => boolean;
@@ -157,12 +158,20 @@ function expectedVersionFile(relativePath: string, head: string, version: string
 export function validateReleaseResumeResidue(input: {
   superprojectStatus: string;
   desktopStatus: string;
+  desktopHeadMatches?: boolean;
   version: string;
   files: Readonly<Record<string, { head: string; worktree: string }>>;
 }): { ok: true } | { ok: false; reason: string } {
   const desktopLines = input.desktopStatus.split('\n').filter(Boolean);
   const expectedSuper = desktopLines.length > 0 ? ' m papercusp-desktop' : '';
-  if (input.superprojectStatus.trimEnd() !== expectedSuper) {
+  // Porcelain v1 folds a submodule's lowercase `m` into `M`, which can also
+  // mean its checked-out commit moved. Accept that encoding only with separate
+  // proof that the desktop gitlink still matches the frozen superproject.
+  const porcelainResidue =
+    desktopLines.length > 0 &&
+    input.superprojectStatus.trimEnd() === ' M papercusp-desktop' &&
+    input.desktopHeadMatches === true;
+  if (input.superprojectStatus.trimEnd() !== expectedSuper && !porcelainResidue) {
     return { ok: false, reason: `superproject status is not the single expected dirty submodule (${JSON.stringify(input.superprojectStatus)})` };
   }
 
@@ -355,6 +364,29 @@ export async function resolveCutRoot(
     const residue = validateReleaseResumeResidue({
       superprojectStatus: dirty,
       desktopStatus,
+      desktopHeadMatches:
+        dirty.trimEnd() === ' M papercusp-desktop'
+          ? (
+              deps.desktopHeadMatches ??
+              ((root: string) => {
+                try {
+                  execFileSync('git', [
+                    '-C',
+                    root,
+                    'diff',
+                    '--quiet',
+                    '--ignore-submodules=dirty',
+                    'HEAD',
+                    '--',
+                    'papercusp-desktop',
+                  ]);
+                  return true;
+                } catch {
+                  return false;
+                }
+              })
+            )(selected.path)
+          : undefined,
       version: options.reuseSeedVersion,
       files,
     });

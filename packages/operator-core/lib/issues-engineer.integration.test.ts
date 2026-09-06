@@ -236,6 +236,10 @@ describe('engineer issues surface (real PG)', () => {
 
     expect(child.parent).toBe(parent.id);
     expect((await issues.getIssue(child.id))?.parent).toBe(parent.id);
+    expect((await issues.listIssues({ parent: parent.id })).map((issue) => issue.id)).toEqual([child.id]);
+    expect(await issues.countIssues({ parent: parent.id })).toBe(1);
+    expect(await issues.countIssuesByState({ parent: parent.id })).toEqual({ open: 1 });
+    expect((await issues.listIssues({ includeChildren: false })).map((issue) => issue.id)).toEqual([parent.id]);
 
     const retained = issues.updateIssue(child.id, { parent: parent.id, silent: true });
     expect(notTripped(await retained)?.parent).toBe(parent.id);

@@ -270,6 +270,41 @@ describe('rubric template schema', () => {
         criteria: [{ ...criterion, passRatings: ['healthy'] }],
       }).success,
     ).toBe(true);
+
+    const disclosure = {
+      ...criterion,
+      key: 'outcome-disclosed',
+      barKey: 'R-2',
+      role: 'disclosure' as const,
+      mandatory: false,
+      coversBarKeys: ['R-1'],
+      passRatings: [],
+    };
+    expect(
+      rubricTemplateDataAuthoringSchema.safeParse({
+        ...acceptance,
+        criteria: [{ ...criterion, passRatings: ['healthy'] }, disclosure],
+      }).success,
+    ).toBe(true);
+
+    const invalidDisclosure = rubricTemplateDataAuthoringSchema.safeParse({
+      ...acceptance,
+      criteria: [
+        { ...criterion, passRatings: ['healthy'] },
+        { ...disclosure, passRatings: ['healthy'] },
+      ],
+    });
+    expect(invalidDisclosure.success).toBe(false);
+    if (!invalidDisclosure.success) {
+      expect(invalidDisclosure.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 1, 'passRatings'],
+            message: expect.stringContaining('must be empty'),
+          }),
+        ]),
+      );
+    }
   });
 });
 

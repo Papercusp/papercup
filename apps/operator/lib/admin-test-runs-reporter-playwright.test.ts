@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   sql: vi.fn(async () => []),
 }));
 
-vi.mock('@papercusp/operator-core/lib/testing-run-store', () => ({
+vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   captureWorktreeSnapshot: mocks.captureWorktreeSnapshot,
   computeWorktreeDirty: mocks.computeWorktreeDirty,
 }));

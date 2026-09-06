@@ -39,6 +39,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { clearStaleHolderlessEmptyGitLock } from '../../harness/git-sync/run-git-sync';
 import {
   type RunGit,
   NETWORK_RUN_GIT_TIMEOUT_MS,
@@ -66,8 +67,7 @@ const ZERO_SHA = '0'.repeat(40);
  */
 export function normalizeGithubRemote(remoteUrl: string): string {
   const u = remoteUrl.trim();
-  const m =
-    /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/]+@)?github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(u);
+  const m = /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/]+@)?github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(u);
   if (m) return `github.com/${m[1].toLowerCase()}/${m[2].toLowerCase()}`;
   return u;
 }
@@ -93,6 +93,12 @@ export interface IngressInput {
   repoPath: string;
   /** The GitHub remote to ingress from (a local path works — tests). */
   remoteUrl: string;
+  /**
+   * Registered full checkout for bounded shallow-history repair. Its current
+   * origin/<branch> (or local branch in tests) can supply already-present
+   * history without downloading the whole graph from GitHub again.
+   */
+  historySourcePath?: string;
   /** Branch names to ingress (WITHOUT refs/heads/), e.g. ['main']. */
   branches: string[];
   runGit?: RunGit;
@@ -149,6 +155,79 @@ export interface IngressResult {
 }
 
 /**
+ * A shallow bare store cannot answer every ancestry question: git treats each
+ * shallow boundary as a root, so `merge-base --is-ancestor` can return 1 for a
+ * real fast-forward whose path crosses that boundary. Before escalating a
+ * would-be history rewrite, deepen the fetched branch once and retry against
+ * the complete graph. A failed/incomplete deepen is inconclusive and must not
+ * be reported as a non-FF rewrite.
+ */
+async function deepenShallowAncestry(input: {
+  repoPath: string;
+  remoteUrl: string;
+  historySourcePath?: string;
+  branch: string;
+  quarantineRef: string;
+  current: string;
+  remoteSha: string;
+  runGit: RunGit;
+}): Promise<{ ancestor: boolean; conclusive: boolean; error?: string }> {
+  const shallow = await input.runGit(['rev-parse', '--is-shallow-repository'], input.repoPath);
+  if (shallow.code !== 0 || shallow.stdout.trim() !== 'true') {
+    return { ancestor: false, conclusive: true };
+  }
+
+  const fetchCompleteHistory = async (source: string, sourceRef: string) => {
+    const fetchArgs = ['fetch', '--unshallow', source, `+${sourceRef}:${input.quarantineRef}`];
+    let result = await input.runGit(fetchArgs, input.repoPath, { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS });
+    if (
+      result.code !== 0 &&
+      /Unable to create '[^']*shallow\.lock': File exists/i.test(`${result.stdout}\n${result.stderr}`)
+    ) {
+      const cleared = await clearStaleHolderlessEmptyGitLock(input.runGit, input.repoPath, 'shallow.lock', () => {});
+      if (cleared) {
+        result = await input.runGit(fetchArgs, input.repoPath, { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS });
+      }
+    }
+    return result;
+  };
+
+  let deepen: Awaited<ReturnType<RunGit>> | undefined;
+  if (input.historySourcePath) {
+    for (const sourceRef of [`refs/remotes/origin/${input.branch}`, `refs/heads/${input.branch}`]) {
+      const sourceHead = await input.runGit(
+        ['rev-parse', '--verify', '--quiet', `${sourceRef}^{commit}`],
+        input.historySourcePath,
+      );
+      if (sourceHead.code !== 0 || sourceHead.stdout.trim() !== input.remoteSha) continue;
+      deepen = await fetchCompleteHistory(input.historySourcePath, sourceRef);
+      break;
+    }
+  }
+  if (!deepen || deepen.code !== 0) {
+    deepen = await fetchCompleteHistory(input.remoteUrl, `refs/heads/${input.branch}`);
+  }
+  const retry = await input.runGit(['merge-base', '--is-ancestor', input.current, input.remoteSha], input.repoPath);
+  if (retry.code === 0) return { ancestor: true, conclusive: true };
+
+  // Another writer can finish the unshallow between our probe and fetch; in
+  // that race the fetch may complain that the repo is already complete, while
+  // the retried ancestry result is still authoritative. Only classify a real
+  // non-FF once the repository now reports a complete graph.
+  const after = await input.runGit(['rev-parse', '--is-shallow-repository'], input.repoPath);
+  if (after.code === 0 && after.stdout.trim() === 'false') {
+    return { ancestor: false, conclusive: true };
+  }
+
+  const detail = deepen.stderr.trim() || `fetch --unshallow exited ${deepen.code}`;
+  return {
+    ancestor: false,
+    conclusive: false,
+    error: `cannot verify ancestry across the shallow boundary: ${detail}`,
+  };
+}
+
+/**
  * Ingress origin branches into the synthetic github-origin namespace.
  * FF-only + CAS by default; per-branch best-effort; never throws.
  */
@@ -181,11 +260,9 @@ export async function ingressOriginBranches(input: IngressInput): Promise<Ingres
     //    timeout tighter than the transfer needs makes the ingress permanently
     //    un-completable (github-bridge-ingress-timeout-too-short-2026-07-20,
     //    EI-18189246091367226).
-    const fetch = await runGit(
-      ['fetch', input.remoteUrl, `+refs/heads/${branch}:${quarantineRef}`],
-      input.repoPath,
-      { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
-    );
+    const fetch = await runGit(['fetch', input.remoteUrl, `+refs/heads/${branch}:${quarantineRef}`], input.repoPath, {
+      timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS,
+    });
     if (fetch.code !== 0) {
       if (/couldn't find remote ref|no such ref/i.test(fetch.stderr)) {
         res.absent.push(branch);
@@ -226,7 +303,26 @@ export async function ingressOriginBranches(input: IngressInput): Promise<Ingres
         continue;
       }
       const ff = await runGit(['merge-base', '--is-ancestor', current, remoteSha], input.repoPath);
-      if (ff.code === 0) {
+      let isFastForward = ff.code === 0;
+      if (!isFastForward) {
+        const repaired = await deepenShallowAncestry({
+          repoPath: input.repoPath,
+          remoteUrl: input.remoteUrl,
+          historySourcePath: input.historySourcePath,
+          branch,
+          quarantineRef,
+          current,
+          remoteSha,
+          runGit,
+        });
+        if (!repaired.conclusive) {
+          res.ok = false;
+          res.errors.push({ branch, message: repaired.error ?? 'shallow ancestry check was inconclusive' });
+          continue;
+        }
+        isFastForward = repaired.ancestor;
+      }
+      if (isFastForward) {
         // Fast-forward — CAS on the head we just read.
         await writeNamespaceRef(input.repoPath, devPubkey, ref, remoteSha, runGit, current);
         res.updated.push({ branch, from: current, to: remoteSha, forced: false });
