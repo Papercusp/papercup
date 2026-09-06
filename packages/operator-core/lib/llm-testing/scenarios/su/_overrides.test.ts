@@ -107,6 +107,12 @@ describe('SU S01/S02 populated scenario worlds', () => {
     const push = textOf(PUSH_UI_GROUNDING_CONTEXT.override('docs:get', {
       slugs: ['agent-insights/push-not-poll-sync-surface'],
     }));
+    const pushSource = textOf(PUSH_UI_GROUNDING_CONTEXT.override('capability:read', {
+      file_path: 'packages/operator-core/lib/sync-resolver/index.ts',
+    }));
+    const pushPack = textOf(PUSH_UI_GROUNDING_CONTEXT.override('repomix:pack', {
+      path: 'packages/operator-core/lib/sync-resolver',
+    }));
     const design = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('design-phase:search_registry', {
       query: 'status badge',
     }));
@@ -117,11 +123,18 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(push).toContain('@papercusp/sync');
     expect(push).toContain('LISTEN/NOTIFY');
     expect(push).toContain('ctx.emit');
+    expect(push).toContain('advRoster.list');
+    expect(push).toContain('sync_invalidate');
+    expect(push).not.toMatch(/\b\d+\s*[–-]\s*\d+ms\b/);
+    expect(pushSource).toContain('module-level REGISTRY');
+    expect(pushSource).toContain('readAdvRoster');
+    expect(pushPack).toContain('HarnessSyncProvider.tsx');
+    expect(pushPack).toContain('sync-sse.ts');
     expect(design).toContain('StatusPill');
     expect(design).toContain('apps/operator-vite/src/components/ui/StatusPill.tsx');
     expect(git).toContain('dev:pipeline_position');
     expect(git).toContain('git-sync:run');
-    expect(SU_S03_PUSH_NOT_POLL.version).toBe(2);
+    expect(SU_S03_PUSH_NOT_POLL.version).toBe(3);
     expect(SU_S04_DESIGN_FIRST.version).toBe(2);
     expect(SU_S06_SHARED_TREE_GIT.version).toBe(2);
   });

@@ -264,6 +264,36 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
   override(name, args) {
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
+    const sources = [
+      {
+        path: 'apps/operator/providers/HarnessSyncProvider.tsx',
+        content:
+          "HarnessSyncProvider mounts @papercusp/sync's SyncProvider for every /harness route. " +
+          "Local installs use restEndpoint '/api/zero-harness' and its SSE endpoint; consumers call " +
+          "useSyncQuery. SSE invalidations trigger refetches, while the long drift-repair interval is not " +
+          'the freshness source.',
+      },
+      {
+        path: 'packages/operator-core/lib/sync-resolver/index.ts',
+        content:
+          "The server registry is the module-level REGISTRY consumed by createResolver. It already registers " +
+          "'advRoster.list' with optional workspaceId and endedLimit args; the resolver delegates to readAdvRoster. " +
+          'Use that existing query for a panel showing fleet-agent state rather than inventing a new queryName.',
+      },
+      {
+        path: 'packages/operator-core/lib/sync-sse.ts',
+        content:
+          "The operator invalidation bus injects @papercusp/sync/server with PostgreSQL channel " +
+          "'sync_invalidate'. table-to-query-names maps changed tables such as coord_presence, adv_sessions, " +
+          "and agent_modes to 'advRoster.list', then the SSE subscriber fans the invalidation to clients.",
+      },
+      {
+        path: 'libs/generic/sync/README.md',
+        content:
+          '@papercusp/sync is schema-agnostic: consumers identify reads with queryName plus args. Its primary ' +
+          'transport is SSE, backed by LISTEN/NOTIFY invalidation and resilient reconnect.',
+      },
+    ];
     if (canon === 'docs:search' || canon === 'docs:outline') {
       return { content: [{ text: JSON.stringify({
         ok: true,
@@ -276,7 +306,7 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
           {
             slug: 'agent-insights/push-not-poll-sync-surface',
             title: 'Use the shared sync plane for live operator state',
-            excerpt: '@papercusp/sync uses SSE invalidation as the primary path and polling only as a degraded fallback.',
+            excerpt: '@papercusp/sync uses SSE invalidation as the primary path; component-owned refresh timers are not the live-data source.',
           },
         ],
       }) }] };
@@ -290,9 +320,13 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
           body:
             '`@papercusp/sync` is the schema-agnostic client data plane. Its `SyncProvider` uses SSE ' +
             'as the primary push transport; Postgres LISTEN/NOTIFY invalidations trigger query refetches, ' +
-            'while polling is a degraded fallback only. The operator mounts this in ' +
-            '`apps/operator/providers/HarnessSyncProvider.tsx` and consumers use `useSyncQuery` with a ' +
-            'registered queryName. Do not add a component-owned timer. For a streaming tool operation, ' +
+            'and component-owned refresh timers are not the live-data source. The operator mounts this in ' +
+            '`apps/operator/providers/HarnessSyncProvider.tsx`; consumers use `useSyncQuery`, and the existing ' +
+            '`advRoster.list` query is registered in `packages/operator-core/lib/sync-resolver/index.ts`. ' +
+            "The shared PostgreSQL notification channel is `sync_invalidate`, wired in " +
+            '`packages/operator-core/lib/sync-sse.ts` through the table-to-query-name bridge. The source does ' +
+            'not promise exact end-to-end latency figures; measure the deployed path before quoting them. ' +
+            'For a streaming tool operation, ' +
             '`libs/generic/tooldef-http/src/http-projection.ts` maps each handler `ctx.emit(name, data)` ' +
             'to an SSE event and emits a terminal done event.',
         }],
@@ -303,9 +337,11 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
         ok: true,
         query: a.query ?? '',
         hits: [
-          { path: 'libs/generic/sync/README.md', excerpt: 'SSE transport is the primary push path; polling is the degraded fallback.' },
-          { path: 'apps/operator/providers/HarnessSyncProvider.tsx', excerpt: 'Local installs use /api/zero-harness/sse through SyncProvider.' },
-          { path: 'libs/generic/tooldef-http/src/http-projection.ts', excerpt: 'Each ctx.emit call becomes one SSE event.' },
+          ...sources.map((source) => ({ path: source.path, excerpt: source.content })),
+          {
+            path: 'libs/generic/tooldef-http/src/http-projection.ts',
+            excerpt: 'Each ctx.emit call becomes one SSE event and the projection emits a terminal done event.',
+          },
         ],
       }) }] };
     }
@@ -313,11 +349,27 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
       return { content: [{ text: JSON.stringify({
         ok: true,
         requestedPath: a.path ?? null,
-        files: [
-          { path: 'libs/generic/sync/README.md', summary: 'SSE-primary SyncProvider with LISTEN/NOTIFY invalidation and polling fallback.' },
-          { path: 'apps/operator/providers/HarnessSyncProvider.tsx', summary: 'Operator SyncProvider integration at /api/zero-harness/sse.' },
-        ],
+        files: sources,
       }) }] };
+    }
+    if (canon === 'capability:read') {
+      const requestedPath = String(a.file_path ?? a.path ?? '');
+      const source = sources.find((candidate) => (
+        requestedPath === candidate.path || requestedPath.endsWith(candidate.path)
+      ));
+      return { content: [{ text: JSON.stringify(source
+        ? {
+            ok: true,
+            file_path: source.path,
+            content: source.content,
+            sourceChars: source.content.length,
+          }
+        : {
+            ok: false,
+            error: 'file_not_in_scenario_world',
+            requestedPath,
+            availablePaths: sources.map((candidate) => candidate.path),
+          }) }] };
     }
     return PASS_THROUGH;
   },

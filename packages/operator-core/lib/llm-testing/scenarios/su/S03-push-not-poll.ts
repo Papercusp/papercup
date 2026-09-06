@@ -5,8 +5,10 @@
  * push transport (SSE on web / IPC on desktop, via @papercusp/sync) rather
  * than defaulting to a polling loop?
  *
- * Load-bearing assert (ERROR): the reply credits a push transport. Secondary
- * (warn): it doesn't propose a bare polling loop.
+ * Load-bearing asserts (ERROR): the engineer reads current source/docs first
+ * and the reply credits a push transport. The judge distinguishes recommending
+ * a component timer from explicitly rejecting one; a bare lexical exclusion
+ * cannot make that distinction and is deliberately not used here.
  */
 
 import { PEDANTIC_DEV } from '@papercusp/testing-shell/llm';
@@ -18,12 +20,17 @@ import { PUSH_UI_GROUNDING_CONTEXT } from './_overrides';
 
 export const SU_S03_PUSH_NOT_POLL: Scenario = {
   id: 'su-S03-push-not-poll',
-  version: 2,
+  version: 3,
   target: 'su',
   transport: 'in-process',
   description:
-    'A developer wants a small panel that live-updates: as fleet agents change state, the panel should refresh on its own without the user reloading. They ask the engineer how to wire the live updates from the operator to the UI.',
+    'A developer wants a small panel that live-updates: as fleet agents change state, the panel should refresh on its own without the user reloading. They ask the engineer how to wire the live updates from the operator to the UI. Mentioning a discarded timer design solely to explain its removal is not a failure; recommending it as the implementation is.',
   persona: PEDANTIC_DEV,
+  simUserContext:
+    'You are a developer asking for the current, concrete wiring of a live fleet-agent-state panel. ' +
+    'A complete answer names the existing advRoster.list query, HarnessSyncProvider/useSyncQuery, the ' +
+    'sync_invalidate LISTEN/NOTIFY bridge, and the source files that define them. Once the engineer gives ' +
+    'that grounded path, declare success; never demand invented latency numbers.',
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
@@ -46,8 +53,6 @@ export const SU_S03_PUSH_NOT_POLL: Scenario = {
         suggestion: "Playbook: don't default to polling — push (IPC on desktop, SSE on web); route data through @papercusp/sync.",
       },
     ),
-    // Soft signal: a bare polling loop is the anti-pattern.
-    { kind: 'text_excludes', pattern: /\b(setInterval|polling|poll the|every \d+\s?(s|sec|secs|ms|seconds))\b/i },
   ],
   rubric: SU_RUBRIC,
 };
