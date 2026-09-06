@@ -424,6 +424,61 @@ describe("<InboxPane>", () => {
     expect(bodyRule).toMatch(/overflow:\s*visible/);
   });
 
+  /* ── List floor guard (inbox-three-column-resolver-states-2026-09-06 P-001) ──
+     Measured live 2026-09-05 (EI-22478177553828828): at 1280×720 the split
+     page rendered `.op-inbox__list` at 0px — zero of 77 rows. Every chrome
+     sibling in `.op-inbox__master` was rigid (`flex: 0 0 auto`) and only the
+     list flexed, so the column's whole vertical shortfall landed on the rows.
+     jsdom has no layout, so these pin the CSS CONTRACT that makes that
+     impossible; `e2e/inbox-list-floor.spec.ts` measures the real geometry. */
+  describe("list floor guard (P-001)", () => {
+    const css = readFileSync(join(__dirname, "inbox-pane.css"), "utf8");
+    const rule = (selector: string): string =>
+      css.match(
+        new RegExp(
+          selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*\\}",
+        ),
+      )?.[0] ?? "";
+
+    it("declares the floor ONCE on the pane root, so stack and split inherit the same value", () => {
+      expect(rule(".op-inbox")).toMatch(/--op-inbox-list-floor:\s*\d+px/);
+      // No layout-specific override may zero the list again.
+      expect(css).not.toMatch(
+        /\.op-inbox--split[^{]*\.op-inbox__list\s*\{[^}]*min-height:\s*0\b/,
+      );
+    });
+
+    it("floors the list at the token and sizes it from zero, so chrome is measured before the rows", () => {
+      const list = rule(".op-inbox__list");
+      expect(list).toMatch(/min-height:\s*var\(--op-inbox-list-floor\b/);
+      // `flex-basis: 0` is load-bearing: with `auto`, the virtualizer's total
+      // height is the basis, and the flex algorithm then shrinks the CHROME in
+      // proportion to that huge basis — collapsing the search box on any tall
+      // list, not just a short viewport.
+      expect(list).toMatch(/flex:\s*1\s+1\s+0(px)?\s*;/);
+      expect(list).not.toMatch(/min-height:\s*0\s*;/);
+    });
+
+    it("lets the controls block yield (and scroll) before the list does — the chrome cap", () => {
+      const controls = rule(".op-inbox__controls");
+      expect(controls).toMatch(/flex:\s*0\s+1\s+auto/);
+      expect(controls).toMatch(/overflow-y:\s*auto/);
+      // …but never to nothing: the search field stays reachable.
+      expect(controls).toMatch(/min-height:\s*[1-9]\d*px/);
+    });
+
+    it("keeps at least two whole rows visible", () => {
+      const floor = Number(
+        rule(".op-inbox").match(/--op-inbox-list-floor:\s*(\d+)px/)?.[1],
+      );
+      const rowMin = Number(
+        rule(".op-inbox__rowbtn").match(/min-height:\s*(\d+)px/)?.[1],
+      );
+      expect(rowMin).toBeGreaterThan(0);
+      expect(floor).toBeGreaterThanOrEqual(2 * rowMin);
+    });
+  });
+
   it('defaults to "Needs you" — decision-tier rows only, with chip counts', () => {
     seedAttention([
       mkItem("d1"),
