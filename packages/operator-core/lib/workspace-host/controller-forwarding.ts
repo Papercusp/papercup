@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   collectSiblingManagedTimers,
   DEFAULT_SIBLING_FANOUT_BUDGET_MS,
@@ -65,6 +66,15 @@ export async function forwardWorkspaceHostRequest(
   const controller = selectController(rows);
   if (!controller) return null;
 
+  // Both callers validate an object before forwarding. Choose the operation ID
+  // here, before crossing the transport boundary, so a lost response cannot also
+  // lose the only identity with which to reconcile a possibly accepted mutation.
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+  const operationId =
+    'operationId' in body && typeof body.operationId === 'string'
+      ? body.operationId
+      : randomUUID();
+  const forwardedBody = { ...body, operationId };
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   try {
     const response = await fetchImpl(`http://127.0.0.1:${controller.port}${path}`, {
@@ -76,7 +86,7 @@ export async function forwardWorkspaceHostRequest(
         accept: 'application/json',
         'content-type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(forwardedBody),
     });
     const contentType = response.headers.get('content-type');
     return new Response(await response.text(), {
@@ -84,7 +94,20 @@ export async function forwardWorkspaceHostRequest(
       headers: contentType ? { 'content-type': contentType } : undefined,
     });
   } catch {
-    return null;
+    // The controller waits for the durable workflow's result, which can outlive
+    // this transport deadline. Once dispatched, a timeout or lost response says
+    // nothing about acceptance. Reserve null for discovery/bypass; otherwise the
+    // route reports an unavailable executor even while its mutation is running.
+    return Response.json(
+      {
+        ok: false,
+        error: 'workspace-host controller response unavailable',
+        outcome: 'unknown',
+        operationId,
+        message: `Operation ${operationId} may have been accepted. Check the workspace host timeline before retrying, and preserve this operation ID.`,
+      },
+      { status: 504 },
+    );
   }
 }
 
