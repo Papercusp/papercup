@@ -19,6 +19,14 @@ import {
 } from './papercusp-hive-share';
 import type { OwnerHiveIdentity } from './papercusp-shared-identity-gist';
 
+/** WI-2147371: the gist is sealed under an owner-held passphrase, so every adopt/share
+ *  path needs one — without it sharing fail-closes and never reaches a write. */
+const TEST_PASS = 'a-sufficiently-long-owner-passphrase';
+/** The gist record shape fetchIdentityRecord returns. */
+function rec(identity: OwnerHiveIdentity, legacyPlaintext = false) {
+  return { identity, gistId: 'g1', legacyPlaintext };
+}
+
 const okId = async () => ({ kind: 'ok' as const, token: 'tok', githubUserId: 7, githubLogin: 'avi' });
 const EXISTING: OwnerHiveIdentity = {
   version: 1,
@@ -52,10 +60,11 @@ describe('adoptSharedHiveIdentity', () => {
     const res = await adoptSharedHiveIdentity({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => null,
+      fetchIdentityRecord: async () => null,
+      identityPassphrase: async () => TEST_PASS,
       storeKey,
     });
-    expect(res).toEqual({ githubLogin: 'avi', token: 'tok', existing: null });
+    expect(res).toEqual({ githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: null });
     expect(storeKey).not.toHaveBeenCalled();
   });
 
@@ -68,12 +77,30 @@ describe('adoptSharedHiveIdentity', () => {
     const res = await adoptSharedHiveIdentity({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => EXISTING,
+      fetchIdentityRecord: async () => rec(EXISTING),
+      identityPassphrase: async () => TEST_PASS,
       storeKey,
     });
     expect(res?.existing).toEqual(EXISTING);
     expect(storedValue && Buffer.isBuffer(storedValue)).toBe(true);
     expect(storedValue?.toString()).toBe('owner-der'); // decoded from base64
+  });
+
+  it('WI-2147371: FAIL-CLOSED with no owner passphrase — no fetch, no state, no publish path', async () => {
+    // There is deliberately no plaintext fallback: without the sealing secret the whole
+    // sharing path no-ops and the device keeps its own hive identity.
+    const fetchIdentityRecord = vi.fn(async () => null);
+    for (const bad of [null, '', 'tooshort']) {
+      const res = await adoptSharedHiveIdentity({
+        isEnabled: async () => true,
+        resolveGithub: okId,
+        fetchIdentityRecord,
+        identityPassphrase: async () => bad,
+        storeKey: async () => undefined,
+      });
+      expect(res).toBeNull();
+    }
+    expect(fetchIdentityRecord).not.toHaveBeenCalled();
   });
 
   it('never throws on a resolver failure', async () => {
@@ -98,7 +125,7 @@ describe('goSharedHive', () => {
     const publishIdentity = vi.fn();
     let listing: { visibility?: string; inviteSecret?: string } | undefined;
     let policy: { policy?: { membership?: string; allowlist?: string[] } } | undefined;
-    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: EXISTING };
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: EXISTING };
 
     await goSharedHive(state, {
       publishIdentity,
@@ -117,9 +144,56 @@ describe('goSharedHive', () => {
     expect(policy?.policy).toEqual({ membership: 'allowlist', allowlist: ['avi'], comms: { defaultTier: 'steer' } });
   });
 
+  it('WI-2147371: an adopted LEGACY PLAINTEXT gist is RE-SEALED in place, not merely adopted', async () => {
+    // Adopting a pre-fix plaintext blob leaves the private key readable by anyone who
+    // learns the gist URL. Fixing the write path only stops NEW leaks; retiring the LIVE
+    // one requires re-publishing (which PATCHes the canonical gist) with the passphrase.
+    const publishIdentity = vi.fn(async () => ({ gistId: 'g1' }));
+    const state: SharedHiveState = {
+      githubLogin: 'avi',
+      token: 'tok',
+      passphrase: TEST_PASS,
+      existingLegacyPlaintext: true,
+      existing: EXISTING,
+    };
+
+    await goSharedHive(state, {
+      publishIdentity,
+      setListing: async () => ({}) as unknown as never,
+      authorPolicy: async () => ({ ok: true }) as unknown as never,
+    });
+
+    expect(publishIdentity).toHaveBeenCalledTimes(1);
+    const [token, identity, passphrase] = publishIdentity.mock.calls[0] as unknown as [
+      string,
+      OwnerHiveIdentity,
+      string,
+    ];
+    expect(token).toBe('tok');
+    expect(identity).toEqual(EXISTING); // same identity — a re-seal, never a new keypair
+    expect(passphrase).toBe(TEST_PASS);
+  });
+
+  it('WI-2147371: a SEALED (non-legacy) adopted gist is NOT re-published', async () => {
+    const publishIdentity = vi.fn();
+    const state: SharedHiveState = {
+      githubLogin: 'avi',
+      token: 'tok',
+      passphrase: TEST_PASS,
+      existingLegacyPlaintext: false,
+      existing: EXISTING,
+    };
+    await goSharedHive(state, {
+      publishIdentity,
+      setListing: async () => ({}) as unknown as never,
+      authorPolicy: async () => ({ ok: true }) as unknown as never,
+    });
+    expect(publishIdentity).not.toHaveBeenCalled();
+  });
+
   it('P-019: an `open` public hive authors membership:open + contentWriteAuthority:author-scoped', async () => {
     let policy: { policy?: { membership?: string; allowlist?: string[]; contentWriteAuthority?: string } } | undefined;
-    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: EXISTING };
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: EXISTING };
     await goSharedHive(state, {
       setListing: async () => ({}) as unknown as never,
       authorPolicy: async (input) => {
@@ -135,7 +209,7 @@ describe('goSharedHive', () => {
 
   it('P-019: default (no membershipMode) stays the private allowlist hive, no author-scoping (today)', async () => {
     let policy: { policy?: { membership?: string; contentWriteAuthority?: string } } | undefined;
-    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: EXISTING };
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: EXISTING };
     await goSharedHive(state, {
       setListing: async () => ({}) as unknown as never,
       authorPolicy: async (input) => {
@@ -151,7 +225,7 @@ describe('goSharedHive', () => {
     let published: OwnerHiveIdentity | undefined;
     let listing: { visibility?: string; inviteSecret?: string } | undefined;
     let policy: { policy?: { allowlist?: string[] } } | undefined;
-    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', existing: null };
+    const state: SharedHiveState = { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: null };
 
     await goSharedHive(state, {
       publishIdentity: async (_token, identity) => {
@@ -184,7 +258,7 @@ describe('goSharedHive', () => {
     let published: OwnerHiveIdentity | undefined;
     let listing: { inviteSecret?: string } | undefined;
     await goSharedHive(
-      { githubLogin: 'avi', token: 'tok', existing: null },
+      { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: null },
       {
         canonicalSecret: () => 'baked-canonical-sec',
         publishIdentity: async (_t, id) => {
@@ -209,7 +283,7 @@ describe('goSharedHive', () => {
   it('P-007: admits the owner PLUS the team allowlist (deduped) in the admission policy', async () => {
     let policy: { policy?: { membership?: string; allowlist?: string[] } } | undefined;
     await goSharedHive(
-      { githubLogin: 'avi', token: 'tok', existing: EXISTING },
+      { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: EXISTING },
       {
         teamAllowlist: ['teammate-1', 'teammate-2', 'avi'], // 'avi' dup collapses
         setListing: async () => ({}) as unknown as never,
@@ -225,7 +299,7 @@ describe('goSharedHive', () => {
   it('later device: a baked canonical secret OVERRIDES a drifted gist secret on announce', async () => {
     let listing: { inviteSecret?: string } | undefined;
     await goSharedHive(
-      { githubLogin: 'avi', token: 'tok', existing: { ...EXISTING, inviteSecret: 'drifted-old' } },
+      { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: { ...EXISTING, inviteSecret: 'drifted-old' } },
       {
         canonicalSecret: () => 'baked-canonical-sec',
         setListing: async (i) => {
@@ -242,7 +316,7 @@ describe('goSharedHive', () => {
     const publishIdentity = vi.fn();
     const setListing = vi.fn(setOk);
     await goSharedHive(
-      { githubLogin: 'avi', token: 'tok', existing: null },
+      { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: null },
       { publishIdentity, setListing, loadKey: async () => ({ kind: 'error' as const }) },
     );
     expect(publishIdentity).not.toHaveBeenCalled();
@@ -252,7 +326,7 @@ describe('goSharedHive', () => {
   it('never throws when announce fails', async () => {
     await expect(
       goSharedHive(
-        { githubLogin: 'avi', token: 'tok', existing: EXISTING },
+        { githubLogin: 'avi', token: 'tok', passphrase: TEST_PASS, existingLegacyPlaintext: false, existing: EXISTING },
         {
           setListing: async () => {
             throw new Error('announce down');
@@ -287,7 +361,8 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
     await shareExistingHive({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => null,
+      fetchIdentityRecord: async () => null,
+      identityPassphrase: async () => TEST_PASS,
       loadKey: async () => ({ kind: 'ok' as const, value: Buffer.from('localkey') }),
       randomSecret: () => 's',
       derivePubkey: () => 'pub',
@@ -315,7 +390,8 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
     await shareExistingHive({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => gist,
+      fetchIdentityRecord: async () => rec(gist),
+      identityPassphrase: async () => TEST_PASS,
       loadPubkey: async () => ({ kind: 'ok' as const, pubkeyBase64: 'match-pub' }),
       setListing: async (i) => {
         listing = i;
@@ -331,7 +407,8 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
     await shareExistingHive({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => ({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
+      fetchIdentityRecord: async () => rec({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
+      identityPassphrase: async () => TEST_PASS,
       loadPubkey: async () => ({ kind: 'ok' as const, pubkeyBase64: 'different-local-pub' }),
       setListing,
     });
@@ -349,7 +426,8 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
     await shareExistingHive({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => gist,
+      fetchIdentityRecord: async () => rec(gist),
+      identityPassphrase: async () => TEST_PASS,
       loadPubkey: async () => ({ kind: 'not_found' as const }),
       setListing: async (i) => {
         listing = i;
@@ -369,7 +447,8 @@ describe('shareExistingHive (enable-later / re-boot path)', () => {
     await shareExistingHive({
       isEnabled: async () => true,
       resolveGithub: okId,
-      fetchIdentity: async () => ({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
+      fetchIdentityRecord: async () => rec({ ...EXISTING, pubkeyBase64: 'gist-pub' }),
+      identityPassphrase: async () => TEST_PASS,
       loadPubkey: async () => ({ kind: 'error' as const, reason: 'decryption_failed' }),
       setListing,
     });

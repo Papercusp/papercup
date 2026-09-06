@@ -756,10 +756,78 @@ export default function InboxPane({
     );
   };
 
+  // Tier scopes + kind facets are ONE element tree rendered in ONE of two
+  // places (inbox-three-column-resolver-states-2026-09-06 P-002, D-001): inside
+  // the controls block in stack mode — the ~360px chat sidebar has nowhere else
+  // to put them, and its box tree stays byte-identical — or in the rail column
+  // in split mode. Same class names, test ids and handlers either way.
+  const tierScopes = (
+    <div className="op-inbox__chips" aria-label="Inbox filter">
+      {FILTERS.map((f) => (
+        <button
+          key={f}
+          type="button"
+          className={`op-inbox__chip${filter === f ? " is-active" : ""}`}
+          aria-pressed={filter === f}
+          data-testid={`inbox-filter-${f}`}
+          onClick={() => void setFilter(f)}
+        >
+          {FILTER_LABEL[f]}
+          <span className="op-inbox__chip-count">{counts[f]}</span>
+        </button>
+      ))}
+    </div>
+  );
+  // Always open (WI-40982) — no disclosure, no toggle. Still conditional on
+  // HAVING facets: an empty scoped feed has no kinds to chip.
+  const kindFacetChips =
+    kindFacets.length > 0 ? (
+      <div className="op-inbox__facets" aria-label="Filter by kind">
+        {selectedKinds.size > 0 ? (
+          <button
+            type="button"
+            className="op-inbox__facet op-inbox__facet--clear"
+            onClick={() => void setKindsParam("")}
+            data-testid="inbox-facet-clear"
+          >
+            Clear kinds
+          </button>
+        ) : null}
+        {kindFacets.map((k) => {
+          const active = selectedKinds.has(k.id);
+          return (
+            <button
+              key={k.id}
+              type="button"
+              className={`op-inbox__facet${active ? " is-active" : ""}`}
+              aria-pressed={active}
+              data-testid={`inbox-facet-${k.id}`}
+              onClick={() => toggleKind(k.id)}
+            >
+              <span className="op-inbox__facet-label">{k.label}</span>
+              <span className="op-inbox__facet-count">{k.count}</span>
+            </button>
+          );
+        })}
+      </div>
+    ) : null;
+  // The "N need you" count — the stack masthead's badge, and the rail head's.
+  const needsCount = (
+    <span
+      className="op-inbox__masthead-count"
+      aria-label={`${counts.needs} ${counts.needs === 1 ? "item needs" : "items need"} you`}
+      data-testid="inbox-masthead-count"
+    >
+      <span className="op-inbox__masthead-count-value">{counts.needs}</span>
+      <span className="op-inbox__masthead-count-label">need you</span>
+    </span>
+  );
+
   // `data-has-selection` is presence-only: the narrow-width split CSS swaps
   // which column is shown on it (list without a selection, detail with one).
   // The `op-inbox__column` wrapper is display:contents in stack mode, so the
-  // sidebar's box tree is unchanged; in split mode it is the left (list) column.
+  // sidebar's box tree is unchanged; in split mode it is the list column, and
+  // the rail (split only) is the grid column before it.
   return (
     <div
       className={`op-inbox${split ? " op-inbox--split" : ""}`}
@@ -767,6 +835,34 @@ export default function InboxPane({
       data-layout={layout}
       data-has-selection={split && selectedItem ? "" : undefined}
     >
+      {split ? (
+        /* COLUMN 1 — the rail (P-002). What used to stack in the list's own
+           column and starve it of height: the masthead collapsed to
+           `Inbox` + count, the tier scopes, the kind facets. Search + sort stay
+           with the list; the bulk card joins the rail in P-003. */
+        <nav
+          className="op-inbox__rail"
+          data-testid="inbox-rail"
+          aria-label="Inbox scopes and filters"
+        >
+          <header className="op-inbox__rail-head">
+            <span className="op-inbox__rail-icon" aria-hidden="true">
+              <InboxIcon size={14} />
+            </span>
+            <strong className="op-inbox__rail-title">Inbox</strong>
+            {needsCount}
+          </header>
+          {tierScopes}
+          {kindFacetChips ? (
+            <>
+              <p className="op-inbox__rail-label" aria-hidden="true">
+                Kinds
+              </p>
+              {kindFacetChips}
+            </>
+          ) : null}
+        </nav>
+      ) : null}
       <div className="op-inbox__column">
       {/* tabIndex -1 (never tab-reachable): the stable landmark
           InboxExpandedDetail returns keyboard focus to when a passively removed
@@ -779,28 +875,25 @@ export default function InboxPane({
         data-testid="inbox-master"
         aria-label="Resolution inbox items"
       >
-        <header className="op-inbox__masthead">
-          <span className="op-inbox__masthead-icon" aria-hidden="true">
-            <InboxIcon size={18} />
-          </span>
-          <span className="op-inbox__masthead-copy">
-            <span className="op-inbox__masthead-eyebrow">Resolution inbox</span>
-            <strong>Needs you</strong>
-            <span className="op-inbox__masthead-subtitle">
-              Resolve every owner-blocked item in one place.
+        {/* Stack only: in split the masthead collapses to the rail head
+            (`Inbox` + count), so its ~90px never competes with the rows. */}
+        {split ? null : (
+          <header className="op-inbox__masthead">
+            <span className="op-inbox__masthead-icon" aria-hidden="true">
+              <InboxIcon size={18} />
             </span>
-          </span>
-          <span
-            className="op-inbox__masthead-count"
-            aria-label={`${counts.needs} ${counts.needs === 1 ? "item needs" : "items need"} you`}
-            data-testid="inbox-masthead-count"
-          >
-            <span className="op-inbox__masthead-count-value">
-              {counts.needs}
+            <span className="op-inbox__masthead-copy">
+              <span className="op-inbox__masthead-eyebrow">
+                Resolution inbox
+              </span>
+              <strong>Needs you</strong>
+              <span className="op-inbox__masthead-subtitle">
+                Resolve every owner-blocked item in one place.
+              </span>
             </span>
-            <span className="op-inbox__masthead-count-label">need you</span>
-          </span>
-        </header>
+            {needsCount}
+          </header>
+        )}
         {/* BULK RESOLVE command strip (P-006, direction A): between the masthead
           and the toolbar — above the filters it acts on, so what it will act on
           is what is on screen when it is pressed. */}
@@ -889,54 +982,9 @@ export default function InboxPane({
             />
           </div>
 
-          <div className="op-inbox__chips" aria-label="Inbox filter">
-            {FILTERS.map((f) => (
-              <button
-                key={f}
-                type="button"
-                className={`op-inbox__chip${filter === f ? " is-active" : ""}`}
-                aria-pressed={filter === f}
-                data-testid={`inbox-filter-${f}`}
-                onClick={() => void setFilter(f)}
-              >
-                {FILTER_LABEL[f]}
-                <span className="op-inbox__chip-count">{counts[f]}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Always open (WI-40982) — no disclosure, no toggle. Still conditional on
-            HAVING facets: an empty scoped feed has no kinds to chip. */}
-          {kindFacets.length > 0 ? (
-            <div className="op-inbox__facets" aria-label="Filter by kind">
-              {selectedKinds.size > 0 ? (
-                <button
-                  type="button"
-                  className="op-inbox__facet op-inbox__facet--clear"
-                  onClick={() => void setKindsParam("")}
-                  data-testid="inbox-facet-clear"
-                >
-                  Clear kinds
-                </button>
-              ) : null}
-              {kindFacets.map((k) => {
-                const active = selectedKinds.has(k.id);
-                return (
-                  <button
-                    key={k.id}
-                    type="button"
-                    className={`op-inbox__facet${active ? " is-active" : ""}`}
-                    aria-pressed={active}
-                    data-testid={`inbox-facet-${k.id}`}
-                    onClick={() => toggleKind(k.id)}
-                  >
-                    <span className="op-inbox__facet-label">{k.label}</span>
-                    <span className="op-inbox__facet-count">{k.count}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
+          {/* Stack: the scopes + facets live here. Split: in the rail. */}
+          {split ? null : tierScopes}
+          {split ? null : kindFacetChips}
         </section>
 
         {hasMore || loadingMore ? (

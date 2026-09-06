@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   acceptanceBarApprovalSchema,
   acceptanceBarAmendmentKey,
@@ -141,6 +141,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
   it('treats Now/Decision prose as neutral but fingerprints BAR source and map changes', async () => {
     const before = subjectPlan();
     const nowEdit = subjectPlan({ now: 'the Now block changed' });
+    const decisionEdit = `${before}\n## Decisions\n\n### D-001 — Keep the BAR source canonical\n\nDate: 2026-09-06\n\nThe decision prose is not BAR source.\n`;
     const requirementEdit = subjectPlan({
       requirements: '**R-1 — Canonical outcome.** The canonical promise changed.',
     });
@@ -148,6 +149,9 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
 
     await expect(acceptanceBarSourceFingerprint(before)).resolves.toBe(
       await acceptanceBarSourceFingerprint(nowEdit),
+    );
+    await expect(acceptanceBarSourceFingerprint(before)).resolves.toBe(
+      await acceptanceBarSourceFingerprint(decisionEdit),
     );
     await expect(acceptanceBarSourceFingerprint(before)).resolves.not.toBe(
       await acceptanceBarSourceFingerprint(requirementEdit),

@@ -217,25 +217,29 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
       outcomeExact: frozen != null && entry.frozenOutcome === frozen.outcome,
     };
   });
-  const requiredFields = entries.map((entry) => ({
-    id: entry.id,
-    valid:
-      isNonEmptyString(entry.id) &&
-      isNonEmptyString(entry.frozenSourceSha256) &&
-      isNonEmptyString(entry.frozenOutcome) &&
-      /^(apply|preserve)(-|$)/.test(entry.recommendation ?? '') &&
-      isNonEmptyString(entry.rationale) &&
-      (entry.frozenOutcome === 'candidate-already-implemented'
-        ? entry.canonicalId == null
-        : isNonEmptyString(entry.canonicalId)) &&
-      entry.currentState != null &&
-      entry.currentOrigin != null &&
-      (entry.currentFingerprint != null ||
-        entry.currentFingerprintEvidence != null ||
-        entry['currentFingerprint/evidence'] != null) &&
-      entry.inboundReferences != null &&
-      entry.outboundReferences != null,
-  }));
+  const requiredFields = entries.map((entry) => {
+    const frozen = ledgerById.get(entry.id);
+    const expectedCanonical = frozen?.proposedCanonical ?? null;
+    return {
+      id: entry.id,
+      valid:
+        isNonEmptyString(entry.id) &&
+        isNonEmptyString(entry.frozenSourceSha256) &&
+        isNonEmptyString(entry.frozenOutcome) &&
+        /^(apply|preserve)(-|$)/.test(entry.recommendation ?? '') &&
+        isNonEmptyString(entry.rationale) &&
+        (expectedCanonical == null
+          ? entry.canonicalId == null
+          : entry.canonicalId === expectedCanonical) &&
+        entry.currentState != null &&
+        entry.currentOrigin != null &&
+        (entry.currentFingerprint != null ||
+          entry.currentFingerprintEvidence != null ||
+          entry['currentFingerprint/evidence'] != null) &&
+        entry.inboundReferences != null &&
+        entry.outboundReferences != null,
+    };
+  });
   result.artifactBlobSha = artifactBlobSha;
   result.completionBlobSha = contentIdentity?.workingTreeBlobSha ?? null;
   result.hashEncoding = hash.encoding;

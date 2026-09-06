@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { hostAudienceResolvers } from '../coordination/audience-host';
+import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates, type LivenessVerdict } from '../coordination/liveness-oracle';
 import {
@@ -165,12 +166,13 @@ export async function resolveAnnouncementOwnership(
 export default defineTool({
   name: 'events:status',
   description:
-    'Inspect the await-event surface: your active awaits/trees/recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter.',
+    'Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter.',
   guidance: {
-    when: 'Checking what you are (still) waiting on, whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
+    when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
     notWhen: 'Reading your message stream — that is coord:inbox. Following an area — topics:feed.',
     seeAlso: [
       'events:cancel (cancel an await you found here)',
+      'events:unsubscribe (cancel a standing event-key inject subscription you found here)',
       'events:await (arm a new wait)',
       'coord:inbox (your message stream, not the event registry)',
     ],
@@ -197,13 +199,14 @@ export default defineTool({
     // the result budget rendering this caller's unrelated await tree first —
     // under a busy fleet that list can hide the only requested evidence.
     const exactEvent = args.event != null;
-    const [awaits, recent, backlog, meter, composedRoots, eventHistory] = await Promise.all([
+    const [awaits, recent, backlog, meter, composedRoots, eventHistory, eventSubscriptions] = await Promise.all([
       exactEvent ? Promise.resolve([]) : listActiveAwaits(identity.ownerId),
       exactEvent ? Promise.resolve([]) : listRecentDeliveries(identity.ownerId, 10),
       exactEvent ? Promise.resolve(null) : deliveryBacklogSummary(identity.ownerId),
       args.meter ? wakeMeter() : Promise.resolve(null),
       exactEvent ? Promise.resolve([]) : listActiveComposedRoots(identity.ownerId),
       args.event ? inspectEventKey(args.event) : Promise.resolve(null),
+      exactEvent ? Promise.resolve([]) : listMyEventKeySubscriptions(identity),
     ]);
     // Render each active composed tree: its authored spec + which leaves have fired vs.
     // are still pending. loadTreeLeaves reads a tree's leaves across all its nodes.
@@ -325,6 +328,18 @@ export default defineTool({
             ...(exactEvent
               ? {}
               : {
+                  // Standing event-key subscriptions live in coord_entity_subscriptions,
+                  // not event_awaits. Keep them as a separate collection and label the
+                  // delivery kind so an inject subscription cannot be mistaken for a
+                  // wake await (or passed to events:cancel).
+                  active_event_subscriptions: eventSubscriptions.map((s) => ({
+                    subscription_id: s.id,
+                    event: s.target_ref,
+                    delivery: 'inject',
+                    mode: s.delivery_mode,
+                    expires_ts: s.expires_ts,
+                    created_at: s.created_ts,
+                  })),
                   // Plain awaits only — a composed tree's leaves + anchor (rootId set)
                   // render under composed_awaits below, not as loose rows here.
                   // Announcements are emitter-side declarations and render only

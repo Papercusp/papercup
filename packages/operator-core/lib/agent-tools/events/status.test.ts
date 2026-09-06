@@ -16,6 +16,9 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-status', ownerLabel: 's', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
+vi.mock('../coordination/event-subscriptions', () => ({
+  listMyEventKeySubscriptions: vi.fn(),
+}));
 vi.mock('../coordination/audience-host', () => ({
   hostAudienceResolvers: { listFleetLeader: vi.fn(async () => []) },
 }));
@@ -45,10 +48,12 @@ import {
   listRecentDeliveries,
   wakeMeter,
 } from '../../events/await/store';
+import { listMyEventKeySubscriptions } from '../coordination/event-subscriptions';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { resolveLiveRoleHolders } from '../coordination/role-slot-live-resolve';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { DeliveryRow } from '../../events/await/types';
+import type { SubscriptionRow } from '@papercusp/coordination/capabilities';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -81,10 +86,20 @@ const DELIVERY_ROW: DeliveryRow = {
   coalescedCount: 1,
   source: null,
 };
+const EVENT_SUBSCRIPTION_ROW: SubscriptionRow = {
+  id: 33,
+  subscriber_id: 'su-status',
+  target_kind: 'event',
+  target_ref: 'work-item:claimable',
+  delivery_mode: 'digest',
+  created_ts: 'C3',
+  expires_ts: null,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listActiveAwaits).mockResolvedValue([AWAIT_ROW] as never);
+  vi.mocked(listMyEventKeySubscriptions).mockResolvedValue([EVENT_SUBSCRIPTION_ROW]);
   vi.mocked(listRecentDeliveries).mockResolvedValue([DELIVERY_ROW]);
   vi.mocked(deliveryBacklogSummary).mockResolvedValue({
     total: 1,
@@ -113,6 +128,28 @@ describe('events:status projection', () => {
       expires_ts: 'E',
       on_timeout: 'wake',
       created_at: 'C',
+    });
+  });
+
+  it('projects standing event-key inject subscriptions separately from wake awaits', async () => {
+    const out = await call({});
+
+    expect(out.active_event_subscriptions).toEqual([
+      {
+        subscription_id: 33,
+        event: 'work-item:claimable',
+        delivery: 'inject',
+        mode: 'digest',
+        expires_ts: null,
+        created_at: 'C3',
+      },
+    ]);
+    expect(listMyEventKeySubscriptions).toHaveBeenCalledWith({
+      ownerId: 'su-status',
+      ownerLabel: 's',
+      source: 'static-client',
+      workspaceId: 'ws-x',
+      userId: null,
     });
   });
 
@@ -207,11 +244,12 @@ describe('events:status projection', () => {
     expect(out.meter).toEqual({ total: 7 });
   });
 
-  it('all three store reads run (Promise.all), scoped to identity', async () => {
+  it('all ambient store reads run (Promise.all), scoped to identity', async () => {
     await call({ meter: true });
     expect(listActiveAwaits).toHaveBeenCalledWith('su-status');
     expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 10);
     expect(deliveryBacklogSummary).toHaveBeenCalledWith('su-status');
+    expect(listMyEventKeySubscriptions).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-status' }));
     expect(wakeMeter).toHaveBeenCalledTimes(1);
   });
 
@@ -293,6 +331,7 @@ describe('events:status projection', () => {
     expect(listActiveAwaits).not.toHaveBeenCalled();
     expect(listRecentDeliveries).not.toHaveBeenCalled();
     expect(deliveryBacklogSummary).not.toHaveBeenCalled();
+    expect(listMyEventKeySubscriptions).not.toHaveBeenCalled();
   });
 
   it('maps an expired current declaration to expired and preserves superseded precedence', async () => {
