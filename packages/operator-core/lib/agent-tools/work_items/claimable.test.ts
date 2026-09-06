@@ -40,6 +40,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import { readIssueClaimability } from '../../scheduler/get-next';
+import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import {
   getClaimSpecRecord,
   resolveFleetClaimSpec,
@@ -176,6 +177,7 @@ beforeEach(() => {
   recordM.mockResolvedValue({
     source: 'default',
     spec: {
+      ...DEFAULT_CLAIM_SPEC,
       specId: 'default-fixed-ordering',
       revision: 0,
       view: { filter: undefined },
@@ -240,6 +242,7 @@ describe('work_items:claimable handler', () => {
     recordM.mockResolvedValue({
       source: 'fleet',
       spec: {
+        ...DEFAULT_CLAIM_SPEC,
         specId: 'goal-drain-lane',
         revision: 4,
         view: { filter: { field: 'goal', op: '=', value: 'work-on-everything-813959' } },
@@ -286,6 +289,7 @@ describe('work_items:claimable handler', () => {
     recordM.mockResolvedValue({
       source: 'fleet',
       spec: {
+        ...DEFAULT_CLAIM_SPEC,
         specId: 'goal-drain-lane',
         revision: 4,
         view: { filter: { field: 'goal', op: '=', value: 'work-on-everything-813959' } },
