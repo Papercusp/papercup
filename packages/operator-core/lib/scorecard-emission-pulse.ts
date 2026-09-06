@@ -239,17 +239,20 @@ export async function runScorecardEmissionPulse(
       console.warn(`[scorecard-emission-pulse] findOpenPulseFloor failed (${watchdogKey}) — filing fresh: ${e instanceof Error ? e.message : e}`);
       return null;
     });
-    if (existingOpen) {
-      const priorCount = readPulseRepeatCount(existingOpen.payload);
-      const priorStamp = (existingOpen.payload as Record<string, unknown> | null)?.pulseRepeat as
-        | { firstFiredAt?: string }
-        | undefined;
-      await bumpPulseRepeat(existingOpen.id, priorCount, priorStamp?.firstFiredAt ?? null);
-      const reason = `no scorecard in ${Math.round(PULSE_WINDOW_MS / 60_000)}m — coalesced onto standing open pulse floor ${existingOpen.id} (repeat ${priorCount + 1})`;
-      await recordFire(workspaceId, sourceHive, reason);
-      return { outcome: 'filed', reason, coalescedInto: existingOpen.id };
-    }
-
+    // WI-10000010: the floor CARD is owed on EVERY empty-window tick — it IS the data
+    // layer, so a floor that goes quiet during a long outage is the precise failure
+    // this floor exists to prevent. WI-2977's coalescing early-returned HERE, ABOVE
+    // the emit, because ONE engineer_issues row served two roles at once: the
+    // scorecard observation AND the standing dedup anchor. Deduping the anchor
+    // therefore silently deduped the card, and the trap is SELF-PERPETUATING — no
+    // card lands, so the window stays empty, so the anchor stays open, forever.
+    // Measured: EI-7857 (`scorecard-pulse:papercusp`) sat open from 2026-07-06 with
+    // payload.pulseRepeat.count = 3550 — 3550 ticks that each reported
+    // outcome:'filed' and emitted nothing, while `pot-coordination-health` went dark
+    // for two months and every log line looked healthy.
+    // Fix: keep exactly ONE anchor per outage, but ALWAYS emit. Only the outage's
+    // first card carries the watchdogKey; later cards are pure observations, so the
+    // anchor cannot fork while the time series stays alive.
     const health = await computeHealth(workspaceId);
     const toolUtil = await toolUtilizationGrade();
     const ratings = synthesizeCoordinationScorecard(health, toolUtil);
@@ -262,7 +265,9 @@ export async function runScorecardEmissionPulse(
       scope: `harness:${sourceHive}`,
       createdBy: 'system:scorecard-emission-pulse',
       payloadExtra: {
-        watchdogKey,
+        // Anchor ONLY the first card of an outage — a second watchdogKey row would
+        // recreate the duplicate-open-EI pile-up WI-2977 removed.
+        ...(existingOpen ? {} : { watchdogKey }),
         observation: {
           kind: 'reinforce',
           scope: 'papercusp',
@@ -274,6 +279,18 @@ export async function runScorecardEmissionPulse(
         },
       },
     });
+
+    if (existingOpen) {
+      const priorCount = readPulseRepeatCount(existingOpen.payload);
+      const priorStamp = (existingOpen.payload as Record<string, unknown> | null)?.pulseRepeat as
+        | { firstFiredAt?: string }
+        | undefined;
+      await bumpPulseRepeat(existingOpen.id, priorCount, priorStamp?.firstFiredAt ?? null);
+      const reason = `no scorecard in ${Math.round(PULSE_WINDOW_MS / 60_000)}m — floor card emitted; coalesced onto standing open pulse floor ${existingOpen.id} (repeat ${priorCount + 1})`;
+      await recordFire(workspaceId, sourceHive, reason);
+      return { outcome: 'filed', reason, coalescedInto: existingOpen.id };
+    }
+
     await recordFire(
       workspaceId,
       sourceHive,

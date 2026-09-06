@@ -164,8 +164,8 @@ describe('runScorecardEmissionPulse', () => {
     expect(obs.ratings['tool-utilization'].rating).toBe('unknown');
   });
 
-  describe('WI-2977 coalescing — a standing open pulse floor bumps instead of re-filing', () => {
-    it('an existing OPEN pulse floor → bumps its repeat stamp, never calls capture, reports coalescedInto', async () => {
+  describe('WI-2977 coalescing — a standing open pulse floor dedups the ANCHOR, never the card', () => {
+    it('an existing OPEN pulse floor → STILL emits the card, bumps the repeat stamp, reports coalescedInto', async () => {
       const bumpPulseRepeat = vi.fn(async () => {});
       const { deps, capture, recordFire } = mkDeps({
         findOpenPulseFloor: async (key) => {
@@ -179,17 +179,57 @@ describe('runScorecardEmissionPulse', () => {
       expect(r.coalescedInto).toBe('EI-1234');
       expect(r.reason).toContain('coalesced onto standing open pulse floor EI-1234');
       expect(r.reason).toContain('repeat 3');
-      expect(capture).not.toHaveBeenCalled();
+      // WI-10000010: the CARD is the data layer and is owed on every empty-window
+      // tick. This assertion used to read `not.toHaveBeenCalled()` — that line WAS
+      // the defect, written down: coalescing the anchor silently coalesced the card.
+      expect(capture).toHaveBeenCalledTimes(1);
+      const arg = capture.mock.calls[0][0] as Record<string, any>;
+      expect(arg.payloadExtra.observation.rubricRef).toBe(COORDINATION_RUBRIC_REF);
+      expect(arg.payloadExtra.observation.synthesized).toBe(true);
+      // ...but it must NOT carry a second watchdogKey, or the anchor forks and the
+      // duplicate-open-EI pile-up WI-2977 removed comes straight back.
+      expect(arg.payloadExtra.watchdogKey).toBeUndefined();
       expect(bumpPulseRepeat).toHaveBeenCalledWith('EI-1234', 2, '2026-07-04T00:00:00Z');
       expect(recordFire).toHaveBeenCalledTimes(1);
     });
 
-    it('no existing open pulse floor → falls through to filing a fresh floor as before', async () => {
+    it('WI-10000010: a LONG outage never silences the floor — every tick emits, and the anchor never forks', async () => {
+      // The regression this pins. WI-2977 returned ABOVE the emit, so once the anchor
+      // was open and the previous card aged out of the 1h window, no card could ever
+      // land again — and because no card lands, the window stays empty and the anchor
+      // stays open, so the trap is self-perpetuating rather than self-healing.
+      // Measured in production: EI-7857 (`scorecard-pulse:papercusp`) open since
+      // 2026-07-06 with pulseRepeat.count=3550 — 3550 ticks, 0 cards, and every one
+      // of them reported outcome:'filed'.
+      const bumpPulseRepeat = vi.fn(async () => {});
+      const { deps, capture } = mkDeps({
+        findOpenPulseFloor: async () => ({
+          id: 'EI-7857',
+          payload: { pulseRepeat: { count: 3550, firstFiredAt: '2026-07-06T13:13:51.129Z', lastFiredAt: '2026-09-06T10:46:56.244Z' } },
+        }),
+        bumpPulseRepeat,
+      });
+      for (let tick = 0; tick < 3; tick++) {
+        const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
+        expect(r.outcome).toBe('filed');
+        expect(r.coalescedInto).toBe('EI-7857');
+      }
+      expect(capture).toHaveBeenCalledTimes(3);
+      for (const call of capture.mock.calls) {
+        expect((call[0] as Record<string, any>).payloadExtra.watchdogKey).toBeUndefined();
+      }
+      expect(bumpPulseRepeat).toHaveBeenCalledTimes(3);
+    });
+
+    it('no existing open pulse floor → files a fresh floor AND anchors it with the watchdogKey', async () => {
       const { deps, capture } = mkDeps({ findOpenPulseFloor: async () => null });
       const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
       expect(r.outcome).toBe('filed');
       expect(r.coalescedInto).toBeUndefined();
       expect(capture).toHaveBeenCalledTimes(1);
+      // The FIRST card of an outage is the anchor — without this the standing-open
+      // dedup has nothing to match and every tick re-files a brand-new open EI.
+      expect((capture.mock.calls[0][0] as Record<string, any>).payloadExtra.watchdogKey).toBe('scorecard-pulse:papercusp');
     });
 
     it('findOpenPulseFloor throwing → caught, falls through to filing fresh (fail-soft)', async () => {
