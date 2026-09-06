@@ -4738,6 +4738,65 @@ describe('fleet:launch-on-plan handler — overrideCapacityClamp arg threads thr
     });
   });
 
+  it('uses a fresh successful same-profile canary to ignore stale healthyAccounts:0 without overriding dispatchBudget', async () => {
+    const now = Date.now();
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        leaderOwnerId: 'owner-1',
+        colorScheme: { name: 'Ocean' },
+        lastLaunchTransaction: {
+          version: 1,
+          transactionId: 'prior-canary-tx',
+          state: 'verified',
+          requestedAt: now - 1_000,
+          updatedAt: now - 1_000,
+          requestedMemberIds: ['su-prior-canary'],
+          openedMemberIds: ['su-prior-canary'],
+          verifiedMemberIds: ['su-prior-canary'],
+          failed: [],
+          waves: [],
+          recovery: { retryOwnerIds: [], nextAction: 'none' },
+          requestedMembers: [{
+            index: 0,
+            ownerId: 'su-prior-canary',
+            agent: 'claude',
+            model: 'sonnet',
+            account: 'auto',
+            carry: 'warm',
+            headless: false,
+          }],
+        },
+      },
+      created: false,
+    });
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Fresh Canary Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 4,
+        agent: 'claude',
+        model: 'sonnet',
+        account: 'auto',
+      } as never,
+      {} as never,
+    );
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(4);
+    expect(payload.opened).toHaveLength(4);
+    expect(payload.capacitySuppressed).toBeUndefined();
+    expect(payload.capacityClamp).toMatchObject({
+      openCount: 4,
+      clamped: false,
+      recommendedOpenCount: 4,
+      healthyAccounts: 0,
+    });
+    expect(payload.capacityClamp.reason).toMatch(/same-profile canary|healthyAccounts=0/);
+  });
+
   it('WITH overrideCapacityClamp:true: all 4 members launch despite healthyAccounts:0, and the override is legible', async () => {
     const res = await invokeLaunchHandler(
       {
