@@ -478,6 +478,27 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('attaches the population-narrowing advisory to a successful grouped read', async () => {
+    const sql =
+      'SELECT tool_name, count(*) FROM arbitrary_relation ' +
+      'GROUP BY tool_name HAVING count(*) = 1 LIMIT 5';
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never).advisory).toContain('population-narrowing');
+    expect(payloadOf(res as never).advisory).toContain('HAVING/LIMIT');
+  });
+
+  it('retains the population-narrowing advisory when the grouped read fails', async () => {
+    const sql =
+      'SELECT tool_name, count(*) FROM arbitrary_relation ' +
+      'GROUP BY tool_name HAVING count(*) = 1 LIMIT 5';
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('syntax error'), { code: '42601' }));
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42601',
+      advisory: expect.stringContaining('population-narrowing'),
+    });
+  });
+
   it('does not advise again after the query uses the guarded decoder', async () => {
     const sql =
       'SELECT CASE WHEN text IS JSON THEN text::jsonb END ' +

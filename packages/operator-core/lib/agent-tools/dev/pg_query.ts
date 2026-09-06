@@ -33,6 +33,7 @@ import {
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
   buildUnusedCteAdvisory,
+  buildPopulationNarrowingAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -464,6 +465,13 @@ export default defineTool({
     // rows from the WRONG population, so nothing in the result distinguishes it
     // from a correctly-scoped answer.
     const unusedCteAdvisory = advisoryOf(() => buildUnusedCteAdvisory(sql));
+    // EI-22433765987075358: GROUP BY/HAVING and a caller LIMIT below maxRows
+    // narrow the population a zero-row result can speak for. Keep this pure
+    // SQL-shape advisory in the shared success/error list so a failed query
+    // cannot lose the same absence warning.
+    const populationNarrowingAdvisory = advisoryOf(() =>
+      buildPopulationNarrowingAdvisory(sql, args.maxRows ?? PG_READ_QUERY_DEFAULT_MAX_ROWS),
+    );
     // A read that answers the WRONG QUESTION correctly: status='open' (or the
     // candidate view) treated as "what can be claimed". Distinct again from
     // both above — the row set is right for the question asked, and wrong for
@@ -547,6 +555,7 @@ export default defineTool({
       nullPathAdvisory,
       jsonbTypeofAdvisory,
       unusedCteAdvisory,
+      populationNarrowingAdvisory,
       splitEvidenceAdvisory,
       nativeToolAdvisory,
       agentActivityAdvisory,
