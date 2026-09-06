@@ -104,16 +104,12 @@ Surfaces whose `error` cell is not-applicable because a failed fetch leaves the 
 | Network | populated | populate() — one-row fixture per data setter |
 | Network | keyboard | populate() + ↓ ↑ through App::update — body intact, no panic |
 
-## Non-strip `Tab` variants (7 of 21) — proof for P-014
+## Non-strip `Tab` variants (3 of 17) — proof for P-014
 
-`switch key →` is `app.tab` after pressing the variant's own switch key from a fresh App (the strip dispatch derives from `Tab::ALL`, so a retired key must land elsewhere). `from_title →` is where persisted view-state naming the variant is re-pointed. `pinned body` is the non-blank cell count when the variant is force-pinned (its draw arm still exists). `sites` are `Tab::<Variant>` source occurrences per file — the deletion radius.
+`switch key →` is `app.tab` after pressing the pane-only variant's nominal key from a fresh App (the strip dispatch derives from `Tab::ALL`, so it must land elsewhere). `from_title →` is where persisted view-state naming the pane is re-pointed. `pinned body` is the non-blank cell count when the variant is force-pinned (its live path). `sites` are `Tab::<Variant>` source occurrences per file — the exhaustive live radius.
 
 | variant | class | live door | switch key → | from_title → | pinned body | sites |
 |---|---|---|---|---|---|---|
-| Plugins | Retired | retired — Cupboard hosts the capability (D-003); `from_title("Plugins")` → Cupboard | `9` → Operator | Cupboard | 620 | app.rs:11, ui.rs:4 |
-| Settings | Retired | retired — Config hosts it (`draw_settings` is Config's lower sub-view); `from_title("Settings")` → Config | `0` → Operator | Config | 888 | app.rs:7, ui.rs:3 |
-| Conversations | Retired | retired — Inbox › Threads sub-view (`InboxFocus::Threads`); `from_title("Convos")` → Inbox | `d` → Operator | Inbox | 677 | app.rs:9, ui.rs:1 |
-| Hives | Retired | retired — Network destination's right pane (`draw_network_destination`); `from_title("Hives")` → Network | `i` → Operator | Network | 771 | app.rs:8, ui.rs:2 |
 | Wake | PaneOnly | pane-only — `pui wake-pane` (main.rs pinned subcommand) | `W` → Operator | Fleet | 110 | app.rs:9, main.rs:5, ui.rs:5, wake_board.rs:5 |
 | AgentCtx | PaneOnly | pane-only — `pui prompt-pane` \| `mail-pane` \| `work-pane` (main.rs pinned subcommand) | `X` → Operator | Fleet | 8 | agent_ctx.rs:1, app.rs:7, event.rs:1, main.rs:4, ui.rs:3 |
 | PlansBoard | PaneOnly | pane-only — `pui context-pane` \| `plans-pane` (main.rs pinned subcommand) | `B` → Operator | Fleet | 592 | app.rs:7, main.rs:3, ui.rs:1 |
@@ -123,4 +119,4 @@ Surfaces whose `error` cell is not-applicable because a failed fetch leaves the 
 - **F-1 Sessions has no explicit empty-state text** — an empty `session_browser.rows` renders the facet header and an empty list; the `empty` cell above is verified on the header only.
 - **F-2 Memory's pre-load state is indistinguishable from backend-unavailable** — `MemoryLoadState` has no `Loading` variant, so until the first load returns the tab shows "(memory backend unavailable — not configured yet)".
 - **F-3 Operator's only error rendering (` · reconnecting`) is bound to a live SU-session binding** and is not built offline here (the one `✗` cell).
-- **F-4 Four of the seven non-strip variants are RETIRED shells (Plugins, Settings, Conversations, Hives); three are live PANE-ONLY boards (Wake, AgentCtx, PlansBoard).** P-014's deletion scope is the four retired ones, not all seven.
+- **F-4 P-014 removed the four retired enum shells (Plugins, Settings, Conversations, Hives).** The remaining non-strip variants are exactly the three live PANE-ONLY boards: Wake, AgentCtx, and PlansBoard. The old titles still migrate through `Tab::from_title` to their capability-complete public parents.

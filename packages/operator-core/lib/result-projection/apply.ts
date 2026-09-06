@@ -646,9 +646,11 @@ export function applyResultProjection<T extends ProjectableResult>(
       note(
         `the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ` +
           `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection can inspect only the ` +
-          `retained SAMPLE; the pick may also have dropped the marker itself. omitted fields/items were never ` +
-          `serialized, so any filter/count is not a complete population finding. ${recovery} before ` +
-          `concluding a value is absent.`,
+          `retained subset/window — if the source is rank-ordered, this is the HEAD of a ranking, not a ` +
+          `representative slice; any filter/count is a floor over that retained data and may be systematically ` +
+          `skewed toward whatever the ordering favors. The pick may also have dropped the marker itself. omitted ` +
+          `fields/items were never serialized, so any filter/count is not a complete population finding. ${recovery} ` +
+          `before concluding a value is absent.`,
       );
     }
 

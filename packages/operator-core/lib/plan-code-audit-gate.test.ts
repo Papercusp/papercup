@@ -125,6 +125,9 @@ beforeEach(() => {
   mockLatestAudit.mockResolvedValue(audit());
   mockEffectiveAudits.mockResolvedValue([]);
   mockPlanItems.mockResolvedValue([]);
+  vi.mocked(readAndEvaluateAcceptanceBarLifecycle).mockResolvedValue({
+    phase: 'ship', applicable: false, satisfied: true, codes: [], blockingBars: [], nextRepair: null, message: null,
+  });
   // P-014 default: no activation audit, so the requirement-realization join is
   // inert. Every pre-P-014 case therefore keeps its original meaning.
   mockActivationAudit.mockResolvedValue(null);
@@ -444,6 +447,7 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
       nonCodeItemProofs: [{ planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] }],
     });
     const current = [{ evidenceKind: 'operational' as const, evidenceRef: 'probe:current', sourceFingerprint: 'now' }];
+    mockRubric.mockResolvedValue([]);
     const verdict = await evaluatePlanAcceptanceGate(PLAN, { current });
     expect(verdict.code).toBe('acceptance_rubric_missing');
     expect(readAndEvaluateAcceptanceBarLifecycle).toHaveBeenCalledWith(PLAN, 'ship', { expectedApplicable: false, current });

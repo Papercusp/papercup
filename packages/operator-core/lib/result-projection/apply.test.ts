@@ -836,7 +836,8 @@ describe('applyResultProjection — structured-body and custom truncation disclo
 
   it('warns on field-level and custom-shaper truncation markers', () => {
     const body = JSON.stringify({
-      rows: [{ id: 'WI-1', title: 'retained' }],
+      rows: [{ id: 'WI-1', title: 'retained', rankScore: 22.2 }],
+      order: { by: 'rankScore', direction: 'desc' },
       fieldTruncated: true,
       truncatedByBudget: true,
     });
@@ -852,6 +853,30 @@ describe('applyResultProjection — structured-body and custom truncation disclo
     expect(footer).toContain('$.truncatedByBudget');
     expect(footer).toContain('field-level/custom-shaper truncation');
     expect(reportOf(out).notes).toHaveLength(1);
+  });
+
+  it('frames an order-bearing retained window as a biased ranking head, not a representative sample', () => {
+    const body = JSON.stringify({
+      rows: [
+        { id: 'gate-high', decision: 'gate', rankScore: 22.2 },
+        { id: 'gate-next', decision: 'gate', rankScore: 12.8 },
+      ],
+      order: { by: 'rankScore', direction: 'desc' },
+      rowsTruncated: true,
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pick: ['rows[].decision'] }),
+      { toolName: 'improvements:triage' },
+    );
+
+    const note = reportOf(out).notes.join(' ');
+    expect(note).not.toMatch(/\bsample\b/i);
+    expect(note).toContain('HEAD of a ranking');
+    expect(note).toContain('not a representative slice');
+    expect(note).toContain('is a floor');
+    expect(note).toContain('systematically');
+    expect(note).toContain('skewed');
   });
 
   it('warns when pick drops non-empty selection partiality metadata', () => {
