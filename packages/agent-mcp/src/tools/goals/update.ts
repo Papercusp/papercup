@@ -44,6 +44,7 @@ import { clearGoalPause, stampGoalPause } from './pause-record';
 import { addGoalFieldChange, appendGoalHistory, type GoalFieldChange } from './history';
 import { isGoalHolderAuthorityError } from '@papercusp/operator-core/lib/modes/goal-context';
 import { assertGoalWriteAuthorityForCaller } from '@papercusp/operator-core/lib/goals/write-authority';
+import { withGoalPackageInstanceOverride } from './_core';
 
 function jsonField(value: unknown): unknown {
   if (typeof value !== 'string') return value ?? null;
@@ -533,8 +534,27 @@ const goalUpdateTool = defineTool({
           : args.tripwires === null || args.tripwires.length === 0
             ? null
             : JSON.stringify(args.tripwires),
-      metadata: Object.keys(pauseMetadata).length ? JSON.stringify(pauseMetadata) : null,
     };
+
+    // A packaged goal has a reusable disk contract plus per-instance live
+    // state. Directly editing its contract must not disappear when the next
+    // instance is minted from the package. Preserve only explicit contract
+    // edits as a narrow metadata overlay; operational tuning remains local.
+    const packageRef =
+      typeof pauseMetadata.goalPackageRef === 'string' ? pauseMetadata.goalPackageRef.trim() : '';
+    const packageOverride =
+      packageRef.length > 0
+        ? {
+            ...(args.title !== undefined ? { title: next.title } : {}),
+            ...(args.body !== undefined ? { body: next.body } : {}),
+            ...(args.killCriterion !== undefined ? { killCriterion: next.killCriterion } : {}),
+            ...(args.tripwires !== undefined ? { tripwires: jsonField(next.tripwires) } : {}),
+          }
+        : {};
+    const nextMetadata =
+      Object.keys(packageOverride).length > 0
+        ? withGoalPackageInstanceOverride(pauseMetadata, packageOverride)
+        : pauseMetadata;
 
     await tx`
       UPDATE harness_shared.goals
@@ -547,7 +567,7 @@ const goalUpdateTool = defineTool({
              install_slug   = ${next.installSlug},
              kill_criterion = ${next.killCriterion},
              tripwires      = ${next.tripwires}::jsonb,
-             metadata       = ${next.metadata}::jsonb,
+             metadata       = ${Object.keys(nextMetadata).length ? JSON.stringify(nextMetadata) : null}::jsonb,
              updated_at     = now()
        WHERE id = ${args.id}
     `;

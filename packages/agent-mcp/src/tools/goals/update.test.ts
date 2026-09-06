@@ -228,6 +228,28 @@ describe('goals:update — install_slug repair cannot write an unlaunchable valu
 });
 
 describe('goals:update — partial writes preserve untouched state', () => {
+  it('records an explicit contract edit on a packaged instance for later starts', async () => {
+    existingRow!.metadata = {
+      goalPackageRef: 'work-on-everything',
+      packageVersion: '1.0.0',
+      startedBy: 'su-old',
+    };
+
+    await tool.handler(
+      tool.args.parse({ id: 'g1', body: 'owner directive: keep this across instances' }) as never,
+      CTX() as never,
+    );
+
+    expect(writtenMetadata()).toMatchObject({
+      goalPackageRef: 'work-on-everything',
+      packageVersion: '1.0.0',
+      startedBy: 'su-old',
+      packageInstanceOverride: {
+        body: 'owner directive: keep this across instances',
+      },
+    });
+  });
+
   it('reporting spend does NOT clear the kill criterion', async () => {
     await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
     expect(writtenCriterion()).toBe('no paying user after 2 weeks');
