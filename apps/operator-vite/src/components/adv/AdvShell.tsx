@@ -684,8 +684,64 @@ export function AdvPotModals({
  * own navigation (the cloud portal's rail) wraps a pot-scoped tab body in —
  * typically `<AdvScopeProvider><AdvPotBar/><LearningTab/></AdvScopeProvider>`.
  */
+/**
+ * The pot-scope KEYBOARD — harness.prev / harness.next (Mod+Alt+←/→, Discord's
+ * server switcher; our server-analog is the pot selector) and harness.create
+ * (Mod+Shift+N) — registered by WHICHEVER host provides the scope
+ * (portal-global-shortcuts-2026-09-06 P-002). AdvShell registered these itself,
+ * so the shell-less host — `AdvScopeProvider`, what the cloud portal mounts
+ * above every pot-scoped tab — had the selector with no keyboard once the portal
+ * started dispatching the registry. One hook, two hosts, no copy.
+ *
+ * The cycle mirrors the selector's onChange exactly: exit all-mode FIRST and
+ * SEQUENTIALLY (a same-tick scope+slug pair collides in the nuqs adapter and the
+ * scope write is lost), set + persist the pick, then reset the within-hive
+ * member focus so the Harnesses dock follows the newly-picked hive.
+ */
+export function useAdvScopeShortcuts({
+  projects,
+  activeSlug,
+  allMode,
+  setScopeMode,
+  setActiveSlug,
+  setActiveHarness,
+}: Pick<
+  ReturnType<typeof useAdvScopeModel>,
+  'projects' | 'activeSlug' | 'allMode' | 'setScopeMode' | 'setActiveSlug' | 'setActiveHarness'
+>) {
+  // The create dialog is URL-backed (`?create`, see AdvPotModals); only the
+  // SETTER is needed here, for Mod+Shift+N.
+  const [, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
+  // Navigation keys keep working while focus sits in a field — the browser's
+  // own Alt+Arrow does the same.
+  const navKeyOpts = { enableOnFormTags: ['INPUT', 'TEXTAREA', 'SELECT'] as const };
+  const cycleHarness = async (dir: 1 | -1) => {
+    if (projects.length === 0) return;
+    const slugs = projects.map((p) => p.slug);
+    const idx = activeSlug ? slugs.indexOf(activeSlug) : -1;
+    const next =
+      idx === -1
+        ? dir === 1
+          ? slugs[0]
+          : slugs[slugs.length - 1]
+        : slugs[(idx + dir + slugs.length) % slugs.length];
+    if (!next || next === activeSlug) return;
+    if (allMode) await setScopeMode('expanded');
+    await setActiveSlug(next);
+    await setActiveHarness(null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
+    }
+  };
+  useShortcutAction('harness.prev', () => void cycleHarness(-1), navKeyOpts);
+  useShortcutAction('harness.next', () => void cycleHarness(1), navKeyOpts);
+  useShortcutAction('harness.create', () => void setCreateOpen(true));
+}
+
 export function AdvScopeProvider({ children }: { children: React.ReactNode }) {
-  const { advScope, allMode, activeSlug, activeSlugIsHive, refreshProjects } = useAdvScopeModel();
+  const model = useAdvScopeModel();
+  const { advScope, allMode, activeSlug, activeSlugIsHive, refreshProjects } = model;
+  useAdvScopeShortcuts(model);
   return (
     <AdvScopeContext.Provider value={advScope}>
       {children}
@@ -802,9 +858,6 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     activeSlugIsHive: activeIsHive,
     advScope,
   } = useAdvScopeModel();
-  // The create dialog is URL-backed (`?create`, see AdvPotModals); the shell only
-  // needs the SETTER, for the Mod+Shift+N shortcut below.
-  const [, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
   // ── Tab fullscreen: off → window (maximize) → screen (OS fullscreen) ──────
   // See the ADV_MAX_LEVELS doc comment for the shape. URL-backed so it survives
   // a refresh and is agent-drivable; 'off' is the default so nuqs clears ?max=.
@@ -1003,36 +1056,14 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   useShortcutAction('goto.prevTab', () => cycleTab(-1), navKeyOpts);
   useShortcutAction('goto.nextTab', () => cycleTab(1), navKeyOpts);
 
-  const cycleHarness = async (dir: 1 | -1) => {
-    if (projects.length === 0) return;
-    const slugs = projects.map((p) => p.slug);
-    const idx = activeSlug ? slugs.indexOf(activeSlug) : -1;
-    const next =
-      idx === -1
-        ? dir === 1
-          ? slugs[0]
-          : slugs[slugs.length - 1]
-        : slugs[(idx + dir + slugs.length) % slugs.length];
-    if (!next || next === activeSlug) return;
-    // Mirror the selector's onChange exactly: exit all-mode FIRST and
-    // SEQUENTIALLY (a same-tick scope+slug pair collides in the nuqs
-    // adapter and the scope write is lost), then set + persist the pick.
-    if (allMode) await setScopeMode('expanded');
-    await setActiveSlug(next);
-    // Same as the selector: reset the within-hive member focus so the dock follows
-    // the newly-picked hive (sequential await — same-tick writes collide in the adapter).
-    await setActiveHarness(null);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
-    }
-  };
-  useShortcutAction('harness.prev', () => void cycleHarness(-1), navKeyOpts);
-  useShortcutAction('harness.next', () => void cycleHarness(1), navKeyOpts);
+  // harness.prev / harness.next / harness.create — the pot-scope keyboard, ONE
+  // hook shared with the shell-less host (AdvScopeProvider; P-002 of
+  // portal-global-shortcuts-2026-09-06).
+  useAdvScopeShortcuts({ projects, activeSlug, allMode, setScopeMode, setActiveSlug, setActiveHarness });
 
-  // In-place versions of the root fallbacks (see GlobalAppShortcuts).
+  // In-place version of the root fallback (see GlobalAppShortcuts).
   // 'conversations' is a workspace-level tab, so it's valid in both scopes.
   useShortcutAction('goto.inbox', () => void setActiveTab('conversations'));
-  useShortcutAction('harness.create', () => void setCreateOpen(true));
 
   // Two-stroke tab jumps (`g b` / `g i`). Unlike goto.inbox these are PER-POT
   // tabs, so
