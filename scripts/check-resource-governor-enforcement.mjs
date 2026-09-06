@@ -164,6 +164,7 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     paths: [
       "packages/operator-core/lib/db/",
       "packages/operator-core/lib/dbos/queue-concurrency.ts",
+      "packages/operator-core/lib/dbos/routines-workflow.ts",
       "packages/operator-core/lib/derived-",
       "packages/operator-core/lib/memory/embed-sidecar-",
     ],
@@ -173,18 +174,23 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     durableSource:
       "the DBOS workflow row and the routines table entry that scheduled it — both already durable, which is why this lane needs admission rather than a new queue",
     telemetry:
-      "connection-pool saturation and per-routine fire/skip counts; pool exhaustion must read as pressure, not as an error",
+      "one prior-cohort org-admin pool probe per tick plus indexed ENQUEUED/PENDING routineFire counts by queue, durable pool-shed events, and per-routine fire/skip counts; pool exhaustion reads as feedback pressure, not as a terminal error",
     contextAndRelease:
-      "sidecar process units carry durable Governor receipts and inherited AdmissionContext; DBOS queues have no local concurrency cap and rely on durable workflow state plus physical database feedback",
+      "sidecar process units carry durable Governor receipts and inherited AdmissionContext; DBOS queues have no local concurrency cap, preserve deferred work as unclaimed durable routine rows, and reopen starts from the next capless previous-cohort feedback epoch after subtracting real in-flight work",
     currentCaps:
       "no numeric ceiling in-lane; the effective limit is the Postgres connection pool, a physical upstream constraint to observe rather than duplicate",
     writerEvidence:
-      "packages/operator-core/lib/memory/embed-sidecar-server.ts is governed per sidecar unit; packages/operator-core/lib/dbos/queue-concurrency.ts removes the former profile-derived DBOS cap while workflow/routine rows remain durable execution state",
+      "packages/operator-core/lib/memory/embed-sidecar-server.ts is governed per sidecar unit; dbos/queue-concurrency.ts removes the former fixed cap while dbos/routines-workflow.ts feeds physical pool health and indexed DBOS occupancy into CaplessAdaptiveController before claim/start and leaves withheld routine rows durably due",
     sites: [
       {
         path: "packages/operator-core/lib/dbos/bootstrap.ts",
         start:
           "DBOS workflow host — durable workflow state; queue capacity is delegated to governor/DB feedback",
+      },
+      {
+        path: "packages/operator-core/lib/dbos/routines-workflow.ts",
+        start:
+          "routineFire workflow fan-out — one prior-cohort health epoch reads indexed DBOS in-flight rows before claim/start, then the loop spends only its credit",
       },
       {
         path: "packages/operator-core/lib/memory/embed-sidecar-server.ts",
@@ -1497,6 +1503,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed semantic disposition for scripts/lib/tracked-files.mjs: its `pending` directory-walk worklist in the filesystem fallback is consumed within one synchronous enumeration and is hard-bounded by FALLBACK_MAX_ENTRIES (it throws rather than continue past the bound), so it is finite traversal state, not a resident resource queue, and starts no independent resident work.",
   },
+  {
+    path: "scripts/vendor-gitnexus-patch.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/vendor-gitnexus-patch.mjs: this offline installation repair invokes synchronous execFileSync('patch') only for missing entries in the finite, version-pinned local patch manifest; --check starts no child. The child patches a known local package file and is awaited before its marker is verified, with no detached worker, network request, resident queue, or independently scheduled productive work.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [
@@ -1980,7 +1993,9 @@ const START_NON_VERB = /new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\(/;
 // also happens to carry a callback parameter of the same name.
 function isLocalCallbackBinding(code, name) {
   if (!new RegExp(`\\b${name}\\s*:\\s*\\(`).test(code)) return false;
-  return !new RegExp(`\\b(?:import|require)\\b[^;\\n]*\\b${name}\\b`).test(code);
+  return !new RegExp(`\\b(?:import|require)\\b[^;\\n]*\\b${name}\\b`).test(
+    code,
+  );
 }
 function hasResourceStart(code) {
   if (START_NON_VERB.test(code)) return true;
@@ -2331,7 +2346,9 @@ function main() {
     );
     return;
   }
-  console.error(`[resource-governor-enforcement] coverage: ${coverageLine}${unscannedNote}`);
+  console.error(
+    `[resource-governor-enforcement] coverage: ${coverageLine}${unscannedNote}`,
+  );
   console.error(
     "[resource-governor-enforcement] FAIL — capless admission/queue/state policy violations:",
   );
