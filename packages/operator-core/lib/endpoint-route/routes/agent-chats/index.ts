@@ -14,6 +14,7 @@
  */
 import { join } from 'node:path';
 import { sseResponse } from '@papercusp/sse';
+import type { ChatEvent } from '@papercusp/chat-protocol';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { harnessQuery } from '@papercusp/db-org';
 import { assembleRolePrompt as assembleHarnessRolePrompt } from '@papercusp/orchestrator/role-prompt';
@@ -744,12 +745,13 @@ const messagesRoute = defineTool({
           // client attaches this to the in-flight bubble; the same values are
           // persisted below so a reconnect never rewrites history from today's
           // global picker selection.
-          sink.event('provenance', {
+          const provenance: Extract<ChatEvent, { type: 'provenance' }> = {
             type: 'provenance',
             engine: 'loop',
             model: effectiveModel,
             accountRoute,
-          });
+          };
+          sink.event('provenance', provenance);
           let result: Awaited<ReturnType<typeof runLoopChatTurn>>;
           try {
             result = await runLoopChatTurn({

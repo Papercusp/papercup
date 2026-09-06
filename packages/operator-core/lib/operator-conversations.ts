@@ -18,6 +18,13 @@ import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import type { ParsedReport } from './operator-converse-tags';
 import { canonicalToolName } from './operator-mcp-tools';
+import type {
+  ChatTurn,
+  ChatTurnRole,
+  ChatTurnSource,
+  ChatTurnToolCall,
+  ChatTurnsPage,
+} from '@papercusp/chat-protocol';
 
 const oc = generated.operatorConversationsInHarnessShared;
 const ot = generated.operatorTurnsInHarnessShared;
@@ -57,8 +64,12 @@ const turnCols = {
   report: dsql<ParsedReport | null>`report`.as('report'),
 } as const;
 
-export type TurnRole = 'user' | 'assistant' | 'system';
-export type TurnSource = 'text_typed' | 'voice_stt' | 'voice_tts' | 'system';
+// The row types below are the converse STORE's projection of the one wire
+// history shape, `@papercusp/chat-protocol` `ChatTurn` (papercup-chat-one-
+// component-one-contract D-008 §3): a `TurnRow` IS a `ChatTurn` plus the
+// converse-only columns, so a history read serves both hosts unchanged.
+export type TurnRole = ChatTurnRole;
+export type TurnSource = ChatTurnSource;
 
 export interface ConversationRow {
   id: string;
@@ -80,30 +91,15 @@ export interface ConversationRow {
  * its answered state survives page reload. Persisted to
  * operator_turns.tools jsonb (migration 015).
  */
-export interface TurnToolCall {
-  name: string;
-  input?: unknown;
-  /**
-   * Picks array — length 1 for single-select cards, ≥1 for multi.
-   * Unified shape across single + multi (pre-alpha policy, no
-   * legacy single-select variant carried).
-   */
-  answered?: {
-    picks: Array<{ option_id: string; label: string }>;
-    at: number;
-  };
-}
+export type TurnToolCall = ChatTurnToolCall;
 
-export interface TurnRow {
-  id: string;
+export interface TurnRow extends ChatTurn {
   conversationId: string;
   seq: number;
   role: TurnRole;
-  text: string;
   source: TurnSource;
   elConvId: string | null;
   audioUrl: string | null;
-  createdAt: number;
   tools: TurnToolCall[] | null;
   /**
    * Structured `<report>` payload (operator_turns.report jsonb, migration
@@ -281,7 +277,7 @@ export async function listTurns(conversationId: string): Promise<TurnRow[]> {
   return (rows as Array<Record<string, unknown>>).map(rowToTurn);
 }
 
-export interface TurnsPage {
+export interface TurnsPage extends ChatTurnsPage {
   /** Turns in this page, in seq ASC order (oldest first within the page). */
   turns: TurnRow[];
   /** True when at least one turn exists earlier than the lowest seq in `turns`. */

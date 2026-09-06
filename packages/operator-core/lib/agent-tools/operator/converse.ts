@@ -17,14 +17,18 @@
  * resolves the session user from cookies (cookies aren't readable from
  * an IPC dispatch path) and forwards everything else through the tool.
  *
- * Wire format:
- *   event: delta    data: { text }                       ← object → JSON
- *                   (elevenlabs-conv consumer at :545 does
- *                    JSON.parse(line.slice(6)).text)
- *   event: tool_call data: { name, input }
- *   event: done     data: <ToolResult.content as JSON>  ← framework auto-emit
- *                                                       (route also emits
- *                                                        sink.done with cost)
+ * Wire format — `@papercusp/chat-protocol` `ChatEvent` frames (the SSE event
+ * name is the discriminant; the data repeats it as `type`; D-008 of
+ * papercup-chat-one-component-one-contract-2026-09-06):
+ *   event: provenance data: { type, engine, model }      ← before the first
+ *                                                          model event
+ *   event: delta      data: { type, text }               ← object → JSON
+ *                     (elevenlabs-conv consumer at :545 does
+ *                      JSON.parse(line.slice(6)).text)
+ *   event: tool_call  data: { type, name, input }
+ *   event: done       data: <ToolResult.content as JSON>  ← framework auto-emit
+ *                                                         (route also emits
+ *                                                          sink.done with cost)
  *
  * On the IPC path the route's sink.done re-emit is bypassed; the
  * framework auto-emitted `done` is sufficient (consumer reads from
@@ -54,6 +58,7 @@ import { readSystemPrincipal } from '../../system-principal';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_AGENT_MCP_TOOLS, canonicalToolName } from '../../operator-mcp-tools';
 import { PROMPT_ROLES } from '../../prompt-assembly';
+import type { ChatEvent } from '@papercusp/chat-protocol';
 import {
   buildOperatorPrompt,
   type ConverseSessionUser,
@@ -155,6 +160,16 @@ async function resolveBrainModel(): Promise<string> {
     /* PG unreachable — fall through to the pinned default */
   }
   return OPERATOR_BRAIN_MODEL_DEFAULT;
+}
+
+/**
+ * Emit one `@papercusp/chat-protocol` frame: the SSE event name IS the
+ * discriminant and the data carries it too, so `parseChatEvent(name, data)` on
+ * either host round-trips it. Every frame this tool streams goes through here
+ * so the wire cannot drift from the protocol type.
+ */
+function emitChatEvent(ctx: { emit: (event: string, data: unknown) => void }, ev: ChatEvent): void {
+  ctx.emit(ev.type, ev);
 }
 
 function readSuperuserToken(): string {
@@ -413,6 +428,14 @@ export default defineTool({
     // — needed when the per-surface backend is one the default model id
     // (anthropic/claude-opus-4-7) doesn't resolve on (e.g. codex).
     const operatorModel = (await surfaceModel('operator')) ?? brainModel;
+    // Announce what will ACTUALLY run before the first model event — the same
+    // chat-protocol `provenance` frame the agent-chats route emits, so the
+    // shared PapercupChat shows one provenance line on both hosts (D-008).
+    emitChatEvent(ctx, {
+      type: 'provenance',
+      engine: resolveBackend({ promptText: '', backend: operatorBackend }),
+      model: operatorModel,
+    });
 
     // The agent backend (omp → codex/anthropic) intermittently produces
     // an empty turn: a transient upstream model error, or omp exiting 0
@@ -488,7 +511,7 @@ export default defineTool({
           if (firstEventAt === null) firstEventAt = Date.now();
           if (ctx.signal.aborted) break;
           if (ev.type === 'delta') {
-            ctx.emit('delta', { text: ev.text });
+            emitChatEvent(ctx, { type: 'delta', text: ev.text });
             assembled += ev.text;
           } else if (ev.type === 'tool_call') {
             emittedToolCall = true;
@@ -498,7 +521,7 @@ export default defineTool({
             // ask_choice gates match on; without it the card silently never
             // renders and the user sees a "pick one" with nothing to pick.
             const name = canonicalToolName(ev.name);
-            ctx.emit('tool_call', { name, input: ev.input });
+            emitChatEvent(ctx, { type: 'tool_call', name, input: ev.input });
           } else if (ev.type === 'result') {
             totalCost += ev.costUsd ?? 0;
             if (typeof ev.unreportedFrames === 'number' && Number.isSafeInteger(ev.unreportedFrames) && ev.unreportedFrames > 0) {
