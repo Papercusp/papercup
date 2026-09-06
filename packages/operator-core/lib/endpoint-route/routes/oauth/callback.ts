@@ -46,6 +46,78 @@ function redirectWith(reqUrl: string, path: string, key: string, value: string):
   return Response.redirect(destination.toString(), 307);
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+function externalBrowserCompletion(key: string, value: string): Response {
+  const connected = key === 'oauth_connected';
+  const title = connected ? 'Connection complete' : 'Connection not completed';
+  const detail = connected
+    ? 'Your account is connected. Papercusp will refresh when you return to the app.'
+    : `Papercusp could not complete this connection. Error: ${escapeHtml(value.slice(0, 500))}`;
+  const body = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${title} · Papercusp</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: Canvas; color: CanvasText; }
+      main { width: min(32rem, calc(100% - 3rem)); }
+      p { line-height: 1.55; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${title}</h1>
+      <p>${detail}</p>
+      <p>You can close this tab and return to Papercusp.</p>
+    </main>
+  </body>
+</html>`;
+  return new Response(body, {
+    status: connected ? 200 : 400,
+    headers: {
+      'cache-control': 'no-store',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'content-type': 'text/html; charset=utf-8',
+      'x-content-type-options': 'nosniff',
+    },
+  });
+}
+
+function oauthResultResponse(
+  reqUrl: string,
+  path: string,
+  key: string,
+  value: string,
+  privateContext?: Readonly<Record<string, string>>,
+  legacyJsonStatus?: number,
+): Response {
+  if (privateContext?.returnMode === 'external-browser') {
+    return externalBrowserCompletion(key, value);
+  }
+  if (legacyJsonStatus !== undefined) {
+    return Response.json({ ok: false, error: value }, { status: legacyJsonStatus });
+  }
+  return redirectWith(reqUrl, path, key, value);
+}
+
 function callbackReturnPath(plugin: string, providerId: string, harness: string): string {
   if (
     (providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN) ||
@@ -91,7 +163,7 @@ export default defineTool({
         const verified = await verifyAndConsumeState(state);
         if (verified.ok && verified.claims) {
           const path = callbackReturnPath(verified.claims.plugin, verified.claims.provider, verified.claims.harness);
-          return redirectWith(req.url, path, 'oauth_error', errorParam);
+          return oauthResultResponse(req.url, path, 'oauth_error', errorParam, verified.privateContext);
         }
       }
       return redirectWith(req.url, '/harness', 'oauth_error', errorParam);
@@ -109,7 +181,14 @@ export default defineTool({
     const returnPath = callbackReturnPath(plugin, providerId, harness);
     const provider = getProvider(providerId);
     if (!provider) {
-      return Response.json({ ok: false, error: `provider ${providerId} not registered` }, { status: 500 });
+      return oauthResultResponse(
+        req.url,
+        returnPath,
+        'oauth_error',
+        `provider ${providerId} not registered`,
+        verified.privateContext,
+        500,
+      );
     }
 
     const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
@@ -136,7 +215,7 @@ export default defineTool({
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return Response.json({ ok: false, error: message }, { status: 400 });
+        return oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext, 400);
       }
     }
     if (connectsFacebookPersonalVault) {
@@ -151,7 +230,7 @@ export default defineTool({
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return Response.json({ ok: false, error: message }, { status: 400 });
+        return oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext, 400);
       }
     }
 
@@ -160,7 +239,7 @@ export default defineTool({
       tokens = await provider.exchangeCode(code, verified.privateContext);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return redirectWith(req.url, returnPath, 'oauth_error', msg);
+      return oauthResultResponse(req.url, returnPath, 'oauth_error', msg, verified.privateContext);
     }
 
     let googleProviderAccountId: string | null = null;
@@ -174,7 +253,13 @@ export default defineTool({
           const provisional =
             expected.startsWith(`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`) || expected.startsWith('legacy-owner:');
           if (!provisional) {
-            return redirectWith(req.url, returnPath, 'oauth_error', 'google_workspace_account_mismatch');
+            return oauthResultResponse(
+              req.url,
+              returnPath,
+              'oauth_error',
+              'google_workspace_account_mismatch',
+              verified.privateContext,
+            );
           }
           await renameOwnedExternalTriggerSourceAccount(getOrgPg().sql, {
             workspaceId: googleOwner.workspaceId,
@@ -205,16 +290,17 @@ export default defineTool({
         // no error surfaced to the owner. Refuse instead: the owner picked the wrong
         // account in the chooser, and the honest repair is to run it again.
         if (!expected && googlePreviousFields.length > 0) {
-          return redirectWith(
+          return oauthResultResponse(
             req.url,
             returnPath,
             'oauth_error',
             'google_workspace_account_already_connected',
+            verified.privateContext,
           );
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return redirectWith(req.url, returnPath, 'oauth_error', message);
+        return oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext);
       }
     }
 
@@ -228,7 +314,13 @@ export default defineTool({
           const provisional =
             expected.startsWith(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`) || expected.startsWith('legacy-owner:');
           if (!provisional) {
-            return redirectWith(req.url, returnPath, 'oauth_error', 'facebook_personal_vault_account_mismatch');
+            return oauthResultResponse(
+              req.url,
+              returnPath,
+              'oauth_error',
+              'facebook_personal_vault_account_mismatch',
+              verified.privateContext,
+            );
           }
           await renameOwnedExternalTriggerSourceAccount(getOrgPg().sql, {
             workspaceId: facebookOwner.workspaceId,
@@ -262,16 +354,17 @@ export default defineTool({
         // the logged-in user. Refuse rather than write a second slot for an account
         // that is already connected.
         if (!expected && facebookPreviousFields.length > 0) {
-          return redirectWith(
+          return oauthResultResponse(
             req.url,
             returnPath,
             'oauth_error',
             'facebook_personal_vault_account_already_connected',
+            verified.privateContext,
           );
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return redirectWith(req.url, returnPath, 'oauth_error', message);
+        return oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext);
       }
     }
 
@@ -288,7 +381,13 @@ export default defineTool({
       googlePreviousFields.length === 0 &&
       !tokens.refreshToken
     ) {
-      return redirectWith(req.url, returnPath, 'oauth_error', 'google_workspace_refresh_token_missing');
+      return oauthResultResponse(
+        req.url,
+        returnPath,
+        'oauth_error',
+        'google_workspace_refresh_token_missing',
+        verified.privateContext,
+      );
     }
 
     const patch: Record<string, unknown> = { [field]: tokens.accessToken };
@@ -329,7 +428,7 @@ export default defineTool({
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return redirectWith(req.url, returnPath, 'oauth_error', message);
+        return oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext);
       }
     }
     if (facebookOwner) {
@@ -354,10 +453,16 @@ export default defineTool({
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return redirectWith(req.url, returnPath, 'oauth_error', message);
+        return oauthResultResponse(req.url, returnPath, 'oauth_error', message, verified.privateContext);
       }
     }
 
-    return redirectWith(req.url, returnPath, 'oauth_connected', plugin);
+    return oauthResultResponse(
+      req.url,
+      returnPath,
+      'oauth_connected',
+      plugin,
+      verified.privateContext,
+    );
   },
 });

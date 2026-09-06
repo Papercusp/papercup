@@ -92,6 +92,7 @@ vi.mock('../../oauth/state', () => ({
     }
     if (
       token === 'google.valid' ||
+      token === 'google.external' ||
       token === 'google.missing' ||
       token === 'google.legacy' ||
       token === 'google.mismatch'
@@ -115,6 +116,7 @@ vi.mock('../../oauth/state', () => ({
                   'https://www.googleapis.com/auth/gmail.readonly',
                   'https://www.googleapis.com/auth/calendar.events',
                 ]),
+                ...(token === 'google.external' ? { returnMode: 'external-browser' } : {}),
                 ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
               }),
         },
@@ -356,6 +358,60 @@ describe('GET /api/oauth/callback', () => {
     expect(cfg['other-private-field']).toBe('keep-other-access');
     expect(cfg['other-private-field_refresh']).toBe('keep-other-refresh');
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
+  });
+
+  it('renders a no-store completion page after a successful external-browser flow', async () => {
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({
+        accessToken: 'google-access',
+        refreshToken: 'google-refresh',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/callback?code=authorization-code&state=google.external',
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('location')).toBeNull();
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'none'");
+    const html = await response.text();
+    expect(html).toContain('Connection complete');
+    expect(html).toContain('close this tab and return to Papercusp');
+    expect(html).not.toContain('authorization-code');
+    expect(html).not.toContain('google-access');
+    expect(sourceMocks.provision).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders an escaped error page when an external-browser flow is denied', async () => {
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/callback?error=%3Cscript%3Ealert%281%29%3C%2Fscript%3E&state=google.external',
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get('location')).toBeNull();
+    const html = await response.text();
+    expect(html).toContain('Connection not completed');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toContain('<script>alert(1)</script>');
   });
 
   it('WI-129473: fails closed when an ADD-account consent comes back with an already-connected account', async () => {

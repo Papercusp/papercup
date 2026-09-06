@@ -1,9 +1,11 @@
 /**
  * GET /api/oauth/start
  *
- * Redirects the browser to the provider's authorize URL with an
- * HMAC-signed state token (plugin/harness/field/provider — read by the
- * callback from the verified state, never from URL params).
+ * Creates the provider authorize URL with an HMAC-signed state token
+ * (plugin/harness/field/provider — read by the callback from the verified
+ * state, never from URL params). The default response redirects in place;
+ * `response=json` returns the URL for the owned desktop shell to open in the
+ * operating system browser.
  *
  * Ported from app/api/oauth/start/route.ts. `auth: 'public'` — the
  * caller is an un-authed browser starting an OAuth flow.
@@ -46,9 +48,13 @@ export default defineTool({
     const requestedField = url.searchParams.get('field') ?? '';
     const requestedProviderAccountId = url.searchParams.get('account')?.trim() ?? '';
     const scopesRaw = url.searchParams.get('scopes') ?? '';
+    const responseMode = url.searchParams.get('response') ?? 'redirect';
 
     if (!providerId || !plugin || !harness || !requestedField) {
       return Response.json({ ok: false, error: 'provider, plugin, harness, field all required' }, { status: 400 });
+    }
+    if (responseMode !== 'redirect' && responseMode !== 'json') {
+      return Response.json({ ok: false, error: 'response must be redirect or json' }, { status: 400 });
     }
     const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
     const connectsFacebookPersonalVault = providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
@@ -150,6 +156,12 @@ export default defineTool({
           : {}),
       };
     }
+    if (responseMode === 'json') {
+      // This marker is stored with the nonce-backed private context. The
+      // callback never trusts a query parameter to select its completion-page
+      // response, so a provider redirect cannot change the response mode.
+      privateContext = { ...privateContext, returnMode: 'external-browser' };
+    }
     const state = await signState(
       {
         plugin,
@@ -160,6 +172,13 @@ export default defineTool({
       },
       { privateContext },
     );
-    return Response.redirect(provider.buildAuthorizeUrl(scopes, state, privateContext), 302);
+    const authorizationUrl = provider.buildAuthorizeUrl(scopes, state, privateContext);
+    if (responseMode === 'json') {
+      return Response.json(
+        { ok: true, authorizationUrl },
+        { headers: { 'cache-control': 'no-store' } },
+      );
+    }
+    return Response.redirect(authorizationUrl, 302);
   },
 });

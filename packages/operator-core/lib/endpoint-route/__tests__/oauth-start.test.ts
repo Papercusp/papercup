@@ -112,6 +112,69 @@ describe('GET /api/oauth/start', () => {
     expect(loc).toContain('state=');
   });
 
+  it('returns the server-built authorize URL for an external-browser flow', async () => {
+    const buildAuthorizeUrl = vi.fn(
+      (_scopes: string[], state: string) =>
+        `https://accounts.google.com/o/oauth2/v2/auth?state=${state}`,
+    );
+    registerProvider({
+      ...stubProvider,
+      id: 'google',
+      defaultScopes: ['scope:mail'],
+      allowedScopes: ['scope:mail'],
+      createFlowContext: () => ({ codeVerifier: 'server-only-verifier' }),
+      buildAuthorizeUrl,
+    });
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok&response=json',
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      authorizationUrl:
+        'https://accounts.google.com/o/oauth2/v2/auth?state=test-state-token',
+    });
+    expect(stateMocks.signState).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'google' }),
+      {
+        privateContext: {
+          codeVerifier: 'server-only-verifier',
+          returnMode: 'external-browser',
+        },
+      },
+    );
+    expect(buildAuthorizeUrl).toHaveBeenCalledWith(
+      ['scope:mail'],
+      'test-state-token',
+      {
+        codeVerifier: 'server-only-verifier',
+        returnMode: 'external-browser',
+      },
+    );
+  });
+
+  it('rejects an unknown response mode before creating OAuth state', async () => {
+    registerProvider(stubProvider);
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=github&plugin=p&harness=h&field=tok&response=popup',
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'response must be redirect or json',
+    });
+    expect(stateMocks.signState).not.toHaveBeenCalled();
+  });
+
   it('persists private flow context and enforces provider scope policy', async () => {
     const buildAuthorizeUrl = vi.fn(() => 'https://accounts.google.com/o/oauth2/v2/auth');
     registerProvider({
