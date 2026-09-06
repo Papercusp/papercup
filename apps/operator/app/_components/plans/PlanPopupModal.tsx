@@ -268,28 +268,39 @@ export default function PlanPopupModal({
                     : "Fullscreen is not available in this browser")
                 }
               >
-                <button
-                  type="button"
-                  className="plan-popup__fullscreen"
-                  onClick={() => void toggleFullscreen()}
-                  disabled={!fullscreenAvailable}
-                  aria-label={
-                    isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
-                  }
-                  aria-pressed={isFullscreen}
-                  title={
-                    fullscreenAvailable
-                      ? undefined
-                      : "Fullscreen is not available in this browser"
-                  }
-                  data-testid="plan-popup-fullscreen"
+                {/* The wrapper — not the button — is the Tooltip trigger. A
+                    disabled <button> receives no pointer/focus events, so the
+                    Radix tooltip would never open for the one state where its
+                    label matters most ("not available in this browser"); the
+                    old native `title=` fallback is exactly what the
+                    design-primitives lint forbids on buttons. The wrapper is
+                    focusable only while the button is disabled, and
+                    `.plan-popup__fullscreen:disabled` drops pointer-events so
+                    hovering the dead button reaches the wrapper in every
+                    engine (WebKitGTK included). */}
+                <span
+                  className="plan-popup__fullscreen-wrap"
+                  tabIndex={fullscreenAvailable ? undefined : 0}
+                  data-testid="plan-popup-fullscreen-wrap"
                 >
-                  {isFullscreen ? (
-                    <Minimize2 size={14} aria-hidden="true" />
-                  ) : (
-                    <Maximize2 size={14} aria-hidden="true" />
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    className="plan-popup__fullscreen"
+                    onClick={() => void toggleFullscreen()}
+                    disabled={!fullscreenAvailable}
+                    aria-label={
+                      isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
+                    }
+                    aria-pressed={isFullscreen}
+                    data-testid="plan-popup-fullscreen"
+                  >
+                    {isFullscreen ? (
+                      <Minimize2 size={14} aria-hidden="true" />
+                    ) : (
+                      <Maximize2 size={14} aria-hidden="true" />
+                    )}
+                  </button>
+                </span>
               </Tooltip>
               <button
                 type="button"
