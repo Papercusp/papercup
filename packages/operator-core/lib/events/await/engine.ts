@@ -67,7 +67,7 @@ import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
-import type { AwaitRow, DeliveryWork } from './types';
+import { wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
   payloadIsTimeout,
   recordTimeoutFires,
@@ -715,7 +715,10 @@ export interface PumpStats {
   claimed: number;
   /** Claimed deliveries settled without a turn because their standing inbox-wake await was cancelled. */
   cancelled: number;
+  /** Settled deliveries whose channel accepted a turn-burning invocation. */
   delivered: number;
+  /** Settled through the coord inbox fallback; no turn was invoked. */
+  inbox: number;
   parked: number;
   dropped: number;
   failed: number;
@@ -724,9 +727,19 @@ export interface PumpStats {
   coalesced: number;
   /** EI-18673058981655804: inbox-wake deliveries settled WITHOUT spending a turn because
    *  every message they would have quoted already predates the subscriber's own last
-   *  coord:inbox/coord:orient read (channel='suppressed-redundant'). Also counted in
-   *  `delivered` (it IS a settled delivery) — this is the observability breakout. */
+   *  coord:inbox/coord:orient read (channel='suppressed-redundant'). */
   suppressed: number;
+}
+
+/** Keep pump counters aligned with the durable channel semantics. */
+function recordSettledDeliveryStats(stats: PumpStats, channel: WakeChannel): void {
+  if (wakeChannelInvokesTurn(channel)) {
+    stats.delivered++;
+  } else if (channel === 'inbox') {
+    stats.inbox++;
+  } else if (channel === 'suppressed-redundant') {
+    stats.suppressed++;
+  }
 }
 
 /** The per-agent inbox-wake key prefix. Duplicated (not imported) from
@@ -870,6 +883,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
     claimed: 0,
     cancelled: 0,
     delivered: 0,
+    inbox: 0,
     parked: 0,
     dropped: 0,
     failed: 0,
@@ -967,8 +981,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             : undefined;
         if (isInboxWakeGroupRedundant(group, lastReadAt, repliedMsgIds)) {
           await markDeliveryDelivered(headline.id, 'suppressed-redundant', group.length);
-          stats.delivered++;
-          stats.suppressed++;
+          recordSettledDeliveryStats(stats, 'suppressed-redundant');
           if (siblings.length > 0) {
             await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
             stats.coalesced += siblings.length;
@@ -1048,7 +1061,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       if (outcome.kind === 'delivered') {
         if (outcome.channel === 'resume' || outcome.channel === 'resume-headless' || outcome.channel === 'plan-run-resume') resumes++;
         await markDeliveryDelivered(headline.id, outcome.channel, group.length);
-        stats.delivered++;
+        recordSettledDeliveryStats(stats, outcome.channel);
         if (siblings.length > 0) {
           await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
           stats.coalesced += siblings.length;
@@ -1074,7 +1087,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
           );
           if (degraded.kind === 'delivered') {
             await markDeliveryDelivered(headline.id, degraded.channel, group.length);
-            stats.delivered++;
+            recordSettledDeliveryStats(stats, degraded.channel);
             if (siblings.length > 0) {
               await markDeliveriesCoalesced(siblings.map((d) => d.id), headline.id);
               stats.coalesced += siblings.length;
