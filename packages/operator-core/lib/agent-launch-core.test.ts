@@ -615,7 +615,6 @@ describe('probeFreshLaunchSessions', () => {
       successful_scheduler_calls: 0,
       ms_since_last_signal: 25,
       has_presence: true,
-      wake_source: null,
       scheduler_disposition: null,
       claimed_work_item_id: null,
       launch_spec: {},
@@ -633,8 +632,74 @@ describe('probeFreshLaunchSessions', () => {
       sessionId: 'native-session-123',
       ownerId: 'su-probed',
     }]);
-    const query = String(launchCoreSql.mock.calls.at(-1)?.[0]?.join(' '));
+    const query = launchCoreSql.mock.calls
+      .map((call) => String(call[0]?.join(' ')))
+      .find((candidate) => candidate.includes('s.session_id'));
     expect(query).toContain('s.session_id');
+  });
+
+  it('uses the authoritative self-wake oracle when session_briefs has stale `none`', async () => {
+    launchCoreSql
+      .mockResolvedValueOnce([{
+        id: 125,
+        session_id: 'native-session-125',
+        coord_owner_id: 'su-probed',
+        successful_calls: 1,
+        scheduler_calls: 0,
+        successful_scheduler_calls: 0,
+        ms_since_last_signal: 25,
+        has_presence: true,
+        // This is the stale launch snapshot that caused EI-225344. The probe
+        // must not consume it as the live wake truth.
+        wake_source: 'none',
+        scheduler_disposition: null,
+        claimed_work_item_id: null,
+        launch_spec: {},
+        launch_argv: ['psu', '--headless'],
+      }])
+      // fetchSelfWake's two parallel queries: active loop, then event awaits.
+      .mockResolvedValueOnce([{ target_owner_id: 'su-probed' }])
+      .mockResolvedValueOnce([]);
+
+    const sessions = await probeFreshLaunchSessions({
+      workspaceId: 'ws-probe',
+      launcherOwnerId: 'su-launcher',
+      since: 1_000,
+    });
+
+    expect(sessions[0]?.workerAttestation.stages.durableWake).toEqual({
+      status: 'satisfied',
+      wakeSource: 'loop',
+    });
+    const queries = launchCoreSql.mock.calls.map((call) => String(call[0]?.join(' ')));
+    expect(queries.some((query) => query.includes('harness_shared.routines'))).toBe(true);
+    expect(queries.some((query) => query.includes('harness_shared.event_awaits'))).toBe(true);
+    expect(queries.some((query) => query.includes('harness_shared.session_briefs'))).toBe(false);
+  });
+
+  it('fails closed when the authoritative self-wake oracle cannot be read', async () => {
+    launchCoreSql
+      .mockResolvedValueOnce([{
+        id: 126,
+        session_id: 'native-session-126',
+        coord_owner_id: 'su-probed',
+        successful_calls: 1,
+        scheduler_calls: 0,
+        successful_scheduler_calls: 0,
+        ms_since_last_signal: 25,
+        has_presence: true,
+        scheduler_disposition: null,
+        claimed_work_item_id: null,
+        launch_spec: {},
+        launch_argv: ['psu', '--headless'],
+      }])
+      .mockRejectedValueOnce(new Error('self-wake oracle unavailable'));
+
+    await expect(probeFreshLaunchSessions({
+      workspaceId: 'ws-probe',
+      launcherOwnerId: 'su-launcher',
+      since: 1_000,
+    })).rejects.toThrow('fresh-launch probe failed: self-wake oracle unavailable');
   });
 
   it('treats the Claude [1m] context marker as equivalent during attestation', async () => {
