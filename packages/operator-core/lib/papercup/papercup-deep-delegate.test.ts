@@ -254,7 +254,7 @@ describe('delegateDeep — D-003 live papercup-deep lane', () => {
 });
 
 describe('defaultDeepDelegateDeps — fallback spawn wiring', () => {
-  it('uses the spawnable bee role instead of the retired cup role', async () => {
+  it('uses the spawnable papercup-deep role instead of the retired cup role', async () => {
     const deps = defaultDeepDelegateDeps();
 
     const out = await deps.spawn({
@@ -270,7 +270,7 @@ describe('defaultDeepDelegateDeps — fallback spawn wiring', () => {
     expect(spawnAgentInHarness).toHaveBeenCalledWith(
       expect.objectContaining({
         harness: 'papercup',
-        role: 'bee',
+        role: 'papercup-deep',
         tier: 'deep',
         featureId: 'WI-301',
         itemId: 'WI-301',

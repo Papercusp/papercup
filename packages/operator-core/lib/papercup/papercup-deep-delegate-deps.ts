@@ -19,8 +19,8 @@
  *                            modern coord/wake channel (D-003).
  *   - releaseClaim         → work-items.releaseWorkItem (delivery-miss cleanup).
  *   - spawn                → fleet/operator-spawn.spawnAgentInHarness with a
- *                            pre-minted spawn id, role `bee` (the generic
- *                            brief-driven worker) at the `deep` tier; if launch
+ *                            pre-minted spawn id, role `papercup-deep` (the
+ *                            registered deep-brain role) at the `deep` tier; if launch
  *                            is refused before the nursery takes ownership, the
  *                            reserved claim is released back to the pool.
  */
@@ -154,7 +154,7 @@ export function defaultDeepDelegateDeps(): DeepDelegateDeps {
           spawnCaller: 'papercup/papercup-deep-delegate-deps',
           workspaceId: activeWorkspaceId(),
           harness,
-          role: 'bee',
+          role: 'papercup-deep',
           spawnId,
           brief,
           tier: 'deep',
