@@ -2762,7 +2762,9 @@ async fn cancel_test_run(
 }
 
 /// Execute a command-palette workbench command (P12b / D-002): list/save/restore
-/// layouts + crews via the backend. Results surface as toast notifications. The
+/// layouts + crews, plus P-012's live tool-catalog flow, via the backend. Ordinary
+/// results surface as toasts; tool discovery/invocation returns typed palette
+/// events so the reducer can preserve stale-result guards and semantic cards. The
 /// SAVE-LAYOUT capture + RESTORE spawn are LIVE (zellij/psu) — real code that only
 /// fires inside a running pui (never exercised by the offline test suite).
 async fn execute_workbench_command(
@@ -2789,6 +2791,81 @@ async fn execute_workbench_command(
         })
     };
     match cmd {
+        P::FindTool {
+            query,
+            harness,
+            plan,
+        } => {
+            let tool_query = query.clone();
+            let recipe_query = query.clone();
+            let tool_search = async {
+                let envelope = client
+                    .run_tool("tools:find", serde_json::json!({ "query": tool_query }))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let inner = crate::client::run_tool_inner_json(&envelope)
+                    .map_err(|error| error.to_string())?;
+                let hits = inner
+                    .get("hits")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                serde_json::from_value::<Vec<models::ToolPaletteHit>>(hits)
+                    .map_err(|error| format!("tools:find result: {error}"))
+            };
+            let recipe_search = async {
+                let mut context = serde_json::Map::new();
+                if let Some(harness) = harness.filter(|value| value != "all") {
+                    context.insert("harness".into(), serde_json::Value::String(harness));
+                }
+                if let Some(plan) = plan {
+                    context.insert("plan".into(), serde_json::Value::String(plan));
+                }
+                let mut args = serde_json::json!({
+                    "query": recipe_query,
+                    "limit": 5,
+                });
+                if !context.is_empty() {
+                    args["context"] = serde_json::Value::Object(context);
+                }
+                let envelope = client
+                    .run_tool("recipes:search", args)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let inner = crate::client::run_tool_inner_json(&envelope)
+                    .map_err(|error| error.to_string())?;
+                let recipes = inner
+                    .get("recipes")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]));
+                serde_json::from_value::<Vec<models::ToolPaletteRecipe>>(recipes)
+                    .map_err(|error| format!("recipes:search result: {error}"))
+            };
+            let (tools, recipes) = tokio::join!(tool_search, recipe_search);
+            let _ = tx.send(Event::ToolPaletteSearchFinished {
+                query,
+                tools,
+                recipes,
+            });
+        }
+        P::InvokeTool { query, tool, args } => {
+            let result = client
+                .run_tool(
+                    "tools:invoke",
+                    serde_json::json!({
+                        "name": tool.name.clone(),
+                        "args": args.clone(),
+                    }),
+                )
+                .await
+                .and_then(|envelope| crate::client::run_tool_inner_json(&envelope))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(Event::ToolPaletteInvocationFinished {
+                query,
+                tool,
+                args,
+                result,
+            });
+        }
         P::ListLayouts => match client.list_layouts(&owner).await {
             Ok(ls) => {
                 let names = if ls.is_empty() {
@@ -6502,5 +6579,72 @@ mod tests {
                     && message.contains("backend offline")
         ));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_tool_palette_discovers_recipes_and_invokes_through_tools_invoke() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        execute_workbench_command(
+            app::PaletteCommand::FindTool {
+                query: "tool catalog discovery".into(),
+                harness: Some("papercusp".into()),
+                plan: None,
+            },
+            vec![],
+            vec![],
+            tx.clone(),
+        )
+        .await;
+        let event = rx.recv().await.expect("tool-palette search event");
+        match event {
+            Event::ToolPaletteSearchFinished {
+                query,
+                tools: Ok(tools),
+                recipes: Ok(_),
+            } => {
+                assert_eq!(query, "tool catalog discovery");
+                assert!(!tools.is_empty(), "live catalog returned no matches");
+                assert!(tools.iter().all(|tool| !tool.name.is_empty()));
+            }
+            other => panic!("unexpected search event: {other:?}"),
+        }
+
+        let tool = models::ToolPaletteHit {
+            name: "tools:find".into(),
+            description: "discover tools".into(),
+            arg_schema: "query:string(1-500)".into(),
+            returns: None,
+            via: Some("both".into()),
+        };
+        execute_workbench_command(
+            app::PaletteCommand::InvokeTool {
+                query: "tool catalog discovery".into(),
+                tool: tool.clone(),
+                args: serde_json::json!({"query":"loop status"}),
+            },
+            vec![],
+            vec![],
+            tx,
+        )
+        .await;
+        let event = rx.recv().await.expect("tool-palette invocation event");
+        match event {
+            Event::ToolPaletteInvocationFinished {
+                tool: invoked,
+                result: Ok(result),
+                ..
+            } => {
+                assert_eq!(invoked.name, tool.name);
+                assert!(
+                    result
+                        .get("hits")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some(),
+                    "tools:invoke did not return the tools:find payload: {result}"
+                );
+            }
+            other => panic!("unexpected invocation event: {other:?}"),
+        }
     }
 }

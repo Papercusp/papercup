@@ -2661,11 +2661,15 @@ pub struct MemoriesPayload {
 /// the same schema generation an agent would read through the MCP surface.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ToolPaletteHit {
-    #[serde(default, rename = "tool")]
+    #[serde(default, rename = "tool", deserialize_with = "null_as_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub description: String,
-    #[serde(default, rename = "argSchema")]
+    #[serde(
+        default,
+        rename = "argSchema",
+        deserialize_with = "null_as_default"
+    )]
     pub arg_schema: String,
     #[serde(default)]
     pub returns: Option<String>,
@@ -2678,11 +2682,11 @@ pub struct ToolPaletteHit {
 /// explicit schema prompt and audited `tools:invoke` path.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ToolPaletteRecipe {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub description: String,
 }
 
@@ -4668,5 +4672,23 @@ mod tests {
             .find(|result| result.id == "conv-1")
             .expect("matching result");
         assert_eq!(result.detail.conversation.as_ref().unwrap().id, "conv-1");
+    }
+
+    #[test]
+    fn tool_palette_catalog_rows_tolerate_nullable_descriptive_fields() {
+        let hit: ToolPaletteHit = serde_json::from_str(
+            r#"{"tool":"tools:find","description":null,"argSchema":null,"returns":null,"via":null}"#,
+        )
+        .unwrap();
+        assert_eq!(hit.name, "tools:find");
+        assert!(hit.description.is_empty());
+        assert!(hit.arg_schema.is_empty());
+
+        let recipe: ToolPaletteRecipe =
+            serde_json::from_str(r#"{"id":"recipe-1","title":null,"description":null}"#)
+                .unwrap();
+        assert_eq!(recipe.id, "recipe-1");
+        assert!(recipe.title.is_empty());
+        assert!(recipe.description.is_empty());
     }
 }

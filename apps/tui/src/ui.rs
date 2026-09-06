@@ -3,7 +3,8 @@
 
 use crate::app::{
     App, CupboardFocus, FleetLauncherField, HarnessFocus, InboxFocus, PluginsFocus,
-    SessionBrowserFacet, Tab, TestingFocus, SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
+    SessionBrowserFacet, Tab, TestingFocus, ToolPalettePhase, SESSION_BROWSER_STATES,
+    SESSION_BROWSER_WHEN,
 };
 use crate::models::{
     contribution_count, contribution_names, tier_glyph, tier_label, Notif,
@@ -4523,8 +4524,10 @@ fn draw_palette(f: &mut Frame, app: &App) {
     // percentage height would over-grow on tall terminals and still clip on
     // short ones. Width tracks the terminal; height is constant.
     let full = f.area();
-    let h = 9u16.min(full.height);
-    let w = (full.width as u32 * 70 / 100) as u16;
+    let tool_mode = app.tool_palette.is_some();
+    let h = if tool_mode { 20 } else { 9 }.min(full.height);
+    let width_percent = if tool_mode { 86 } else { 70 };
+    let w = (full.width as u32 * width_percent / 100) as u16;
     let area = Rect {
         x: full.x + (full.width.saturating_sub(w)) / 2,
         y: full.y + (full.height.saturating_sub(h)) / 2,
@@ -4532,6 +4535,208 @@ fn draw_palette(f: &mut Frame, app: &App) {
         height: h,
     };
     f.render_widget(Clear, area);
+    if let Some(state) = app.tool_palette.as_ref() {
+        let inner_w = area.width.saturating_sub(4).max(1) as usize;
+        let mut lines = vec![Line::from(vec![
+            Span::styled("query  ", Theme::dim()),
+            Span::styled(state.query.clone(), Theme::input()),
+        ])];
+        let title = match &state.phase {
+            ToolPalettePhase::Searching => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Searching the live tool catalog and reusable recipes…",
+                    Theme::dim(),
+                )));
+                " Tools · searching (Esc closes) ".to_string()
+            }
+            ToolPalettePhase::Results => {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{} tool match{} · ↑/↓ select · Enter arguments",
+                        state.tools.len(),
+                        if state.tools.len() == 1 { "" } else { "es" }
+                    ),
+                    Theme::dim(),
+                )));
+                let start = state.selected.saturating_sub(4);
+                for (index, hit) in state.tools.iter().enumerate().skip(start).take(6) {
+                    let selected = index == state.selected;
+                    let marker = if selected { "▶" } else { " " };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{marker} {}", hit.name),
+                            if selected {
+                                Theme::selected()
+                            } else {
+                                Style::default()
+                            },
+                        ),
+                        Span::styled(
+                            hit.via
+                                .as_deref()
+                                .filter(|via| !via.is_empty())
+                                .map(|via| format!("  [{via}]"))
+                                .unwrap_or_default(),
+                            Theme::dim(),
+                        ),
+                    ]));
+                    if selected && !hit.description.trim().is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            trunc(&format!("    {}", hit.description), inner_w),
+                            Theme::dim(),
+                        )));
+                    }
+                }
+                if !state.recipes.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "recipes:search suggestions",
+                        Theme::header(),
+                    )));
+                    for recipe in state.recipes.iter().take(3) {
+                        lines.push(Line::from(Span::styled(
+                            trunc(
+                                &format!(
+                                    "  ◇ {} — {}",
+                                    recipe.id,
+                                    if recipe.title.is_empty() {
+                                        recipe.description.as_str()
+                                    } else {
+                                        recipe.title.as_str()
+                                    }
+                                ),
+                                inner_w,
+                            ),
+                            Theme::dim(),
+                        )));
+                    }
+                }
+                if let Some(error) = state.recipe_error.as_deref() {
+                    lines.push(Line::from(Span::styled(
+                        trunc(&format!("recipe suggestions unavailable: {error}"), inner_w),
+                        Theme::warn(),
+                    )));
+                }
+                " Tools · results (Esc closes) ".to_string()
+            }
+            ToolPalettePhase::Arguments {
+                tool,
+                required,
+                index,
+                args,
+            } => {
+                lines.push(Line::from(vec![
+                    Span::styled("tool   ", Theme::dim()),
+                    Span::styled(tool.name.clone(), Theme::header()),
+                ]));
+                for line in wrap_text(&format!("schema  {}", tool.arg_schema), inner_w)
+                    .into_iter()
+                    .take(3)
+                {
+                    lines.push(Line::from(Span::styled(line, Theme::dim())));
+                }
+                lines.push(Line::from(""));
+                if let Some(field) = required.get(*index) {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("required {}/{}  {}", index + 1, required.len(), field.name),
+                            Theme::header(),
+                        ),
+                        Span::styled(format!(" : {}", field.schema), Theme::dim()),
+                    ]));
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "optional extras JSON object (blank = none) · {} required value{} captured",
+                            args.len(),
+                            if args.len() == 1 { "" } else { "s" }
+                        ),
+                        Theme::header(),
+                    )));
+                }
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", app.palette_input),
+                    Theme::input(),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "Enter accepts · Esc returns to results · paste is safe data",
+                    Theme::dim(),
+                )));
+                format!(" Tools · arguments · {} ", tool.name)
+            }
+            ToolPalettePhase::Running { tool, args } => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    format!("{} Invoking {}", crate::glyph::status::WIP, tool.name),
+                    Theme::header(),
+                )));
+                lines.push(Line::from(Span::styled(
+                    trunc(&format!("args  {args}"), inner_w),
+                    Theme::dim(),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "The server still applies capability and confirmation policy.",
+                    Theme::dim(),
+                )));
+                " Tools · running (Esc dismisses) ".to_string()
+            }
+            ToolPalettePhase::Result {
+                tool,
+                card,
+                succeeded,
+            } => {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{} ",
+                            if *succeeded {
+                                crate::glyph::status::DONE
+                            } else {
+                                crate::glyph::status::FAILED
+                            }
+                        ),
+                        if *succeeded {
+                            Theme::success()
+                        } else {
+                            Theme::danger()
+                        },
+                    ),
+                    Span::styled(card.title.clone(), Theme::header()),
+                ]));
+                for row in &card.rows {
+                    let style = match row.tone {
+                        SemanticTone::Neutral => Theme::dim(),
+                        SemanticTone::Positive => Theme::success(),
+                        SemanticTone::Warning => Theme::warn(),
+                    };
+                    lines.push(Line::from(Span::styled(
+                        trunc(&format!("  {}: {}", row.label, row.value), inner_w),
+                        style,
+                    )));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Enter or Esc closes",
+                    Theme::dim(),
+                )));
+                format!(" Tools · result · {} ", tool.name)
+            }
+        };
+        if let Some(error) = state.error.as_deref() {
+            lines.push(Line::from(Span::styled(
+                trunc(&format!("error  {error}"), inner_w),
+                Theme::danger(),
+            )));
+        }
+        f.render_widget(
+            Paragraph::new(Text::from(lines))
+                .wrap(Wrap { trim: true })
+                .block(Theme::popup_block(Line::from(title))),
+            area,
+        );
+        return;
+    }
     // The active swap-layout preset (Brief 50 / D-008) rides the companion
     // topology; absent a companion link we just show the cycle from the KDL.
     let active_preset = app
@@ -4550,7 +4755,7 @@ fn draw_palette(f: &mut Frame, app: &App) {
         Line::from(Span::styled(format!("> {}", app.palette_input), Theme::input())),
         Line::from(""),
         Line::from(Span::styled(
-            "tutorial · layouts · crews (saved session sets — restore focuses live · wakes parked · asks on ended) · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] · theme <name> · themes",
+            "tutorial · tool <query> · layouts · crews (saved session sets — restore focuses live · wakes parked · asks on ended) · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] · theme <name> · themes",
             Theme::dim(),
         )),
         Line::from(Span::styled(
@@ -7250,6 +7455,71 @@ mod tests {
         });
         let text = render(&app, 120, 22);
         assert!(text.contains("[grid]"), "palette shows the active preset");
+    }
+
+    #[test]
+    fn tool_palette_renders_matches_recipes_schema_prompt_and_semantic_result() {
+        use crate::app::{ToolArgField, ToolPaletteState};
+        use crate::models::{ToolPaletteHit, ToolPaletteRecipe};
+        use crate::semantic_tool_cards::{SemanticRow, SemanticToolCard};
+
+        let hit = ToolPaletteHit {
+            name: "work_items:get".into(),
+            description: "Fetch one or many work items by id".into(),
+            arg_schema: "id:string(1-120); detail?:boolean".into(),
+            returns: None,
+            via: Some("both".into()),
+        };
+        let mut app = App::new();
+        app.palette_open = true;
+        app.tool_palette = Some(ToolPaletteState {
+            query: "work item detail".into(),
+            phase: ToolPalettePhase::Results,
+            tools: vec![hit.clone()],
+            recipes: vec![ToolPaletteRecipe {
+                id: "recipe-work-item-detail".into(),
+                title: "Work-item detail".into(),
+                description: String::new(),
+            }],
+            selected: 0,
+            error: None,
+            recipe_error: None,
+        });
+        let results = render(&app, 120, 30);
+        assert!(results.contains("work_items:get"));
+        assert!(results.contains("recipes:search suggestions"));
+        assert!(results.contains("recipe-work-item-detail"));
+
+        app.tool_palette.as_mut().unwrap().phase = ToolPalettePhase::Arguments {
+            tool: hit.clone(),
+            required: vec![ToolArgField {
+                name: "id".into(),
+                schema: "string(1-120)".into(),
+            }],
+            index: 0,
+            args: serde_json::Map::new(),
+        };
+        app.palette_input = "WI-7".into();
+        let arguments = render(&app, 120, 30);
+        assert!(arguments.contains("required 1/1"));
+        assert!(arguments.contains("id : string(1-120)"));
+        assert!(arguments.contains("> WI-7"));
+
+        app.tool_palette.as_mut().unwrap().phase = ToolPalettePhase::Result {
+            tool: hit,
+            card: SemanticToolCard {
+                title: "Tool result · work_items:get".into(),
+                rows: vec![SemanticRow {
+                    label: "status",
+                    value: "open".into(),
+                    tone: SemanticTone::Positive,
+                }],
+            },
+            succeeded: true,
+        };
+        let result = render(&app, 120, 30);
+        assert!(result.contains("Tool result · work_items:get"));
+        assert!(result.contains("status: open"));
     }
 
     // --- Fleet status view (pui-fleet-status-view-2026-06-04) ---

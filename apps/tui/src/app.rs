@@ -11,18 +11,20 @@ use crate::models::{
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
     HarnessRef, HiveVisibility, Notif, OperatorConfig, PipelineStatus, PlanItemStates, PlanSummary,
     RosterEntry, SessionTranscriptAvailability, SessionTranscriptTurn, TestingDomain, ToolOutcome,
-    TuiPaneContribution, ViewState, WorkItem,
+    ToolPaletteHit, ToolPaletteRecipe, TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crate::su_session::SuSessionInventoryEntry;
 use crossterm::event::{KeyCode, KeyModifiers};
 use pui_companion_proto::Topology;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 /// Cap on retained notification history (P8).
 const NOTIF_HISTORY_CAP: usize = 50;
+/// Submitted command-palette lines retained for Up/Down recall this process.
+const PALETTE_HISTORY_CAP: usize = 50;
 
 /// Fallback Cupboard kind order for legacy workers that do not return
 /// `kind_facets`. Once facets arrive the filter cycle is derived from their
@@ -816,6 +818,21 @@ pub enum PaletteCommand {
         item_id: Option<String>,
         note: String,
     },
+    /// `:tool <query>` — discover the live catalog and nearby reusable recipes.
+    /// Harness/plan context is resolved by the reducer when the command is
+    /// submitted, keeping this parser pure.
+    FindTool {
+        query: String,
+        harness: Option<String>,
+        plan: Option<String>,
+    },
+    /// Invoke the selected catalog result through the universal
+    /// `tools:invoke` bridge after the schema-driven argument prompt completes.
+    InvokeTool {
+        query: String,
+        tool: ToolPaletteHit,
+        args: Value,
+    },
     /// `:stack` — gather the work area into one stacked group (dockview D-008).
     /// Resolved to `DockCmd::Stack` against the live topology at Enter.
     Stack,
@@ -841,6 +858,121 @@ pub enum PaletteCommand {
     },
     /// `:themes` — list the registered themes, marking the active one.
     Themes,
+}
+
+/// One required top-level argument extracted from the compact schema returned
+/// by `tools:find`. Optional fields are accepted together in a final JSON-object
+/// prompt so tools with broad option surfaces do not require dozens of blank
+/// Enter presses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolArgField {
+    pub name: String,
+    pub schema: String,
+}
+
+/// The tool palette is a mode of the existing command palette, not a parallel
+/// dispatcher. All server work still exits through `Action::Workbench` and the
+/// existing loopback `run-tool` bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolPalettePhase {
+    Searching,
+    Results,
+    Arguments {
+        tool: ToolPaletteHit,
+        required: Vec<ToolArgField>,
+        index: usize,
+        args: Map<String, Value>,
+    },
+    Running {
+        tool: ToolPaletteHit,
+        args: Value,
+    },
+    Result {
+        tool: ToolPaletteHit,
+        card: crate::semantic_tool_cards::SemanticToolCard,
+        succeeded: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPaletteState {
+    pub query: String,
+    pub phase: ToolPalettePhase,
+    pub tools: Vec<ToolPaletteHit>,
+    pub recipes: Vec<ToolPaletteRecipe>,
+    pub selected: usize,
+    pub error: Option<String>,
+    pub recipe_error: Option<String>,
+}
+
+impl ToolPaletteState {
+    fn searching(query: String) -> Self {
+        Self {
+            query,
+            phase: ToolPalettePhase::Searching,
+            tools: Vec::new(),
+            recipes: Vec::new(),
+            selected: 0,
+            error: None,
+            recipe_error: None,
+        }
+    }
+}
+
+/// Parse only REQUIRED top-level fields from the compact `tools:find`
+/// `argSchema`. The grammar uses semicolons between top-level fields and marks
+/// optional names with `?`; alias/one-of constraint clauses are not fields.
+pub fn required_tool_args(schema: &str) -> Vec<ToolArgField> {
+    schema
+        .split(';')
+        .filter_map(|segment| {
+            let segment = segment.trim();
+            let (name, shape) = segment.split_once(':')?;
+            let name = name.trim();
+            if name.is_empty()
+                || name.ends_with('?')
+                || name.starts_with("alias-group")
+                || name == "one-of"
+                || !name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            {
+                return None;
+            }
+            Some(ToolArgField {
+                name: name.to_string(),
+                schema: shape.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_required_tool_arg(field: &ToolArgField, input: &str) -> Result<Value, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(format!("{} is required", field.name));
+    }
+    let shape = field.schema.trim_start();
+    if shape.starts_with("string") || shape.starts_with("enum") || shape.starts_with("id") {
+        return Ok(serde_json::from_str(input).unwrap_or_else(|_| Value::String(input.into())));
+    }
+    serde_json::from_str(input).map_err(|error| {
+        format!(
+            "{} expects {} — enter valid JSON ({error})",
+            field.name, field.schema
+        )
+    })
+}
+
+fn parse_optional_tool_args(input: &str) -> Result<Map<String, Value>, String> {
+    if input.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    match serde_json::from_str::<Value>(input) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => Err("optional arguments must be a JSON object".into()),
+        Err(error) => Err(format!("optional arguments are not valid JSON: {error}")),
+    }
 }
 
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
@@ -971,6 +1103,11 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
         "resolve" | "res" if !arg.is_empty() => Some(PaletteCommand::TriageResolve {
             item_id: None,
             note: arg,
+        }),
+        "tool" if !arg.is_empty() => Some(PaletteCommand::FindTool {
+            query: arg,
+            harness: None,
+            plan: None,
         }),
         // ── dockview dock-verbs (Brief 50 / D-008) ──
         // `:stack` — gather the work area into one stacked group.
@@ -1893,6 +2030,13 @@ pub struct App {
     /// Command palette open + its current input buffer.
     pub palette_open: bool,
     pub palette_input: String,
+    /// Multi-stage `:tool` flow hosted inside the command palette.
+    pub tool_palette: Option<ToolPaletteState>,
+    /// Process-local palette history. It is intentionally not a second durable
+    /// settings surface; Up/Down recalls commands for this workbench run.
+    pub palette_history: Vec<String>,
+    pub palette_history_cursor: Option<usize>,
+    pub palette_history_draft: String,
     /// Always-on presence sidebar visible (P7 — who's online + intent). `p` toggles.
     pub show_presence: bool,
     /// Plans-filter rail (D-009 — Inbox + Fleet). `plan_filter` is the selected
@@ -2341,6 +2485,10 @@ impl App {
             show_help: false,
             palette_open: false,
             palette_input: String::new(),
+            tool_palette: None,
+            palette_history: Vec::new(),
+            palette_history_cursor: None,
+            palette_history_draft: String::new(),
             show_presence: true,
             plan_filter: BTreeSet::new(),
             plan_filter_open: false,
@@ -6710,11 +6858,17 @@ impl App {
     pub fn update(&mut self, ev: Event) -> Action {
         match ev {
             Event::Paste(text) => {
-                // Only the composer consumes pastes today. Anywhere else a paste
-                // is DROPPED rather than replayed as keystrokes — silently doing
-                // nothing beats a stray paste triggering single-key bindings
-                // (`d`, `q`, …) across a pane that never asked for text.
-                if self.operator_input_active() && self.chat_composing {
+                // Text-entry overlays consume the paste as DATA. Newlines are
+                // flattened in the palette because its command/argument editor
+                // is one line; they are never replayed as Enter keypresses.
+                if self.palette_open {
+                    let flattened = text.replace(['\r', '\n'], " ");
+                    self.palette_input.push_str(&flattened);
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.error = None;
+                    }
+                    Action::Render
+                } else if self.operator_input_active() && self.chat_composing {
                     self.chat_paste(&text);
                     Action::Render
                 } else {
@@ -7634,6 +7788,85 @@ impl App {
                 }
                 Action::Render
             }
+            Event::ToolPaletteSearchFinished {
+                query,
+                tools,
+                recipes,
+            } => {
+                let Some(state) = self.tool_palette.as_mut() else {
+                    return Action::None;
+                };
+                if state.query != query || !matches!(state.phase, ToolPalettePhase::Searching) {
+                    return Action::None;
+                }
+                state.tools = match tools {
+                    Ok(mut hits) => {
+                        hits.retain(|hit| !hit.name.trim().is_empty());
+                        hits.truncate(12);
+                        hits
+                    }
+                    Err(error) => {
+                        state.error = Some(error);
+                        Vec::new()
+                    }
+                };
+                state.recipes = match recipes {
+                    Ok(mut rows) => {
+                        rows.retain(|row| !row.id.trim().is_empty());
+                        rows.truncate(5);
+                        rows
+                    }
+                    Err(error) => {
+                        state.recipe_error = Some(error);
+                        Vec::new()
+                    }
+                };
+                if state.tools.is_empty() && state.error.is_none() {
+                    state.error = Some(format!("no tools matched `{query}`"));
+                }
+                state.selected = 0;
+                state.phase = ToolPalettePhase::Results;
+                self.palette_open = true;
+                Action::Render
+            }
+            Event::ToolPaletteInvocationFinished {
+                query,
+                tool,
+                args,
+                result,
+            } => {
+                let Some(state) = self.tool_palette.as_mut() else {
+                    return Action::None;
+                };
+                let current_tool = match &state.phase {
+                    ToolPalettePhase::Running { tool, .. } => &tool.name,
+                    _ => return Action::None,
+                };
+                if state.query != query || current_tool != &tool.name {
+                    return Action::None;
+                }
+                let succeeded = result.is_ok();
+                let card = match &result {
+                    Ok(value) => crate::semantic_tool_cards::card_for_invocation(
+                        &tool.name,
+                        &args,
+                        Ok(value),
+                    ),
+                    Err(error) => crate::semantic_tool_cards::card_for_invocation(
+                        &tool.name,
+                        &args,
+                        Err(error.as_str()),
+                    ),
+                };
+                state.error = None;
+                state.phase = ToolPalettePhase::Result {
+                    tool,
+                    card,
+                    succeeded,
+                };
+                self.palette_open = true;
+                Action::Render
+            }
             Event::Notify(n) => {
                 self.push_notif(n);
                 self.last_error = None;
@@ -8033,6 +8266,211 @@ impl App {
         }
     }
 
+    fn close_palette(&mut self) {
+        self.palette_open = false;
+        self.palette_input.clear();
+        self.tool_palette = None;
+        self.palette_history_cursor = None;
+        self.palette_history_draft.clear();
+    }
+
+    fn remember_palette_line(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        if self.palette_history.last().map(String::as_str) != Some(line) {
+            self.palette_history.push(line.to_string());
+            if self.palette_history.len() > PALETTE_HISTORY_CAP {
+                self.palette_history.remove(0);
+            }
+        }
+        self.palette_history_cursor = None;
+        self.palette_history_draft.clear();
+    }
+
+    fn palette_history_previous(&mut self) {
+        if self.palette_history.is_empty() {
+            return;
+        }
+        let next = match self.palette_history_cursor {
+            Some(index) => index.saturating_sub(1),
+            None => {
+                self.palette_history_draft = self.palette_input.clone();
+                self.palette_history.len() - 1
+            }
+        };
+        self.palette_history_cursor = Some(next);
+        self.palette_input = self.palette_history[next].clone();
+    }
+
+    fn palette_history_next(&mut self) {
+        let Some(index) = self.palette_history_cursor else {
+            return;
+        };
+        if index + 1 < self.palette_history.len() {
+            let next = index + 1;
+            self.palette_history_cursor = Some(next);
+            self.palette_input = self.palette_history[next].clone();
+        } else {
+            self.palette_history_cursor = None;
+            self.palette_input = std::mem::take(&mut self.palette_history_draft);
+        }
+    }
+
+    fn handle_tool_palette_key(&mut self, code: KeyCode) -> Action {
+        let Some(phase) = self.tool_palette.as_ref().map(|state| state.phase.clone()) else {
+            return Action::None;
+        };
+        match phase {
+            ToolPalettePhase::Searching | ToolPalettePhase::Running { .. } => match code {
+                KeyCode::Esc => {
+                    self.close_palette();
+                    Action::Render
+                }
+                _ => Action::None,
+            },
+            ToolPalettePhase::Results => match code {
+                KeyCode::Esc => {
+                    self.close_palette();
+                    Action::Render
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.selected = state.selected.saturating_sub(1);
+                    }
+                    Action::Render
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.selected =
+                            (state.selected + 1).min(state.tools.len().saturating_sub(1));
+                    }
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    let tool = self
+                        .tool_palette
+                        .as_ref()
+                        .and_then(|state| state.tools.get(state.selected))
+                        .cloned();
+                    let Some(tool) = tool else {
+                        return Action::Render;
+                    };
+                    let required = required_tool_args(&tool.arg_schema);
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.error = None;
+                        state.phase = ToolPalettePhase::Arguments {
+                            tool,
+                            required,
+                            index: 0,
+                            args: Map::new(),
+                        };
+                    }
+                    self.palette_input.clear();
+                    Action::Render
+                }
+                _ => Action::None,
+            },
+            ToolPalettePhase::Arguments {
+                tool,
+                required,
+                index,
+                mut args,
+            } => match code {
+                KeyCode::Esc => {
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.error = None;
+                        state.phase = ToolPalettePhase::Results;
+                    }
+                    self.palette_input.clear();
+                    Action::Render
+                }
+                KeyCode::Backspace => {
+                    self.palette_input.pop();
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.error = None;
+                    }
+                    Action::Render
+                }
+                KeyCode::Char(c) => {
+                    self.palette_input.push(c);
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.error = None;
+                    }
+                    Action::Render
+                }
+                KeyCode::Enter if index < required.len() => {
+                    let field = &required[index];
+                    match parse_required_tool_arg(field, &self.palette_input) {
+                        Ok(value) => {
+                            args.insert(field.name.clone(), value);
+                            if let Some(state) = self.tool_palette.as_mut() {
+                                state.error = None;
+                                state.phase = ToolPalettePhase::Arguments {
+                                    tool,
+                                    required,
+                                    index: index + 1,
+                                    args,
+                                };
+                            }
+                            self.palette_input.clear();
+                        }
+                        Err(error) => {
+                            if let Some(state) = self.tool_palette.as_mut() {
+                                state.error = Some(error);
+                            }
+                        }
+                    }
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    let extras = match parse_optional_tool_args(&self.palette_input) {
+                        Ok(extras) => extras,
+                        Err(error) => {
+                            if let Some(state) = self.tool_palette.as_mut() {
+                                state.error = Some(error);
+                            }
+                            return Action::Render;
+                        }
+                    };
+                    if let Some(repeated) = extras.keys().find(|key| args.contains_key(*key)) {
+                        if let Some(state) = self.tool_palette.as_mut() {
+                            state.error = Some(format!(
+                                "optional object repeats required field `{repeated}`"
+                            ));
+                        }
+                        return Action::Render;
+                    }
+                    args.extend(extras);
+                    let args = Value::Object(args);
+                    let query = self
+                        .tool_palette
+                        .as_ref()
+                        .map(|state| state.query.clone())
+                        .unwrap_or_default();
+                    if let Some(state) = self.tool_palette.as_mut() {
+                        state.error = None;
+                        state.phase = ToolPalettePhase::Running {
+                            tool: tool.clone(),
+                            args: args.clone(),
+                        };
+                    }
+                    self.palette_input.clear();
+                    Action::Workbench(PaletteCommand::InvokeTool { query, tool, args })
+                }
+                _ => Action::None,
+            },
+            ToolPalettePhase::Result { .. } => match code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.close_palette();
+                    Action::Render
+                }
+                _ => Action::None,
+            },
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
         // First-run tutorial (P9): Esc skips; any other key advances a step and
         // closes after the last. Swallows the key (nothing else reacts).
@@ -8326,13 +8764,16 @@ impl App {
         }
         // Command palette captures all input while open.
         if self.palette_open {
+            if self.tool_palette.is_some() {
+                return self.handle_tool_palette_key(code);
+            }
             return match code {
                 KeyCode::Esc => {
-                    self.palette_open = false;
-                    self.palette_input.clear();
+                    self.close_palette();
                     Action::Render
                 }
                 KeyCode::Enter => {
+                    let submitted = self.palette_input.trim().to_string();
                     let line = self
                         .palette_input
                         .trim()
@@ -8342,6 +8783,7 @@ impl App {
                         .to_string();
                     // Parse the palette line into a workbench command (P12b).
                     let cmd = parse_palette_command(&self.palette_input);
+                    self.remember_palette_line(&submitted);
                     self.palette_open = false;
                     self.palette_input.clear();
                     // `:tutorial` re-opens the guided tour from the start any
@@ -8567,6 +9009,20 @@ impl App {
                                 }
                             }
                         }
+                        Some(PaletteCommand::FindTool { query, .. }) => {
+                            let plan = self.selected_plan().map(|plan| plan.slug.clone());
+                            let harness = (!self.all_pots).then(|| self.harness.clone());
+                            self.tool_palette = Some(ToolPaletteState::searching(query.clone()));
+                            self.palette_open = true;
+                            Action::Workbench(PaletteCommand::FindTool {
+                                query,
+                                harness,
+                                plan,
+                            })
+                        }
+                        // This variant is produced only by the tool-palette
+                        // argument state machine, never by the text parser.
+                        Some(PaletteCommand::InvokeTool { .. }) => Action::Render,
                         // ── dockview dock-verbs (Brief 50 / D-008): resolved
                         // against the live topology here, then driven by the run
                         // loop (companion or CLI fallback). ──
@@ -8645,11 +9101,23 @@ impl App {
                         None => Action::Render,
                     }
                 }
+                KeyCode::Up => {
+                    self.palette_history_previous();
+                    Action::Render
+                }
+                KeyCode::Down => {
+                    self.palette_history_next();
+                    Action::Render
+                }
                 KeyCode::Backspace => {
+                    self.palette_history_cursor = None;
+                    self.palette_history_draft.clear();
                     self.palette_input.pop();
                     Action::Render
                 }
                 KeyCode::Char(c) => {
+                    self.palette_history_cursor = None;
+                    self.palette_history_draft.clear();
                     self.palette_input.push(c);
                     Action::Render
                 }
@@ -8973,6 +9441,9 @@ impl App {
             KeyCode::Char(':') => {
                 self.palette_open = true;
                 self.palette_input.clear();
+                self.tool_palette = None;
+                self.palette_history_cursor = None;
+                self.palette_history_draft.clear();
                 Action::Render
             }
             // Focus the operator composer (tui-operator-surface). `i` mirrors the
@@ -15681,6 +16152,165 @@ mod tests {
         assert_eq!(parse_palette_command("release"), None);
         assert_eq!(parse_palette_command("bogus"), None);
         assert_eq!(parse_palette_command(""), None);
+    }
+
+    fn palette_hit(name: &str, schema: &str) -> ToolPaletteHit {
+        ToolPaletteHit {
+            name: name.into(),
+            description: format!("{name} description"),
+            arg_schema: schema.into(),
+            returns: None,
+            via: Some("both".into()),
+        }
+    }
+
+    #[test]
+    fn parses_tool_palette_command_and_required_schema_fields() {
+        assert_eq!(
+            parse_palette_command(":tool coordination locks"),
+            Some(PaletteCommand::FindTool {
+                query: "coordination locks".into(),
+                harness: None,
+                plan: None,
+            })
+        );
+        assert_eq!(parse_palette_command(":tool"), None);
+
+        let fields = required_tool_args(
+            "alias-group:itemIds|item; query:string(1-500); limit?:integer(1-20); target:object{name:string}; one-of:items",
+        );
+        assert_eq!(
+            fields,
+            vec![
+                ToolArgField {
+                    name: "query".into(),
+                    schema: "string(1-500)".into(),
+                },
+                ToolArgField {
+                    name: "target".into(),
+                    schema: "object{name:string}".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            parse_required_tool_arg(&fields[0], "locks").unwrap(),
+            json!("locks")
+        );
+        assert!(parse_required_tool_arg(&fields[1], "not-json").is_err());
+        assert_eq!(
+            parse_optional_tool_args(r#"{"limit":3}"#).unwrap()["limit"],
+            json!(3)
+        );
+        assert!(parse_optional_tool_args("[]").is_err());
+    }
+
+    #[test]
+    fn tool_palette_search_arguments_invoke_and_result_are_one_guarded_flow() {
+        let mut app = App::new();
+        app.palette_open = true;
+        app.palette_input = ":tool work item detail".into();
+        let search = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            search,
+            Action::Workbench(PaletteCommand::FindTool {
+                query: "work item detail".into(),
+                harness: None,
+                plan: None,
+            })
+        );
+        assert!(app.palette_open);
+        assert!(matches!(
+            app.tool_palette.as_ref().map(|state| &state.phase),
+            Some(ToolPalettePhase::Searching)
+        ));
+        assert_eq!(app.palette_history, vec![":tool work item detail"]);
+
+        // A stale result cannot repaint the current query.
+        assert_eq!(
+            app.update(Event::ToolPaletteSearchFinished {
+                query: "older query".into(),
+                tools: Ok(vec![palette_hit("wrong:tool", "")]),
+                recipes: Ok(vec![]),
+            }),
+            Action::None
+        );
+
+        app.update(Event::ToolPaletteSearchFinished {
+            query: "work item detail".into(),
+            tools: Ok(vec![
+                palette_hit("tools:find", "query:string(1-500)"),
+                palette_hit("work_items:get", "id:string(1-120); detail?:boolean"),
+            ]),
+            recipes: Ok(vec![ToolPaletteRecipe {
+                id: "recipe-work-item-detail".into(),
+                title: "Work-item detail".into(),
+                description: "read a work item".into(),
+            }]),
+        });
+        assert!(matches!(
+            app.tool_palette.as_ref().map(|state| &state.phase),
+            Some(ToolPalettePhase::Results)
+        ));
+        app.on_key(KeyCode::Down, KeyModifiers::NONE);
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(
+            app.tool_palette.as_ref().map(|state| &state.phase),
+            Some(ToolPalettePhase::Arguments { index: 0, .. })
+        ));
+
+        app.palette_input = "WI-7".into();
+        assert_eq!(
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        );
+        app.palette_input = r#"{"detail":true}"#.into();
+        let args = json!({"id":"WI-7","detail":true});
+        assert_eq!(
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Workbench(PaletteCommand::InvokeTool {
+                query: "work item detail".into(),
+                tool: palette_hit("work_items:get", "id:string(1-120); detail?:boolean"),
+                args: args.clone(),
+            })
+        );
+        assert!(matches!(
+            app.tool_palette.as_ref().map(|state| &state.phase),
+            Some(ToolPalettePhase::Running { .. })
+        ));
+
+        app.update(Event::ToolPaletteInvocationFinished {
+            query: "work item detail".into(),
+            tool: palette_hit("work_items:get", "id:string(1-120); detail?:boolean"),
+            args,
+            result: Ok(json!({"status":"open","id":"WI-7"})),
+        });
+        assert!(matches!(
+            app.tool_palette.as_ref().map(|state| &state.phase),
+            Some(ToolPalettePhase::Result {
+                succeeded: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn palette_history_recalls_recent_commands_and_restores_the_draft() {
+        let mut app = App::new();
+        for command in ["layouts", "crews"] {
+            app.palette_open = true;
+            app.palette_input = command.into();
+            let _ = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.palette_open = true;
+        app.palette_input = "draft".into();
+        app.on_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.palette_input, "crews");
+        app.on_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.palette_input, "layouts");
+        app.on_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.palette_input, "crews");
+        app.on_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.palette_input, "draft");
     }
 
     #[test]
