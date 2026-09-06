@@ -181,6 +181,46 @@ describe('detectUnparsedItemLines — precision unit', () => {
     expect(found[0]?.text).toContain('Do the first thing');
   });
 
+  it('flags P-NNN list attempts in ## Now and ## Decisions, where the parser skips items', () => {
+    const body = [
+      '## Now',
+      '',
+      '- **P-317** `todo` this item was misplaced in Now',
+      '',
+      '## Decisions',
+      '',
+      '### D-001 — keep the decision',
+      '1. P-318 `todo` this item was misplaced in Decisions',
+    ].join('\n');
+
+    const found = detectUnparsedItemLines(written(body), new Set());
+    expect(found).toHaveLength(2);
+    expect(found.map((line) => line.text)).toEqual([
+      '- **P-317** `todo` this item was misplaced in Now',
+      '1. P-318 `todo` this item was misplaced in Decisions',
+    ]);
+  });
+
+  it('keeps ordinary Now/Decisions prose and fenced P-NNN examples quiet', () => {
+    const body = [
+      '## Now',
+      '',
+      '- current status is waiting for review',
+      '1. explain the next step in prose',
+      '',
+      '```md',
+      '- **P-777** `todo` example only',
+      '```',
+      '',
+      '## Decisions',
+      '',
+      '### D-001 — a decision',
+      '- this decision body has no item reference',
+    ].join('\n');
+
+    expect(detectUnparsedItemLines(written(body), new Set())).toEqual([]);
+  });
+
   it('ignores machine-managed ## Promoted rows but still flags malformed plan items elsewhere', () => {
     const body = written(
       [
@@ -189,6 +229,7 @@ describe('detectUnparsedItemLines — precision unit', () => {
         '<!-- plan-pipeline: do not edit this block manually -->',
         '- [ ] WI-40290 — Unified feature-family work item',
         '- [x] F-AUTO-ABC123 — Legacy feature row',
+        '- **P-999** `todo` generated provenance row',
         '',
         '## Phase 1',
         '',

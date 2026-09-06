@@ -79,12 +79,14 @@ const ITEM_GRAMMAR =
  * HIGH-PRECISION by design — a plain prose bullet in ## Background is NEVER
  * flagged. A list-like line counts as an "attempted item" only when it is a
  * `[ ]` checkbox, OR carries a `P-NNN` token, OR sits under a `## Phase`
- * heading (where content is items by convention). Lines inside fenced code
- * blocks and inside the ## Now / ## Decisions sections are ignored, matching
- * the parser. The machine-managed ## Promoted record is ignored too: its
- * checkbox rows describe realized feature/work-item provenance, not P-NNN
- * plan items. `parsedItemRawLines` is the set of lines the parser DID accept,
- * so a correctly-formatted item is never re-flagged.
+ * heading (where content is items by convention). The special ## Now / ##
+ * Decisions sections are inspected for list-like lines carrying `P-NNN`, since
+ * the parser intentionally skips those sections and would otherwise silently
+ * drop a misplaced item. Ordinary prose bullets there remain unflagged. Lines
+ * inside fenced code blocks are ignored, and the machine-managed ## Promoted
+ * record is ignored too: its rows describe realized feature/work-item
+ * provenance, not P-NNN plan items. `parsedItemRawLines` is the set of lines
+ * the parser DID accept, so a correctly-formatted item is never re-flagged.
  */
 export function detectUnparsedItemLines(
   writtenBody: string,
@@ -96,7 +98,8 @@ export function detectUnparsedItemLines(
   const maskedLines = maskFences(writtenBody).split('\n');
   const realLines = writtenBody.split('\n');
   const out: UnparsedItemLine[] = [];
-  let skipSection = false; // inside ## Now, ## Decisions, or ## Promoted
+  let ignoredSection = false; // inside the machine-managed ## Promoted section
+  let misplacedSection: 'Now' | 'Decisions' | null = null;
   let underPhase = false; // inside a ## Phase… section
   let activeValIndent: number | null = null;
 
@@ -107,12 +110,13 @@ export function detectUnparsedItemLines(
     const heading = /^(#{1,2})\s+(.*)$/.exec(masked);
     if (heading) {
       const norm = (heading[2] ?? '').replace(/^\d+(?:\.\d+)?\.\s+/, '').trim();
-      skipSection = /^(Now|Decisions|Promoted)$/i.test(norm);
+      ignoredSection = /^Promoted$/i.test(norm);
+      misplacedSection = /^Now$/i.test(norm) ? 'Now' : /^Decisions$/i.test(norm) ? 'Decisions' : null;
       underPhase = /^Phase\b/i.test(norm);
       activeValIndent = null;
       continue;
     }
-    if (skipSection) continue;
+    if (ignoredSection) continue;
 
     const indent = masked.match(/^[ \t]*/)?.[0].length ?? 0;
     if (activeValIndent !== null) {
@@ -141,7 +145,10 @@ export function detectUnparsedItemLines(
 
     const isCheckbox = /^\s*[-*+]\s+\[[ xX]\]/.test(masked);
     const hasPNN = /\bP-\d{3,}\b/.test(masked);
-    if (!(isCheckbox || hasPNN || underPhase)) continue;
+    // Now/Decisions are not item-bearing parser sections, so only a list-like
+    // line that names a plan item is suspicious there. In normal prose/Phase
+    // sections retain the original checkbox/P-NNN/Phase heuristics.
+    if (misplacedSection ? !hasPNN : !(isCheckbox || hasPNN || underPhase)) continue;
 
     out.push({ line: i + 1, text: real.trim().slice(0, 160) });
   }
