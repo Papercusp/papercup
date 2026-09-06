@@ -18,6 +18,7 @@
  * on failure and the caller proceeds.
  */
 
+import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import { resolvePlanScope } from './source';
 import { hashPlanContent } from './content-hash';
@@ -443,6 +444,64 @@ interface PlanRevisionDbRow {
   session_id: string | null;
   session_kind: string | null;
   created_at: string;
+}
+
+/** One immutable plan revision snapshot, including the enriched bytes persisted
+ * by rubric writers for historical structured-data reads. */
+export interface PlanRevisionSnapshot {
+  id: number;
+  planSlug: string;
+  seq: number;
+  contentHash: string;
+  contentSnapshot: string;
+  contentSnapshotHash: string;
+}
+
+interface PlanRevisionSnapshotDbRow {
+  id: number | string;
+  plan_slug: string;
+  seq: number | string;
+  content_hash: string;
+  content_snapshot: string;
+}
+
+/**
+ * Read one immutable revision snapshot by plan slug + sequence.
+ *
+ * The ordinary revision-list surface deliberately omits snapshots because they
+ * are large. Historical rubric reads need the opposite contract: address one
+ * exact sequence, never fall back to the current plan row, and expose a
+ * fingerprint of the bytes actually read. Scope is resolved through the same
+ * canonical plan resolver as the rest of this module.
+ */
+export async function getPlanRevisionSnapshot(
+  planSlug: string,
+  seq: number,
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
+): Promise<PlanRevisionSnapshot | null> {
+  if (!Number.isInteger(seq) || seq <= 0) return null;
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<PlanRevisionSnapshotDbRow[]>`
+      SELECT id, plan_slug, seq, content_hash, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${planSlug}
+         AND seq = ${seq}
+       LIMIT 1
+    `;
+  });
+  const row = rows.find((candidate) => candidate.plan_slug === planSlug && Number(candidate.seq) === seq);
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    planSlug: row.plan_slug,
+    seq: Number(row.seq),
+    contentHash: row.content_hash,
+    contentSnapshot: row.content_snapshot,
+    contentSnapshotHash: createHash('sha256').update(row.content_snapshot).digest('hex'),
+  };
 }
 
 /**
