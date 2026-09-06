@@ -98,6 +98,7 @@ import {
   launchesOnSuTier,
   suRoleFor,
   psuLaunchArgvRecord,
+  resumeLaunchArgvRecord,
   effectiveAutoMode,
   assertFleetJoined,
   roleBootstrapBody,
@@ -10359,12 +10360,31 @@ describe("resume reservation finalize/release reporters", () => {
         fetchImpl,
         operatorUrl: "http://op:1",
         token: "tok-1",
+        launchArgv: [
+          "psu",
+          "--no-picker",
+          "--resume=42",
+          "--agent=claude",
+          "--account=auto",
+          "--model=opus[1m]:max",
+        ],
       }),
     ).resolves.toEqual({ finalized: true, resumeClaimKey: "resume-claim-1" });
     expect(calls).toEqual([
       {
         url: "http://op:1/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
-        body: { advSessionId: 42, resumeClaimKey: "resume-claim-1" },
+        body: {
+          advSessionId: 42,
+          resumeClaimKey: "resume-claim-1",
+          launchArgv: [
+            "psu",
+            "--no-picker",
+            "--resume=42",
+            "--agent=claude",
+            "--account=auto",
+            "--model=opus[1m]:max",
+          ],
+        },
       },
     ]);
   });
@@ -12188,6 +12208,65 @@ describe("psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)", () => {
         withoutFlag,
       ),
     ).not.toContain("--allow-subagents");
+  });
+});
+
+describe("resumeLaunchArgvRecord (EI-22441173036886852)", () => {
+  it("refreshes the effective account/model while retaining durable resume placement", () => {
+    const argv = resumeLaunchArgvRecord(
+      {
+        id: 22496,
+        agent: "claude",
+        workspaceId: "papercusp-workspace",
+        harnessSlug: "papercusp",
+        planSlug: null,
+        launchArgv: [
+          "psu",
+          "--no-picker",
+          "--resume=22496",
+          "--agent=claude",
+          "--account=default",
+          "--fleet=shared-hive",
+          "--carry=warm",
+        ],
+      },
+      {
+        account: { mode: "auto", forward: "auto", id: null },
+        model: "opus[1m]:max",
+      },
+    );
+
+    expect(argv).toEqual(
+      expect.arrayContaining([
+        "--resume=22496",
+        "--agent=claude",
+        "--account=auto",
+        "--model=opus[1m]:max",
+        "--fleet=shared-hive",
+        "--carry=warm",
+      ]),
+    );
+    expect(argv).not.toContain("--account=default");
+  });
+
+  it("removes a stale model when the resume explicitly selects the backend default", () => {
+    const argv = resumeLaunchArgvRecord(
+      {
+        id: 22497,
+        agent: "claude",
+        launchArgv: [
+          "psu",
+          "--no-picker",
+          "--resume=22497",
+          "--agent=claude",
+          "--model=opus[1m]:max",
+        ],
+      },
+      { account: { mode: "default" }, model: null },
+    );
+
+    expect(argv).not.toContain("--model=opus[1m]:max");
+    expect(argv).toContain("--account=default");
   });
 });
 
