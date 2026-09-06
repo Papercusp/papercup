@@ -182,6 +182,7 @@ type Read = {
 let reads: Read[] = [];
 
 vi.mock("@papercusp/sync", async () => ({
+  ORIGIN_SCHEDULER_CLASSES: ["interactive-control", "foreground-read", "background-sync", "bulk"],
   // WI-6948: see LearningTab.test.tsx — the real AdvShell reaches lazyWithRetry, which
   // this package re-exports, so the factory must supply it.
   lazyWithRetry: (await import("react")).lazy,

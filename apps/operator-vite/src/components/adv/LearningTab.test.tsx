@@ -624,6 +624,7 @@ const seenArgs: Record<string, unknown> = {};
 // gymResult — lets a test model the client's scoped→workspace-wide fallback.
 let gymWideResult: Record<string, unknown> | null = null;
 vi.mock("@papercusp/sync", async () => ({
+  ORIGIN_SCHEDULER_CLASSES: ["interactive-control", "foreground-read", "background-sync", "bulk"],
   // WI-6948: this suite mocks ./AdvShell with importOriginal, so it loads the REAL
   // shell -> TasksRunningPill -> lazyWithRetry, which this package re-exports. Without
   // it the re-export is undefined and vitest surfaces the throw as the generic
