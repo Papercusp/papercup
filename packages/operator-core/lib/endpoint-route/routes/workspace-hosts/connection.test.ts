@@ -104,11 +104,42 @@ describe('POST /workspace-hosts/connection', () => {
         id: 'gcp:production-gcp',
         credentialRef: 'adc://default',
         status: 'connected',
+        authenticatedIdentity: 'owner@example.test',
         scopes: [{ id: 'paper-prod', label: 'paper-prod' }],
         regions: [{ id: 'us-central1', label: 'Iowa', zones: ['us-central1-a'] }],
         sizes: [{ id: 'e2-small', label: 'e2-small', vcpu: 2, memoryGiB: 4 }],
         images: [{ id: 'projects/images/global/images/papercusp-v1', label: 'Papercusp v1' }],
         networks: [{ id: 'managed', label: 'Papercusp-managed private network' }],
+      }),
+    );
+  });
+
+  it('fails closed when a nominally successful validation proves no authenticated principal', async () => {
+    const { dependencies, inspectConnection, upsertConnection } = harness();
+    inspectConnection.mockResolvedValueOnce({
+      ...successfulInspection(),
+      validation: {
+        ok: true,
+        checkedAt: '2026-08-28T00:00:00.000Z',
+        warnings: [],
+        errors: [],
+      },
+    });
+
+    const response = await post(dependencies, {
+      action: 'connect',
+      target: 'gcp',
+      label: 'Production GCP',
+      credentialRef: 'adc://default',
+      projectId: 'paper-prod',
+      serviceAccountEmail: 'papercusp-host@paper-prod.iam.gserviceaccount.com',
+    });
+
+    expect(response.status).toBe(422);
+    expect(upsertConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'invalid',
+        statusDetail: 'Provider validation did not return an authenticated identity.',
       }),
     );
   });

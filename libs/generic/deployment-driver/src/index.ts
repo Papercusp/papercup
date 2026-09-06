@@ -92,6 +92,23 @@ export {
   WORKSPACE_HOST_LIFECYCLE_ACTIONS,
   WORKSPACE_HOST_HEALTH_STATUSES,
 } from "./workspace-host-types";
+export type {
+  WorkspaceHostIdentity,
+  WorkspaceHostAuthenticatedConnection,
+  WorkspaceHostRuntimeRelease,
+  WorkspaceHostControllerAuthority,
+  WorkspaceHostDomainState,
+  WorkspaceHostVendorControlMetadataField,
+  WorkspaceHostVendorControlScalar,
+  WorkspaceHostVendorControlMetadata,
+} from "./workspace-host-domain";
+export {
+  WORKSPACE_HOST_VENDOR_CONTROL_METADATA_FIELDS,
+  workspaceHostRuntimeRelease,
+  assertWorkspaceHostDomainState,
+  assertWorkspaceHostReplacement,
+  projectWorkspaceHostVendorControlMetadata,
+} from "./workspace-host-domain";
 export {
   resolveWorkspaceHostHealthStatus,
   unmeasuredHealthCheck,

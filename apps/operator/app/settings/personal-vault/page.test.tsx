@@ -16,6 +16,17 @@ const sync = vi.hoisted(() => ({
   useSyncQuery: vi.fn(),
 }));
 
+const desktop = vi.hoisted(() => ({
+  enabled: false,
+  invoke: vi.fn(),
+}));
+
+const notifications = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  warning: vi.fn(),
+}));
+
 vi.mock("@papercusp/sync", () => ({
   useSyncQuery: (options: Record<string, unknown>) => {
     sync.useSyncQuery(options);
@@ -32,14 +43,21 @@ vi.mock("@papercusp/sync", () => ({
   },
 }));
 
+vi.mock("@/lib/ipc-status-tauri", () => ({
+  isDesktop: () => desktop.enabled,
+  canUseContentOriginDesktopActions: async () => desktop.enabled,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => desktop.invoke(...args),
+}));
+
 import PersonalVaultSettingsPage, {
   facebookPersonalVaultConnectHref,
   googleWorkspaceConnectHref,
 } from "./page";
 
-vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
-}));
+vi.mock("sonner", () => ({ toast: notifications }));
 
 const googleCapabilities = [
   {
@@ -220,6 +238,10 @@ const status = {
 };
 
 const fetchMock = vi.fn();
+const oauth = {
+  authorizationUrl:
+    "https://accounts.google.com/o/oauth2/v2/auth?client_id=desktop-client&state=signed-state",
+};
 
 function importJob(overrides: Record<string, unknown> = {}) {
   return {
@@ -253,6 +275,14 @@ beforeEach(() => {
   sync.jobs = [];
   sync.invalidate.mockReset();
   sync.useSyncQuery.mockReset();
+  desktop.enabled = false;
+  desktop.invoke.mockReset();
+  desktop.invoke.mockResolvedValue(undefined);
+  notifications.success.mockReset();
+  notifications.error.mockReset();
+  notifications.warning.mockReset();
+  oauth.authorizationUrl =
+    "https://accounts.google.com/o/oauth2/v2/auth?client_id=desktop-client&state=signed-state";
   fetchMock.mockReset();
   fetchMock.mockImplementation(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -262,6 +292,12 @@ beforeEach(() => {
         (!init?.method || init.method === "GET")
       ) {
         return Response.json(status);
+      }
+      if (url.startsWith("/api/oauth/start?")) {
+        return Response.json({
+          ok: true,
+          authorizationUrl: oauth.authorizationUrl,
+        });
       }
       if (url === "/api/user/personal-vault" && init?.method === "PATCH") {
         const body = JSON.parse(String(init.body)) as { enabled: boolean };
@@ -632,6 +668,89 @@ describe("PersonalVaultSettingsPage", () => {
       "/api/user/personal-vault",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("opens Google OAuth in the system browser and refreshes when desktop focus returns", async () => {
+    desktop.enabled = true;
+    render(<PersonalVaultSettingsPage />);
+    await screen.findByRole("heading", { name: "Google Workspace" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Google account" }));
+
+    const startUrl =
+      "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&response=json";
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(startUrl, { cache: "no-store" });
+      expect(desktop.invoke).toHaveBeenCalledWith("plugin:shell|open", {
+        path: oauth.authorizationUrl,
+      });
+    });
+    expect(
+      screen.getByText(/Google sign-in is open in your browser/i),
+    ).toBeTruthy();
+
+    const statusReadsBeforeFocus = fetchMock.mock.calls.filter(
+      ([url]) => String(url) === "/api/user/personal-vault",
+    ).length;
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url]) => String(url) === "/api/user/personal-vault",
+        ),
+      ).toHaveLength(statusReadsBeforeFocus + 1);
+      expect(
+        screen.queryByText(/Google sign-in is open in your browser/i),
+      ).toBeNull();
+    });
+  });
+
+  it("keeps reconnect account-scoped when opening Google in the system browser", async () => {
+    desktop.enabled = true;
+    render(<PersonalVaultSettingsPage />);
+    const accountCard = within(
+      (await screen.findByRole("heading", { name: "Google Workspace" })).closest(
+        "article",
+      )!,
+    )
+      .getByRole("heading", { name: "owner@example.com" })
+      .closest("section");
+    expect(accountCard).toBeTruthy();
+
+    fireEvent.click(
+      within(accountCard!).getByRole("button", {
+        name: "Reconnect owner@example.com",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=owner%40example.com&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events&response=json",
+        { cache: "no-store" },
+      );
+      expect(desktop.invoke).toHaveBeenCalledWith("plugin:shell|open", {
+        path: oauth.authorizationUrl,
+      });
+    });
+  });
+
+  it("rejects an unsafe OAuth authorization URL without opening the browser", async () => {
+    desktop.enabled = true;
+    oauth.authorizationUrl = "https://example.test/not-google";
+    render(<PersonalVaultSettingsPage />);
+    await screen.findByRole("heading", { name: "Google Workspace" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Google account" }));
+
+    await waitFor(() =>
+      expect(notifications.error).toHaveBeenCalledWith(
+        "Couldn’t open Google sign-in: OAuth server returned an unsafe authorization URL",
+      ),
+    );
+    expect(desktop.invoke).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(/Google sign-in is open in your browser/i),
+    ).toBeNull();
   });
 
   it("shows an explicit consent upgrade for Calendar write access on the same connection", async () => {

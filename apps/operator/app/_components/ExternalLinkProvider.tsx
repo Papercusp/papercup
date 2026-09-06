@@ -31,6 +31,15 @@ export function isExternalWebUrl(href: string, currentHref: string): boolean {
 }
 
 /**
+ * Hand an already-validated web URL to the operating system's default browser.
+ * OAuth and the global external-link interceptor share this single Tauri shell
+ * seam so browser launches cannot drift into separate command spellings.
+ */
+export async function openExternalWebUrl(href: string): Promise<void> {
+  await invoke('plugin:shell|open', { path: href });
+}
+
+/**
  * ExternalLinkProvider — a global, capture-phase click interceptor that routes
  * EXTERNAL links to the OS default browser via the Tauri shell plugin, so an
  * external `<a>` (e.g. a GitHub link in the Insights tab) never replaces the SPA
@@ -65,7 +74,7 @@ export default function ExternalLinkProvider() {
 
       // Keep the SPA put; hand the URL to the OS browser instead.
       event.preventDefault();
-      void invoke('plugin:shell|open', { path: anchor.href }).catch((err: unknown) => {
+      void openExternalWebUrl(anchor.href).catch((err: unknown) => {
         console.error('[ExternalLinkProvider] shell open failed', err);
       });
     }

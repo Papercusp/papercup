@@ -8,6 +8,11 @@ import { Checkbox } from "../../harness/Checkbox";
 import { Modal } from "../../harness/Modal";
 import { Select } from "../../harness/Select";
 import { Table, type TableColumn } from "../../harness/Table";
+import {
+  isExternalWebUrl,
+  openExternalWebUrl,
+} from "../../_components/ExternalLinkProvider";
+import { isDesktop } from "@/lib/ipc-status-tauri";
 
 /**
  * Sentinel for the "no provider account" choice in the archive-account picker.
@@ -309,6 +314,7 @@ export default function PersonalVaultSettingsPage() {
   const [planSlug, setPlanSlug] = useState("");
   const [harnessSlug, setHarnessSlug] = useState("papercusp");
   const [grantPreview, setGrantPreview] = useState<GrantPreview | null>(null);
+  const [googleOAuthPending, setGoogleOAuthPending] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const importJobsQuery = useSyncQuery<PersonalVaultImportJob>({
@@ -334,6 +340,85 @@ export default function PersonalVaultSettingsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!googleOAuthPending) return;
+
+    let refreshing = false;
+    const refreshAfterOAuth = () => {
+      if (refreshing) return;
+      refreshing = true;
+      void load().finally(() => setGoogleOAuthPending(false));
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshAfterOAuth();
+    };
+
+    window.addEventListener("focus", refreshAfterOAuth);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshAfterOAuth);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [googleOAuthPending, load]);
+
+  const startGoogleOAuth = useCallback(
+    async (includeCalendarWrite = true, providerAccountId?: string) => {
+      if (busy) return;
+      const startHref = googleWorkspaceConnectHref(
+        includeCalendarWrite,
+        providerAccountId,
+      );
+
+      // A normal browser is already Google's supported user agent. Preserve the
+      // existing redirect flow there; only the Tauri webview needs the explicit
+      // server-URL → system-browser handoff.
+      if (!isDesktop()) {
+        window.location.assign(startHref);
+        return;
+      }
+
+      const action = providerAccountId
+        ? `oauth-google:${providerAccountId}`
+        : "oauth-google:add";
+      setBusy(action);
+      try {
+        const requestUrl = new URL(startHref, window.location.href);
+        requestUrl.searchParams.set("response", "json");
+        const result = await responseJson<{
+          ok: true;
+          authorizationUrl: string;
+        }>(
+          await fetch(requestUrl.pathname + requestUrl.search, {
+            cache: "no-store",
+          }),
+        );
+        let authorizationUrl: URL;
+        try {
+          authorizationUrl = new URL(result.authorizationUrl);
+        } catch {
+          throw new Error("OAuth server returned an unsafe authorization URL");
+        }
+        if (
+          authorizationUrl.protocol !== "https:" ||
+          authorizationUrl.hostname !== "accounts.google.com" ||
+          !isExternalWebUrl(authorizationUrl.toString(), window.location.href)
+        ) {
+          throw new Error("OAuth server returned an unsafe authorization URL");
+        }
+        await openExternalWebUrl(authorizationUrl.toString());
+        setGoogleOAuthPending(true);
+        toast.success(
+          "Google sign-in opened in your browser. Finish there, then return to Papercusp.",
+        );
+      } catch (err) {
+        toast.error(`Couldn’t open Google sign-in: ${(err as Error).message}`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy],
+  );
 
   const liveGrants = useMemo(
     () => status?.grants.filter(activeGrant) ?? [],
@@ -1328,15 +1413,16 @@ export default function PersonalVaultSettingsPage() {
                             variant="primary"
                             disabled={!google.configured || busy !== null}
                             onClick={() =>
-                              window.location.assign(
-                                googleWorkspaceConnectHref(
-                                  calendar?.enabled !== false,
-                                  account.providerAccountId,
-                                ),
+                              void startGoogleOAuth(
+                                calendar?.enabled !== false,
+                                account.providerAccountId,
                               )
                             }
                           >
-                            Reconnect {account.displayName}
+                            {busy ===
+                            `oauth-google:${account.providerAccountId}`
+                              ? "Opening browser…"
+                              : `Reconnect ${account.displayName}`}
                           </Button>
                           {account.connected ? (
                             <Button
@@ -1373,13 +1459,20 @@ export default function PersonalVaultSettingsPage() {
                 <Button
                   variant="primary"
                   disabled={!google.configured || busy !== null}
-                  onClick={() =>
-                    window.location.assign(googleWorkspaceConnectHref(true))
-                  }
+                  onClick={() => void startGoogleOAuth(true)}
                 >
-                  Add Google account
+                  {busy === "oauth-google:add"
+                    ? "Opening browser…"
+                    : "Add Google account"}
                 </Button>
               </div>
+              {googleOAuthPending ? (
+                <p className="pc-settings-note" role="status">
+                  Google sign-in is open in your browser. Finish the consent
+                  flow there, then return to Papercusp; this page will refresh
+                  your connection status.
+                </p>
+              ) : null}
               <p className="pc-settings-note" style={{ marginBottom: 0 }}>
                 Add Account always starts a new consent flow. Reconnect and
                 Disconnect are scoped to the selected account and keep settled

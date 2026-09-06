@@ -160,6 +160,9 @@ function connectionInput(
     credentialRef: connection.cloudCredentialRef.ref,
     provider: connection.provider,
     status,
+    ...(connected && inspection.validation.identity?.trim()
+      ? { authenticatedIdentity: inspection.validation.identity.trim() }
+      : {}),
     statusDetail: connected
       ? inspection.validation.warnings.join('; ') || undefined
       : inspection.validation.errors.join('; ') || 'Provider validation failed.',
@@ -278,6 +281,24 @@ export function createWorkspaceHostConnectionRoute(
         };
       }
 
+      // "The provider answered" is not authenticated connection identity. A successful
+      // validation must name the non-secret principal it proved; otherwise the controller could
+      // later mutate resources without being able to show which authority was admitted.
+      if (inspection.validation.ok && !inspection.validation.identity?.trim()) {
+        inspection = {
+          validation: {
+            ok: false,
+            checkedAt: inspection.validation.checkedAt,
+            warnings: inspection.validation.warnings,
+            errors: ['Provider validation did not return an authenticated identity.'],
+          },
+          scopes: [],
+          regions: [],
+          sizes: [],
+          images: [],
+        };
+      }
+
       await dependencies.upsertConnection(connectionInput(workspaceId, connectionId, label, connection, inspection));
       if (!inspection.validation.ok) {
         const problems = inspection.validation.errors;
@@ -290,6 +311,7 @@ export function createWorkspaceHostConnectionRoute(
         ok: true,
         status: 'connected',
         connectionId,
+        authenticatedIdentity: inspection.validation.identity,
         message: action === 'connect' ? `${label} connected and validated` : `${label} connection validated`,
       });
     },

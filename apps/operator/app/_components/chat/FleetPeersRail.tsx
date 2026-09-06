@@ -280,6 +280,7 @@ export default function FleetPeersRail({
   alerts,
   onSelectPeer,
   onClose,
+  headerControl,
 }: {
   model: FleetPeersModel;
   /**
@@ -297,6 +298,7 @@ export default function FleetPeersRail({
    */
   onSelectPeer?: (ownerId: string) => void;
   onClose: () => void;
+  headerControl?: React.ReactNode;
 }) {
   // Subscribed only so the rendered ages re-paint between roster pushes; the
   // ORDERING and the state words come from the model the caller derived, so this
@@ -314,6 +316,7 @@ export default function FleetPeersRail({
       {/* Mirrors the Orders and Activity title bars so the four columns read as
           one set rather than three plus an addition. */}
       <header className="pc-zone-title" data-testid="peers-zone-title">
+        {headerControl ?? <>
         <span>Fleet</span>
         {/* "they", matching the voice the other two rails use. */}
         <span className="pc-zone-title__sub">— who they’re with</span>
@@ -325,6 +328,7 @@ export default function FleetPeersRail({
         >
           ✕
         </button>
+        </>}
       </header>
 
       <div className="pc-peers__head">

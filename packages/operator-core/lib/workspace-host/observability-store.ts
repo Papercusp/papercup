@@ -1,13 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import {
+  assertWorkspaceHostDomainState,
+  assertWorkspaceHostSecretIsolation,
+} from '@papercusp/deployment-driver';
 import type {
+  WorkspaceHostControllerAuthority,
   WorkspaceHostProviderConnection,
   WorkspaceHostDesiredSpec,
+  WorkspaceHostDomainState,
   WorkspaceHostHealthAttestation,
   WorkspaceHostLifecycleAction,
   WorkspaceHostObservation,
+  WorkspaceHostRuntimeRelease,
   WorkspaceHostResourceCheckpoint,
   WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
@@ -20,6 +26,13 @@ type ConnectionStatus = 'connected' | 'degraded' | 'invalid';
 type OperationStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 type TimelineLevel = 'info' | 'warn' | 'error';
 type LogStream = 'cloud-init' | 'systemd' | 'controller';
+
+export class WorkspaceHostControllerFenceError extends Error {
+  constructor(readonly hostId: string) {
+    super(`workspace-host controller authority or host generation is stale for '${hostId}'`);
+    this.name = 'WorkspaceHostControllerFenceError';
+  }
+}
 
 const SECRET_KEY = /(?:authorization|cookie|password|passphrase|secret|token|private.?key|access.?key)/i;
 const SAFE_REFERENCE_KEY = /(?:credential|secret|token|key)ref$/i;
@@ -116,6 +129,25 @@ function inWorkspace<T>(workspaceId: string, tx: Sql | undefined, fn: (query: Sq
   return tx ? fn(tx) : withWorkspace(workspaceId, fn);
 }
 
+async function requireWorkspaceHostControllerAuthority(
+  query: Sql,
+  workspaceId: string,
+  hostId: string,
+  authority: WorkspaceHostControllerAuthority | undefined,
+): Promise<void> {
+  if (!authority) return;
+  const rows = await query<Array<{ id: string }>>`
+    SELECT id
+    FROM harness_shared.workspace_hosts
+    WHERE workspace_id = ${workspaceId}
+      AND id = ${hostId}
+      AND controller_id = ${authority.controllerId}
+      AND controller_fence = ${authority.fence}
+    FOR SHARE
+  `;
+  if (!rows[0]) throw new WorkspaceHostControllerFenceError(hostId);
+}
+
 export interface WorkspaceHostConnectionInput {
   workspaceId: string;
   id: string;
@@ -125,6 +157,8 @@ export interface WorkspaceHostConnectionInput {
   /** Non-secret metadata required to resolve the opaque credential reference. */
   provider?: Readonly<Record<string, unknown>>;
   status: ConnectionStatus;
+  /** Non-secret principal proved by the latest successful provider validation. */
+  authenticatedIdentity?: string;
   statusDetail?: string;
   lastValidatedAt?: string;
   scopes?: readonly unknown[];
@@ -141,12 +175,13 @@ export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnecti
   await inWorkspace(input.workspaceId, tx, async (query) => {
     await query`
       INSERT INTO harness_shared.workspace_host_connections (
-        workspace_id, id, target, label, credential_ref, provider_config, status, status_detail,
+        workspace_id, id, target, label, credential_ref, provider_config, status, authenticated_identity, status_detail,
         last_validated_at, scopes, regions, sizes, images, networks,
         disk_price_per_gib_month, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.id}, ${input.target}, ${input.label},
-        ${input.credentialRef}, ${query.json(providerConfig as never)}, ${input.status}, ${input.statusDetail ?? null},
+        ${input.credentialRef}, ${query.json(providerConfig as never)}, ${input.status},
+        ${input.authenticatedIdentity?.trim() || null}, ${input.statusDetail ?? null},
         ${input.lastValidatedAt ?? null}, ${query.json(json(input.scopes ?? []) as never)},
         ${query.json(json(input.regions ?? []) as never)}, ${query.json(json(input.sizes ?? []) as never)},
         ${query.json(json(input.images ?? []) as never)}, ${query.json(json(input.networks ?? []) as never)},
@@ -158,6 +193,9 @@ export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnecti
         credential_ref = EXCLUDED.credential_ref,
         provider_config = EXCLUDED.provider_config,
         status = EXCLUDED.status,
+        -- A failed/transport-class refresh proves no replacement identity. Preserve the last
+        -- authenticated principal unless a successful validation supplied a new one.
+        authenticated_identity = COALESCE(EXCLUDED.authenticated_identity, harness_shared.workspace_host_connections.authenticated_identity),
         status_detail = EXCLUDED.status_detail,
         last_validated_at = EXCLUDED.last_validated_at,
         scopes = EXCLUDED.scopes,
@@ -176,6 +214,7 @@ export interface StoredWorkspaceHostConnection {
   label?: string;
   target: string;
   status: ConnectionStatus;
+  authenticatedIdentity?: string;
   statusDetail?: string;
   connection: WorkspaceHostProviderConnection;
 }
@@ -195,10 +234,11 @@ export async function readWorkspaceHostConnection(
         credential_ref: string;
         provider_config: JsonRecord;
         status: ConnectionStatus;
+        authenticated_identity: string | null;
         status_detail: string | null;
       }>
     >`
-      SELECT id, label, target, credential_ref, provider_config, status, status_detail
+      SELECT id, label, target, credential_ref, provider_config, status, authenticated_identity, status_detail
       FROM harness_shared.workspace_host_connections
       WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
       LIMIT 1
@@ -210,6 +250,7 @@ export async function readWorkspaceHostConnection(
       label: row.label,
       target: row.target,
       status: row.status,
+      ...(row.authenticated_identity ? { authenticatedIdentity: row.authenticated_identity } : {}),
       ...(row.status_detail ? { statusDetail: row.status_detail } : {}),
       connection: {
         target: row.target,
@@ -235,6 +276,12 @@ export interface WorkspaceHostInput {
   estimatedMonthlyUsd?: number;
   desiredState: string;
   observedState: string;
+  /** Defaults support expand-first rollout; explicit values are validated as one domain state. */
+  hostGeneration?: number;
+  desiredRevision?: number;
+  observedRevision?: number;
+  runtimeRelease?: WorkspaceHostRuntimeRelease;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
   observedAt?: string;
   endpoint?: string;
   recoverability?: { kind: 'snapshot' | 'backup' | 'none'; label: string; updatedAt?: string };
@@ -255,21 +302,39 @@ export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<vo
   // write means a spec carrying secret material fails loudly at the boundary instead of being
   // persisted and later exported by the audit route.
   if (input.desiredSpec) assertWorkspaceHostSecretIsolation(input.desiredSpec, 'workspaceHost.desiredSpec');
+  const hostGeneration = input.hostGeneration ?? 1;
+  const desiredRevision = input.desiredRevision ?? 1;
+  const observedRevision = input.observedRevision ?? 0;
+  assertWorkspaceHostDomainState({
+    workspaceId: input.workspaceId,
+    hostId: input.id,
+    hostGeneration,
+    connectionId: input.connectionId,
+    desiredRevision,
+    observedRevision,
+    ...(input.runtimeRelease ? { runtimeRelease: input.runtimeRelease } : {}),
+    ...(input.controllerAuthority ? { controllerAuthority: input.controllerAuthority } : {}),
+  });
   const desiredSpec = input.desiredSpec ? JSON.stringify(input.desiredSpec) : null;
   await withWorkspace(input.workspaceId, async (tx) => {
-    await tx`
+    const rows = await tx<Array<{ id: string }>>`
       INSERT INTO harness_shared.workspace_hosts (
         workspace_id, id, name, connection_id, target, scope_label, region, size,
         image, disk_gib, network, estimated_monthly_usd, desired_state,
         observed_state, observed_at, endpoint, recoverability_kind,
-        recoverability_label, recoverability_updated_at, desired_spec, updated_at
+        recoverability_label, recoverability_updated_at, desired_spec,
+        host_generation, desired_revision, observed_revision, runtime_release,
+        controller_id, controller_fence, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.id}, ${input.name}, ${input.connectionId},
         ${input.target}, ${input.scopeLabel}, ${input.region}, ${input.size},
         ${input.image}, ${input.diskGiB}, ${input.network}, ${input.estimatedMonthlyUsd ?? null},
         ${input.desiredState}, ${input.observedState}, ${input.observedAt ?? null},
         ${input.endpoint ?? null}, ${recoverability.kind}, ${recoverability.label},
-        ${recoverability.updatedAt ?? null}, ${desiredSpec}::jsonb, now()
+        ${recoverability.updatedAt ?? null}, ${desiredSpec}::jsonb,
+        ${hostGeneration}, ${desiredRevision}, ${observedRevision},
+        ${input.runtimeRelease === undefined ? null : tx.json(input.runtimeRelease as never)},
+        ${input.controllerAuthority?.controllerId ?? null}, ${input.controllerAuthority?.fence ?? 0}, now()
       )
       ON CONFLICT (workspace_id, id) DO UPDATE SET
         name = EXCLUDED.name,
@@ -292,8 +357,43 @@ export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<vo
         -- PRESERVE, don't clobber: an observation refresh omits the spec, and provisioning
         -- intent must survive it. Only a caller that actually supplies a spec replaces one.
         desired_spec = COALESCE(EXCLUDED.desired_spec, harness_shared.workspace_hosts.desired_spec),
+        -- Same host id means the same replaceable Host. Generation changes require a NEW id;
+        -- omission on an observation refresh preserves every domain/control field.
+        host_generation = CASE
+          WHEN ${input.hostGeneration === undefined} THEN harness_shared.workspace_hosts.host_generation
+          ELSE EXCLUDED.host_generation
+        END,
+        desired_revision = CASE
+          WHEN ${input.desiredRevision === undefined} THEN harness_shared.workspace_hosts.desired_revision
+          ELSE EXCLUDED.desired_revision
+        END,
+        observed_revision = CASE
+          WHEN ${input.observedRevision === undefined} THEN harness_shared.workspace_hosts.observed_revision
+          ELSE EXCLUDED.observed_revision
+        END,
+        runtime_release = COALESCE(EXCLUDED.runtime_release, harness_shared.workspace_hosts.runtime_release),
+        controller_id = COALESCE(EXCLUDED.controller_id, harness_shared.workspace_hosts.controller_id),
+        controller_fence = CASE
+          WHEN EXCLUDED.controller_id IS NULL THEN harness_shared.workspace_hosts.controller_fence
+          ELSE EXCLUDED.controller_fence
+        END,
         updated_at = now()
+      WHERE (${input.hostGeneration === undefined} OR EXCLUDED.host_generation = harness_shared.workspace_hosts.host_generation)
+        AND (
+          EXCLUDED.controller_id IS NULL
+          OR harness_shared.workspace_hosts.controller_id IS NULL
+          OR (
+            EXCLUDED.controller_id = harness_shared.workspace_hosts.controller_id
+            AND EXCLUDED.controller_fence = harness_shared.workspace_hosts.controller_fence
+          )
+          OR EXCLUDED.controller_fence > harness_shared.workspace_hosts.controller_fence
+        )
+      RETURNING id
     `;
+    // PostgreSQL reports a successful statement when ON CONFLICT's WHERE clause rejects the
+    // update. That outcome is a stale controller/generation refusal, not a successful no-op:
+    // returning normally would let the losing controller proceed to its next provider mutation.
+    if (!rows[0]) throw new WorkspaceHostControllerFenceError(input.id);
   });
 }
 
@@ -336,7 +436,11 @@ export async function readWorkspaceHostDesiredSpec(
   });
 }
 
-export interface StoredWorkspaceHostDestroyTarget {
+export interface StoredWorkspaceHostDestroyTarget
+  extends Pick<
+    WorkspaceHostDomainState,
+    'hostGeneration' | 'desiredRevision' | 'observedRevision' | 'runtimeRelease' | 'controllerAuthority'
+  > {
   id: string;
   name: string;
   connectionId: string;
@@ -364,7 +468,9 @@ export async function readWorkspaceHostDestroyTarget(
 ): Promise<StoredWorkspaceHostDestroyTarget | null> {
   return inWorkspace(workspaceId, tx, async (query) => {
     const hosts = (await query`
-      SELECT id, name, connection_id, target, observed_state, desired_spec
+      SELECT id, name, connection_id, target, observed_state, desired_spec,
+             host_generation, desired_revision, observed_revision, runtime_release,
+             controller_id, controller_fence
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
       LIMIT 1
@@ -375,6 +481,12 @@ export async function readWorkspaceHostDestroyTarget(
       target: string;
       observed_state: string;
       desired_spec: unknown;
+      host_generation: number;
+      desired_revision: number;
+      observed_revision: number;
+      runtime_release: WorkspaceHostRuntimeRelease | null;
+      controller_id: string | null;
+      controller_fence: number;
     }>;
     const host = hosts[0];
     if (!host) return null;
@@ -425,6 +537,13 @@ export async function readWorkspaceHostDestroyTarget(
       connectionId: host.connection_id,
       target: host.target,
       observedState: host.observed_state,
+      hostGeneration: host.host_generation,
+      desiredRevision: host.desired_revision,
+      observedRevision: host.observed_revision,
+      ...(host.runtime_release ? { runtimeRelease: host.runtime_release } : {}),
+      ...(host.controller_id
+        ? { controllerAuthority: { controllerId: host.controller_id, fence: host.controller_fence } }
+        : {}),
       desired: host.desired_spec as WorkspaceHostDesiredSpec,
       resources,
     };
@@ -470,18 +589,67 @@ export interface WorkspaceHostOperationInput {
   percent?: number;
   message?: string;
   request?: unknown;
+  /** First write of an operation may take over only with a strictly newer fencing token. */
+  controllerAuthority?: WorkspaceHostControllerAuthority;
+  /** Provision uses revision 1; later lifecycle operations default to the next revision. */
+  desiredRevision?: number;
 }
 
 export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationInput): Promise<void> {
   const percent = Math.max(0, Math.min(100, Math.round(input.percent ?? 0)));
   await withWorkspace(input.workspaceId, async (tx) => {
+    let desiredRevision = input.desiredRevision ?? null;
+    if (input.controllerAuthority) {
+      const existing = await tx<
+        Array<{ desired_revision: number | null; controller_id: string | null; controller_fence: number | null }>
+      >`
+        SELECT desired_revision, controller_id, controller_fence
+        FROM harness_shared.workspace_host_operations
+        WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
+        LIMIT 1
+      `;
+      if (existing[0]) {
+        if (
+          existing[0].controller_id !== input.controllerAuthority.controllerId ||
+          existing[0].controller_fence !== input.controllerAuthority.fence
+        ) {
+          throw new WorkspaceHostControllerFenceError(input.hostId);
+        }
+        return;
+      }
+
+      const controlled = await tx<Array<{ desired_revision: number }>>`
+        UPDATE harness_shared.workspace_hosts
+        SET desired_revision = CASE
+              WHEN ${desiredRevision}::bigint IS NULL THEN desired_revision + 1
+              ELSE ${desiredRevision}::bigint
+            END,
+            controller_id = ${input.controllerAuthority.controllerId},
+            controller_fence = ${input.controllerAuthority.fence},
+            updated_at = now()
+        WHERE workspace_id = ${input.workspaceId}
+          AND id = ${input.hostId}
+          AND (${desiredRevision}::bigint IS NULL OR ${desiredRevision}::bigint >= desired_revision)
+          AND (
+            controller_id IS NULL
+            OR (controller_id = ${input.controllerAuthority.controllerId} AND controller_fence = ${input.controllerAuthority.fence})
+            OR ${input.controllerAuthority.fence} > controller_fence
+          )
+        RETURNING desired_revision
+      `;
+      if (!controlled[0]) throw new WorkspaceHostControllerFenceError(input.hostId);
+      desiredRevision = controlled[0].desired_revision;
+    }
     await tx`
       INSERT INTO harness_shared.workspace_host_operations (
-        workspace_id, id, host_id, action, status, percent, message, request, started_at, updated_at
+        workspace_id, id, host_id, action, status, percent, message, request,
+        desired_revision, controller_id, controller_fence, started_at, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.operationId}, ${input.hostId}, ${input.action},
         ${input.status ?? 'queued'}, ${percent}, ${redactWorkspaceHostText(input.message ?? '')},
         ${input.request === undefined ? null : tx.json(json(input.request) as never)},
+        ${desiredRevision}, ${input.controllerAuthority?.controllerId ?? null},
+        ${input.controllerAuthority?.fence ?? null},
         ${input.status === 'running' ? new Date().toISOString() : null}, now()
       )
       ON CONFLICT (workspace_id, id) DO NOTHING
@@ -496,9 +664,19 @@ export async function updateWorkspaceHostOperation(input: {
   percent: number;
   message: string;
   error?: unknown;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
   const percent = Math.max(0, Math.min(100, Math.round(input.percent)));
   await withWorkspace(input.workspaceId, async (tx) => {
+    const operations = await tx<Array<{ host_id: string }>>`
+      SELECT host_id FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
+      LIMIT 1
+    `;
+    const hostId = operations[0]?.host_id;
+    if (hostId) {
+      await requireWorkspaceHostControllerAuthority(tx, input.workspaceId, hostId, input.controllerAuthority);
+    }
     await tx`
       UPDATE harness_shared.workspace_host_operations
       SET status = ${input.status},
@@ -518,10 +696,17 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
   hostId: string;
   operationId: string;
   checkpoint: WorkspaceHostResourceCheckpoint;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
   const { checkpoint } = input;
   const resource = checkpoint.providerResource;
   await withWorkspace(input.workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.controllerAuthority,
+    );
     await tx`
       INSERT INTO harness_shared.workspace_host_resources (
         workspace_id, host_id, logical_key, operation_id, state, attempts,
@@ -646,11 +831,18 @@ export interface WorkspaceHostTimelineEventInput {
   source?: string;
   message: string;
   details?: unknown;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
 }
 
 export async function appendWorkspaceHostEvent(input: WorkspaceHostTimelineEventInput): Promise<string> {
   const id = input.id ?? randomUUID();
   await withWorkspace(input.workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.controllerAuthority,
+    );
     await tx`
       INSERT INTO harness_shared.workspace_host_events (
         workspace_id, id, host_id, operation_id, occurred_at, phase,
@@ -709,13 +901,31 @@ export async function appendWorkspaceHostLogs(
 export async function recordWorkspaceHostObservation(
   workspaceId: string,
   observation: WorkspaceHostObservation,
+  control?: { operationId: string; controllerAuthority: WorkspaceHostControllerAuthority },
 ): Promise<void> {
   await withWorkspace(workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      workspaceId,
+      observation.host.hostId,
+      control?.controllerAuthority,
+    );
     await tx`
       UPDATE harness_shared.workspace_hosts
       SET observed_state = ${observation.state},
           observed_at = ${observation.observedAt},
           version_drift = ${tx.json(json(observation.drift) as never)},
+          observed_revision = CASE
+            WHEN ${control?.operationId ?? null}::text IS NULL THEN observed_revision
+            ELSE GREATEST(
+              observed_revision,
+              COALESCE((
+                SELECT desired_revision
+                FROM harness_shared.workspace_host_operations
+                WHERE workspace_id = ${workspaceId} AND id = ${control?.operationId ?? null}
+              ), observed_revision)
+            )
+          END,
           updated_at = now()
       WHERE workspace_id = ${workspaceId} AND id = ${observation.host.hostId}
     `;
@@ -767,6 +977,7 @@ interface ConnectionDbRow {
   credential_ref: string;
   provider_config: JsonRecord;
   status: ConnectionStatus;
+  authenticated_identity: string | null;
   status_detail: string | null;
   last_validated_at: Date | string | null;
   scopes: unknown[];
@@ -804,6 +1015,12 @@ interface HostDbRow {
   tunnel_status: JsonRecord;
   cost_signals: unknown[];
   quota_signals: unknown[];
+  host_generation: number;
+  desired_revision: number;
+  observed_revision: number;
+  runtime_release: WorkspaceHostRuntimeRelease | null;
+  controller_id: string | null;
+  controller_fence: number;
 }
 interface OperationDbRow {
   id: string;
@@ -818,6 +1035,9 @@ interface OperationDbRow {
   started_at: Date | string | null;
   finished_at: Date | string | null;
   updated_at: Date | string;
+  desired_revision: number | null;
+  controller_id: string | null;
+  controller_fence: number | null;
 }
 interface ResourceDbRow {
   host_id: string;
@@ -875,7 +1095,7 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
   return inWorkspace(workspaceId, tx, async (query) => {
     const connections = await query<ConnectionDbRow[]>`
       SELECT id, target, label, credential_ref, provider_config, status, status_detail, last_validated_at,
-             scopes, regions, sizes, images, networks, disk_price_per_gib_month
+             authenticated_identity, scopes, regions, sizes, images, networks, disk_price_per_gib_month
       FROM harness_shared.workspace_host_connections
       ORDER BY target, label, id
     `;
@@ -888,14 +1108,17 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
              -- leaves it alone.
              observed_at, created_at, endpoint, recoverability_kind, recoverability_label,
              recoverability_updated_at, health_status, health_attested_at, health_checks,
-             bootstrap_version, version_drift, tunnel_status, cost_signals, quota_signals
+             bootstrap_version, version_drift, tunnel_status, cost_signals, quota_signals,
+             host_generation, desired_revision, observed_revision, runtime_release,
+             controller_id, controller_fence
       FROM harness_shared.workspace_hosts
       ORDER BY updated_at DESC, id
     `;
     const operations = await query<OperationDbRow[]>`
       SELECT DISTINCT ON (host_id)
              id, host_id, action, status, percent, message, request, error,
-             created_at, started_at, finished_at, updated_at
+             created_at, started_at, finished_at, updated_at,
+             desired_revision, controller_id, controller_fence
       FROM harness_shared.workspace_host_operations
       ORDER BY host_id, updated_at DESC, id DESC
     `;
@@ -955,6 +1178,7 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
       target: row.target,
       label: row.label,
       status: row.status,
+      authenticatedIdentity: row.authenticated_identity ?? undefined,
       credentialRef: credentialReferenceDisplay(row.credential_ref),
       provider: row.provider_config,
       lastValidatedAt: iso(row.last_validated_at),
@@ -985,6 +1209,13 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
         estimatedMonthlyUsd: row.estimated_monthly_usd == null ? undefined : Number(row.estimated_monthly_usd),
         desiredState: row.desired_state,
         observedState: row.observed_state,
+        hostGeneration: row.host_generation,
+        desiredRevision: row.desired_revision,
+        observedRevision: row.observed_revision,
+        runtimeRelease: row.runtime_release ?? undefined,
+        controllerAuthority: row.controller_id
+          ? { controllerId: row.controller_id, fence: row.controller_fence }
+          : undefined,
         observedAt: iso(row.observed_at),
         provisionedAt: iso(row.created_at),
         providerResourceId:
@@ -1041,6 +1272,10 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
               message: operation.message,
               request: operation.request,
               error: operation.error,
+              desiredRevision: operation.desired_revision ?? undefined,
+              controllerAuthority: operation.controller_id
+                ? { controllerId: operation.controller_id, fence: operation.controller_fence }
+                : undefined,
               startedAt: iso(operation.started_at ?? operation.created_at),
               finishedAt: iso(operation.finished_at),
               events: (eventsByOperation.get(operation.id) ?? []).map((event) => ({

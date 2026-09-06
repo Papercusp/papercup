@@ -9,18 +9,21 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
+  WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   assertWorkspaceHostSecretIsolation,
   createWorkspaceHostManualDestroyReceipt,
   nextWorkspaceHostControllerAction,
   workspaceHostCanaryIdentityAudit,
   workspaceHostCanaryIdentityLabels,
   workspaceHostProviderRetryClass,
+  workspaceHostRuntimeRelease,
   WorkspaceHostLiveCanaryHarness,
   type WorkspaceHostApplyResult,
   type WorkspaceHostCanaryCompletionReceipt,
   type WorkspaceHostCanaryCostEvidence,
   type WorkspaceHostCanaryOrphanCensus,
   type WorkspaceHostContractApproval,
+  type WorkspaceHostControllerAuthority,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostDurableResourcePlan,
   type WorkspaceHostDurableWorkflowSpec,
@@ -35,6 +38,7 @@ import {
   type WorkspaceHostProviderContext,
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
+  type WorkspaceHostRuntimeRelease,
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
@@ -63,11 +67,34 @@ import {
 
 const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
+export const DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY: WorkspaceHostControllerAuthority = {
+  controllerId: 'papercusp-workspace-host-controller',
+  fence: 1,
+};
+
+export interface ControllerWorkspaceHostBootstrap {
+  script: string;
+  runtimeRelease: WorkspaceHostRuntimeRelease;
+}
+
+/** Resolve script and the closed signed-runtime identity from one trusted controller profile. */
+export async function resolveControllerWorkspaceHostBootstrap(
+  hostId: string,
+): Promise<ControllerWorkspaceHostBootstrap> {
+  const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
+  return {
+    script: renderWorkspaceHostProvisionBootstrap(hostId, profile),
+    runtimeRelease: workspaceHostRuntimeRelease(
+      profile.release,
+      WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+      profile.migrationId,
+    ),
+  };
+}
 
 /** Production host-bootstrap render: the controller's own trusted release and SSH public key. */
 export async function renderControllerWorkspaceHostBootstrap(hostId: string): Promise<string> {
-  const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
-  return renderWorkspaceHostProvisionBootstrap(hostId, profile);
+  return (await resolveControllerWorkspaceHostBootstrap(hostId)).script;
 }
 
 export class WorkspaceHostProvisioningRequestError extends Error {
@@ -152,6 +179,22 @@ const DEFAULT_STORE: WorkspaceHostProvisioningStore = {
   recordObservation: recordWorkspaceHostObservation,
 };
 
+function controllerStore(
+  store: WorkspaceHostProvisioningStore,
+  controllerAuthority: WorkspaceHostControllerAuthority,
+  operationId: string,
+): WorkspaceHostProvisioningStore {
+  return {
+    ...store,
+    beginOperation: (input) => store.beginOperation({ ...input, controllerAuthority }),
+    updateOperation: (input) => store.updateOperation({ ...input, controllerAuthority }),
+    upsertCheckpoint: (input) => store.upsertCheckpoint({ ...input, controllerAuthority }),
+    appendEvent: (input) => store.appendEvent({ ...input, controllerAuthority }),
+    recordObservation: (workspaceId, observation) =>
+      store.recordObservation(workspaceId, observation, { operationId, controllerAuthority }),
+  };
+}
+
 export interface RunWorkspaceHostProvisioningInput {
   workspaceId: string;
   connectionId: string;
@@ -163,6 +206,10 @@ export interface RunWorkspaceHostProvisioningInput {
   actorId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostProvisioningStore;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
+  desiredRevision?: number;
+  /** Test/adapter seam; production derives this from the same trusted profile as the script. */
+  runtimeRelease?: WorkspaceHostRuntimeRelease;
   /**
    * Test seam for the controller-authored host bootstrap. Production resolves the controller's
    * own trusted release and SSH public key; see `provision-bootstrap.ts`. Consulted only when the
@@ -728,12 +775,14 @@ async function observeAfterProvision(
 export async function runWorkspaceHostProvisioning(
   input: RunWorkspaceHostProvisioningInput,
 ): Promise<WorkspaceHostProvisioningResult> {
-  const store = input.store ?? DEFAULT_STORE;
   const workspaceId = nonEmpty(input.workspaceId, 'workspaceId');
   const connectionId = nonEmpty(input.connectionId, 'connectionId');
   const name = nonEmpty(input.name, 'name');
   const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
   const hostId = nonEmpty(input.desired.hostId, 'desired.hostId');
+  const controllerAuthority = input.controllerAuthority ?? DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY;
+  const desiredRevision = input.desiredRevision ?? 1;
+  const store = controllerStore(input.store ?? DEFAULT_STORE, controllerAuthority, operationId);
 
   const requestProblems: string[] = [];
   try {
@@ -770,10 +819,16 @@ export async function runWorkspaceHostProvisioning(
   // rendering for them would convert a controller misconfiguration into a refusal of a provision
   // that never needed the render at all.
   let hostBootstrapScript: string | undefined;
+  let runtimeRelease = input.runtimeRelease;
   if (input.provider.capabilities.lifecycle.hostBootstrap) {
-    const render = input.renderHostBootstrap ?? renderControllerWorkspaceHostBootstrap;
     try {
-      hostBootstrapScript = await render(hostId);
+      if (input.renderHostBootstrap) {
+        hostBootstrapScript = await input.renderHostBootstrap(hostId);
+      } else {
+        const resolved = await resolveControllerWorkspaceHostBootstrap(hostId);
+        hostBootstrapScript = resolved.script;
+        runtimeRelease = resolved.runtimeRelease;
+      }
     } catch (error) {
       throw new WorkspaceHostProvisioningRequestError([message(error)]);
     }
@@ -831,6 +886,11 @@ export async function runWorkspaceHostProvisioning(
       desiredState: 'provisioning',
       observedState: 'provisioning',
       desiredSpec: input.desired,
+      hostGeneration: 1,
+      desiredRevision,
+      observedRevision: 0,
+      ...(runtimeRelease ? { runtimeRelease } : {}),
+      controllerAuthority,
     });
   }
 
@@ -842,6 +902,7 @@ export async function runWorkspaceHostProvisioning(
     status: 'running',
     message: 'Workspace-host provisioning started',
     request: { connectionId, name, desired: input.desired },
+    desiredRevision,
   });
 
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
