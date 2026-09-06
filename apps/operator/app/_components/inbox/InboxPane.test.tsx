@@ -85,6 +85,8 @@ vi.mock("@/app/admin/plans/PlanOtherList", () => ({
     onNavigate,
     actionsPlacement,
     metadataPlacement,
+    whyPlacement,
+    bodyPresentation,
   }: {
     item: { id: string };
     onDiscuss?: (i: unknown) => boolean;
@@ -92,12 +94,16 @@ vi.mock("@/app/admin/plans/PlanOtherList", () => ({
     onNavigate?: (i: unknown, actionId: "open" | "message-owner") => boolean;
     actionsPlacement?: "toolbar" | "after-body";
     metadataPlacement?: "toolbar" | "host";
+    whyPlacement?: "card" | "host";
+    bodyPresentation?: "plain" | "item-open";
   }) => (
     <div
       data-testid="other-detail"
       data-item={item.id}
       data-actions-placement={actionsPlacement}
       data-metadata-placement={metadataPlacement}
+      data-why-placement={whyPlacement}
+      data-body-presentation={bodyPresentation}
     >
       <button
         type="button"
@@ -855,7 +861,7 @@ describe("<InboxPane>", () => {
   });
 
   /* ── The detail pane (inbox-three-column-resolver-states-2026-09-06 P-008 / D-003) ── */
-  it("split with a selection: the aside leads with the item's title as its heading + a meta line, the six chips re-homed as a labelled rail beside the body, and OtherDetail's own chips suppressed", () => {
+  it("split with a selection: eyebrow, title, id-first reporter meta and why pill lead the hosted card; the six facts occupy the rail", () => {
     seedAttention([
       mkItem("d1"),
       mkItem("d2", {
@@ -863,6 +869,7 @@ describe("<InboxPane>", () => {
         kind: "coord-escalation",
         planSlug: "plan-x",
         category: "deploy",
+        authorizer: "you",
         whyGated: "protected",
         importance: "high",
         occurredAt: new Date(Date.now() - 5 * 60_000).toISOString(),
@@ -872,30 +879,35 @@ describe("<InboxPane>", () => {
     const aside = screen.getByTestId("inbox-aside");
     const expanded = screen.getByTestId("inbox-expanded-d2");
     const head = screen.getByTestId("inbox-detail-head");
+    const eyebrow = screen.getByTestId("inbox-detail-eyebrow");
     const detail = screen.getByTestId("other-detail");
     const rail = screen.getByTestId("inbox-detail-rail");
     expect(aside.contains(head)).toBe(true);
-    // The heading IS the item's title — the pane's one h2 (pre-P-008 the
-    // detail rendered no heading element at all; the carried check).
+    expect(screen.getByTestId("inbox-detail-eyebrow-tier").textContent).toBe(
+      "Decisions",
+    );
+    expect(screen.getByTestId("inbox-detail-eyebrow-category").textContent).toBe(
+      "deploy",
+    );
+    expect(eyebrow.textContent).toBe("Decisions·deploy");
+    // The heading IS the item's title — the pane's one h2.
     const h2 = screen.getByTestId("inbox-detail-title");
     expect(h2.tagName).toBe("H2");
     expect(h2.textContent).toBe("Approve the key rotation");
     expect(expanded.querySelectorAll("h1,h2,h3,h4,h5")).toHaveLength(1);
-    // Meta line: kind · owner · plan-or-harness · when.
-    expect(screen.getByTestId("inbox-detail-meta-kind").textContent).toBe(
-      "escalation",
-    );
+    // Meta line: item id first, then the explicit reporter phrase and age.
+    expect(screen.getByTestId("inbox-detail-meta-id").textContent).toBe("d2");
     expect(screen.getByTestId("inbox-detail-meta-owner").textContent).toBe(
-      "su · su-abc",
-    );
-    expect(screen.getByTestId("inbox-detail-meta-where").textContent).toBe(
-      "plan-x",
+      "reported by su · su-abc",
     );
     const when = screen.getByTestId("inbox-detail-meta-when");
     expect(when.textContent).toBe("5m");
     expect(when.querySelector("time")?.getAttribute("datetime")).toBeTruthy();
     expect(when.querySelector("time")?.getAttribute("title")).toBeTruthy();
-    // Source order head → card → rail; the grid places them.
+    const why = screen.getByTestId("inbox-detail-why");
+    expect(why.textContent).toBe("●needs you · protected category — your call by right");
+    // Eyebrow → title → meta → why, then head → card → rail.
+    expect(Array.from(head.children)).toEqual([eyebrow, h2, screen.getByTestId("inbox-detail-meta"), why]);
     const kids = Array.from(expanded.children);
     expect(kids.indexOf(head)).toBeLessThan(kids.indexOf(detail));
     expect(kids.indexOf(detail)).toBeLessThan(kids.indexOf(rail));
@@ -929,6 +941,8 @@ describe("<InboxPane>", () => {
     );
     // OtherDetail is told the host owns the metadata — no second chip row.
     expect(detail.getAttribute("data-metadata-placement")).toBe("host");
+    expect(detail.getAttribute("data-why-placement")).toBe("host");
+    expect(detail.getAttribute("data-body-presentation")).toBe("item-open");
   });
 
   it("split meta line and rail omit what the item lacks — no blank segments, no Category/Harness rows", () => {
@@ -943,11 +957,12 @@ describe("<InboxPane>", () => {
     ]);
     renderPane("?opcis=d2", { layout: "split" });
     expect(screen.getByTestId("inbox-detail-meta").textContent).toBe(
-      "message",
+      "d2",
     );
     expect(screen.queryByTestId("inbox-detail-meta-owner")).toBeNull();
-    expect(screen.queryByTestId("inbox-detail-meta-where")).toBeNull();
     expect(screen.queryByTestId("inbox-detail-meta-when")).toBeNull();
+    expect(screen.queryByTestId("inbox-detail-eyebrow-category")).toBeNull();
+    expect(screen.queryByTestId("inbox-detail-why")).toBeNull();
     const rows = Array.from(
       screen
         .getByTestId("inbox-detail-rail")
@@ -965,6 +980,12 @@ describe("<InboxPane>", () => {
     expect(
       screen.getByTestId("other-detail").getAttribute("data-metadata-placement"),
     ).toBe("toolbar");
+    expect(
+      screen.getByTestId("other-detail").getAttribute("data-why-placement"),
+    ).toBe("card");
+    expect(
+      screen.getByTestId("other-detail").getAttribute("data-body-presentation"),
+    ).toBe("plain");
   });
 
   /* ── One total in the list column (inbox-three-column-resolver-states-2026-09-06 P-009) ──

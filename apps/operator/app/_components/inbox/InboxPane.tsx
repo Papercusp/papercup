@@ -78,6 +78,7 @@ import {
 import { Select } from "@/app/harness/Select";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { OtherDetail, KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
+import { whyLine } from "@/app/admin/plans/queue-authorizer";
 import {
   TIER_LABEL,
   type AttentionActionId,
@@ -101,6 +102,7 @@ import {
 } from "./use-inbox-bulk-run";
 import { attentionWorkItemId } from "./attention-work-item-ref";
 import { useFlag } from "@/lib/flag-hooks";
+import { useLexicon } from "@/lib/useLexicon";
 import { FLAGS } from "@papercusp/flags";
 import SessionChatModal from "../chat/SessionChatModal";
 import {
@@ -385,20 +387,21 @@ function InboxExpandedDetail({
  * The detail pane's head — split mode only (inbox-three-column-resolver-states
  * P-008 / D-003). Measured live 2026-09-05: the aside rendered OtherDetail's
  * chips, why-line and body with NO heading, so the selected item's title
- * appeared nowhere in the pane. This puts the title first as the pane's h2,
- * then one meta line: kind · owner · plan-or-harness · when. Each segment is
- * omitted when the item lacks it, never rendered as a blank.
+ * appeared nowhere in the pane. This follows the accepted item-open frame:
+ * tier/category eyebrow, title, id-first reporter meta, then the reason this
+ * item needs the owner as a pill. Missing optional segments are omitted.
  */
 function InboxDetailHead({ item }: { item: AttentionItem }) {
+  const t = useLexicon();
   const rel = formatRelativeDate(item.occurredAt);
   const abs = formatAbsoluteDate(item.occurredAt);
   const owner = item.ownerLabel ?? item.ownerAgentId;
-  const where = item.planSlug ?? item.harnessSlug;
+  const displayId = attentionWorkItemId(item) ?? item.itemRef ?? item.id;
+  const why = whyLine(item, t);
   const segments: Array<{ key: string; node: ReactNode }> = [
-    { key: "kind", node: KIND_LABEL[item.kind] ?? item.kind },
+    { key: "id", node: displayId },
   ];
-  if (owner) segments.push({ key: "owner", node: owner });
-  if (where) segments.push({ key: "where", node: where });
+  if (owner) segments.push({ key: "owner", node: <>reported by {owner}</> });
   if (rel) {
     segments.push({
       key: "when",
@@ -411,6 +414,19 @@ function InboxDetailHead({ item }: { item: AttentionItem }) {
   }
   return (
     <header className="op-inbox__detail-head" data-testid="inbox-detail-head">
+      <p className="op-inbox__detail-eyebrow" data-testid="inbox-detail-eyebrow">
+        <strong data-testid="inbox-detail-eyebrow-tier">
+          {TIER_LABEL[item.tier] ?? item.tier}
+        </strong>
+        {item.category ? (
+          <>
+            <span className="op-inbox__detail-eyebrow-sep" aria-hidden="true">
+              ·
+            </span>
+            <span data-testid="inbox-detail-eyebrow-category">{item.category}</span>
+          </>
+        ) : null}
+      </p>
       <h2 className="op-inbox__detail-title" data-testid="inbox-detail-title">
         {item.title}
       </h2>
@@ -426,6 +442,12 @@ function InboxDetailHead({ item }: { item: AttentionItem }) {
           </Fragment>
         ))}
       </p>
+      {why ? (
+        <span className="op-inbox__detail-why" data-testid="inbox-detail-why">
+          <span aria-hidden="true">●</span>
+          {why}
+        </span>
+      ) : null}
     </header>
   );
 }
@@ -891,6 +913,8 @@ export default function InboxPane({
           item={i}
           actionsPlacement="after-body"
           metadataPlacement={split ? "host" : "toolbar"}
+          whyPlacement={split ? "host" : "card"}
+          bodyPresentation={split ? "item-open" : "plain"}
           onResolved={onResolved}
           onDiscuss={onDiscuss}
           onNavigate={onNavigate}

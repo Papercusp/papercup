@@ -1,17 +1,17 @@
 /**
  * WI-3519 regression — the fast-orphan reap branch must NOT cancel healthy
- * BACKLOGGED fires (proven against real PG).
+ * BACKLOGGED fires (proven against real PG) when liveness is inferred from
+ * workflow_status siblings.
  *
- * THE BUG (2026-07-09, plan p2p-git-live-activation-2026-07-09 P-002): in this
- * DBOS version `dbos.workflow_queue` holds no rows even for never-dequeued
- * ENQUEUED workflows, so the fast-orphan branch's "no live queue row" guard is
- * vacuous. Under queue-slot starvation (routines-critical concurrency=2, two
- * slow fires under host CPU pressure) every git-sync fire waiting >10min was
- * cancelled+requeued each 2-min sweep (oddsmith reaped_count hit 114) — the
- * WI-1415 "firing but not committing" flap, reintroduced by the reaper itself.
+ * THE BUG (2026-09-06): the deployed DBOS schema does not provide a queue-row
+ * relation, so any direct dependency on it aborts the entire reap pass before
+ * workflow_status liveness can be evaluated. Under queue-slot starvation
+ * (routines-critical concurrency=2, two slow fires under host CPU pressure)
+ * every git-sync fire waiting >10min must remain protected by live workflow_status
+ * siblings and explicit deadlines rather than a missing optional relation.
  *
  * THE PROPERTY proven here: an over-window ENQUEUED routineFire is reaped ONLY
- * when its QUEUE is dead — no sibling on the same queue_name either actively
+ * when its workflow_status queue is dead — no sibling on the same queue_name either actively
  * PENDING (recent updated_at) or recently drained to SUCCESS/ERROR. A healthy
  * backlog behind live workers is left alone; the reaper's own CANCELLED rows do
  * not count as liveness (they must not self-mask a genuinely wedged queue).
@@ -60,12 +60,6 @@ beforeAll(async () => {
       workflow_uuid TEXT NOT NULL,
       function_id INT NOT NULL
     )`;
-  await sql`
-    CREATE TABLE IF NOT EXISTS dbos.workflow_queue (
-      workflow_uuid TEXT NOT NULL,
-      executor_id TEXT,
-      completed_at_epoch_ms BIGINT
-    )`;
 });
 afterAll(async () => {
   await org?.cleanup();
@@ -73,7 +67,6 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`DELETE FROM dbos.workflow_status`;
   await sql`DELETE FROM dbos.operation_outputs`;
-  await sql`DELETE FROM dbos.workflow_queue`;
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS}`;
 });
 
@@ -108,7 +101,7 @@ async function seedRoutine(id: string): Promise<void> {
     VALUES (${id}, ${HARNESS}, 'git-sync', 'cron', '{}'::jsonb, 'su', TRUE, ${WS}, '{}'::jsonb)`;
 }
 
-/** The over-orphan-window ENQUEUED fire under test (no op outputs, no queue row). */
+/** The over-orphan-window ENQUEUED fire under test (no op outputs, no live sibling). */
 async function seedBackloggedTarget(queue: string, routineId: string): Promise<string> {
   const uuid = `wf-target-${queue}`;
   await seedWf({
@@ -139,7 +132,7 @@ async function routineMeta(id: string): Promise<Record<string, unknown> | null> 
   return r[0]?.metadata ?? null;
 }
 
-describe('fast-orphan reap requires a DEAD queue (WI-3519, real PG)', () => {
+describe('fast-orphan reap requires no live workflow_status sibling (WI-3519, real PG)', () => {
   it('leaves a backlogged ENQUEUED fire alone while a sibling PENDING worker is live on the queue', async () => {
     const target = await seedBackloggedTarget('q-live-pending', 'rt-live-pending');
     // The healthy-but-slow worker occupying a concurrency slot (recent updated_at).

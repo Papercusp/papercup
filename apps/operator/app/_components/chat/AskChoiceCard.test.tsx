@@ -79,6 +79,17 @@ describe('AskChoiceCard', () => {
     expect(container.querySelector('.ask-choice-report')).toBeNull();
   });
 
+  it('lets an opted-in host render structured question content without changing the default', () => {
+    const { container } = render(
+      <AskChoiceCard
+        args={args}
+        renderQuestion={(question) => <strong data-testid="rich-question">Rich: {question}</strong>}
+      />,
+    );
+    expect(screen.getByTestId('rich-question').textContent).toBe('Rich: Pick one');
+    expect(container.querySelector('.ask-choice-question')?.tagName).toBe('DIV');
+  });
+
   it('single-select: Skip link renders when allowDecline (default) and fires decline', () => {
     const onResponse = vi.fn();
     render(<AskChoiceCard args={args} onResponse={onResponse} />);

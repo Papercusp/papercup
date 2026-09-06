@@ -43,7 +43,6 @@ describe('reapDeadExecutorWorkflows', () => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) return [{ workflow_uuid: 'sched-.routinesTick-old' }];
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
 
@@ -51,7 +50,7 @@ describe('reapDeadExecutorWorkflows', () => {
 
     expect(res).toEqual({
       cancelled: 1,
-      queuePurged: 1,
+      queuePurged: 0,
       requeuedRoutineIds: [],
       deadExecutorIds: [],
       staleWorkflowIds: ['sched-.routinesTick-old'],
@@ -72,7 +71,6 @@ describe('reapDeadExecutorWorkflows', () => {
         return [{ workflow_uuid: 'sched-.routineFire-no-step', requeue_routine_id: 'rt_scout' }];
       }
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
       if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
@@ -105,7 +103,6 @@ describe('reapDeadExecutorWorkflows', () => {
         ];
       }
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 2 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
       if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
@@ -139,14 +136,13 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(thresholdSpan).toBeGreaterThanOrEqual(20 * 60 * 1000);
   });
 
-  it('fast-reaps orphaned no-output routineFire rows that have no live queue row', async () => {
+  it('fast-reaps orphaned no-output routineFire rows that have no live workflow_status sibling', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) {
         return [{ workflow_uuid: 'sched-.routineFire-orphaned-before-first-step', requeue_routine_id: 'rt_scout' }];
       }
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
       if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
@@ -157,8 +153,7 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(res.staleWorkflowIds).toEqual(['sched-.routineFire-orphaned-before-first-step']);
     expect(res.requeuedRoutineIds).toEqual(['rt_scout']);
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
-    expect(staleSelect.text).toContain('FROM dbos.workflow_queue q');
-    expect(staleSelect.text).toContain('q.completed_at_epoch_ms IS NULL');
+    expect(staleSelect.text).not.toContain('workflow_queue');
     expect(staleSelect.text).toContain('op.function_id > 0');
 
     const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
@@ -166,7 +161,7 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(createdAtChecks).toBeGreaterThanOrEqual(4);
   });
 
-  it('WI-1416: the fast-orphan path is ENQUEUED-only — a PENDING fire with no queue row is EXECUTING, not orphaned (queue rows vanish at dequeue)', async () => {
+  it('WI-1416: the fast-orphan path is ENQUEUED-only — a PENDING fire is left to the long liveness windows', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) return [];
@@ -176,11 +171,9 @@ describe('reapDeadExecutorWorkflows', () => {
     await reapDeadExecutorWorkflows(sql);
 
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
-    // Both the requeue CASE and the WHERE restrict the no-queue-row heuristic to
-    // ENQUEUED rows — the state that IS anomalous under the corrected semantics.
-    // (Verified live 2026-07-01: DBOS deletes the queue row at DEQUEUE, so every
-    // healthy executing PENDING fire has no queue row; the old unrestricted 90s fast
-    // path reaped every fire whose first step outlived 90s — the WI-1415 loop.)
+    // Both the requeue CASE and the WHERE restrict the fast orphan heuristic to
+    // ENQUEUED rows. PENDING fires are left to the long no-output window, explicit
+    // deadline, or dead-executor path.
     const enqueuedGuards = staleSelect.text.match(/status = 'ENQUEUED'/g) ?? [];
     expect(enqueuedGuards.length).toBe(2);
     // …and each guard rides its OWN longer orphan window, not the 90s scheduler one.
@@ -197,7 +190,6 @@ describe('reapDeadExecutorWorkflows', () => {
         return [{ workflow_uuid: 'sched-.routineFire-gitsync', requeue_routine_id: 'rt_gitsync' }];
       }
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
       if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
@@ -230,7 +222,6 @@ describe('reapDeadExecutorWorkflows', () => {
         ];
       }
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 3 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
       if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
@@ -247,17 +238,15 @@ describe('reapDeadExecutorWorkflows', () => {
     const { sql } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [{ executor_id: 'dead-exec' }];
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('executor_id = ANY')) return { count: 2 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('executor_id = ANY')) return { count: 2 };
       if (text.includes('SELECT workflow_uuid')) return [{ workflow_uuid: 'expired-fire', requeue_routine_id: null }];
       if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-      if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 1 };
       throw new Error(`unexpected query: ${text}`);
     });
 
     const res = await reapDeadExecutorWorkflows(sql);
 
     expect(res.cancelled).toBe(3);
-    expect(res.queuePurged).toBe(3);
+    expect(res.queuePurged).toBe(0);
     expect(res.requeuedRoutineIds).toEqual([]);
     expect(res.deadExecutorIds).toEqual(['dead-exec']);
     expect(res.staleWorkflowIds).toEqual(['expired-fire']);
@@ -288,8 +277,6 @@ describe('reapDeadExecutorWorkflows', () => {
           return [{ workflow_uuid: 'sched-.routineFire-restart-orphan', requeue_routine_id: 'rt_papercusp_git_sync' }];
         }
         if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-        if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY'))
-          return { count: 0 };
         if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
         throw new Error(`unexpected query: ${text}`);
       });

@@ -57,6 +57,9 @@ export interface AskChoiceCardProps {
   hideOptions?: boolean;
   expired?: boolean;
   renderReport?: ReportRenderer;
+  /** Host-owned rich presentation for the question text. The default stays a
+   *  plain paragraph; opted-in hosts may return structured inline/block DOM. */
+  renderQuestion?: (question: string) => ReactNode;
 }
 
 export function AskChoiceCard({
@@ -69,6 +72,7 @@ export function AskChoiceCard({
   hideOptions = false,
   expired = false,
   renderReport,
+  renderQuestion,
 }: AskChoiceCardProps): ReactNode {
   const questionId = `ask-${args.question.slice(0, 16).replace(/\s+/g, '-')}`;
   const isAnswered = Boolean(answered);
@@ -106,7 +110,13 @@ export function AskChoiceCard({
       data-expired={isExpired ? 'true' : 'false'}
     >
       <div className="ask-choice-head">
-        <p id={questionId} className="ask-choice-question">{args.question}</p>
+        {renderQuestion ? (
+          <div id={questionId} className="ask-choice-question">
+            {renderQuestion(args.question)}
+          </div>
+        ) : (
+          <p id={questionId} className="ask-choice-question">{args.question}</p>
+        )}
         {isExpired ? (
           <p className="ask-choice-expired" role="status">Expired — this question is no longer open.</p>
         ) : answered?.declined ? (

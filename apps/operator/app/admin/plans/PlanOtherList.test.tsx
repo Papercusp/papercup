@@ -233,6 +233,62 @@ describe('OtherDetail — host action placement', () => {
   });
 });
 
+describe('OtherDetail — host why-line placement', () => {
+  const needsOwner = () => item({ authorizer: 'you', whyGated: 'owner-only' });
+
+  it('keeps the why-line in the shared card by default', () => {
+    render(<OtherDetail item={needsOwner()} onResolved={() => {}} />);
+    expect(document.querySelector('.pc-items__why-line')?.textContent).toBe(
+      'needs you · your ratification',
+    );
+  });
+
+  it('omits the duplicate when a host renders the why-line in its own head', () => {
+    render(<OtherDetail item={needsOwner()} whyPlacement="host" onResolved={() => {}} />);
+    expect(document.querySelector('.pc-items__why-line')).toBeNull();
+  });
+});
+
+describe('OtherDetail — item-open body presentation', () => {
+  it('preserves paragraphs, marks inline tokens as code, and renders structured trailing facts', () => {
+    render(
+      <OtherDetail
+        item={item({
+          body: [
+            'Call `plans:migrate-acceptance-bars`; server-side tools:invoke dispatch is required.',
+            'The second paragraph stays separate.',
+            'Tool: plans:migrate-acceptance-bars\nClear server mismatch: true',
+          ].join('\n\n'),
+        })}
+        bodyPresentation="item-open"
+        onResolved={() => {}}
+      />,
+    );
+    const copy = screen.getByTestId('inbox-detail-body-copy');
+    expect(copy.querySelectorAll(':scope > p')).toHaveLength(2);
+    expect(Array.from(copy.querySelectorAll('code')).map((node) => node.textContent)).toEqual([
+      'plans:migrate-acceptance-bars',
+      'tools:invoke',
+      'plans:migrate-acceptance-bars',
+    ]);
+    const facts = screen.getByTestId('inbox-detail-facts');
+    expect(Array.from(facts.querySelectorAll('dt')).map((node) => node.textContent)).toEqual([
+      'Tool',
+      'Clear server mismatch',
+    ]);
+    expect(Array.from(facts.querySelectorAll('dd')).map((node) => node.textContent)).toEqual([
+      'plans:migrate-acceptance-bars',
+      'true',
+    ]);
+  });
+
+  it('keeps the shared plain-text question presentation by default', () => {
+    render(<OtherDetail item={item({ body: 'Use tools:invoke.' })} onResolved={() => {}} />);
+    expect(document.querySelector('.ask-choice-question')?.tagName).toBe('P');
+    expect(screen.queryByTestId('inbox-detail-body-copy')).toBeNull();
+  });
+});
+
 /* ── inbox-three-column-resolver-states-2026-09-06 P-008 / D-003 ────────────
    The Resolution Inbox's split-page aside re-homes the card's six chips as a
    labelled metadata rail beside the body, so it asks the card NOT to render

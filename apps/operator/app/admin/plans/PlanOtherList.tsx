@@ -25,7 +25,7 @@
  * dispatch through `resolveAttentionAction`.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
@@ -70,6 +70,56 @@ export const KIND_LABEL: Record<AttentionKind, string> = {
   'work-item-blocked': 'blocked work',
   'decision-owed': 'decision owed',
 };
+
+const INLINE_DETAIL_TOKEN = /(`[^`]+`|\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_.-]*\b)/gi;
+const COLON_FORM_TOKEN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_.-]*$/i;
+const DETAIL_FACT = /^([A-Z][A-Za-z0-9 /_-]{0,48}):\s+(.+)$/;
+
+/** The accepted item-open body grammar: prose paragraphs, inline tool/token
+ *  code, then any structured `Label: value` tail as real definition rows. */
+function inlineDetailText(text: string, keyPrefix: string): ReactNode[] {
+  return text.split(INLINE_DETAIL_TOKEN).map((part, index) => {
+    const backticked = part.length >= 2 && part.startsWith('`') && part.endsWith('`');
+    const value = backticked ? part.slice(1, -1) : part;
+    return backticked || COLON_FORM_TOKEN.test(value)
+      ? <code key={`${keyPrefix}-${index}`}>{value}</code>
+      : part;
+  });
+}
+
+function ItemOpenBody({ body }: { body: string }) {
+  const blocks = body.trim().split(/\n\s*\n/).filter(Boolean);
+  return (
+    <div className="op-inbox__detail-copy" data-testid="inbox-detail-body-copy">
+      {blocks.map((block, blockIndex) => {
+        const lines = block.split('\n').map((line) => line.trim()).filter(Boolean);
+        const facts = lines.map((line) => DETAIL_FACT.exec(line));
+        if (facts.length > 0 && facts.every(Boolean)) {
+          return (
+            <dl className="op-inbox__detail-facts" data-testid="inbox-detail-facts" key={`facts-${blockIndex}`}>
+              {facts.map((fact, factIndex) => (
+                <div className="op-inbox__detail-fact" key={`${fact![1]}-${factIndex}`}>
+                  <dt>{fact![1]}</dt>
+                  <dd>{inlineDetailText(fact![2]!, `fact-${blockIndex}-${factIndex}`)}</dd>
+                </div>
+              ))}
+            </dl>
+          );
+        }
+        return (
+          <p key={`paragraph-${blockIndex}`}>
+            {lines.map((line, lineIndex) => (
+              <Fragment key={`line-${blockIndex}-${lineIndex}`}>
+                {lineIndex > 0 ? <br /> : null}
+                {inlineDetailText(line, `paragraph-${blockIndex}-${lineIndex}`)}
+              </Fragment>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 
 // A1 grouping helpers (byAuthorizer / whyLine / planSections / DisplaySection)
 // live in ./queue-authorizer so they're unit-testable without this component's
@@ -457,6 +507,8 @@ export function OtherDetail({
   onNavigate,
   actionsPlacement = 'toolbar',
   metadataPlacement = 'toolbar',
+  whyPlacement = 'card',
+  bodyPresentation = 'plain',
 }: {
   item: AttentionItem | null;
   onResolved: () => void;
@@ -480,6 +532,13 @@ export function OtherDetail({
    *  P-008 / D-003), so the bar is omitted here rather than shown twice.
    *  Toolbar-placed actions are unaffected — the bar still renders for them. */
   metadataPlacement?: 'toolbar' | 'host';
+  /** Where the why-this-needs-you line renders. `card` is the Queue/stack
+   *  default. `host` lets the split Resolution Inbox place the same text in
+   *  its item-open head without duplicating it inside the shared card. */
+  whyPlacement?: 'card' | 'host';
+  /** `item-open` applies the accepted Resolution Inbox body grammar. Other
+   *  hosts retain the shared card's plain-text question presentation. */
+  bodyPresentation?: 'plain' | 'item-open';
 }) {
   // The row arrives from the SLIMMED list feed (body clipped, `actions` dropped
   // — slim-plans-attention-sync-payload-2026-07-26 P-003), so the detail pane
@@ -635,7 +694,7 @@ export function OtherDetail({
       {/* A1 (P-005): the "why it's here" line — who must sign off + why. The
           autonomy-policy deep-link for queen-eligible items is gone with the tier
           flag it was gated on (P-068/D-098). */}
-      {why ? (
+      {why && whyPlacement === 'card' ? (
         <div className="pc-items__why-line pc-queue__intro" style={{ margin: '4px 14px 0' }}>
           {why}
         </div>
@@ -655,6 +714,9 @@ export function OtherDetail({
           answered={answered}
           allowDecline={false}
           hideOptions
+          renderQuestion={bodyPresentation === 'item-open'
+            ? (question) => <ItemOpenBody body={question} />
+            : undefined}
           onResponse={(r) => void onResponse(r)}
         />
         {actionsPlacement === 'after-body' ? actions : null}
