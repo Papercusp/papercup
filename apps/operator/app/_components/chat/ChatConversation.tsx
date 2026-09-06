@@ -821,23 +821,25 @@ export function ChatConversation(props: ChatConversationProps) {
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
   useEffect(() => { fetchInFlightRef.current = !!loadingEarlier; }, [loadingEarlier]);
+  const requestEarlier = useCallback(() => {
+    if (!onLoadEarlier || !hasMoreEarlier || fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+    onLoadEarlier();
+  }, [onLoadEarlier, hasMoreEarlier]);
   useEffect(() => {
-    if (!onLoadEarlier) return;
+    if (!requestEarlier) return;
     const el = topSentinelRef.current;
     if (!el) return;
     const obs = new IntersectionObserver((entries) => {
       for (const e of entries) {
         if (!e.isIntersecting) continue;
         if (!userScrolledRef.current) continue;
-        if (!hasMoreEarlier) continue;
-        if (fetchInFlightRef.current) continue;
-        fetchInFlightRef.current = true;
-        onLoadEarlier();
+        requestEarlier();
       }
     }, { root: scrollerRef.current ?? null, rootMargin: '120px 0px 0px 0px' });
     obs.observe(el);
     return () => obs.disconnect();
-  }, [onLoadEarlier, hasMoreEarlier]);
+  }, [requestEarlier]);
 
   const InputIconComp = inputIcon ?? emptyState.icon;
   const EmptyIconComp = emptyState.icon;
@@ -1151,9 +1153,16 @@ export function ChatConversation(props: ChatConversationProps) {
         {onLoadEarlier && messages.length > 0 && (
           <>
             <div ref={topSentinelRef} aria-hidden="true" style={{ height: 1 }} />
-            {hasMoreEarlier && loadingEarlier && (
+            {hasMoreEarlier && (
               <div className="oracle-load-earlier" aria-live="polite">
-                <span>Loading earlier…</span>
+                <button
+                  type="button"
+                  className="pc-button oracle-load-earlier-button"
+                  onClick={requestEarlier}
+                  disabled={loadingEarlier}
+                >
+                  {loadingEarlier ? 'Loading earlier…' : 'Load earlier messages'}
+                </button>
               </div>
             )}
             {!hasMoreEarlier && (

@@ -490,8 +490,20 @@ describe('ChatConversation', () => {
     renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: false });
     expect(screen.getByText('Beginning of conversation')).toBeTruthy();
     cleanup();
+    renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: true });
+    expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeTruthy();
+    cleanup();
     renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: true, loadingEarlier: true });
     expect(screen.getByText('Loading earlier…')).toBeTruthy();
+  });
+
+  it('guards the manual load-earlier action against synchronous double clicks', () => {
+    const onLoadEarlier = vi.fn();
+    renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier, hasMoreEarlier: true });
+    const button = screen.getByRole('button', { name: 'Load earlier messages' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -618,11 +618,6 @@ describe('SessionChatModal', () => {
   });
 
   it('loads and prepends older stable-owner pages until the beginning of retained history', async () => {
-    const observerCallbacks: IntersectionObserverCallback[] = [];
-    vi.stubGlobal('IntersectionObserver', class {
-      constructor(callback: IntersectionObserverCallback) { observerCallbacks.push(callback); }
-      observe() {} unobserve() {} disconnect() {}
-    });
     fetchMock.mockImplementation(async (input: string | URL | Request) => {
       const url = String(input);
       const body = url.includes('historyPage=1')
@@ -649,22 +644,10 @@ describe('SessionChatModal', () => {
     });
     const conversation = within(screen.getByTestId('session-chat-conversation'));
     expect(await conversation.findByText('current epoch question')).toBeTruthy();
-    // Drop the observer created while hasMore=false. The history event changes
-    // the callback's cursor/hasMore closure and therefore creates a fresh one;
-    // firing the stale callback would correctly do nothing.
-    observerCallbacks.length = 0;
     act(() => {
       captured!.handlers.history!(JSON.stringify({ hasMore: true, cursor: 'page-2' }));
     });
-
-    const region = await screen.findByRole('region', { name: 'Conversation messages' });
-    await waitFor(() => expect(observerCallbacks.length).toBeGreaterThan(0));
-    fireEvent.scroll(region);
-    act(() => {
-      for (const callback of observerCallbacks) {
-        callback([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
-      }
-    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Load earlier messages' }));
 
     expect(await conversation.findByText('prior epoch question')).toBeTruthy();
     expect(conversation.getByText('current epoch question')).toBeTruthy();
