@@ -35,6 +35,7 @@ const INSTALL_DOOR_SITES = [
   'install-recipe.ts',
   'install-rubric.ts',
   'install-template.ts',
+  'install-theme.ts',
 ] as const;
 
 function doorsOnDisk(): string[] {
@@ -70,9 +71,19 @@ describe('install door coverage', () => {
    * way and its control caught it. This assertion also used to check only that
    * the `if (!gate.ok)` branch EXISTED, which passed for a branch with no
    * `return` in it at all.
+   *
+   * TWO refusal SHAPES are accepted, because both refuse correctly:
+   *   braced     `if (!gate.ok) { ... return ...; }`
+   *   braceless  `if (!gate.ok) return ...;`   ← install-theme.ts
+   * Matching only the braced shape made this guard report a FALSE POSITIVE: a
+   * braceless early return is the stricter form (it cannot fall through at
+   * all), yet it was named as a non-refusing door. The braceless arm still
+   * demands `return` as the very next token, so `if (!gate.ok) logRefusal(x);`
+   * — braceless AND non-refusing — stays caught; the control below pins both
+   * directions of both shapes.
    */
   const refusesOnGateRefusal = (source: string): boolean =>
-    /if\s*\(!gate\.ok\)\s*\{[^{}]{0,400}?return\s/.test(source);
+    /if\s*\(!gate\.ok\)\s*(?:\{[^{}]{0,400}?return\s|return\s)/.test(source);
 
   it('every install door REFUSES on a gate refusal rather than continuing', () => {
     // Calling the gate and ignoring its verdict would satisfy the check above
@@ -102,7 +113,23 @@ describe('install door coverage', () => {
       }
       return text({ ok: true });
     `;
+    // The braceless shape, both directions. A refusing braceless door is the
+    // STRICTER form and must pass; a braceless branch that merely logs must
+    // still be caught, or widening the predicate would have bought a pass for
+    // exactly the defect this guard exists to find.
+    const honoursVerdictBraceless = `
+      const gate = await gateInstallDoor(req);
+      if (!gate.ok) return text({ ok: false, error: gate.code });
+      return text({ ok: true });
+    `;
+    const ignoresVerdictBraceless = `
+      const gate = await gateInstallDoor(req);
+      if (!gate.ok) logRefusal(gate.code);
+      return text({ ok: true });
+    `;
     expect(refusesOnGateRefusal(ignoresVerdict)).toBe(false);
     expect(refusesOnGateRefusal(honoursVerdict)).toBe(true);
+    expect(refusesOnGateRefusal(ignoresVerdictBraceless)).toBe(false);
+    expect(refusesOnGateRefusal(honoursVerdictBraceless)).toBe(true);
   });
 });

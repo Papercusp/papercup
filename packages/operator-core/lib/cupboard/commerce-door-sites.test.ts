@@ -76,7 +76,16 @@ describe('commerce door coverage', () => {
     // reports a door that merely LOGS the refusal as compliant. The control
     // below caught exactly that; the character class is what confines the
     // search to the refusal branch's own body.
-    /if\s*\(!(decision|outcome)\.ok\)\s*\{[^{}]{0,400}?return\s/.test(source);
+    // TWO refusal SHAPES are accepted, because both refuse correctly:
+    //   braced     `if (!decision.ok) { ... return ...; }`
+    //   braceless  `if (!decision.ok) return ...;`
+    // Matching only the braced shape is a FALSE-POSITIVE generator: a braceless
+    // early return is the STRICTER form (it cannot fall through), yet it gets
+    // named as a non-refusing door. That fired for real on the sibling guard
+    // (install-door-sites.test.ts) the day install-theme.ts was declared. The
+    // braceless arm still demands `return` as the very next token, so
+    // `if (!decision.ok) recordRefusal(x);` stays caught.
+    /if\s*\(!(decision|outcome)\.ok\)\s*(?:\{[^{}]{0,400}?return\s|return\s)/.test(source);
 
   it('every commerce door RETURNS on a refusal rather than continuing', () => {
     // Calling the gate and ignoring its verdict would satisfy the check above
@@ -104,8 +113,23 @@ describe('commerce door coverage', () => {
       }
       return text({ ok: true });
     `;
+    // The braceless shape, both directions — pinned here so no commerce door
+    // written in that style is ever reported as non-refusing, and so widening
+    // the predicate cannot silently buy a pass for a non-refusing branch.
+    const ignoresVerdictBraceless = `
+      const decision = await refundRequestDoor(input);
+      if (!decision.ok) recordRefusal(decision.code);
+      return text({ ok: true });
+    `;
+    const honoursVerdictBraceless = `
+      const decision = await refundRequestDoor(input);
+      if (!decision.ok) return text({ ok: false, error: decision.code });
+      return text({ ok: true });
+    `;
     expect(refusesOnRefusal(ignoresVerdict)).toBe(false);
     expect(refusesOnRefusal(honoursVerdict)).toBe(true);
+    expect(refusesOnRefusal(ignoresVerdictBraceless)).toBe(false);
+    expect(refusesOnRefusal(honoursVerdictBraceless)).toBe(true);
   });
 
   it('every commerce door is REGISTERED — an unimported door is unreachable', () => {

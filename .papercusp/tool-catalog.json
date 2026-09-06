@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 866,
+  "count": 862,
   "tools": [
     {
       "name": "ablation:report",
@@ -7113,7 +7113,7 @@
           "POST"
         ]
       },
-      "description": "What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls (loop:checkpoint { walls }), work-items in needs-human, and live `wall:` standing facts. Each row carries the ask VERBATIM, how long it has been waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session has died (stranded: answering will not resume it; it must be respawned). Live asks rank first, then oldest-wait.",
+      "description": "What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls (loop:checkpoint { walls }) and work-items in needs-human. Each row carries the ask VERBATIM, how long it has been waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session has died (stranded: answering will not resume it; it must be respawned). Live asks rank first, then oldest-wait.",
       "capabilities": [
         "coord:read"
       ],
@@ -7456,7 +7456,7 @@
           "POST"
         ]
       },
-      "description": "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally), and `per-use` (settled, claimed and reversed microcharge revenue per channel, in MICROS — a per-use unit is often worth under a cent, so these never convert to the ledger's minor units). Read-only. Revoked entitlements are reported, never hidden.",
+      "description": "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
       "capabilities": [
         "harness:read"
       ],
@@ -7611,42 +7611,6 @@
       }
     },
     {
-      "name": "cupboard:install-theme",
-      "http": {
-        "path": "/api/agent-tools/cupboard/install-theme",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Install a Cupboard theme into this workspace. The validated semantic-token package becomes immediately available in the existing theme picker; installation does not select it. Pass update:true to replace an installed package explicitly.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "Installing a result from cupboard:search { kind:'theme' } so it can be selected locally.",
-        "notWhen": "Selecting an already installed theme or editing a local theme.",
-        "chaining": "cupboard:search { kind:'theme' } → cupboard:install-theme { listingId } → select the returned activeThemeId in the ordinary UI."
-      }
-    },
-    {
-      "name": "cupboard:meter-invocation",
-      "http": {
-        "path": "/api/agent-tools/cupboard/meter-invocation",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Meter one billable unit of a per-use Cupboard item against a funded microcharge channel. op=reserve BEFORE executing the unit (refuses a duplicate nonce, an exhausted escrow cap, a regressed cumulative claim, or terms that do not match the published offer), op=settle AFTER it with the units actually served, op=usage to read the channel ledger. Refuses locally before any network call.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "Serving or paying for a unit of a per-use Cupboard offer, after cupboard:checkout returned a microcharge preflight and the channel was funded.",
-        "notWhen": "A one-time or subscription offer (cupboard:checkout alone settles those). Funding the channel itself. Reading what an org bought (cupboard:commerce-dashboards).",
-        "chaining": "reserve → execute the unit → settle with actualQuantity. Reserve FIRST: settling a nonce that was never reserved is refused rather than billed, and a unit executed before reserving may turn out to be uncoverable. Reuse the SAME usageNonce across the pair; a fresh one on retry double-bills."
-      }
-    },
-    {
       "name": "cupboard:publish-app",
       "http": {
         "path": "/api/agent-tools/cupboard/publish-app",
@@ -7791,24 +7755,6 @@
       }
     },
     {
-      "name": "cupboard:publish-theme",
-      "http": {
-        "path": "/api/agent-tools/cupboard/publish-theme",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Export one locally-authored theme as theme.json + listing.json and list it on the Cupboard's Themes tab. The public GitHub mirror and listing ref identify the package. Pass exportOnly to materialize the package before pushing it.",
-      "capabilities": [
-        "harness:write"
-      ],
-      "guidance": {
-        "when": "Sharing a theme from Personalization so another workspace can install and select it.",
-        "notWhen": "Creating/editing a local theme, selecting a theme, or installing an existing theme listing.",
-        "chaining": "Export first, push the returned directory to the named public mirror, then publish the listing; consumers use cupboard:install-theme."
-      }
-    },
-    {
       "name": "cupboard:refund-request",
       "http": {
         "path": "/api/agent-tools/cupboard/refund-request",
@@ -7834,7 +7780,7 @@
           "POST"
         ]
       },
-      "description": "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal · theme). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with the matching kind-specific installer.",
+      "description": "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with cupboard:install-plugin / cupboard:install-blueprint (or the kind-specific installers) to install one.",
       "capabilities": [
         "harness:read"
       ],
@@ -10480,7 +10426,7 @@
           "POST"
         ]
       },
-      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Standing once:false watches require confirm_standing:true after checking events:status because queued deliveries are dropped with the watch. Pass at least one.",
+      "description": "Cancel one of your active events:await registrations (await_id — you will not be woken), retire one of your unfired announced gate declarations (announcement_id, optionally guarded by expected_generation), cancel a whole composed await TREE by its root_id, or ACK a pending/parked wake delivery (delivery_id). Pass at least one.",
       "capabilities": [
         "coord:write"
       ],
@@ -10497,8 +10443,8 @@
         "curator"
       ],
       "guidance": {
-        "when": "The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately.",
-        "notWhen": "A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s.",
+        "when": "The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you).",
+        "notWhen": "A fired await needs no cancel (one-shot — it already cleared). You cannot cancel or ack a peer’s.",
         "chaining": "events:status to find the await_id / delivery_id / declaration id → events:cancel."
       }
     },
@@ -10629,7 +10575,7 @@
           "POST"
         ]
       },
-      "description": "Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter.",
+      "description": "Inspect the await-event surface: your active awaits/trees/recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter.",
       "capabilities": [
         "coord:read"
       ],
@@ -10646,7 +10592,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).",
+        "when": "Checking what you are (still) waiting on, whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).",
         "notWhen": "Reading your message stream — that is coord:inbox. Following an area — topics:feed."
       }
     },
@@ -14443,33 +14389,6 @@
       }
     },
     {
-      "name": "hive:store_breakdown",
-      "http": {
-        "path": "/api/agent-tools/hive/store_breakdown",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "What the hive peer-log store actually holds: on-disk bytes per harness store (split by RocksDB file class — .sst vs .blob), op counts per admitted log, and per-federated-kind append volume over a window joined to each kind's RETENTION CLASS. `amplification.versionMultiplier` (appends ÷ distinct keys) is the real growth driver — an append-only log stores every VERSION while PG stores the current one — and `appendsPerKey` names which kinds pay it. Read `storeBytesPerWindowWireByte` WITH its caveat: the store spans every admitted peer since creation, the wire figure is this peer over the window, so it is a scale check and never an amplification factor.",
-      "capabilities": [
-        "intel:read"
-      ],
-      "agentRoles": [
-        "operator",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "documenter",
-        "curator"
-      ],
-      "guidance": {
-        "when": "Asking where a hyperbee/peer-log store's bytes went, whether a federated kind's volume is growing, whether a new op kind landed without a retention class (`unclassifiedProducers`), or sizing what an epoch-rotation pass would reclaim (the `rotating` rows). Also the before/after instrument for any retention change.",
-        "notWhen": "Postgres table sizes — dev:pg_table_sizes. Replay cost / op counts alone — dogfood:substrate_status. Whether federation is FLOWING (drain stalls, admitted-set health) — dogfood:substrate_status."
-      }
-    },
-    {
       "name": "hooks:known",
       "http": {
         "path": "/api/agent-tools/hooks/known",
@@ -15838,7 +15757,7 @@
           "POST"
         ]
       },
-      "description": "Claim repository or authorized home-directory/XDG-runtime files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass current-user home or XDG_RUNTIME_DIR files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp, not caller input.",
+      "description": "Claim repository or authorized home-directory configuration files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass home files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp, not caller input.",
       "capabilities": [
         "locks:write"
       ],
@@ -16429,7 +16348,7 @@
           "POST"
         ]
       },
-      "description": "Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute current-user home or XDG_RUNTIME_DIR files and maps them to the same @external/home/* or @external/runtime/* keys used by locks:acquire before merging the filter. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.",
+      "description": "Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute home files and maps them to the same @external/home/* keys used by locks:acquire before merging the filter. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.",
       "capabilities": [
         "locks:read"
       ],
@@ -16492,7 +16411,7 @@
       "guidance": {
         "when": "Diagnostics — \"what are the other agents doing?\" or \"why am I blocked?\". Cheap, MVCC read.",
         "notWhen": "Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.",
-        "chaining": "Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home or XDG_RUNTIME_DIR file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it maps to the same reserved external key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector."
+        "chaining": "Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it maps to the same @external/home/* key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector."
       }
     },
     {
@@ -26578,7 +26497,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many rubrics in full — criteria (key + model + method + drift markers + rating scale), default rating scale, method_ref runbook, and acceptance-rubric vetting status. Pass `rubricRef` (one) or `rubricRefs` (several); `plan:<rubric-slug>` refs are normalized; `ref`/`slug`/`id` are single-rubric compatibility aliases (rubricRef wins). A positive `revision` reads an immutable snapshot (results expose rubric.revision + rubric.criteriaHash; an unavailable snapshot is an item error, never a fallback to current). `harness` is accepted but does not filter. Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not position.",
+      "description": "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
       "capabilities": [
         "coord:read"
       ],
@@ -26604,9 +26523,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You hold rubric refs (from rubrics:list/search or coord provenance) and need full criteria to grade against — a scorecard or a structured observation. Pass every ref at once via `rubricRefs`; add `revision` for pinned grading.",
+        "when": "You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; legacy single-rubric callers may pass `id`.",
         "notWhen": "Scanning many — rubrics:list (summary rows).",
-        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key). For a frozen audit pass { rubricRef, revision } and retain rubric.revision + rubric.criteriaHash. One failed ref never fails the rest."
+        "chaining": "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
       }
     },
     {
@@ -30520,7 +30439,7 @@
           "POST"
         ]
       },
-      "description": "Delegate a HARD-THINKING question (analysis/research/deep comparison) to the deep brain (the live papercup-deep session; ephemeral agent fallback). With wait:true (the chat surfaces) the call blocks until the deep brain answers and returns `answer` in this same turn — present it. Without wait, the answer comes back later as `[deep-answer WI-NNN] …` pane input. Capped at 2 in flight.",
+      "description": "Delegate a HARD-THINKING question (analysis/research/deep comparison) to the deep brain (the live papercup-deep session; ephemeral agent fallback). The answer comes back into your pane as `[deep-answer WI-NNN] …` — present + speak it then. Capped at 2 in flight.",
       "capabilities": [
         "operator:read"
       ],
@@ -30530,9 +30449,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The user asked something that needs REAL investigation (minutes of reading code/state/docs) and expects an ANSWER back in conversation. In a CHAT turn (converse — desktop or portal): call it with wait:true and present the returned `answer` in the same reply (lead with the speakable core, then the detail); if it comes back pending, say the dive is in flight — never invent the answer. In the PANE: delegate without wait, voice:say a short ack (\"digging into that — I'll come back to you\"), and present the [deep-answer WI-NNN] message when it arrives.",
+        "when": "The user asked something that needs REAL investigation (minutes of reading code/state/docs) and expects an ANSWER back in conversation. Delegate it, voice:say a short ack (\"digging into that — I'll come back to you\"), and stay responsive. When the [deep-answer WI-NNN] message arrives in your pane, present it: voice:say the speakable core + show the detail.",
         "notWhen": "Trivia you can answer now (just answer). Buildable WORK (\"build X\", \"fix Y\") — that's a Mug handoff, not a deep dive. More than 2 in flight — the tool refuses; tell the user one is already cooking.",
-        "chaining": "Chat: voice:delegate_deep { question, brief, wait:true } → present result.answer. Pane: voice:delegate_deep { question } → voice:say the ack → (later) the [deep-answer] arrives as pane input → voice:say the answer. Check progress via work_items:get on the returned workItemId."
+        "chaining": "voice:delegate_deep { question } → voice:say the ack → (later) the [deep-answer] arrives as pane input → voice:say the answer. Check progress via work_items:get on the returned workItemId."
       }
     },
     {
@@ -30826,7 +30745,7 @@
           "POST"
         ]
       },
-      "description": "Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, apply that exact preview under a scope-bound hash and transactional revalidation, or enqueue the durable staged work-item bulk deduplicator. Reviewed apply is reserved for the centralized reconciliation owner, merges only still-eligible entries through the shared guarded writer, and records the preview/evidence binding in reversal receipts. The model-backed run keeps its pinned census ratchet. Requires confirm:true.",
+      "description": "Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, or enqueue the durable staged work-item bulk deduplicator. Reviewed preview reads the same full endpoint/reference snapshots and readiness protections as persistence and returns deterministic eligible/preserved/unknown receipts. The run operation creates a fresh pinned census/shard map, applies the duplication-only charter, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true.",
       "capabilities": [
         "work_items:write"
       ],
@@ -30851,9 +30770,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A reviewed historical cohort needs a current evidence/readiness preflight, its centralized owner is applying the exact accepted preview, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.",
+        "when": "A reviewed historical cohort needs a current evidence/readiness preflight, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.",
         "notWhen": "Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.",
-        "chaining": "work_items:bulk_dedup { op:\"preview-reviewed\", reviewedEntries:[...], harness, confirm:true } → retain previewHash → the centralized reconciliation owner calls op:\"apply-reviewed\" with the unchanged entries + previewHash; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the model-backed run."
+        "chaining": "work_items:bulk_dedup { op:\"preview-reviewed\", reviewedEntries:[...], harness, confirm:true } → inspect deterministic receipts → centralized owner applies only eligible entries; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the durable model-backed run."
       }
     },
     {
@@ -31246,7 +31165,7 @@
           "POST"
         ]
       },
-      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue; chunk is retired (rejected). If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
+      "description": "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
       "capabilities": [
         "work_items:write"
       ],
@@ -31271,7 +31190,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.",
+        "when": "Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). The retired `chunk` kind is history, not an option. A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.",
         "notWhen": "NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing peer question → coord:send with expects:\"answer\". A validator finding inside a live pipeline run → the validator pipeline, not here.",
         "chaining": "work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run."
       }
