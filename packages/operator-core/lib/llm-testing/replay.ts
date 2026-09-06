@@ -286,6 +286,7 @@ function buildSummary(args: BuildSummaryArgs): RunSummary {
     runId: `replay-${randomUUID()}`,
     scenarioId: args.scenario.id,
     scenarioVersion: args.scenario.version,
+    scenarioTarget: args.scenario.target,
     identityHash: computeIdentityHash({
       scenarioId: args.scenario.id,
       scenarioVersion: args.scenario.version,

@@ -227,6 +227,7 @@ export function synthesizeRun(
     runId: `t3-${query.id}`,
     scenarioId: JUDGED_INSTRUCTION_CONTRACT.scenarioId,
     scenarioVersion: 1,
+    scenarioTarget: 'memory-bench',
     identityHash: `t3:${JUDGED_TIER_RUBRIC_VERSION}:${query.id}`,
     sutModel: 'memory-backend (non-LLM retrieval)',
     judgeModel,

@@ -43,6 +43,7 @@ function summary(turns: TurnResult[]): RunSummary {
     runId: 't',
     scenarioId: 't',
     scenarioVersion: 1,
+    scenarioTarget: 'operator',
     identityHash: '0'.repeat(64),
     sutModel: 's', judgeModel: 'j',
     personaId: 'p', personaTraits: {} as RunSummary['personaTraits'],

@@ -399,6 +399,7 @@ export function synthesizePairRun(pair: JudgeableDoc, judgeModel: string): RunSu
     runId: `p038-${pair.pairId}`,
     scenarioId: JUDGE_INSTRUCTION_CONTRACT.scenarioId,
     scenarioVersion: 1,
+    scenarioTarget: 'search-bench',
     identityHash: `p038:${JUDGE_AGREEMENT_RUBRIC_VERSION}:${pair.pairId}`,
     sutModel: 'derived-gold pair (no retrieval system in the loop)',
     judgeModel,

@@ -22,6 +22,7 @@ function mkRun(assistantText: string): RunSummary {
     runId: 's08-regression',
     scenarioId: SU_S08_COMPACT_READ.id,
     scenarioVersion: SU_S08_COMPACT_READ.version,
+    scenarioTarget: 'su',
     identityHash: 'identity',
     sutModel: 'sut',
     judgeModel: 'judge',

@@ -1404,6 +1404,45 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
 
     expect(out.get('su-x')!.cadenceDrift).toBe(true);
   });
+
+  it('EI-22457624472620001: an active provider backoff is not reported as turnsStalled', async () => {
+    const now = Date.now();
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 10,
+        fire_count_at_arm: 0,
+        last_fired_at: new Date(now - 60 * 60_000).toISOString(),
+        last_delivery_outcome: 'resume-turn-death:usage_limit',
+        next_fire_at: new Date(now + 60 * 60_000).toISOString(),
+        last_turn_at: new Date(now - 3 * 60_000).toISOString(),
+        last_real_turn_at: new Date(now - 3 * 60_000).toISOString(),
+      }) as unknown as Sql,
+    });
+    const status = out.get('su-x')!;
+
+    expect(status.lifecycleBackoff).toMatchObject({ reason: 'usage_limit' });
+    expect(status.lifecycleBackoff!.resumesInMs).toBeGreaterThan(0);
+    expect(status.turnsStalled).toBe(false);
+  });
+
+  it('EI-22457624472620001: an elapsed provider backoff does not mask a real stall', async () => {
+    const now = Date.now();
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 10,
+        fire_count_at_arm: 0,
+        last_fired_at: new Date(now - 60 * 60_000).toISOString(),
+        last_delivery_outcome: 'resume-turn-death:usage_limit',
+        next_fire_at: new Date(now - 1_000).toISOString(),
+        last_turn_at: new Date(now - 60 * 60_000).toISOString(),
+        last_real_turn_at: new Date(now - 60 * 60_000).toISOString(),
+      }) as unknown as Sql,
+    });
+    const status = out.get('su-x')!;
+
+    expect(status.lifecycleBackoff!.resumesInMs).toBe(0);
+    expect(status.turnsStalled).toBe(true);
+  });
 });
 
 describe('getLoopStatuses — monitor standdown reason reaches the status surface (P-004, ABM-P004-REASON)', () => {
