@@ -80,6 +80,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.session_switcher.is_some() {
             draw_session_switcher(f, app);
         }
+        if app.inbox_answer.is_some() {
+            draw_inbox_answer(f, app);
+        }
         return;
     }
 
@@ -175,6 +178,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             && app.fleet_action_menu.is_none()
             && app.wake_review.is_none()
             && app.fleet_launcher.is_none()
+            && app.inbox_answer.is_none()
         {
             draw_toast(f, t);
         }
@@ -213,6 +217,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.session_switcher.is_some() {
         draw_session_switcher(f, app);
+    }
+    if app.inbox_answer.is_some() {
+        draw_inbox_answer(f, app);
     }
 }
 
@@ -1465,7 +1472,7 @@ fn report_block_lines(rep: &crate::chat_tags::Report, inner_w: usize) -> Vec<Lin
 }
 
 fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
-    // Two sub-views, `Tab` toggles: the attention list, and the absorbed
+    // Three facets, `Tab` cycles: Needs you, all Attention, and the absorbed
     // Convos thread browser. Without this dispatch the conversations that
     // `tab_entry_side_effect` fetches on entering Inbox were never drawn, so
     // the whole absorbed capability was unreachable — the absorption was
@@ -1480,6 +1487,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // The pot-scope-filtered inbox (D-003) — `inbox_sel` indexes THIS list.
+    // `visible_inbox` applies the Needs-you predicate when that facet is active.
     // Items are rendered in four tier SECTIONS (inbox-tiering D-006): Decisions ▸
     // Handled ▸ Alerts ▸ Activity. Each tier gets a header row + its items; the
     // selected item (by id) is highlighted at its display position so selection
@@ -1546,12 +1554,15 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     };
     // Name the sub-view actually on screen and advertise the key that reaches
     // the other one — the thread list is only discoverable if this says so.
+    let (facet, next) = match app.inbox_focus {
+        InboxFocus::NeedsYou => ("Needs you", "All"),
+        InboxFocus::Attention => ("All", "Threads"),
+        InboxFocus::Threads => unreachable!("threads returned above"),
+    };
     let title = format!(
-        " Inbox · {}Attention · [Tab] Threads ({}) {}{} ",
-        filter_badge,
+        " Inbox · {filter_badge}{facet} ({}) · [Tab] {next} · Threads {} ",
+        inbox.len(),
         app.visible_conversations().len(),
-        crate::glyph::status::NEEDS_HUMAN,
-        counts[0]
     );
     let body_area = block_with_header(
         f,
@@ -1560,7 +1571,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .title(Line::from(title)),
         &format!(
-            "  {} Decisions · {} Handled · {} Alerts · {} Activity",
+            "  a/Enter answer or ack · {} Decisions · {} Handled · {} Alerts · {} Activity",
             crate::glyph::status::NEEDS_HUMAN,
             crate::glyph::status::DONE,
             crate::glyph::severity::ALERT,
@@ -1615,12 +1626,24 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
                 lines.extend(report_block_lines(rep, inner_w));
             }
             lines.push(Line::from(String::new()));
-            lines.push(Line::from("[m] message owner".to_string()));
+            if !it.actions.is_empty() {
+                lines.push(Line::from(format!(
+                    "actions: {}",
+                    it.actions
+                        .iter()
+                        .map(|action| action.label.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                )));
+            }
+            lines.push(Line::from(
+                "[a/Enter] answer or acknowledge · [m] message owner".to_string(),
+            ));
             lines.push(Line::from(":resolve <note>  triage-resolve".to_string()));
             lines
         }
         None => vec![Line::from(format!(
-            "Inbox empty — nothing needs attention. Threads: {} (Tab to browse).",
+            "Inbox facet empty — nothing needs attention here. Threads: {} (Tab to cycle).",
             app.visible_conversations().len()
         ))],
     };
@@ -1628,6 +1651,42 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false })
         .block(Block::default().borders(Borders::ALL).title(" Preview "));
     f.render_widget(para, cols[1]);
+}
+
+fn draw_inbox_answer(f: &mut Frame, app: &App) {
+    let Some(answer) = app.inbox_answer.as_ref() else {
+        return;
+    };
+    let full = f.area();
+    let width = (full.width as u32 * 72 / 100).clamp(42, 96) as u16;
+    let height = 8.min(full.height);
+    let area = Rect {
+        x: full.x + full.width.saturating_sub(width) / 2,
+        y: full.y + full.height.saturating_sub(height) / 2,
+        width: width.max(1),
+        height,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(answer.target.title.clone(), Theme::header())),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("answer: ", Theme::title_active()),
+                Span::styled(answer.input.clone(), Theme::input()),
+                Span::styled("▌", Theme::dim()),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter send through the owning verb · Esc cancel",
+                Theme::dim(),
+            )),
+        ])
+        .wrap(Wrap { trim: false })
+        .style(Theme::popup())
+        .block(Theme::popup_block(Line::from(" Needs you · answer "))),
+        area,
+    );
 }
 
 /// Conversations tab (Brief 25) — the coord conversations browse surface. List
@@ -5469,6 +5528,8 @@ mod tests {
             triage_state: None,
             triage_note: None,
             report: None,
+            actions: Vec::new(),
+            reference: serde_json::Value::Null,
         }
     }
 
@@ -5999,13 +6060,13 @@ mod tests {
             triage_state: None,
             triage_note: None,
             report: None,
+            actions: Vec::new(),
+            reference: serde_json::Value::Null,
         }]);
         let text = render(&app, 100, 28);
         assert!(text.contains("Inbox"));
-        // Attention and Threads are sub-views now, not one merged pane: the
-        // title names the one on screen and advertises the key to the other.
-        assert!(text.contains("Attention · [Tab] Threads"));
-        assert!(text.contains("◆1")); // title headlines the Decisions count
+        // Needs-you is the landing facet; Tab reaches the complete feed.
+        assert!(text.contains("Needs you (1) · [Tab] All"));
         assert!(text.contains("Decisions (1)")); // the Decisions tier section header
         assert!(text.contains("needs-human"));
         assert!(text.contains("my-plan/P-002"));
@@ -6045,9 +6106,12 @@ mod tests {
                 None
             },
             report: None,
+            actions: Vec::new(),
+            reference: serde_json::Value::Null,
         };
         let mut app = App::new();
         app.tab = Tab::Inbox;
+        app.inbox_focus = InboxFocus::Attention;
         app.show_presence = false; // assert the title + badge, not sidebar clipping
         app.set_inbox(vec![
             mk("d1", "decision", true),
@@ -6064,8 +6128,7 @@ mod tests {
         assert!(text.contains("Activity (2)"));
         // The title names the Attention sub-view on screen, advertises the
         // Tab key that reaches Threads, and headlines the Decisions count.
-        assert!(text.contains("Inbox · Attention · [Tab] Threads"));
-        assert!(text.contains("◆1"));
+        assert!(text.contains("Inbox · All (5) · [Tab] Threads"));
     }
 
     fn presence_entry(agent: &str, intent: &str) -> RosterEntry {
@@ -7867,6 +7930,7 @@ mod tests {
         };
         let mut app = App::new();
         app.tab = Tab::Inbox;
+        app.inbox_focus = InboxFocus::Attention;
         app.set_inbox(vec![AttentionItem {
             id: "operator-report:t-1".into(),
             kind: "operator-report".into(),
@@ -7885,6 +7949,8 @@ mod tests {
             triage_state: None,
             triage_note: None,
             report: Some(report),
+            actions: Vec::new(),
+            reference: serde_json::Value::Null,
         }]);
         let text = render(&app, 110, 30);
         // The detail pane renders the structured block (two tiers).

@@ -1072,8 +1072,18 @@ pub struct RosterResponse {
     pub pending: Vec<RosterEntry>,
 }
 
-/// One attention item from `/api/admin/plans/attention` (Inbox). Covers all
-/// three kinds (plan-item / coord-escalation / coord-message).
+/// One action offered by the canonical attention adapter. The TUI preserves
+/// this array instead of re-deriving policy from `kind`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionAction {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+/// One attention item from `/api/admin/plans/attention` (Inbox).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttentionItem {
@@ -1120,6 +1130,15 @@ pub struct AttentionItem {
     /// conversation-only).
     #[serde(default)]
     pub report: Option<crate::chat_tags::Report>,
+    /// Server-authored action policy. Kept in full so `a`/Enter can dispatch
+    /// only an action the selected snapshot actually offered.
+    #[serde(default)]
+    pub actions: Vec<AttentionAction>,
+    /// Heterogeneous owning-source handle (`ref` on the wire). Opaque except
+    /// for the small field reads in the action router; preserving the complete
+    /// object prevents a client-side shadow identity from drifting.
+    #[serde(default, rename = "ref")]
+    pub reference: serde_json::Value,
 }
 
 /// The four inbox tiers (inbox-tiering-and-message-agent D-006), in display
@@ -1161,6 +1180,21 @@ impl AttentionItem {
             "alert" => 2,
             _ => 3,
         }
+    }
+
+    /// The P-013 Needs-you facet is deliberately broader than `needsHuman`:
+    /// owner-wall and open-question cards remain actionable even when the
+    /// source's liveness policy tiers them as Alerts.
+    pub fn is_needs_you(&self) -> bool {
+        self.needs_human || matches!(self.kind.as_str(), "owner-wall" | "conversation")
+    }
+
+    pub fn has_action(&self, id: &str) -> bool {
+        self.actions.iter().any(|action| action.id == id)
+    }
+
+    pub fn primary_action(&self) -> Option<&AttentionAction> {
+        self.actions.iter().find(|action| action.primary)
     }
 }
 
@@ -2665,11 +2699,7 @@ pub struct ToolPaletteHit {
     pub name: String,
     #[serde(default, deserialize_with = "null_as_default")]
     pub description: String,
-    #[serde(
-        default,
-        rename = "argSchema",
-        deserialize_with = "null_as_default"
-    )]
+    #[serde(default, rename = "argSchema", deserialize_with = "null_as_default")]
     pub arg_schema: String,
     #[serde(default)]
     pub returns: Option<String>,
@@ -3733,7 +3763,8 @@ mod tests {
              "items":[
                {"id":"plan-item:p-1:P-001","kind":"plan-item","source":"plan","harnessSlug":null,
                 "planSlug":"p-1","itemRef":"P-001","title":"Do X","body":"Body of X","status":"todo",
-                "importance":"normal","needsHuman":false,"actions":[],"ref":"x"},
+                "importance":"normal","needsHuman":false,"actions":[{"id":"answer","label":"Answer"}],
+                "ref":{"kind":"plan-item","slug":"p-1","itemId":"P-001"}},
                {"id":"coord:esc:9","kind":"coord-escalation","source":"coord","harnessSlug":null,
                 "planSlug":null,"itemRef":null,"title":"Escalation!","body":null,"status":"needs-human",
                 "importance":"urgent","needsHuman":true},
@@ -3757,6 +3788,9 @@ mod tests {
         assert_eq!(first.item_ref.as_deref(), Some("P-001"));
         assert_eq!(first.status, "todo");
         assert_eq!(first.importance.as_deref(), Some("normal"));
+        assert_eq!(first.actions[0].id, "answer");
+        assert_eq!(first.reference["kind"], "plan-item");
+        assert_eq!(first.reference["itemId"], "P-001");
         assert!(!first.needs_human);
         let esc = &r.groups[0].items[1];
         assert_eq!(esc.kind, "coord-escalation");
@@ -4685,8 +4719,7 @@ mod tests {
         assert!(hit.arg_schema.is_empty());
 
         let recipe: ToolPaletteRecipe =
-            serde_json::from_str(r#"{"id":"recipe-1","title":null,"description":null}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"id":"recipe-1","title":null,"description":null}"#).unwrap();
         assert_eq!(recipe.id, "recipe-1");
         assert!(recipe.title.is_empty());
         assert!(recipe.description.is_empty());

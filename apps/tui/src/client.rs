@@ -11,6 +11,7 @@ use crate::agent_chats::{
     AgentChatListResponse, AgentChatTaskMutation, AgentChatTaskMutationResponse, NewAgentChat,
     PendingAgentChatApproval,
 };
+use crate::app::InboxActionTarget;
 use crate::event::MemoryLoadState;
 use crate::http::{HttpClient, HttpStatusError};
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
@@ -248,6 +249,163 @@ pub struct OperatorClient {
     transport: Transport,
     endpoint: String,
     selection_source: String,
+}
+
+/// Ordered write plan for one Inbox quick action. Kept as data so tests can
+/// assert the exact owning verbs/arguments without a fake HTTP server.
+#[derive(Debug, Clone, PartialEq)]
+enum InboxActionStep {
+    Tool {
+        name: &'static str,
+        args: serde_json::Value,
+    },
+    OwnerReply(serde_json::Value),
+    Triage {
+        item_id: String,
+    },
+}
+
+fn target_ref_str<'a>(target: &'a InboxActionTarget, key: &str) -> &'a str {
+    target
+        .reference
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn with_harness(mut args: serde_json::Value, harness: Option<&str>) -> serde_json::Value {
+    if let (Some(harness), Some(object)) = (
+        harness.filter(|value| !value.is_empty()),
+        args.as_object_mut(),
+    ) {
+        object.insert(
+            "harness".into(),
+            serde_json::Value::String(harness.to_string()),
+        );
+    }
+    args
+}
+
+fn inbox_action_steps(
+    target: &InboxActionTarget,
+    action_id: &str,
+    answer_text: Option<&str>,
+) -> Result<Vec<InboxActionStep>> {
+    if !target.actions.iter().any(|action| action.id == action_id) {
+        anyhow::bail!(
+            "attention action '{action_id}' was not offered by {}",
+            target.id
+        );
+    }
+    let kind = target_ref_str(target, "kind");
+    let answer = answer_text.map(str::trim).filter(|value| !value.is_empty());
+    let harness = target.harness_slug.as_deref();
+
+    match (kind, action_id) {
+        ("plan-item", "answer") => {
+            let body = answer.ok_or_else(|| anyhow!("plan answer cannot be blank"))?;
+            let slug = target_ref_str(target, "slug");
+            let item = target_ref_str(target, "itemId");
+            if slug.is_empty() || item.is_empty() {
+                anyhow::bail!("plan answer is missing ref.slug/ref.itemId");
+            }
+            Ok(vec![
+                InboxActionStep::Tool {
+                    name: "plans:add-decision",
+                    args: with_harness(
+                        serde_json::json!({
+                            "slug": slug,
+                            "title": format!("Answer to {item}"),
+                            "body": body,
+                            "refs": [item],
+                        }),
+                        harness,
+                    ),
+                },
+                InboxActionStep::Tool {
+                    name: "plans:set-status",
+                    args: with_harness(
+                        serde_json::json!({
+                            "slug": slug,
+                            "item": item,
+                            "status": "done",
+                            "rationale": "Owner answered from PUI Needs-you",
+                        }),
+                        harness,
+                    ),
+                },
+            ])
+        }
+        ("conversation", "answer") => {
+            let body = answer.ok_or_else(|| anyhow!("conversation answer cannot be blank"))?;
+            let conversation_id = target_ref_str(target, "conversationId");
+            if conversation_id.is_empty() {
+                anyhow::bail!("conversation answer is missing ref.conversationId");
+            }
+            Ok(vec![InboxActionStep::Tool {
+                name: "conversations:resolve",
+                args: serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "accepted_answer": body,
+                }),
+            }])
+        }
+        ("coord-message", "ack") => {
+            let msg_id = target_ref_str(target, "msgId");
+            if msg_id.is_empty() {
+                anyhow::bail!("coord acknowledgement is missing ref.msgId");
+            }
+            Ok(vec![InboxActionStep::Tool {
+                name: "coord:ack",
+                args: serde_json::json!({ "msg_id": msg_id }),
+            }])
+        }
+        ("owner-wall", "resolve") if target_ref_str(target, "wallSource") == "standing-fact" => {
+            let scope = target_ref_str(target, "factScope");
+            let key = target_ref_str(target, "factKey");
+            if scope.is_empty() || key.is_empty() {
+                anyhow::bail!("standing wall is missing exact fact scope/key coordinates");
+            }
+            let mut args = serde_json::json!({
+                "scope": scope,
+                "key": key,
+                "reason": "Owner cleared this wall from PUI Needs-you",
+            });
+            if let Some(scope_ref) = target
+                .reference
+                .get("factScopeRef")
+                .and_then(serde_json::Value::as_str)
+            {
+                if !scope_ref.is_empty() {
+                    args["scopeRef"] = serde_json::Value::String(scope_ref.to_string());
+                }
+            }
+            Ok(vec![InboxActionStep::Tool {
+                name: "facts:retract",
+                args,
+            }])
+        }
+        ("work-item-needs-human" | "owner-wall", "answer") => {
+            let body = answer.ok_or_else(|| anyhow!("owner-wall answer cannot be blank"))?;
+            let asker_id = target
+                .owner_agent_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("owner-wall answer has no live asker target"))?;
+            Ok(vec![
+                InboxActionStep::OwnerReply(serde_json::json!({
+                    "askerId": asker_id,
+                    "text": body,
+                    "summary": format!("Owner answered your {} ({})", target.kind, target.id),
+                    "planSlug": target.plan_slug,
+                })),
+                InboxActionStep::Triage {
+                    item_id: target.id.clone(),
+                },
+            ])
+        }
+        _ => anyhow::bail!("unsupported PUI attention action {kind}/{action_id}"),
+    }
 }
 
 /// Fold indexed transcript hits into the live/ended roster without duplicating
@@ -1347,6 +1505,70 @@ impl OperatorClient {
             .context("decode attention")?
             .groups;
         Ok(groups.into_iter().flat_map(|g| g.items).collect())
+    }
+
+    /// Execute one frozen P-013 Inbox action through the source's owning verb.
+    /// `inbox_action_steps` validates that the action existed on the captured
+    /// server row before any write occurs; ordered multi-write paths preserve
+    /// browser parity (decision then status, delivery then triage).
+    pub async fn run_inbox_action(
+        &self,
+        target: &InboxActionTarget,
+        action_id: &str,
+        answer_text: Option<&str>,
+    ) -> Result<()> {
+        for step in inbox_action_steps(target, action_id, answer_text)? {
+            match step {
+                InboxActionStep::Tool { name, args } => {
+                    let envelope = self.run_tool(name, args).await?;
+                    let inner = run_tool_inner_json(&envelope)?;
+                    if inner.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                        let error = inner
+                            .get("error")
+                            .or_else(|| inner.get("detail"))
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| format!("{name} refused"));
+                        anyhow::bail!(error);
+                    }
+                    if let Some(failed) = inner
+                        .get("results")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|results| {
+                            results.iter().find(|row| {
+                                row.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                            })
+                        })
+                    {
+                        let error = failed
+                            .get("error")
+                            .or_else(|| failed.get("detail"))
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| format!("{name} item failed"));
+                        anyhow::bail!(error);
+                    }
+                }
+                InboxActionStep::OwnerReply(body) => {
+                    let response = self.post_json("/api/admin/coord-inbox-reply", body).await?;
+                    if response.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+                        || response
+                            .get("delivered")
+                            .and_then(serde_json::Value::as_bool)
+                            != Some(true)
+                    {
+                        let error = response
+                            .get("error")
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "owner reply did not reach a live asker".into());
+                        anyhow::bail!(error);
+                    }
+                }
+                InboxActionStep::Triage { item_id } => {
+                    self.resolve_inbox_item(&item_id, "Owner answer delivered from PUI Needs-you")
+                        .await?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Fleet rate/usage read-model for the Overview top-bar (Brief 23 P-005;

@@ -168,6 +168,14 @@ pub enum Action {
     /// A command-palette workbench command (P12b) — the run loop dispatches it to
     /// the workbench-command task (list/save/restore layouts + crews).
     Workbench(PaletteCommand),
+    /// Execute one P-013 Inbox quick action against the immutable item snapshot
+    /// captured before the answer composer opened. The run loop performs the
+    /// owning backend writes, then refetches `plans:attention`.
+    RunInboxAction {
+        target: InboxActionTarget,
+        action_id: String,
+        answer_text: Option<String>,
+    },
     /// Save the Sessions browser's current selection through the existing
     /// SaveCrew executor without mutating the workbench's launched-pane roster.
     SaveCrewSelection {
@@ -1716,12 +1724,63 @@ impl CupboardFocus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InboxFocus {
+    /// The owner-action slice: canonical needsHuman decisions plus owner-wall
+    /// and open-question cards whose source policy may tier them as Alerts.
+    /// This is the Inbox landing facet.
+    NeedsYou,
     /// The pot-scope-filtered attention list, tiered Decisions ▸ Handled ▸
-    /// Alerts ▸ Activity. The landing sub-view.
+    /// Alerts ▸ Activity.
     Attention,
     /// The absorbed coord-conversations browser: threads under the active
     /// state/kind/topic filter + the selected thread's detail.
     Threads,
+}
+
+impl InboxFocus {
+    pub fn next(self) -> Self {
+        match self {
+            Self::NeedsYou => Self::Attention,
+            Self::Attention => Self::Threads,
+            Self::Threads => Self::NeedsYou,
+        }
+    }
+}
+
+/// Immutable action target copied from the selected attention row. An SSE
+/// refresh may replace/reorder `app.inbox` while the owner types; submission
+/// must still address the row and source coordinates named by the composer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboxActionTarget {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub harness_slug: Option<String>,
+    pub plan_slug: Option<String>,
+    pub owner_agent_id: Option<String>,
+    pub actions: Vec<crate::models::AttentionAction>,
+    pub reference: serde_json::Value,
+}
+
+impl From<&AttentionItem> for InboxActionTarget {
+    fn from(item: &AttentionItem) -> Self {
+        Self {
+            id: item.id.clone(),
+            kind: item.kind.clone(),
+            title: item.title.clone(),
+            harness_slug: item.harness_slug.clone(),
+            plan_slug: item.plan_slug.clone(),
+            owner_agent_id: item.owner_agent_id.clone(),
+            actions: item.actions.clone(),
+            reference: item.reference.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboxAnswerComposer {
+    pub target: InboxActionTarget,
+    pub action_id: String,
+    pub input: String,
 }
 
 /// One test run's lifecycle on the Testing tab (D-004a): in-flight, then the
@@ -1939,6 +1998,9 @@ pub struct App {
     /// Which Inbox sub-view is drawn — the attention list, or the absorbed
     /// Convos thread browser. `Tab` toggles.
     pub inbox_focus: InboxFocus,
+    /// Modal answer composer. Its target is frozen when opened; it never
+    /// re-resolves against a later attention snapshot on Enter.
+    pub inbox_answer: Option<InboxAnswerComposer>,
     /// Which Cupboard sub-view is drawn — marketplace Browse, or the absorbed
     /// installed-plugin inventory / panes launcher. `Tab` cycles.
     pub cupboard_focus: CupboardFocus,
@@ -2435,7 +2497,8 @@ impl App {
             plugins: Vec::new(),
             plugin_sel: 0,
             plugins_focus: PluginsFocus::List,
-            inbox_focus: InboxFocus::Attention,
+            inbox_focus: InboxFocus::NeedsYou,
+            inbox_answer: None,
             cupboard_focus: CupboardFocus::Browse,
             plugin_config: None,
             hives: Vec::new(),
@@ -3668,6 +3731,7 @@ impl App {
             .inbox
             .iter()
             .filter(|i| self.in_scope(i.harness_slug.as_deref()))
+            .filter(|i| self.inbox_focus != InboxFocus::NeedsYou || i.is_needs_you())
             .filter(|i| {
                 self.plan_filter.is_empty()
                     || i.plan_slug
@@ -3680,6 +3744,84 @@ impl App {
         // A stable sort preserves the server's within-tier importance order.
         v.sort_by_key(|i| i.tier_rank());
         v
+    }
+
+    /// One-key Inbox path shared by `a` and Enter. The server-authored actions
+    /// array is authoritative: answer opens the modal composer; ack dispatches
+    /// immediately; a standing-fact wall with no live answer target can still
+    /// clear through its offered facts:retract-backed Resolve action.
+    fn activate_inbox_quick_action(&mut self) -> Action {
+        let Some(item) = self.selected_inbox() else {
+            return Action::Render;
+        };
+        let action_id = if item.has_action("answer") {
+            "answer"
+        } else if item.has_action("ack") {
+            "ack"
+        } else if item.kind == "owner-wall"
+            && item.reference.get("wallSource").and_then(Value::as_str) == Some("standing-fact")
+            && item.has_action("resolve")
+        {
+            "resolve"
+        } else {
+            return Action::Render;
+        };
+        let target = InboxActionTarget::from(item);
+        if action_id == "answer" {
+            self.inbox_answer = Some(InboxAnswerComposer {
+                target,
+                action_id: action_id.into(),
+                input: String::new(),
+            });
+            Action::Render
+        } else {
+            Action::RunInboxAction {
+                target,
+                action_id: action_id.into(),
+                answer_text: None,
+            }
+        }
+    }
+
+    fn inbox_answer_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return Action::Quit;
+        }
+        match code {
+            KeyCode::Esc => {
+                self.inbox_answer = None;
+                Action::Render
+            }
+            KeyCode::Backspace => {
+                if let Some(answer) = self.inbox_answer.as_mut() {
+                    answer.input.pop();
+                }
+                Action::Render
+            }
+            KeyCode::Char(c) => {
+                if let Some(answer) = self.inbox_answer.as_mut() {
+                    answer.input.push(c);
+                }
+                Action::Render
+            }
+            KeyCode::Enter => {
+                let Some(answer) = self.inbox_answer.take() else {
+                    return Action::Render;
+                };
+                let text = answer.input.trim().to_string();
+                if text.is_empty() {
+                    self.inbox_answer = Some(answer);
+                    return Action::Render;
+                }
+                Action::RunInboxAction {
+                    target: answer.target,
+                    action_id: answer.action_id,
+                    answer_text: Some(text),
+                }
+            }
+            _ => Action::Render,
+        }
     }
 
     /// The Fleet roster under the plans filter (D-009) — `fleet.agent_sel`
@@ -6861,7 +7003,10 @@ impl App {
                 // Text-entry overlays consume the paste as DATA. Newlines are
                 // flattened in the palette because its command/argument editor
                 // is one line; they are never replayed as Enter keypresses.
-                if self.palette_open {
+                if let Some(answer) = self.inbox_answer.as_mut() {
+                    answer.input.push_str(&text.replace(['\r', '\n'], " "));
+                    Action::Render
+                } else if self.palette_open {
                     let flattened = text.replace(['\r', '\n'], " ");
                     self.palette_input.push_str(&flattened);
                     if let Some(state) = self.tool_palette.as_mut() {
@@ -8490,6 +8635,9 @@ impl App {
             self.show_notifs = false;
             return Action::Render;
         }
+        if self.inbox_answer.is_some() {
+            return self.inbox_answer_key(code, mods);
+        }
         // D-009: Ctrl-S opens the session switcher from every ordinary surface.
         // Once open it is modal and owns text/nav keys until Enter/Esc.
         if self.session_switcher.is_some() {
@@ -9740,6 +9888,11 @@ impl App {
             KeyCode::Char('-') if self.tab == Tab::Overview => self.nudge_max_agents(-1),
             KeyCode::Enter if self.tab == Tab::Overview => self.overview_activate(),
             KeyCode::Enter if self.inbox_threads_focused() => self.conv_open_detail(),
+            KeyCode::Char('a') | KeyCode::Enter
+                if self.tab == Tab::Inbox && self.inbox_focus != InboxFocus::Threads =>
+            {
+                self.activate_inbox_quick_action()
+            }
             // P-028: one discoverable key from both scheduling surfaces. Uppercase
             // `K` is intentionally distinct from `k` navigation.
             KeyCode::Char('K')
@@ -10079,10 +10232,8 @@ impl App {
             // the absorbed capability, so it is what makes the Convos→Inbox
             // absorption real rather than title-only.
             KeyCode::Tab if self.tab == Tab::Inbox => {
-                self.inbox_focus = match self.inbox_focus {
-                    InboxFocus::Attention => InboxFocus::Threads,
-                    InboxFocus::Threads => InboxFocus::Attention,
-                };
+                self.inbox_focus = self.inbox_focus.next();
+                self.inbox_sel = 0;
                 Action::Render
             }
             KeyCode::PageDown if self.tab == Tab::Docs => {
@@ -10847,7 +10998,7 @@ impl App {
             Tab::Overview => 4,
             Tab::Plans => self.visible_plans().len(),
             Tab::Inbox => match self.inbox_focus {
-                InboxFocus::Attention => self.visible_inbox().len(),
+                InboxFocus::NeedsYou | InboxFocus::Attention => self.visible_inbox().len(),
                 InboxFocus::Threads => self.visible_conversations().len(),
             },
             Tab::Harnesses => match self.harness_focus {
@@ -10893,7 +11044,7 @@ impl App {
             Tab::Overview => &mut self.overview_sel,
             Tab::Plans => &mut self.plan_sel,
             Tab::Inbox => match self.inbox_focus {
-                InboxFocus::Attention => &mut self.inbox_sel,
+                InboxFocus::NeedsYou | InboxFocus::Attention => &mut self.inbox_sel,
                 InboxFocus::Threads => &mut self.conversation_sel,
             },
             Tab::Harnesses => match self.harness_focus {
@@ -13802,10 +13953,13 @@ mod tests {
             triage_state: None,
             triage_note: None,
             report: None,
+            actions: Vec::new(),
+            reference: serde_json::Value::Null,
         };
         let mut a = App::new();
         a.update(key('2', KeyModifiers::NONE)); // Inbox tab
         assert_eq!(a.tab, Tab::Inbox);
+        a.inbox_focus = InboxFocus::Attention;
         a.set_inbox(vec![item("x"), item("y")]);
         assert_eq!(a.inbox_sel, 0);
         a.update(key('j', KeyModifiers::NONE));
@@ -15328,8 +15482,11 @@ mod tests {
             triage_state: None,
             triage_note: None,
             report: None,
+            actions: Vec::new(),
+            reference: serde_json::Value::Null,
         };
         let mut a = App::new();
+        a.inbox_focus = InboxFocus::Attention;
         a.set_inbox(vec![
             item("a", Some("alpha")),
             item("b", Some("beta")),
@@ -17253,8 +17410,8 @@ mod tests {
     fn inbox_tab_key_reaches_the_absorbed_thread_controls() {
         let mut a = App::new();
         a.tab = Tab::Inbox;
-        // Inbox lands on Attention, so Convos controls stay inert here.
-        assert_eq!(a.inbox_focus, InboxFocus::Attention);
+        // Inbox lands on Needs-you, so Convos controls stay inert here.
+        assert_eq!(a.inbox_focus, InboxFocus::NeedsYou);
         assert!(!a.inbox_threads_focused());
         let state_before = a.conv_state_idx;
         a.update(Event::Key(KeyEvent::new(
@@ -17280,8 +17437,9 @@ mod tests {
         );
         a.tab = Tab::Inbox;
 
-        // Tab hops to Threads — the only keystroke that reaches the absorbed
-        // capability at all.
+        // Tab cycles Needs-you → All → Threads.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.inbox_focus, InboxFocus::Attention);
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(a.inbox_focus, InboxFocus::Threads);
         assert!(a.inbox_threads_focused());
@@ -17307,9 +17465,105 @@ mod tests {
         )));
         assert_ne!(a.conv_kind_idx, kind_before, "'t' cycles the kind filter");
 
-        // Tab returns to the attention list.
+        // Tab returns to the Needs-you landing facet.
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(a.inbox_focus, InboxFocus::Attention);
+        assert_eq!(a.inbox_focus, InboxFocus::NeedsYou);
+    }
+
+    #[test]
+    fn needs_you_facet_merges_decisions_owner_walls_and_questions() {
+        let make = |id: &str, kind: &str, needs_human: bool| AttentionItem {
+            id: id.into(),
+            kind: kind.into(),
+            source: "coord".into(),
+            harness_slug: None,
+            plan_slug: None,
+            item_ref: None,
+            title: id.into(),
+            body: None,
+            status: "open".into(),
+            importance: None,
+            needs_human,
+            tier: Some(if needs_human { "decision" } else { "alert" }.into()),
+            owner_agent_id: None,
+            owner_label: None,
+            triage_state: None,
+            triage_note: None,
+            report: None,
+            actions: Vec::new(),
+            reference: serde_json::json!({ "kind": kind }),
+        };
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.set_inbox(vec![
+            make("decision", "plan-item", true),
+            make("wall", "owner-wall", false),
+            make("question", "conversation", false),
+            make("noise", "coord-message", false),
+        ]);
+        assert_eq!(
+            app.visible_inbox()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["decision", "wall", "question"]
+        );
+        app.inbox_focus = InboxFocus::Attention;
+        assert_eq!(app.visible_inbox().len(), 4);
+    }
+
+    #[test]
+    fn inbox_answer_composer_freezes_target_across_attention_refresh() {
+        let answerable = |id: &str, item_id: &str| AttentionItem {
+            id: id.into(),
+            kind: "plan-item".into(),
+            source: "plan".into(),
+            harness_slug: Some("papercusp".into()),
+            plan_slug: Some("p".into()),
+            item_ref: Some(item_id.into()),
+            title: id.into(),
+            body: None,
+            status: "needs-human".into(),
+            importance: None,
+            needs_human: true,
+            tier: Some("decision".into()),
+            owner_agent_id: None,
+            owner_label: None,
+            triage_state: None,
+            triage_note: None,
+            report: None,
+            actions: vec![crate::models::AttentionAction {
+                id: "answer".into(),
+                label: "Answer".into(),
+                primary: false,
+            }],
+            reference: serde_json::json!({ "kind": "plan-item", "slug": "p", "itemId": item_id }),
+        };
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.set_inbox(vec![answerable("old", "P-001")]);
+        assert_eq!(app.update(key('a', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(app.inbox_answer.as_ref().unwrap().target.id, "old");
+
+        // A push replaces the list while the owner is typing. Submission must
+        // use the captured old ref, never whichever row now occupies index 0.
+        app.set_inbox(vec![answerable("new", "P-999")]);
+        app.update(key('y', KeyModifiers::NONE));
+        app.update(key('e', KeyModifiers::NONE));
+        app.update(key('s', KeyModifiers::NONE));
+        match app.update(ev(KeyCode::Enter)) {
+            Action::RunInboxAction {
+                target,
+                action_id,
+                answer_text,
+            } => {
+                assert_eq!(target.id, "old");
+                assert_eq!(target.reference["itemId"], "P-001");
+                assert_eq!(action_id, "answer");
+                assert_eq!(answer_text.as_deref(), Some("yes"));
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 
     /// j/k must drive the list actually on screen. Before the sub-view landed,

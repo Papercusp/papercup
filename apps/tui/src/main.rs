@@ -798,7 +798,10 @@ mod doctor_session_tests {
             }),
         );
         assert!(fail);
-        assert!(line.contains("ORPHAN") && line.contains("2053474") && line.contains("codex"), "{line}");
+        assert!(
+            line.contains("ORPHAN") && line.contains("2053474") && line.contains("codex"),
+            "{line}"
+        );
         for (exited, v) in [
             (false, Some(LauncherVerdict::Alive(l(1)))),
             (false, Some(LauncherVerdict::Unknown)),
@@ -958,7 +961,8 @@ async fn run_doctor() -> Result<()> {
         println!("zellij sessions: none");
     } else {
         for (name, exited) in sessions {
-            let (line, orphan) = doctor_session_line(&name, exited, identity::launcher_verdict(&name));
+            let (line, orphan) =
+                doctor_session_line(&name, exited, identity::launcher_verdict(&name));
             println!("session:        {line}");
             if orphan {
                 failures += 1;
@@ -1753,6 +1757,19 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::RunInboxAction {
+                    target,
+                    action_id,
+                    answer_text,
+                } => {
+                    tokio::spawn(execute_inbox_action(
+                        target,
+                        action_id,
+                        answer_text,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::SaveCrewSelection { name, members } => {
                     // P-030 hands one selected browser row to the existing crew
                     // executor; it does not mutate the launched-pane roster.
@@ -2425,7 +2442,9 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
     }
-    let _ = tx.send(Event::PipelineStatus(Box::new(client.pipeline_status().await)));
+    let _ = tx.send(Event::PipelineStatus(Box::new(
+        client.pipeline_status().await,
+    )));
 }
 
 // (mark_session_launched moved inline into the LaunchPanes arm — EI-358
@@ -3220,6 +3239,56 @@ async fn execute_workbench_command(
                     let _ = tx.send(Event::Error(format!("resolve: {e}")));
                 }
             }
+        }
+    }
+}
+
+/// P-013 quick answer/ack execution. On success, refetch through the same
+/// `attention_typed` client path as the normal sync loop so the visible queue
+/// reconciles from source truth rather than optimistically deleting a row.
+async fn execute_inbox_action(
+    target: app::InboxActionTarget,
+    action_id: String,
+    answer_text: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("inbox action: {error}")));
+            return;
+        }
+    };
+    match client
+        .run_inbox_action(&target, &action_id, answer_text.as_deref())
+        .await
+    {
+        Ok(()) => {
+            let _ = tx.send(Event::Notify(models::Notif {
+                level: "info".into(),
+                message: format!(
+                    "{}: {}",
+                    target.title,
+                    if action_id == "ack" {
+                        "acknowledged"
+                    } else {
+                        "answered"
+                    }
+                ),
+                harness: target.harness_slug.clone(),
+                ts: None,
+            }));
+            match client.attention_typed().await {
+                Ok(items) => {
+                    let _ = tx.send(Event::Inbox(items));
+                }
+                Err(error) => {
+                    let _ = tx.send(Event::Error(format!("inbox refetch: {error}")));
+                }
+            }
+        }
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("inbox action: {error}")));
         }
     }
 }
@@ -6060,7 +6129,9 @@ async fn refetch_all(
     // P-008: registered state cells, read through the operator's generic tool
     // bridge. Per-cell failures remain in-band in the model, so this never
     // converts an unavailable measurement into an all-clear.
-    let _ = tx.send(Event::PipelineStatus(Box::new(client.pipeline_status().await)));
+    let _ = tx.send(Event::PipelineStatus(Box::new(
+        client.pipeline_status().await,
+    )));
     // Deployed cloud frames (per-frame dock tabs, hive-agent-tabs P-013).
     // Quietly optional: nothing deployed / an older host → no tabs, no toasts.
     if let Ok(fr) = client.deploy_frames().await {
