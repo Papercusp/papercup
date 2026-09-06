@@ -78,7 +78,8 @@ const SUPERSEDING_BLOCK =
   `[owner 2026-08-09] "i dont need the live reports stop that"`;
 const CHECKPOINT = `${OLDER_PLAN}\n\n${SUPERSEDING_BLOCK}`;
 
-vi.mock('../../carry-brief', () => ({
+vi.mock('../../carry-brief', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../carry-brief')>()),
   readHeldWorkItems: vi.fn(async () => [
     {
       id: 'WI-37110',
@@ -146,6 +147,52 @@ describe('buildCompactionRecovery — held-item checkpoint fold', () => {
     const { buildCompactionRecovery } = await import('./compaction-recovery');
     const recovery = await buildCompactionRecovery('owner-x', 'ws-1', { sessionHarness: 'h' });
     expect(recovery.checkpoints?.[0]?.crossHarnessNote).toBeUndefined();
+  });
+
+  it('suppresses a missing-proof item to a read-only ownership warning', async () => {
+    const { buildCompactionRecovery } = await import('./compaction-recovery');
+    const recovery = await buildCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [{
+        id: 'WI-unverified',
+        title: 'private title',
+        body: 'private body',
+        harness: 'h',
+        checkpoint: 'private checkpoint',
+      }],
+    });
+    const row = recovery.checkpoints?.[0];
+    expect(row).toMatchObject({
+      id: 'WI-unverified',
+      harness: 'h',
+      checkpoint: null,
+    });
+    expect(row?.ownershipWarning).toContain('no holder proof');
+    expect(row).not.toHaveProperty('title');
+    expect(row).not.toHaveProperty('body');
+    expect(row).not.toHaveProperty('checkpointTruncated');
+  });
+
+  it('suppresses an owner-mismatched item to a read-only ownership warning', async () => {
+    const { buildCompactionRecovery } = await import('./compaction-recovery');
+    const recovery = await buildCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [{
+        id: 'WI-mismatched',
+        title: 'private title',
+        body: 'private body',
+        harness: 'h',
+        checkpoint: 'private checkpoint',
+        holderProof: { ownerId: 'other-owner', workspaceId: 'ws-1' },
+      }],
+    });
+    const row = recovery.checkpoints?.[0];
+    expect(row).toMatchObject({
+      id: 'WI-mismatched',
+      harness: 'h',
+      checkpoint: null,
+    });
+    expect(row?.ownershipWarning).toContain("holder proof names owner 'other-owner'");
+    expect(row).not.toHaveProperty('title');
+    expect(row).not.toHaveProperty('body');
   });
 });
 
