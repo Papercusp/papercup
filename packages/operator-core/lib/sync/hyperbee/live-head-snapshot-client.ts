@@ -21,9 +21,15 @@
  * `probeOnly` pass identifies the single holder, and only that one is asked to do the
  * expensive thing.
  */
+import { Agent, type Dispatcher } from 'undici';
 import { listSiblingOperators, type SiblingOperator } from '../../schedule-federation';
 
 export const HEAD_SNAPSHOT_PATH = '/api/internal/substrate/head-snapshot';
+
+// The AbortSignal below owns each request's deadline. Undici otherwise applies
+// its independent five-minute headers timeout, which cuts a healthy long snapshot
+// short even when the caller explicitly grants fifteen minutes.
+const snapshotDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 /** Discovery deadline per sibling. A `probeOnly` answer is a memory-map lookup. */
 export const DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS = 1_500;
@@ -147,10 +153,7 @@ export interface HeadSnapshotRetryLog {
   readonly elapsedMs: number;
 }
 
-export type LiveHeadSnapshotOutcome =
-  | LiveHeadSnapshotProduced
-  | LiveHeadSnapshotNoHolder
-  | LiveHeadSnapshotFailed;
+export type LiveHeadSnapshotOutcome = LiveHeadSnapshotProduced | LiveHeadSnapshotNoHolder | LiveHeadSnapshotFailed;
 
 interface ResponseLike {
   readonly ok: boolean;
@@ -159,7 +162,7 @@ interface ResponseLike {
 }
 type FetchLike = (
   url: string,
-  init: { method: string; signal: AbortSignal; headers: Record<string, string>; body: string },
+  init: { method: string; signal: AbortSignal; headers: Record<string, string>; body: string; dispatcher?: Dispatcher },
 ) => Promise<ResponseLike>;
 
 interface HeadSnapshotReply {
@@ -187,9 +190,8 @@ async function post(
     // managed-timers. HEAD_SNAPSHOT_PATH carries the prefix so this stays one string.
     const res = await fetchImpl(`http://127.0.0.1:${sibling.port}${HEAD_SNAPSHOT_PATH}`, {
       method: 'POST',
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-        : AbortSignal.timeout(timeoutMs),
+      dispatcher: snapshotDispatcher,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(body),
     });
@@ -198,7 +200,9 @@ async function post(
     if (!res.ok) return { __transportError: `HTTP ${res.status}`, __status: res.status };
     return ((await res.json()) as HeadSnapshotReply) ?? {};
   } catch (e) {
-    return { __transportError: e instanceof Error ? e.message : String(e) };
+    const cause = e instanceof Error ? e.cause : undefined;
+    const detail = cause instanceof Error ? `${'code' in cause ? `${String(cause.code)}: ` : ''}${cause.message}` : '';
+    return { __transportError: `${e instanceof Error ? e.message : String(e)}${detail ? ` (${detail})` : ''}` };
   }
 }
 
@@ -410,9 +414,7 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
     // Only a restart-shaped failure is worth waiting out; a refusal is a real answer.
     const retryable = outcome.kind === 'no-holder' || (outcome.kind === 'failed' && outcome.transport);
     if (!retryable) {
-      return attempts > 1
-        ? withRetryLog(outcome, { attempts, waitedMs, elapsedMs: now() - startedAt })
-        : outcome;
+      return attempts > 1 ? withRetryLog(outcome, { attempts, waitedMs, elapsedMs: now() - startedAt }) : outcome;
     }
     last = outcome;
 
@@ -424,9 +426,7 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
         `[head-snapshot] giving up after ${attempts} attempt(s) over ${now() - startedAt}ms — ` +
           `the holder never came back within the ${budgetMs}ms retry budget.`,
       );
-      return attempts > 1
-        ? withRetryLog(last, { attempts, waitedMs, elapsedMs: now() - startedAt })
-        : last;
+      return attempts > 1 ? withRetryLog(last, { attempts, waitedMs, elapsedMs: now() - startedAt }) : last;
     }
 
     inp.warn?.(
@@ -440,8 +440,7 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
 }
 
 function describeOutcome(o: LiveHeadSnapshotOutcome): string {
-  if (o.kind === 'no-holder')
-    return `no booted holder among [${o.probed.join(', ')}]`;
+  if (o.kind === 'no-holder') return `no booted holder among [${o.probed.join(', ')}]`;
   if (o.kind === 'failed') return `port ${o.port}: ${o.error}`;
   return 'produced';
 }
@@ -544,8 +543,10 @@ function pidAlive(pid: number): boolean {
 
 function describeHolderLoss(found: FindHiveHolderOutcome, previous: SiblingOperator): string {
   if (found.kind === 'holder') {
-    return `a replacement holder is ${found.sibling.pid}@${found.sibling.port} ` +
-      `(previously ${previous.pid}@${previous.port})`;
+    return (
+      `a replacement holder is ${found.sibling.pid}@${found.sibling.port} ` +
+      `(previously ${previous.pid}@${previous.port})`
+    );
   }
   return found.probed.length === 0
     ? 'no operator-shaped sibling remains'

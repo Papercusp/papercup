@@ -32,3 +32,21 @@ H mod+k: http://127.0.0.1:3081/?app=home&panel=launcher
 H switch mod+j: http://127.0.0.1:3081/?app=home&panel=quick
 H esc: http://127.0.0.1:3081/?app=home
 === I alt+ArrowDown / alt+ArrowUp cycle the visible rail
+I rail: []
+I down: http://127.0.0.1:3081/?app=calendar
+I down2: http://127.0.0.1:3081/?app=phone
+I up: http://127.0.0.1:3081/?app=calendar
+=== J mod+i → Inbox
+J url: http://127.0.0.1:3081/?app=inbox
+=== K mod+u toggles the agents panel
+K mod+u: http://127.0.0.1:3081/?app=inbox&panel=agents
+K mod+u again: http://127.0.0.1:3081/?app=inbox
+=== L alt+ArrowLeft → history back (navigation.back)
+L before: http://127.0.0.1:3081/?app=settings
+L back: http://127.0.0.1:3081/?app=inbox
+=== M mod+shift+n → Overview + create=1 (harness.create root fallback)
+M url: http://127.0.0.1:3081/?app=overview&create=true&scope=all
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-global-shortcuts-2026-09-06/screenshot-create-pot.png
+=== console
+No console messages.
+PROBE_END 20260906T173455Z

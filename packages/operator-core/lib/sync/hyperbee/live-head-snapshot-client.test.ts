@@ -2,9 +2,11 @@
  * P-019 (D-012) — the cutter-side client that asks the LIVE operator holding a hive
  * to append a head snapshot, so a `--sparse` cut can be taken with NO OUTAGE.
  *
- * Everything here is injectable (`fetchImpl`, `listSiblingsImpl`), so these are pure
- * unit tests: no ports, no processes, no discovery files.
+ * Discovery and transport are injectable. One loopback server also exercises the
+ * real HTTP deadline so mocked fetches cannot hide an independent transport timeout.
  */
+import { createServer } from 'node:http';
+import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS,
@@ -52,8 +54,7 @@ function fleet(opts: {
     const port = Number(/:(\d+)\//.exec(url)?.[1]);
     if (opts.dead?.includes(port)) throw new Error('ECONNREFUSED');
     // Serving fine, but this ROUTE does not exist in that build.
-    if (opts.staleBuild?.includes(port))
-      return { ok: false, status: 404, json: async () => ({ error: 'not_found' }) };
+    if (opts.staleBuild?.includes(port)) return { ok: false, status: 404, json: async () => ({ error: 'not_found' }) };
     const booted = port === opts.holderPort;
     if (!booted) return { ok: true, status: 200, json: async () => ({ ok: true, booted: false }) };
     if (body.probeOnly === true) {
@@ -159,6 +160,81 @@ describe('findLiveOperatorHoldingHive', () => {
 });
 
 describe('requestLiveOperatorHeadSnapshot', () => {
+  it('keeps the caller deadline when response headers outlast the default dispatcher timeout', async () => {
+    const original = getGlobalDispatcher();
+    const shortDeadline = new Agent({ headersTimeout: 50 });
+    const server = createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      const probe = JSON.parse(body).probeOnly === true;
+      const reply = () => {
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify(
+            probe
+              ? { ok: true, booted: true }
+              : {
+                  ok: true,
+                  booted: true,
+                  appended: true,
+                  coversUpTo: 12,
+                  chunkCount: 1,
+                  rowCount: 3,
+                  elapsedMs: 1_600,
+                },
+          ),
+        );
+      };
+      if (probe) reply();
+      else {
+        const timer = setTimeout(reply, 1_600);
+        res.on('close', () => clearTimeout(timer));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    setGlobalDispatcher(shortDeadline);
+    try {
+      const out = await requestLiveOperatorHeadSnapshot({
+        ...base,
+        timeoutMs: 5_000,
+        retryBudgetMs: 0,
+        listSiblingsImpl: async () => [{ port, pid: process.pid, startedAt: 1 }],
+      });
+      expect(out).toMatchObject({ kind: 'produced', appended: true, coversUpTo: 12, rowCount: 3 });
+    } finally {
+      setGlobalDispatcher(original);
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await shortDeadline.close();
+    }
+  });
+
+  it('retains the underlying transport error instead of reporting only fetch failed', async () => {
+    const f = fleet({ ports: [3070], holderPort: 3070 });
+    const out = await requestLiveOperatorHeadSnapshot({
+      ...base,
+      ...f,
+      retryBudgetMs: 0,
+      fetchImpl: async (_url, init) => {
+        if (JSON.parse(init.body).probeOnly)
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true, booted: true }),
+          };
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' }),
+        });
+      },
+    });
+    expect(out).toMatchObject({
+      kind: 'failed',
+      transport: true,
+      error: 'fetch failed (UND_ERR_HEADERS_TIMEOUT: Headers Timeout Error)',
+    });
+  });
+
   it('asks ONLY the holder to do the expensive thing — the O(own-log) call is never fanned out', async () => {
     // The real call reads the entire own log and stalls the holder's merge loop. Fanning
     // that across every operator on the box to find one would put all of them at risk.
@@ -204,7 +280,13 @@ describe('requestLiveOperatorHeadSnapshot', () => {
     // no-holder ⇒ "nobody has this hive". failed ⇒ "the holder tried and could not."
     // Collapsing them would send a human to check the wrong thing.
     let phase = 0;
-    const f = fleet({ ports: [3070], holderPort: 3070, onCall: (c) => { if (c.body.probeOnly !== true) phase = 1; } });
+    const f = fleet({
+      ports: [3070],
+      holderPort: 3070,
+      onCall: (c) => {
+        if (c.body.probeOnly !== true) phase = 1;
+      },
+    });
     const fetchImpl = (async (url: string, init: { body: string }) => {
       const r = await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
       if (phase === 1) throw new Error('socket hang up');
@@ -503,10 +585,10 @@ describe('retrying across a holder recycle', () => {
     // The measured attempt-1 failure: every port answered booted:false during a recycle,
     // the cut refused, and 18 minutes later the same probe answered booted:true.
     let passes = 0;
-    const findHolderImpl = (async () =>
+    const findHolderImpl = async () =>
       ++passes < 3
         ? { kind: 'no-holder' as const, answered: [3271], probed: [3271], staleBuild: [] }
-        : { kind: 'holder' as const, sibling: { port: 3271, pid: 4271, startedAt: 1 } });
+        : { kind: 'holder' as const, sibling: { port: 3271, pid: 4271, startedAt: 1 } };
 
     const c = clock();
     const out = await waitForLiveOperatorHoldingHive({ ...base, findHolderImpl: findHolderImpl as never, ...c });
@@ -517,10 +599,10 @@ describe('retrying across a holder recycle', () => {
   it('CONTROL: a single look REFUSES on that same cold window', async () => {
     // Pins that the test above measures the waiting, not the fake being generous.
     let passes = 0;
-    const findHolderImpl = (async () =>
+    const findHolderImpl = async () =>
       ++passes < 3
         ? { kind: 'no-holder' as const, answered: [3271], probed: [3271], staleBuild: [] }
-        : { kind: 'holder' as const, sibling: { port: 3271, pid: 4271, startedAt: 1 } });
+        : { kind: 'holder' as const, sibling: { port: 3271, pid: 4271, startedAt: 1 } };
 
     const out = await waitForLiveOperatorHoldingHive({
       ...base,

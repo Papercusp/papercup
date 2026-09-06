@@ -1,0 +1,13 @@
+REMAP_PROBE_START 20260906T173455Z base=http://127.0.0.1:3081 mod=Control
+origin-3801 pid=1117074 release=releases/7OORWOu1IP4jdyXJu_vDH-20260906173000829-792875-31f999cc
+N0 clear any override: cleared
+N0 CONTROL default chord, no override (expect ?app=settings): http://127.0.0.1:3081/?app=settings
+N1 pane: inputs=25 value=mod+comma
+N1 recorded (expect mod+shift+o, customized pill): value=mod+shift+o pill=true
+N2 persisted (expect settings.open → mod+shift+o): {"key":"pc:ws:default:papercusp.shortcuts.v1","val":"{\"settings.open\":\"mod+shift+o\"}"}
+N3 new chord after reload (expect ?app=settings): http://127.0.0.1:3081/?app=settings
+N4 default with override (expect UNCHANGED ?app=home): http://127.0.0.1:3081/?app=home
+N5 reset (expect mod+comma, no override): value=mod+comma {"key":"pc:ws:default:papercusp.shortcuts.v1","val":"{}"}
+N5 default restored (expect ?app=settings): http://127.0.0.1:3081/?app=settings
+console: No console messages. 
+REMAP_PROBE_END 20260906T173924Z

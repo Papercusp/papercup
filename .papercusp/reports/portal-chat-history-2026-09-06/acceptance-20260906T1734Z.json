@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10000114",
+  "plan": "portal-chat-history-2026-09-06",
+  "rubric": "acceptance-portal-chat-history-2026-09-06@6",
+  "verification": "Guarded production build, supported handoff, real service descendant artifact/digest and unmocked Chromium at 1440x900 and 390x900 verified. Independent rubric vetting and plan acceptance remain pending.",
+  "limits": [
+    "Live history returned an empty owner-scoped list. Populated history reopen, search matching and streamed continuation were exercised by fixtures, not a live model turn.",
+    "Legacy agent-chat identifiers are intentionally excluded from Converse history.",
+    "The artifact was built from the Portal working tree; git HEAD was 3e8380e34cd344ac62306309c74addeca36ebca9 with P008 source edits not yet committed. sourceRootDigest identifies the exact built content.",
+    "Linked dependencies changed during the build; the supported wrapper reported this and verified that the Portal source root digest stayed unchanged."
+  ],
+  "testSummary": {
+    "focused": {
+      "files": 9,
+      "passed": 184,
+      "exitCode": 0
+    },
+    "browserFixtures": {
+      "passed": 2,
+      "widths": [
+        1440,
+        390
+      ],
+      "exitCode": 0
+    },
+    "peerTypecheck": {
+      "log": "/tmp/p008-verify2.log",
+      "exitCode": 0
+    },
+    "build": {
+      "exitCode": 0
+    },
+    "handoff": {
+      "exitCode": 0
+    }
+  },
+  "commands": [
+    "npm test -- tests/shell-ui.test.tsx tests/launched-sessions-ui.test.tsx tests/chat-history-persistence.integration.test.ts tests/launched-chats.test.ts tests/agent-chats.test.ts tests/papercup-chat-proxy.test.ts tests/papercup-chat-adapter.test.ts tests/ask-papercup-portal.test.tsx tests/papercup-chat-projection.test.ts",
+    "npm run test:e2e:browser -- e2e/portal-chat-history.spec.ts --output=/tmp/portal-history-settled-playwright",
+    "npm run build",
+    "bash apps/operator/scripts/systemd/deploy-cloud-portal.sh --handoff"
+  ],
+  "liveMethod": "In fresh Chromium contexts at each width, navigate to real :3081 without route interception, open Papercup Chat in rail, require exactly one visible Message Papercup textbox, open header Chat history, require search, close history and recheck composer, reopen via rail Chat history directly following Papercup Chat, fill/clear search, assert composer within viewport and no history load alert. Inspect screenshots. Separately read systemd MainPID and its actual descendant cwd, immutable manifest, and freshly computed release-source-digest; require matching digest, matching release cwd and HTTP 200.",
+  "root": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "head": "3e8380e34cd344ac62306309c74addeca36ebca9",
+  "hashes": {
+    "tests/shell-ui.test.tsx": "2de63aef9d2bc9a5f50f10c6dcc69e409e1cc9ec",
+    "tests/launched-sessions-ui.test.tsx": "77b260ceef1572ee0498030dea6fbfd983593871",
+    "tests/chat-history-persistence.integration.test.ts": "03fc2258771aab9e009a9d352ba8e2d8039c1721",
+    "tests/launched-chats.test.ts": "d4bbceae8cae9636e60f47204e51e46f3f900c57",
+    "tests/agent-chats.test.ts": "f32ca10c1542f26863138b2387b59e014f51a519",
+    "tests/papercup-chat-proxy.test.ts": "f3de61e7a9858f19e18b0f907f2638206c2613f6",
+    "tests/papercup-chat-adapter.test.ts": "8c71c4a7695e2420fc7419a0f12e10926c116b45",
+    "tests/ask-papercup-portal.test.tsx": "2a7282cbb1dbaccaa014fcc67779f00698dfb815",
+    "tests/papercup-chat-projection.test.ts": "6ef87705f92d65045f6d8a05dc9b2618079bc7b7",
+    "e2e/portal-chat-history.spec.ts": "2580b0741f203b0b643c36b5f15a2c9f26d4f2fa"
+  },
+  "logs": {
+    "tests": {
+      "path": "/tmp/portal-history-settled-tests-b35ba.log",
+      "sha256": "e8efd83e6bbec8ac5c18ab9dca08fdd18b8382cdf01262703b490bc5f08c76a1"
+    },
+    "browser": {
+      "path": "/tmp/portal-history-settled-browser-b35ba.log",
+      "sha256": "aee1c49d620a78cd9f018de0c01aab05e5613d61aa00dd208caad22f543f015f"
+    },
+    "build": {
+      "path": "/tmp/portal-history-settled-build-b35ba.log",
+      "sha256": "263a7530f272eb9f8e1d44b01db485e369ea4d34b557e8a8ed01d938d4baa43f"
+    },
+    "handoff": {
+      "path": "/tmp/portal-history-settled-handoff-b35ba.log",
+      "sha256": "fe4162665e67a5cc131a6b15d1d6e0fb6d442d1a0b95f8d1ccf5cdedc615e115"
+    }
+  },
+  "served": {
+    "observedAt": "2026-09-06T17:34:11.967Z",
+    "baseUrl": "http://127.0.0.1:3081/",
+    "unmocked": true,
+    "results": [
+      {
+        "width": 1440,
+        "health": 200,
+        "adjacent": true,
+        "visibleComposers": 1,
+        "box": {
+          "x": 400.5625,
+          "y": 850.8125,
+          "width": 589.515625,
+          "height": 26.1875
+        },
+        "historyBox": {
+          "x": 80,
+          "y": 34,
+          "width": 355.21875,
+          "height": 866
+        },
+        "historyState": "No sessions yet. Ask Papercup a question and your conversation will appear here.",
+        "responses": [
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          },
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          },
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          },
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          }
+        ],
+        "pageErrors": [],
+        "screenshot": ".papercusp/reports/portal-chat-history-2026-09-06/history-desktop-20260906T1734Z.png"
+      },
+      {
+        "width": 390,
+        "health": 200,
+        "adjacent": true,
+        "visibleComposers": 1,
+        "box": {
+          "x": 87,
+          "y": 850.8125,
+          "width": 220.203125,
+          "height": 26.1875
+        },
+        "historyBox": {
+          "x": 64,
+          "y": 34,
+          "width": 325,
+          "height": 294.4375
+        },
+        "historyState": "No sessions yet. Ask Papercup a question and your conversation will appear here.",
+        "responses": [
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          },
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          },
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          },
+          {
+            "path": "/api/papercup-chat/conversations",
+            "status": 200
+          }
+        ],
+        "pageErrors": [],
+        "screenshot": ".papercusp/reports/portal-chat-history-2026-09-06/history-phone-20260906T1734Z.png"
+      }
+    ]
+  },
+  "serving": {
+    "observedAt": "2026-09-06T17:34:59.820Z",
+    "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/7OORWOu1IP4jdyXJu_vDH-20260906173000829-792875-31f999cc",
+    "manifestKeys": [
+      "schemaVersion",
+      "buildId",
+      "release",
+      "sourceRoot",
+      "publishedAt",
+      "sourceRootDigest"
+    ],
+    "buildId": "7OORWOu1IP4jdyXJu_vDH",
+    "publishedAt": "2026-09-06T17:30:00.829Z",
+    "sourceRootDigest": "f18c9ea1d4a80b7c2b9cdd5f7275b2e7f97ad7cd4769a5c1ee58cca08e020e3f",
+    "currentSourceDigest": "f18c9ea1d4a80b7c2b9cdd5f7275b2e7f97ad7cd4769a5c1ee58cca08e020e3f",
+    "digestMatches": true,
+    "mainPid": 1116637,
+    "servingChildren": [
+      {
+        "pid": 1116922,
+        "cwd": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/7OORWOu1IP4jdyXJu_vDH-20260906173000829-792875-31f999cc"
+      },
+      {
+        "pid": 1117074,
+        "cwd": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/7OORWOu1IP4jdyXJu_vDH-20260906173000829-792875-31f999cc/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal"
+      }
+    ],
+    "healthStatus": 200
+  }
+}
