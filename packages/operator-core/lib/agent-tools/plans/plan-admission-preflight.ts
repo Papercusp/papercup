@@ -69,6 +69,8 @@ export interface ExactPlanAdmission {
   /** Advisory-only classifier output; never changes the admission verdict. */
   findings: PlanDagParallelismDiagnostics['findings'];
   requestedSeats: number | null;
+  /** WIP plan lanes already occupied by an assigned promoted row. */
+  occupiedWidth: number;
   executableWidth: number | null;
   seatShortfall: number | null;
   blockingRows: Array<{
@@ -211,11 +213,32 @@ export function evaluateExactPlanAdmission(args: {
       ? Math.floor(args.requestedSeats as number)
       : null;
   const laneClaimable = args.laneHealth?.effective.claimable ?? null;
-  const executableWidth = laneClaimable == null ? null : Math.min(parallelism.readyWidth, laneClaimable);
+  const unclaimedExecutableWidth = laneClaimable == null ? null : Math.min(parallelism.readyWidth, laneClaimable);
+  const wipPlanItemIds = new Set(
+    resolved.items.filter((item) => item.effectiveStatus === 'wip').map((item) => item.id),
+  );
+  const occupiedPlanItemIds = new Set(
+    activePromotedRows.flatMap((row) => {
+      if (!row.assignee) return [];
+      return provenanceIds(row).filter((planItemId) => wipPlanItemIds.has(planItemId));
+    }),
+  );
+  const occupiedWidth = occupiedPlanItemIds.size;
+  // `requestedSeats` is a target-width diagnostic for fleet launches. Include
+  // lanes already occupied by assigned WIP rows in that target comparison, but
+  // keep the plans:start (no requestedSeats) diagnostic as the unclaimed width:
+  // its caller-held bypass handles already-owned rows explicitly below.
+  const executableWidth =
+    unclaimedExecutableWidth == null
+      ? null
+      : requestedSeats == null
+        ? unclaimedExecutableWidth
+        : unclaimedExecutableWidth + occupiedWidth;
   const seatShortfall =
     requestedSeats == null || executableWidth == null ? null : Math.max(0, requestedSeats - executableWidth);
   const readyItemIds = new Set(parallelism.readyItemIds);
-  const hasExecutableGap = executableWidth != null && parallelism.readyWidth > executableWidth;
+  const hasExecutableGap =
+    unclaimedExecutableWidth != null && parallelism.readyWidth > unclaimedExecutableWidth;
   const blockingRows = hasExecutableGap
     ? activePromotedRows
         .flatMap((row) => {
@@ -266,6 +289,7 @@ export function evaluateExactPlanAdmission(args: {
     parallelism,
     findings: parallelism.findings,
     requestedSeats,
+    occupiedWidth,
     executableWidth,
     seatShortfall,
     blockingRows,
@@ -360,7 +384,8 @@ export function evaluateExactPlanAdmission(args: {
       'refused',
       'insufficient-executable-width',
       `Requested ${requestedSeats} seat(s), but the exact plan exposes executableWidth=${executableWidth} ` +
-        `(readyWidth=${parallelism.readyWidth}, laneClaimable=${args.laneHealth.effective.claimable}); ` +
+        `(readyWidth=${parallelism.readyWidth}, laneClaimable=${args.laneHealth.effective.claimable}, ` +
+        `occupiedWidth=${occupiedWidth}); ` +
         `shortfall=${seatShortfall}. Ready items: ${parallelism.readyItemIds.join(', ') || 'none'}. ` +
         `${hasExecutableGap ? `Held ready rows: ${heldReadyRows.join(', ') || 'none identified'}. ` : ''}` +
         `Blocking edges: ${edges.join(', ') || 'none'}${edgeSuffix}. ` +

@@ -420,6 +420,58 @@ describe('evaluateExactPlanAdmission', () => {
     expect(verdict.message).toContain('P-003<-P-002(todo)');
   });
 
+  it('counts assigned WIP lanes as occupied width for a wider target request', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [
+        item('P-028'),
+        item('P-029', 'wip'),
+        item('P-030', 'wip'),
+        item('P-037', 'wip'),
+        item('P-038'),
+        item('P-039'),
+      ],
+      workItems: [
+        { id: 'WI-028', family: 'issue', sourcePlanItemIds: ['P-028'], payload: null },
+        {
+          id: 'WI-029',
+          family: 'issue',
+          sourcePlanItemIds: ['P-029'],
+          payload: null,
+          assignee: 'su-live-1',
+        },
+        {
+          id: 'WI-030',
+          family: 'issue',
+          sourcePlanItemIds: ['P-030'],
+          payload: null,
+          assignee: 'su-live-2',
+        },
+        {
+          id: 'WI-037',
+          family: 'issue',
+          sourcePlanItemIds: ['P-037'],
+          payload: null,
+          assignee: 'su-live-3',
+        },
+        { id: 'WI-038', family: 'issue', sourcePlanItemIds: ['P-038'], payload: null },
+        { id: 'WI-039', family: 'issue', sourcePlanItemIds: ['P-039'], payload: null },
+      ],
+      laneHealth: lane({ issue: 3, featureReachable: false }),
+      requestedSeats: 4,
+    });
+
+    expect(verdict).toMatchObject({
+      ready: true,
+      status: 'ready',
+      reason: 'ready',
+      requestedSeats: 4,
+      occupiedWidth: 3,
+      executableWidth: 6,
+      seatShortfall: 0,
+    });
+  });
+
   it('emits held ready rows with their holder and claim time when the executable frontier is narrower', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
