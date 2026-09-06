@@ -20,6 +20,7 @@ import {
   REORIENT_BANNER,
   CARRY_DOC_MAX_TAIL_TURNS,
   CARRY_DOC_MAX_PLAN_ITEMS,
+  CARRY_DOC_MAX_BACKGROUND_TASKS,
   flagAsksAgainstFacts,
   detectRetractedContinuationRefs,
   renderRetractionGuard,
@@ -30,6 +31,7 @@ import {
   type CarryDocTailTurn,
   type CarryDocContinuation,
   type CarryDocSlotKind,
+  type CarryDocBackgroundTask,
 } from './carry-doc';
 import type { ProjectedTool } from '@papercusp/tooldef';
 
@@ -1035,5 +1037,150 @@ describe('aging ladder / budget fit (P-011)', () => {
     expect(out).toContain('## Session mode');
     expect(out).toContain('## Self-recall');
     expect(out).toContain('## Continuation (last-turn handling)');
+  });
+});
+
+/**
+ * EI-21600998523239527 — the carry document must surface the agent's OWN
+ * still-running `capability:bash` background jobs.
+ *
+ * The bug this guards: every other continuity surface the document reclaims is
+ * inert while unattended; a background job is not. One measured orphan survived a
+ * carry-respawn and burned 24,244 CPU-seconds / 18.5 GB peak RSS across 161
+ * processes, competing for pc-heavy admission against a fleet-blocking red gate,
+ * and nothing told the successor it existed.
+ */
+describe('background tasks slot (EI-21600998523239527)', () => {
+  const task = (over: Partial<CarryDocBackgroundTask> = {}): CarryDocBackgroundTask => ({
+    taskId: '0mtbao3bd1xotmym10a',
+    command: 'npm run test:affected -- --changed-paths packages/operator-core/lib/carry-doc.ts',
+    state: 'running',
+    startedAtMs: NOW - 75 * 60_000,
+    deadlineAtMs: NOW + 160 * 60_000,
+    ...over,
+  });
+
+  function bgDoc(tasks: CarryDocBackgroundTask[] | undefined): CarryDoc {
+    return {
+      brief: brief(),
+      identity: { ownerId: 'su-1', ownerLabel: 'su · su-1', harness: 'papercusp', workspaceId: 'ws-1', fleet: null, account: 'default' },
+      sessionMode: { modes: [], loopActive: false, loopIntervalSec: null },
+      planItems: [],
+      asks: [],
+      tail: [],
+      continuation: { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true },
+      backgroundTasks: tasks,
+    };
+  }
+
+  it('renders the owned job with its age, deadline and command', () => {
+    const text = renderCarryDoc(bgDoc([task()]), NOW);
+    expect(text).toContain('## Your still-running background tasks');
+    expect(text).toContain('0mtbao3bd1xotmym10a');
+    expect(text).toContain('75m old');
+    expect(text).toContain('npm run test:affected');
+    expect(text).toContain('running');
+  });
+
+  it('hands over the DURABLE task_id handle, never bash_id', () => {
+    // A bash_id resolves only "in the original launching context" — exactly what a
+    // carry-respawn destroyed. Rendering it would produce a handle that reads
+    // plausible and then fails at the moment of use.
+    const text = renderCarryDoc(bgDoc([task()]), NOW);
+    expect(text).toContain("capability:bash_output { task_id: '0mtbao3bd1xotmym10a' }");
+    expect(text).toContain("processes:kill { taskId: '0mtbao3bd1xotmym10a' }");
+    expect(text).not.toContain('bash_id');
+  });
+
+  it('states the lifetime honestly instead of implying a durable handle', () => {
+    // Otherwise the fix becomes a NEW false-confidence surface — the same class of
+    // bug as the one it exists to fix.
+    const text = renderCarryDoc(bgDoc([task()]), NOW);
+    expect(text).toContain('NOT restart-durable');
+    expect(text).toContain('re-verify');
+    // And the state shown must be sourced from the ledger, not from output bytes:
+    // a 0-byte .output after a respawn is not evidence the job died
+    // (EI-20692923474318761).
+    expect(text).toContain("State is the LEDGER's");
+  });
+
+  it('renders NOTHING — not an empty header — when the agent owns no background jobs', () => {
+    // The section's mere presence is the signal; an always-present empty header
+    // would train the successor to skip it.
+    for (const empty of [[], undefined]) {
+      const text = renderCarryDoc(bgDoc(empty), NOW);
+      expect(text).not.toContain('## Your still-running background tasks');
+    }
+  });
+
+  it('is ALWAYS-KEPT: it survives a budget that sheds every sheddable slot', () => {
+    // This is the assertion that guards the actual bug. Budget pressure correlates
+    // with a busy session, which is precisely when an orphan is most likely to
+    // exist — a document that sheds this slot re-creates the reported failure.
+    const text = renderCarryDoc(bgDoc([task()]), NOW, { budgetChars: 1 });
+    expect(text).toContain('## Your still-running background tasks');
+    expect(text).toContain('0mtbao3bd1xotmym10a');
+    // Control: a genuinely sheddable slot IS dropped at the same budget, so this
+    // test cannot pass merely because nothing was shed at all.
+    expect(text).not.toContain('## Standing carry');
+  });
+
+  it('bounds the list and reports the overflow as a count', () => {
+    const many = Array.from({ length: CARRY_DOC_MAX_BACKGROUND_TASKS + 3 }, (_, i) =>
+      task({ taskId: `task-${i}` }),
+    );
+    const text = renderCarryDoc(bgDoc(many), NOW);
+    expect(text).toContain(`task-${CARRY_DOC_MAX_BACKGROUND_TASKS - 1}`);
+    expect(text).not.toContain(`task-${CARRY_DOC_MAX_BACKGROUND_TASKS}`);
+    expect(text).toContain('and 3 more');
+    expect(text).toContain("processes:list { launchedBy: 'self', state: 'running' }");
+  });
+
+  it('tolerates a missing start time and a job with no deadline', () => {
+    const text = renderCarryDoc(bgDoc([task({ startedAtMs: null, deadlineAtMs: null })]), NOW);
+    expect(text).toContain('age unknown');
+    expect(text).toContain('no deadline');
+  });
+
+  it('buildCarryDoc reads the seam, and a throwing read yields no rows rather than a failed document', async () => {
+    const opts = {
+      workspaceId: 'ws-1',
+      harness: 'papercusp',
+      buildCarryBriefFn: async () => brief(),
+      buildAutomaticRecoveryFn: async () => null,
+      getModesFn: async () => [],
+      getPlanItemsFn: async () => [],
+      getAsksFn: async () => [],
+      getTailFn: async () => [],
+    };
+
+    const seen: Array<[string, string]> = [];
+    const built = await buildCarryDoc('su-1', {
+      ...opts,
+      getBackgroundTasksFn: async (ownerId: string, workspaceId: string) => {
+        seen.push([ownerId, workspaceId]);
+        return [task()];
+      },
+    });
+    expect(seen).toEqual([['su-1', 'ws-1']]);
+    expect(built.backgroundTasks).toEqual([task()]);
+
+    const degraded = await buildCarryDoc('su-1', {
+      ...opts,
+      getBackgroundTasksFn: async () => {
+        throw new Error('ledger unreachable');
+      },
+    });
+    expect(degraded.backgroundTasks).toEqual([]);
+    expect(degraded.identity.ownerId).toBe('su-1');
+  });
+
+  it('registers the slot in the bounded-slot audit', () => {
+    const slot = CARRY_DOC_SLOTS.find((s) => s.slot === 'backgroundTasks');
+    expect(slot).toBeDefined();
+    expect(slot!.kind).toBe('top-k');
+    expect(slot!.boundedBy).toContain(String(CARRY_DOC_MAX_BACKGROUND_TASKS));
+    // It is deliberately NOT on the shed ladder — see the always-kept test above.
+    expect([...CARRY_DOC_SHED_LADDER]).not.toContain('backgroundTasks');
   });
 });
