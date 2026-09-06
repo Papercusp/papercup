@@ -139,6 +139,7 @@ function spyDeps() {
     decideStandingApproval: vi.fn(async () => {}),
     triageAttentionItem: vi.fn(async () => {}),
     clearWorkItemOwnerGate: vi.fn(async () => {}),
+    retractStandingFact: vi.fn(async () => {}),
     closeWorkItem: vi.fn(async () => {}),
     resolveConversation: vi.fn(async () => {}),
     closeSessionGate: vi.fn(async () => {}),
@@ -352,6 +353,34 @@ describe('P-003 owner-gate terminals write the SOURCE', () => {
     expect(result.resolved).toBe(true);
     expect(carry.clearWorkItemOwnerGate).not.toHaveBeenCalled();
     expect(carry.triageAttentionItem).toHaveBeenCalled();
+  });
+
+  it('a standing-fact owner wall retracts the exact fact instead of hiding the card', async () => {
+    const fact = ownerWallToAttention({
+      source: 'standing-fact',
+      ownerId: null,
+      claim: 'credential is still required',
+      ref: 'wall:voice-credential',
+      factScope: 'harness',
+      factScopeRef: 'papercusp',
+      factKey: 'wall:voice-credential',
+      status: 'unknown',
+    });
+    const deps = spyDeps();
+    const result = await dispatchAttentionTerminalAction({
+      item: asTerminalItem(fact),
+      actionId: 'resolve',
+      deps,
+      rationale: 'credential installed',
+    });
+    expect(result.resolved).toBe(true);
+    expect(deps.retractStandingFact).toHaveBeenCalledWith({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      key: 'wall:voice-credential',
+      reason: 'credential installed',
+    });
+    expect(deps.triageAttentionItem).not.toHaveBeenCalled();
   });
 });
 

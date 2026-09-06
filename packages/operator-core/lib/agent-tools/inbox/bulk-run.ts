@@ -286,6 +286,13 @@ export function terminalDependencies(input: { call: InnerCall; workspaceId?: str
         });
       }
     },
+    retractStandingFact: ({ scope, scopeRef, key, reason }) =>
+      callRequired(call, 'facts:retract', {
+        scope,
+        ...(scopeRef ? { scopeRef } : {}),
+        key,
+        reason,
+      }),
     // A terminal state REQUIRES completion evidence and an explicit assumptions
     // declaration (work_items:set_state's own refines reject the call otherwise),
     // so the caller's audit rationale is threaded in as the completionRef rather

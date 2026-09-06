@@ -868,12 +868,15 @@ export function blockedWorkItemToAttention(i: BlockedWorkItemInput): AttentionIt
 /* ── registered owner-wall (P-005b) ─────────────────────────────────────── */
 
 export interface OwnerWallInput {
-  source: 'loop-carry-note' | 'work-item';
+  source: 'loop-carry-note' | 'work-item' | 'standing-fact';
   ownerId: string | null;
   harnessSlug?: string | null;
   claim: string;
   recheck?: string | null;
   ref?: string | null;
+  factScope?: 'workspace' | 'role' | 'owner' | 'harness' | 'work_item';
+  factScopeRef?: string | null;
+  factKey?: string | null;
   waitingHours?: number | null;
   /** Mirrors coord:walls' liveness join: `stranded` = the raising agent's
    *  session is gone, so answering alone will not resume the work. `stale`
@@ -945,14 +948,16 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
   const idPart = w.ref ?? w.ownerId ?? w.claim;
   const hours = w.waitingHours ?? 0;
   const workItemSource = w.source === 'work-item' && w.ref && /^(?:WI|EI|F)-\d+$/i.test(w.ref);
+  const standingFactSource = w.source === 'standing-fact' && Boolean(w.factScope) && Boolean(w.factKey?.trim());
   // P-003: every branch here was navigate-only, so a registered wall could never
   // be ENDED from the inbox — only talked about. A work-item-backed wall clears
   // through the same owner gate as a `work-item-needs-human` card (a real source
   // mutation); a loop-carry-note wall has no operator-writable row, so its honest
   // terminal is the acknowledgement record instead.
-  const wallTerminal: AttentionAction = workItemSource
-    ? { id: 'resolve', label: 'Clear wall' }
-    : { id: 'dismiss', label: 'Clear wall' };
+  const wallTerminal: AttentionAction =
+    workItemSource || standingFactSource
+      ? { id: 'resolve', label: 'Clear wall' }
+      : { id: 'dismiss', label: 'Clear wall' };
   const actions: AttentionAction[] =
     actionability === 'actionable' && w.ownerId
       ? [
@@ -988,7 +993,19 @@ export function ownerWallToAttention(w: OwnerWallInput): AttentionItem {
     ownerLabel: null,
     ...untriaged(),
     actions,
-    ref: { kind: 'owner-wall', wallSource: w.source, wallOwnerId: w.ownerId, wallRef: w.ref ?? null },
+    ref: {
+      kind: 'owner-wall',
+      wallSource: w.source,
+      wallOwnerId: w.ownerId,
+      wallRef: w.ref ?? null,
+      ...(standingFactSource
+        ? {
+            factScope: w.factScope,
+            factScopeRef: w.factScopeRef ?? null,
+            factKey: w.factKey!.trim(),
+          }
+        : {}),
+    },
   };
 }
 

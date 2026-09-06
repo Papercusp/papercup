@@ -382,9 +382,14 @@ export type AttentionRef =
     }
   | {
       kind: 'owner-wall';
-      wallSource: 'loop-carry-note' | 'work-item';
+      wallSource: 'loop-carry-note' | 'work-item' | 'standing-fact';
       wallOwnerId: string | null;
       wallRef: string | null;
+      /** Exact coordinates of a standing wall fact. Present only when
+       *  wallSource === 'standing-fact'; carried unchanged to facts:retract. */
+      factScope?: 'workspace' | 'role' | 'owner' | 'harness' | 'work_item';
+      factScopeRef?: string | null;
+      factKey?: string;
     }
   | { kind: 'dark-flag-ratification'; flagKey: string }
   | { kind: 'blocked-session'; sessionId: string; client: string; refId: string }

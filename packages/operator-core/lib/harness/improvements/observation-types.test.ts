@@ -212,7 +212,17 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
         commitsBehindHead: 0,
         failingTests: [],
       },
-      acceptance: { verdict: 'accept', reasoning: 'The independent grading meets this plan.' },
+      acceptance: {
+        verdict: 'accept',
+        reasoning: 'The independent grading meets this plan.',
+        seat: {
+          succeededFrom: 'su-ended-author',
+          authorSessionState: 'ended',
+          basisWorkItemId: 'WI-2147562',
+          basisPlanSlug: 'some-plan',
+          succeededAt: '2026-09-06T04:26:17.205Z',
+        },
+      },
       evidenceFingerprint: 'abc123',
       instrumentSnapshots: { flow: { verdict: 'pass' } },
     });
@@ -229,7 +239,17 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       gateVerdict: 'green',
       commitsBehindHead: 0,
     });
-    expect(out?.acceptance).toEqual({ verdict: 'accept', reasoning: 'The independent grading meets this plan.' });
+    expect(out?.acceptance).toEqual({
+      verdict: 'accept',
+      reasoning: 'The independent grading meets this plan.',
+      seat: {
+        succeededFrom: 'su-ended-author',
+        authorSessionState: 'ended',
+        basisWorkItemId: 'WI-2147562',
+        basisPlanSlug: 'some-plan',
+        succeededAt: '2026-09-06T04:26:17.205Z',
+      },
+    });
     expect(out?.evidenceFingerprint).toBe('abc123');
     expect(out?.instrumentSnapshots).toEqual({ flow: { verdict: 'pass' } });
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
@@ -385,6 +405,19 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'accept', reasoning: '   ' } })?.acceptance,
     ).toBeUndefined();
     expect(asStructuredObservation({ rubricRef: 'r', acceptance: 'accept' })?.acceptance).toBeUndefined();
+  });
+
+  it('drops a partial succession seat while retaining the otherwise valid verdict', () => {
+    expect(
+      asStructuredObservation({
+        rubricRef: 'r',
+        acceptance: {
+          verdict: 'accept',
+          reasoning: 'The independent grading meets this plan.',
+          seat: { succeededFrom: 'su-ended-author' },
+        },
+      })?.acceptance,
+    ).toEqual({ verdict: 'accept', reasoning: 'The independent grading meets this plan.' });
   });
 
   it('returns undefined for non-object / empty / unknown-only input', () => {

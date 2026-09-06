@@ -60,6 +60,68 @@ function envelope(rows: Array<Record<string, unknown>>): Envelope {
 }
 
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it("shapes checksOnly as a bounded ledger and removes the internal marker and full-read fields", () => {
+    const out = shapeWorkItemsGet(
+      {
+        ok: true,
+        __checksOnly: true,
+        results: [
+          {
+            ok: true,
+            id: "WI-checks-only",
+            workItem: {
+              id: "WI-checks-only",
+              title: "must be omitted",
+              payload: { secret: "must be omitted" },
+            },
+            checkpoint: "private narrative must be omitted",
+            checkpointChecks: {
+              count: 2,
+              cap: 12,
+              remaining: 10,
+              rows: [
+                { id: "gate-green", claim: "C".repeat(5_000) },
+                { claim: "main points at the tested commit" },
+              ],
+            },
+            checkpointAgeMs: 12,
+            checkpointUpdatedAtMs: 34,
+            checkpointContentHash: "81344e6f2817",
+          },
+          { ok: false, id: "WI-missing", error: "not found" },
+        ],
+        counts: { ok: 1, failed: 1 },
+      },
+      "trimmed",
+    ) as Record<string, any>;
+
+    expect(out.__checksOnly).toBeUndefined();
+    expect(out._shapeNote).toMatchObject({
+      tier: "trimmed",
+      checksOnly: true,
+    });
+    expect(out.results[0]).toMatchObject({
+      ok: true,
+      id: "WI-checks-only",
+      checkpointChecks: {
+        count: 2,
+        cap: 12,
+        remaining: 10,
+        rows: [
+          { id: "gate-green" },
+          { claim: "main points at the tested commit" },
+        ],
+      },
+      checkpointAgeMs: 12,
+      checkpointUpdatedAtMs: 34,
+      checkpointContentHash: "81344e6f2817",
+    });
+    expect(out.results[0].checkpointChecks.rows[0].claim).toMatch(/TRUNCATED/);
+    expect(out.results[0]).not.toHaveProperty("workItem");
+    expect(out.results[0]).not.toHaveProperty("checkpoint");
+    expect(out.results[1]).toEqual({ ok: false, id: "WI-missing", error: "not found" });
+  });
+
   it('preserves checkpoint check-row capacity in both payload tiers and compact fallback', () => {
     const checkpointChecks = { count: 10, cap: 12, remaining: 2 };
     for (const tier of ['trimmed', 'standard'] as const) {

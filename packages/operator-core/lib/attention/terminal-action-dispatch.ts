@@ -62,6 +62,14 @@ export interface TerminalActionDependencies {
     harnessSlug?: string | null;
     statusGated: boolean;
   }): Promise<void>;
+  /** Clear a wall whose SOURCE is the standing-facts ledger. Exact scope/key
+   *  coordinates come from the attention ref; callers must not infer them. */
+  retractStandingFact(input: {
+    scope: 'workspace' | 'role' | 'owner' | 'harness' | 'work_item';
+    scopeRef?: string | null;
+    key: string;
+    reason: string;
+  }): Promise<void>;
   /** P-003 — close a work-item as won't-do, carrying the caller's audit rationale
    *  as the completion evidence a terminal state requires. */
   closeWorkItem(input: { workItemId: string; harnessSlug?: string | null; rationale: string }): Promise<void>;
@@ -193,6 +201,19 @@ export async function dispatchAttentionTerminalAction(input: {
     return { resolved: true };
   }
 
+  if (isStandingFactWall(item) && (actionId === 'resolve' || actionId === 'dismiss' || actionId === 'mark-done')) {
+    const scope = refString(item, 'factScope') as 'workspace' | 'role' | 'owner' | 'harness' | 'work_item';
+    const key = refString(item, 'factKey');
+    if (!scope || !key) return { resolved: false };
+    await deps.retractStandingFact({
+      scope,
+      scopeRef: item.ref.factScopeRef == null ? null : refString(item, 'factScopeRef'),
+      key,
+      reason: rationale?.trim() || 'Owner cleared this wall from the inbox',
+    });
+    return { resolved: true };
+  }
+
   // ── P-003: the owner-gate kinds ────────────────────────────────────────────
   // `work-item-needs-human` is 46% of the bulk-run ledger and had no terminal
   // action at all: the owner could open it, chat about it, or answer it in the
@@ -290,6 +311,10 @@ export async function dispatchAttentionTerminalAction(input: {
 function isWorkItemBackedWall(item: TerminalAttentionItem): boolean {
   if (item.ref.kind !== 'owner-wall') return false;
   return item.ref.wallSource === 'work-item' && /^(?:WI|EI|F)-\d+$/i.test(refString(item, 'wallRef'));
+}
+
+function isStandingFactWall(item: TerminalAttentionItem): boolean {
+  return item.ref.kind === 'owner-wall' && item.ref.wallSource === 'standing-fact';
 }
 
 function workItemIdFor(item: TerminalAttentionItem): string {

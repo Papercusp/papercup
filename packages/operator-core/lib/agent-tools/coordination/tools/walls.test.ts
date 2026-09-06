@@ -44,14 +44,15 @@ beforeEach(() => {
   h.sql
     .mockResolvedValueOnce([]) // coord_presence
     .mockResolvedValueOnce([]) // carry_notes
-    .mockResolvedValueOnce([]); // needs-human work_items
+    .mockResolvedValueOnce([]) // needs-human work_items
+    .mockResolvedValueOnce([]); // wall: standing facts
 });
 
 describe('coord:walls handler', () => {
   it('calls getOrgPg().sql as the tagged-template function and returns an empty wall set', async () => {
     const out = (await tool.handler({}, { workspaceId: 'ws-test' } as never)) as Out;
 
-    expect(h.sql).toHaveBeenCalledTimes(3);
+    expect(h.sql).toHaveBeenCalledTimes(4);
     expect(out.data).toMatchObject({
       ok: true,
       count: 0,
@@ -93,11 +94,28 @@ describe('coord:walls — a live ask is never crowded out by older dead rows', (
     h.sql.mockReset();
     h.sql
       .mockResolvedValueOnce([
-        { owner_id: LIVE_OWNER, workspace_id: 'ws-test', heartbeat_at: new Date(now).toISOString(), host: 'h', pid: 1, source: 's', agent_role: 'su' },
-        { owner_id: DEAD_OWNER, workspace_id: 'ws-test', heartbeat_at: hoursAgo(1300).toISOString(), host: 'h', pid: 2, source: 's', agent_role: 'su' },
+        {
+          owner_id: LIVE_OWNER,
+          workspace_id: 'ws-test',
+          heartbeat_at: new Date(now).toISOString(),
+          host: 'h',
+          pid: 1,
+          source: 's',
+          agent_role: 'su',
+        },
+        {
+          owner_id: DEAD_OWNER,
+          workspace_id: 'ws-test',
+          heartbeat_at: hoursAgo(1300).toISOString(),
+          host: 'h',
+          pid: 2,
+          source: 's',
+          agent_role: 'su',
+        },
       ])
       .mockResolvedValueOnce([]) // carry_notes
-      .mockResolvedValueOnce([...ancient, live]);
+      .mockResolvedValueOnce([...ancient, live])
+      .mockResolvedValueOnce([]); // wall: standing facts
 
     h.resolveSessionStates.mockResolvedValue(
       new Map([
@@ -156,9 +174,7 @@ describe('coord:walls — a live ask is never crowded out by older dead rows', (
       { ownerId: LIVE_OWNER, status: 'waiting', waitingHours: 12 },
     ];
 
-    const preFix = [...rows]
-      .sort((a, b) => (b.waitingHours ?? -1) - (a.waitingHours ?? -1))
-      .slice(0, 3);
+    const preFix = [...rows].sort((a, b) => (b.waitingHours ?? -1) - (a.waitingHours ?? -1)).slice(0, 3);
 
     // The exact defect: the live ask is not in the window, and counting the
     // window instead of the population reports zero live asks.
@@ -178,5 +194,57 @@ describe('coord:walls — a live ask is never crowded out by older dead rows', (
     // ~12, not ~1304: the number an owner acts on is the live ask's age.
     expect(out.data.oldestWaitHours).toBeGreaterThanOrEqual(11);
     expect(out.data.oldestWaitHours).toBeLessThan(20);
+  });
+});
+
+describe('coord:walls — standing wall facts', () => {
+  it('projects exact retract coordinates and the stored recheck probe', async () => {
+    h.sql.mockReset();
+    h.sql
+      .mockResolvedValueOnce([
+        {
+          owner_id: 'su-fact-author',
+          workspace_id: 'ws-test',
+          heartbeat_at: new Date().toISOString(),
+          host: 'h',
+          pid: 3,
+          source: 'codex',
+          agent_role: 'su',
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          scope: 'harness',
+          scope_ref: 'papercusp',
+          key: 'wall:voice-credential',
+          body: 'Provide a voice credential.',
+          created_by: 'su-fact-author',
+          updated_at: new Date(),
+          harness_slug: 'papercusp',
+          recheck: { probe: 'accounts:status', falsifier: 'credential installed' },
+        },
+      ]);
+    h.resolveSessionStates.mockResolvedValue(
+      new Map([['su-fact-author', { ownerId: 'su-fact-author', sessionState: 'live' }]]),
+    );
+
+    const out = (await tool.handler({ harness: 'papercusp' }, { workspaceId: 'ws-test' } as never)) as unknown as {
+      data: { walls: Array<Record<string, unknown>> };
+    };
+
+    expect(out.data.walls).toHaveLength(1);
+    expect(out.data.walls[0]).toMatchObject({
+      source: 'standing-fact',
+      ownerId: 'su-fact-author',
+      harness: 'papercusp',
+      ref: 'wall:voice-credential',
+      factScope: 'harness',
+      factScopeRef: 'papercusp',
+      factKey: 'wall:voice-credential',
+      recheck: 'accounts:status',
+      status: 'waiting',
+    });
   });
 });

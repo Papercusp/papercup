@@ -214,6 +214,7 @@ export function acceptanceSeatRefusalHint(
   resolution: Extract<AcceptanceSeatResolution, { eligible: false }>,
   authorId: string | null,
   subjectPlan: string | null | undefined,
+  scope: { workspaceId?: string | null; harness?: string | null } = {},
 ): string {
   switch (resolution.reason) {
     case 'author_still_reachable':
@@ -221,18 +222,29 @@ export function acceptanceSeatRefusalHint(
         ` — the recorded author's session is still reachable (sessionState: ` +
         `'${resolution.authorSessionState}'), so the seat cannot be inherited; ask them to record the verdict`
       );
-    case 'caller_not_accountable_for_plan':
+    case 'caller_not_accountable_for_plan': {
+      const workspaceId = scope.workspaceId?.trim() ?? '';
+      const harnessSlug = scope.harness?.trim() ?? '';
+      const planSlug = subjectPlan?.trim() ?? '';
+      const acceptanceDrainRef = workspaceId && harnessSlug && planSlug
+        ? acceptanceDrainPlanRef({ workspaceId, harnessSlug, planSlug })
+        : null;
+      const acceptanceDrainInstruction = acceptanceDrainRef
+        ? `payload.acceptanceDrainPlan = '${acceptanceDrainRef}'`
+        : `payload.acceptanceDrainPlan using the canonical <workspace>/<harness>/<plan> ref for ` +
+          `'${planSlug || 'this rubric’s subject plan'}'`;
       return (
         ` — the recorded author's session has ended (sessionState: '${resolution.authorSessionState}'), so the ` +
         `seat MAY be inherited, but only by a session accountable for the plan: claim the plan's work-item ` +
         `or its independent acceptance-drain work-item (work_items:claim; the latter is filed with ` +
-        `payload.acceptanceDrainPlan for '${subjectPlan ?? 'this rubric’s subject plan'}') and re-emit. ` +
+        `${acceptanceDrainInstruction}) and re-emit. ` +
         `If you ARE that author under a new sid (a relaunch/carry-respawn changed your ` +
         `PAPERCUSP_SID), coord:rebind-identity { from: '${authorId ?? 'the author'}' } remains the correct ` +
         `recovery and this guard walks its audited trail. Do NOT reach for it as an unrelated PEER just to pass ` +
         `this check: it migrates the dead author's whole owner-keyed surface set (armed loops, claims, file ` +
         `locks, facts, fleet membership), which is not what recording one verdict should do`
       );
+    }
     case 'author_state_unknown':
       return (
         ` — the recorded author's session state could not be read, so seat succession cannot be authorized ` +

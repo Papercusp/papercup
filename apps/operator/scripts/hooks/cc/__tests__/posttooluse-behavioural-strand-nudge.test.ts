@@ -32,15 +32,21 @@ const HOOK = resolve(__dirname, '../posttooluse-behavioural-strand-nudge.mjs');
 const DETECTOR = resolve(ROOT, 'scripts/check-behavioural-strands.mjs');
 
 type Seam = { seam: string; before: number; after: number };
+type OutputValue = { property: string; before: string; after: string; reason?: string };
 type Detector = {
   increasedSeams: (before: string, after: string, file?: string) => Seam[];
+  diffOutputValues: (before: string, after: string, file?: string) => OutputValue[];
   repoForPath: (rel: string, subs: string[]) => { submodule: string | null; cwd: string; relPath: string };
   submodulePaths: () => string[];
 };
 type Hook = {
   nudgeFor: (p: string, deps?: Record<string, unknown>) => Promise<string | null>;
   isCandidateFile: (p: string) => boolean;
-  formatNudge: (rel: string, seams: Seam[], opts?: { baseSha?: string | null; submodule?: string | null }) => string;
+  formatNudge: (
+    rel: string,
+    seamsOrTriggers: Seam[] | { seams?: Seam[]; values?: OutputValue[] },
+    opts?: { baseSha?: string | null; submodule?: string | null },
+  ) => string;
   isDirectCliInvocation: (entryPath?: string) => boolean;
 };
 
@@ -53,6 +59,8 @@ const ONE_CALL = 'export function run(source){ return source.lexical(); }';
 const TWO_CALLS = 'export function run(source){ source.lexical(); return source.lexical(); }';
 /** Same file, edited, but the seam count is unchanged — the calibration control. */
 const ONE_CALL_EDITED = 'export function run(source){ /* comment */ return source.lexical(); }';
+const OUTPUT_BEFORE = 'export function write(rollup){ return { spentCents: rollup.potCents }; }';
+const OUTPUT_AFTER = 'export function write(rollup){ return { spentCents: rollup.pot.samples > 0 ? rollup.potCents : null }; }';
 
 /**
  * Deps that use the REAL detector but inject file content and git answers, so no tree write
@@ -125,6 +133,18 @@ describe('behavioural-strand nudge — fires on the real trap', () => {
     const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
     const { deps } = await depsFor(abs, null, TWO_CALLS);
     expect(await hook.nudgeFor(abs, deps)).toBeNull();
+  });
+
+  it('FIRES when a returned output value changes, using the real detector', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, OUTPUT_BEFORE, OUTPUT_AFTER);
+    const out = await hook.nudgeFor(abs, deps);
+    expect(out).not.toBeNull();
+    expect(out).toContain('OUTPUT-VALUE STRAND');
+    expect(out).toContain('spentCents');
+    expect(out).toContain('rollup.potCents');
+    expect(out).toContain('toHaveProperty');
   });
 });
 

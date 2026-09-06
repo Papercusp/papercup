@@ -914,6 +914,38 @@ export function normalizeScorecardRatings(
 }
 
 /**
+ * Read back the server-stamped acceptance-seat succession record without
+ * weakening the author boundary. A malformed or partial stamp is omitted, so
+ * it can never turn an unrelated scorecard into an author verdict.
+ */
+function asAcceptanceSeatSuccession(v: unknown): AcceptanceSeatSuccession | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const seat = v as Record<string, unknown>;
+  if (
+    typeof seat.succeededFrom !== 'string' ||
+    !seat.succeededFrom.trim() ||
+    typeof seat.authorSessionState !== 'string' ||
+    !seat.authorSessionState.trim() ||
+    typeof seat.basisWorkItemId !== 'string' ||
+    !seat.basisWorkItemId.trim() ||
+    typeof seat.basisPlanSlug !== 'string' ||
+    !seat.basisPlanSlug.trim() ||
+    typeof seat.succeededAt !== 'string' ||
+    !seat.succeededAt.trim() ||
+    !Number.isFinite(Date.parse(seat.succeededAt))
+  ) {
+    return undefined;
+  }
+  return {
+    succeededFrom: seat.succeededFrom,
+    authorSessionState: seat.authorSessionState,
+    basisWorkItemId: seat.basisWorkItemId,
+    basisPlanSlug: seat.basisPlanSlug,
+    succeededAt: seat.succeededAt,
+  };
+}
+
+/**
  * Narrow an unknown `payload.observation` field to the StructuredObservation
  * shape (a cheap structural check, mirroring read-items' isIdeaLifecycle). Used
  * by the READ side to surface the structured view onto a candidate without a
@@ -995,7 +1027,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (o.acceptance && typeof o.acceptance === 'object' && !Array.isArray(o.acceptance)) {
     const a = o.acceptance as Record<string, unknown>;
     if ((a.verdict === 'accept' || a.verdict === 'reject') && typeof a.reasoning === 'string' && a.reasoning.trim()) {
-      out.acceptance = { verdict: a.verdict, reasoning: a.reasoning };
+      const seat = asAcceptanceSeatSuccession(a.seat);
+      out.acceptance = { verdict: a.verdict, reasoning: a.reasoning, ...(seat ? { seat } : {}) };
     }
   }
   // EI-21394921596281409: an adequacy card must retain the exact clause/evidence

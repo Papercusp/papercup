@@ -857,4 +857,33 @@ describe('terminalDependencies plan-item wire contract (WI-41370)', () => {
     await deps.setPlanItemStatus({ slug: 'a-plan', itemId: 'P-011', status: 'done' });
     expect(String(calls[1]!.args.rationale ?? '').trim()).not.toBe('');
   });
+
+  it('retractStandingFact calls facts:retract with the exact projected coordinates', async () => {
+    const { terminalDependencies } = await import('./bulk-run');
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const deps = terminalDependencies({
+      call: (async (name: string, args: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return { ok: true };
+      }) as never,
+    });
+
+    await deps.retractStandingFact({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      key: 'wall:voice-credential',
+      reason: 'credential installed',
+    });
+    expect(calls).toEqual([
+      {
+        name: 'facts:retract',
+        args: {
+          scope: 'harness',
+          scopeRef: 'papercusp',
+          key: 'wall:voice-credential',
+          reason: 'credential installed',
+        },
+      },
+    ]);
+  });
 });

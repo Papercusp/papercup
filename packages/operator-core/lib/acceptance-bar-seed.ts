@@ -797,8 +797,9 @@ export async function seedAcceptanceBarsInTransaction(
     current_revision: number | string;
     source_bar_key: string | null;
     plan_item_id: string;
+    lifecycle_status: SpecClauseWrite['lifecycleStatus'];
   }>>`
-    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id
+    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id, r.lifecycle_status
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
         ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -828,7 +829,7 @@ export async function seedAcceptanceBarsInTransaction(
         unexpected.map((row) => row.spec_id).join(', '),
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
   }
-  const revisionBySpec = new Map(identities.map((row) => [row.spec_id, Number(row.current_revision)]));
+  const identityBySpec = new Map(identities.map((row) => [row.spec_id, row]));
   if (input.dryRun) {
     const { diffAcceptanceBarContractSnapshots } = await import('./acceptance-bar-contract-snapshot');
     const view = (criteria: ProposeRubricCriterion[], prior = false) => ({
@@ -859,8 +860,17 @@ export async function seedAcceptanceBarsInTransaction(
     };
   }
   for (const projection of built.projections) {
+    const prior = identityBySpec.get(projection.specId);
     const result = await setSpecClause(
-      { ...projection, expectedRevision: revisionBySpec.get(projection.specId) ?? 0 },
+      {
+        ...projection,
+        expectedRevision: prior ? Number(prior.current_revision) : 0,
+        // Activation re-audits refresh the projection, not its review lifecycle.
+        // Preserving the state makes unchanged writes no-ops, retaining exact
+        // evidence pins and acceptance provenance. New clauses still start draft;
+        // changed contract fields still append a revision through setSpecClause.
+        lifecycleStatus: prior?.lifecycle_status ?? projection.lifecycleStatus,
+      },
       { executor: sql, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug },
     );
     if (!['created', 'revised', 'unchanged'].includes(result.status)) {

@@ -46,6 +46,7 @@ import {
   dismissImprovement,
   deliverInboxReply,
   clearWorkItemOwnerGate,
+  retractStandingFact,
   closeWorkItem,
   clearSessionGate,
 } from './plans-api';
@@ -300,6 +301,10 @@ export async function resolveAttentionAction(
       // terminal option that silently no-ops is worse than one that fails loudly.
       async clearWorkItemOwnerGate(args) {
         const result = await clearWorkItemOwnerGate(args);
+        if (result?.error) throw new Error(result.error);
+      },
+      async retractStandingFact(args) {
+        const result = await retractStandingFact(args);
         if (result?.error) throw new Error(result.error);
       },
       async closeWorkItem(args) {

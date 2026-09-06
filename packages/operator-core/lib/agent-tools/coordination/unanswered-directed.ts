@@ -490,13 +490,15 @@ export async function fetchUnansweredDirected(
              ra.body->>'from'              AS from_id,
              ra.body->>'msg_id'            AS msg_id,
              ra.body->>'related_msg_id'    AS related_msg_id,
+             ra.body->'why'->>'goalRef'    AS goal_ref,
              -- carried SEPARATELY from related_msg_id on purpose: \`body ? 'related_msg_id'\`
              -- and \`body->>'related_msg_id' IS NOT NULL\` disagree when the key is present with
              -- a JSON null value. Zero such rows today, but loose_replies' predicate is the
              -- key-presence test, so it must stay the key-presence test.
              ra.body ? 'related_msg_id'    AS has_related,
              ra.body->'to'                 AS to_arr,
-             (ra.body->>'ts')::timestamptz AS ts
+             (ra.body->>'ts')::timestamptz AS ts,
+             (extract(epoch FROM (ra.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
         FROM harness_shared.coord_event_log ra
        WHERE ra.workspace_id = ${workspaceId}
          AND ra.surface = 'messages'
@@ -531,10 +533,12 @@ export async function fetchUnansweredDirected(
     ),
     directed AS (
       SELECT
+        e.id AS event_id,
         e.workspace_id,
         e.body->>'msg_id' AS msg_id,
         e.body->>'from' AS from_id,
         e.body->>'summary' AS summary,
+        e.body->'why'->>'goalRef' AS goal_ref,
         (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
         r AS recipient
         FROM harness_shared.coord_event_log e
@@ -631,6 +635,27 @@ export async function fetchUnansweredDirected(
            )
          )
     ),
+    -- EI-22458045233456597: one substantive reply can answer a cluster of
+    -- directed asks about the same stable goal/subject. "why.goalRef" is the
+    -- persisted one-goal pointer stamped by coord:send (explicitly or from the
+    -- sender's current goal); only an exact threaded reply to an ask in that
+    -- cluster gets this coalescing treatment. The reply timestamp/event id
+    -- keeps a later ask in the same goal open.
+    answered_goal_clusters AS MATERIALIZED (
+      SELECT DISTINCT d.workspace_id,
+             d.recipient,
+             d.from_id,
+             d.goal_ref,
+             ra.ts_ms AS reply_ts_ms,
+             ra.id AS reply_event_id
+        FROM directed d
+        JOIN roster_authored ra
+          ON ra.workspace_id = d.workspace_id
+         AND ra.from_id = d.recipient
+         AND ra.related_msg_id = d.msg_id
+       WHERE d.goal_ref IS NOT NULL
+         AND ra.goal_ref = d.goal_ref
+    ),
     -- (1) An EXACT threaded reply/ack to THIS specific ask, authored by the
     -- recipient, answers it outright — no pairing, no ambiguity. Evaluated per
     -- (msg_id, recipient), never msg_id alone: one message fans out to N
@@ -652,6 +677,17 @@ export async function fetchUnansweredDirected(
             AND ra.from_id = d.recipient
             AND ra.related_msg_id = d.msg_id
        )
+         AND NOT EXISTS (
+           SELECT 1 FROM answered_goal_clusters agc
+            WHERE agc.workspace_id = d.workspace_id
+              AND agc.recipient = d.recipient
+              AND agc.from_id = d.from_id
+              AND agc.goal_ref = d.goal_ref
+              AND (
+                agc.reply_ts_ms > d.ts_ms
+                OR (agc.reply_ts_ms = d.ts_ms AND agc.reply_event_id >= d.event_id)
+              )
+         )
     ),
     unanswered AS (
       -- (2) WI-6729: the LOOSE branch, now NARROWED and PAIRED. An un-threaded
@@ -1117,12 +1153,13 @@ export async function fetchOpenAsks(
   const workspaceId = coordWorkspaceId();
   const rows = await sql<OpenAskRow[]>`
     WITH sent AS MATERIALIZED (
-      SELECT
+             SELECT
         e.id,
         e.workspace_id,
         e.body->>'msg_id'             AS msg_id,
         e.body->>'from'               AS from_id,
         e.body->>'summary'            AS summary,
+        e.body->'why'->>'goalRef'    AS goal_ref,
         (extract(epoch FROM (e.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms,
         e.body ? 'related_msg_id'     AS has_related,
         e.body->>'related_msg_id'     AS related_msg_id,
@@ -1151,9 +1188,11 @@ export async function fetchOpenAsks(
              ra.body->>'from'              AS from_id,
              ra.body->>'msg_id'            AS msg_id,
              ra.body->>'related_msg_id'    AS related_msg_id,
+             ra.body->'why'->>'goalRef'    AS goal_ref,
              ra.body ? 'related_msg_id'    AS has_related,
              ra.body->'to'                 AS to_arr,
-             (ra.body->>'ts')::timestamptz AS ts
+             (ra.body->>'ts')::timestamptz AS ts,
+             (extract(epoch FROM (ra.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
         FROM harness_shared.coord_event_log ra
        WHERE ra.workspace_id = ${workspaceId}
          AND ra.surface = 'messages'
@@ -1187,7 +1226,25 @@ export async function fetchOpenAsks(
               AND ra.msg_id = s.related_msg_id
               AND ra.from_id = s.recipient
          )
-       )
+         )
+    ),
+    -- Mirror fetchUnansweredDirected's goal-cluster fold for the sender-side
+    -- open-ask read. Keep the same exact-thread + chronology rails so the two
+    -- surfaces cannot disagree about whether one reply settled a cluster.
+    answered_goal_clusters AS MATERIALIZED (
+      SELECT DISTINCT c.workspace_id,
+             c.recipient,
+             c.from_id,
+             c.goal_ref,
+             ra.ts_ms AS reply_ts_ms,
+             ra.id AS reply_event_id
+        FROM candidate c
+        JOIN replier_authored ra
+          ON ra.workspace_id = c.workspace_id
+         AND ra.from_id = c.recipient
+         AND ra.related_msg_id = c.msg_id
+       WHERE c.goal_ref IS NOT NULL
+         AND ra.goal_ref = c.goal_ref
     ),
     open_asks AS (
       SELECT c.*,
@@ -1201,6 +1258,17 @@ export async function fetchOpenAsks(
             AND ra.from_id = c.recipient
             AND ra.related_msg_id = c.msg_id
        )
+         AND NOT EXISTS (
+           SELECT 1 FROM answered_goal_clusters agc
+            WHERE agc.workspace_id = c.workspace_id
+              AND agc.recipient = c.recipient
+              AND agc.from_id = c.from_id
+              AND agc.goal_ref = c.goal_ref
+              AND (
+                agc.reply_ts_ms > c.ts_ms
+                OR (agc.reply_ts_ms = c.ts_ms AND agc.reply_event_id >= c.id)
+              )
+         )
     ),
     open_final AS (
       SELECT o.* FROM open_asks o

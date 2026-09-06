@@ -2717,6 +2717,16 @@ set is a RANKING, not a boundary (`--wide` runs the full reachable band). If a d
 count assertion fails, UPDATE the count — deleting or loosening it removes the only thing
 that makes the next such change detectable.
 
+The detector also covers the value half of this runtime strand: rewriting the expression
+assigned to a returned or persisted output property (for example, `spentCents:
+rollup.potCents` → a conditional) can strand a downstream assertion even when the object
+shape and every type still agree. It joins on the PROPERTY NAME, not on one matcher spelling,
+and ranks reachable tests that read the property directly, by element access, an object
+matcher, `toHaveProperty`, or an `assert.*` call. A value trigger is advisory for the same
+reason as a call-count trigger: RUN the named tests, then update the expectation only when the
+new runtime contract is intentional; otherwise repair the writer. Pin the pre-edit commit
+with `--base <sha>` when git-sync may already have swept the edit into `HEAD`.
+
 
 **A migration that ADDS a column to a `harness_shared` table can silently strand a
 sibling `*.integration.test.ts` fixture** that hand-rolls that same table via an inline

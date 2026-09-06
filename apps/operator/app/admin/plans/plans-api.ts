@@ -1189,6 +1189,23 @@ export async function clearWorkItemOwnerGate(args: {
   });
 }
 
+/** Retract a standing `wall:` fact through its owning verb. The attention ref
+ * carries the exact scope/key coordinates, so this never guesses from the
+ * display id or body. */
+export function retractStandingFact(args: {
+  scope: "workspace" | "role" | "owner" | "harness" | "work_item";
+  scopeRef?: string | null;
+  key: string;
+  reason: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  return runAgentTool("facts:retract", {
+    scope: args.scope,
+    ...(args.scopeRef ? { scopeRef: args.scopeRef } : {}),
+    key: args.key,
+    reason: args.reason,
+  });
+}
+
 /** Close a work-item as won't-do from the Queue (P-003). A terminal state
  *  requires completion evidence, so the owner's rationale carries it. */
 export function closeWorkItem(args: {

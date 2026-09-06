@@ -33,6 +33,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../roles';
 import { splitCarryNoteWalls } from '../../../carry-note';
+import { WALL_KEY_PREFIX, type FactScope } from '../../../agent-facts/store';
 import {
   classifyReadActionability,
   resolveSessionStates,
@@ -59,12 +60,17 @@ function hoursSince(ms: number | null, now: number): number | null {
 }
 
 export interface WallRow {
-  source: 'loop-carry-note' | 'work-item';
+  source: 'loop-carry-note' | 'work-item' | 'standing-fact';
   ownerId: string | null;
   harness: string | null;
   claim: string;
   recheck?: string;
   ref?: string;
+  /** Present only for the `wall:` standing-fact leg. These are the exact
+   *  facts:retract coordinates; never reconstruct them from the card id. */
+  factScope?: FactScope;
+  factScopeRef?: string | null;
+  factKey?: string;
   sinceIso: string | null;
   waitingHours: number | null;
   /** waiting = actionable; stale = draining; stranded = ended/suspect; unknown
@@ -136,15 +142,17 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   // ── Liveness inputs: the shared oracle decides whether an answer has a live
   // waiter. Keep the full presence row rather than rebuilding a heartbeat-only
   // rule here.
-  const presence = await sql<Array<{
-    owner_id: string;
-    workspace_id: string;
-    heartbeat_at: string | null;
-    host: string | null;
-    pid: number | null;
-    source: string | null;
-    agent_role: string | null;
-  }>>`
+  const presence = await sql<
+    Array<{
+      owner_id: string;
+      workspace_id: string;
+      heartbeat_at: string | null;
+      host: string | null;
+      pid: number | null;
+      source: string | null;
+      agent_role: string | null;
+    }>
+  >`
     SELECT owner_id, workspace_id, heartbeat_at::text AS heartbeat_at,
            host, pid, source, agent_role
       FROM harness_shared.coord_presence
@@ -190,10 +198,15 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
   }
 
   // ── Source 2: work-items parked in needs-human ───────────────────────────
-  const items = await sql<Array<{
-    feature_id: string; title: string | null; harness_slug: string | null;
-    taken_by: string | null; last_progress_at: Date | null;
-  }>>`
+  const items = await sql<
+    Array<{
+      feature_id: string;
+      title: string | null;
+      harness_slug: string | null;
+      taken_by: string | null;
+      last_progress_at: Date | null;
+    }>
+  >`
     SELECT feature_id, title, harness_slug, taken_by, last_progress_at
       FROM harness_shared.work_items
      WHERE (workspace_id = ${ws} OR workspace_id = 'default')
@@ -209,6 +222,76 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
       harness: it.harness_slug,
       claim: it.title ?? it.feature_id,
       ref: it.feature_id,
+      sinceIso: sinceMs != null ? new Date(sinceMs).toISOString() : null,
+      waitingHours: hoursSince(sinceMs, now),
+      status: 'unknown',
+    });
+  }
+
+  // ── Source 3: live standing facts in the explicit `wall:` slot ───────────
+  //
+  // A wall fact is already the durable, owner-gated source of truth. Project it
+  // into this existing union rather than inventing a parallel queue. Scope is
+  // preserved verbatim because it is the address facts:retract needs; harness
+  // scope is resolved for filtering/display, and a work_item-scoped fact joins
+  // the existing work-items view only to recover that item's harness.
+  const factHarness = opts.harness ?? null;
+  const facts = await sql<
+    Array<{
+      scope: FactScope;
+      scope_ref: string | null;
+      key: string;
+      body: string;
+      created_by: string;
+      updated_at: Date | null;
+      harness_slug: string | null;
+      recheck: unknown;
+    }>
+  >`
+    SELECT f.scope, f.scope_ref, f.key, f.body, f.created_by,
+           f.updated_at, CASE
+             WHEN f.scope = 'harness' THEN f.scope_ref
+             WHEN f.scope = 'work_item' THEN wi.harness_slug
+             ELSE NULL
+           END AS harness_slug,
+           f.recheck
+      FROM harness_shared.agent_facts f
+      LEFT JOIN harness_shared.work_items wi
+        ON f.scope = 'work_item'
+       AND wi.workspace_id = f.workspace_id
+       AND wi.feature_id = f.scope_ref
+     WHERE (f.workspace_id = ${ws} OR f.workspace_id = 'default')
+       AND f.key LIKE ${WALL_KEY_PREFIX + '%'}
+       AND f.superseded_at IS NULL
+       AND f.retracted_at IS NULL
+       AND f.expires_at > now()
+       AND (${opts.ownerId ?? null}::text IS NULL OR f.created_by = ${opts.ownerId ?? null})
+       AND (
+         ${factHarness}::text IS NULL
+         OR f.scope IN ('workspace', 'owner', 'role')
+         OR (f.scope = 'harness' AND f.scope_ref = ${factHarness})
+         OR (f.scope = 'work_item' AND wi.harness_slug = ${factHarness})
+       )
+  `;
+  for (const fact of facts) {
+    const sinceMs = fact.updated_at ? new Date(fact.updated_at).getTime() : null;
+    const recheck =
+      fact.recheck &&
+      typeof fact.recheck === 'object' &&
+      !Array.isArray(fact.recheck) &&
+      typeof (fact.recheck as { probe?: unknown }).probe === 'string'
+        ? (fact.recheck as { probe: string }).probe.trim()
+        : '';
+    walls.push({
+      source: 'standing-fact',
+      ownerId: fact.created_by || null,
+      harness: fact.harness_slug,
+      claim: fact.body,
+      ...(recheck ? { recheck } : {}),
+      ref: fact.key,
+      factScope: fact.scope,
+      factScopeRef: fact.scope_ref,
+      factKey: fact.key,
       sinceIso: sinceMs != null ? new Date(sinceMs).toISOString() : null,
       waitingHours: hoursSince(sinceMs, now),
       status: 'unknown',
@@ -269,8 +352,7 @@ export async function listOwnerWalls(opts: ListOwnerWallsOpts = {}): Promise<{
     // The oldest ACTIONABLE wall when there is one — that is the number an owner
     // acts on. Falling back to the oldest row overall keeps a stranded-only read
     // informative instead of reporting null.
-    oldestWaitHours:
-      (waitingRows[0]?.waitingHours ?? eligible[0]?.waitingHours) ?? null,
+    oldestWaitHours: waitingRows[0]?.waitingHours ?? eligible[0]?.waitingHours ?? null,
     total: eligible.length,
     returned: filtered.length,
     truncatedByLimit: eligible.length > filtered.length,
@@ -282,7 +364,7 @@ export default defineTool({
   description:
     'What is BLOCKED ON THE OWNER right now — every agent parked on a decision, credential, or approval only a human can give. ' +
     'Unions the two surfaces where agents are already required to register owner-gated blockers: loop carry-note walls ' +
-    '(loop:checkpoint { walls }) and work-items in needs-human. Each row carries the ask VERBATIM, how long it has been ' +
+    '(loop:checkpoint { walls }), work-items in needs-human, and live `wall:` standing facts. Each row carries the ask VERBATIM, how long it has been ' +
     'waiting, the re-check command, and — critically — whether the blocked agent is still ALIVE (waiting) or its session ' +
     'has died (stranded: answering will not resume it; it must be respawned). Live asks rank first, then oldest-wait.',
   guidance: {
@@ -297,7 +379,7 @@ export default defineTool({
       'coord:walls → answer the claim (coord:send to the ownerId), then the agent clears it via loop:checkpoint { walls: [...] } ' +
       '(pass the remaining set; [] clears all). A `stranded` row needs a respawn as well as an answer — the waiter is gone.',
     returns:
-      '{ ok, count, returned, truncatedByLimit, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, recheck?, ref?, sinceIso, waitingHours, status }] }. ' +
+      '{ ok, count, returned, truncatedByLimit, waiting, stranded, oldestWaitHours, walls: [{ source, ownerId, harness, claim, recheck?, ref?, factScope?, factScopeRef?, factKey?, sinceIso, waitingHours, status }] }. ' +
       '`count`/`waiting`/`stranded` are a census over the whole population; `returned` is the row-list size and `truncatedByLimit` says rows were omitted. ' +
       'status: waiting = agent alive and parked on you; stranded = its session died (answer AND respawn); unknown = no presence row.',
     seeAlso: ['coord:presence', 'coord:send', 'loop:checkpoint', 'work_items:list'],

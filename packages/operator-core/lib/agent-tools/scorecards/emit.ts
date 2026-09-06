@@ -645,7 +645,10 @@ export async function emitScorecard(
             error:
               `acceptance must be recorded by the acceptance-rubric author ('${implementer ?? 'unknown'}'), ` +
               `not grader '${input.createdBy}' — independent graders emit ratings without acceptance` +
-              acceptanceSeatRefusalHint(seat, implementer, rubric.subjectPlan ?? null),
+              acceptanceSeatRefusalHint(seat, implementer, rubric.subjectPlan ?? null, {
+                workspaceId: identityWorkspace,
+                harness: input.ctxHarness ?? null,
+              }),
           };
         }
       }

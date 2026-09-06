@@ -6,9 +6,12 @@
 //
 // THE TRAP
 //   Adding a CALL to an injected collaborator inside a shared lib changes HOW MANY TIMES
-//   that seam is called. Every test in another workspace that asserts on the call COUNT or
-//   ORDER — `toHaveBeenCalledTimes`, `callCount`, `.mock.calls`, `expect(x).not.toHaveBeenCalled()`
-//   — is instantly stranded, in files your change never touched.
+//   that seam is called. Rewriting a returned or persisted output PROPERTY can change its
+//   runtime value while keeping the object shape and types identical. Every test in another
+//   workspace that asserts on the call COUNT/ORDER or changed output value —
+//   `toHaveBeenCalledTimes`, `callCount`, `.mock.calls`, `expect(x).not.toHaveBeenCalled()`,
+//   direct property reads, object matchers, `toHaveProperty`, or `assert.*` — is instantly
+//   stranded, in files your change never touched.
 //
 //   This class is invisible to BOTH of the checks an author naturally runs:
 //     - `lint:tsc` cannot see it. The types did not change; only a runtime count did.
@@ -180,21 +183,46 @@ export function findRepoRoot(filePath, exists = existsSync) {
  * it turns the prescribed command into a reproduction of THIS comparison rather than a
  * fresh, decaying one — see "WHY THE PRESCRIBED COMMAND IS ANCHORED" in the header.
  */
-export function formatNudge(relPath, seams, { baseSha = null, submodule = null } = {}) {
+export function formatNudge(relPath, seamsOrTriggers, { baseSha = null, submodule = null } = {}) {
+  // Keep the old `(relPath, seams, opts)` shape for installed hooks and third-party callers;
+  // the detector's value-aware form passes `{ seams, values }` as the second argument.
+  const seams = Array.isArray(seamsOrTriggers) ? seamsOrTriggers : seamsOrTriggers?.seams ?? [];
+  const values = Array.isArray(seamsOrTriggers) ? [] : seamsOrTriggers?.values ?? [];
+  const hasCallTriggers = seams.length > 0;
+  const hasValueTriggers = values.length > 0;
   const lines = [
-    '⚠ SEAM CALL-COUNT INCREASE — you may have just stranded call-count assertions you cannot see.',
+    hasCallTriggers && hasValueTriggers
+      ? '⚠ BEHAVIOURAL STRAND RISK — a seam call count and an output value changed; downstream assertions may be stale.'
+      : hasValueTriggers
+        ? '⚠ OUTPUT-VALUE STRAND — you may have just changed a downstream runtime value contract you cannot see.'
+        : '⚠ SEAM CALL-COUNT INCREASE — you may have just stranded call-count assertions you cannot see.',
     `  ${relPath}`,
   ];
   for (const s of seams) {
     lines.push(`    • ${s.seam}  (called ${s.before}× → ${s.after}×)`);
   }
+  if (hasCallTriggers) {
+    lines.push(
+      '',
+      '  Every test in ANOTHER workspace asserting on this seam’s call count or order just went',
+      '  stale — toHaveBeenCalledTimes, callCount, .mock.calls, not.toHaveBeenCalled.',
+    );
+  }
+  if (hasValueTriggers) {
+    lines.push(
+      '',
+      '  Every test in ANOTHER workspace asserting on a changed output PROPERTY may still encode',
+      '  the old value — direct reads, element access, object matchers, toHaveProperty, assert.*.',
+      '  The property name is the stable join key; the writer expression may have been rewritten.',
+    );
+    for (const value of values) {
+      lines.push(`    • ${value.property}  (${value.before} → ${value.after})`);
+    }
+  }
   lines.push(
     '',
-    '  Every test in ANOTHER workspace asserting on this seam’s call count or order just went',
-    '  stale — toHaveBeenCalledTimes, callCount, .mock.calls, not.toHaveBeenCalled.',
-    '',
-    '  Neither check you are about to run can see this:',
-    '    • lint:tsc  — the TYPES did not change, only a runtime count. It will be clean.',
+    '  Neither check you are about to run can see this runtime strand:',
+    '    • lint:tsc  — the TYPES may be unchanged, so it can be clean.',
     '    • test:affected — its radius is the workspaces your changed PATHS map into; the',
     '      stranded fixtures are in a DIFFERENT one, so it will not select them.',
     '  The next thing that notices is the fleet green-checkpoint, hours from now, for everyone.',
@@ -222,10 +250,20 @@ export function formatNudge(relPath, seams, { baseSha = null, submodule = null }
     '  The named set is a RANKING, not a boundary: the run prints both band sizes, and',
     '  `--wide` runs the full reachable band if the narrowed one looks wrong.',
     '',
-    '  Adding a call is usually CORRECT — this is a prompt to verify, not a verdict. If a',
-    '  downstream count assertion now fails, UPDATE it to the new count; do not delete or',
-    '  loosen it, because that assertion is what makes the next such change detectable.',
   );
+  if (hasCallTriggers) {
+    lines.push(
+      '  Adding a call is usually CORRECT — this is a prompt to verify, not a verdict. If a',
+      '  downstream count assertion now fails, UPDATE it to the new count; do not delete or',
+      '  loosen it, because that assertion is what makes the next such change detectable.',
+    );
+  }
+  if (hasValueTriggers) {
+    lines.push(
+      '  A value rewrite may be intentional — this is a prompt to verify, not a verdict. Run',
+      '  the named tests, then update the expectation only when the new runtime contract is right.',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -278,9 +316,12 @@ export async function nudgeFor(filePath, deps = {}) {
   const afterText = readFile(abs);
   if (beforeText === afterText) return null;
 
-  const seams = detector.increasedSeams(beforeText, afterText, relPath);
-  if (!seams || !seams.length) return null;
-  return formatNudge(relPath, seams, { baseSha, submodule });
+  const seams = detector.increasedSeams(beforeText, afterText, relPath) ?? [];
+  const values = typeof detector.diffOutputValues === 'function'
+    ? detector.diffOutputValues(beforeText, afterText, relPath) ?? []
+    : [];
+  if (!seams.length && !values.length) return null;
+  return formatNudge(relPath, { seams, values }, { baseSha, submodule });
 }
 
 /**
@@ -375,6 +416,7 @@ async function selfTest() {
   const SEAMS = [{ seam: 'deps.emit', before: 1, after: 3 }];
   const fakeDetector = (calls = null) => ({
     increasedSeams: (before, after) => (before === after ? [] : SEAMS),
+    diffOutputValues: () => [],
     submodulePaths: () => ['libs/generic/search'],
     repoForPath: (file, subs) => {
       const hit = subs.find((s) => file === s || file.startsWith(`${s}/`));

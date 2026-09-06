@@ -174,7 +174,9 @@ describe('the second trigger: a writer output value changed', () => {
   it('also recognizes an object passed directly to a writer call', () => {
     const before = `await db.update(goals).set({ spentCents: rollup.potCents });`;
     const after = `await db.update(goals).set({ spentCents: rollup.pot.samples > 0 ? rollup.potCents : null });`;
-    expect(diffOutputValues(before, after, 'spend-rollup.ts').map(({ property }) => property)).toEqual(['spentCents']);
+    expect(
+      diffOutputValues(before, after, 'spend-rollup.ts').map(({ property }: { property: string }) => property),
+    ).toEqual(['spentCents']);
   });
 
   it('stays silent on formatting/comments and on an unrelated local object', () => {

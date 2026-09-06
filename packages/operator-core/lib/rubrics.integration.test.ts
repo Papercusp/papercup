@@ -1272,12 +1272,13 @@ describe('workspace scope follows activeWorkspaceId (WI-976 regression)', () => 
 describe('template_data persistence boundary — the set-template-data door', () => {
   async function seedBarContract(subject: string) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
+    const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
     const workspaceId = activeWorkspaceId();
     const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: active\n---\n\n## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,acceptance_bar_epoch,acceptance_bar_cohort)
-      VALUES (${workspaceId},'papercusp',${subject},${content},md5(${content}),1,'METHOD pins','active','su-test',1,'post-epoch')`;
+      VALUES (${workspaceId},'papercusp',${subject},${content},${hashPlanContent(content)},1,'METHOD pins','active','su-test',1,'post-epoch')`;
     for (const [index, item] of ['P-001', 'P-002'].entries()) {
       await db.adminSql`INSERT INTO harness_shared.plan_items
         (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
@@ -1292,6 +1293,56 @@ describe('template_data persistence boundary — the set-template-data door', ()
     if (!seeded.ok) throw new Error(seeded.message);
     return { ...seeded, workspaceId, subject };
   }
+
+  it.each(['active', 'accepted'] as const)(
+    'activation re-audit preserves an unchanged %s clause and its exact evidence revision',
+    async (lifecycleStatus) => {
+      const { workspaceId, subject, rubricSlug } = await seedBarContract(`reaudit-${lifecycleStatus}`);
+      const { listSpecClauses, setSpecClause, specClauseContentHash } = await import('./agent-tools/plans/spec-clauses-store');
+      const { recordCurrentActivationAudit } = await import('./plan-audits');
+      const scope = { harnessSlug: 'papercusp', planSlug: subject };
+      const initial = await listSpecClauses(scope);
+      expect(initial).toHaveLength(2);
+      expect(initial.map((clause) => clause.lifecycleStatus)).toEqual(['draft', 'draft']);
+      const draft = initial[0]!;
+      const write = { ...draft, ...scope, expectedRevision: draft.revision, lifecycleStatus, actorId: 'clause-reviewer' };
+      expect(await setSpecClause(write)).toMatchObject({ status: 'revised', revision: 2 });
+      const before = await listSpecClauses(scope);
+      const reviewed = before[0]!;
+      expect(reviewed).toMatchObject({ lifecycleStatus, revision: 2, acceptedBy: 'clause-reviewer' });
+      expect(reviewed.acceptedAt).not.toBeNull();
+      // Permanent pre-fix control: replaying the builder's draft changes the
+      // content hash, invalidating an otherwise current evidence revision.
+      expect(specClauseContentHash({ ...write, lifecycleStatus: 'draft' })).not.toBe(reviewed.contentHash);
+
+      await db.adminSql`
+        INSERT INTO harness_shared.plan_revisions
+          (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+           rationale, author_kind, author_id, created_at)
+        SELECT workspace_id, harness_slug, plan_slug, 1, content_hash, content,
+               'activation fixture', 'agent', 'su-test', 1
+          FROM harness_shared.harness_plans
+         WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
+      const rubricBefore = await rubrics.getRubric(rubricSlug);
+      const audit = await recordCurrentActivationAudit({
+        workspaceId, harnessSlug: 'papercusp', planSlug: subject, createdBy: 'audit-reviewer',
+        activation: {
+          sourceRanges: [{ sourceKind: 'codex', sessionId: 'reaudit-fixture', fromTurn: 0, toTurn: 0 }],
+          mappings: ['P-001', 'P-002'].map((item, index) => ({
+            id: `M-00${index + 1}`, sourceRefs: ['session_turn:codex:reaudit-fixture:0'],
+            requirement: `Preserve outcome ${index + 1}`, planTargets: [item], disposition: 'covered' as const,
+          })),
+          repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [],
+        },
+      });
+      expect(audit.ok).toBe(true);
+      // Exact equality includes the revision, content hash, acceptance author,
+      // acceptance time, and the untouched sibling's draft lifecycle.
+      expect(await listSpecClauses(scope)).toEqual(before);
+      expect((await listSpecClauses({ ...scope, includeHistory: true }))).toHaveLength(3);
+      expect((await rubrics.getRubric(rubricSlug))?.revision).toBe(rubricBefore?.revision);
+    },
+  );
 
   it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject');

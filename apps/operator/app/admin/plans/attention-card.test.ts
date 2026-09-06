@@ -18,6 +18,10 @@ vi.mock('./plans-api', () => ({
   resolveConversationAnswer: vi.fn(async () => ({ ok: true, state: 'resolved' })),
   dismissImprovement: vi.fn(async () => ({ ok: true, closed: true })),
   deliverInboxReply: vi.fn(async () => ({ ok: true, live: true, delivered: true, woken: 1 })),
+  clearWorkItemOwnerGate: vi.fn(async () => ({ ok: true })),
+  closeWorkItem: vi.fn(async () => ({ ok: true })),
+  clearSessionGate: vi.fn(async () => ({ ok: true })),
+  retractStandingFact: vi.fn(async () => ({ ok: true })),
 }));
 
 import {
@@ -37,6 +41,7 @@ import {
   resolveConversationAnswer,
   dismissImprovement,
   deliverInboxReply,
+  retractStandingFact,
 } from './plans-api';
 import type { AttentionItem } from './plans-api';
 
@@ -390,6 +395,33 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     // It does NOT touch the plan-item / escalation backends.
     expect(setItemStatus).not.toHaveBeenCalled();
     expect(resolveEscalation).not.toHaveBeenCalled();
+  });
+
+  it('standing-fact wall Resolve → facts:retract with exact ref coordinates', async () => {
+    const factWall = item({
+      id: 'owner-wall:standing-fact:wall:voice-credential',
+      kind: 'owner-wall',
+      source: 'harness',
+      actions: [{ id: 'resolve', label: 'Clear wall', primary: true }],
+      ref: {
+        kind: 'owner-wall',
+        wallSource: 'standing-fact',
+        wallOwnerId: null,
+        wallRef: 'wall:voice-credential',
+        factScope: 'harness',
+        factScopeRef: 'papercusp',
+        factKey: 'wall:voice-credential',
+      },
+    });
+    const result = await resolveAttentionAction(factWall, 'resolve');
+    expect(result.resolved).toBe(true);
+    expect(retractStandingFact).toHaveBeenCalledWith({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      key: 'wall:voice-credential',
+      reason: 'Owner cleared this wall from the inbox',
+    });
+    expect(triageAttentionItem).not.toHaveBeenCalled();
   });
 
   // D-027 follow-on (1): inline disposition for the folded kinds.

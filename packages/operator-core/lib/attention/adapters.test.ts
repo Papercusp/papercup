@@ -701,6 +701,30 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(a.body).toContain('LIVENESS UNKNOWN');
   });
 
+  it('owner-wall: a standing fact preserves exact facts:retract coordinates', () => {
+    const a = ownerWallToAttention({
+      source: 'standing-fact',
+      ownerId: null,
+      claim: 'Owner must provide the credential.',
+      ref: 'wall:voice-credential',
+      factScope: 'harness',
+      factScopeRef: 'papercusp',
+      factKey: 'wall:voice-credential',
+      status: 'unknown',
+    });
+
+    expect(a.actions[0]).toMatchObject({ id: 'resolve', label: 'Clear wall', primary: true });
+    expect(a.ref).toEqual({
+      kind: 'owner-wall',
+      wallSource: 'standing-fact',
+      wallOwnerId: null,
+      wallRef: 'wall:voice-credential',
+      factScope: 'harness',
+      factScopeRef: 'papercusp',
+      factKey: 'wall:voice-credential',
+    });
+  });
+
   it('dark-flag-ratification: a Decision naming the flag key, falling back to a generic body', () => {
     const withReason = darkFlagRatificationToAttention({
       flagKey: 'papercusp-open-signup',

@@ -716,6 +716,9 @@ export default defineTool({
                     claim: w.claim,
                     recheck: w.recheck ?? null,
                     ref: w.ref ?? null,
+                    factScope: w.factScope,
+                    factScopeRef: w.factScopeRef,
+                    factKey: w.factKey,
                     waitingHours: w.waitingHours,
                     status: w.status,
                     actionability: w.actionability,
@@ -991,9 +994,7 @@ export default defineTool({
     // documented below as "the complete-feed count, not the page count" — with
     // a scope argument in play, the complete feed IS the scoped one, and
     // handing back fleet-wide numbers would make a scoped read's badge lie.
-    const scopedTierCounts = ownerFilter
-      ? groupByTier(scopedGroups.flatMap((g) => g.items)).counts
-      : tierCounts;
+    const scopedTierCounts = ownerFilter ? groupByTier(scopedGroups.flatMap((g) => g.items)).counts : tierCounts;
 
     // Apply the presentation window only after the complete source aggregation
     // has been built and cached. Counts/detail consumers can therefore request
