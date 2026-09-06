@@ -160,6 +160,12 @@ import {
 } from "./desktop-perf-gate";
 import { runDeltaGate, deltaGatePolicyFromEnv } from "./delta-gate";
 import { heldGateAlert } from "./held-gate-alarm";
+import {
+  createSetupStretchStamps,
+  formatDominantPhaseClause,
+  formatSetupSubPhaseLine,
+  summarizeSetupStretch,
+} from "./setup-stretch-stamps";
 import { typecheckFailureBanner } from "../gate-artifact-verdict-tail";
 // WI-6441 — the ONE seam that parses vitest's output. Reaching across into `scripts/`
 // (rather than the reverse) mirrors `operator-core/lib/content-lint/conflict-markers.ts`
@@ -10573,6 +10579,11 @@ async function runGreenCheckpointInner(
    * different question that rule cannot: WHERE that age came from.
    */
   const candidateSelectedAtMs = Date.now();
+  // P-005 (gate-latency-selection-and-retry-policy-2026-09-06): WI-7069 measures the WHOLE
+  // selection→suite stretch; these stamps say WHICH step of it took the time, so the warning
+  // below can name the dominant phase instead of guessing at setupTree. Diagnostic only, like
+  // everything else on this path.
+  const setupStretch = createSetupStretchStamps();
   /**
    * PUBLISH the candidate — the run's own answer to "which sha are you judging?".
    *
@@ -10626,6 +10637,7 @@ async function runGreenCheckpointInner(
     stage: "pre-materialization" | "post-materialization-backstop",
   ): Promise<{ file: string; error: string }[]> => {
     if (!deps.ensureMigrationsCurrent) return [];
+    const preflightStartedAtMs = Date.now();
     try {
       const migrated = await deps.ensureMigrationsCurrent(
         candidateMigrationInput,
@@ -10645,6 +10657,8 @@ async function runGreenCheckpointInner(
         `migration preflight (${stage}) skipped (${e instanceof Error ? e.message : e})`,
       );
       return [];
+    } finally {
+      setupStretch.stamp(`migration-preflight:${stage}`, preflightStartedAtMs);
     }
   };
   const pendingMigrationsResult = (
@@ -10748,10 +10762,15 @@ async function runGreenCheckpointInner(
   const stopMaterializationHeartbeat =
     startMaterializationHeartbeat(phaseLockDir);
   let setupIdentity: void | CheckpointSetupIdentity;
+  const setupTreeStartedAtMs = Date.now();
   try {
     setupIdentity = await deps.setupTree(candidate, setupOptions);
   } finally {
     stopMaterializationHeartbeat();
+    // The whole call: exact-source prepare + dependency-generation select + the pc-heavy slot
+    // wait + the setup-release-checkout copy. The real setupTree logs those sub-phases itself
+    // (`setup-tree phase: …` lines) so a dominant setup-tree can be read one level deeper.
+    setupStretch.stamp("setup-tree", setupTreeStartedAtMs);
   }
 
   // EI-18757156963245979: (re)enter the SUITE phase after materialization. This must be
@@ -10813,6 +10832,7 @@ async function runGreenCheckpointInner(
   // incident cost two agents hours misdiagnosing). Purely diagnostic: never blocks or
   // alters the advance/hold decision, same discipline as the migration preflight above.
   if (deps.checkTreeDrift) {
+    const treeDriftStartedAtMs = Date.now();
     try {
       const drift = await deps.checkTreeDrift();
       if (drift && !drift.skipped) {
@@ -10838,8 +10858,11 @@ async function runGreenCheckpointInner(
       deps.log(
         `tree-drift preflight failed (${e instanceof Error ? e.message : e})`,
       );
+    } finally {
+      setupStretch.stamp("tree-drift-preflight", treeDriftStartedAtMs);
     }
   }
+  const earlyTypecheckStartedAtMs = Date.now();
   // WI-38422: reject a candidate-scoped operator-core type regression BEFORE paying for
   // the full affected-test sweep. This deliberately reuses BOTH existing seams:
   // `changedFilesForRange` is the exact committed last-green..candidate diff (including
@@ -10962,6 +10985,9 @@ async function runGreenCheckpointInner(
       }
     }
   }
+  if (deps.runChangedFileTypecheckPreflight && deps.changedFilesForRange) {
+    setupStretch.stamp("early-typecheck-preflight", earlyTypecheckStartedAtMs);
+  }
   // WI-7069: report the selection→suite gap RIGHT BEFORE judging — the last moment at which
   // the number is still complete, and the first at which it is actionable. Fail-soft in every
   // direction: a git failure here degrades to logging the gap alone, and nothing below reads
@@ -10969,6 +10995,9 @@ async function runGreenCheckpointInner(
   let candidateCommittedAtSecForVerdict: number | null = null;
   if (!earlyPreflightFailure) {
     const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
+    // P-005: attribute the stretch to its stamped phases. Rendered on BOTH branches, so a
+    // healthy run leaves a baseline in every log and a slow one names its dominant phase.
+    const stretch = summarizeSetupStretch(setupStretch.stamps, selectionToSuiteMs);
     let committedNote = "";
     try {
       const committedAtSec = await commitUnixTime(
@@ -10989,16 +11018,21 @@ async function runGreenCheckpointInner(
     const gapMin = Math.round(selectionToSuiteMs / 60_000);
     const line =
       `candidate-age: selected ${candidate.slice(0, 8)} ${gapMin}m ago, judging it now` +
-      `${committedNote} (setup + preflights + slot wait all elapse while the candidate stays pinned)`;
+      `${committedNote} (setup + preflights + slot wait all elapse while the candidate stays pinned; ` +
+      `${stretch.breakdown})`;
     if (selectionToSuiteMs > CANDIDATE_SELECTION_TO_SUITE_WARN_MS) {
       // Loud, and states the consequence rather than just the number: a verdict written from
       // here describes a tree that is already this far behind, and every downstream reader
       // (agents chasing the named failing tests) will treat it as current unless told.
+      // P-005: the culprit is MEASURED, not guessed — the dominant phase clause replaces the
+      // old fixed "suspect setup-release-checkout.sh" text, which was right only while that
+      // script was the sole unbounded call on this path.
       deps.log(
         `⚠ ${line} — this exceeds the ${Math.round(CANDIDATE_SELECTION_TO_SUITE_WARN_MS / 60_000)}m ` +
           `expected setup budget, so the verdict about to be produced describes a STALE tree. ` +
-          `Suspect a blocked step between selection and here (setupTree's setup-release-checkout.sh ` +
-          `is unbounded — WI-7069), not a bad candidate choice.`,
+          `Suspect a blocked step between selection and here — ` +
+          `${formatDominantPhaseClause(stretch, selectionToSuiteMs)} (WI-7069) — ` +
+          `not a bad candidate choice.`,
       );
     } else {
       deps.log(line);
@@ -16850,11 +16884,19 @@ export function realCheckpointDeps(
         stdout: "",
         stderr: "",
       };
+      // P-005: the materialization exec below spends its first stretch queued for a pc-heavy
+      // slot and emits nothing until admitted, so the first setup-release stdout line is the
+      // best available marker of "the copy actually started". Reported as an approximation.
+      let materializationStartedAtMs: number | null = null;
+      let firstSetupStdoutAtMs: number | null = null;
       const relaySetupOutput = (stream: "stdout" | "stderr", text: string) => {
         const lines = `${setupOutputRemainders[stream]}${text}`.split(/\r?\n/);
         setupOutputRemainders[stream] = lines.pop() ?? "";
         for (const line of lines) {
-          if (line.trim()) log(`setup-release ${stream}: ${line}`);
+          if (line.trim()) {
+            if (stream === "stdout" && firstSetupStdoutAtMs === null) firstSetupStdoutAtMs = Date.now();
+            log(`setup-release ${stream}: ${line}`);
+          }
         }
       };
       const flushSetupOutput = () => {
@@ -16863,12 +16905,43 @@ export function realCheckpointDeps(
           if (remainder.trim()) log(`setup-release ${stream}: ${remainder}`);
           setupOutputRemainders[stream] = "";
         }
+        if (materializationStartedAtMs !== null) {
+          const slotWaitNote =
+            firstSetupStdoutAtMs !== null
+              ? `≈${Math.round((firstSetupStdoutAtMs - materializationStartedAtMs) / 1000)}s pc-heavy slot wait before first setup-release output`
+              : "no setup-release stdout observed, slot wait unknown";
+          log(
+            formatSetupSubPhaseLine(
+              "setup-tree",
+              "materialization",
+              Date.now() - materializationStartedAtMs,
+              slotWaitNote,
+            ),
+          );
+          materializationStartedAtMs = null;
+        }
       };
-      if (!options?.preparedSource) await prepareExactSource(ref);
+      // P-005: sub-phase lines for the outer `setup-tree` stamp (see setupStretch in
+      // runGreenCheckpoint) — which of prepare / generation-select / materialization ate the
+      // time is otherwise reconstructible only from setup-release's own stage markers.
+      if (!options?.preparedSource) {
+        const prepareStartedAtMs = Date.now();
+        await prepareExactSource(ref);
+        log(formatSetupSubPhaseLine("setup-tree", "prepare-exact-source", Date.now() - prepareStartedAtMs));
+      }
+      const generationSelectStartedAtMs = Date.now();
       const selectedDependencyGeneration =
         prewarmedDependencyGeneration?.candidate === ref
           ? prewarmedDependencyGeneration
           : await selectPrewarmedDependencyGeneration(ref, cfg.checkpointRoot);
+      log(
+        formatSetupSubPhaseLine(
+          "setup-tree",
+          "dependency-generation-select",
+          Date.now() - generationSelectStartedAtMs,
+          prewarmedDependencyGeneration?.candidate === ref ? "pre-lock generation reused" : undefined,
+        ),
+      );
       if (prewarmedDependencyGeneration?.candidate === ref) {
         log(
           `using pre-lock dependency generation ${selectedDependencyGeneration.identity} ` +
@@ -16891,6 +16964,7 @@ export function realCheckpointDeps(
             : "shared-slot materialization (D-033: reuse needs no whole-box hold)"),
       );
       let setup: CheckpointExecResult;
+      materializationStartedAtMs = Date.now();
       try {
         setup = await exec(
           "bash",

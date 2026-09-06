@@ -243,8 +243,9 @@ describe('wiring into scripts/affected-tests.mjs', () => {
       /await runCapturedTask\(\s*context,\s*allocation,\s*context\.__retry\.extraArgs,\s*context\.__retry\.scriptOverride,\s*'retry',\s*\);\s*(?:\/\/[^\n]*\n\s*)*const load1AtRerun = loadavg\(\)\[0\];/,
     );
     expect(src).toMatch(/load1AtRerun = retried\.value\.__load1AtRerun \?\? null;/);
-    // No stray sample in the reporting loop (the hoisting failure this guard exists for).
-    expect(src).not.toMatch(/load1AtRerun = loadavg\(\)\[0\];[\s\S]*retryPrep\.get\(scheduled\.index\)/);
+    // No stray sample AFTER the reporting loop begins (the late-sample failure this guard
+    // exists for): the one sample site must precede `retryPrep.get(...)` in file order.
+    expect(src).not.toMatch(/retryPrep\.get\(scheduled\.index\)[\s\S]*load1AtRerun = loadavg\(\)\[0\];/);
   });
 
   it("re-runs a LANE workspace's failed files under the DEFAULT `test` script, so the retry is ISOLATED", () => {

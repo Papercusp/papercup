@@ -4103,6 +4103,11 @@ describe("runGreenCheckpoint", () => {
     // suspecting candidate selection, which is where the 2026-08-02 investigation went wrong.
     expect(line).toContain("not a bad candidate choice");
     expect(line).toContain("WI-7069");
+    // P-005 (gate-latency-selection-and-retry-policy-2026-09-06): the culprit is MEASURED. The
+    // 45m was injected inside setupTree, so the stamps must attribute the stretch to that phase
+    // — a warning that names the wrong step is the failure this instrumentation ends.
+    expect(line).toContain("dominant phase: setup-tree");
+    expect(line).toMatch(/phases: setup-tree 45m/);
     // Diagnostic ONLY — never blocks, re-cuts, or changes the advance/hold decision.
     expect(calls).toContain("runGreen");
   });
