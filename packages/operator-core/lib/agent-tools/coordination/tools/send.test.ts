@@ -268,6 +268,16 @@ beforeEach(() => {
   mockResolvedTyped(staleQuoteM, []);
 });
 
+// Timer-backed regression fixtures must never poison the other 179 cases if
+// one assertion times out before its local `finally` can run. Vitest advances
+// to the next case after a timeout while the abandoned async body remains
+// pending; without this outer guard that leaves the worker on a frozen fake
+// clock and makes every later send look hung too.
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
 describe('coord:send handler (bulk keyed-array)', () => {
   it('single { to, summary } → one result self-describing its `to` + msg_id', async () => {
     const b = await body({ to: ['bee-1'], summary: 'hi' });
@@ -299,8 +309,15 @@ describe('coord:send handler (bulk keyed-array)', () => {
 
     try {
       const pending = body({ to: ['bee-1'], summary: 'persist despite a stalled probe' });
-      // Let the handler reach the bounded probe before advancing its deadline.
-      await vi.advanceTimersByTimeAsync(0);
+      // The handler crosses several real async enrichment legs before it
+      // starts this optional probe. A single zero-time hop can run before the
+      // deadline is even scheduled, especially in the complete 180-test file.
+      // Probe the observable call instead; vi.waitFor advances fake time while
+      // yielding microtasks, so the subsequent deadline advance is causal.
+      await vi.waitFor(() => expect(idleM).toHaveBeenCalledTimes(1), {
+        timeout: 5_000,
+        interval: 10,
+      });
       await vi.advanceTimersByTimeAsync(COORD_SEND_IDLE_REPORT_TIMEOUT_MS);
       const b = await pending;
 
@@ -533,8 +550,13 @@ describe('coord:send handler (bulk keyed-array)', () => {
 
     try {
       const pending = body({ to: ['bee-1'], summary: 'time-critical peer review delivery' });
-      // Let the handler reach the deadline race before advancing past it.
-      await vi.advanceTimersByTimeAsync(0);
+      // As above, establish that the never-settling operation has actually
+      // started before advancing its deadline. Advancing first can strand the
+      // timer in the future and freeze the whole file behind this case.
+      await vi.waitFor(() => expect(sendM).toHaveBeenCalledTimes(1), {
+        timeout: 5_000,
+        interval: 10,
+      });
       await vi.advanceTimersByTimeAsync(COORD_SEND_DB_DEADLINE_MS);
       const b = await pending;
 
