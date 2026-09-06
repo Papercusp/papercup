@@ -5,10 +5,30 @@
  * on/off, and the orphaned-window marker gate. Production wiring (PG lookup,
  * audit INSERT) is exercised by the fleet:cancel/turn:interrupt suites it mirrors.
  */
-import { describe, it, expect } from 'vitest';
-import { killOne, findTabShellPid, closeTerminalPid, type ProcInfo, type KillDeps } from './kill';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { killOne, findLiveUnmanagedSession, findTabShellPid, closeTerminalPid, isPositiveUnmanagedSessionState, type ProcInfo, type KillDeps } from './kill';
 import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
 import { linuxProcessIdentityFromStat, linuxStartTicksFromProcStat } from '../../process-identity';
+
+const { sqlMock, resolveSessionStatesMock, latestAdvSessionMock, terminalEvidenceMock } = vi.hoisted(() => ({
+  sqlMock: vi.fn(),
+  resolveSessionStatesMock: vi.fn(),
+  latestAdvSessionMock: vi.fn(),
+  terminalEvidenceMock: vi.fn(),
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
+}));
+vi.mock('../coordination/liveness-oracle', () => ({
+  resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),
+}));
+vi.mock('../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../adv-sessions')>()),
+  latestAdvSessionByCoordOwner: (...args: unknown[]) => latestAdvSessionMock(...args),
+  hasAdvSessionTerminalEvidence: (...args: unknown[]) => terminalEvidenceMock(...args),
+}));
 
 const MARKER_CMD = "bash -lc printf … && touch .papercup-console-active.$$ … (eval 'psu --no-picker --fleet=x')";
 
@@ -73,6 +93,54 @@ const headlessHost = (pid: number): PsuPtyHost => ({
 });
 
 const noSleep = (_ms: number) => Promise.resolve();
+
+beforeEach(() => {
+  sqlMock.mockReset().mockResolvedValue([
+    { source: 'omp-hook-session', heartbeat_at: '2026-09-06T16:00:00.000Z' },
+  ]);
+  resolveSessionStatesMock.mockReset();
+  latestAdvSessionMock.mockReset().mockResolvedValue(null);
+  terminalEvidenceMock.mockReset().mockReturnValue(false);
+});
+
+describe('unmanaged-session liveness gate', () => {
+  it('rejects heartbeat-only/no-channel verdicts instead of preserving stale presence', async () => {
+    resolveSessionStatesMock.mockResolvedValue(new Map([
+      ['su-omp', { ownerId: 'su-omp', sessionState: 'ended', wakeable: false, liveTurn: false }],
+    ]));
+
+    await expect(findLiveUnmanagedSession('su-omp', 'ws')).resolves.toBeNull();
+    expect(resolveSessionStatesMock).toHaveBeenCalledWith([
+      {
+        ownerId: 'su-omp',
+        heartbeatAt: '2026-09-06T16:00:00.000Z',
+        source: 'omp-hook-session',
+      },
+    ]);
+  });
+
+  it.each(['live', 'parked', 'draining', 'recorded'] as const)(
+    'preserves a positive %s shared-liveness verdict',
+    async (sessionState) => {
+      resolveSessionStatesMock.mockResolvedValue(new Map([
+        ['su-omp', { ownerId: 'su-omp', sessionState, wakeable: sessionState !== 'recorded', liveTurn: sessionState === 'live' }],
+      ]));
+
+      await expect(findLiveUnmanagedSession('su-omp', 'ws')).resolves.toEqual({
+        source: 'omp-hook-session',
+        heartbeatAt: '2026-09-06T16:00:00.000Z',
+      });
+    },
+  );
+
+  it('does not treat unknown or suspect oracle verdicts as positive unmanaged liveness', () => {
+    expect(isPositiveUnmanagedSessionState(null)).toBe(false);
+    expect(isPositiveUnmanagedSessionState('ended')).toBe(false);
+    expect(isPositiveUnmanagedSessionState('suspect')).toBe(false);
+    expect(isPositiveUnmanagedSessionState('parked')).toBe(true);
+    expect(isPositiveUnmanagedSessionState('live')).toBe(true);
+  });
+});
 
 describe('findTabShellPid', () => {
   it('walks up to the TOPMOST marker-carrying ancestor (the tab shell)', () => {

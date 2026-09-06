@@ -63,6 +63,8 @@ import {
   repairStaleAdvSessionTerminalMarkers,
 } from '../../adv-sessions';
 import { deactivateLoop } from '../../harness/routines/loop';
+import { resolveSessionStates } from '../coordination/liveness-oracle';
+import type { SessionState } from '../coordination/presence-wakeability';
 
 /** Console-marker substring stamped into every fleet/desktop launch command
  *  (capability:terminal / fleet:launch-on-plan) — identifies a papercusp tab
@@ -133,6 +135,22 @@ export interface KillOneInput {
 export interface LiveUnmanagedSession {
   source: string;
   heartbeatAt: string | null;
+}
+
+const POSITIVE_UNMANAGED_SESSION_STATES: ReadonlySet<SessionState> = new Set([
+  'live',
+  'parked',
+  'draining',
+  'recorded',
+]);
+
+/** A fresh OMP heartbeat is only a candidate for preservation. The shared
+ * liveness oracle must positively establish a live turn, wakeable session, or
+ * recorded live session before fleet:kill refuses to reap it. */
+export function isPositiveUnmanagedSessionState(
+  sessionState: SessionState | null | undefined,
+): boolean {
+  return sessionState != null && POSITIVE_UNMANAGED_SESSION_STATES.has(sessionState);
 }
 
 export interface KillOneResult {
@@ -561,14 +579,16 @@ async function cancelNurseryTarget(
 
 /**
  * OMP hook sessions run in the caller's process rather than behind the
- * operator's psu-pty host. Their coord_presence row is the only live signal
- * fleet:kill can inspect, and it is intentionally used only to avoid the
- * destructive false-negative path above — never as a permission to signal a
- * pid owned by an unrelated process.
+ * operator's psu-pty host. Their coord_presence row is only a candidate signal
+ * fleet:kill can inspect, not proof that an interruptible session still exists.
+ * The shared liveness oracle supplies the positive live/wake/recorded verdict;
+ * this endpoint never treats a heartbeat-only row as permission to preserve a
+ * dead session or signal a pid owned by an unrelated process.
  */
-async function findLiveUnmanagedSession(
+export async function findLiveUnmanagedSession(
   ownerId: string,
   workspaceId: string,
+  resolveStates: typeof resolveSessionStates = resolveSessionStates,
 ): Promise<LiveUnmanagedSession | null> {
   try {
     // Presence is a heartbeat, not terminal authority. If the newest recorded
@@ -595,6 +615,18 @@ async function findLiveUnmanagedSession(
       : row.heartbeat_at instanceof Date
         ? row.heartbeat_at.toISOString()
         : new Date(row.heartbeat_at).toISOString();
+
+    // A fresh presence row is the exact stale-presence race this path must
+    // reconcile. Reuse the same batched liveness assembly as coord:presence,
+    // fleet:assignments, and respawn-member instead of rebuilding wake/activity
+    // predicates here. `heartbeatAt` and `source` are supplied from the
+    // workspace-scoped row above so the oracle does not hydrate a different
+    // workspace's presence record.
+    const verdict = (await resolveStates([
+      { ownerId, heartbeatAt, source: row.source },
+    ])).get(ownerId);
+    if (!isPositiveUnmanagedSessionState(verdict?.sessionState)) return null;
+
     return { source: row.source, heartbeatAt };
   } catch {
     // A failed liveness read must not block the existing not-found cleanup
