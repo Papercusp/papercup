@@ -83,10 +83,11 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(textOf(search)).not.toContain('verify-ui-via-staging-3170');
     expect(textOf(stagingPage)).toContain('only for a dedicated staging/:3170 webview');
     const commandBans = SU_S02_TAURI_ONLY.asserts
-      .filter((assertion): assertion is Extract<typeof assertion, { kind: 'text_excludes' }> => (
-        assertion.kind === 'text_excludes'
-      ))
-      .map((assertion) => assertion.pattern);
+      .flatMap((assertion) => (
+        assertion.kind === 'text_excludes' && assertion.pattern instanceof RegExp
+          ? [assertion.pattern]
+          : []
+      ));
     expect(commandBans.some((pattern) => pattern.test('I can give you a visual verdict after the check.'))).toBe(false);
     expect(commandBans.some((pattern) => pattern.test('Run verdict open http://localhost:3070.'))).toBe(true);
     expect(commandBans.some((pattern) => pattern.test('Run xdg-open http://localhost:3070.'))).toBe(true);
