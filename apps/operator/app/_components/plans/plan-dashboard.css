@@ -429,33 +429,65 @@
 }
 
 .plan-dash__irow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.plan-dash__irow-main {
   display: grid;
   grid-template-columns: 20px minmax(56px, auto) minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 10px;
   padding: 6px 2px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
-  /* Rows render as <button>s when promoted — neutralise button chrome. */
+  flex: 1 1 auto;
+  min-width: 0;
   background: transparent;
-  border-left: 0;
-  border-right: 0;
-  border-top: 0;
+  border: 0;
   width: 100%;
   text-align: left;
   color: inherit;
   font-size: 12px;
+  cursor: pointer;
 }
 
 .plan-dash__igroup:last-child .plan-dash__irow:last-child {
   border-bottom: 0;
 }
 
-button.plan-dash__irow {
+.plan-dash__irow-main:hover .plan-dash__itext {
+  color: var(--fg);
+}
+
+.plan-dash__irow-main:focus-visible,
+.plan-dash__iwork:focus-visible,
+.plan-dash__drow:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: -2px;
+  border-radius: 7px;
+}
+
+.plan-dash__iwork {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-mute);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
   cursor: pointer;
 }
 
-button.plan-dash__irow:hover .plan-dash__itext {
+.plan-dash__iwork:hover {
   color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--bg-3);
 }
 
 .plan-dash__iic {
@@ -529,6 +561,15 @@ button.plan-dash__irow:hover .plan-dash__itext {
   column-gap: 10px;
   align-items: baseline;
   padding: 4px 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plan-dash__drow:hover .plan-dash__dtext {
+  color: var(--fg);
 }
 
 .plan-dash__dref {

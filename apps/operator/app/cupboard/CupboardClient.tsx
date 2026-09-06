@@ -28,7 +28,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download, MonitorDown, Ruler, ListChecks, Workflow, Goal } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download, MonitorDown, Ruler, ListChecks, Workflow, Goal, Palette } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -82,7 +82,7 @@ interface CupboardListingsEnvelope {
 // 'recipe' get their own tabs. They sit AFTER the code kinds and before 'tools'
 // because they are the judgment/procedure family (what grades work, what work to
 // do, how to do it) rather than things that add runtime surface.
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal', 'tools'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'theme', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -106,6 +106,7 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'plan': return <ListChecks size={size} />;
     case 'recipe': return <Workflow size={size} />;
     case 'goal': return <Goal size={size} />;
+    case 'theme': return <Palette size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
@@ -184,6 +185,7 @@ export default function CupboardClient() {
       // The Apps tab itself (adding 'app' to VIEW_FILTERS) lands in P-004; this
       // label keeps the Record<ViewFilter> exhaustive now the 'app' kind exists.
       app: 'Apps',
+      theme: 'Themes',
       tools: 'Tools',
     }),
     [t],

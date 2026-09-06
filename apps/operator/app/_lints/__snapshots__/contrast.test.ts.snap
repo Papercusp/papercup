@@ -112,7 +112,12 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.075))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.07))",
-  "operator/app/_components/plans/plans-pane.css :: .plan-popup__close:hover :: color:--fg on background:--bg-3
+  "operator/app/_components/plans/plan-dashboard.css :: .plan-dash__iwork:hover :: color:--fg on background:--bg-3
+    black:background:unsupported-function(rgba(255, 255, 255, 0.075))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.075))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.075))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.07))",
+  "operator/app/_components/plans/plans-pane.css :: .plan-popup__fullscreen:hover:not(:disabled), .plan-popup__close:hover :: color:--fg on background:--bg-3
     black:background:unsupported-function(rgba(255, 255, 255, 0.075))
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.075))

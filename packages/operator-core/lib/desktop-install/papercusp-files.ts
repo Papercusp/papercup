@@ -3741,6 +3741,19 @@ export interface RenderSuPlaybookInput {
    * code in the repo.
    */
   tier?: 'full' | 'fleet';
+  /**
+   * Determinism seam for the "## Wire schemas" legend (identities-v1 P-018). The default
+   * renderer derives the legend from the PROCESS-GLOBAL projected-tool registry
+   * (`listAllProjectedTools()`, pinned to `globalThis`) — empty in a fresh process and
+   * populated by whatever loaded a tool catalog earlier in the same process. An ambient
+   * render is therefore ORDER-DEPENDENT under a shared test fork (the pure test lane,
+   * isolate:false): a co-resident file that registers tools turns an empty legend into a
+   * ~1 KB one and moves every byte-pinned section after it. A pinned-fixture render passes
+   * its own renderer (`() => ''` collapses the marker exactly as an empty registry does) so
+   * its output depends only on pinned inputs. Receives the tier's entry filter. Omitted ⇒
+   * the live registry legend, byte-identical to every pre-seam render.
+   */
+  renderWireSchemas?: (entryFilter?: (name: string) => boolean) => string;
 }
 
 /** FULL-ONLY section tags (P-017): content between these comment markers is
@@ -3853,11 +3866,14 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   const overlaySource = overlay
     ? path.join(input.overlayDir ?? path.dirname(baseSource), `papercusp-su.${input.agent}.md`)
     : '';
+  // P-018 determinism seam: a pinned-fixture render injects its own legend renderer so the
+  // output cannot depend on the process-global projected-tool registry (see the input doc).
+  const renderWire = input.renderWireSchemas ?? renderWireSchemasSection;
   const withWire = spliceGeneratedSection(
     spliceToolingOverlay(base, overlay),
     WIRE_SCHEMAS_MARKER,
     // P-017: the fleet tier keeps only the spine families' legend entries.
-    renderWireSchemasSection(
+    renderWire(
       tier === 'fleet' ? (name) => FLEET_WIRE_SCHEMA_FAMILIES.some((f) => name.startsWith(f)) : undefined,
     ),
   );
