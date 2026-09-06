@@ -239,7 +239,6 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
       // real filesystem and executable, without a network or any real authorization material.
       const system = new RecordingSystem();
       place(system, materialPath, bytes);
-      system.present.add("/workspaces/repository/.git");
       const deps = createProductionWorkspaceHostRemoteInitializerDeps({
         system,
         workspaceRoot: "/workspaces",
@@ -313,7 +312,6 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
   it("consumes only bound git-channel material outside argv and public evidence", async () => {
     const { system, deps } = fixture();
     place(system, MATERIAL_PATH, Buffer.from(AUTHORIZATION_MATERIAL));
-    system.present.add("/workspaces/repository/.git");
     await deps.credentials.run("bind", gitBinding());
 
     // A fresh dependency graph models the next SSH step/new process. The bind must survive it.
@@ -355,6 +353,120 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
       credentialChannel: "git",
       cloned: true,
     });
+  });
+
+  it("reuses a clean existing checkout only when origin and revision match", async () => {
+    const { system, deps } = fixture();
+    const destination = "/workspaces/repository";
+    system.present.add(destination);
+    system.present.add(join(destination, ".git"));
+    system.setResult(["-C", destination, "rev-parse", "--is-inside-work-tree"], {
+      exitCode: 0,
+      stdout: "true\n",
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "remote", "get-url", "origin"], {
+      exitCode: 0,
+      stdout: "https://github.com/papercupai/private-canary.git\n",
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"], {
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "rev-parse", "--verify", "main^{commit}"], {
+      exitCode: 0,
+      stdout: "abc123\n",
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "rev-parse", "HEAD"], {
+      exitCode: 0,
+      stdout: "abc123\n",
+      stderr: "",
+    });
+
+    const evidence = await deps.host.cloneRepository({
+      repositoryUrl: "https://github.com/papercupai/private-canary.git",
+      visibility: "public",
+      destination: "repository",
+      revision: "main",
+    });
+
+    expect(system.commands.some(({ args }) => args[0] === "clone")).toBe(false);
+    expect(evidence).toMatchObject({
+      destination,
+      cloned: false,
+      reused: true,
+      revision: "main",
+    });
+  });
+
+  it.each([
+    {
+      name: "different origin",
+      expected: "existing destination /workspaces/repository has a different origin",
+      origin: "https://github.com/other-owner/other-repository.git\n",
+      status: "",
+      requested: "abc123\n",
+      head: "abc123\n",
+    },
+    {
+      name: "dirty worktree",
+      expected: "existing destination /workspaces/repository has uncommitted changes",
+      origin: "https://github.com/papercupai/private-canary.git\n",
+      status: " M README.md\n",
+      requested: "abc123\n",
+      head: "abc123\n",
+    },
+    {
+      name: "incompatible revision",
+      expected: "existing destination /workspaces/repository is not at requested revision main",
+      origin: "https://github.com/papercupai/private-canary.git\n",
+      status: "",
+      requested: "abc123\n",
+      head: "def456\n",
+    },
+  ])("refuses an unsafe existing checkout ($name)", async ({ expected, origin, status, requested, head }) => {
+    const { system, deps } = fixture();
+    const destination = "/workspaces/repository";
+    system.present.add(destination);
+    system.present.add(join(destination, ".git"));
+    system.setResult(["-C", destination, "rev-parse", "--is-inside-work-tree"], {
+      exitCode: 0,
+      stdout: "true\n",
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "remote", "get-url", "origin"], {
+      exitCode: 0,
+      stdout: origin,
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"], {
+      exitCode: 0,
+      stdout: status,
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "rev-parse", "--verify", "main^{commit}"], {
+      exitCode: 0,
+      stdout: requested,
+      stderr: "",
+    });
+    system.setResult(["-C", destination, "rev-parse", "HEAD"], {
+      exitCode: 0,
+      stdout: head,
+      stderr: "",
+    });
+
+    await expect(
+      deps.host.cloneRepository({
+        repositoryUrl: "https://github.com/papercupai/private-canary.git",
+        visibility: "public",
+        destination: "repository",
+        revision: "main",
+      }),
+    ).rejects.toThrow(expected);
+    expect(system.commands.some(({ args }) => args[0] === "clone")).toBe(false);
   });
 
   it("fails closed before spawning git when bound material is absent", async () => {
@@ -458,7 +570,6 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
     await stale.credentials.run("revoke", gitBinding());
     await stale.credentials.run("verify-revoked", gitBinding());
 
-    system.present.add("/workspaces/repository/.git");
     await rotated.host.cloneRepository({
       repositoryUrl: "https://github.com/papercupai/private-canary.git",
       visibility: "private",
@@ -513,7 +624,6 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
 
     system.release();
     await Promise.all([staleRevoke, newerBind]);
-    system.present.add("/workspaces/repository/.git");
     await newer.host.cloneRepository({
       repositoryUrl: "https://github.com/papercupai/private-canary.git",
       visibility: "private",
@@ -793,7 +903,6 @@ describe("ProductionWorkspaceHostRemoteInitializerHost cloned-repository observa
       now: () => NOW,
     });
     // `run` is a double, so the clone's filesystem effect is modelled rather than executed.
-    system.present.add("/workspaces/repository/.git");
     await cloning.host.cloneRepository({
       repositoryUrl: "https://github.com/papercupai/public-canary.git",
       visibility: "public",
