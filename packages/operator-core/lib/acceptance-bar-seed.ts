@@ -97,6 +97,14 @@ export interface AcceptanceBarSeedBuildInput {
   rubricSlug: string;
   rubricRevision: number;
   existingTemplateData?: unknown;
+  /** Set ONLY by a caller that has already proven the subject write is BAR-neutral
+   *  (identical acceptanceBarSourceFingerprint on both bodies). Such a caller is
+   *  advancing the subjectPlanRevision pin alone, so the canonical BARs must be
+   *  preserved verbatim: re-deriving them from the plan body would silently revert
+   *  any amendment whose text is richer than the original seed. The caller still
+   *  compares the returned barSetHash against the stored one, so preservation can
+   *  only ever produce the unchanged set it is meant to (WI-10000058). */
+  preserveExistingBars?: boolean;
 }
 
 export type AcceptanceBarSeedBuildResult =
@@ -413,9 +421,14 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   }
   const existing = existingParsed?.success ? existingParsed.data : null;
   const preserveCanonicalBars = input.planStatus != null && input.planStatus !== 'draft' &&
-    existing?.barContract?.subjectPlanRevision === input.subjectPlanRevision &&
+    existing?.barContract != null &&
     existing.barContract.adoptionEpoch === input.adoptionEpoch &&
-    existing.barContract.cohort === input.cohort;
+    existing.barContract.cohort === input.cohort &&
+    // Either the pin already names this exact revision, or the caller has proven the
+    // write BAR-neutral and is advancing the pin alone. Without the second case a pin
+    // repair re-derives criteria from the plan body and reverts amended BAR text.
+    (existing.barContract.subjectPlanRevision === input.subjectPlanRevision ||
+      input.preserveExistingBars === true);
   if (existing && (existing.kind !== 'acceptance' || existing.subjectPlan !== input.planSlug)) {
     return refusal([{
       code: 'bar_rubric_conflict',
