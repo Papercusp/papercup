@@ -4232,6 +4232,7 @@ describe("psu-launcher arg parsing", () => {
       PAPERCUSP_WORKSPACE: "ws1",
       PAPERCUSP_ADV_SESSION_ID: "7",
       PAPERCUSP_AGENT_SESSION: "1",
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
       ...contextTrimmingEnv("claude"),
