@@ -99,8 +99,8 @@ const ctx = {
   tx: vi.fn(),
 } as never;
 
-const body = async (items: Array<Record<string, unknown>>) =>
-  ((await tool.handler({ slug: 'plan-a', harness: 'papercusp', items } as never, ctx)) as { data: any }).data;
+const body = async (items: Array<Record<string, unknown>>, over: Record<string, unknown> = {}) =>
+  ((await tool.handler({ slug: 'plan-a', harness: 'papercusp', items, ...over } as never, ctx)) as { data: any }).data;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -261,6 +261,33 @@ describe('plans:audit D-008 writer contract', () => {
         ],
       }),
     );
+  });
+
+  it('refuses a citation whose current bytes do not exist at the explicit auditedSha', async () => {
+    const currentBlobSha = '0'.repeat(40);
+    const auditedBlobSha = '1'.repeat(40);
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? currentBlobSha : null),
+        blobShaAt: (path, sha) =>
+          path === 'src/gate.ts' && sha === 'a'.repeat(40) ? auditedBlobSha : null,
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(result.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_mismatch' }),
+    ]));
+    expect(mockRecord).not.toHaveBeenCalled();
   });
 
   it('refuses divergent blob provenance for one path across fresh and carried entries', async () => {
