@@ -5,7 +5,11 @@
  * it with the headline count, four tiles, the last resolver run's readout with
  * its grouped disposition rows and the primary action — and, while a run is
  * LIVE, with the run itself: progress, the three counts, the launch snapshot
- * with Restart, and Stop (P-006). The REVIEW/RESUME view is P-007's.
+ * with Restart, and Stop (P-006); and once the persisted phase is `review`,
+ * with the review itself: the grouped rows, Review, and "Continue N retryable"
+ * stating exactly which rows it requeues (P-007). Reopening the pane lands on
+ * that state because the run is persisted and `useInboxBulkRun` reads the
+ * latest one without a deep link — the design now shows that it did.
  *
  * Composed ONLY from state the pane already holds (D-002: no new reads):
  *  - the feed's scope counts (`needs`) and the server total (`tracked`);
@@ -49,6 +53,12 @@ export interface InboxBriefingProps {
   /** The persisted bulk run the pane already loads (null when none / flag off). */
   run: BulkRun | null;
   runItems: BulkRunItem[];
+  /**
+   * Rows a continuation pass may requeue — pending, skipped or failed — as
+   * `useInboxBulkRun` derives them. Drives "Continue N retryable" (P-007);
+   * omitted → no resume control.
+   */
+  unreached?: BulkRunItem[];
   /** A live run: the briefing shows the run in progress instead of the glance. */
   isRunning: boolean;
   /** Opens the grouped report for the run — the strip's `onReview` op. */
@@ -151,6 +161,17 @@ export function briefingHeadline(needs: number): string {
 
 /** The live view's headline — the same slot, so the aside never re-flows. */
 export const RUNNING_HEADLINE = "Papercup is resolving…";
+/** The review view's headline (P-007): the run is waiting on the owner. */
+export const REVIEW_HEADLINE = "Review the run";
+
+/**
+ * The resume control's SCOPE, stated where the gesture is: what Continue will
+ * requeue and, as importantly, what it will not touch (`resumeReviewRun`
+ * preserves owner decisions, terminal outcomes and recommendations).
+ */
+export function resumeScopeCopy(retryable: number): string {
+  return `${retryable} ${retryable === 1 ? "row was" : "rows were"} never reached. Continuing requeues only rows whose detail was unavailable or whose resolver attempt failed. Your decisions, terminal outcomes and recommendations are preserved.`;
+}
 
 function Tile({
   id,
@@ -181,6 +202,7 @@ export default function InboxBriefing({
   tracked,
   run,
   runItems,
+  unreached,
   isRunning,
   onReview,
   onKeepWorking,
@@ -189,11 +211,22 @@ export default function InboxBriefing({
   const counts = run ? deriveRunCounts(runItems, run) : null;
   const live = isRunning && run !== null && counts !== null;
   const showRun = run !== null && counts !== null && !isRunning;
+  const inReview = showRun && run !== null && run.phase === "review";
+  const retryable = showRun ? (unreached?.length ?? 0) : 0;
   const rows = counts ? deriveRunDispositionRows(counts) : [];
   const elapsed = run ? formatRunElapsed(run.startedAt, run.finishedAt) : null;
-  // Same ops as the rail card (D-002). `unreached` is P-007's — the live view
-  // never resumes — so the default empty set is right here.
-  const { stop, restart, restarting, notice } = useBulkRunActions(run);
+  // Same ops as the rail card (D-002): Stop/Restart for the live view, Resume/
+  // Reclassify for the review view, one notice line for whichever fired.
+  const {
+    stop,
+    restart,
+    resume,
+    reclassify,
+    restarting,
+    resuming,
+    classifying,
+    notice,
+  } = useBulkRunActions(run, unreached);
   const stale = run?.liveness?.state === "stale" ? run.liveness : null;
   const openReview = () => {
     if (!run) return;
@@ -214,7 +247,11 @@ export default function InboxBriefing({
           className="op-inbox__briefing-title"
           data-testid="inbox-briefing-headline"
         >
-          {live ? RUNNING_HEADLINE : briefingHeadline(needs)}
+          {live
+            ? RUNNING_HEADLINE
+            : inReview
+              ? REVIEW_HEADLINE
+              : briefingHeadline(needs)}
         </h2>
         <p className="op-inbox__briefing-lead">
           {live ? (
@@ -222,6 +259,11 @@ export default function InboxBriefing({
               Every row keeps its own badge in the list, so you can carry on
               reading while this runs. Nothing is applied without your final
               gesture.
+            </>
+          ) : inReview ? (
+            <>
+              Grouped by what each row now needs from you — open the review to
+              work a group, or answer rows one at a time in the list.
             </>
           ) : (
             <>
@@ -435,16 +477,69 @@ export default function InboxBriefing({
               </li>
             ))}
           </ul>
-          <button
-            type="button"
-            className="op-inbox__briefing-review"
-            data-testid="inbox-briefing-review"
-            disabled={counts.unresolved === 0}
-            onClick={openReview}
-          >
-            Review {counts.unresolved} unresolved
-            <ChevronRight size={14} aria-hidden="true" />
-          </button>
+          <div className="op-inbox__briefing-actions">
+            <button
+              type="button"
+              className="op-inbox__briefing-review"
+              data-testid="inbox-briefing-review"
+              disabled={counts.unresolved === 0 || resuming || classifying}
+              onClick={openReview}
+            >
+              Review {counts.unresolved} unresolved
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+            {counts.legacySkipped > 0 ? (
+              <button
+                type="button"
+                className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
+                data-testid="inbox-briefing-classify"
+                disabled={classifying || resuming}
+                onClick={() => void reclassify()}
+              >
+                {classifying
+                  ? "Classifying…"
+                  : `Classify ${counts.legacySkipped} legacy skips`}
+              </button>
+            ) : null}
+          </div>
+          {/* P-007: resume is a first-class control — it says how many, and
+              exactly which rows it will and will not touch. Shown only while
+              there is something to requeue. */}
+          {retryable > 0 ? (
+            <div
+              className="op-inbox__briefing-resume"
+              data-testid="inbox-briefing-resume"
+            >
+              <p data-testid="inbox-briefing-resume-scope">
+                {resumeScopeCopy(retryable)}
+              </p>
+              <button
+                type="button"
+                className="op-inbox__bulk-continue"
+                data-testid="inbox-briefing-continue"
+                disabled={resuming || classifying}
+                onClick={() => void resume()}
+              >
+                {resuming ? (
+                  <span className="op-inbox__bulk-spin" aria-hidden="true">
+                    <Loader2 size={14} />
+                  </span>
+                ) : (
+                  <RotateCw size={14} aria-hidden="true" />
+                )}
+                {resuming ? "Continuing…" : `Continue ${retryable} retryable`}
+              </button>
+            </div>
+          ) : null}
+          {notice ? (
+            <p
+              className="op-inbox__bulk-notice"
+              role="status"
+              data-testid="inbox-briefing-notice"
+            >
+              {notice}
+            </p>
+          ) : null}
         </section>
       ) : null}
       {feed}
