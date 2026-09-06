@@ -89,7 +89,9 @@ import {
 import {
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
+  FLEET_CONTROL_ACTIONS,
   ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_FLEET_CONTROL_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_QUEUE,
   TRIGGER_POLL_ACTIONS,
@@ -116,7 +118,12 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
       pressure: 'ok',
       probeMs: 4,
       inFlightByQueue: {},
-      activeQueues: [ROUTINES_QUEUE, ROUTINES_LOOP_QUEUE, ROUTINES_CRITICAL_QUEUE],
+      activeQueues: [
+        ROUTINES_QUEUE,
+        ROUTINES_LOOP_QUEUE,
+        ROUTINES_CRITICAL_QUEUE,
+        ROUTINES_FLEET_CONTROL_QUEUE,
+      ],
       controller: new CaplessAdaptiveController(),
       atMs: START,
     });
@@ -128,6 +135,7 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     expect(queue(epoch, ROUTINES_QUEUE).availableStarts).toBe(1);
     expect(queue(epoch, ROUTINES_LOOP_QUEUE).availableStarts).toBe(1);
     expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(1);
+    expect(queue(epoch, ROUTINES_FLEET_CONTROL_QUEUE).availableStarts).toBe(1);
     expect([
       Math.min(47, queue(epoch, ROUTINES_QUEUE).availableStarts),
       Math.min(27, queue(epoch, ROUTINES_LOOP_QUEUE).availableStarts),
@@ -260,12 +268,13 @@ describe('routinesTickImpl — loop rebase survives critical pool shed (EI-21859
 });
 
 describe('routineFireWorkflow — durable loop:wake output', () => {
-  it('registers the shared, critical, deadline-sensitive loop, and external-poll queues at boot', () => {
+  it('registers every isolated routine lane at boot', () => {
     // Every lane queueForRoutine can return MUST be registered here, or a fire enqueued
     // onto it is never consumed (WI-41662 added routines-triggers).
     expect(ROUTINE_FIRE_QUEUES).toEqual([
       'routines',
       'routines-critical',
+      'routines-fleet-control',
       'routines-loop',
       'routines-triggers',
       'routines-release',
@@ -282,6 +291,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     const routableTargets = [
       LOOP_WAKE_TARGET_ROLE,
       ...[...CRITICAL_ROUTINE_ACTIONS].map((a) => `system:${a}`),
+      ...[...FLEET_CONTROL_ACTIONS].map((a) => `system:${a}`),
       ...[...TRIGGER_POLL_ACTIONS].map((a) => `system:${a}`),
       'system:green-checkpoint',
       'mug',

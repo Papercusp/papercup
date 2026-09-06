@@ -891,7 +891,7 @@ export function formatFailureScopeSummary({
       `  not from paths you named, so NOTHING in the break set above is attributable to your`,
       `  change. On this box that radius is the whole fleet's in-flight work. Before treating any`,
       `  red above as yours — or as someone else's — re-run scoped:`,
-      `    npm run test:affected -- --changed-paths <the files you edited>`,
+      `    npm run test:affected -- --changed-paths=path/to/first.ts,path/to/second.ts`,
     );
   } else {
     const outside = rows.filter((r) => r.attribution === "outside-caller-scope");

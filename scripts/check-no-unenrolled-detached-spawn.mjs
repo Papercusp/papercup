@@ -111,6 +111,7 @@ export const ALLOWLIST = new Map([
   // these two should come off the list.
   ['packages/operator-core/lib/agent-tools/testing/run.ts', 'detached ONLY to lead a process group so a timeout group-kills vitest; the child is awaited and dies with the call'],
   ['packages/operator-core/lib/agent-tools/build/typecheck.ts', 'detached ONLY to lead a process group so a timeout group-kills tsc; the child is awaited and dies with the call'],
+  ['libs/generic/deployment-driver/src/workspace-host-agent-authentication.ts', 'detached ONLY to lead the awaited agent probe process group; timeout and output-limit paths kill runuser plus its descendants, closing inherited pipes before the host initializer exits (EI-22527750869820737)'],
   // Surfaced for the FIRST time by the AST trigger: `detached: detach` at :9289, where
   // `const detach = opts.killProcessGroupOnTimeout === true`. The literal-text predicate
   // could not see a computed value, so this file had never been judged at all — it is in

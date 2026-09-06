@@ -2466,7 +2466,8 @@ plan's `## Now` + your completion report. The dark allowlist carries a
 ## Tests after editing
 
 ```bash
-npm run test:affected -- --changed-paths <the files you edited>   # YOUR radius
+# Pass one comma-delimited value after `--changed-paths=` for YOUR radius.
+npm run test:affected -- --changed-paths=path/to/first.ts,path/to/second.ts   # YOUR radius
 npm run test:affected                  # unit only — the WHOLE tree's radius, not yours
 npm run test:affected:integration      # also runs *.integration.test.ts
 npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not typecheck

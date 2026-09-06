@@ -72,6 +72,24 @@ describe('governed test-process bridge', () => {
     });
   });
 
+  it('uses a one-shot sample timer so slow procfs reads cannot spin the event loop', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const sampler = createGovernedProcessDemandSampler(
+        buildGovernedProcessDemand(),
+        { readSnapshot: () => ({ cpuMicros: 1, rssBytes: 1, fileDescriptors: 1 }), intervalMs: 60_000 },
+      );
+      sampler.attach(42);
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+      expect(setTimeoutSpy).toHaveBeenCalled();
+      sampler.stop();
+    } finally {
+      setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it('cancels undetermined starts and releases measured real exits', () => {
     expect(classifyGovernedTestProcessOutcome({
       code: null,

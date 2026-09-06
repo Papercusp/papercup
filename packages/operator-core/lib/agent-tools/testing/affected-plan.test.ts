@@ -217,4 +217,10 @@ describe('planNote', () => {
     expect(planNote(6, 27)).toContain('VERBATIM');
     expect(planNote(6, 27)).toContain('--prefix');
   });
+
+  it('shows changed paths as one comma-delimited argument', () => {
+    const note = planNote(6, 27);
+    expect(note).toContain('--changed-paths=path/to/first.ts,path/to/second.ts');
+    expect(note).toContain('one comma-delimited argument');
+  });
 });

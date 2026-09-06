@@ -11,7 +11,7 @@ import { runControlMutation } from '../../gateway-control/control-harness';
 import {
   parseRoutineSnap,
   readRoutineSnap,
-  routineSnapEqual,
+  stableJson,
   writeRoutineSnap,
   type RoutineSnap,
 } from './routine-snapshot';
@@ -35,6 +35,156 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+const MISSING = Symbol('missing');
+const BLOCKED = Symbol('blocked');
+type Path = readonly string[];
+type PathValue = unknown | typeof MISSING | typeof BLOCKED;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function pathValuesEqual(left: PathValue, right: PathValue): boolean {
+  if (left === MISSING || right === MISSING || left === BLOCKED || right === BLOCKED) {
+    return left === right;
+  }
+  return JSON.stringify(stableJson(left)) === JSON.stringify(stableJson(right));
+}
+
+/**
+ * Return the paths owned by the audited mutation. A routines:set audit stores
+ * complete snapshots, but health writers may advance unrelated metadata between
+ * the set and its revert. Diffing recursively lets revert guard and restore only
+ * fields the source mutation actually changed instead of treating that metadata
+ * churn as a conflicting config write.
+ */
+function collectOwnedPaths(
+  before: PathValue,
+  after: PathValue,
+  path: string[],
+  out: string[][],
+): void {
+  if (before === MISSING || after === MISSING) {
+    const present = before === MISSING ? after : before;
+    if (isRecord(present)) {
+      const keys = Object.keys(present);
+      if (keys.length === 0) {
+        out.push(path);
+      } else {
+        for (const key of keys) collectOwnedPaths(MISSING, present[key], [...path, key], out);
+      }
+      return;
+    }
+    out.push(path);
+    return;
+  }
+
+  if (isRecord(before) && isRecord(after)) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const key of keys) {
+      const beforeHas = Object.prototype.hasOwnProperty.call(before, key);
+      const afterHas = Object.prototype.hasOwnProperty.call(after, key);
+      collectOwnedPaths(
+        beforeHas ? before[key] : MISSING,
+        afterHas ? after[key] : MISSING,
+        [...path, key],
+        out,
+      );
+    }
+    return;
+  }
+
+  if (isRecord(before) || isRecord(after)) {
+    out.push(path);
+    return;
+  }
+
+  if (!pathValuesEqual(before, after)) out.push(path);
+}
+
+function ownedPathsBetween(before: RoutineSnap, after: RoutineSnap): string[][] {
+  const paths: string[][] = [];
+  collectOwnedPaths(before, after, [], paths);
+  return paths;
+}
+
+function valueAtPath(root: unknown, path: Path): PathValue {
+  let current: unknown = root;
+  for (const key of path) {
+    if (!isRecord(current)) return BLOCKED;
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return MISSING;
+    current = current[key];
+  }
+  return current;
+}
+
+function cloneJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneJson);
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneJson(entry)]));
+  }
+  return value;
+}
+
+function setPath(root: Record<string, unknown>, path: Path, value: unknown): void {
+  if (path.length === 0) return;
+  let current = root;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index]!;
+    if (!isRecord(current[key])) current[key] = {};
+    current = current[key] as Record<string, unknown>;
+  }
+  current[path[path.length - 1]!] = value;
+}
+
+function deletePath(root: Record<string, unknown>, path: Path): void {
+  if (path.length === 0) return;
+  let current: unknown = root;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    if (!isRecord(current)) return;
+    if (!Object.prototype.hasOwnProperty.call(current, path[index]!)) return;
+    current = current[path[index]!];
+  }
+  if (!isRecord(current)) return;
+  delete current[path[path.length - 1]!];
+
+  // Do not leave empty containers created solely by an owned nested field
+  // deletion, but retain the required top-level snapshot objects.
+  for (let index = path.length - 2; index >= 1; index -= 1) {
+    const node = valueAtPath(root, path.slice(0, index + 1));
+    if (!isRecord(node) || Object.keys(node).length !== 0) break;
+    const parent = valueAtPath(root, path.slice(0, index));
+    if (!isRecord(parent)) break;
+    delete parent[path[index]!];
+  }
+}
+
+function ownedFieldsEqual(
+  left: RoutineSnap,
+  right: RoutineSnap,
+  ownedPaths: readonly Path[],
+): boolean {
+  return ownedPaths.every((path) => pathValuesEqual(valueAtPath(left, path), valueAtPath(right, path)));
+}
+
+function mergeOwnedFields(
+  current: RoutineSnap,
+  restore: RoutineSnap,
+  ownedPaths: readonly Path[],
+): RoutineSnap {
+  const merged = cloneJson(current) as RoutineSnap;
+  const mutable = merged as unknown as Record<string, unknown>;
+  for (const path of ownedPaths) {
+    const value = valueAtPath(restore, path);
+    if (value === MISSING || value === BLOCKED) {
+      deletePath(mutable, path);
+    } else {
+      setPath(mutable, path, cloneJson(value));
+    }
+  }
+  return merged;
 }
 
 function splitRoutineSubject(subject: string): { installSlug: string; name: string } | null {
@@ -92,6 +242,7 @@ export default defineTool({
     if (!restore || !auditedNext) {
       throw new Error(`routines:set audit ${args.auditId} has no valid complete routine snapshot`);
     }
+    const ownedPaths = ownedPathsBetween(restore, auditedNext);
 
     const readSnap = (): Promise<RoutineSnap> =>
       readRoutineSnap(sql, workspaceId, subject.installSlug, subject.name);
@@ -107,21 +258,30 @@ export default defineTool({
         capturePrev: readSnap,
         apply: async () => {
           const current = await readSnap();
-          if (!routineSnapEqual(current, auditedNext)) {
+          if (!ownedFieldsEqual(current, auditedNext, ownedPaths)) {
             throw new Error(
               `routine ${row.subject} changed after audit ${args.auditId}; refusing to overwrite the newer state`,
             );
           }
-          await writeSnap(restore);
-          return restore;
+          const merged = mergeOwnedFields(current, restore, ownedPaths);
+          await writeSnap(merged);
+          return merged;
         },
-        revertTo: writeSnap,
+        revertTo: async (prev) => {
+          const current = await readSnap();
+          await writeSnap(mergeOwnedFields(current, prev, ownedPaths));
+        },
         verify: async (next) => {
           const current = await readSnap();
-          const ok = routineSnapEqual(current, next);
+          const ok = ownedFieldsEqual(current, next, ownedPaths);
           return { ok, detail: ok ? undefined : 'routine row did not reflect the restored snapshot' };
         },
-        describe: (current) => ({ auditId: args.auditId, current, restore }),
+        describe: (current) => ({
+          auditId: args.auditId,
+          current,
+          restore,
+          proposed: mergeOwnedFields(current, restore, ownedPaths),
+        }),
       },
       { dryRun: args.dryRun },
     );

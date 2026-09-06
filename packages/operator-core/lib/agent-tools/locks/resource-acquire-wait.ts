@@ -33,6 +33,7 @@ import {
   type ResourceHolder,
 } from './su-lock-store';
 import { inWorkspaceTxn, type WorkspaceTxnOptions } from './in-workspace-txn';
+import { acquireWithContentionRetry } from './contention-retry';
 import { subscribeWorkspace } from './workspace-listener';
 
 /** Per-iteration ceiling: re-poll status at least this often even if the
@@ -260,21 +261,28 @@ export async function acquireResourceExclusiveWithWait(
   const startedAt = Date.now();
   const workspaceTxnOptions = workspaceTxnOptionsForExclusiveWait(maxWaitSec);
 
+  // EI-22466898351484526: the first exclusive transaction is itself exposed to
+  // same-workspace advisory-lock contention. Retry the whole transaction after
+  // a transient 55P03/57014 so guardResource does not fail before it can drain
+  // or mutate anything. The transaction wrapper rolls back on timeout, so each
+  // retry gets a fresh transaction while preserving the caller's wait budget.
   const doAcquire = () =>
-    inWorkspaceTxn(
-      cd,
-      owner,
-      (tx) =>
-        tryAcquireResource(tx, {
-          coordinationDomain: cd,
-          resource,
-          mode: 'exclusive',
-          owner,
-          ownerLabel,
-          reason,
-          ttlSec,
-        }),
-      workspaceTxnOptions,
+    acquireWithContentionRetry(() =>
+      inWorkspaceTxn(
+        cd,
+        owner,
+        (tx) =>
+          tryAcquireResource(tx, {
+            coordinationDomain: cd,
+            resource,
+            mode: 'exclusive',
+            owner,
+            ownerLabel,
+            reason,
+            ttlSec,
+          }),
+        workspaceTxnOptions,
+      ),
     );
 
   /**

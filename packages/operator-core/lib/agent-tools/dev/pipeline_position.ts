@@ -145,6 +145,11 @@ export const PIPELINE_GATE_PROJECTED_FIELDS = [
   // whose value is `null` (it skips only `undefined`), so the no-repair-queue case
   // reaches the caller as an explicit `null` rather than a missing key.
   'candidateFailures',
+  // gate-audit-hardening-2026-08-31 P-001. The composed owner brief is the registered
+  // cell's one-read contract. `compactPipelineValue` bounds its prose, arrays and
+  // nested detail at this door, while preserving the declared assessment/evidence
+  // leaves so a bounded response cannot masquerade as resolver drift.
+  'ownerBrief',
   // main-green-status-visible-2026-09-03 P-004 (`convergence`, `freezeDisposition`) and
   // P-009 (`retriage`): each is the payload of a registered state cell —
   // `gate.greenCheckpoint.convergence` / `.freezeDisposition` / `.retriage` in
@@ -173,9 +178,6 @@ export const PIPELINE_GATE_SEPARATELY_PROJECTED = ['ownership', 'checkpointRunIn
  * not "project them all".
  */
 export const PIPELINE_GATE_FIELDS_NOT_PROJECTED = [
-  // Prose advisory, unbounded in practice — the same overflow shape as `ownership.thread`,
-  // which is excluded just above for exactly this reason.
-  'ownerBrief',
   // The full failing-test list is the largest single field on the struct and the one most
   // likely to blow the door; `repairQueue` + `candidateFailures` carry the counts a caller
   // needs. ⚠ `failingTestsMeasured` is omitted WITH it deliberately: emitting the
@@ -195,8 +197,8 @@ export const PIPELINE_GATE_FIELDS_NOT_PROJECTED = [
   // Raw observation timestamp; `candidateAgeMs` + `verdictStale` express the same staleness
   // in the terms a caller acts on.
   'verdictObservedAtMs',
-  // A 7-field nested struct carrying a prose `reason` — the same overflow shape as
-  // `ownerBrief` above, and this door's budget has already blown twice.
+  // A 7-field nested struct carrying a prose `reason` — this door's budget has already
+  // blown twice, so the raw record remains deliberately omitted.
   //
   // The drift harm the pin test guards does NOT apply to it today: that harm is a state
   // CELL declaring a path this projection drops, and no cell in `cell-registrations.ts`

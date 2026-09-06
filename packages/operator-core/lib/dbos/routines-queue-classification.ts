@@ -24,6 +24,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 export const ROUTINES_QUEUE = 'routines';
 export const ROUTINES_CRITICAL_QUEUE = 'routines-critical';
+export const ROUTINES_FLEET_CONTROL_QUEUE = 'routines-fleet-control';
 export const ROUTINES_LOOP_QUEUE = 'routines-loop';
 export const ROUTINES_TRIGGERS_QUEUE = 'routines-triggers';
 export const ROUTINES_RELEASE_QUEUE = 'routines-release';
@@ -38,6 +39,18 @@ export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
  * re-create the starvation this lane exists to prevent).
  */
 export const CRITICAL_ROUTINE_ACTIONS = new Set<string>(['git-sync']);
+
+/**
+ * Fleet membership restoration is control-plane work whose latency determines
+ * whether a leader can recover dead/stale lanes. It cannot share the ordinary
+ * queue: a pool-pressure episode can leave dozens of older routine rows ahead
+ * of a one-second headcount tick, delaying recovery for tens of minutes even
+ * after the scheduler itself is healthy. It also cannot use the critical,
+ * loop, trigger, or release lanes: a headcount action can open and attest agent
+ * processes, so it is neither quick nor safe to put ahead of those consumers.
+ * Keep this exact allow-list on its own serial queue.
+ */
+export const FLEET_CONTROL_ACTIONS = new Set<string>(['fleet-headcount-governor']);
 
 /**
  * External-SOURCE poll actions → their own bounded lane. These are QUICK, run on a
@@ -73,10 +86,10 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
  * that one home-hive action its own serial lane; subject-hive checkpoints stay on
  * the bounded shared lane so their aggregate concurrency remains unchanged.
  *
- * A loop wake → the latency-isolated `routines-loop` lane; a critical quick SYSTEM
- * action → `routines-critical`; a quick external-source poll → `routines-triggers`;
- * the operator-home green-checkpoint → `routines-release`; everything else →
- * `routines`.
+ * A loop wake → the latency-isolated `routines-loop` lane; fleet restoration →
+ * the serial `routines-fleet-control` lane; a critical quick SYSTEM action →
+ * `routines-critical`; a quick external-source poll → `routines-triggers`; the
+ * operator-home green-checkpoint → `routines-release`; everything else → `routines`.
  */
 export function queueForRoutine(targetRole: string, installSlug?: string | null): string {
   if (targetRole === LOOP_WAKE_TARGET_ROLE) return ROUTINES_LOOP_QUEUE;
@@ -85,6 +98,7 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
     if (action === 'green-checkpoint' && installSlug === operatorHomeHarnessSlug()) {
       return ROUTINES_RELEASE_QUEUE;
     }
+    if (FLEET_CONTROL_ACTIONS.has(action)) return ROUTINES_FLEET_CONTROL_QUEUE;
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
     if (TRIGGER_POLL_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
   }

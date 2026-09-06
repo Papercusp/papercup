@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_FLEET_CONTROL_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
+  FLEET_CONTROL_ACTIONS,
   TRIGGER_POLL_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
@@ -64,6 +66,26 @@ describe('queueForRoutine — the latency-isolated loop lane', () => {
     expect(queueForRoutine('system:loop-wake-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:pre-loop-wake')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('loop-wake')).toBe(ROUTINES_QUEUE);
+  });
+});
+
+describe('queueForRoutine — the fleet-control lane (EI-22526486100493483)', () => {
+  it('routes every fleet-control action to its own serial lane', () => {
+    expect([...FLEET_CONTROL_ACTIONS]).toEqual(['fleet-headcount-governor']);
+    for (const action of FLEET_CONTROL_ACTIONS) {
+      expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_FLEET_CONTROL_QUEUE);
+    }
+  });
+
+  it('keeps near-miss and unrelated long actions on the shared lane', () => {
+    expect(queueForRoutine('system:fleet-headcount-governor-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-fleet-headcount-governor')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:blueprint-run')).toBe(ROUTINES_QUEUE);
+  });
+
+  it('does not widen the critical pool-pressure floor', () => {
+    expect(shouldFireUnderPoolShed('system:fleet-headcount-governor')).toBe(false);
+    expect(CRITICAL_ROUTINE_ACTIONS.has('fleet-headcount-governor')).toBe(false);
   });
 });
 

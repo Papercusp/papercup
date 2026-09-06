@@ -110,13 +110,85 @@ describe('routines:revert MCP boundary', () => {
           details: { prev: previous, next },
         },
       ])
-      .mockResolvedValueOnce([rowFor({ ...next, active: false })])
-      .mockResolvedValueOnce([rowFor({ ...next, active: false })]);
+      .mockResolvedValueOnce([
+        rowFor({
+          ...next,
+          triggerConfig: { ...next.triggerConfig, throttle_min: 99 },
+        }),
+      ])
+      .mockResolvedValueOnce([
+        rowFor({
+          ...next,
+          triggerConfig: { ...next.triggerConfig, throttle_min: 99 },
+        }),
+      ]);
 
     await expect(
       tool.handler({ auditId: 'gwc-source-1' } as never, { role: 'operator' } as never),
     ).rejects.toThrow(/changed after audit.*refusing/i);
     expect(sqlMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('restores owned fields while preserving health-metadata churn', async () => {
+    const pausePrevious = {
+      ...previous,
+      metadata: {
+        source: 'before',
+        gate_health: { lastFireAtMs: 100, status: 'idle' },
+      },
+    };
+    const pauseNext = {
+      ...pausePrevious,
+      active: false,
+      metadata: {
+        ...pausePrevious.metadata,
+        pause: { reason: 'bounded restart', pausedBy: 'su-test', pausedAtMs: 1 },
+      },
+    };
+    const current = {
+      ...pauseNext,
+      metadata: {
+        ...pauseNext.metadata,
+        gate_health: { lastFireAtMs: 200, status: 'healthy' },
+      },
+    };
+    const expected = {
+      ...pausePrevious,
+      metadata: {
+        ...pausePrevious.metadata,
+        gate_health: current.metadata.gate_health,
+      },
+    };
+
+    sqlMock
+      .mockResolvedValueOnce([
+        {
+          action: 'gateway-control.routines:set',
+          subject: 'papercusp/git-sync',
+          details: { prev: pausePrevious, next: pauseNext },
+        },
+      ])
+      .mockResolvedValueOnce([rowFor(current)])
+      .mockResolvedValueOnce([rowFor(current)])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([rowFor(expected)]);
+
+    const result = body(
+      await tool.handler({ auditId: 'gwc-source-1' } as never, { role: 'operator' } as never),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      routine: 'papercusp/git-sync',
+      applied: true,
+      verify: { ok: true },
+    });
+    const metadataJson = sqlMock.mock.calls
+      .flat()
+      .find((value) => typeof value === 'string' && value.includes('"gate_health"')) as string | undefined;
+    expect(metadataJson).toBeDefined();
+    expect(JSON.parse(metadataJson!)).toEqual(expected.metadata);
+    expect(sqlMock.mock.calls.flat()).toContain(true);
   });
 
   it('rejects an audit id from another control action', async () => {

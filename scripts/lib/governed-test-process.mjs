@@ -236,6 +236,22 @@ export function createGovernedProcessDemandSampler(
   let cpuWeight = null;
   let stoppedDemand = null;
 
+  const scheduleNextSample = () => {
+    if (stopped || pid == null) return;
+    // Do not use setInterval here. `readGovernedProcessResourceSnapshot` is
+    // synchronous and scans procfs; on a busy host one sample can take as long
+    // as (or longer than) the nominal interval. A fixed interval then keeps the
+    // timer continuously due, monopolizes this runner's event loop, and can
+    // starve the watchdog that is meant to reap a wedged Vitest process.
+    timer = setTimeout(() => {
+      timer = null;
+      if (stopped) return;
+      sample();
+      scheduleNextSample();
+    }, intervalMs);
+    timer.unref?.();
+  };
+
   const sample = () => {
     if (stopped || pid == null) return;
     let snapshot;
@@ -265,15 +281,14 @@ export function createGovernedProcessDemandSampler(
       if (stopped || !Number.isInteger(nextPid) || nextPid <= 0) return;
       pid = nextPid;
       sample();
-      timer = setInterval(sample, intervalMs);
-      timer.unref?.();
+      scheduleNextSample();
     },
     sample,
     stop(extra = {}) {
       if (stoppedDemand) return stoppedDemand;
       if (!stopped) sample();
       stopped = true;
-      if (timer) clearInterval(timer);
+      if (timer) clearTimeout(timer);
       timer = null;
       stoppedDemand = {
         cpuWeight: extra.cpuWeight ?? cpuWeight ?? planned?.cpuWeight ?? 1,

@@ -49,6 +49,7 @@ import { CELL_READ_SPAWN_ID, formatCellHoist, readCell } from './cell-read';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
 import { shapePipelinePosition } from './agent-tools/dev/pipeline_position';
 import type { PipelinePosition } from './git-pipeline-position';
+import { composeGateOwnerBrief } from './gate-owner-brief';
 
 const ENV = { workspaceId: 'default', harnessSlug: 'papercusp', role: 'su' };
 const READER = { ownerId: 'su-me', roles: ['su'], harnessSlug: 'papercusp', workItems: ['WI-1'] };
@@ -108,6 +109,72 @@ const TRUNCATED_PAYLOAD = {
     fullRead: { tool: 'dev:pipeline_position', args: {} },
   },
 };
+
+const OWNER_BRIEF = composeGateOwnerBrief({
+  nowMs: 1_000,
+  consecutiveReds: 1,
+  failingTests: ['packages/operator-core/lib/red.test.ts'],
+  failingTestsMeasured: true,
+  failingTestsProvenance: 'measured',
+  mainBehindStaging: false,
+  promotion: {
+    judgedSha: 'judged',
+    mainPin: 'main',
+    mainContainsJudgedSha: false,
+    stagingHead: 'staging',
+    stagingContainsMainPin: true,
+    stagingContainsJudgedSha: false,
+    stagingBufferPresent: true,
+  },
+  lastGreenAtMs: 900,
+  verdictObservedAtMs: 950,
+  fireStale: false,
+  verdictStale: false,
+  inconclusive: null,
+  repairQueue: {
+    frozenCandidate: 'candidate',
+    repairHead: 'repair',
+    phase: 'awaiting-fixer',
+    attempts: 1,
+    updatedAtMs: 900,
+    ageMs: 100,
+    fixerSpawnId: 's-fixer',
+    fixerAlive: false,
+    zeroAttemptStalled: false,
+    admissions: [],
+    signature: [],
+    legs: [],
+    verdictProvenance: {
+      frozenCandidate: 'candidate',
+      repairHead: 'repair',
+      phase: 'awaiting-fixer',
+      currentStatus: 'isolated-suite-result',
+      frozenCandidateVerdict: 'full-gate-red',
+      repairHeadVerdict: 'isolated-repair-green',
+    },
+  },
+  ownership: {
+    claimState: 'held',
+    takenBy: 'su-holder',
+    workItem: 'WI-1',
+    assessment: 'held-live',
+  },
+  nonTestLegs: { measured: 'measured', outstanding: ['lint:tsc'] },
+});
+
+function bulkyOwnerBriefResult(): PipelinePosition {
+  return {
+    deployedSha: '8779b1c7f2885274b57ad0ffc30359f35aa75d62',
+    verdictUnknown: [
+      { leg: 'changeInCandidate.judgingSha', unknown: { code: 'not-applicable', detail: 'x'.repeat(400) } },
+    ],
+    serving: { startedSinceCodeChange: null, unknownReason: { code: 'not-applicable', detail: 'y'.repeat(400) } },
+    gate: { ownerBrief: OWNER_BRIEF },
+    repoRoot: 'r'.repeat(3000),
+    notes: Array.from({ length: 40 }, (_, i) => `note ${i} ${'n'.repeat(200)}`),
+    runtimes: Array.from({ length: 20 }, () => ({ host: 'h'.repeat(200) })),
+  } as unknown as PipelinePosition;
+}
 
 beforeEach(() => {
   __resetCellRegistryForTests();
@@ -302,6 +369,52 @@ describe('WI-38266: the door does not shape the payload it hands the CELL READER
     const projection = shaped.projection as Record<string, unknown> | undefined;
     expect(projection?.truncated).toBe(true);
     expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(6000);
+  });
+
+  it('bounded shaping preserves every ownerBrief cell assessment/evidence path', () => {
+    const shaped = shapePipelinePosition(bulkyOwnerBriefResult(), {}, {}) as Record<string, unknown>;
+    const projection = shaped.projection as Record<string, unknown> | undefined;
+    const gate = shaped.gate as Record<string, unknown> | undefined;
+    const ownerBrief = gate?.ownerBrief as Record<string, unknown> | undefined;
+
+    expect(projection?.truncated).toBe(true);
+    expect(ownerBrief).toBeDefined();
+    expect(ownerBrief?.assessment).toMatchObject({ code: 'red-owned-stalled' });
+    expect((ownerBrief?.mainGreen as Record<string, unknown> | undefined)?.value).toBe(false);
+    expect(ownerBrief?.whyNot).toMatchObject({
+      failingLegs: ['packages/operator-core/lib/red.test.ts'],
+      measured: true,
+      provenance: 'measured',
+      failingNonTestLegs: ['lint:tsc'],
+      nonTestLegsMeasured: 'measured',
+    });
+    expect(ownerBrief?.promotion).toMatchObject({
+      mainContainsJudgedSha: false,
+      staging: { bufferPresent: true, relation: 'ahead-after-absorption' },
+    });
+    expect(ownerBrief?.ownership).toMatchObject({ assessmentCode: 'held-live' });
+    expect(ownerBrief?.remediation).toMatchObject({
+      frozenCandidate: 'candidate',
+      repairHead: 'repair',
+      frozenSinceAtMs: null,
+      fixerAlive: false,
+      admissions: [],
+      signature: [],
+      legs: [],
+      admissionsMeasured: true,
+      signatureMeasured: true,
+      legsMeasured: true,
+      blockedReason: null,
+      blockedReasonMeasured: false,
+      verdictProvenance: {
+        frozenCandidate: 'candidate',
+        repairHead: 'repair',
+        phase: 'awaiting-fixer',
+      },
+    });
+    expect(ownerBrief?.vintageSpreadMs).toBeTypeOf('number');
+    expect(ownerBrief?.attestations).toMatchObject({ verdict: expect.any(String), staleLegs: [] });
+    expect(ownerBrief?.unknownLegs).toEqual(expect.any(Array));
   });
 
   it('readCell dispatches under the shared spawn id the door keys its exemption on', async () => {

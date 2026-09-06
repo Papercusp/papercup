@@ -1092,7 +1092,8 @@ Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one t
 ## Tests after editing
 
 ```bash
-npm run test:affected -- --changed-paths <the files you edited>   # YOUR radius
+# Pass one comma-delimited value after `--changed-paths=` for YOUR radius.
+npm run test:affected -- --changed-paths=path/to/first.ts,path/to/second.ts   # YOUR radius
 npm run test:affected                  # unit only — the WHOLE tree's radius, not yours
 npm run test:affected:integration      # also runs *.integration.test.ts
 npm run lint:tsc -- --files=<the files you edited>   # TYPES — vitest does not typecheck

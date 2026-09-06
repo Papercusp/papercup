@@ -271,6 +271,7 @@ export interface WorkspaceHostAgentProbeProcess {
   readonly command: string;
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  readonly cwd?: string;
 }
 
 const WORKSPACE_HOST_PROBE_RUNUSER = "/usr/sbin/runuser";
@@ -310,6 +311,12 @@ export function buildWorkspaceHostAgentProbeProcess(
       "agent authentication probe runAsUser requires a complete environment",
     );
   }
+  const agentHome = invocation.env.HOME;
+  if (!agentHome?.startsWith("/") || containsControlCharacter(agentHome)) {
+    throw new Error(
+      "agent authentication probe runAsUser requires an absolute HOME",
+    );
+  }
   const environment = Object.entries(invocation.env).map(([key, value]) => {
     if (!WORKSPACE_HOST_PROBE_ENV_NAME.test(key) || /\0/.test(value)) {
       throw new Error(
@@ -320,6 +327,9 @@ export function buildWorkspaceHostAgentProbeProcess(
   });
   return {
     command: WORKSPACE_HOST_PROBE_RUNUSER,
+    // SSH enters its own 0700 home. Switching identity does not change cwd;
+    // agents must start inside the home their credential binding actually owns.
+    cwd: agentHome,
     args: [
       "--user",
       invocation.runAsUser,
@@ -359,6 +369,7 @@ export type WorkspaceHostAgentProbeFailureReason =
   | "non-zero-exit"
   | "no-verification-proof"
   | "probe-error"
+  | "credential-revoked"
   | "provider-usage-limit";
 
 /**
@@ -384,6 +395,8 @@ const PROBE_FAILURE_CLASSIFIERS: readonly {
   readonly pattern: RegExp;
   readonly reason: WorkspaceHostAgentProbeFailureReason;
 }[] = [
+  // Measured r7 failure: retain the cause while discarding all credential text.
+  { pattern: /\brefresh token was revoked\b/i, reason: "credential-revoked" },
   { pattern: /\bhit your usage limit\b/i, reason: "provider-usage-limit" },
   { pattern: /\busage limit reached\b/i, reason: "provider-usage-limit" },
   { pattern: /\bquota exceeded\b/i, reason: "provider-usage-limit" },
@@ -431,11 +444,17 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
         reject(error);
         return;
       }
+      // runuser is a launcher: killing only its PID leaves the agent holding our
+      // output pipes open. This awaited probe owns one POSIX process group so its
+      // deadline and output bound cover the launcher and its descendants together.
+      const ownsProcessGroup = process.platform !== "win32";
       const child = this.spawnImpl(
         processInput.command,
         [...processInput.args],
         {
           stdio: ["ignore", "pipe", "pipe"],
+          detached: ownsProcessGroup,
+          ...(processInput.cwd ? { cwd: processInput.cwd } : {}),
           ...(processInput.env ? { env: { ...processInput.env } } : {}),
         },
       );
@@ -444,6 +463,18 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
       let settled = false;
       let stderrWindow = "";
       let failureHint: WorkspaceHostAgentProbeFailureReason | undefined;
+
+      const killProbe = (): void => {
+        if (ownsProcessGroup && child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+            return;
+          } catch {
+            // The group may already have exited; retain the child-handle fallback.
+          }
+        }
+        child.kill("SIGKILL");
+      };
 
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -454,7 +485,7 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
 
       const timer = setTimeout(() => {
         finish(() => {
-          child.kill("SIGKILL");
+          killProbe();
           reject(
             new Error(
               `agent authentication probe timed out after ${invocation.timeoutMs}ms`,
@@ -468,7 +499,7 @@ export class NodeWorkspaceHostAgentProbeRunner implements WorkspaceHostAgentProb
         bytes += Buffer.byteLength(text);
         if (bytes > MAX_PROBE_OUTPUT_BYTES) {
           finish(() => {
-            child.kill("SIGKILL");
+            killProbe();
             reject(
               new Error("agent authentication probe produced too much output"),
             );

@@ -1,4 +1,7 @@
-import { homedir } from "node:os";
+import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { homedir, tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { describe, expect, it } from "vitest";
 
@@ -302,6 +305,55 @@ describe("workspace-host agent verification probes", () => {
     expect(outcome.stdout).not.toContain("PATH=");
   });
 
+  it.each(["timeout", "output-limit"] as const)(
+    "closes descendant output pipes when a probe reaches its %s",
+    async (failure) => {
+      let child: ChildProcess | undefined;
+      let descendantPid: number | undefined;
+      let closed: Promise<unknown> | undefined;
+      const spawnProbe: typeof nodeSpawn = ((...args: Parameters<typeof nodeSpawn>) => {
+        child = nodeSpawn(...args);
+        closed = once(child, "close");
+        child.stdout?.on("data", (chunk: Buffer) => {
+          const match = /DESCENDANT_PID=(\d+)/.exec(chunk.toString());
+          if (match) descendantPid = Number(match[1]);
+        });
+        return child;
+      }) as typeof nodeSpawn;
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'inherit' });",
+        "console.log('DESCENDANT_PID=' + child.pid);",
+        failure === "output-limit"
+          ? "setTimeout(() => process.stdout.write('x'.repeat(1024 * 1024)), 50);"
+          : "",
+        "setTimeout(() => {}, 30000);",
+      ].join("\n");
+      try {
+        await expect(
+          new NodeWorkspaceHostAgentProbeRunner(spawnProbe).run({
+            command: process.execPath,
+            args: ["-e", script],
+            timeoutMs: failure === "timeout" ? 2_000 : 10_000,
+          }),
+        ).rejects.toThrow(failure === "timeout" ? /timed out/ : /too much output/);
+        expect(descendantPid).toBeGreaterThan(0);
+        // `close`, unlike `exit`, waits for the descendant's inherited pipes too.
+        expect(
+          await Promise.race([closed!.then(() => true), delay(1_000, false)]),
+        ).toBe(true);
+      } finally {
+        // Also clean up the intentionally red pre-fix reproduction.
+        if (descendantPid) {
+          try { process.kill(descendantPid, "SIGKILL"); } catch { /* already reaped */ }
+        }
+        child?.kill("SIGKILL");
+        await closed;
+      }
+    },
+    15_000,
+  );
+
   it("drops to the real workspace account through runuser and then scrubs the target environment", () => {
     const processInput = buildWorkspaceHostAgentProbeProcess({
       command: "claude",
@@ -317,6 +369,7 @@ describe("workspace-host agent verification probes", () => {
     });
     expect(processInput).toEqual({
       command: "/usr/sbin/runuser",
+      cwd: "/home/papercusp-workspace",
       args: [
         "--user",
         "papercusp-workspace",
@@ -344,6 +397,37 @@ describe("workspace-host agent verification probes", () => {
       }),
     ).toThrow(/non-root Linux account/);
   });
+
+  it("starts the agent in its home instead of the controller's inherited working directory", async () => {
+    // Exercise the actual child cwd without requiring root for this unit suite.
+    // The separate argv test covers runuser; only that privilege hop is removed.
+    const withoutPrivilegeHop: typeof nodeSpawn = ((command, args, options) => {
+      expect(command).toBe("/usr/sbin/runuser");
+      return nodeSpawn("/usr/bin/env", (args as string[]).slice(4), options);
+    }) as typeof nodeSpawn;
+    const outcome = await new NodeWorkspaceHostAgentProbeRunner(withoutPrivilegeHop).run({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(process.cwd())"],
+      timeoutMs: 5_000,
+      runAsUser: "papercusp-agent",
+      env: { HOME: tmpdir(), USER: "papercusp-agent", PATH: "/usr/bin:/bin" },
+    });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toBe(tmpdir());
+  });
+
+  it.each([undefined, "relative/home", "/home/agent\nother"])(
+    "refuses an agent probe without a safe absolute home (%s)",
+    (home) => {
+      expect(() => buildWorkspaceHostAgentProbeProcess({
+        command: "codex",
+        args: [],
+        timeoutMs: 1_000,
+        runAsUser: "papercusp-agent",
+        env: home === undefined ? {} : { HOME: home },
+      })).toThrow(/absolute HOME/);
+    },
+  );
 
   it("gives the same account a stable digest and different accounts different digests", () => {
     expect(workspaceHostAgentSubjectDigest("a@b.c")).toBe(
@@ -558,6 +642,21 @@ describe("provider-cause classification (WI-2144034)", () => {
     ]) {
       expect(classifyWorkspaceHostAgentProbeFailure(text)).toBeUndefined();
     }
+  });
+
+  it("classifies revoked refresh credentials from a real child's stderr without publishing its text", async () => {
+    const evidence = await probeWorkspaceHostAgentVerification({
+      spec: {
+        ...DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES.codex[1],
+        command: "/bin/sh",
+        args: ["-c", "printf '%s' 'ERROR: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.' >&2; exit 1"],
+      },
+      runner: new NodeWorkspaceHostAgentProbeRunner(),
+      now: NOW,
+    });
+    expect(evidence).toMatchObject({ ready: false, exitStatus: 1, failure: "credential-revoked" });
+    expect(JSON.stringify(evidence)).not.toContain("refresh token");
+    expect(classifyWorkspaceHostAgentProbeFailure("A token may be revoked by its owner")).toBeUndefined();
   });
 
   it("reports the measured shape — exit 0, no marker, quota named — as provider-usage-limit", async () => {

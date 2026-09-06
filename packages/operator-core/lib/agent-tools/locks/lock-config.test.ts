@@ -13,6 +13,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_LOCK_TTL_SEC, MAX_LOCK_TTL_SEC, MAX_LOCK_WAIT_SEC } from './lock-config';
+import acquireTool from './acquire';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 
@@ -21,6 +22,16 @@ describe('lock-config — single source (P-013 / D-006)', () => {
     expect(DEFAULT_LOCK_TTL_SEC).toBe(1200);
     expect(MAX_LOCK_TTL_SEC).toBe(3600);
     expect(MAX_LOCK_WAIT_SEC).toBe(45);
+  });
+
+  it('keeps locks:acquire discovery and validation aligned at the live TTL boundary', () => {
+    const base = { paths: ['a.ts'], intent: 'probe' };
+    expect(
+      acquireTool.args.safeParse({ ...base, ttl_sec: MAX_LOCK_TTL_SEC }).success,
+    ).toBe(true);
+    expect(
+      acquireTool.args.safeParse({ ...base, ttl_sec: MAX_LOCK_TTL_SEC + 1 }).success,
+    ).toBe(false);
   });
 
   it('blocking wait ceiling stays under the ~55s MCP client deadline (EI-21389299859182434)', () => {

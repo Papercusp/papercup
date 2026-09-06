@@ -2,8 +2,9 @@
  * `testing:run { changedPaths }` — the CHEAP half of `npm run test:affected`.
  *
  * ── Why this exists ─────────────────────────────────────────────────────────
- * Root CLAUDE.md mandates `npm run test:affected -- --changed-paths <files>` after
- * editing. That entrypoint is pc-heavy-wrapped, so under fleet load it queues on the
+ * Root CLAUDE.md mandates one comma-delimited value after `--changed-paths`, for
+ * example `npm run test:affected -- --changed-paths=path/to/first.ts,path/to/second.ts`.
+ * That entrypoint is pc-heavy-wrapped, so under fleet load it queues on the
  * shared test-process admission mutex. Measured 2026-09-02 (EI-22171363189119304):
  * it waited 1022s behind other agents' 29- and 32-task runs and was then SIGTERMed
  * (`PC_HEAVY_RESULT status=undetermined reason=signal exit=143`) having measured ZERO
@@ -203,7 +204,8 @@ export function planNote(workspaces: number, tasks: number): string {
     `(operator-core alone splits into test:lane-pure + test:lane-stateful plus its lint guards), so the ` +
     `workspace count understates the real cost. Choose deliberately: run the specific test files through ` +
     `testing:run { files } (no admission ticket), run one exact taskCommands[].command verbatim, or run ` +
-    `npm run test:affected -- --changed-paths <paths> and accept the queue. Copy a command VERBATIM — ` +
+    `npm run test:affected -- --changed-paths=path/to/first.ts,path/to/second.ts and accept the queue. ` +
+    '`--changed-paths` must be one comma-delimited argument. Copy a command VERBATIM — ' +
     `never rebuild one from a workspace name, because a standalone submodule needs npm --prefix and the ` +
     `--workspace form exits 1 having measured ZERO tests.`
   );

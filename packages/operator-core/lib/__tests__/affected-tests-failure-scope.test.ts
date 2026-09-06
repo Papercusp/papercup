@@ -34,6 +34,10 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+const DOC_CORPUS = resolve(
+  REPO_ROOT,
+  'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md',
+);
 
 // The measured EI-20072082961786945 run, reconstructed: a change confined to the watchdog, and
 // two reds in workspaces it never touched.
@@ -148,9 +152,26 @@ describe('formatFailureScopeSummary', () => {
       treeDrifted: true,
     }).join('\n');
     expect(body).toContain('--changed-paths');
+    expect(body).toContain('--changed-paths=path/to/first.ts,path/to/second.ts');
     expect(body).toContain('scope=derived');
     // Nothing was attributable, so the churn count must stay 0 even though the tree moved.
     expect(body).toContain('possiblePeerChurn=0');
+  });
+
+  it('keeps the runtime repair and projected agent guidance on one comma-delimited argv shape', () => {
+    const projected = readFileSync(DOC_CORPUS, 'utf8');
+    const runtime = formatFailureScopeSummary({
+      classification: classifyFailureScope({
+        entries: MEASURED_ENTRIES,
+        callerPaths: null,
+        workspaceDirs: WORKSPACE_DIRS,
+      }),
+    }).join('\n');
+
+    for (const text of [runtime, projected]) {
+      expect(text).toContain('--changed-paths=path/to/first.ts,path/to/second.ts');
+      expect(text).not.toContain('--changed-paths <the files you edited>');
+    }
   });
 
   it('labels `possible-peer-churn` only when BOTH facts hold', () => {
