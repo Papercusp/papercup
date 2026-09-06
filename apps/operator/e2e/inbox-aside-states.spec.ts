@@ -269,12 +269,12 @@ for (const vp of VIEWPORTS) {
       expect(sel.railInAside).toBe(true);
       expect(sel.railTag).toBe("DL");
       expect(sel.railDts).toEqual([
-        "Tier",
-        "Kind",
-        "Category",
-        "Status",
+        "State",
         "Importance",
+        "Kind",
         "Harness",
+        "Topic",
+        "Waiting",
       ]);
       expect(sel.railWidth).toBeCloseTo(190, 0);
       expect(sel.cardWidth).toBeLessThanOrEqual(sel.ch58 + 1);
