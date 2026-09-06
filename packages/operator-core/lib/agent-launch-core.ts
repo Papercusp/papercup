@@ -191,8 +191,18 @@ export function resolveLaunchMode(opts: {
 
 /** A resume/fork target fully resolved to the exact session to act on. */
 export interface ResumeTarget {
-  /** The native CLI session uuid `psu --resume` takes. */
-  sessionId: string;
+  /**
+   * The native CLI session uuid, when the backend recorded one.
+   *
+   * Tracked Codex rows can predate native-id registration; in that case this is
+   * null and {@link resumeId} carries the tracked adv_sessions row id instead.
+   */
+  sessionId: string | null;
+  /**
+   * The selector accepted by `psu --resume`: the native session id when known,
+   * otherwise the tracked adv_sessions row id for a Codex session.
+   */
+  resumeId: string;
   /** The session's coord identity — the pty-host discovery key + the identity an
    *  in-place resume re-attaches. */
   ownerId: string | null;
@@ -362,7 +372,11 @@ export async function resolveResumeTarget(ref: {
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
   const nativeSessionId = resolvedNativeSessionId(sessionId, row.sessionId);
-  if (!nativeSessionId) {
+  // The psu launcher already supports tracked Codex rows with no native UUID:
+  // `psu --resume=<adv row id>` resolves the row, restores its isolated
+  // CODEX_HOME, and runs `codex resume --last`. Other backends need a native
+  // transcript handle, so preserve their fail-closed error.
+  if (!nativeSessionId && row.agent !== 'codex') {
     return {
       ok: false,
       error: 'no_native_session_id',
@@ -378,6 +392,7 @@ export async function resolveResumeTarget(ref: {
     // Exact native UUID pins are never replaced by the logical owner's older
     // adv_sessions.session_id. session_turns supplies owner METADATA only.
     sessionId: nativeSessionId,
+    resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
     agent: row.agent,
     cwd: row.cwd,
@@ -402,6 +417,8 @@ export async function resolveResumeTarget(ref: {
 export function buildAgentLaunchCommand(opts: {
   mode: 'fresh' | 'resume' | 'fork';
   sessionId?: string | null;
+  /** Tracked selector used when a native session id is unavailable. */
+  resumeId?: string | null;
   agent?: string | null;
   plan?: string | null;
   harness?: string | null;
@@ -478,8 +495,12 @@ export function buildAgentLaunchCommand(opts: {
     `--account=${safe('account', opts.account?.trim() || defaultLaunchAccount(opts.platform))}`,
   ];
   if (opts.mode === 'resume' || opts.mode === 'fork') {
-    if (!opts.sessionId) throw new Error(`buildAgentLaunchCommand: mode ${opts.mode} requires sessionId`);
-    parts.push(`--resume=${safe('sessionId', opts.sessionId)}`);
+    const requestedResumeId = opts.resumeId?.trim() || opts.sessionId?.trim() || null;
+    if (!requestedResumeId) {
+      throw new Error(`buildAgentLaunchCommand: mode ${opts.mode} requires sessionId or resumeId`);
+    }
+    const resumeLabel = opts.resumeId?.trim() ? 'resumeId' : 'sessionId';
+    parts.push(`--resume=${safe(resumeLabel, requestedResumeId)}`);
     if (opts.mode === 'fork') parts.push('--fork');
   } else {
     // psu REQUIRES --agent on a FRESH launch — an omitted one is not "psu's default",
@@ -1939,7 +1960,7 @@ export function nativeSessionIdFromHost(
       if (arg.startsWith(flag) && arg.length > flag.length) return arg.slice(flag.length);
     }
     if ((arg === '--resume' || arg === '--resume-session') && args[i + 1]) return args[i + 1];
-    if (arg === 'resume' && args[i + 1]) return args[i + 1];
+    if (arg === 'resume' && args[i + 1] && !args[i + 1].startsWith('--')) return args[i + 1];
   }
   return null;
 }
