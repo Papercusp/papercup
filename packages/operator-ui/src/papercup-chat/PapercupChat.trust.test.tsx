@@ -186,6 +186,7 @@ function controller(overrides: Partial<PapercupChatController> = {}): PapercupCh
     retry: vi.fn(async () => {}),
     loadEarlier: vi.fn(async () => {}),
     abort: vi.fn(),
+    appendLocalTurns: vi.fn(),
     ...overrides,
   };
 }
