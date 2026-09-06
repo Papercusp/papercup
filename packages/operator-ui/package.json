@@ -50,6 +50,7 @@
     }
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
