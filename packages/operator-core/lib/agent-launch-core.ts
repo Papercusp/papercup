@@ -1352,6 +1352,11 @@ export interface FreshLaunchSessionProbe {
   msSinceLastSignal: number | null;
   /** A live coord_presence row exists for its owner. */
   hasPresence: boolean;
+  /** Current host-observed usage-limit state. `null` means no live/new-enough
+   *  PsuPtyHost reading exists, not that quota is healthy. */
+  quotaBlocked: boolean | null;
+  /** Start of the current host-observed quota episode, when available. */
+  quotaBlockedSinceMs: number | null;
   /** Requested-vs-actual differences measured from the persisted launch spec. */
   attestationDiffs: FreshLaunchAttestationDiff[];
   /** Productive-worker evidence; independent from launch-config attestation. */
@@ -1553,6 +1558,34 @@ export async function verifyFreshLaunchStarted(
         waitedMs: Date.now() - begun,
         sessions,
         note: `✗ ATTESTATION MISMATCH — ${differences.join('; ')}. Stop this launch transaction; do not open a later wave.`,
+      };
+    }
+    // A live PsuPtyHost has already observed the backend's usage-limit banner.
+    // Presence and launch statuslines are therefore false-positive liveness:
+    // the CLI is open, but it is explicitly deferring every turn. Only classify
+    // a zero-call session this way — a session that already took a real turn
+    // proved this launch started, even if it later became quota-blocked.
+    const quotaBlocked = sessions.filter(
+      (session) => session.successfulCalls === 0 && session.quotaBlocked === true,
+    );
+    if (quotaBlocked.length > 0) {
+      const blocked = quotaBlocked.map((session) => {
+        const id = session.ownerId ?? `adv-session-${session.advSessionId}`;
+        return session.quotaBlockedSinceMs == null
+          ? id
+          : `${id} since ${new Date(session.quotaBlockedSinceMs).toISOString()}`;
+      });
+      return {
+        agentStarted: false,
+        workerReady: freshLaunchWorkerReady(sessions, expected),
+        waitedMs: Date.now() - begun,
+        sessions,
+        note:
+          `✗ QUOTA BLOCKED — ${quotaBlocked.length} freshly launched session` +
+          `${quotaBlocked.length > 1 ? 's are' : ' is'} open, but its PsuPtyHost observed a ` +
+          `usage-limit banner before any agent-chosen call. The hosted CLI is deferring every ` +
+          `turn, so presence is not productive liveness and this launch must not be reported as ` +
+          `started. Blocked: ${blocked.join(', ')}.`,
       };
     }
     // POSITIVE signal — return as soon as it lands, so a healthy launch pays
@@ -1775,6 +1808,13 @@ export async function probeFreshLaunchSessions({
         }
       }
       const successfulCalls = Number(r.successful_calls ?? 0);
+      const host = r.coord_owner_id ? findLiveHost(r.coord_owner_id) : null;
+      const quotaBlocked =
+        host && typeof host.quotaBlocked === 'boolean' ? host.quotaBlocked : null;
+      const quotaBlockedSinceMs =
+        host?.quotaBlockedSinceMs != null && Number.isFinite(Number(host.quotaBlockedSinceMs))
+          ? Number(host.quotaBlockedSinceMs)
+          : null;
       return {
         advSessionId: Number(r.id),
         sessionId: r.session_id ?? null,
@@ -1782,6 +1822,8 @@ export async function probeFreshLaunchSessions({
         successfulCalls,
         msSinceLastSignal: r.ms_since_last_signal == null ? null : Number(r.ms_since_last_signal),
         hasPresence: Boolean(r.has_presence),
+        quotaBlocked,
+        quotaBlockedSinceMs,
         attestationDiffs,
         workerAttestation: deriveFreshLaunchWorkerAttestation({
           ownerId: r.coord_owner_id,

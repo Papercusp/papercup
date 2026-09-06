@@ -48,6 +48,8 @@ const session = (over: Partial<FreshLaunchSessionProbe> = {}): FreshLaunchSessio
     successfulCalls,
     msSinceLastSignal: null,
     hasPresence: false,
+    quotaBlocked: null,
+    quotaBlockedSinceMs: null,
     attestationDiffs: [],
     workerAttestation: over.workerAttestation ?? deriveFreshLaunchWorkerAttestation({
       ownerId,
@@ -148,6 +150,45 @@ describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-
     expect(verdict.agentStarted).toBeNull();
     expect(verdict.workerReady).toBe(false);
     expect(verdict.note).toMatch(/UNVERIFIED/);
+  });
+
+  it('reports a present zero-call session as failed when its PsuPtyHost observes quota blocking', async () => {
+    const verdict = await verifyFreshLaunchStarted(ARGS, {
+      ...FAST,
+      probe: fixedProbe([
+        session({
+          successfulCalls: 0,
+          hasPresence: true,
+          msSinceLastSignal: 500,
+          quotaBlocked: true,
+          quotaBlockedSinceMs: Date.parse('2026-09-06T20:11:00.000Z'),
+        }),
+      ]),
+    });
+
+    expect(verdict.agentStarted).toBe(false);
+    expect(verdict.workerReady).toBe(false);
+    expect(verdict.note).toMatch(/QUOTA BLOCKED/);
+    expect(verdict.note).toContain('su-launched since 2026-09-06T20:11:00.000Z');
+    expect(verdict.note).toMatch(/presence is not productive liveness/);
+  });
+
+  it('does not reclassify a session that already took a real turn when quota blocks later', async () => {
+    const verdict = await verifyFreshLaunchStarted(ARGS, {
+      ...FAST,
+      probe: fixedProbe([
+        session({
+          successfulCalls: 2,
+          hasPresence: true,
+          quotaBlocked: true,
+          quotaBlockedSinceMs: Date.parse('2026-09-06T20:11:00.000Z'),
+        }),
+      ]),
+    });
+
+    expect(verdict.agentStarted).toBe(true);
+    expect(verdict.note).toMatch(/verified running/);
+    expect(verdict.note).not.toMatch(/QUOTA BLOCKED/);
   });
 
   it('fails closed when the exact pinned owner reports a requested-vs-actual attestation mismatch', async () => {
