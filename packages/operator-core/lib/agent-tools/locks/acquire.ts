@@ -132,10 +132,12 @@ export default defineTool({
     // CLAUDE.md's mutation-probe recipe. Zero prompt weight (argRedirects is excluded
     // from describeFromGuidance), paid for only on the rejection that needs it.
     argRedirects: {
-      // A plain string, not a corrective call: the remedy is to DROP the key, not to
-      // switch tools — the caller already picked the right one (recipes:get's `harness`
-      // redirect is the same shape).
-      mode: 'file locks have NO mode — they are ALWAYS exclusive-per-path, so there is nothing for `mode` to select: drop the key and the lock you get IS the exclusive one you were asking for. `mode` belongs to the sibling lock families — locks:acquire_resource { resource, mode: shared|exclusive } for a NAMED resource (dev server, db schema), and locks:acquire_granular { path, mode: IS|IX|S|SIX|X } for a directory/subtree intention lock.',
+      // Explicit drop shape: this remedy has no replacement destination, so it
+      // must not be parsed as a same-tool path or a cross-tool call.
+      mode: {
+        drop: true,
+        note: 'file locks have NO mode — they are ALWAYS exclusive-per-path, so there is nothing for `mode` to select: drop the key and the lock you get IS the exclusive one you were asking for. `mode` belongs to the sibling lock families — locks:acquire_resource { resource, mode: shared|exclusive } for a NAMED resource (dev server, db schema), and locks:acquire_granular { path, mode: IS|IX|S|SIX|X } for a directory/subtree intention lock.',
+      },
       // EI-21713580465105839: filed together with `mode` — the same caller carried BOTH
       // keys over from the locks:acquire_resource shape. `mode` alone was covered, so the
       // rejection still read as a bare key list for half the report. Unlike `mode` (which

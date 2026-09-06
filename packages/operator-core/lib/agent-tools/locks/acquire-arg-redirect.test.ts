@@ -31,10 +31,11 @@ describe('locks:acquire guidance.argRedirects', () => {
   it('tells a caller passing `mode` to DROP the key, because file locks are always exclusive', () => {
     const redirect = acquireTool.guidance?.argRedirects?.mode;
 
-    // A plain string, not a corrective call: the remedy is to omit the key, not to
-    // switch tools — the caller already chose the right one.
-    expect(typeof redirect).toBe('string');
-    const note = redirect as string;
+    // An explicit drop remedy, not a corrective call: there is no replacement
+    // destination because file locks are always exclusive.
+    expect(typeof redirect).toBe('object');
+    expect(redirect).toMatchObject({ drop: true });
+    const note = (redirect as { note?: string }).note ?? '';
 
     // The load-bearing correction: exclusivity is not missing, it is unconditional.
     expect(note).toMatch(/always exclusive/i);
