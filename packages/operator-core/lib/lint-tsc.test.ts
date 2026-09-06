@@ -460,9 +460,9 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     // true only if the GATE actually stamps the count — a `readFileSync` + regex assertion
     // cannot tell live wiring from a comment that mentions it, and cannot see reachability at
     // all. Runnable here because the coverage decision is a pure path comparison made BEFORE
-    // the ~150s compile: the all-uncovered path reaches its verdict in ~250ms. The path is
-    // deliberately SYNTHETIC — coverage is decided by prefix, never by a stat() — so this test
-    // cannot start failing because some real file was moved out from under it.
+    // the ~150s compile: the all-uncovered path reaches its verdict in ~250ms. The path is a
+    // stable, tracked repository file outside every typecheck gate, so explicit-path validation
+    // accepts it while coverage still proves the all-uncovered branch.
     it('stamps the count from a REAL gate run, not just in the formatter', () => {
       const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
       let stdout: string;
@@ -471,7 +471,7 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
           'node',
           [
             join(repoRoot, 'scripts/lint-tsc.mjs'),
-            '--files=packages/not-a-real-workspace/src/synthetic.ts',
+            '--files=CLAUDE.md',
           ],
           { cwd: repoRoot, encoding: 'utf-8', stdio: 'pipe' },
         );
@@ -839,6 +839,98 @@ describe('typecheck preflight ordering (EI-21441555291852229)', () => {
         stdio: 'pipe',
       });
       expect(out).toContain('TSC preflight-order: 0 type errors');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('explicit --files path validation (EI-22438149246482169)', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+
+  function runGate({
+    root,
+    argv,
+    preTscCommand,
+    tscCommand,
+  }: {
+    root: string;
+    argv: string[];
+    preTscCommand: string;
+    tscCommand: string;
+  }): { out: string; code: number } {
+    writeFileSync(
+      join(root, 'run.mjs'),
+      `import { runTscBaselineGate } from ${JSON.stringify(gateUrl)};\n` +
+        `await runTscBaselineGate({\n` +
+        `  root: ${JSON.stringify(root)},\n` +
+        `  preTscCommand: ${JSON.stringify(preTscCommand)},\n` +
+        `  tscCommand: ${JSON.stringify(tscCommand)},\n` +
+        `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+        `  label: 'explicit-files',\n` +
+        `  argv: ${JSON.stringify(argv)},\n` +
+        `});\n`,
+    );
+    try {
+      return {
+        out: execFileSync(process.execPath, [join(root, 'run.mjs')], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+        }),
+        code: 0,
+      };
+    } catch (e: any) {
+      return { out: `${e.stdout ?? ''}${e.stderr ?? ''}`, code: e.status ?? -1 };
+    }
+  }
+
+  it('fails a missing named path before preTscCommand or tsc can run', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-missing-explicit-file-'));
+    try {
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: {} }));
+      const preflightMarker = join(root, 'preflight-ran');
+      const tscMarker = join(root, 'tsc-ran');
+      const { out, code } = runGate({
+        root,
+        argv: ['--files=lib/does-not-exist.ts'],
+        preTscCommand: `printf preflight > ${preflightMarker}`,
+        tscCommand: `printf tsc > ${tscMarker}`,
+      });
+
+      expect(code).toBe(1);
+      expect(out).toContain('LINT_TSC_RUN_STAMP');
+      expect(out).toContain('lib/does-not-exist.ts');
+      expect(out).toContain('missing/non-file');
+      expect(out).toContain('status=preflight-failed');
+      expect(existsSync(preflightMarker)).toBe(false);
+      expect(existsSync(tscMarker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('allows existing named files through preTscCommand and tsc', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-existing-explicit-file-'));
+    try {
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/existing.ts'), 'export const value = 1;\n');
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: {} }));
+      const preflightMarker = join(root, 'preflight-ran');
+      const tscMarker = join(root, 'tsc-ran');
+      const { out, code } = runGate({
+        root,
+        argv: ['--files=lib/existing.ts'],
+        preTscCommand: `printf preflight > ${preflightMarker}`,
+        tscCommand: `test -f ${preflightMarker} && printf tsc > ${tscMarker}`,
+      });
+
+      expect(code).toBe(0);
+      expect(out).toContain('TSC explicit-files: 0 type errors');
+      expect(out).toContain('status=clean');
+      expect(readFileSync(preflightMarker, 'utf8')).toBe('preflight');
+      expect(readFileSync(tscMarker, 'utf8')).toBe('tsc');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2521,6 +2613,8 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
   function runGate(baseline: Record<string, number>): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-wiring-'));
     try {
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
       writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n`);
       // The baseline is `{ files: {...} }`, not a flat map. Writing a flat map here made the
       // gate read NO baseline at all and default the file to 0 — which still produced a green
@@ -2555,6 +2649,8 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
   function runSyntaxGate(): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-syntax-wiring-'));
     try {
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
       writeFileSync(join(root, 'tsc-output.txt'), `${TS1XXX_HARD_FAIL_TSC_LINES}\n`);
       writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'lib/a.ts': 0 } }));
       writeFileSync(
@@ -2595,6 +2691,7 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
       git(['config', 'user.name', 'gate test']);
       mkdirSync(join(root, 'lib'), { recursive: true });
       writeFileSync(join(root, 'lib/old-peer.ts'), 'export const x = 1;\n');
+      writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
       // Backdate well past LANDING_RACE_WINDOW_SEC so the file is unambiguously "settled".
       const old = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
       git(['add', '-A']);
@@ -2682,6 +2779,8 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
   function runGateWithTwelveErrors(extraArgv: string[]): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-cap-'));
     try {
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
       writeFileSync(join(root, 'tsc-output.txt'), `${TWELVE_ERROR_LINES.join('\n')}\n`);
       writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'lib/a.ts': 0 } }));
       const argv = JSON.stringify(['--files=lib/a.ts', ...extraArgv]);
@@ -2727,6 +2826,8 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-stderr-'));
     try {
       mkdirSync(join(root, 'scripts'));
+      mkdirSync(join(root, 'lib'), { recursive: true });
+      writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
       writeFileSync(
         join(root, 'scripts', 'pc-heavy.sh'),
         '#!/usr/bin/env bash\nprintf "%s\\n" "pc-heavy: waiting for compile slot" >&2\nexec "$@"\n',
@@ -3978,6 +4079,8 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       try {
         mkdirSync(join(root, 'pkg-a', 'lib'), { recursive: true });
         mkdirSync(join(root, 'pkg-b', 'lib'), { recursive: true });
+        writeFileSync(join(root, 'pkg-a', 'lib', 'a.ts'), 'export const fixture = 1;\n');
+        writeFileSync(join(root, 'pkg-b', 'lib', 'b.ts'), 'export const fixture = 1;\n');
         writeFileSync(join(root, 'pkg-a', 'tsconfig.json'), '{}');
         writeFileSync(
           join(root, 'package.json'),
