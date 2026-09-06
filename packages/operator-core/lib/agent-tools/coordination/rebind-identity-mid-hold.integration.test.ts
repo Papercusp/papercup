@@ -109,6 +109,23 @@ describe('rebindIdentity — mid-hold compaction survival (real Postgres)', () =
         fired_at      timestamptz,
         cancelled_at  timestamptz
       );
+
+      CREATE TABLE IF NOT EXISTS harness_shared.agent_modes (
+        workspace_id              text NOT NULL,
+        owner_id                  text NOT NULL,
+        axis_key                  text NOT NULL,
+        mode                      text NOT NULL,
+        reason                    text NOT NULL DEFAULT '',
+        set_by                    text NOT NULL,
+        owner_directed            boolean NOT NULL DEFAULT false,
+        set_at                    timestamptz NOT NULL DEFAULT now(),
+        subject                   text,
+        goal_lease_epoch          bigint,
+        goal_handoff_from_owner_id text,
+        goal_handoff_expires_at   timestamptz,
+        implied_by                jsonb,
+        PRIMARY KEY (workspace_id, owner_id, axis_key)
+      );
     `);
   });
 
@@ -160,6 +177,22 @@ describe('rebindIdentity — mid-hold compaction survival (real Postgres)', () =
       VALUES (${WS}, ${FROM}, ${'coord:inbox-wake:' + FROM})
     `;
 
+    // Current mode posture: the GOAL row carries lease metadata that must
+    // survive the owner-id change; the successor already chose cold-auto on
+    // the same autonomy axis, so the predecessor's auto row must not clobber
+    // it. DRAIN is a separate overlay and must follow the successor too.
+    await sql`
+      INSERT INTO harness_shared.agent_modes
+        (workspace_id, owner_id, axis_key, mode, reason, set_by, subject,
+         goal_lease_epoch, goal_handoff_from_owner_id, goal_handoff_expires_at)
+      VALUES
+        (${WS}, ${FROM}, 'overlay:goal', 'goal', 'old goal', ${FROM}, 'goal-cold',
+         7, 'su-predecessor', '2099-01-01T00:00:00Z'::timestamptz),
+        (${WS}, ${FROM}, 'work-source', 'drain', 'old drain', ${FROM}, NULL, NULL, NULL, NULL),
+        (${WS}, ${FROM}, 'autonomy', 'auto', 'old auto', ${FROM}, NULL, NULL, NULL, NULL),
+        (${WS}, ${TO}, 'autonomy', 'cold-auto', 'successor choice', ${TO}, NULL, NULL, NULL, NULL)
+    `;
+
     // ── The mid-hold rebind — one call, exactly what the SessionStart
     //    recovery hook / coord:rebind-identity fires. ──
     const res = await rebindIdentity(FROM, TO, { sql });
@@ -197,11 +230,48 @@ describe('rebindIdentity — mid-hold compaction survival (real Postgres)', () =
     expect(awaits[0].subscriber_id).toBe(TO);
     expect(awaits[0].event_key).toBe('coord:inbox-wake:' + TO);
 
+    const modes = await sql`
+      SELECT owner_id, axis_key, mode, subject, goal_lease_epoch,
+             goal_handoff_from_owner_id, goal_handoff_expires_at
+        FROM harness_shared.agent_modes
+       WHERE workspace_id = ${WS}
+       ORDER BY axis_key
+    `;
+    expect(modes).toEqual([
+      {
+        owner_id: TO,
+        axis_key: 'autonomy',
+        mode: 'cold-auto',
+        subject: null,
+        goal_lease_epoch: null,
+        goal_handoff_from_owner_id: null,
+        goal_handoff_expires_at: null,
+      },
+      {
+        owner_id: TO,
+        axis_key: 'overlay:goal',
+        mode: 'goal',
+        subject: 'goal-cold',
+        goal_lease_epoch: 7,
+        goal_handoff_from_owner_id: 'su-predecessor',
+        goal_handoff_expires_at: new Date('2099-01-01T00:00:00.000Z'),
+      },
+      {
+        owner_id: TO,
+        axis_key: 'work-source',
+        mode: 'drain',
+        subject: null,
+        goal_lease_epoch: null,
+        goal_handoff_from_owner_id: null,
+        goal_handoff_expires_at: null,
+      },
+    ]);
+
     // The seeded surfaces themselves report ok (moved > 0); unseeded surfaces
     // (carry-note, presence, fleet-*, claim-spec, watermarks, held-items,
-    // owner-facts, read-cursors, pending-wakes) hit a missing relation and are
+    // owner-facts, owner-directives, read-cursors, pending-wakes) hit a missing relation and are
     // expected to error in this deliberately minimal fixture — not asserted on.
-    const seeded = ['held-work-items', 'plan-claims', 'loop-routine', 'awaits'];
+    const seeded = ['held-work-items', 'plan-claims', 'loop-routine', 'awaits', 'agent-modes'];
     for (const name of seeded) {
       const surface = res.surfaces.find((s) => s.surface === name);
       expect(surface, `surface ${name} missing`).toBeTruthy();

@@ -613,6 +613,32 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
+  // 12c. Current mode posture — unlike agent_mode_changes, this is live
+  // per-owner state, not attribution history. Re-key every non-colliding axis
+  // wholesale so GOAL's subject, lease epoch, and bounded handoff fields stay
+  // attached to the cold-carry successor alongside AUTO/DRAIN/other posture.
+  // If the successor already asserted that axis, its current row wins: drop the
+  // predecessor row rather than clobbering a fresher successor decision.
+  await run('agent-modes', async (r) => {
+    const dropped = await sql<Array<{ axis_key: string }>>`
+      DELETE FROM harness_shared.agent_modes AS from_mode
+       USING harness_shared.agent_modes AS to_mode
+       WHERE from_mode.owner_id = ${f}
+         AND to_mode.owner_id = ${t}
+         AND to_mode.workspace_id = from_mode.workspace_id
+         AND to_mode.axis_key = from_mode.axis_key
+       RETURNING from_mode.axis_key
+    `;
+    r.dropped = dropped.length;
+    const moved = await sql<Array<{ axis_key: string }>>`
+      UPDATE harness_shared.agent_modes
+         SET owner_id = ${t}
+       WHERE owner_id = ${f}
+       RETURNING axis_key
+    `;
+    r.moved = moved.length;
+  });
+
   // 13b. Server-side read cursors (P-004 fleet-deltas-leader-primitives,
   //      migration 537) — PK (workspace_id, owner_id, surface), same shape and
   //      same non-monotonic-cursor-survival rationale as the 'watermarks' step

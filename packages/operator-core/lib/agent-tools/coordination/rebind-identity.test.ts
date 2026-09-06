@@ -58,6 +58,8 @@ interface FakeOpts {
   factsDrop?: number;
   factsMove?: number;
   ownerDirectives?: number;
+  agentModesDrop?: number;
+  agentModesMove?: number;
   pendingWakes?: number;
   cursorDrop?: number;
   cursorMove?: number;
@@ -157,6 +159,12 @@ function fakeSql(opts: FakeOpts = {}) {
     if (text.includes('UPDATE harness_shared.owner_directives')) {
       return Promise.resolve(rows(opts.ownerDirectives, { id: 7 }));
     }
+    if (text.includes('DELETE FROM harness_shared.agent_modes')) {
+      return Promise.resolve(rows(opts.agentModesDrop, { axis_key: 'overlay:goal' }));
+    }
+    if (text.includes('UPDATE harness_shared.agent_modes')) {
+      return Promise.resolve(rows(opts.agentModesMove, { axis_key: 'overlay:goal' }));
+    }
     if (text.includes('UPDATE harness_shared.pending_wakes')) {
       return Promise.resolve(rows(opts.pendingWakes, { id: 42 }));
     }
@@ -235,6 +243,7 @@ const BASE_SURFACES = [
   'held-work-items',
   'owner-facts',
   'owner-directives',
+  'agent-modes',
   'read-cursors',
   'pending-wakes',
 ] as const;
@@ -611,6 +620,21 @@ describe('remaining re-keys, totals, and error isolation', () => {
     expect(upd).toBeTruthy();
     expect(upd!.text).toContain('dispositioned_at IS NULL');
     expect(upd!.vals).toEqual([TO, FROM]);
+  });
+
+  it('agent-modes re-keys live GOAL/AUTO/DRAIN posture and preserves the successor row on an axis collision', async () => {
+    const sql = fakeSql({ agentModesDrop: 1, agentModesMove: 3 });
+    const res = await rebind(FROM, TO, sql);
+    expect(surfaceOf(res, 'agent-modes')).toMatchObject({ moved: 3, dropped: 1 });
+
+    const drop = sql.calls.find((c) => c.text.includes('DELETE FROM harness_shared.agent_modes'));
+    expect(drop).toBeTruthy();
+    expect(drop!.text).toContain('from_mode.owner_id = ?');
+    expect(drop!.text).toContain('to_mode.owner_id = ?');
+    expect(drop!.text).toContain('to_mode.axis_key = from_mode.axis_key');
+    const move = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.agent_modes'));
+    expect(move).toBeTruthy();
+    expect(move!.vals).toEqual([TO, FROM]);
   });
 
   it('held-items re-key excludes terminal states (history keeps its author)', async () => {

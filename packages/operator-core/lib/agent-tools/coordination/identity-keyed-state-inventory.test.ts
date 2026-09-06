@@ -196,8 +196,8 @@ const ALLOWLIST: Record<string, Classification> = {
     reason: 'append-only mode-change event log — the CURRENT mode lives in agent_modes.owner_id (see below), this is history.',
   },
   'agent_modes.owner_id': {
-    status: 'exempt',
-    reason: 'a stale rebind here means the new sid falls back to the DEFAULT wake-mode, not a stolen/lost claim — a UX nit, not a correctness bug (no reaper frees a resource because of it). Candidate for a future rebind surface, not urgent.',
+    status: 'covered',
+    surface: 'agent-modes',
   },
   'agent_display_names.owner_id': {
     status: 'exempt',
