@@ -2956,6 +2956,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       diffSubjects: diffSubjectsOn,
       ...(liveLockPaths.length > 0 ? { excludePaths: liveLockPaths } : {}),
       ...(liveLockHoldingRows.length > 0 ? { liveLockHoldings: liveLockHoldingRows } : {}),
+      // Re-read the edit-lock plane at the final commit seam for every repo. The
+      // initial census above protects setup, while this guarded callback closes
+      // the longer submodule/guard window where a peer can acquire a lock.
+      refreshLiveLockHoldings: () =>
+        guarded('refresh-live-file-locks', () =>
+          acquireWithContentionRetry(() => liveLockHoldingsStrict()),
+        ),
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).

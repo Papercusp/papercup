@@ -30,6 +30,12 @@ import {
   valueAtPath,
   type PredicateOp,
 } from '../../../events/await/predicate-watch';
+import {
+  GOAL_OWNER_REPORT_FIELD,
+  parseGoalOwnerReport,
+  stampGoalOwnerReport,
+  type GoalOwnerReportStamp,
+} from '../../../goal-owner-report';
 
 const SEVERITY = ['blocker', 'question', 'advisory'] as const;
 
@@ -315,6 +321,61 @@ export default defineTool({
     const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const harnessSlug =
       typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    // P-006 / A-05: coord:escalate is always owner-facing, so a body using any
+    // GOAL report heading is an attempted report operation. Resolve the CURRENT
+    // subject server-side at the write boundary; callers cannot stamp or choose
+    // a goal id. An ordinary escalation has no such heading and pays no mode
+    // read. If the read itself is unavailable, preserve the escalation as a
+    // diagnostic/remediation rail but make the missing evidence explicit.
+    let goalOwnerReport: GoalOwnerReportStamp | null = null;
+    let goalOwnerReportWarning: string | null = null;
+    const parsedGoalOwnerReport = parseGoalOwnerReport(args.body);
+    if (parsedGoalOwnerReport.attempted) {
+      const reportWorkspaceId =
+        identity.workspaceId ??
+        (typeof (ctx as { workspaceId?: unknown }).workspaceId === 'string'
+          ? (ctx as { workspaceId: string }).workspaceId
+          : null);
+      let goalId: string | null = null;
+      if (!reportWorkspaceId || reportWorkspaceId === '*') {
+        goalOwnerReportWarning =
+          'GOAL owner-report validation was unavailable because this sender has no concrete workspace; the escalation was delivered but does not carry canonical report evidence.';
+      } else {
+        try {
+          const { getModeSubject } = await import('../../../modes/store');
+          goalId = await getModeSubject(reportWorkspaceId, identity.ownerId, 'goal');
+        } catch (error) {
+          goalOwnerReportWarning =
+            'GOAL owner-report validation was unavailable at escalation time; the escalation was delivered without canonical report evidence. ' +
+            `Retry after the active GOAL subject is readable (${error instanceof Error ? error.message : String(error)}).`;
+        }
+      }
+      if (goalId) {
+        if (!parsedGoalOwnerReport.complete) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  error: 'goal-owner-report-incomplete',
+                  goalId,
+                  missing: parsedGoalOwnerReport.missing,
+                  empty: parsedGoalOwnerReport.empty,
+                  duplicate: parsedGoalOwnerReport.duplicate,
+                  message:
+                    `GOAL owner report for ${goalId} is incomplete; nothing was escalated. ` +
+                    'Provide exactly one non-empty section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
+                    'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value.',
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        goalOwnerReport = stampGoalOwnerReport(goalId, parsedGoalOwnerReport);
+      }
+    }
     // A caller-supplied conditionKey becomes the dedup subjectSignature, so the SAME
     // recurring condition coalesces onto one open row across firings. Without it the
     // signature is derived from the prose summary — and a watchdog whose summary carries
@@ -383,6 +444,10 @@ export default defineTool({
         : {}),
       ...(predicateValidation ? { predicateValidation } : {}),
       ...(evidenceValidation ? { evidenceValidation } : {}),
+      ...(goalOwnerReport ? { [GOAL_OWNER_REPORT_FIELD]: goalOwnerReport } : {}),
+      ...(goalOwnerReportWarning
+        ? { goalOwnerReportValidation: { status: 'unknown', reason: goalOwnerReportWarning } }
+        : {}),
     };
     const rec = await openEscalation(identity, {
       severity: args.severity,
@@ -426,6 +491,10 @@ export default defineTool({
             interest_watch: interestWatch,
             ...(predicateValidation ? { predicate_validation: predicateValidation } : {}),
             ...(evidenceValidation ? { evidence_validation: evidenceValidation } : {}),
+            ...(goalOwnerReport
+              ? { goal_owner_report: { status: 'stamped', goalId: goalOwnerReport.goalId } }
+              : {}),
+            ...(goalOwnerReportWarning ? { goal_owner_report_warning: goalOwnerReportWarning } : {}),
           }),
         },
       ],

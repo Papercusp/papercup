@@ -46,6 +46,7 @@ const goalLaunchReadMock = vi.hoisted(() => vi.fn());
 const goalPotPlacementAuthorityMock = vi.hoisted(() => vi.fn());
 const goalModeSubjectMock = vi.hoisted(() => vi.fn());
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
+const obligationAgendaReadMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
@@ -97,6 +98,10 @@ vi.mock('../../../goal-launch-settings', async (importOriginal) => ({
   readGoalLaunchSettingsForLauncher: (...args: unknown[]) => goalLaunchReadMock(...args),
   resolveGoalLaunch: (...args: unknown[]) => goalLaunchResolveMock(...args),
   resolveGoalPotPlacementAuthority: (...args: unknown[]) => goalPotPlacementAuthorityMock(...args),
+}));
+vi.mock('../../../agent-obligation-reader', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readAgentObligationAgenda: (...args: unknown[]) => obligationAgendaReadMock(...args),
 }));
 
 vi.mock('../../../workspace-registry', () => ({
@@ -586,6 +591,73 @@ beforeEach(() => {
     degraded: false,
     degradedReasons: [],
   });
+  obligationAgendaReadMock.mockReset();
+  obligationAgendaReadMock.mockImplementation(async (input: any) => {
+    const plan = input.planSlugs?.[0] ?? 'my-plan';
+    const fleet = input.fleetSlug ?? `${plan}-fleet`;
+    return {
+      goalId: input.goalId,
+      observedAt: new Date().toISOString(),
+      agenda: {
+        sourceGeneration: 'agenda-current',
+        evaluations: [
+          {
+            id: 'obl:goal-plan-placement:test',
+            ruleId: 'goal-plan-placement',
+            ruleRevision: 'goal-plan-placement-v2',
+            family: 'plan-placement',
+            title: `Place ${plan}`,
+            scope: {
+              workspaceId: input.workspaceId,
+              ownerId: input.ownerId,
+              goalId: input.goalId,
+              planSlug: plan,
+            },
+            responsibleOwnerId: input.ownerId,
+            episode: `launch:${plan}`,
+            status: 'due',
+            authority: { kind: 'policy', sourceRef: 'test', revision: 'v2' },
+            reason: `${plan} is the provider-selected eligible placement`,
+            priority: 'high',
+            causalRank: 1,
+            applicableDemand: 1,
+            sourceGeneration: 'placement-current',
+            evidence: [
+              {
+                ref: `goal-plan-placement:${plan}`,
+                observedAt: new Date().toISOString(),
+                freshness: 'current',
+              },
+            ],
+            action: {
+              kind: 'delegate',
+              summary: `launch ${plan}`,
+              tool: 'fleet:launch-on-plan',
+              args: {
+                name: fleet,
+                plan,
+                harness: 'papercusp',
+                leader: 'spawn',
+                headless: true,
+              },
+            },
+            clearsWhen: {
+              id: 'placement',
+              summary: 'independent placement is live',
+              evidenceKind: 'state',
+              sourceRef: 'test',
+            },
+            boundary: {
+              boundary: 'fleet:launch-on-plan',
+              refusalCode: 'goal-plan-placement-prerequisite',
+              enforcement: 'required',
+              unknown: 'allow-with-warning',
+            },
+          },
+        ],
+      },
+    };
+  });
   goalPotPlacementAuthorityMock.mockReset();
   goalPotPlacementAuthorityMock.mockResolvedValue({
     allowed: true,
@@ -672,6 +744,92 @@ describe('fleet:launch-on-plan GOAL pot sovereignty fence (EI-22180799091614070)
 
     expect(goalPotPlacementAuthorityMock).not.toHaveBeenCalled();
     expect(createFleetIfAbsentMock).toHaveBeenCalled();
+  });
+});
+
+describe('fleet:launch-on-plan GOAL provider placement boundary (P-006 / A-04)', () => {
+  beforeEach(() => {
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'goal-1', settings: null, drainFleetSlug: null,
+      degraded: false, degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('goal-1');
+  });
+
+  it('admits the normalized provider-selected action after defaulting spawned leadership', async () => {
+    const res = await invokeLaunchHandler({
+      name: 'my-plan', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true,
+    } as never, {} as never, null);
+    expect(parseHandlerPayload(res).ok).toBe(true);
+    expect(obligationAgendaReadMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1', ownerId: 'owner-1', goalId: 'goal-1',
+      planSlugs: [], fleetSlug: 'my-plan', launchCount: 1,
+    }));
+    expect(createFleetIfAbsentMock).toHaveBeenCalled();
+  });
+
+  it('refuses a wrong-plan/fleet operation before promotion or fleet writes', async () => {
+    obligationAgendaReadMock.mockResolvedValueOnce({
+      goalId: 'goal-1',
+      observedAt: new Date().toISOString(),
+      agenda: {
+        evaluations: [{
+          id: 'obl:wrong-plan', ruleId: 'goal-plan-placement', ruleRevision: 'v2',
+          family: 'plan-placement', title: 'Place plan-b',
+          scope: { workspaceId: 'ws-1', ownerId: 'owner-1', goalId: 'goal-1', planSlug: 'plan-b' },
+          responsibleOwnerId: 'owner-1', episode: 'plan-b', status: 'due',
+          authority: { kind: 'policy', sourceRef: 'test', revision: 'v2' },
+          reason: 'plan-b is the highest-priority eligible plan', priority: 'high', causalRank: 1,
+          applicableDemand: 1, sourceGeneration: 'current-b',
+          evidence: [{ ref: 'placement:plan-b', observedAt: new Date().toISOString(), freshness: 'current' }],
+          action: { kind: 'delegate', summary: 'launch plan-b', tool: 'fleet:launch-on-plan', args: {
+            name: 'plan-b-fleet', plan: 'plan-b', harness: 'papercusp', leader: 'spawn', headless: true,
+          } },
+          clearsWhen: { id: 'placement', summary: 'live', evidenceKind: 'state', sourceRef: 'test' },
+          boundary: { boundary: 'fleet:launch-on-plan', refusalCode: 'goal-plan-placement-prerequisite', enforcement: 'required', unknown: 'allow-with-warning' },
+        }],
+      },
+    });
+
+    const res = await invokeLaunchHandler({
+      name: 'plan-a-fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true,
+    } as never, {} as never, null);
+    const payload = parseHandlerPayload(res);
+    expect(payload).toMatchObject({ ok: false, error: 'goal-plan-placement-prerequisite' });
+    expect(payload.recovery.args).toMatchObject({ plan: 'plan-b', name: 'plan-b-fleet' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses no-eligible-work and wrong-subject/stale evidence as non-authority', async () => {
+    const baseInput = {
+      goalId: 'goal-1', observedAt: new Date().toISOString(), agenda: { evaluations: [] as any[] },
+    };
+    obligationAgendaReadMock.mockResolvedValueOnce({
+      ...baseInput,
+      agenda: { evaluations: [{
+        id: 'obl:none', family: 'plan-placement', status: 'not-applicable',
+        scope: { workspaceId: 'ws-1', ownerId: 'owner-1', goalId: 'goal-1' },
+        responsibleOwnerId: 'owner-1', sourceGeneration: 'current-none', evidence: [],
+        reason: 'no non-terminal goal plan needs placement',
+        boundary: { boundary: 'fleet:launch-on-plan', refusalCode: 'goal-plan-placement-prerequisite', enforcement: 'required', unknown: 'allow-with-warning' },
+      }] },
+    });
+    const noWork = await invokeLaunchHandler({
+      name: 'extra-fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true,
+    } as never, {} as never, null);
+    expect(parseHandlerPayload(noWork)).toMatchObject({ ok: false, error: 'goal-plan-placement-prerequisite' });
+
+    obligationAgendaReadMock.mockResolvedValueOnce({
+      goalId: 'wrong-goal', observedAt: '2020-01-01T00:00:00.000Z', agenda: { evaluations: [] },
+    });
+    const stale = await invokeLaunchHandler({
+      name: 'stale-fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true,
+    } as never, {} as never, null);
+    expect(parseHandlerPayload(stale)).toMatchObject({ ok: false, error: 'goal-plan-placement-prerequisite' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
   });
 });
 

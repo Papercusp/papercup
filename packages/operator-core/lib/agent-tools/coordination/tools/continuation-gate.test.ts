@@ -318,7 +318,9 @@ describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
   const authorized = {
     activeClaimPresent: false,
     currentFleet: fleet,
+    currentFleetRole: 'member',
     fleetControlState: 'winding-down',
+    claimSpecLaneDrained: true,
     cues: [cue()],
   } as const;
 
@@ -332,6 +334,12 @@ describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
 
   it('NEGATIVE: active control state does not authorize loop:end', () => {
     expect(isFleetWindDownLoopEndAuthorized({ ...authorized, fleetControlState: 'active' })).toBe(false);
+  });
+
+  it('NEGATIVE: a leader or an unproven lane cannot use the member escape', () => {
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, currentFleetRole: 'leader' })).toBe(false);
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, claimSpecLaneDrained: false })).toBe(false);
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, claimSpecLaneDrained: null })).toBe(false);
   });
 
   it('NEGATIVE: free text, wrong authority, wrong scope, and wrong fleet are all fail-closed', () => {

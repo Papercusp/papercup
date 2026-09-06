@@ -12,8 +12,8 @@
     "D-014"
   ],
   "mutationBoundary": {
-    "state": "partial-apply-four-exact-duplicates-complete-implemented-proof-pending",
-    "reason": "The four exact-duplicate pairs passed the exact reviewed preview and were applied through the transactional reversible writer after D-014 links were redirected and verified. Shared-root, blocked-plan-run, review-gated, and changed-source rows remain preserved. Eighteen byte-identical implementation candidates remain closed to mutation until completion reversal adequacy and current per-row reference floors are proven."
+    "state": "approved-apply-complete-protected-residual-preserved",
+    "reason": "The four exact-duplicate pairs were applied through the preview-hash-bound reversible writer after D-014 redirects, and all eighteen unchanged resolve-as-implemented rows were terminalized in three guarded six-row batches with committed structured evidence. Every batch re-exported exact current bytes, queue-control floors, producer identity, and both reference directions before mutation and verified preservation afterward. All 78 shared-root identity conflicts, 3 blocked plan runs, 131 original review-floor preserves, and drifted WI-38027 remain untouched."
   },
   "executionReceipts": {
     "schemaVersion": "feature-change-p004-execution-receipts-v1",
@@ -117,6 +117,224 @@
       "finalD014OutEdges": 8,
       "finalD014InEdges": 8,
       "finalD014Exact": true
+    },
+    "resolveAsImplementedBatches": [
+      {
+        "batch": 1,
+        "appliedAt": "2026-09-06T03:01:20.762Z",
+        "rowsRequested": 6,
+        "preApply": {
+          "exported": 6,
+          "missing": [],
+          "byteExact": 6,
+          "stateOpen": 6,
+          "unassigned": 6,
+          "unheld": 6,
+          "unparked": 6,
+          "preExportManifestSha256": "c6d5498f60438a980a7838501496e47adc3912503c884eb13a40fe1555dd8228",
+          "bidirectionalLinkGraphSha256": "4d47d9f45b1f5ea7f9dea664cf883837fd377d7dc3164a6e9f8a427fdbdddfcf"
+        },
+        "verification": {
+          "implementationTestFilesPassed": 9,
+          "implementationTestsPassed": 351,
+          "reversalTestFilesPassed": 2,
+          "reversalTestsPassed": 96,
+          "postStateDone": 6,
+          "completionAuthorityCommitted": 6,
+          "completionEvidencePresent": 6,
+          "assumptionsNone": 6,
+          "nonCompletionPayloadPreserved": 6,
+          "bidirectionalLinksPreserved": true,
+          "postExportManifestSha256": "579628acd6bba64121c14771b6430064ec7e343ba5faa888d9d9589283d9a8a8"
+        },
+        "rows": [
+          {
+            "id": "EI-20279622190502179",
+            "preApplySha256": "0d23fdb8b322c4282d279b852177130ab8a763954fb513a19d8bc44fe0a23aca",
+            "postApplySha256": "721c2d3cfdce3f74e97b6cc3c66d1b9488b81ce4f93c956f9919ec374e2050fb",
+            "closedAt": "2026-09-06T03:01:20.762Z"
+          },
+          {
+            "id": "EI-21104331433329392",
+            "preApplySha256": "1d3c7e9ef74d3d173cb523a562c9398fc390d62b190c55dd3e50ea40861bc181",
+            "postApplySha256": "c655d04ca11b6e8d285664adf112be1421fda23314b0f6d97b76d81044e7022b",
+            "closedAt": "2026-09-06T03:01:21.080Z"
+          },
+          {
+            "id": "EI-21137936760355170",
+            "preApplySha256": "e320d5c812475c0538b410590de5fee64a0db530457db61708d14c17e0f2f850",
+            "postApplySha256": "6b1ebf42f8599f91f6e8e36ea9e14f3e2be1aa03b611f0be947626c79d26a005",
+            "closedAt": "2026-09-06T03:01:21.327Z"
+          },
+          {
+            "id": "EI-21154812116603472",
+            "preApplySha256": "14ac5b56623f39737b274a31b9c5790bdc8cca04c035f43ac3e6cbe9e24f338d",
+            "postApplySha256": "4dc9f317f4d7a0fcf4b4513f05feebf7de5bb972ca4d35d5449beec568cf4e2e",
+            "closedAt": "2026-09-06T03:01:21.600Z"
+          },
+          {
+            "id": "EI-21186639557436599",
+            "preApplySha256": "1eb86fb92de95e93ebdae622bc1d1731bc8219eee2eaddcb8608fb71145cdfa2",
+            "postApplySha256": "d070acea492aac91b403c9ef43799b51ca4c7020be8134b7a68eda07535c1c58",
+            "closedAt": "2026-09-06T03:01:21.846Z"
+          },
+          {
+            "id": "EI-21220573084661667",
+            "preApplySha256": "91a5b4dd8d2f848ad651b4936917f19870f89578768a4b1c666f9915d7deb1d3",
+            "postApplySha256": "b3025e28931e4663e9b660ed9180715880d58a86b3efe7304a9a3227c6856600",
+            "closedAt": "2026-09-06T03:01:22.378Z"
+          }
+        ]
+      },
+      {
+        "batch": 2,
+        "appliedAt": "2026-09-06T03:06:51.219Z",
+        "rowsRequested": 6,
+        "preApply": {
+          "exported": 6,
+          "missing": [],
+          "byteExact": 6,
+          "stateOpen": 6,
+          "unassigned": 6,
+          "unheld": 6,
+          "unparked": 6,
+          "preExportManifestSha256": "032b86da4a963ed38e5dc08904ec4460f0c0d68cb72cce3197b588443517a5c9",
+          "bidirectionalLinkGraphSha256": "8787438bff6a20ea250bda5443069c0b513b3d99950c036d0f3b90b9cde3cf74"
+        },
+        "verification": {
+          "implementationTestFilesPassed": 9,
+          "implementationTestsPassed": 351,
+          "reversalTestFilesPassed": 2,
+          "reversalTestsPassed": 96,
+          "postStateDone": 6,
+          "completionAuthorityCommitted": 6,
+          "completionEvidencePresent": 6,
+          "assumptionsNone": 6,
+          "nonCompletionPayloadPreserved": 6,
+          "bidirectionalLinksPreserved": true,
+          "postExportManifestSha256": "2e4decaa70b9a27598c5d2ff7a0cb77966fe2ac954519e9ed34d648db1940fa1"
+        },
+        "rows": [
+          {
+            "id": "EI-21221625726030547",
+            "preApplySha256": "2fca14d1047d617a6003707c5eeed5992e2c0ad3d72cd35e23f0838784290e40",
+            "postApplySha256": "cafc6b7db82511871cec542b15f636da6d0fca0737156f131e333246e77c91df",
+            "closedAt": "2026-09-06T03:06:51.219Z"
+          },
+          {
+            "id": "EI-21247852936351249",
+            "preApplySha256": "92c3ea52a2872c6f0b73cec710e6c80c7a394c076a8ac08098ad89715b55e21a",
+            "postApplySha256": "7310935ffb6cdc3936d7656d64a16aa6d242c42a5ce2cc388a689b59a9207b14",
+            "closedAt": "2026-09-06T03:07:01.449Z"
+          },
+          {
+            "id": "EI-21278487946317444",
+            "preApplySha256": "7c56e2bb1872919dc19d377c6f949767a5bce08e3b78d4526d3a1d9c4345d5df",
+            "postApplySha256": "63bcb563d2ea24d7110b9208e015c1ce9dc84d41bc21dd193315ea3374cb72e6",
+            "closedAt": "2026-09-06T03:07:02.618Z"
+          },
+          {
+            "id": "EI-21342094406892720",
+            "preApplySha256": "8763ee7d35950bdebdb735a0d92a8de4d52f43a2ece47a0b75ad58d439d0de80",
+            "postApplySha256": "ae4eae7842286677070fd322f90d4b872807ac7d8dbbc1c322499f43a70cbfe1",
+            "closedAt": "2026-09-06T03:07:03.049Z"
+          },
+          {
+            "id": "EI-21346506582938240",
+            "preApplySha256": "920d962b168da2c9117152e23dfd6a71befac4933bda786fde2fa99acbc7ad15",
+            "postApplySha256": "f715d8152c7e16808a3ae11bffe26acc73630d5f5727b71ac711fcc4d77fabd8",
+            "closedAt": "2026-09-06T03:07:03.508Z"
+          },
+          {
+            "id": "EI-21358833651129756",
+            "preApplySha256": "9da3a98934b566d7c46cf0fa88d6c3db76f0cd5f04e8221c8a756a9f6f97f988",
+            "postApplySha256": "c0f127b1f94a1011e2251ffe18b421a8d5bbdbec4e76a6e5b66af56789aba1b9",
+            "closedAt": "2026-09-06T03:07:03.917Z"
+          }
+        ]
+      },
+      {
+        "batch": 3,
+        "appliedAt": "2026-09-06T03:11:00.033Z",
+        "rowsRequested": 6,
+        "preApply": {
+          "exported": 6,
+          "missing": [],
+          "byteExact": 6,
+          "stateOpen": 6,
+          "unassigned": 6,
+          "unheld": 6,
+          "unparked": 6,
+          "preExportManifestSha256": "ccee39989514d5755041dff0ba879a4aeec02ee538499a15e1f898a97309edbd",
+          "bidirectionalLinkGraphSha256": "bd5a501f23f5f8ea61a3959710952df03ca3c4b7e2c2d9e322501c9ec97bc522"
+        },
+        "verification": {
+          "implementationTestFilesPassed": 9,
+          "implementationTestsPassed": 351,
+          "reversalTestFilesPassed": 2,
+          "reversalTestsPassed": 96,
+          "postStateDone": 6,
+          "completionAuthorityCommitted": 6,
+          "completionEvidencePresent": 6,
+          "assumptionsNone": 6,
+          "nonCompletionPayloadPreserved": 6,
+          "bidirectionalLinksPreserved": true,
+          "postExportManifestSha256": "4c425b4adcf2037f316e3199f341349770b875965f3b395ebec4f4d38c7aa16b"
+        },
+        "rows": [
+          {
+            "id": "EI-21374898064443007",
+            "preApplySha256": "2f8271e7cc932273df407bf656eb025aa4ff2e043e0d6e57fbccaf07a51bedc9",
+            "postApplySha256": "590f979f35302d4be6e19626440ddd906cda95675e28d7a307c3cca7afb3abec",
+            "closedAt": "2026-09-06T03:11:00.033Z"
+          },
+          {
+            "id": "EI-21394481656888796",
+            "preApplySha256": "0befc41621c59518972fdc415dba6af69ba8a2b9896aa1bd6d9d55ff3c82682d",
+            "postApplySha256": "4c0f48d4e5b5242b57d80de1fbbe2449999e4137d49800b2b62e2c353dab432d",
+            "closedAt": "2026-09-06T03:11:00.318Z"
+          },
+          {
+            "id": "EI-21400146324354078",
+            "preApplySha256": "2f568f927527b2b70f6634e7e5ce197e1bcb3b4e425ecbbba978cc3b28bc41f1",
+            "postApplySha256": "66a28fefedc0376261c1b17ce9d2b628c18849f8edd2a5f5e4546861aa9abcd7",
+            "closedAt": "2026-09-06T03:11:00.576Z"
+          },
+          {
+            "id": "EI-21553758280298722",
+            "preApplySha256": "776f577cf35fdc4e0e90e1d7d5ba27549551d6eb9364abca6c2aa5d7823394a8",
+            "postApplySha256": "74b6509222bd24a942a64691ffa629b070d76d4767593c8a6f79fa9a519f654f",
+            "closedAt": "2026-09-06T03:11:00.859Z"
+          },
+          {
+            "id": "WI-36618",
+            "preApplySha256": "9385e422cc0cbf111b813080df7f8cfd893b5da3433faf76c538e20d6c95c42b",
+            "postApplySha256": "e90df166a870322bc744306d27bcd2fb36039b7c7b422fd36903b540efba5e06",
+            "closedAt": "2026-09-06T03:11:01.163Z"
+          },
+          {
+            "id": "WI-36683",
+            "preApplySha256": "5adc80be362980400b1afe91a63653115e27a9dbca33b65b6240517a51eef40a",
+            "postApplySha256": "2866ae1ca4abac1d7f7ff41f78803f6b0fffe67a3a57d0acdc7bf35fc9ee5fcc",
+            "closedAt": "2026-09-06T03:11:01.743Z"
+          }
+        ]
+      }
+    ],
+    "resolveAsImplementedSummary": {
+      "requested": 18,
+      "completed": 18,
+      "batches": 3,
+      "batchSize": 6,
+      "completionAuthorityCommitted": 18,
+      "completionEvidencePresent": 18,
+      "assumptionsNone": 18,
+      "nonCompletionPayloadPreserved": 18,
+      "bidirectionalLinksPreserved": 18,
+      "changedCandidatePreserved": "WI-38027",
+      "protectedSharedRootRows": 78,
+      "protectedBlockedPlanRunRows": 3,
+      "protectedOriginalReviewFloorRows": 131
     }
   },
   "sources": {

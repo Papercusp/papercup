@@ -119,10 +119,33 @@ grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$UPDATE_RESULT"
   --eval "getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'"
 
 echo '=== [6/8] reload the WebView and prove persisted selection + cached CSS ==='
+# The bridge's direct `navigate /path` calls above are intentionally soft and
+# omit the desktop's ordinary `?ws=` launch identity. Preserve the already-
+# verified browser workspace on the URL before the hard reload; otherwise the
+# host has no per-window scope to re-inject and legitimately falls back to the
+# process-global workspace, turning this into a wrong-tenant test rather than a
+# persistence test. Also read the PG-backed profile before reload so the
+# assertion proves the canonical write landed instead of passing from the
+# WebView cache alone.
+PRE_RELOAD_RESULT="$(theme_eval "(async () => {
+  const response = await fetch('/api/profile', { headers: { accept: 'application/json' } });
+  const profile = await response.json().catch(() => null);
+  const workspace = String(window.__PAPERCUSP_WS__ || '');
+  const url = new URL(window.location.href);
+  if (workspace) {
+    url.searchParams.set('ws', workspace);
+    window.history.replaceState(window.history.state, '', url);
+  }
+  return JSON.stringify({ status: response.status, themeId: profile?.theme_id ?? null, workspace, href: window.location.href });
+})()")"
+printf '%s\n' "$PRE_RELOAD_RESULT" | tee "$THEME_TAURI_OUT/pre-reload.json"
+grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$PRE_RELOAD_RESULT"
+grep -Eq '"themeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$PRE_RELOAD_RESULT"
+grep -Eq '"workspace"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$PRE_RELOAD_RESULT"
 theme_eval 'window.location.reload()' >/dev/null 2>&1 || true
 "$THEME_TAURI_POLL" \
   --require 'html[data-theme="custom:tauri-aurora"]' \
-  --eval "getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'" \
+  --eval "String(window.__PAPERCUSP_WS__ || '') !== '' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'" \
   --no-errors
 
 echo '=== [7/8] remove the active theme and verify canonical fallback ==='

@@ -39,6 +39,7 @@ import {
   resolveFleetParkResumePath,
   type FleetParkResumePath,
 } from '../../../fleet-park-resume-path';
+import { readClaimSpecLaneHealth } from '../../../fleet/lane-health';
 
 /** The envelope fields the interrupt classifier reads — structural, so the gate
  *  keeps no import edge to the coordination core types (CoordEnvelope satisfies it). */
@@ -60,8 +61,12 @@ export interface FleetWindDownLoopEndAuthorizationInputs {
   activeClaimPresent: boolean | null | undefined;
   /** The member's current presence-fleet label; null means known non-member. */
   currentFleet: string | null | undefined;
+  /** The member role from the same current presence read; only `member` may use this escape. */
+  currentFleetRole?: string | null | undefined;
   /** The durable registry control state for currentFleet. */
   fleetControlState: string | null | undefined;
+  /** True only when the current effective claim spec's family-complete lane read is drained. */
+  claimSpecLaneDrained?: boolean | null | undefined;
   /** Cues read from the member's current inbox window. */
   cues: readonly FleetWindDownCueLike[] | null | undefined;
   /**
@@ -95,7 +100,8 @@ export function isFleetWindDownLoopEndAuthorized(
 ): boolean {
   if (inputs.activeClaimPresent !== false) return false;
   const fleet = typeof inputs.currentFleet === 'string' ? inputs.currentFleet.trim() : '';
-  if (!fleet || inputs.fleetControlState !== 'winding-down') return false;
+  if (!fleet || inputs.currentFleetRole !== 'member' || inputs.fleetControlState !== 'winding-down') return false;
+  if (inputs.claimSpecLaneDrained !== true) return false;
   // WI-2034563: a park with a live way back is a STAND-BY, not a shutdown. The
   // member is expected to hold the gate, not to disappear; authorizing a wake-less
   // stop here is what produced the stranding this exception was never meant to cause.
@@ -121,6 +127,34 @@ export function isFleetWindDownLoopEndAuthorized(
 }
 
 /**
+ * Read only the classification needed to decide whether the member-only guard
+ * applies. This is separate from the full authorization read because a false
+ * authorization means both "not a fleet member" and "a member that must park";
+ * loop:end must distinguish those cases before it can refuse a non-autonomous
+ * member. A read failure stays unknown so the historical always-stoppable path
+ * is preserved when coordination infrastructure is unavailable.
+ */
+export async function readFleetWindDownLoopEndRequirement(args: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<boolean | null> {
+  try {
+    const [{ fetchPresenceFleet }, { getFleet }] = await Promise.all([
+      import('../presence-fleet'),
+      import('../../../agent-fleets-store'),
+    ]);
+    const fleetMap = await fetchPresenceFleet([args.ownerId]);
+    const membership = fleetMap.get(args.ownerId);
+    if (membership?.fleetRole !== 'member' || !membership.fleetSlug) return false;
+    const fleet = await getFleet(args.workspaceId, membership.fleetSlug).catch(() => undefined);
+    if (fleet === undefined) return null;
+    return fleet?.controlState === 'winding-down';
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read the independent, durable inputs for the no-PTY fleet wind-down escape.
  * Each leg is deliberately best-effort but keeps an unknown distinct from a
  * known negative: a read failure returns null, while a successful read that
@@ -133,11 +167,13 @@ export async function readFleetWindDownLoopEndAuthorization(args: {
   workspaceId: string;
 }): Promise<boolean | null> {
   try {
-    const [{ getActiveClaimForOwner }, { fetchPresenceFleet }, { readInboxWindow }] = await Promise.all([
-      import('../../../work-item-claims'),
-      import('../presence-fleet'),
-      import('../messages'),
-    ]);
+    const [{ getActiveClaimForOwner }, { fetchPresenceFleet }, { readInboxWindow }, { getClaimSpecRecord }] =
+      await Promise.all([
+        import('../../../work-item-claims'),
+        import('../presence-fleet'),
+        import('../messages'),
+        import('../../../scheduler/claim-spec-store'),
+      ]);
 
     const [claim, fleetMap] = await Promise.all([
       getActiveClaimForOwner(args.workspaceId, args.ownerId).catch(() => undefined),
@@ -145,12 +181,34 @@ export async function readFleetWindDownLoopEndAuthorization(args: {
     ]);
 
     if (claim === undefined || fleetMap === undefined) return null;
-    const currentFleet = fleetMap.get(args.ownerId)?.fleetSlug ?? null;
-    if (!currentFleet) return false;
+    const membership = fleetMap.get(args.ownerId);
+    const currentFleet = membership?.fleetSlug ?? null;
+    if (!currentFleet || membership?.fleetRole !== 'member') return false;
 
     const { getFleet } = await import('../../../agent-fleets-store');
     const fleet = await getFleet(args.workspaceId, currentFleet).catch(() => undefined);
     if (fleet === undefined) return null;
+
+    // A scheduler miss/spec_exhausted is not drainage proof. Read the effective
+    // member spec (per-member override -> inherited fleet spec -> default) and
+    // use the shared family-complete lane oracle, so issue and feature storage
+    // cannot silently disagree about whether work remains.
+    const record = await getClaimSpecRecord({ cupId: args.ownerId, workspaceId: args.workspaceId });
+    const harness = record.harnessSlug;
+    if (!harness) return null;
+    const laneHealth = await readClaimSpecLaneHealth({
+      spec: record.spec,
+      record,
+      fleet: currentFleet,
+      harness,
+      workspaceId: args.workspaceId,
+      assignee: args.ownerId,
+    });
+    if (laneHealth === null) return null;
+    const claimSpecLaneDrained =
+      laneHealth.effective.claimable === 0 &&
+      laneHealth.effective.matchedByFilter !== null &&
+      laneHealth.effective.excluded !== null;
 
     const inbox = await readInboxWindow(
       args.ownerId,
@@ -180,7 +238,9 @@ export async function readFleetWindDownLoopEndAuthorization(args: {
     return isFleetWindDownLoopEndAuthorized({
       activeClaimPresent: claim !== null,
       currentFleet,
+      currentFleetRole: membership.fleetRole,
       fleetControlState: fleet?.controlState ?? null,
+      claimSpecLaneDrained,
       cues: inbox,
       parkOffersResumePath: fleetParkOffersResumePath(resolveFleetParkResumePath(fleet, Date.now())),
     });

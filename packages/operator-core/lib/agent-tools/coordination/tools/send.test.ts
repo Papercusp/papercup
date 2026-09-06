@@ -31,6 +31,9 @@ const { getMessageByIdMock, getWorkItemMock, resolveMessageRefMock } = vi.hoiste
   });
   return { getMessageByIdMock, getWorkItemMock, resolveMessageRefMock };
 });
+const { getModeSubjectMock } = vi.hoisted(() => ({
+  getModeSubjectMock: vi.fn(async () => null as string | null),
+}));
 
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
 // importOriginal. A bare factory replaces the whole module, so send.ts's
@@ -89,6 +92,10 @@ vi.mock('../recipient-resolve', () => ({
 }));
 vi.mock('../../turn/interrupt', () => ({ forceEndTurn: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+// P-006: the report-shape gate resolves the CURRENT GOAL subject lazily and
+// only for a report-shaped message to the human. Keep the handler suite DB-free
+// while asserting that exact selective read and the resulting server stamp.
+vi.mock('../../../modes/store', () => ({ getModeSubject: getModeSubjectMock }));
 // P-006: keep ref-hydrate-resolve's IO graph (work-items + announced-gates
 // store → coord log → flags listener) OUT of this unit graph — this file mocks
 // flags/server partially, so loading the real chain explodes at import. Gate
@@ -2379,6 +2386,97 @@ describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
     expect(
       tool.args.safeParse({ items: [{ to: ['human'], summary: 'hi', expects: 'none', report }] }).success,
     ).toBe(true);
+  });
+});
+
+describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
+  const goalId = 'work-on-everything-070565';
+  const completeBody = [
+    { text: 'MOVED: P-006 advanced' },
+    { text: 'COST: unknown (goal-pots rollup unavailable)' },
+    { text: 'OWNER-WALLED: none' },
+    { text: 'KILLED: stale experiment' },
+  ];
+
+  it('resolves the live GOAL subject and stamps one complete four-section send', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    const b = await body({
+      to: ['human'],
+      summary: 'Goal owner report',
+      expects: 'none',
+      body: completeBody,
+    });
+
+    expect(getModeSubjectMock).toHaveBeenCalledWith('ws1', 'me', 'goal');
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      goalOwnerReport: { status: 'stamped', goalId },
+    });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
+    expect(opts.extra?.goalOwnerReport).toEqual({
+      schemaVersion: 'goal-owner-report-v1',
+      goalId,
+      moved: 'P-006 advanced',
+      cost: 'unknown (goal-pots rollup unavailable)',
+      ownerWalled: 'none',
+      killed: 'stale experiment',
+    });
+  });
+
+  it('refuses a partial attempted report before persistence and names every repair', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, goalId);
+    const b = await body({
+      to: ['human'],
+      summary: 'Goal owner report',
+      expects: 'none',
+      body: [{ text: 'MOVED: P-006 advanced' }, { text: 'COST:' }, { text: 'KILLED: none' }],
+    });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'goal-owner-report-incomplete',
+      goalId,
+      missing: ['ownerWalled'],
+      empty: ['cost'],
+    });
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('does not read GOAL state for ordinary human messages or report-shaped peer diagnostics', async () => {
+    await body({ to: ['human'], summary: 'ordinary status', expects: 'none', body: [{ text: 'Still working.' }] });
+    await body({ to: ['peer-1'], summary: 'cost diagnostic', expects: 'none', body: [{ text: 'COST: query plan' }] });
+
+    expect(getModeSubjectMock).not.toHaveBeenCalled();
+    expect(sendM).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails open with an explicit warning when the subject read is unavailable', async () => {
+    getModeSubjectMock.mockRejectedValueOnce(new Error('mode store unavailable'));
+    const b = await body({
+      to: ['human'],
+      summary: 'Goal owner report',
+      expects: 'none',
+      body: completeBody,
+    });
+
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].goalOwnerReportWarning).toContain('mode store unavailable');
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
+    expect(opts.extra?.goalOwnerReport).toBeUndefined();
+    expect(opts.extra?.goalOwnerReportValidation).toMatchObject({ status: 'unknown' });
+  });
+
+  it('keeps an inactive sender report-shaped note usable without manufacturing a stamp', async () => {
+    mockResolvedOnceTyped(getModeSubjectMock, null);
+    const b = await body({
+      to: ['human'],
+      summary: 'Non-goal status',
+      expects: 'none',
+      body: completeBody,
+    });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, any> };
+    expect(opts.extra?.goalOwnerReport).toBeUndefined();
   });
 });
 

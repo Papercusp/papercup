@@ -2674,9 +2674,10 @@ export async function runTscBaselineGate({
   // `process.exit(1)`, so the flag and the exit it describes are the same decision. It refines
   // WHICH failure this is; it can never turn a failure into a pass (see the formatter's note).
   let nothingTypechecked = false;
-  // EI-21467670625776948 — set ONLY by the preflight catch below, on the line before its
-  // `process.exit(1)`. A preflight abort measured ZERO of the caller's files, and the marker
-  // must say that instead of `regressed` (a verdict about work this run never judged).
+  // EI-21467670625776948 / EI-22438149246482169 — set ONLY by a pre-compile validation failure,
+  // on the line before its `process.exit(1)`. A failed preflight or an explicit `--files` path
+  // validation abort measures ZERO of the caller's files, and the marker must say that instead
+  // of `regressed` (a verdict about work this run never judged).
   let preflightFailed = false;
   // EI-20211153048499132 — a bare full-tree compile can straddle a peer's edit and observe a
   // source graph that never existed atomically. This is set after the compile, then read by the
@@ -2761,6 +2762,35 @@ export async function runTscBaselineGate({
     scope: runStampScope,
     files: runStampFiles,
   });
+
+  // EI-22438149246482169 — an explicit selector is a caller assertion that each named path is
+  // real. A typo in `--files=` used to survive normalization and project-coverage checks, then
+  // run the generated-declaration preflight and tsc anyway; with no diagnostic for the typo, the
+  // gate printed a clean verdict about a file that never existed. Validate AFTER the run stamp so
+  // the forensic banner still records the exact normalized selection, but BEFORE any preflight,
+  // sibling routing, or compiler work.
+  if (explicitFiles !== null && explicitFiles.size > 0) {
+    const missingExplicitFiles = [...explicitFiles].filter((file) => {
+      const absolute = isAbsolute(file) ? resolve(file) : resolve(root, file);
+      try {
+        return !statSync(absolute).isFile();
+      } catch {
+        return true;
+      }
+    });
+    if (missingExplicitFiles.length > 0) {
+      console.error(
+        `❌ ${label} explicit file selection contains ${missingExplicitFiles.length} missing/non-file path(s):`,
+      );
+      for (const file of missingExplicitFiles) console.error(`   - ${file}`);
+      console.error(
+        '   Refusing to run the typecheck preflight or tsc; correct the --files/--files-from selection and retry.',
+      );
+      preflightFailed = true;
+      process.exit(1);
+      return;
+    }
+  }
 
   // EI-19341572300046923 — REFUSE to report a verdict about files this project never compiles.
   //

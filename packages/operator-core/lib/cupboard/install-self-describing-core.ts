@@ -31,6 +31,7 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 // A mirror-repo clone target. Mirrors install-blueprint-core / install-template-core.
 const GITHUB_URL_RE =
@@ -172,7 +173,7 @@ export async function installSelfDescribingFromCupboard<TMeta>(
 
   const cloneDir = join(
     deps.tmpDir(),
-    `cupboard-${spec.label}-install-${Date.now()}-${Math.floor(performance.now())}`,
+    `cupboard-${spec.label}-install-${process.pid}-${randomUUID()}`,
   );
   try {
     await deps.cloneRepo(url, cloneDir);
@@ -206,7 +207,7 @@ export async function installSelfDescribingFromCupboard<TMeta>(
     if (!targetExists) {
       await copyContentDir(srcDir, target);
     } else {
-      const suffix = `${process.pid}-${Date.now()}-${Math.floor(performance.now())}`;
+      const suffix = `${process.pid}-${randomUUID()}`;
       const incoming = `${target}.incoming-${suffix}`;
       const backup = `${target}.backup-${suffix}`;
       try {

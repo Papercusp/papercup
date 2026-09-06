@@ -126,7 +126,7 @@ describe('reviveConsultResponder', () => {
       }),
     });
     const r = await reviveConsultResponder(OPTS, CTX, deps);
-    expect(r.spawned).toBe(false);
+    expect(r).toMatchObject({ spawned: false, reason: 'live-collision' });
     expect(r.detail).toContain('WI-3882');
     expect(calls.spawn).toHaveLength(0);
   });
