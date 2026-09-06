@@ -1119,7 +1119,12 @@ export function defaultOrientationDeps(): OrientationDeps {
       const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief } = await import(
         './agent-obligation-reader'
       );
-      const { agenda } = await readAgentObligationAgenda({ workspaceId, ownerId });
+      const { agenda, observedAt } = await readAgentObligationAgenda({ workspaceId, ownerId });
+      // P-005: project the SAME evaluated agenda onto the existing durable await
+      // plane. Reconciliation is fail-soft internally, so an unavailable optional
+      // reminder can never suppress the load-bearing guidance rendered below.
+      const { reconcileAgentObligationReminders } = await import('./agent-obligation-reminders');
+      await reconcileAgentObligationReminders({ ownerId, agenda, now: new Date(observedAt) });
       if (agenda.primary.length === 0) return null;
       return projectAgentTurnStartObligationBrief(agenda);
     },
