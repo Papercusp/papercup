@@ -24,6 +24,12 @@
  * through to dumping as before. A deployment with no host job — the desktop ship
  * target — therefore never skips, because it never produces a receipt.
  *
+ * Since WI-2146225 the host producer may replace the undifferentiated
+ * `papercusp` artifact with an authoritative `papercusp-state` /
+ * `papercusp-transcript` pair. The workspace hook omits the transcript tables,
+ * so a successful state tier is sufficient coverage for the hook's data subset;
+ * it is accepted only when the receipt explicitly advertises tier mode.
+ *
  * Cluster identity is `pg_control_system().system_identifier`, a 64-bit value
  * generated at initdb. It is deliberately NOT a host:port or database-name
  * comparison, because both are unsafe here:
@@ -72,6 +78,7 @@ export interface HostDumpStatus {
   ok?: unknown;
   lastSuccessEpoch?: unknown;
   dumped?: unknown;
+  tiersEnabled?: unknown;
   systemIdentifier?: unknown;
 }
 
@@ -136,7 +143,10 @@ export function evaluateHostDumpCoverage(input: {
   const dumped = Array.isArray(status.dumped)
     ? status.dumped.filter((d): d is string => typeof d === 'string')
     : [];
-  if (!dumped.includes(database)) {
+  const directArtifact = dumped.includes(database);
+  const tieredStateArtifact = `${database}-state`;
+  const tieredState = status.tiersEnabled === true && dumped.includes(tieredStateArtifact);
+  if (!directArtifact && !tieredState) {
     return { covered: false, reason: `database ${database} not in host-dump receipt` };
   }
 
@@ -155,7 +165,7 @@ export function evaluateHostDumpCoverage(input: {
 
   return {
     covered: true,
-    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, dumped ${ageSec}s ago)`,
+    reason: `host PG is covered by db-backup.sh (cluster ${hostId}, database ${database}, artifact ${directArtifact ? database : tieredStateArtifact}, dumped ${ageSec}s ago)`,
   };
 }
 
