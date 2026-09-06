@@ -52,14 +52,14 @@ type HarnessLite = { slug: string; title?: string | null; name?: string | null }
 
 const BS_HARNESS_LS_KEY = 'pc-qp-brainstorm-harness';
 
-function BrainstormPane() {
+function BrainstormPane({ queryPrefix }: { queryPrefix: string }) {
   const { data } = useSyncQuery<HarnessLite>({
     queryName: 'harnessProjects.lite',
     args: { includeHiveHomes: true },
     staleTime: 60_000,
   });
   const harnesses = useMemo(() => data ?? [], [data]);
-  const [slug, setSlug] = useQueryState('bs', parseAsString.withDefault(''));
+  const [slug, setSlug] = useQueryState(`${queryPrefix}bs`, parseAsString.withDefault(''));
 
   // Remember the last-used harness across window reopens (the popup window
   // always loads the bare /quick-panel URL).
@@ -121,17 +121,34 @@ function BrainstormPane() {
  *   live under operator-vite/src and cannot be imported up-layer from this
  *   operator/app page, so the route composes them and passes them down
  *   (quick-panel-status-pills-2026-07-13 D-001).
+ * @param chatSidebar Whether to mount the docked OperatorChatSidebar (default
+ *   true, behind OPERATOR_CHAT_SIDEBAR). A host that already has its own chat
+ *   dock beside this page — the cloud portal mounts it as a shell panel
+ *   (portal-quick-panel-palette-2026-09-06 D-001) — passes false: the sidebar
+ *   writes `--op-chat-w` on :root and `body.has-op-chat`, which would shift
+ *   that host's whole page for a rail it never asked for.
+ * @param queryPrefix Prefix for this page's nuqs keys (`tab`, `bs`, and the
+ *   prompts tab's `q` / `sel` / `zoom` / `done`). Empty in the popup window,
+ *   which owns its URL. A host that mounts the page OVER another page shares
+ *   that page's URL, and the bare keys collide there: the portal shell's search
+ *   box is `q`, and its dev / cloud pages own `tab` — switching the palette to
+ *   Brainstorm would reset the dev console's tab underneath it.
  */
-export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode } = {}) {
+export default function QuickPanelPage({
+  headerSlot,
+  chatSidebar: chatSidebarWanted = true,
+  queryPrefix = '',
+}: { headerSlot?: ReactNode; chatSidebar?: boolean; queryPrefix?: string } = {}) {
   const enabled = useFlag(FLAGS.QUICK_PANEL);
   // The Papercup chat / 🫖 Pot Health sidebar, docked left inside the panel
   // window (owner ask 2026-07-14). /quick-panel is chromeless, so ChromeShell —
   // the sidebar's usual host — never renders here; the page mounts it itself,
   // behind the same flag. It sets --op-chat-w on :root, which .pc-qp consumes
   // as left padding, exactly like the main app's body offset.
-  const chatSidebar = useFlag(FLAGS.OPERATOR_CHAT_SIDEBAR);
+  const chatSidebarFlag = useFlag(FLAGS.OPERATOR_CHAT_SIDEBAR);
+  const chatSidebar = chatSidebarWanted && chatSidebarFlag;
   const [tab, setTab] = useQueryState(
-    'tab',
+    `${queryPrefix}tab`,
     parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('prompts'),
   );
 
@@ -205,11 +222,11 @@ export default function QuickPanelPage({ headerSlot }: { headerSlot?: ReactNode 
         </Tabs.List>
 
         <Tabs.Content className="pc-qp__pane" value="prompts">
-          <PromptsTab />
+          <PromptsTab queryPrefix={queryPrefix} />
         </Tabs.Content>
 
         <Tabs.Content className="pc-qp__pane" value="brainstorm">
-          <BrainstormPane />
+          <BrainstormPane queryPrefix={queryPrefix} />
         </Tabs.Content>
 
         <Tabs.Content className="pc-qp__pane" value="docs">

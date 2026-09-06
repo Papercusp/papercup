@@ -854,7 +854,13 @@ function OutlineRow({
 // The tab
 // ---------------------------------------------------------------------------
 
-export default function PromptsTab() {
+/**
+ * @param queryPrefix Prefix for the four nuqs keys below. Empty in the popup
+ *   window; a host that mounts the quick panel over another page (the cloud
+ *   portal, whose shell search box is `q`) passes one so the outline's filter
+ *   never lands in that page's search state — see QuickPanelPage.
+ */
+export default function PromptsTab({ queryPrefix = '' }: { queryPrefix?: string } = {}) {
   const { data, invalidate } = useSyncQuery<SavedPrompt>({
     queryName: 'savedPrompts.byScope',
     args: SCOPE_ARGS,
@@ -871,11 +877,11 @@ export default function PromptsTab() {
   }, [data, collapseOverlay]);
 
   // URL state (repo rule: user-meaningful state lives in nuqs).
-  const [filter, setFilter] = useQueryState('q', parseAsString.withDefault(''));
-  const [sel, setSel] = useQueryState('sel', parseAsString.withDefault(''));
-  const [zoomParam, setZoom] = useQueryState('zoom', parseAsString.withDefault(''));
+  const [filter, setFilter] = useQueryState(`${queryPrefix}q`, parseAsString.withDefault(''));
+  const [sel, setSel] = useQueryState(`${queryPrefix}sel`, parseAsString.withDefault(''));
+  const [zoomParam, setZoom] = useQueryState(`${queryPrefix}zoom`, parseAsString.withDefault(''));
   const [doneVis, setDoneVis] = useQueryState(
-    'done',
+    `${queryPrefix}done`,
     parseAsStringEnum(['show', 'hide']).withDefault('show'),
   );
 
