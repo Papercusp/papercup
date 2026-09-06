@@ -33,8 +33,8 @@ export default defineTool({
   guidance: {
     when: "Asking where a hyperbee/peer-log store's bytes went, whether a federated kind's volume is growing, whether a new op kind landed without a retention class (`unclassifiedProducers`), or sizing what an epoch-rotation pass would reclaim (the `rotating` rows). Also the before/after instrument for any retention change.",
     notWhen:
-      'Postgres table sizes — dev:pg_table_sizes. Replay cost / op counts alone — dogfood:substrate_status. Whether federation is FLOWING (drain stalls, admitted-set health) — dogfood:substrate_status.',
-    seeAlso: ['dev:pg_table_sizes (the OTHER store)', 'dogfood:substrate_status (is federation flowing)'],
+      'Postgres table sizes — dev:pg_table_sizes. Replay cost / op counts alone — dev:dogfood_substrate_status. Whether federation is FLOWING (drain stalls, admitted-set health) — dev:dogfood_substrate_status.',
+    seeAlso: ['dev:pg_table_sizes (the OTHER store)', 'dev:dogfood_substrate_status (is federation flowing)'],
   },
   capability: 'intel:read',
   requirePrincipal: false,
