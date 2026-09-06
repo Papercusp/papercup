@@ -11,6 +11,7 @@ import {
   formatStaleSwapProblems,
 } from './lib/stale-swap-leftovers.mjs';
 import { missingPlaywrightBrowsers, browserCachePath } from './ensure-playwright-browsers.mjs';
+import { assertCudaProviderAssets } from './install-onnxruntime-node.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -83,6 +84,9 @@ if (!submodulesOnly) {
   check('node >= 20', () => {
     const major = Number(process.versions.node.split('.')[0]);
     if (major < 20) throw new Error(`have ${process.versions.node}`);
+  });
+  check('ORT CUDA provider assets match the requested rerank device', () => {
+    assertCudaProviderAssets({ repoRoot: REPO_ROOT });
   });
 }
 check('submodule worktrees sane', assertSubmoduleWorktreesSane);

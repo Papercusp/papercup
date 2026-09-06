@@ -280,7 +280,7 @@ describe('P-019 record-edit transport parsing and fallback', () => {
       }),
       {
         env: { PAPERCUSP_SCRATCH_ROOT: '/tmp/papercusp-scratch' },
-        fileExists: (path) => path === '/tmp/papercusp-scratch/result-door/result.json',
+        fileExists: (path: string) => path === '/tmp/papercusp-scratch/result-door/result.json',
         readSpill: async () => ({
           content: [
             { type: 'text', text: 'advisory text before payload' },
@@ -306,16 +306,15 @@ describe('P-019 record-edit transport parsing and fallback', () => {
     const result = await recordOneHunk({
       ...recordArgs,
       operatorUrl: 'http://127.0.0.1:3070',
-      fetchImpl: async (url: string) => {
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         calls.push(url);
-        return {
-          ok: true,
-          status: 200,
-          text: async () =>
-            calls.length === 1
-              ? rpcResult({ ok: false, reason: 'unknown operation record-edit' })
-              : rpcResult({ ok: true, recorded: true, ledgerId: 23 }),
-        };
+        return new Response(
+          calls.length === 1
+            ? rpcResult({ ok: false, reason: 'unknown operation record-edit' })
+            : rpcResult({ ok: true, recorded: true, ledgerId: 23 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
       },
     });
 
@@ -330,13 +329,13 @@ describe('P-019 record-edit transport parsing and fallback', () => {
     const result = await recordOneHunk({
       ...recordArgs,
       operatorUrl: 'http://127.0.0.1:3070',
-      fetchImpl: async (url: string) => {
+      fetchImpl: async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         calls.push(url);
-        return {
-          ok: true,
+        return new Response(rpcResult({ ok: false, reason: 'unauthorized' }), {
           status: 200,
-          text: async () => rpcResult({ ok: false, reason: 'unauthorized' }),
-        };
+          headers: { 'content-type': 'application/json' },
+        });
       },
     });
 

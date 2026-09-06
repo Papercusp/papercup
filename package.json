@@ -369,7 +369,7 @@
     "mirror:push": "node scripts/templates-mirror-sync.mjs --push",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
     "patch:regen": "patch-package --exclude '(^package\\.json$|(^|/)\\.verdict-data/)'",
-    "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && patch-package"
+    "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && node scripts/install-onnxruntime-node.mjs && patch-package"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.25",
@@ -436,6 +436,9 @@
     "verdict-cli": "^0.1.1",
     "yauzl": "^3.4.0",
     "zod": "^4.4.2"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "1.24.3"
   },
   "overrides": {
     "livekit-client": "^2.16.1",

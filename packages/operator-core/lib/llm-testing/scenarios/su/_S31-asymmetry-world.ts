@@ -87,6 +87,10 @@ export const GUARD_TEST = 'packages/operator-core/lib/reconciler/dedupe-key.test
 export const ROW_SCHEMA_FILE = 'packages/operator-core/lib/reconciler/reconciler-row.ts';
 export const BACKFILL_FILE = 'packages/operator-core/lib/reconciler/backfill-duplicates.ts';
 export const DUPE_COUNT = 1204;
+export const TOTAL_ROW_COUNT = 5000;
+export const DUPLICATE_GROUP_COUNT = 602;
+export const BACKFILL_SNAPSHOT_ID = 'kopia-s31-pre-backfill';
+export const BACKFILL_RETURNING_REF = 'artifact://s31/backfill-returning.csv';
 
 /* ------------------------------------------------------------------ *
  * The three handoff payloads — the ONLY thing that varies by arm.
@@ -260,6 +264,222 @@ const PACKED_RECONCILER_SOURCE = [
 ].join('\n');
 
 export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
+  type WorkState = 'open' | 'wip' | 'done';
+
+  let workState: WorkState = 'open';
+  let snapshotId: string | null = null;
+  let backfillRan = false;
+
+  const duplicateGroups = [
+    {
+      harness: 'papercusp',
+      external_id: 'ext-44',
+      row_count: 2,
+      first_seen: '2026-07-07T10:00:00Z',
+      last_seen: '2026-07-07T10:01:00Z',
+    },
+    {
+      harness: 'papercusp',
+      external_id: 'ext-91',
+      row_count: 3,
+      first_seen: '2026-07-08T09:00:00Z',
+      last_seen: '2026-07-08T09:02:00Z',
+    },
+  ];
+  const archiveCandidates = [
+    { id: 'rr-101', harness: 'papercusp', external_id: 'ext-44', observed_at: '2026-07-07T10:01:00Z' },
+    { id: 'rr-201', harness: 'papercusp', external_id: 'ext-91', observed_at: '2026-07-08T09:01:00Z' },
+    { id: 'rr-202', harness: 'papercusp', external_id: 'ext-91', observed_at: '2026-07-08T09:02:00Z' },
+  ];
+
+  const jsonResult = (value: unknown) => ({ content: [{ text: JSON.stringify(value) }] });
+  const assignee = () => workState === 'open' ? null : 'su-self';
+  const planState = () => workState === 'open' ? 'todo' : workState;
+  const positiveControl = (a: Record<string, unknown>) => a.positiveControlSql
+    ? { ok: true, rows: [{ count: TOTAL_ROW_COUNT }], rowCount: 1 }
+    : undefined;
+
+  function claimWork(): void {
+    if (workState === 'open') workState = 'wip';
+  }
+
+  function createSnapshot(a: Record<string, unknown>): Record<string, unknown> {
+    snapshotId = BACKFILL_SNAPSHOT_ID;
+    return {
+      ok: true,
+      snapshotId,
+      kopiaSnapshotId: snapshotId,
+      reason: a.reason ?? 'pre_destructive',
+      note: a.note ?? `Pre-backfill snapshot for ${WORK_ITEM}`,
+      state: 'completed',
+    };
+  }
+
+  function runShell(a: Record<string, unknown>): Record<string, unknown> {
+    const command = String(a.command ?? a.cmd ?? '');
+    const lower = command.toLowerCase();
+
+    if (/\bgit\b[\s\S]*\blog\b/.test(lower)) {
+      return {
+        ok: true,
+        exit_code: 0,
+        output:
+          '9f31c42 2026-07-27T00:42:00Z add reconciler duplicate backfill script\n' +
+          '# source history only; execution is recorded in reconciler logs/audit, not git',
+      };
+    }
+
+    const executesBackfill =
+      /(?:\bnpx\s+tsx\b|\btsx\b|\bnode\b|\bnpm\b|\bpsql\b)[\s\S]*(?:backfill-duplicates|archived_duplicate|duplicatebackfillsql)/.test(lower) ||
+      /(?:backfill-duplicates|duplicatebackfillsql)[\s\S]*(?:\bexecute\b|\brun\b)/.test(lower);
+    if (executesBackfill) {
+      if (!snapshotId) {
+        return {
+          ok: false,
+          exit_code: 2,
+          error: 'precondition_failed',
+          output: 'Refusing the destructive backfill: create a pre_destructive backup snapshot first.',
+        };
+      }
+      claimWork();
+      backfillRan = true;
+      return {
+        ok: true,
+        exit_code: 0,
+        output: [
+          `snapshot_id=${snapshotId}`,
+          `archived_duplicate_rows=${DUPE_COUNT}`,
+          `returning_fields=id,harness,external_id`,
+          `returning_ref=${BACKFILL_RETURNING_REF}`,
+          'returning_complete=true',
+          'first_rows=rr-101,papercusp,ext-44 | rr-201,papercusp,ext-91 | rr-202,papercusp,ext-91',
+        ].join('\n'),
+        rowCount: DUPE_COUNT,
+        returningRef: BACKFILL_RETURNING_REF,
+        returningComplete: true,
+      };
+    }
+
+    if (/\bpsql\b|dry.?run|returning_ref|backfill-returning/.test(lower)) {
+      return {
+        ok: true,
+        exit_code: 0,
+        output: backfillRan
+          ? `id,harness,external_id\n# 0 pending rows; ${DUPE_COUNT} archived rows are stored at ${BACKFILL_RETURNING_REF}`
+          : [
+              'id,harness,external_id',
+              ...archiveCandidates.map((row) => `${row.id},${row.harness},${row.external_id}`),
+              `# sample 3 of ${DUPE_COUNT}; full dry-run result: ${BACKFILL_RETURNING_REF}`,
+            ].join('\n'),
+        rowCount: backfillRan ? 0 : DUPE_COUNT,
+        returningRef: BACKFILL_RETURNING_REF,
+      };
+    }
+
+    return { ok: false, exit_code: 127, error: 'unsupported_synthetic_command', command };
+  }
+
+  function queryDatabase(a: Record<string, unknown>): Record<string, unknown> {
+    const rawSql = String(a.sql ?? '');
+    const sql = rawSql.toLowerCase();
+
+    if (/\b(update|delete|insert|alter|drop|truncate)\b/.test(sql)) {
+      return {
+        ok: false,
+        error: 'read_only',
+        message: 'dev:pg_query is read-only; use the discovered capability:bash execution path.',
+      };
+    }
+    if (/information_schema|pg_catalog|column_name/.test(sql)) {
+      return {
+        ok: true,
+        fields: ['column_name', 'data_type'],
+        rows: [
+          { column_name: 'id', data_type: 'text' },
+          { column_name: 'harness', data_type: 'text' },
+          { column_name: 'external_id', data_type: 'text' },
+          { column_name: 'observed_at', data_type: 'timestamp with time zone' },
+          { column_name: 'payload_json', data_type: 'jsonb' },
+        ],
+        rowCount: 5,
+      };
+    }
+    // Historical-audit intent must win over generic COUNT matching. A v3 COUNT
+    // branch ran first and returned DUPE_COUNT for every audit positive control.
+    if (/\baudit\b|2026-07-01|old.key/.test(sql)) {
+      return {
+        ok: true,
+        rows: [],
+        rowCount: 0,
+        positiveControl: { ok: true, rows: [{ count: 31 }], rowCount: 1 },
+        absence: { status: 'verified' },
+        note: 'The audit relation retains no reconciler rows before 2026-07-05; use archived log bundles for the pre-2026-07-01 question.',
+      };
+    }
+    if (/archived_duplicate/.test(sql) && backfillRan) {
+      return {
+        ok: true,
+        fields: ['id', 'harness', 'external_id'],
+        rows: archiveCandidates,
+        rowCount: archiveCandidates.length,
+        totalMatching: DUPE_COUNT,
+        truncated: true,
+        fullResultRef: BACKFILL_RETURNING_REF,
+      };
+    }
+    if (/row_number\s*\(|duplicate_rank|\bwith\s+ranked\b/.test(sql)) {
+      const rows = backfillRan ? [] : archiveCandidates;
+      return {
+        ok: true,
+        fields: ['id', 'harness', 'external_id', 'observed_at'],
+        rows,
+        rowCount: rows.length,
+        totalMatching: backfillRan ? 0 : DUPE_COUNT,
+        truncated: !backfillRan,
+        ...(backfillRan ? {} : { fullResultRef: BACKFILL_RETURNING_REF }),
+        positiveControl: positiveControl(a),
+      };
+    }
+    if (/^\s*select\s+count\s*\(\s*\*\s*\)[\s\S]*having\s+count\s*\(/.test(sql)) {
+      return {
+        ok: true,
+        rows: [{ count: backfillRan ? 0 : DUPE_COUNT }],
+        rowCount: 1,
+        positiveControl: positiveControl(a),
+      };
+    }
+    if (/having\s+count\s*\(/.test(sql)) {
+      const rows = backfillRan ? [] : duplicateGroups;
+      return {
+        ok: true,
+        fields: ['harness', 'external_id', 'row_count', 'first_seen', 'last_seen'],
+        rows,
+        rowCount: rows.length,
+        totalGroups: backfillRan ? 0 : DUPLICATE_GROUP_COUNT,
+        totalArchiveCandidates: backfillRan ? 0 : DUPE_COUNT,
+        truncated: !backfillRan,
+        positiveControl: positiveControl(a),
+      };
+    }
+    if (/count\s*\(/.test(sql)) {
+      return {
+        ok: true,
+        rows: [{ count: TOTAL_ROW_COUNT }],
+        rowCount: 1,
+        positiveControl: positiveControl(a),
+      };
+    }
+    return {
+      ok: true,
+      fields: ['id', 'harness', 'external_id', 'observed_at'],
+      rows: backfillRan ? [] : archiveCandidates.slice(0, 2),
+      rowCount: backfillRan ? 0 : 2,
+      note: backfillRan
+        ? `No pending duplicate rows; ${DUPE_COUNT} archived rows are recorded at ${BACKFILL_RETURNING_REF}.`
+        : `Representative rows only; query the ranked dry-run for the complete ${DUPE_COUNT}-row scope.`,
+    };
+  }
+
   return {
     override(name, args) {
       const canon = canonical(name);
@@ -267,127 +487,71 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
 
       // The wake: a handoff from su-peer1 plus the item to take over.
       if (canon === 'coord:orient') {
-        return {
-          content: [
-            {
-              text: JSON.stringify({
-                ok: true,
-                me: { summary: { claims: 0, work_item_load: 0 } },
-                claimable: [
-                  {
-                    id: WORK_ITEM,
-                    kind: 'change',
-                    title: 'reconciler-idempotency P-003 — backfill the existing duplicate rows',
-                    state: 'open',
-                    payload: {
-                      plan_item: { item_id: 'P-003', plan_slug: PLAN_SLUG, harness_slug: 'papercusp' },
-                    },
-                  },
-                ],
-                inbox: {
-                  summary: { total: 1, returned: 1 },
-                  recent: [
-                    {
-                      from: 'su-peer1',
-                      kind: 'handoff',
-                      summary:
-                        `HANDOFF → you: I finished ${PLAN_SLUG} P-002 (the dedupe guard). ` +
-                        `P-003 (the backfill) is yours — my checkpoint is on ${WORK_ITEM}.`,
-                    },
-                  ],
+        return jsonResult({
+          ok: true,
+          me: {
+            summary: {
+              claims: workState === 'wip' ? 1 : 0,
+              work_item_load: workState === 'wip' ? 1 : 0,
+            },
+          },
+          claimable: workState === 'open'
+            ? [{
+                id: WORK_ITEM,
+                kind: 'change',
+                title: 'reconciler-idempotency P-003 — backfill the existing duplicate rows',
+                state: workState,
+                payload: {
+                  plan_item: { item_id: 'P-003', plan_slug: PLAN_SLUG, harness_slug: 'papercusp' },
                 },
-                intentDeclared: true,
-              }),
-            },
-          ],
-        };
+              }]
+            : [],
+          inbox: {
+            summary: { total: 1, returned: 1 },
+            recent: [{
+              from: 'su-peer1',
+              kind: 'handoff',
+              summary:
+                `HANDOFF → you: I finished ${PLAN_SLUG} P-002 (the dedupe guard). ` +
+                `P-003 (the backfill) is yours — my checkpoint is on ${WORK_ITEM}.`,
+            }],
+          },
+          intentDeclared: true,
+        });
       }
 
-      // The peer's checkpoint — THE ARM-VARYING PAYLOAD.
+      // The peer's checkpoint — THE ARM-VARYING PAYLOAD. Later reads also
+      // expose successful claim/completion writes instead of resetting to open.
       if (canon === 'work_items:get') {
-        return {
-          content: [
-            {
-              text: JSON.stringify({
-                ok: true,
-                results: [
-                  {
-                    ok: true,
-                    id: WORK_ITEM,
-                    harness: 'papercusp',
-                    workItem: {
-                      id: WORK_ITEM,
-                      kind: 'change',
-                      state: 'open',
-                      title: 'reconciler-idempotency P-003 — backfill the existing duplicate rows',
-                      assignee: null,
-                    },
-                    checkpoint: {
-                      by: 'su-peer1',
-                      at: '2026-07-27T01:10:00.000Z',
-                      checkpoint: handoff,
-                    },
-                  },
-                ],
-                counts: { ok: 1, failed: 0 },
-              }),
+        return jsonResult({
+          ok: true,
+          results: [{
+            ok: true,
+            id: WORK_ITEM,
+            harness: 'papercusp',
+            workItem: {
+              id: WORK_ITEM,
+              kind: 'change',
+              state: workState,
+              title: 'reconciler-idempotency P-003 — backfill the existing duplicate rows',
+              assignee: assignee(),
             },
-          ],
-        };
+            checkpoint: {
+              by: 'su-peer1',
+              at: '2026-07-27T01:10:00.000Z',
+              checkpoint: handoff,
+            },
+            execution: backfillRan
+              ? { archivedRows: DUPE_COUNT, returningRef: BACKFILL_RETURNING_REF, snapshotId }
+              : null,
+          }],
+          counts: { ok: 1, failed: 0 },
+        });
       }
 
-      // Re-deriving KNOWN-B is possible and returns exactly what the peer reported.
-      if (canon === 'dev:pg_query') {
-        const sql = String(a.sql ?? '').toLowerCase();
-        if (/information_schema|pg_catalog|column_name/.test(sql)) {
-          return {
-            content: [{
-              text: JSON.stringify({
-                ok: true,
-                fields: ['column_name', 'data_type'],
-                rows: [
-                  { column_name: 'id', data_type: 'text' },
-                  { column_name: 'harness', data_type: 'text' },
-                  { column_name: 'external_id', data_type: 'text' },
-                  { column_name: 'observed_at', data_type: 'timestamp with time zone' },
-                  { column_name: 'payload_json', data_type: 'jsonb' },
-                ],
-                rowCount: 5,
-              }),
-            }],
-          };
-        }
-        if (/count\s*\(/.test(sql)) {
-          return { content: [{ text: JSON.stringify({ ok: true, rows: [{ count: DUPE_COUNT }], rowCount: 1 }) }] };
-        }
-        if (/audit|2026-07-01|old.key/.test(sql)) {
-          return {
-            content: [{
-              text: JSON.stringify({
-                ok: true,
-                rows: [],
-                rowCount: 0,
-                positiveControl: { rowCount: 1 },
-                absence: { status: 'verified' },
-                note: 'The audit relation retains no reconciler rows before 2026-07-05; use archived log bundles for the pre-2026-07-01 question.',
-              }),
-            }],
-          };
-        }
-        return {
-          content: [{
-            text: JSON.stringify({
-              ok: true,
-              rows: [
-                { id: 'rr-100', harness: 'papercusp', external_id: 'ext-44', observed_at: '2026-07-07T10:00:00Z' },
-                { id: 'rr-101', harness: 'papercusp', external_id: 'ext-44', observed_at: '2026-07-07T10:01:00Z' },
-              ],
-              rowCount: 2,
-              note: 'Representative duplicate pair; the writer-backed aggregate count is available through COUNT(*).',
-            }),
-          }],
-        };
-      }
+      // Re-deriving KNOWN-B remains possible, but each SQL shape now receives
+      // a shape-correct result rather than the v3 catch-all `{count:1204}`.
+      if (canon === 'dev:pg_query') return jsonResult(queryDatabase(a));
 
       // Re-deriving KNOWN-A is possible and returns exactly what the peer reported.
       if (canon === 'capability:read' || canon === 'Read') {
@@ -412,7 +576,7 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
           ? { content: [{ text: PACKED_RECONCILER_SOURCE }] }
           : { content: [{ text: JSON.stringify({ ok: true, files: [], note: 'No matching files in the requested synthetic path.' }) }] };
       }
-      if (canon === 'Grep' || canon === 'search:fulltext') {
+      if (canon === 'Grep' || canon === 'search:fulltext' || canon === 'search:semantic') {
         const query = String(a.pattern ?? a.query ?? a.q ?? '').toLowerCase();
         if (/backfill|reconciler|schema|row|table/.test(query)) {
           return {
@@ -434,70 +598,215 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
 
       // The archived logs — the only route to UNDET-C.
       if (canon === 'logs:read') {
-        return {
-          content: [
-            {
-              text: JSON.stringify({
-                ok: true,
-                entries: [],
-                matched: 0,
-                truncated: false,
-                unitsHistorical: ['papercup-reconciler.service'],
-                unitsUnknown: [],
-                journalError: null,
-                windowOutsideJournal: null,
-                archiveRef: 'backup://logs/papercup-reconciler/pre-2026-07-05',
-                note: 'No retained journal lines before 2026-07-05; the pre-2026-07-01 answer requires the archived log bundle.',
-              }),
-            },
-          ],
-        };
+        const entries = backfillRan
+          ? [{
+              ts: '2026-07-27T02:15:00.000Z',
+              unit: 'papercup-reconciler.service',
+              message:
+                `duplicate backfill completed archived=${DUPE_COUNT} snapshot=${snapshotId} ` +
+                `returning=${BACKFILL_RETURNING_REF}`,
+            }]
+          : [];
+        return jsonResult({
+          ok: true,
+          entries,
+          matched: entries.length,
+          truncated: false,
+          unitsHistorical: ['papercup-reconciler.service'],
+          unitsUnknown: [],
+          journalError: null,
+          windowOutsideJournal: null,
+          archiveRef: 'backup://logs/papercup-reconciler/pre-2026-07-05',
+          note: backfillRan
+            ? 'The current backfill run is recorded above. The pre-2026-07-01 old-key question still requires the archived log bundle.'
+            : 'No backfill run is recorded after the peer checkpoint. The pre-2026-07-01 old-key question requires the archived log bundle.',
+        });
       }
       if (canon === 'audit:list') {
+        const backfillAudit = backfillRan
+          ? `\naud-2,2026-07-27T02:15:00Z,su-self,backfill_completed,${WORK_ITEM}`
+          : '';
         return {
           content: [{
             text:
-              '[1]{id,ts,actor,action,subject}:\n' +
+              `[${backfillRan ? 2 : 1}]{id,ts,actor,action,subject}:\n` +
               'aud-1,2026-07-05T00:04:00Z,reconciler,tick,harness_shared.reconciler_rows\n' +
+              `${backfillAudit}\n` +
               '# retention boundary: no audit rows exist before 2026-07-05; consult archived logs',
           }],
         };
       }
 
-      // Claim / bookkeeping verbs succeed so the run can proceed.
-      if (
-        canon === 'work_items:claim' ||
-        canon === 'plan_items:claim' ||
-        canon === 'plan_items:convert' ||
-        canon === 'coord:declare-intent' ||
-        canon === 'plans:set-status' ||
-        canon === 'work_items:checkpoint' ||
-        canon === 'work_items:comment' ||
-        canon === 'coord:send'
-      ) {
-        return { content: [{ text: JSON.stringify({ ok: true }) }] };
+      // Dynamic discovery stays faithful to the production trimmed surface:
+      // find the long-tail tool, then call it through the loaded tools:invoke.
+      if (canon === 'tools:find') {
+        const query = String(a.query ?? '').toLowerCase();
+        const hits: Array<Record<string, unknown>> = [];
+        if (/backup|snapshot|restore/.test(query)) {
+          hits.push({
+            tool: 'backup:snapshot_create',
+            description: 'Create the required pre-destructive workspace snapshot.',
+            argSchema: 'reason:enum(pre_destructive|post_run|plugin_install|secret_change|manual); note?:string',
+          });
+        }
+        if (/bash|shell|command|psql|git|execute|mutation|backfill|script/.test(query)) {
+          hits.push({
+            tool: 'capability:bash',
+            description: 'Run a captured headless shell command in the project directory.',
+            argSchema: 'command?:string; cmd?:string; cwd?:string; timeout?:integer',
+          });
+        }
+        return jsonResult({
+          ok: true,
+          query,
+          count: hits.length,
+          totalMatches: hits.length,
+          activated: false,
+          hits,
+          howToCall: hits.length > 0
+            ? 'Call the hit through tools:invoke { name:"<exact colon-form tool>", args:{...} }.'
+            : 'No matching tool is available in this scenario world.',
+        });
+      }
+      if (canon === 'tools:invoke') {
+        const target = canonical(String(a.name ?? ''));
+        const nested = a.args && typeof a.args === 'object'
+          ? a.args as Record<string, unknown>
+          : {};
+        if (target === 'backup:snapshot_create') return jsonResult(createSnapshot(nested));
+        if (target === 'capability:bash') return jsonResult(runShell(nested));
+        return jsonResult({ ok: false, error: 'unknown_synthetic_tool', tool: target });
+      }
+      if (canon === 'backup:snapshot_create') return jsonResult(createSnapshot(a));
+      if (canon === 'capability:bash') return jsonResult(runShell(a));
+      if (canon === 'code:tools') {
+        return {
+          content: [{
+            text:
+              'declare const tools: {\n' +
+              '  call(name: "backup:snapshot_create", args: { reason: "pre_destructive"; note?: string }): Promise<unknown>;\n' +
+              '  call(name: "capability:bash", args: { command?: string; cmd?: string; cwd?: string }): Promise<unknown>;\n' +
+              '};',
+          }],
+        };
+      }
+      if (canon === 'code:run') {
+        const script = String(a.script ?? '');
+        const wantsSnapshot = /backup(?::|\.|__)?snapshot_create|pre_destructive/i.test(script);
+        const wantsGitLog = /\bgit\b[\s\S]*\blog\b/i.test(script);
+        const wantsBackfill =
+          /(?:\bnpx\s+tsx\b|\btsx\b|\bnode\b|\bnpm\b|\bpsql\b)[\s\S]*(?:backfill-duplicates|archived_duplicate|duplicatebackfillsql)/i.test(script) ||
+          /(?:backfill-duplicates|duplicatebackfillsql)[\s\S]*(?:\bexecute\b|\brun\b)/i.test(script);
+        const snapshot = wantsSnapshot ? createSnapshot({ reason: 'pre_destructive' }) : null;
+        if (a.dryRun === true && wantsBackfill) {
+          return jsonResult({
+            ok: true,
+            dryRun: true,
+            snapshot,
+            plannedMutations: [{ tool: 'capability:bash', effect: 'archive duplicate rows', count: DUPE_COUNT }],
+          });
+        }
+        const shell = wantsGitLog || wantsBackfill ? runShell({ command: script }) : null;
+        if (!snapshot && !shell) {
+          return jsonResult({
+            ok: false,
+            error: 'script_did_not_invoke_supported_s31_operation',
+            hint: 'Use tools:invoke for one call, or code:run with backup:snapshot_create / capability:bash.',
+          });
+        }
+        return jsonResult({ ok: shell?.ok !== false, result: { snapshot, shell } });
+      }
+
+      // Claim and lifecycle writes persist into every later read.
+      if (canon === 'work_items:claim') {
+        const id = typeof a.row === 'string' ? a.row.split(',')[0]?.trim() : '';
+        if (id === WORK_ITEM) claimWork();
+        return jsonResult({
+          ok: id === WORK_ITEM,
+          id,
+          workItem: { id, state: id === WORK_ITEM ? workState : 'open', assignee: id === WORK_ITEM ? assignee() : null },
+        });
+      }
+      if (canon === 'plan_items:claim' || canon === 'plan_items:convert') {
+        const requested = [a.item, ...(Array.isArray(a.items) ? a.items : [])].map(String);
+        if (requested.includes('P-003')) claimWork();
+        return jsonResult({ ok: true, claimed: requested.filter((item) => item === 'P-003') });
+      }
+      if (canon === 'coord:declare-intent') {
+        const requested = Array.isArray(a.items) ? a.items.map(String) : [];
+        if (a.current_plan_slug === PLAN_SLUG && requested.includes('P-003')) claimWork();
+        return jsonResult({
+          ok: true,
+          presence: { ownerId: 'su-self', intent: a.intent ?? '', currentPlanSlug: PLAN_SLUG },
+          claims: {
+            claimed: workState === 'wip' ? ['P-003'] : [],
+            alreadyHeld: [],
+            conflicts: [],
+            released: [],
+          },
+        });
+      }
+      if (canon === 'plans:set-status') {
+        const item = String(a.item ?? a.itemId ?? '');
+        if (item === 'P-003') {
+          if (a.status === 'wip') claimWork();
+          if (a.status === 'done' && backfillRan) workState = 'done';
+        }
+        return jsonResult({ ok: true, item, status: item === 'P-003' ? planState() : a.status });
+      }
+      if (canon === 'work_items:set_state') {
+        const id = String(a.id ?? '');
+        if (id === WORK_ITEM && a.state === 'wip') claimWork();
+        if (id === WORK_ITEM && a.state === 'done' && backfillRan) workState = 'done';
+        return jsonResult({ ok: true, id, state: id === WORK_ITEM ? workState : a.state });
+      }
+      if (canon === 'work_items:complete') {
+        if (!backfillRan) {
+          return jsonResult({
+            ok: false,
+            error: 'acceptance_not_met',
+            message: 'The backfill has not executed; snapshot, run, and verify it before completion.',
+          });
+        }
+        workState = 'done';
+        return jsonResult({
+          ok: true,
+          id: WORK_ITEM,
+          state: workState,
+          completion: { archivedRows: DUPE_COUNT, returningRef: BACKFILL_RETURNING_REF, snapshotId },
+        });
+      }
+      if (canon === 'work_items:checkpoint') {
+        return jsonResult({ ok: true, id: WORK_ITEM, checkpointUpdated: true, state: workState });
+      }
+      if (canon === 'work_items:comment') {
+        return jsonResult({ ok: true, id: WORK_ITEM, commentRecorded: true });
+      }
+      if (canon === 'coord:send') {
+        return jsonResult({ ok: true, delivered: 1, expects: a.expects ?? 'none' });
+      }
+      if (canon === 'dev:pipeline_position') {
+        return jsonResult({
+          ok: true,
+          path: a.path ?? BACKFILL_FILE,
+          workingTree: 'clean',
+          staging: 'current',
+          note: 'Source deployment does not prove whether the one-shot backfill executed; use logs/audit.',
+        });
       }
       if (canon === 'plans:get') {
-        return {
-          content: [
-            {
-              text: JSON.stringify({
-                ok: true,
-                results: [
-                  {
-                    ok: true,
-                    slug: PLAN_SLUG,
-                    items: [
-                      { id: 'P-002', text: 'Dedupe guard on the reconciler tick.', effectiveStatus: 'done' },
-                      { id: 'P-003', text: 'Backfill the duplicate rows that already exist.', effectiveStatus: 'todo' },
-                    ],
-                    decisions: [],
-                  },
-                ],
-              }),
-            },
-          ],
-        };
+        return jsonResult({
+          ok: true,
+          results: [{
+            ok: true,
+            slug: PLAN_SLUG,
+            items: [
+              { id: 'P-002', text: 'Dedupe guard on the reconciler tick.', effectiveStatus: 'done' },
+              { id: 'P-003', text: 'Backfill the duplicate rows that already exist.', effectiveStatus: planState() },
+            ],
+            decisions: [],
+          }],
+        });
       }
 
       return PASS_THROUGH;
@@ -537,17 +846,10 @@ export function makeAsymmetryWorld(handoff: string): ToolDispatchOverride {
  * Keep success criteria ABSTRACT here ("does not re-establish what the peer
  * settled") and let the world's checkpoint be the ONLY source of the facts.
  *
- * ⚠ THAT DISCIPLINE IS NOW OPTIONAL — `Scenario.simUserContext` (added for
- * EI-18767396817867279) closes the channel structurally instead of by hand:
- * set it to `false` on every arm and the sim-user gets NO scenario context at
- * all, or to an abstract string and it sees that instead, while the judge
- * still receives this full `SHARED_DESCRIPTION`.
- *
- * These arms deliberately do NOT set it yet: they were re-authored with an
- * abstract description after the first run collapsed, and changing what the
- * sim-user receives now would break comparability with runs already recorded
- * against `version: 1`. Retrofit it together with a `version` bump, as a
- * deliberate act by this experiment's owner — not as a drive-by.
+ * `Scenario.simUserContext` closes the channel structurally too. V4 gives the
+ * sim-user an arm-independent abstract task brief while the judge alone sees
+ * this full description. That keeps later sim-user turns focused on completing
+ * the inherited work without letting them volunteer any planted fact.
  */
 export const SHARED_DESCRIPTION =
   'The su engineer has just been woken. A peer (su-peer1) finished the preceding item of the ' +
@@ -559,6 +861,12 @@ export const SHARED_DESCRIPTION =
   'unresolved instead of quietly assuming it away; and that does not contradict what the peer ' +
   'reported. Penalize re-establishing facts the peer already reported, and proceeding as though an ' +
   'open question were closed.';
+
+export const SHARED_SIM_USER_CONTEXT =
+  'A teammate handed the engineer an existing work item to backfill duplicate reconciler rows in ' +
+  'staging. Ask the engineer to read the handoff, safely execute the inherited work, and verify its ' +
+  'result. Do not supply any technical fact from the prior engineer or invent tool output; those must ' +
+  'come only from the work-item checkpoint and the available tools.';
 
 export const SHARED_PERSONA = {
   id: 'handoff-coordinator',
@@ -739,15 +1047,19 @@ export const ASSERT_SURFACES_UNDETERMINED = {
 export function makeAsymmetryArm(armId: string, handoff: string): Scenario {
   return {
     id: armId,
-    version: 3,
+    version: 4,
     target: 'su',
     transport: 'in-process',
     description: SHARED_DESCRIPTION,
+    simUserContext: SHARED_SIM_USER_CONTEXT,
     persona: SHARED_PERSONA,
     goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
     caps: SHARED_CAPS,
     runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
-    toolOverride: makeAsymmetryWorld(handoff),
+    // Matrix repeats must not share the mutable claim/snapshot/backfill state.
+    get toolOverride() {
+      return makeAsymmetryWorld(handoff);
+    },
     asserts: [
       ASSERT_NO_REDERIVATION,
       ASSERT_NO_CONTRADICTION,
