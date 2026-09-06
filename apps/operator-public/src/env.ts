@@ -28,6 +28,15 @@ export interface Env {
    *  attempting an unauthenticated call to Stripe. Installing it in a deployment
    *  is an OWNER credential action, deliberately outside any agent's scope. */
   STRIPE_SECRET_KEY?: string;
+  /** Base-compatible RPC URL for the buyer-side P-032 payment-channel rail. */
+  PAYMENT_CHANNEL_RPC_URL?: string;
+  /** 32-byte EVM private key. The bound-wallet funding path additionally
+   * requires its derived address to equal the authenticated wallet binding. */
+  PAYMENT_CHANNEL_PRIVATE_KEY?: string;
+  /** Idempotent channel contract implementing openChannel/closeChannel. */
+  PAYMENT_CHANNEL_SETTLEMENT_CONTRACT?: string;
+  /** Stablecoin contract address (pilot: Base-compatible USDC). */
+  PAYMENT_CHANNEL_STABLECOIN?: string;
 
   // Vars
   ENVIRONMENT: string;
@@ -41,4 +50,6 @@ export interface Env {
   RATE_PER_USER_REPORT_HOURLY: string;      // default '10'
   RATE_PER_IP_LIST_PER_MINUTE: string;      // default '60'
   INDEXER_BATCH_SIZE: string;               // default '100'
+  /** CAIP-compatible EVM numeric chain id for the payment-channel pilot. */
+  PAYMENT_CHANNEL_CHAIN_ID?: string;
 }
