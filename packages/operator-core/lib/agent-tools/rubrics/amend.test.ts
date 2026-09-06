@@ -33,6 +33,60 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     if (parsed.success) expect(parsed.data.criteria?.[0]?.bar).toBe(criterion.bar);
   });
 
+  it('allows passRatings: [] for disclosure criteria and rejects the same shape for outcomes', () => {
+    const disclosure = {
+      ...criterion,
+      role: 'disclosure' as const,
+      mandatory: false,
+      passRatings: [],
+      coversBarKeys: ['R-1'],
+    };
+    expect(
+      rubricsAmendArgs.safeParse({
+        rubricRef: 'acceptance-example',
+        criteria: [disclosure],
+      }).success,
+    ).toBe(true);
+    expect(
+      rubricsAmendArgs.safeParse({
+        rubricRef: 'acceptance-example',
+        requirement: { key: 'r-1', acceptance: { role: 'disclosure', passRatings: [] } },
+      }).success,
+    ).toBe(true);
+
+    const invalid = rubricsAmendArgs.safeParse({
+      rubricRef: 'acceptance-example',
+      criteria: [{ ...disclosure, role: 'outcome', mandatory: true }],
+    });
+    expect(invalid.success).toBe(false);
+    if (!invalid.success) {
+      expect(invalid.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 0, 'passRatings'],
+            message: expect.stringContaining("role:'disclosure'"),
+          }),
+        ]),
+      );
+    }
+
+    const invalidDisclosure = rubricsAmendArgs.safeParse({
+      rubricRef: 'acceptance-example',
+      criteria: [{ ...disclosure, passRatings: ['healthy'] }],
+    });
+    expect(invalidDisclosure.success).toBe(false);
+    if (!invalidDisclosure.success) {
+      expect(invalidDisclosure.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['criteria', 0, 'passRatings'],
+            message: expect.stringContaining('must be empty'),
+          }),
+        ]),
+      );
+    }
+  });
+
   it('retains a missing-class binding without requiring replacement criteria', () => {
     const parsed = rubricsAmendArgs.parse({
       rubricRef: 'acceptance-example',
