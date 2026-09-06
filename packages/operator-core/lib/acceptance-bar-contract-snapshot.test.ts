@@ -399,6 +399,46 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(blocked, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
   });
 
+  it('uses current evidence across planes for mixed-layer adequacy on a live BAR', () => {
+    const input = provedFixture(1);
+    const criterion = input.rubrics.rows[0]!.criteria[0]!;
+    const clause = input.clauses.rows[0]!;
+    criterion.evidencePlane = 'live';
+    criterion.requiredTestLayers = ['unit', 'e2e'];
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash([criterion]);
+    input.rubrics.rows[0]!.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    clause.requiredTestLayers = ['unit', 'e2e'];
+    clause.sourceBar!.barHash = criterion.barHash;
+    clause.sourceBar!.barSetHash = barSetHash;
+    clause.sourceBar!.evidencePlane = 'live';
+
+    const treeUnit = input.evidence.rows[0]!;
+    treeUnit.details = {
+      evidencePlane: 'tree',
+      adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit' },
+    };
+    const liveE2e = {
+      ...treeUnit,
+      id: 2,
+      evidenceRef: 'test:e2e',
+      details: {
+        evidencePlane: 'live',
+        adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e' },
+      },
+    };
+    input.evidence.rows = [treeUnit, liveE2e];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.adequacy).toMatchObject({
+      state: 'pass',
+      checks: [expect.objectContaining({ verdict: 'pass' })],
+    });
+    expect(snapshot.bars[0]!.proof.evidencePlanes).toEqual(['live', 'tree']);
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
+  });
+
   it.each([
     ['unreachable', { pathReachable: false }], ['skipped', { skipped: true }],
     ['failed', { outcome: 'failed' }], ['self-oracle', { oracleIndependent: false }],
