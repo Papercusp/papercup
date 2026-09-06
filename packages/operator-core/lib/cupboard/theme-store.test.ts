@@ -56,6 +56,7 @@ describe('installed theme package store', () => {
         label: 'Aurora',
         installed: true,
         packageRef: 'acme-aurora',
+        listingRef: 'aurora',
         baseTheme: 'portal-light',
         colorScheme: 'light',
         version: '1.2.0',
