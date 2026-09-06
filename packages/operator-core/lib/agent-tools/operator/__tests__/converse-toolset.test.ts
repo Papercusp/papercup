@@ -1,0 +1,85 @@
+/**
+ * converse-toolset — the host-TRUST-keyed tool surface + MCP mount
+ * (papercup-chat-one-component-one-contract-2026-09-06 P-005, D-007 §2/§3;
+ * PARITY op-tool-working-set / op-delegate-deep). Pure; the operator working
+ * set is mocked narrow so the assertions read literally.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../../operator-mcp-tools', () => ({
+  ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__harness:status', 'mcp__agentmcp__chat:ask_choice'],
+  INTERACTIVE_CHAT_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
+}));
+
+import { buildConverseMcpMount, DELEGATE_DEEP_TOOL, selectConverseTools } from '../converse-toolset';
+
+const doors = () => ['capability:read', 'capability:fetch', 'tasks:ops'];
+
+describe('selectConverseTools', () => {
+  it('owner trust: the operator role keeps today\'s curated working set, unchanged', () => {
+    expect(selectConverseTools({ role: 'operator', hostTrust: 'owner', publicDoorNames: doors })).toEqual([
+      'mcp__agentmcp__harness:status',
+      'mcp__agentmcp__chat:ask_choice',
+    ]);
+  });
+
+  it('owner trust: the papercup role = the working set + voice:delegate_deep (D-007 §3)', () => {
+    expect(selectConverseTools({ role: 'papercup', hostTrust: 'owner', publicDoorNames: doors })).toEqual([
+      'mcp__agentmcp__harness:status',
+      'mcp__agentmcp__chat:ask_choice',
+      DELEGATE_DEEP_TOOL,
+    ]);
+  });
+
+  it('public trust: the OWNED-loop doors + the card tool + delegate_deep — never the owner working set', () => {
+    const pub = selectConverseTools({ role: 'papercup', hostTrust: 'public', publicDoorNames: doors });
+    expect(pub).toEqual([
+      'mcp__agentmcp__capability:read',
+      'mcp__agentmcp__capability:fetch',
+      'mcp__agentmcp__tasks:ops',
+      'mcp__agentmcp__chat:ask_choice',
+      DELEGATE_DEEP_TOOL,
+    ]);
+    expect(pub).not.toContain('mcp__agentmcp__harness:status');
+    // The door list is only consulted on public trust.
+    const spy = vi.fn(doors);
+    selectConverseTools({ role: 'papercup', hostTrust: 'owner', publicDoorNames: spy });
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildConverseMcpMount', () => {
+  const base = {
+    baseUrl: 'http://localhost:3070',
+    workspaceId: 'ws with space',
+    tools: ['mcp__agentmcp__harness:status', 'mcp__agentmcp__chat:ask_choice'] as const,
+    uiClientId: 'abcdef0123456789',
+  };
+
+  it('owner trust: superuser=1 + the disk token; the legacy param order is kept', () => {
+    const m = buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: 'su-tok', principalToken: null });
+    expect(m).toEqual({
+      url: 'http://localhost:3070/api/mcp?superuser=1&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+      bearer: 'su-tok',
+    });
+    expect(buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: '', principalToken: 'x' })).toBeNull();
+  });
+
+  it('public trust: NEVER superuser=1, NEVER the disk token — the boundary bearer or no mount', () => {
+    const m = buildConverseMcpMount({ ...base, hostTrust: 'public', superuserToken: 'su-tok', principalToken: 'user-bearer' });
+    expect(m).not.toBeNull();
+    expect(m!.url).not.toContain('superuser');
+    expect(m!.url).toBe(
+      'http://localhost:3070/api/mcp?workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+    );
+    expect(m!.bearer).toBe('user-bearer');
+    // Fail-closed: no boundary bearer ⇒ no mount, even though a superuser token exists.
+    expect(buildConverseMcpMount({ ...base, hostTrust: 'public', superuserToken: 'su-tok', principalToken: null })).toBeNull();
+    expect(buildConverseMcpMount({ ...base, hostTrust: 'public', superuserToken: 'su-tok', principalToken: '  ' })).toBeNull();
+  });
+
+  it('omits &client= when there is no valid client id', () => {
+    const m = buildConverseMcpMount({ ...base, uiClientId: null, hostTrust: 'owner', superuserToken: 't', principalToken: null });
+    expect(m!.url).not.toContain('client=');
+  });
+});

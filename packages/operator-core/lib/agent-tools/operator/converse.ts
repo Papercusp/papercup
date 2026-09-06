@@ -56,8 +56,18 @@ import { checkBudget, recordSpend, shouldBypassOperatorBudget } from '../../oper
 import { parseOperatorTurn } from '../../operator-converse-tags';
 import { readSystemPrincipal } from '../../system-principal';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { ALL_AGENT_MCP_TOOLS, canonicalToolName } from '../../operator-mcp-tools';
+import { canonicalToolName } from '../../operator-mcp-tools';
 import { PROMPT_ROLES } from '../../prompt-assembly';
+import { UI_CONTEXT_MAX_CHARS } from '../../chat-context-sections';
+import { capabilityToolNames, OWNED_LOOP_TOOL_SELECTION } from '../../agent-loop/capability-toolset';
+import { resolvePapercupChatModel } from '../../papercup/papercup-chat-model';
+import type { AgentBackend } from '../../agent-config-constants';
+import {
+  buildConverseMcpMount,
+  CONVERSE_HOST_TRUSTS,
+  selectConverseTools,
+  type ConverseHostTrust,
+} from './converse-toolset';
 import type { ChatEvent } from '@papercusp/chat-protocol';
 import {
   buildOperatorPrompt,
@@ -121,6 +131,20 @@ export const ArgsSchema = z.object({
   /** Session user resolved from cookies by the HTTP route; null
    *  acceptable on the IPC path or unauthenticated calls. */
   sessionUser: SessionUserSchema.nullable().optional(),
+  /** Who is on the other end (papercup-chat-one-component-one-contract-2026-09-06
+   *  P-005, D-007 §2). 'owner' (default) = the workspace owner's desktop / TUI /
+   *  device: the curated working set over the `superuser=1` MCP mount and every
+   *  prompt context section. 'public' = the portal behind its per-user boundary:
+   *  the capability doors + the card tool over a mount that NEVER carries
+   *  superuser=1 or the disk token, and only the boundary-allowed sections. */
+  hostTrust: z.enum(CONVERSE_HOST_TRUSTS).optional(),
+  /** The hosting surface's current UI context (the agent-chats seam's
+   *  `body.context`) — orientation data, never authority. */
+  uiContext: z.string().max(UI_CONTEXT_MAX_CHARS).optional(),
+  /** Public trust only: the per-user boundary's bearer for the brain's MCP
+   *  mount. Absent ⇒ the public brain runs TOOL-LESS (fail-closed, never on the
+   *  owner's credential). Ignored on owner trust. */
+  principalToken: z.string().optional(),
 });
 
 type Args = z.infer<typeof ArgsSchema>;
@@ -160,6 +184,33 @@ async function resolveBrainModel(): Promise<string> {
     /* PG unreachable — fall through to the pinned default */
   }
   return OPERATOR_BRAIN_MODEL_DEFAULT;
+}
+
+/**
+ * The model + backend this turn's ROLE runs on. The operator brain keeps its
+ * chain (resolveBrainModel: env > agent-config models['operator'] > pinned
+ * default, with the per-surface override on top). The chat `papercup` role is
+ * the QUICK model pinned in PAPERCUP_CHAT_MODEL_PIN (D-007 §3): its own env >
+ * agent-config > pin ladder lives in papercup-chat-model.ts, and the backend
+ * travels WITH the pin (a bare luna id on a claude-CLI backend hard-downs the
+ * role — WI-4623). Exported for the handler tests.
+ */
+export async function resolveConverseBrain(
+  role: string,
+): Promise<{ model: string; backend: AgentBackend | undefined }> {
+  const surfaceBe = await surfaceBackend('operator');
+  if (role === 'papercup') {
+    let config: Awaited<ReturnType<typeof readAgentConfig>> | null = null;
+    try {
+      config = await readAgentConfig();
+    } catch {
+      /* PG unreachable — the pin still resolves */
+    }
+    const r = resolvePapercupChatModel({ env: process.env, config, fallbackBackend: surfaceBe });
+    return { model: r.model, backend: r.backend };
+  }
+  const brainModel = await resolveBrainModel();
+  return { model: (await surfaceModel('operator')) ?? brainModel, backend: surfaceBe };
 }
 
 /**
@@ -246,7 +297,20 @@ export default defineTool({
     // backends either have no on-disk session store (anthropic-direct) or
     // are not wired for it (omp/codex). The per-surface backend override is
     // resolved here (and reused below) instead of after the build.
-    const operatorBackend = await surfaceBackend('operator');
+    const role = input.role ?? 'operator';
+    const hostTrust: ConverseHostTrust = input.hostTrust === 'public' ? 'public' : 'owner';
+    // The role's model + backend, resolved ONCE up front: the backend gates
+    // session reuse below (claude-code only), and the papercup pin carries its
+    // backend with it (D-007 §3).
+    const { model: operatorModel, backend: operatorBackend } = await resolveConverseBrain(role);
+    // The brain's tool surface for this turn — host-TRUST-keyed (D-007 §2), and
+    // resolved BEFORE the prompt build so the catalog advertises exactly the set
+    // the mount serves (listed == callable on both trusts).
+    const operatorTools: readonly string[] = selectConverseTools({
+      role,
+      hostTrust,
+      publicDoorNames: () => capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
+    });
     const convId =
       typeof input.conversationId === 'string' && input.conversationId.trim()
         ? input.conversationId
@@ -289,6 +353,11 @@ export default defineTool({
         role: input.role,
         // WI-5071: keep the system prompt byte-stable for session reuse.
         memoryInUser: sessionReuseOn,
+        // P-005 (D-007 §2): host trust keys the context sections; the surface's
+        // UI context rides along; the catalog advertises THIS turn's toolset.
+        hostTrust,
+        uiContext: input.uiContext,
+        toolNames: operatorTools,
       } satisfies OperatorConverseInput,
       sessionUser,
     );
@@ -354,62 +423,54 @@ export default defineTool({
         && /^(?:llm-testing\/)?[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
         ? input.uiClientId
         : null;
-    // The operator's curated working set (operator-mcp-tools.ts). chat:ask_choice
-    // is available on the TUI surface too: the pui renders inline terminal cards
-    // from the state-channel `openCards` snapshot and answers them via
-    // /card-response (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a),
-    // so a card no longer blocks until timeoutSec on the terminal. One set feeds
-    // BOTH the `?tools=` allowlist and `--allowed-tools`, so the listed surface
-    // and the callable surface stay identical by construction.
-    const operatorTools: readonly string[] = ALL_AGENT_MCP_TOOLS;
-    // `?tools=` shrinks the operator's /api/mcp surface from ~226 → ~50 tools,
-    // loaded NON-deferred (each marked always-load server-side), so Claude
-    // Code stops ToolSearch-flailing over a giant deferred catalog
-    // (voice-persona-production-readiness P-009). The param value is the
-    // colon MCP-catalog name (strip the claude-code `mcp__agentmcp__` prefix).
-    const toolsParam = operatorTools
-      .map((t) => t.replace(/^mcp__agentmcp__/, ''))
-      .join(',');
+    // The agentmcp HTTP MCP mount (converse-toolset.ts) — one set feeds BOTH the
+    // `?tools=` allowlist and `--allowed-tools`, so the listed surface and the
+    // callable surface stay identical by construction. chat:ask_choice is on
+    // the TUI surface too: the pui renders inline terminal cards from the
+    // state-channel `openCards` snapshot (Phase 2a). `?tools=` shrinks the
+    // /api/mcp surface to the selected set, loaded NON-deferred, so Claude Code
+    // stops ToolSearch-flailing over a giant deferred catalog (P-009).
+    //   owner trust  → `superuser=1` + the on-disk superuser token (unchanged).
+    //   public trust → NO superuser param, NO disk token — ever (D-007 §2): the
+    //                  per-user boundary's own bearer (input.principalToken) or
+    //                  no mount at all, so a public brain never borrows the
+    //                  owner's credential; it runs tool-less instead.
     // workspace= is REQUIRED for state-channel scoping: chat:ask_choice
-    // sub-tool calls (via claude-code → MCP HTTP) need ctx.workspaceId
-    // to match what the chat surface subscribed to (subscribeWorkspace).
-    // Without it, http-projection defaults to workspaceId='*' for the
-    // superuser path and cards from chat:ask_choice never reach the
-    // PendingCardsBar (registers under '*', surface subscribed to real
-    // workspaceId — no overlap). Tool blocks until 60s timeoutSec.
-    //
-    // Plan ref: bespoke-card-improvements-2026-05-13.md §4.4 wire shape.
-    const mcpUrl =
-      `${selfUrl()}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}` +
-      `&tools=${encodeURIComponent(toolsParam)}` +
-      (uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '');
-    const superuserToken = readSuperuserToken();
+    // sub-tool calls (via the brain → MCP HTTP) need ctx.workspaceId to match
+    // what the chat surface subscribed to (subscribeWorkspace). Without it the
+    // superuser path defaults to workspaceId='*' and cards never reach the
+    // PendingCardsBar (registers under '*', surface subscribed to the real
+    // workspaceId — no overlap). Plan ref: bespoke-card-improvements-2026-05-13
+    // §4.4 wire shape.
+    const mount = buildConverseMcpMount({
+      hostTrust,
+      baseUrl: selfUrl(),
+      workspaceId,
+      tools: operatorTools,
+      uiClientId,
+      superuserToken: hostTrust === 'owner' ? readSuperuserToken() : '',
+      principalToken: hostTrust === 'public' ? (input.principalToken ?? null) : null,
+    });
     const mcpConfig =
-      principalOk && superuserToken
+      principalOk && mount
         ? {
             mcpServers: {
-              // Direct HTTP MCP — omp connects to the host's /api/mcp
-              // natively, the same shape the user's papercusp-su server
-              // uses. The old `npx mcp-remote@latest` stdio bridge added
-              // a cold npm-resolve + a proxy subprocess on every turn and
-              // was the flaky empty-turn culprit (2026-05-21): the brain
-              // would intermittently produce no output because its tool
-              // transport never came up in time. omp speaks HTTP MCP
-              // natively, so the bridge is pure overhead.
+              // Direct HTTP MCP — the brain connects to the host's /api/mcp
+              // natively, the same shape the user's papercusp-su server uses.
+              // The old `npx mcp-remote@latest` stdio bridge added a cold
+              // npm-resolve + a proxy subprocess on every turn and was the
+              // flaky empty-turn culprit (2026-05-21).
               agentmcp: {
                 type: 'http',
-                url: mcpUrl,
-                headers: { Authorization: `Bearer ${superuserToken}` },
+                url: mount.url,
+                headers: { Authorization: `Bearer ${mount.bearer}` },
               },
             },
           }
         : undefined;
     // The callable surface mirrors the listed (`?tools=`) surface exactly —
-    // operatorTools is now the full set on BOTH surfaces (chat:ask_choice
-    // INCLUDED on tui; the pui renders inline terminal cards — see the note
-    // above, Phase 2a). Listed == callable by construction.
-    const allowedTools: readonly string[] =
-      principalOk && superuserToken ? operatorTools : [];
+    // listed == callable by construction; no mount ⇒ no callable tools.
+    const allowedTools: readonly string[] = mcpConfig ? operatorTools : [];
 
     let totalCost = 0;
     let assembled = '';
@@ -417,17 +478,12 @@ export default defineTool({
     let emittedToolCall = false;
     let firstEventAt: number | null = null;
 
-    // Resolve the brain model once per turn: env > agent-config
-    // models['operator'] > pinned Anthropic default.
-    const brainModel = await resolveBrainModel();
-    // Per-surface backend override (/settings/agent) — `operatorBackend` is
-    // resolved ONCE at the top of the handler (WI-5071 needs it pre-prompt-
-    // build); undefined → inherit the global $AGENT_BACKEND that
-    // applyToProcessEnv mirrors from agent-config.
-    // Per-surface model override (OQ3) wins over the pinned brain default
-    // — needed when the per-surface backend is one the default model id
-    // (anthropic/claude-opus-4-7) doesn't resolve on (e.g. codex).
-    const operatorModel = (await surfaceModel('operator')) ?? brainModel;
+    // `operatorModel` / `operatorBackend` were resolved ONCE at the top of the
+    // handler (resolveConverseBrain): the operator brain's env > agent-config >
+    // pinned default with the per-surface override (OQ3) on top; the papercup
+    // role's quick-model pin WITH its backend (D-007 §3). An undefined backend
+    // inherits the global $AGENT_BACKEND that applyToProcessEnv mirrors from
+    // agent-config.
     // Announce what will ACTUALLY run before the first model event — the same
     // chat-protocol `provenance` frame the agent-chats route emits, so the
     // shared PapercupChat shows one provenance line on both hosts (D-008).
@@ -582,7 +638,8 @@ export default defineTool({
         `firstEventMs=${firstEventAt !== null ? firstEventAt - tTurnStart : -1} ` +
         `totalMs=${Date.now() - tTurnStart} model=${operatorModel} ` +
         `modality=${turnModality} emittedToolCall=${emittedToolCall} ` +
-        `assembledChars=${assembled.length} session=${turnSessionMode}`,
+        `assembledChars=${assembled.length} session=${turnSessionMode} ` +
+        `role=${role} trust=${hostTrust} tools=${allowedTools.length}`,
     );
 
     // WI-4950 class observability: a turn that enumerated options in prose
@@ -683,13 +740,15 @@ export default defineTool({
     // failures as failed nursery rows instead of dropping them.
     try {
       const parsed = parseOperatorTurn(assembled);
-      // Sentinel control tags: the
-      // SENTINEL never places work itself. It can emit `<handoff>` for
-      // buildable work (file-and-nudge to the Mug) and `<delegate_deep>` for
-      // hard thinking (deep-analysis lane). Honored ONLY for role==='sentinel';
-      // the operator path below ignores both entirely (and the sentinel ignores
-      // spawns — the two can't cross). The Sentinel must NOT cup:spawn.
-      const isSentinel = input.role === 'papercup';
+      // Sentinel control tags: the SENTINEL never places work itself. It can
+      // emit `<handoff>` for buildable work (file-and-nudge to the Mug). Honored
+      // ONLY for role==='papercup'; the operator path below ignores it (and the
+      // sentinel ignores spawns — the two can't cross). The Sentinel must NOT
+      // cup:spawn. The `<delegate_deep>` TAG path is RETIRED (D-007 §3, PARITY
+      // op-delegate-deep): hard thinking is the `voice:delegate_deep` TOOL in
+      // the papercup toolset (converse-toolset.ts), called with wait:true so the
+      // answer lands in the SAME turn — a stray tag is inert here.
+      const isSentinel = role === 'papercup';
       if (isSentinel && parsed.handoffs.length > 0) {
         const [{ dispatchSentinelHandoff }, { defaultSentinelHandoffDeps }] = await Promise.all([
           import('../../operator-sentinel-handoff'),
@@ -709,30 +768,12 @@ export default defineTool({
         }
       }
       if (isSentinel && parsed.deepDelegations.length > 0) {
-        const [{ delegateDeep }, { defaultDeepDelegateDeps }] = await Promise.all([
-          import('../../papercup/papercup-deep-delegate'),
-          import('../../papercup/papercup-deep-delegate-deps'),
-        ]);
-        const deps = defaultDeepDelegateDeps();
-        for (const deep of parsed.deepDelegations) {
-          void delegateDeep(
-            {
-              question: deep.summary,
-              brief: deep.brief,
-              harness: deep.harness,
-              workspaceId,
-            },
-            deps,
-          )
-            .then((r) => {
-              if (!r.ok) {
-                console.warn(`[sentinel-converse] deep delegation rejected: ${r.error}`);
-              }
-            })
-            .catch((err) => {
-              console.warn('[sentinel-converse] deep delegation dispatch error', err);
-            });
-        }
+        // Observability only: the prompt no longer teaches the tag, so a hit
+        // here means a stale persona/prompt override is still emitting it.
+        console.warn(
+          `[sentinel-converse] ignoring ${parsed.deepDelegations.length} <delegate_deep> tag(s) — ` +
+            'the tag path is retired; the papercup toolset carries voice:delegate_deep (D-007 §3).',
+        );
       }
       // The OPERATOR spawns directly; the SENTINEL never does (its envelope denies
       // cup:spawn). Guard the spawn dispatch on NOT-sentinel so a stray `<spawn>`

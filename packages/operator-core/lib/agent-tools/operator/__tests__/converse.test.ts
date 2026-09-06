@@ -78,6 +78,14 @@ vi.mock('../../../agent-config', () => ({
 }));
 vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['tasks:read', 'mcp__agentmcp__chat:ask_choice'],
+  INTERACTIVE_CHAT_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
+  canonicalToolName: (n: string) => n,
+}));
+// P-005: the public-trust door list comes from the projected-tool registry;
+// stub it so the handler test never loads the catalog.
+vi.mock('../../../agent-loop/capability-toolset', () => ({
+  OWNED_LOOP_TOOL_SELECTION: { prefixes: ['capability:'] },
+  capabilityToolNames: vi.fn(() => ['capability:read', 'tasks:ops']),
 }));
 // The <spawn>-tag dispatch goes through the durable nursery spawn engine
 // (fleet/operator-spawn), dynamically imported by the handler — mock the module
@@ -411,10 +419,11 @@ describe('operator:converse — loop behaviors (P-019)', () => {
   // `<handoff_to_mug>` spelling stays covered at the parse+shape layer by
   // operator-sentinel-handoff.test.ts and by the 3-spelling block in
   // operator-converse-tags.test.ts.
-  it('role=sentinel dispatches <handoff> and <delegate_deep> but never spawn', async () => {
+  it('role=sentinel dispatches <handoff>; the <delegate_deep> TAG is inert (retired for the tool, D-007 §3); never spawn', async () => {
     vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
     const { readSystemPrincipal } = await import('../../../system-principal');
     vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: 'ws-real' } as never);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
       yield {
         type: 'delta',
@@ -436,14 +445,78 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       summary: 'ship the export flow',
       harness: 'papercup',
     });
-    expect(delegateDeep).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(delegateDeep).mock.calls[0][0]).toMatchObject({
-      question: 'compare the migration strategies',
-      brief: 'Need the safer recommendation.',
-      harness: 'papercup',
-      workspaceId: 'ws-real',
-    });
+    // PARITY op-delegate-deep: the tag path no longer dispatches — the papercup
+    // toolset carries voice:delegate_deep (called with wait:true) instead.
+    expect(delegateDeep).not.toHaveBeenCalled();
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('<delegate_deep>'))).toBe(true);
     expect(spawnAgentInHarness).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('role=papercup runs the QUICK pin — gpt-5.6-luna:low ON codex — with voice:delegate_deep in its toolset (D-007 §3)', async () => {
+    delete process.env.PAPERCUP_CHAT_MODEL;
+    delete process.env.PAPERCUP_CHAT_BACKEND;
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+    const ctx = makeCtx();
+    await handler(
+      { messages: [], trigger: 'user_message', role: 'papercup', sessionUser: null },
+      { ...ctx, role: 'papercup' },
+    );
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as {
+      model?: string;
+      backend?: string;
+      allowedTools?: string[];
+      mcpConfig?: McpConfig;
+    };
+    expect(call.model).toBe('gpt-5.6-luna:low');
+    expect(call.backend).toBe('codex');
+    expect(call.allowedTools).toContain('mcp__agentmcp__voice:delegate_deep');
+    expect(call.allowedTools).toContain('mcp__agentmcp__chat:ask_choice');
+    // Owner trust (default): the mount is the superuser one, tools= carries the deep tool.
+    const tools = new URL(mcpUrlOf(call.mcpConfig)!).searchParams.get('tools') ?? '';
+    expect(tools.split(',')).toContain('voice:delegate_deep');
+    // The provenance frame announces what actually runs (D-008).
+    expect(ctx.emit).toHaveBeenCalledWith('provenance', { type: 'provenance', engine: 'codex', model: 'gpt-5.6-luna:low' });
+    // The operator role is untouched by the pin.
+    vi.mocked(runAgentChat).mockClear();
+    await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
+    const op = vi.mocked(runAgentChat).mock.calls[0][0] as { model?: string; allowedTools?: string[] };
+    expect(op.model).toBe('anthropic/claude-opus-4-7');
+    expect(op.allowedTools).not.toContain('mcp__agentmcp__voice:delegate_deep');
+  });
+
+  it('hostTrust=public: NO superuser mount, doors + card + deep tool; tool-less without the boundary bearer (D-007 §2)', async () => {
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+    // Fail-closed: no principalToken ⇒ no mcpConfig at all, allowedTools empty —
+    // even though the disk superuser token IS readable in this process.
+    await handler(
+      { messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'public', sessionUser: null },
+      { ...makeCtx(), role: 'papercup' },
+    );
+    const bare = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig; allowedTools?: string[] };
+    expect(bare.mcpConfig).toBeUndefined();
+    expect(bare.allowedTools).toEqual([]);
+    // With the boundary's bearer: a plain mount, never superuser=1, never the disk token.
+    vi.mocked(runAgentChat).mockClear();
+    await handler(
+      {
+        messages: [],
+        trigger: 'user_message',
+        role: 'papercup',
+        hostTrust: 'public',
+        principalToken: 'portal-user-bearer',
+        sessionUser: null,
+      },
+      { ...makeCtx(), role: 'papercup' },
+    );
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig; allowedTools?: string[] };
+    const url = mcpUrlOf(call.mcpConfig)!;
+    expect(url).not.toContain('superuser');
+    expect(url).toContain('&workspace=ws-real');
+    expect(call.mcpConfig?.mcpServers.agentmcp.headers.Authorization).toBe('Bearer portal-user-bearer');
+    const tools = new URL(url).searchParams.get('tools') ?? '';
+    expect(tools.split(',')).toEqual(['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep']);
+    expect(call.allowedTools).not.toContain('tasks:read'); // the owner working set never crosses
   });
 
   // cup-lexicon-full-rename-2026-07-09 P-006 (dual-accept, leader-mandated amendment):

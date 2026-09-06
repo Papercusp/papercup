@@ -78,6 +78,24 @@ export const PUBLIC_PORTAL_AGENT_BASELINE = {
   backend: 'claude-code',
 } as const satisfies { model: string; backend: AgentBackend };
 
+/**
+ * The chat `papercup` role's QUICK-model pin (papercup-chat-one-component-one-
+ * contract-2026-09-06 P-005, D-007 §3). The Papercup chat is a quick model with
+ * the deep-delegation tool in its toolset; hard questions route to a
+ * papercup-deep session. Testing pin per the owner (2026-09-06, confirmed
+ * verbatim "gpt-5.6-luna:low (codex)"): the luna tier on the codex backend at
+ * LOW effort. The backend is PART of the pin — a bare luna id handed to a
+ * claude-CLI-backed role hard-downs it (WI-4623) — so, like the portal baseline
+ * above, model and backend live in one object and are consumed together
+ * (lib/papercup/papercup-chat-model.ts). Overridable per the usual ladder:
+ * PAPERCUP_CHAT_MODEL / PAPERCUP_CHAT_BACKEND env, then agent-config
+ * models['papercup'] / roleBackends['papercup'].
+ */
+export const PAPERCUP_CHAT_MODEL_PIN = {
+  model: 'gpt-5.6-luna:low',
+  backend: 'codex',
+} as const satisfies { model: string; backend: AgentBackend };
+
 // ── Model tiers (queen-model-tier-selection-2026-06-11) ──────────────────────
 
 /** Reasoning-effort levels a model spec's `:<effort>` suffix may carry —

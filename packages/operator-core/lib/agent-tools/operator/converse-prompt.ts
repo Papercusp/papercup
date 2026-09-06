@@ -27,6 +27,14 @@ import {
 import { buildMemoryContextBlock, lastUserContext } from '../../memory/injection';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
+import {
+  buildPlanContextSection,
+  buildWorkItemDossierSections,
+  CONTEXT_SECTION_BUDGET_MS,
+  renderUiContextSection,
+  withTimeoutBudget,
+} from '../../chat-context-sections';
+import type { ConverseHostTrust } from './converse-toolset';
 
 export interface ConverseInput {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
@@ -66,6 +74,23 @@ export interface ConverseInput {
    *  prefix survives across turns. Default false ⇒ byte-identical legacy
    *  layout (memory in system). */
   memoryInUser?: boolean;
+  /** Who is on the other end of this turn (papercup-chat-one-component-one-
+   *  contract-2026-09-06 P-005, D-007 §2). 'owner' (default — byte-identical
+   *  legacy) = the workspace owner's desktop / TUI / device: every context
+   *  section. 'public' = the portal behind its per-user boundary: ONLY what
+   *  that boundary allows — memory scoped to the signed-in user, the UI context
+   *  the surface sent — never the workspace-internal sentinel/fleet digest, the
+   *  bound work-item's dossier / plan context, or the server-resolved subject
+   *  record. */
+  hostTrust?: ConverseHostTrust;
+  /** The hosting surface's current UI context (the agent-chats seam's
+   *  `body.context`, ≤ UI_CONTEXT_MAX_CHARS). Orientation data, never
+   *  authority — rendered as one quoted JSON string. */
+  uiContext?: string;
+  /** The tool surface this turn actually has (allowed-tools or colon form).
+   *  The catalog advertises EXACTLY this set so listed == callable on both
+   *  trusts. Default: ALL_AGENT_MCP_TOOLS (the owner working set). */
+  toolNames?: readonly string[];
 }
 
 export interface ConverseSessionUser {
@@ -119,7 +144,10 @@ export async function buildOperatorPrompt(
   // A scoped client sends only the conversation id. Resolve the bound subject
   // on the server and keep this lookup concurrent with the existing summary /
   // memory gathers so work-item context does not add a serial prompt phase.
-  const subjectContextPromise: Promise<string | null> = input.conversationId
+  // Host trust (D-007 §2): 'owner' is the byte-identical legacy layout; 'public'
+  // keeps every workspace-internal section out of the prompt (see ConverseInput).
+  const hostTrust: ConverseHostTrust = input.hostTrust === 'public' ? 'public' : 'owner';
+  const subjectContextPromise: Promise<string | null> = input.conversationId && hostTrust === 'owner'
     ? import('../../operator-conversation-subject')
         .then(({ buildOperatorConversationSubjectContext }) =>
           buildOperatorConversationSubjectContext(
@@ -135,6 +163,38 @@ export async function buildOperatorPrompt(
           return null;
         })
     : Promise.resolve(null);
+  // P-005 (D-007 §2): the agent-chats seam's work-item dossier + in-flight
+  // checkpoint + plan-context sections, keyed off the conversation's work-item
+  // binding (the seam's `chat.feature_id`), built by the SAME shared builders
+  // (chat-context-sections.ts). Owner trust only — a public user's per-user
+  // boundary does not extend to workspace work-item state. Kicked off here so
+  // it runs concurrently with the summary / memory / sentinel gathers; every
+  // leg is best-effort and budgeted, so a miss degrades the sections, never
+  // the turn.
+  const boundItemContextPromise: Promise<{ dossier: string[]; plan: string | null }> =
+    input.conversationId && hostTrust === 'owner'
+      ? (async () => {
+          try {
+            const { getConversationById } = await import('../../operator-conversations');
+            const ws = activeWorkspaceId();
+            const conv = await getConversationById(input.conversationId!, ws);
+            if (!conv || conv.subjectKind !== 'work-item' || !conv.harnessSlug || !conv.subjectRef) {
+              return { dossier: [], plan: null };
+            }
+            const [dossier, plan] = await Promise.all([
+              buildWorkItemDossierSections({ workspaceId: ws, harness: conv.harnessSlug, workItemId: conv.subjectRef }),
+              withTimeoutBudget(
+                buildPlanContextSection({ harness: conv.harnessSlug, workItemId: conv.subjectRef }),
+                CONTEXT_SECTION_BUDGET_MS,
+              ),
+            ]);
+            return { dossier, plan: plan ?? null };
+          } catch {
+            /* best-effort — the brain still has its read tools */
+            return { dossier: [], plan: null };
+          }
+        })()
+      : Promise.resolve({ dossier: [], plan: null });
   let compactedSummary: string | null = null;
   if (contextMode === 'compaction' && input.conversationId) {
     try {
@@ -179,7 +239,9 @@ export async function buildOperatorPrompt(
   // the model, so the catalog must advertise the name the model actually sees
   // (voice-persona P-005). The earlier dotted-variant entries were dead: they
   // never matched the colon-keyed registry, so they only ever rendered nothing.
-  const operatorToolNames = ALL_AGENT_MCP_TOOLS.map((fullName) =>
+  // The set this TURN actually has (converse.ts selects it per role + trust and
+  // passes it in) — the owner working set when the caller gave none.
+  const operatorToolNames = (input.toolNames ?? ALL_AGENT_MCP_TOOLS).map((fullName) =>
     fullName.replace(/^mcp__agentmcp__/, ''),
   );
   const toClaudeName = (mcpName: string): string => mcpName.replace(/:/g, '_');
@@ -213,7 +275,13 @@ export async function buildOperatorPrompt(
       `You have no \`Bash\`, no \`Task\`, no file or shell access, and they will ` +
       `not work if you try. Never emit a \`Bash(...)\` call as a comment or ` +
       `no-op. If no catalog tool does what you need, say so in your \`<say>\` ` +
-      `instead of improvising a tool.`,
+      `instead of improvising a tool.` +
+      (hostTrust === 'public'
+        ? `\n- **This is a PUBLIC surface.** The catalog above is the complete set ` +
+          `for this host; a tool named anywhere else in these instructions but ` +
+          `absent from the catalog does not exist here — never try it, say what ` +
+          `you cannot do instead.`
+        : ''),
   );
 
   const playbook = loadRoleToolsMd(role);
@@ -228,10 +296,12 @@ export async function buildOperatorPrompt(
   // memory recall across every harness in the workspace. Failures
   // here are non-fatal — the injection helper is best-effort.
   let harnessSlugs: string[] = [];
-  try {
-    const reg = await loadHarnessRegistry(activeWorkspaceId());
-    harnessSlugs = reg.projects.map((p) => p.slug);
-  } catch { /* leave empty — recall just skips the harness pool */ }
+  if (hostTrust === 'owner') {
+    try {
+      const reg = await loadHarnessRegistry(activeWorkspaceId());
+      harnessSlugs = reg.projects.map((p) => p.slug);
+    } catch { /* leave empty — recall just skips the harness pool */ }
+  }
   // Kicked off WITHOUT awaiting — the sentinel read-context below is an
   // independent gather, and the two were measured SEQUENTIAL at ~11.3s +
   // ~11.6s (prompt-phases, 2026-07-16), the dominant phases of a ~23s prompt
@@ -247,11 +317,17 @@ export async function buildOperatorPrompt(
   // THIS turn's query in background) or gives up the section after the cold
   // deadline; a sentinel_scan turn has no human waiting, so it takes a generous
   // deadline and warms the cache for typed turns instead.
+  //
+  // Public trust (D-007 §2): recall is scoped to the signed-in user ONLY — no
+  // harness / hive pools (harnessSlugs stays empty above; hiveSlugs suppressed
+  // below) — and there is NO recall at all without a user: an anonymous public
+  // turn must never read anyone's memory.
   const memBlockPromise: Promise<string | null> = (async () => {
+    if (hostTrust === 'public' && !sessionUser?.id) return null;
     try {
       const { getMemoryBlockBounded } = await import('../../memory/injection-block-cache');
-      // Stale recall must never bleed across a different role/user/conversation.
-      const memScopeKey = `${role}:${sessionUser?.id ?? 'anon'}:${input.conversationId ?? 'window'}`;
+      // Stale recall must never bleed across a different role/trust/user/conversation.
+      const memScopeKey = `${role}:${hostTrust}:${sessionUser?.id ?? 'anon'}:${input.conversationId ?? 'window'}`;
       return await getMemoryBlockBounded(
         activeWorkspaceId(),
         memScopeKey,
@@ -260,6 +336,7 @@ export async function buildOperatorPrompt(
             userId: sessionUser?.id ?? null,
             workspaceId: activeWorkspaceId(),
             harnessSlugs,
+            ...(hostTrust === 'public' ? { hiveSlugs: [] } : {}),
             queryContext: lastUserContext(messages, 3),
             // The Sentinel's recall heading mirrors the operator one but names its own role
             // so an injected fact reads as the Sentinel's memory, not "Operator memory".
@@ -284,8 +361,10 @@ export async function buildOperatorPrompt(
   // GUARDED on role==='sentinel' so the operator path is byte-identical (it never
   // gathers, never imports the sentinel module). Fail-soft: a gather error degrades
   // to no section — the turn never blocks on it (mirrors the memory block above).
+  // Owner trust only: the fleet/anomaly digest is workspace-internal state
+  // (D-007 §2 — never crosses the public per-user boundary).
   const sentinelBlockPromise: Promise<string | null> =
-    role === 'papercup'
+    role === 'papercup' && hostTrust === 'owner'
       ? (async () => {
           try {
             // Cached + deadline-bounded (P-009, evidence EI-13193): the raw gather
@@ -342,6 +421,10 @@ export async function buildOperatorPrompt(
 
   const subjectContextBlock = await subjectContextPromise;
   const tSubject = Date.now();
+
+  const boundItemContext = await boundItemContextPromise;
+  const uiContextBlock = renderUiContextSection(input.uiContext);
+  const tContext = Date.now();
 
   // USER sections (this turn's context — sent as the positional message).
   // historySections carry the conversation PAST (rolling summary + verbatim
@@ -403,6 +486,14 @@ export async function buildOperatorPrompt(
   // turns, and resumed brain sessions must receive the fresh record in their
   // delta prompt too. Global conversations return null and stay byte-identical.
   if (subjectContextBlock) userSections.push(subjectContextBlock);
+  // P-005 (D-007 §2): the seam's sections in the seam's order — the dossier
+  // (+ in-flight checkpoint) LEADS the task framing, then plan context, then
+  // the surface's UI context. USER sections, like the subject record: they vary
+  // per turn, and a resumed brain session must receive the fresh record in its
+  // delta prompt too. Empty on a global conversation / public trust.
+  for (const section of boundItemContext.dossier) userSections.push(section);
+  if (boundItemContext.plan) userSections.push(boundItemContext.plan);
+  if (uiContextBlock) userSections.push(uiContextBlock);
 
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
     user_message: `Trigger: user_message — the user just said something. React per the ladder.
@@ -550,7 +641,8 @@ Do NOT emit \`<continue/>\` from this trigger — a sweep is one turn. Do NOT as
     `[converse-prompt] prompt-phases historySummaryMs=${tHistSummary - tP0} ` +
       `personaCatalogMs=${tPersona - tHistSummary} memoryMs=${tMem - tPersona} ` +
       `sentinelMs=${tSentinel - tMem} subjectMs=${tSubject - tSentinel} ` +
-      `renderMs=${Date.now() - tSubject} role=${role}`,
+      `contextMs=${tContext - tSubject} renderMs=${Date.now() - tContext} ` +
+      `role=${role} trust=${hostTrust}`,
   );
 
   return {
