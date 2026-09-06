@@ -94,6 +94,8 @@ export interface PanelToggleButtonProps {
    *  ("the goal brief") or a fuller description ("plans and work items"). */
   describe?: string;
   'data-testid'?: string;
+  /** Panel headers and collapsed edge strips share the same label/chevron. */
+  placement?: 'toolbar' | 'panel' | 'edge';
   /** Merged OVER the shared toolbar style, for a surface that needs to nudge
    *  spacing. Prefer not passing it: divergence here is how the two popups
    *  start looking different again. */
@@ -107,6 +109,7 @@ export default function PanelToggleButton({
   onToggle,
   describe,
   'data-testid': testId,
+  placement = 'toolbar',
   style,
 }: PanelToggleButtonProps) {
   /* The whole rule, in one line — see the docblock's table. A left panel that
@@ -116,17 +119,18 @@ export default function PanelToggleButton({
   return (
     <button
       type="button"
-      className="pc-button"
+      className={`pc-button pc-panel-toggle pc-panel-toggle--${placement}`}
       onClick={onToggle}
       aria-pressed={open}
+      aria-expanded={open}
       aria-label={`${open ? 'Hide' : 'Show'} ${noun}`}
       data-testid={testId}
-      style={style ? { ...PANEL_TOOLBAR_BUTTON_STYLE, ...style } : PANEL_TOOLBAR_BUTTON_STYLE}
+      style={placement === 'toolbar' ? { ...PANEL_TOOLBAR_BUTTON_STYLE, ...style } : style}
     >
       {pointsLeft ? (
         <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
       ) : null}
-      {label}
+      <span className="pc-panel-toggle__label">{label}</span>
       {pointsLeft ? null : (
         <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
       )}
