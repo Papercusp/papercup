@@ -1068,6 +1068,9 @@ const DELTA_FULL_SNAPSHOT = {
   cursor: 'wil-c1',
   count: DELTA_BASE_ROWS.length,
   items: DELTA_BASE_ROWS,
+  note:
+    'mode=full: this is the complete current open-work-item view for this filter. ' +
+    'cursor is a change-watermark, not a pagination cursor.',
 };
 
 const DELTA_CHANGES = {
@@ -1095,6 +1098,9 @@ const DELTA_REFETCH_FULL = {
   cursor: 'wil-c2',
   count: DELTA_CURRENT_ROWS.length,
   items: DELTA_CURRENT_ROWS,
+  note:
+    'mode=full: this is the complete current open-work-item view for this filter. ' +
+    'cursor is a change-watermark, not a pagination cursor; absent ids were removed from the view.',
 };
 
 /**
@@ -1107,8 +1113,36 @@ const DELTA_REFETCH_FULL = {
 export function makeDeltaSnapshotOverride(): ToolDispatchOverride {
   let calls = 0;
   return {
-    override(name) {
-      if (canonical(name) !== 'work_items:list') return PASS_THROUGH;
+    override(name, rawArgs) {
+      const canon = canonical(name);
+      const args = (rawArgs ?? {}) as Record<string, unknown>;
+      if (canon === 'work_items:get') {
+        const ids = Array.isArray(args.ids)
+          ? args.ids.filter((id): id is string => typeof id === 'string')
+          : typeof args.id === 'string'
+            ? [args.id]
+            : [];
+        const results = ids.map((id) => {
+          const row = DELTA_CURRENT_ROWS.find((candidate) => candidate.id === id);
+          return row
+            ? { ok: true, id, workItem: { ...row, state: 'open' } }
+            : { ok: false, id, error: 'not_found_in_current_open_view' };
+        });
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: true,
+              results,
+              counts: {
+                ok: results.filter((result) => result.ok).length,
+                failed: results.filter((result) => !result.ok).length,
+              },
+              note: 'Detail reads use the same current snapshot as work_items:list.',
+            }),
+          }],
+        };
+      }
+      if (canon !== 'work_items:list') return PASS_THROUGH;
       calls += 1;
       const body = calls === 1 ? DELTA_FULL_SNAPSHOT : calls === 2 ? DELTA_CHANGES : DELTA_REFETCH_FULL;
       return { content: [{ text: JSON.stringify(body) }] };
