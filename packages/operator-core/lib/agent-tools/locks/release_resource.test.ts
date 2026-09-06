@@ -21,6 +21,7 @@ vi.mock('./contention-retry', () => ({ acquireWithContentionRetry: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 
 import { tryReleaseResource } from './su-lock-store';
+import { mockImplementationTyped } from '../../testing/typed-mock';
 import { acquireWithContentionRetry } from './contention-retry';
 import { broadcastResourceBackUp } from './resource-broadcast';
 const releaseM = vi.mocked(tryReleaseResource);
@@ -182,12 +183,12 @@ describe('locks:release_resource handler', () => {
   });
 
   it('releases selected resource names and broadcasts per exclusive resource', async () => {
-    releaseM.mockImplementation(async (_tx, spec) => ({
+    mockImplementationTyped(releaseM, async (_tx, spec) => ({
       released: [spec.resource],
       releasedModes: ['exclusive'],
       exclusiveResources: [spec.resource],
       waiters: { [spec.resource as string]: [`waiter:${spec.resource}`] },
-    }) as never);
+    }));
     const b = body(await call({ resources: ['dev-server', 'db'] }));
     expect(b).toMatchObject({
       ok: true,

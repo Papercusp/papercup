@@ -27,10 +27,10 @@ vi.mock('./workspace-listener', () => ({
 }));
 
 import {
-  getTxPool,
   readResourceLockStatus,
   tryAcquireResource,
 } from './su-lock-store';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { subscribeWorkspace } from './workspace-listener';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
@@ -39,7 +39,6 @@ const txnM = vi.mocked(inWorkspaceTxn);
 const subscribeM = vi.mocked(subscribeWorkspace);
 const acquireM = vi.mocked(tryAcquireResource);
 const statusM = vi.mocked(readResourceLockStatus);
-const txPoolM = vi.mocked(getTxPool);
 
 const held = {
   ok: true,
@@ -60,10 +59,9 @@ const contention = () =>
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
-  txPoolM.mockReturnValue({} as never);
   statusM.mockReset();
   acquireM.mockReset();
-  acquireM.mockResolvedValue(held as never);
+  mockResolvedTyped(acquireM, held);
   txnM.mockReset();
   txnM.mockImplementation(async (_domain, _owner, fn) => fn({} as never));
   subscribeM.mockReset();

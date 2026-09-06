@@ -477,7 +477,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
       replication: `replication-${i + 1} ${'r'.repeat(120)}`,
       instrumentKey: `instrument-${i + 1}`,
     }));
-    getM.mockResolvedValue({ rubricId: 'large-rubric', criteria } as never);
+    mockResolvedTyped(getM, { ...RUBRIC_R1, rubricId: 'large-rubric', criteria });
 
     const raw = await body(getTool, { rubricRef: 'large-rubric' });
     const rawChars = JSON.stringify(raw).length;
