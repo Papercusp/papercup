@@ -996,6 +996,11 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'ANTHROPIC_CUSTOM_HEADERS',
   'DISABLE_AUTO_COMPACT',
   'DISABLE_COMPACT',
+  // Console-history preservation (launcher terminalRenderEnv, owner terminal
+  // 2026-09-06): a successor that boots into Claude Code's fullscreen TUI paints on
+  // the alternate screen and its whole epoch vanishes from the console at the next
+  // cut. Pinned ⊇ terminalRenderEnv's keys by psu-host-handoff-env.test.ts.
+  'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN',
 ]);
 
 export function writeHostHandoff(ownerId, record) {

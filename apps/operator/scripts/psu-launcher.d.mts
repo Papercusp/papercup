@@ -1873,6 +1873,39 @@ export function nativeCompactionEnv(agent: any): {
     DISABLE_AUTO_COMPACT?: undefined;
     DISABLE_COMPACT?: undefined;
 };
+/**
+ * Console-history preservation across a carry-respawn [owner terminal 2026-09-06
+ * 00:10Z: "WHY IN THE CONSOLE IT SHOWING OLDER HISTORY"]. Claude Code 2.1.259 ships a
+ * fullscreen TUI that paints on the terminal's ALTERNATE screen (`ESC[?1049h`),
+ * switched on remotely through the `tui_fullscreen_upsell_trial` gate or locally by
+ * the `tui:"fullscreen"` setting — so it can flip between two epochs of the SAME
+ * session with no local code or config change. Everything drawn there is discarded
+ * the moment the CLI exits, and every carry-respawn exits the CLI: two whole epochs
+ * of su-8ef2d (22:53Z→00:08Z) vanished from the owner's console, leaving only their
+ * "Resume this session with" exit lines, while the epoch before them (primary
+ * screen) survived intact. The pty host's respawnTerminalHandoffBytes (WI-41386)
+ * protects PRIMARY scrollback only; nothing host-side can save alternate-screen
+ * frames, so the fix is to keep the child off that screen.
+ *
+ * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` is a binary-verified CC 2.1.259 env key
+ * (listed beside CLAUDE_CODE_DISABLE_MOUSE / _DISABLE_VIRTUAL_SCROLL in the
+ * terminal-feature env table). An explicit value in the launch env WINS — an owner
+ * who wants fullscreen sets it to `0` in their shell and this stamps nothing. `{}`
+ * for non-claude: omp has always run on the alternate screen by design (the pty
+ * host documents it), codex paints inline. Spread by every Claude spawn path
+ * (launchFreshSu, buildResumeEnv, trackedForkEnvelopeEnv, role sessions) and
+ * re-derived by the host-handoff successor ({@link healTerminalRenderEnv}) for the
+ * same reason as the context-trimming trio: the handoff is written by the OLD code.
+ */
+export function terminalRenderEnv(agent: any, env?: NodeJS.ProcessEnv): {
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
+} | {
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
+};
+/** Fill {@link terminalRenderEnv} into `env` wherever it is ABSENT (an explicitly
+ *  carried value always wins) and return the keys filled — the host-handoff heal,
+ *  same contract as {@link healContextTrimmingEnv}. */
+export function healTerminalRenderEnv(env: any, agent?: any): string[];
 /** Native backend hint for unambiguous cloud model families. Unknown model ids
  * stay open-set and return null; explicit OMP remains valid for either family.
  *

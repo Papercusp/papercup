@@ -4602,6 +4602,9 @@ export function buildResumeEnv(
     // retirement env must be re-stamped exactly as on a fresh launch — without
     // it a resumed Claude session silently regains native auto-compact + /compact.
     ...nativeCompactionEnv(session?.agent),
+    // Same again for the alternate-screen switch: a resumed CLI that boots into the
+    // fullscreen TUI loses its whole epoch from the console at the next cut.
+    ...terminalRenderEnv(session?.agent),
     // Same rationale for the context-trimming trio (WI-2140943 lane 2): a resume
     // spawns a NEW CLI, and a gateway-routed claude without ENABLE_TOOL_SEARCH /
     // PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER boots with the whole catalog inline.
@@ -6486,6 +6489,51 @@ export function nativeCompactionEnv(agent) {
   return agent === "claude"
     ? { DISABLE_AUTO_COMPACT: "1", DISABLE_COMPACT: "1" }
     : {};
+}
+
+/**
+ * Console-history preservation across a carry-respawn [owner terminal 2026-09-06
+ * 00:10Z: "WHY IN THE CONSOLE IT SHOWING OLDER HISTORY"]. Claude Code 2.1.259 ships a
+ * fullscreen TUI that paints on the terminal's ALTERNATE screen (`ESC[?1049h`),
+ * switched on remotely through the `tui_fullscreen_upsell_trial` gate or locally by
+ * the `tui:"fullscreen"` setting — so it can flip between two epochs of the SAME
+ * session with no local code or config change. Everything drawn there is discarded
+ * the moment the CLI exits, and every carry-respawn exits the CLI: two whole epochs
+ * of su-8ef2d (22:53Z→00:08Z) vanished from the owner's console, leaving only their
+ * "Resume this session with" exit lines, while the epoch before them (primary
+ * screen) survived intact. The pty host's respawnTerminalHandoffBytes (WI-41386)
+ * protects PRIMARY scrollback only; nothing host-side can save alternate-screen
+ * frames, so the fix is to keep the child off that screen.
+ *
+ * `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` is a binary-verified CC 2.1.259 env key
+ * (listed beside CLAUDE_CODE_DISABLE_MOUSE / _DISABLE_VIRTUAL_SCROLL in the
+ * terminal-feature env table). An explicit value in the launch env WINS — an owner
+ * who wants fullscreen sets it to `0` in their shell and this stamps nothing. `{}`
+ * for non-claude: omp has always run on the alternate screen by design (the pty
+ * host documents it), codex paints inline. Spread by every Claude spawn path
+ * (launchFreshSu, buildResumeEnv, trackedForkEnvelopeEnv, role sessions) and
+ * re-derived by the host-handoff successor ({@link healTerminalRenderEnv}) for the
+ * same reason as the context-trimming trio: the handoff is written by the OLD code.
+ */
+export function terminalRenderEnv(agent, env = process.env) {
+  if (agent !== "claude") return {};
+  const explicit = env?.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN;
+  if (explicit !== undefined && explicit !== "") return {};
+  return { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1" };
+}
+
+/** Fill {@link terminalRenderEnv} into `env` wherever it is ABSENT (an explicitly
+ *  carried value always wins) and return the keys filled — the host-handoff heal,
+ *  same contract as {@link healContextTrimmingEnv}. */
+export function healTerminalRenderEnv(env, agent = env?.PAPERCUSP_AGENT) {
+  const filled = [];
+  for (const [k, v] of Object.entries(terminalRenderEnv(agent, env))) {
+    if (env[k] === undefined || env[k] === "") {
+      env[k] = v;
+      filled.push(k);
+    }
+  }
+  return filled;
 }
 
 /** The canonical BARE cloud model aliases psu recognizes. Short + lowercase. The CLI/gateway own
@@ -9640,6 +9688,14 @@ export function runWrapper(options) {
       process.stderr.write(
         `psu: host handoff carried no ${healed.join(", ")} — re-derived from contextTrimmingEnv (WI-2140943)\n`,
       );
+    // Same heal for the alternate-screen switch (see terminalRenderEnv): a handoff
+    // written by a pre-fix host carries no CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN, and
+    // without it the successor's whole epoch vanishes from the console at its cut.
+    const healedRender = healTerminalRenderEnv(env, env.PAPERCUSP_AGENT);
+    if (healedRender.length > 0)
+      process.stderr.write(
+        `psu: host handoff carried no ${healedRender.join(", ")} — re-derived from terminalRenderEnv\n`,
+      );
     // The successor's first turn is the carry, delivered through the argv above.
     // A kickoff from THIS process's own command line would be the ORIGINAL
     // launch's first prompt replayed into a session that is many turns past it.
@@ -11276,6 +11332,8 @@ export function trackedForkEnvelopeEnv(bootstrapEnvelopeEnv, agent = "claude") {
     ...bootstrapEnvelopeEnv,
     PAPERCUSP_AGENT_SESSION: "1",
     ...nativeCompactionEnv(agent),
+    // A fork is a NEW CLI too: keep it off the alternate screen (terminalRenderEnv).
+    ...terminalRenderEnv(agent),
     // WI-2140943 lane 2: the context-trimming trio is a launcher-side concern too
     // (the server envelope never carries it) — a fork without it boots the whole
     // catalog inline, exactly like the host-handoff successor did.
@@ -12849,6 +12907,9 @@ async function roleFlow(args, role, rolesMeta) {
       // P-022: native auto-compact is retired — every Claude launch runs with
       // DISABLE_AUTO_COMPACT; the carry-respawn ladder owns the boundary.
       ...nativeCompactionEnv(res.agent),
+      // Keep the CLI off the terminal's alternate screen so its epoch survives the
+      // cut in the console (terminalRenderEnv).
+      ...terminalRenderEnv(res.agent),
     },
   });
 }
@@ -13701,6 +13762,10 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // DISABLE_AUTO_COMPACT; the carry-respawn ladder owns the boundary
       // (self-cut → watchdog soft cut → 1.3× force cut → death detector).
       ...nativeCompactionEnv(res.agent),
+      // Console-history preservation: keep the CLI off the terminal's alternate
+      // screen, or every carry-respawn discards the whole epoch it just rendered
+      // (terminalRenderEnv — owner terminal 2026-09-06).
+      ...terminalRenderEnv(res.agent),
       // P-030 (2026-07-02): OMP's default 30s MCP connect timeout is starved by a ~35s
       // startup event-loop block (observed twice, blockedMs≈35.6k both times) — every MCP
       // server then "times out"/"unable to connect" and the session runs TOOL-LESS with no

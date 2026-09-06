@@ -69,6 +69,78 @@ pub(crate) fn card_for_tool(tool: &ChatToolCall) -> Option<SemanticToolCard> {
     None
 }
 
+/// Build the semantic card shown by the command palette after an explicit
+/// `tools:invoke`. Known tools reuse the exact chat-card registry above;
+/// everything else gets a bounded, common-field summary rather than a raw JSON
+/// dump. This keeps palette and transcript semantics on one source of truth.
+pub(crate) fn card_for_invocation(
+    name: &str,
+    args: &Value,
+    result: Result<&Value, &str>,
+) -> SemanticToolCard {
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            return SemanticToolCard {
+                title: format!("Tool failed · {name}"),
+                rows: vec![row("error", error.to_string(), SemanticTone::Warning)],
+            };
+        }
+    };
+    let call = ChatToolCall {
+        name: name.to_string(),
+        id: None,
+        needs_approval: false,
+        input: Some(args.clone()),
+        result: Some(result.clone()),
+        outcome: ToolOutcome::Ok,
+    };
+    card_for_tool(&call).unwrap_or_else(|| generic_invocation_card(name, result))
+}
+
+fn generic_invocation_card(name: &str, result: &Value) -> SemanticToolCard {
+    let mut rows = Vec::new();
+    push_found(
+        &mut rows,
+        "status",
+        Some(result),
+        &["status", "state", "verdict", "outcome"],
+        SemanticTone::Positive,
+    );
+    push_found(
+        &mut rows,
+        "summary",
+        Some(result),
+        &["summary", "message", "note", "reason"],
+        SemanticTone::Neutral,
+    );
+    push_found(
+        &mut rows,
+        "subject",
+        Some(result),
+        &["id", "slug", "name", "ref"],
+        SemanticTone::Neutral,
+    );
+    push_found(
+        &mut rows,
+        "count",
+        Some(result),
+        &["count", "total", "totalMatches", "matched"],
+        SemanticTone::Neutral,
+    );
+    if rows.is_empty() {
+        rows.push(row(
+            "result",
+            compact(result).unwrap_or_else(|| "ok".into()),
+            SemanticTone::Neutral,
+        ));
+    }
+    SemanticToolCard {
+        title: format!("Tool result · {name}"),
+        rows,
+    }
+}
+
 /// Interpret the activity-ledger row written by the fleet event bridge. This is
 /// shared by the leader tape and the agent's inline transcript cards so the two
 /// renderers cannot disagree about an event's meaning.
@@ -645,6 +717,30 @@ mod tests {
         );
         assert_eq!(card_for_tool(&wrapped).unwrap().title, "Task done · t-1");
         assert!(card_for_tool(&call("capability:read", json!({"file_path":"x"}), None)).is_none());
+    }
+
+    #[test]
+    fn palette_invocation_reuses_known_cards_and_bounds_unknown_results() {
+        let args = json!({"op":"done","task_id":"t-1"});
+        let known = card_for_invocation("tasks:ops", &args, Ok(&json!({"changedTaskId":"t-1"})));
+        assert_eq!(known.title, "Task done · t-1");
+
+        let unknown_result = json!({
+            "status":"green",
+            "summary":"the requested operation completed",
+            "ignored":{"very":"large"}
+        });
+        let unknown = card_for_invocation("custom:probe", &json!({}), Ok(&unknown_result));
+        assert_eq!(unknown.title, "Tool result · custom:probe");
+        assert!(unknown
+            .rows
+            .iter()
+            .any(|row| row.label == "status" && row.value == "green"));
+        assert!(unknown.rows.iter().any(|row| row.label == "summary"));
+
+        let failed = card_for_invocation("custom:probe", &json!({}), Err("denied"));
+        assert_eq!(failed.title, "Tool failed · custom:probe");
+        assert_eq!(failed.rows[0].tone, SemanticTone::Warning);
     }
 
     #[test]

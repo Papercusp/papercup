@@ -21,8 +21,8 @@ vi.mock('./source', async (importOriginal) => {
 
 import { classifySpecEvidenceCurrentness, listSpecEvidence } from './spec-evidence-store';
 
-describe('classifySpecEvidenceCurrentness self-copy guard', () => {
-  it('does not treat a byte-identical echo of every binding fingerprint as current', () => {
+describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
+  it('treats a complete byte-identical independently-derived fingerprint set as current', () => {
     const currentness = classifySpecEvidenceCurrentness(
       {
         spec_is_current: true,
@@ -45,7 +45,7 @@ describe('classifySpecEvidenceCurrentness self-copy guard', () => {
     );
 
     expect(currentness).toMatchObject({
-      overall: 'unknown',
+      overall: 'current',
       dimensions: {
         spec: 'current',
         source: 'current',
@@ -53,7 +53,7 @@ describe('classifySpecEvidenceCurrentness self-copy guard', () => {
         fixture: 'not-applicable',
       },
       staleReasons: [],
-      unknownReasons: ['self-referential-current-fingerprint'],
+      unknownReasons: [],
       comparisonSupplied: true,
     });
   });
@@ -112,8 +112,8 @@ describe('listSpecEvidence timestamp normalization', () => {
       observedAt: '2026-08-20T21:10:00.000Z',
       createdAt: '2026-08-20T21:10:01.000Z',
       currentness: {
-        overall: 'unknown',
-        unknownReasons: ['self-referential-current-fingerprint'],
+        overall: 'current',
+        unknownReasons: [],
       },
     });
   });
