@@ -130,17 +130,31 @@ async function requireWorkspaceHostControllerAuthority(
   query: Sql,
   workspaceId: string,
   hostId: string,
+  operationId: string | undefined,
   authority: WorkspaceHostControllerAuthority | undefined,
 ): Promise<void> {
   if (!authority) return;
   const rows = await query<Array<{ id: string }>>`
-    SELECT id
-    FROM harness_shared.workspace_hosts
-    WHERE workspace_id = ${workspaceId}
-      AND id = ${hostId}
-      AND controller_id = ${authority.controllerId}
-      AND controller_fence = ${authority.fence}
-    FOR SHARE
+    SELECT host.id
+    FROM harness_shared.workspace_hosts AS host
+    WHERE host.workspace_id = ${workspaceId}
+      AND host.id = ${hostId}
+      AND host.controller_id = ${authority.controllerId}
+      AND host.controller_fence = ${authority.fence}
+      AND (
+        ${operationId ?? null}::text IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM harness_shared.workspace_host_operations AS operation
+          WHERE operation.workspace_id = host.workspace_id
+            AND operation.id = ${operationId ?? null}
+            AND operation.host_id = host.id
+            AND operation.controller_id = host.controller_id
+            AND operation.controller_fence = host.controller_fence
+            AND operation.desired_revision = host.desired_revision
+        )
+      )
+    FOR SHARE OF host
   `;
   if (!rows[0]) throw new WorkspaceHostControllerFenceError(hostId);
 }
@@ -553,8 +567,17 @@ export async function updateWorkspaceHostLifecycleState(input: {
   state: 'destroying' | 'absent';
   observedAt?: string;
   discard?: boolean;
+  operationId?: string;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
   await withWorkspace(input.workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.operationId,
+      input.controllerAuthority,
+    );
     await tx`
       UPDATE harness_shared.workspace_hosts
       SET desired_state = ${input.state},
@@ -597,20 +620,39 @@ export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationI
     let desiredRevision = input.desiredRevision ?? null;
     if (input.controllerAuthority) {
       const existing = await tx<
-        Array<{ desired_revision: number | null; controller_id: string | null; controller_fence: number | null }>
+        Array<{
+          host_id: string;
+          action: WorkspaceHostLifecycleAction;
+          desired_revision: number | null;
+          controller_id: string | null;
+          controller_fence: number | null;
+          request_matches: boolean;
+        }>
       >`
-        SELECT desired_revision, controller_id, controller_fence
+        SELECT host_id, action, desired_revision, controller_id, controller_fence,
+               request IS NOT DISTINCT FROM ${input.request === undefined ? null : tx.json(json(input.request) as never)}::jsonb AS request_matches
         FROM harness_shared.workspace_host_operations
         WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
         LIMIT 1
       `;
       if (existing[0]) {
         if (
+          existing[0].host_id !== input.hostId ||
+          existing[0].action !== input.action ||
           existing[0].controller_id !== input.controllerAuthority.controllerId ||
-          existing[0].controller_fence !== input.controllerAuthority.fence
+          existing[0].controller_fence !== input.controllerAuthority.fence ||
+          (input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision) ||
+          !existing[0].request_matches
         ) {
           throw new WorkspaceHostControllerFenceError(input.hostId);
         }
+        await requireWorkspaceHostControllerAuthority(
+          tx,
+          input.workspaceId,
+          input.hostId,
+          input.operationId,
+          input.controllerAuthority,
+        );
         return;
       }
 
@@ -625,7 +667,18 @@ export async function beginWorkspaceHostOperation(input: WorkspaceHostOperationI
             updated_at = now()
         WHERE workspace_id = ${input.workspaceId}
           AND id = ${input.hostId}
-          AND (${desiredRevision}::bigint IS NULL OR ${desiredRevision}::bigint >= desired_revision)
+          AND (
+            ${desiredRevision}::bigint IS NULL
+            OR ${desiredRevision}::bigint > desired_revision
+            OR (
+              ${input.action} = 'provision'
+              AND ${desiredRevision}::bigint = desired_revision
+              AND NOT EXISTS (
+                SELECT 1 FROM harness_shared.workspace_host_operations prior
+                WHERE prior.workspace_id = ${input.workspaceId} AND prior.host_id = ${input.hostId}
+              )
+            )
+          )
           AND (
             controller_id IS NULL
             OR (controller_id = ${input.controllerAuthority.controllerId} AND controller_fence = ${input.controllerAuthority.fence})
@@ -671,7 +724,13 @@ export async function updateWorkspaceHostOperation(input: {
     `;
     const hostId = operations[0]?.host_id;
     if (hostId) {
-      await requireWorkspaceHostControllerAuthority(tx, input.workspaceId, hostId, input.controllerAuthority);
+      await requireWorkspaceHostControllerAuthority(
+        tx,
+        input.workspaceId,
+        hostId,
+        input.operationId,
+        input.controllerAuthority,
+      );
     }
     await tx`
       UPDATE harness_shared.workspace_host_operations
@@ -697,7 +756,13 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
   const { checkpoint } = input;
   const resource = checkpoint.providerResource;
   await withWorkspace(input.workspaceId, async (tx) => {
-    await requireWorkspaceHostControllerAuthority(tx, input.workspaceId, input.hostId, input.controllerAuthority);
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.operationId,
+      input.controllerAuthority,
+    );
     await tx`
       INSERT INTO harness_shared.workspace_host_resources (
         workspace_id, host_id, logical_key, operation_id, state, attempts,
@@ -828,7 +893,13 @@ export interface WorkspaceHostTimelineEventInput {
 export async function appendWorkspaceHostEvent(input: WorkspaceHostTimelineEventInput): Promise<string> {
   const id = input.id ?? randomUUID();
   await withWorkspace(input.workspaceId, async (tx) => {
-    await requireWorkspaceHostControllerAuthority(tx, input.workspaceId, input.hostId, input.controllerAuthority);
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.operationId,
+      input.controllerAuthority,
+    );
     await tx`
       INSERT INTO harness_shared.workspace_host_events (
         workspace_id, id, host_id, operation_id, occurred_at, phase,
@@ -894,6 +965,7 @@ export async function recordWorkspaceHostObservation(
       tx,
       workspaceId,
       observation.host.hostId,
+      control?.operationId,
       control?.controllerAuthority,
     );
     await tx`
@@ -942,8 +1014,17 @@ export async function recordWorkspaceHostSignals(input: {
   tunnelStatus?: unknown;
   costSignals?: readonly unknown[];
   quotaSignals?: readonly unknown[];
+  operationId?: string;
+  controllerAuthority?: WorkspaceHostControllerAuthority;
 }): Promise<void> {
   await withWorkspace(input.workspaceId, async (tx) => {
+    await requireWorkspaceHostControllerAuthority(
+      tx,
+      input.workspaceId,
+      input.hostId,
+      input.operationId,
+      input.controllerAuthority,
+    );
     await tx`
       UPDATE harness_shared.workspace_hosts
       SET endpoint = coalesce(${input.endpoint ?? null}, endpoint),

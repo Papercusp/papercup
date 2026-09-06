@@ -33,7 +33,8 @@ import {
 } from './observability-store';
 import {
   assertProviderConnectionUsable,
-  DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY,
+  bindWorkspaceHostPlanRevision,
+  nextWorkspaceHostControllerAuthority,
   resolveControllerWorkspaceHostBootstrap,
   WorkspaceHostProvisioningRequestError,
   type WorkspaceHostProvisioningResult,
@@ -67,6 +68,7 @@ export interface RunWorkspaceHostLifecycleInput {
   signal?: AbortSignal;
   store?: WorkspaceHostLifecycleStore;
   controllerAuthority?: WorkspaceHostControllerAuthority;
+  desiredRevision?: number;
   /** Test/adapter seam; production derives this with the trusted bootstrap profile. */
   runtimeRelease?: WorkspaceHostRuntimeRelease;
   /** Test seam for lifecycle actions that must install the controller's current trusted release. */
@@ -195,10 +197,11 @@ function planRequest(
   input: RunWorkspaceHostLifecycleInput,
   target: StoredWorkspaceHostDestroyTarget,
   operationId: string,
+  desiredRevision: number,
 ): WorkspaceHostPlanRequest {
   const base = {
     operationId,
-    idempotencyKey: `workspace-host:${input.workspaceId}:${input.hostId}:${operationId}:${input.action}`,
+    idempotencyKey: `workspace-host:${input.workspaceId}:${input.hostId}:revision:${desiredRevision}:${operationId}:${input.action}`,
     host: {
       hostId: input.hostId,
       target: target.desired.target,
@@ -294,8 +297,8 @@ export async function runWorkspaceHostLifecycle(
     ]);
   }
   const controllerAuthority =
-    input.controllerAuthority ?? target.controllerAuthority ?? DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY;
-  const desiredRevision = target.desiredRevision + 1;
+    input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
+  const desiredRevision = input.desiredRevision ?? target.desiredRevision + 1;
   const store = controllerStore(baseStore, controllerAuthority, operationId);
 
   let hostBootstrapScript: string | undefined;
@@ -333,7 +336,10 @@ export async function runWorkspaceHostLifecycle(
 
   let plan: WorkspaceHostPlan;
   try {
-    plan = await input.provider.plan(planRequest(input, target, operationId), context);
+    plan = bindWorkspaceHostPlanRevision(
+      await input.provider.plan(planRequest(input, target, operationId, desiredRevision), context),
+      desiredRevision,
+    );
   } catch (error) {
     if (error instanceof WorkspaceHostProvisioningRequestError) throw error;
     throw new WorkspaceHostProvisioningRequestError([message(error)]);
@@ -409,7 +415,7 @@ export async function runWorkspaceHostLifecycle(
       operationId,
       planId: plan.planId,
       target: plan.target,
-      desiredGeneration: 1,
+      desiredRevision,
     },
     action: input.action,
     resources: plan.steps.map((step) => ({
@@ -429,7 +435,14 @@ export async function runWorkspaceHostLifecycle(
     action: input.action,
     status: 'running',
     message: `Workspace-host ${input.action} started`,
-    request: { sourceHostId: hostId, ...(input.name ? { name: input.name } : {}) },
+    request: {
+      sourceHostId: hostId,
+      ...(input.name ? { name: input.name } : {}),
+      plan: {
+        planId: plan.planId,
+        steps: plan.steps.map(({ id, idempotencyKey }) => ({ id, idempotencyKey })),
+      },
+    },
     desiredRevision,
   });
 

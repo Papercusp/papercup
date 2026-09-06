@@ -100,8 +100,31 @@ function pauseOf(
  * consecutive reds); the rest are the generic routine-health signals every
  * `routines` row can carry.
  *
+ * EI-22499535458977879 — THE FIFTH INSTANCE, and the one that finally settles the
+ * shape. The header above predicted a fourth and got it; appending a fifth literal
+ * would predict a sixth. The measurement that ends the cycle: of the 121 distinct
+ * metadata keys live on `harness_shared.routines`, exactly six are per-subsystem
+ * health blobs, and every one of them is named `<subsystem>_health` or the bare
+ * `health` — while NO non-health key among the other 115 matches that suffix. The
+ * writers were already following a convention; only this reader was not. Four of
+ * the six were being dropped on the floor (`gitnexus_health`,
+ * `project_history_health`, `intake_health`, `health`), each one a subsystem that
+ * records its own failure streak and then reads `health: null` to every agent —
+ * the same "durable record nobody can read" failure, four times over, found only
+ * because a grader happened to notice ONE of them.
+ *
+ * So health-record keys are now DERIVED from that convention
+ * ({@link isHealthRecordKey}) rather than transcribed, which is the derived-truth
+ * ladder's first rung: a new `<subsystem>_health` writer is projected the day it
+ * ships, with no edit here and no sixth instance. The explicit list below stays for
+ * the keys that do NOT follow the convention (`validation`, and the generic
+ * per-row scalars), and keeps `gate_health`/`watchdog_health` pinned to their
+ * imported constants so a writer-side rename still cannot drift past the reader.
+ *
  * Returns null when the row carries none of them, so an ordinary routine's
  * payload is unchanged and the field stays cheap on the trimmed projection.
+ * Measured when this landed: the four newly-projected blobs are 129–470 chars,
+ * against the 6,755-char `gate_health` this already carried.
  */
 function epochMs(value: unknown): number | null {
   if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : null;
@@ -228,6 +251,26 @@ export function attestGateHealth(value: unknown, nowMs: number = Date.now()): un
   };
 }
 
+/**
+ * The naming convention every per-subsystem health writer on `harness_shared.routines`
+ * already follows: `<subsystem>_health`, or the bare `health`.
+ *
+ * This is deliberately a CONVENTION test and not a second allowlist — the whole point of
+ * EI-22499535458977879 is that a reader which enumerates writers goes stale the moment a
+ * writer ships. Verified against the live population when it landed: it selects all six
+ * health blobs (`gate_health`, `watchdog_health`, `gitnexus_health`,
+ * `project_history_health`, `intake_health`, `health`) and none of the other 115 keys, so
+ * it is neither under- nor over-inclusive on real data. The bare `health` case is included
+ * because a routine that owns the whole row uses it (the admission canary); `_health` alone
+ * is rejected as a degenerate name with no subsystem.
+ *
+ * Exported for the guard test, which asserts an INVENTED `<subsystem>_health` key is
+ * projected with no edit here — the property that makes a sixth instance impossible.
+ */
+export function isHealthRecordKey(key: string): boolean {
+  return key === 'health' || (key.endsWith('_health') && key.length > '_health'.length);
+}
+
 function healthOf(metadata: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!metadata) return null;
   const OPERATIONAL_KEYS = [
@@ -267,10 +310,18 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     'git_sync_activity',
   ] as const;
   const out: Record<string, unknown> = {};
-  for (const k of OPERATIONAL_KEYS) {
-    if (metadata[k] !== undefined && metadata[k] !== null) {
-      out[k] = k === 'gate_health' ? attestGateHealth(metadata[k]) : metadata[k];
-    }
+  const emit = (k: string): void => {
+    const value = metadata[k];
+    if (value === undefined || value === null) return;
+    out[k] = k === 'gate_health' ? attestGateHealth(value) : value;
+  };
+  // The explicit keys first, in declaration order, so `gate_health` keeps its position at
+  // the head of the projection and this change is a pure ADDITION for every existing row.
+  for (const k of OPERATIONAL_KEYS) emit(k);
+  // Then anything the writers named by the health convention that the list above did not
+  // already cover. Sorted so the payload is deterministic regardless of jsonb key order.
+  for (const k of Object.keys(metadata).sort()) {
+    if (!(k in out) && isHealthRecordKey(k)) emit(k);
   }
   return Object.keys(out).length ? out : null;
 }
@@ -575,7 +626,7 @@ export default defineTool({
     returns: [
       'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, health }.',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
-      '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
+      '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
       '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no stamp, or a degraded git-sync freshness verdict) suppresses byte-exclusion action advice until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, stuck }, null when the row carries no git_sync_activity. `stuck:true` means one fire has been running longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`.',

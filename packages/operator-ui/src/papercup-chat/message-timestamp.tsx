@@ -109,7 +109,8 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 /** `4s` · `12m` · `3h` · `2d` — the HUD's own age vocabulary (hud-board-model
  *  `formatAge`), restated here because this package cannot import the
- *  operator; the two are pinned equal by message-timestamp.test.ts. */
+ *  operator. Nine lines; the operator's stamp now renders through THIS one, so
+ *  the two vocabularies cannot disagree on a chat surface. */
 export function formatAge(sec: number | null): string {
   if (sec == null) return '—';
   if (sec < 60) return `${sec}s`;

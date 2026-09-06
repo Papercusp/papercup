@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, expectTypeOf, it } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   _resetWorkspaceHostProvidersForTests,
   configureWorkspaceHostProviders,
   registeredWorkspaceHostProviderTargets,
   registerWorkspaceHostProvider,
+  registerWorkspaceHostProviderFactory,
   resolveWorkspaceHostProvider,
 } from './workspace-host-registry';
 import { WORKSPACE_HOST_LIFECYCLE_ACTIONS } from './workspace-host-types';
@@ -101,5 +102,20 @@ describe('workspace-host provider contract', () => {
     configureWorkspaceHostProviders({ providers: [aws, gcp2] });
     expect(registeredWorkspaceHostProviderTargets().sort()).toEqual(['aws', 'gcp']);
     expect(resolveWorkspaceHostProvider('gcp')).toBe(gcp2);
+  });
+
+  it('resolves connection-aware factories without exposing backend construction to the controller', () => {
+    const provider = fakeProvider('gcp');
+    const factory = vi.fn(() => provider);
+    registerWorkspaceHostProviderFactory('gcp', factory);
+    const connection = {
+      target: 'gcp',
+      cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
+      scope: { kind: 'project', id: 'project-1' },
+    } as const;
+
+    expect(resolveWorkspaceHostProvider(connection)).toBe(provider);
+    expect(factory).toHaveBeenCalledWith(connection);
+    expect(() => resolveWorkspaceHostProvider('gcp')).toThrow(/requires a connection-aware registry lookup/);
   });
 });

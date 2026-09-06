@@ -266,11 +266,13 @@ export type {
 } from "./workspace-host-canary-identity";
 export {
   registerWorkspaceHostProvider,
+  registerWorkspaceHostProviderFactory,
   configureWorkspaceHostProviders,
   resolveWorkspaceHostProvider,
   registeredWorkspaceHostProviderTargets,
   _resetWorkspaceHostProvidersForTests,
 } from "./workspace-host-registry";
+export type { WorkspaceHostProviderFactory } from "./workspace-host-registry";
 export type {
   WorkspaceHostBuildParameterValue,
   WorkspaceHostBuilderKind,

@@ -13,7 +13,8 @@ export interface WorkspaceHostWorkflowIdentity {
   operationId: string;
   planId: string;
   target: WorkspaceHostProviderTarget;
-  desiredGeneration: number;
+  /** Monotonic desired-state revision implemented by this plan and its postconditions. */
+  desiredRevision: number;
 }
 
 /**
@@ -169,8 +170,8 @@ export function validateWorkspaceHostWorkflow(
   })) {
     if (!value.trim()) errors.push(`${field} must not be empty`);
   }
-  if (!Number.isSafeInteger(spec.identity.desiredGeneration) || spec.identity.desiredGeneration < 0) {
-    errors.push('desiredGeneration must be a non-negative safe integer');
+  if (!Number.isSafeInteger(spec.identity.desiredRevision) || spec.identity.desiredRevision < 1) {
+    errors.push('desiredRevision must be a positive safe integer');
   }
   if (!Number.isSafeInteger(spec.maxApplyAttempts) || spec.maxApplyAttempts < 1) {
     errors.push('maxApplyAttempts must be a positive safe integer');

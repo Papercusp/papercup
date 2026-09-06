@@ -4,6 +4,7 @@ import type postgres from 'postgres';
 import {
   decodeGoogleGmailNotification,
   ensureGoogleGmailWatch,
+  GoogleGmailApiError,
   googleGmailSourceEmail,
   googleGmailSourceHistoryId,
   syncGoogleGmailSource,
@@ -27,6 +28,7 @@ import {
 import {
   isGoogleWorkspaceTerminalAuthError,
   resolveGoogleWorkspaceAccessToken,
+  withGoogleWorkspaceAccessTokenRetry,
 } from '../../external-triggers/google-workspace';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
@@ -48,11 +50,18 @@ export interface GoogleGmailPollResult {
   failures: GoogleGmailPollFailure[];
 }
 
+type GoogleGmailAuthenticatedRunner = <T>(
+  source: ExternalTriggerSourceRow,
+  installSlug: string,
+  operation: (accessToken: string) => Promise<T>,
+) => Promise<T>;
+
 export interface GoogleGmailPollDeps {
   sql?: postgres.Sql;
   listSources?: typeof listPollableExternalTriggerSources;
   getSource?: typeof getExternalTriggerSource;
   resolveAccessToken?: (source: ExternalTriggerSourceRow, installSlug: string) => Promise<string>;
+  withAccessTokenRetry?: GoogleGmailAuthenticatedRunner;
   provision?: (workspaceId: string) => Promise<GooglePubSubProvisionResult>;
   pull?: (workspaceId: string, maxMessages: number) => Promise<GooglePubSubReceivedMessage[]>;
   acknowledge?: (workspaceId: string, ackIds: string[]) => Promise<number>;
@@ -92,6 +101,23 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
   return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
 }
 
+async function runGoogleGmailAuthenticated<T>(
+  source: ExternalTriggerSourceRow,
+  installSlug: string,
+  operation: (accessToken: string) => Promise<T>,
+): Promise<T> {
+  return withGoogleWorkspaceAccessTokenRetry(source, installSlug, async (accessToken) => {
+    try {
+      return { status: 200, result: await operation(accessToken) };
+    } catch (cause) {
+      if (cause instanceof GoogleGmailApiError && cause.status === 401) {
+        return { status: 401, result: undefined as T };
+      }
+      throw cause;
+    }
+  });
+}
+
 /**
  * Renew every owned Gmail watch, pull this workspace's broadcast doorbells,
  * reconcile only matching mailboxes, then ack the successfully committed ones.
@@ -104,6 +130,11 @@ export async function runGoogleGmailPoll(
   const listSources = provided.listSources ?? listPollableExternalTriggerSources;
   const getSource = provided.getSource ?? getExternalTriggerSource;
   const resolveAccessToken = provided.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken;
+  const withAccessTokenRetry: GoogleGmailAuthenticatedRunner =
+    provided.withAccessTokenRetry ??
+    (provided.resolveAccessToken
+      ? async (source, installSlug, operation) => operation(await resolveAccessToken(source, installSlug))
+      : runGoogleGmailAuthenticated);
   const provision = provided.provision ?? ((workspaceId) => provisionGoogleGmailPubSub({ workspaceId }));
   const pull =
     provided.pull ?? ((workspaceId, maxMessages) => pullGoogleGmailNotifications({ workspaceId, maxMessages }));
@@ -150,7 +181,7 @@ export async function runGoogleGmailPoll(
     return result;
   }
   const sourceById = new Map(sources.map((source) => [source.id, source]));
-  const accessTokens = new Map<string, string>();
+  const readySourceIds = new Set<string>();
   const renewBeforeMs = boundedInteger(
     ctx.triggerConfig.renew_before_ms,
     24 * 60 * 60 * 1_000,
@@ -167,28 +198,36 @@ export async function runGoogleGmailPoll(
         source,
         source.ownerUserId ? `owner:${source.ownerUserId}` : null,
       );
-      const accessToken = await resolveAccessToken(source, ctx.installSlug);
-      let current = source;
-      if (!googleGmailSourceHistoryId(current)) {
-        const initial = await syncSource(sql, current, accessToken);
-        result.messages += initial.messages;
-        if (initial.mode === 'full') result.fullResyncs += 1;
-        const persisted = await getSource(sql, ctx.workspaceId, current.id);
-        if (!persisted) throw new Error(`google_gmail_source_missing_after_initial_sync:${current.id}`);
-        current = persisted;
-      }
-      const watched = await ensureWatch(sql, current, accessToken, pubsub.topicName, { renewBeforeMs });
-      const readySource =
-        watched.source.status === 'connected'
-          ? watched.source
-          : await updateSource(sql, ctx.workspaceId, source.id, {
-              status: 'connected',
-              lastError: null,
-              connected: true,
-            });
-      sourceById.set(source.id, readySource);
-      accessTokens.set(source.id, accessToken);
-      if (watched.renewed) result.renewed += 1;
+      let authAttempt = 0;
+      const prepared = await withAccessTokenRetry(source, ctx.installSlug, async (accessToken) => {
+        let current =
+          authAttempt++ === 0 ? source : ((await getSource(sql, ctx.workspaceId, source.id)) ?? source);
+        let messages = 0;
+        let fullResyncs = 0;
+        if (!googleGmailSourceHistoryId(current)) {
+          const initial = await syncSource(sql, current, accessToken);
+          messages += initial.messages;
+          if (initial.mode === 'full') fullResyncs += 1;
+          const persisted = await getSource(sql, ctx.workspaceId, current.id);
+          if (!persisted) throw new Error(`google_gmail_source_missing_after_initial_sync:${current.id}`);
+          current = persisted;
+        }
+        const watched = await ensureWatch(sql, current, accessToken, pubsub.topicName, { renewBeforeMs });
+        const readySource =
+          watched.source.status === 'connected'
+            ? watched.source
+            : await updateSource(sql, ctx.workspaceId, source.id, {
+                status: 'connected',
+                lastError: null,
+                connected: true,
+              });
+        return { readySource, renewed: watched.renewed, messages, fullResyncs };
+      });
+      sourceById.set(source.id, prepared.readySource);
+      readySourceIds.add(source.id);
+      result.messages += prepared.messages;
+      result.fullResyncs += prepared.fullResyncs;
+      if (prepared.renewed) result.renewed += 1;
     } catch (cause) {
       await recordFailure(source, cause);
     }
@@ -220,7 +259,7 @@ export async function runGoogleGmailPoll(
   for (const received of pulled) {
     const notification = decodeGoogleGmailNotification(received.message?.data);
     if (!notification) {
-      const readyIds = [...accessTokens.keys()];
+      const readyIds = [...readySourceIds];
       if (readyIds.length !== sources.length) {
         requirements.set(received.ackId, null);
       } else {
@@ -237,7 +276,7 @@ export async function runGoogleGmailPoll(
       requirements.set(received.ackId, everySourceHasEmail ? new Set() : null);
       continue;
     }
-    if (!matching.every((id) => accessTokens.has(id))) {
+    if (!matching.every((id) => readySourceIds.has(id))) {
       requirements.set(received.ackId, null);
       continue;
     }
@@ -249,10 +288,11 @@ export async function runGoogleGmailPoll(
   const syncedSourceIds = new Set<string>();
   for (const sourceId of targets) {
     const source = sourceById.get(sourceId);
-    const accessToken = accessTokens.get(sourceId);
-    if (!source || !accessToken) continue;
+    if (!source || !readySourceIds.has(sourceId)) continue;
     try {
-      const synced = await syncSource(sql, source, accessToken);
+      const synced = await withAccessTokenRetry(source, ctx.installSlug, (accessToken) =>
+        syncSource(sql, source, accessToken),
+      );
       syncedSourceIds.add(sourceId);
       result.messages += synced.messages;
       if (synced.mode === 'full') result.fullResyncs += 1;

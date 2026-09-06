@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
+  _resetWorkspaceHostProvidersForTests,
+  registerWorkspaceHostProvider,
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderConnection,
@@ -13,13 +15,8 @@ const control = vi.hoisted(() => ({
   stepOptions: null as null | Record<string, unknown>,
   sleep: vi.fn(async (_ms: number) => {}),
   provider: { target: 'gcp' },
-  createProvider: vi.fn(),
   runDestroy: vi.fn(),
   runProvisioning: vi.fn(),
-}));
-
-vi.mock('../workspace-host/gcp-provider', () => ({
-  createConfiguredGcpWorkspaceHostProvider: control.createProvider,
 }));
 
 vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
@@ -112,8 +109,8 @@ beforeEach(() => {
   control.startOptions = null;
   control.stepOptions = null;
   control.sleep.mockClear();
-  control.createProvider.mockReset();
-  control.createProvider.mockReturnValue(control.provider);
+  _resetWorkspaceHostProvidersForTests();
+  registerWorkspaceHostProvider(control.provider as never);
   control.runProvisioning.mockReset();
   control.runDestroy.mockReset();
 });
@@ -149,7 +146,7 @@ describe('workspace-host provisioning DBOS admission', () => {
     });
   });
 
-  it('composes the production provider from the selected connection inside the DBOS workflow', async () => {
+  it('resolves the production provider from the injected registry inside the DBOS workflow', async () => {
     control.runProvisioning.mockResolvedValueOnce({
       status: 'succeeded',
       operationId: 'op-1',
@@ -160,10 +157,6 @@ describe('workspace-host provisioning DBOS admission', () => {
 
     await startWorkspaceHostProvisioningWorkflow(input);
 
-    expect(control.createProvider).toHaveBeenCalledWith(
-      connection,
-      expect.objectContaining({ resolveHostedAuth: expect.any(Function) }),
-    );
     expect(control.runProvisioning).toHaveBeenCalledWith(expect.objectContaining({ provider: control.provider }));
   });
 
@@ -217,10 +210,6 @@ describe('workspace-host provisioning DBOS admission', () => {
       queueName: 'workspace-host-provision',
       enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' },
     });
-    expect(control.createProvider).toHaveBeenCalledWith(
-      connection,
-      expect.objectContaining({ resolveHostedAuth: expect.any(Function) }),
-    );
     expect(control.runDestroy).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'destroy', provider: control.provider }),
     );

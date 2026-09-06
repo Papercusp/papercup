@@ -8,7 +8,7 @@ import {
   loadAndRegisterProvidersFromDisk,
 } from '../oauth/providers';
 import { fsTokenStorage } from '../oauth/storage-fs';
-import { getOAuthToken } from '../oauth/token';
+import { getOAuthToken, withRetry } from '../oauth/token';
 
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
 export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal', 'contacts'] as const;
@@ -103,6 +103,15 @@ export function assertGoogleWorkspaceOwnerUserId(ownerUserId: string | undefined
   return normalized;
 }
 
+function googleWorkspaceTokenContext(field: string, installSlug: string) {
+  return {
+    plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
+    harness: installSlug,
+    storage: fsTokenStorage,
+    resolveProvider: (candidate: string) => (candidate === field ? { provider: 'google' } : null),
+  };
+}
+
 /** Resolve the shared Google Workspace Desktop OAuth token for either source. */
 export async function resolveGoogleWorkspaceAccessToken(
   source: ExternalTriggerSourceRow,
@@ -110,17 +119,25 @@ export async function resolveGoogleWorkspaceAccessToken(
 ): Promise<string> {
   const field = googleWorkspaceOAuthField(source.credentialRef);
   if (!getProvider('google')) await loadAndRegisterProvidersFromDisk();
-  const token = await getOAuthToken(
-    {
-      plugin: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
-      harness: installSlug,
-      storage: fsTokenStorage,
-      resolveProvider: (candidate) => (candidate === field ? { provider: 'google' } : null),
-    },
-    field,
-  );
+  const token = await getOAuthToken(googleWorkspaceTokenContext(field, installSlug), field);
   if (!token) throw new Error(`google_workspace_oauth_not_connected:${field}`);
   return token;
+}
+
+/**
+ * Run one provider operation with the shared OAuth helper's forced-refresh
+ * retry. Callers report the upstream status so a 401 retries once with a fresh
+ * access token; a second 401 marks the credential expired and requires an
+ * account-targeted reconnect.
+ */
+export async function withGoogleWorkspaceAccessTokenRetry<T>(
+  source: ExternalTriggerSourceRow,
+  installSlug: string,
+  call: (accessToken: string) => Promise<{ status: number; result: T }>,
+): Promise<T> {
+  const field = googleWorkspaceOAuthField(source.credentialRef);
+  if (!getProvider('google')) await loadAndRegisterProvidersFromDisk();
+  return withRetry(googleWorkspaceTokenContext(field, installSlug), field, call);
 }
 
 /**

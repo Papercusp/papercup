@@ -26,6 +26,10 @@ export {
   type OperatorUiToast,
 } from './seam';
 
+// The one Papercup chat (papercup-chat-one-component-one-contract-2026-09-06,
+// D-003) — also reachable as the `./papercup-chat` subpath.
+export * from './papercup-chat';
+
 export { default as AccountsTab } from './accounts/AccountsTab';
 export { useAccountOverride, type AccountOverride } from './accounts/use-account-override';
 export { ACCOUNTS_TAB_CSS, ACCOUNTS_TAB_BASE_CSS } from './accounts/accounts-tab.styles';

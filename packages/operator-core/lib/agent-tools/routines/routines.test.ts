@@ -90,7 +90,7 @@ const gateOwnershipM = vi.mocked(readGateOwnership);
 
 const listModule = await import('./list');
 const listTool = listModule.default;
-const { attestGateHealth, deriveGitSyncFreshness, deriveGitSyncExclusions } = listModule;
+const { attestGateHealth, deriveGitSyncFreshness, deriveGitSyncExclusions, isHealthRecordKey } = listModule;
 const setTool = (await import('./set')).default;
 
 type Out = { content?: { text: string }[]; data?: unknown };
@@ -981,6 +981,106 @@ describe('routines:list', () => {
         'paused-green-checkpoint': { consecutiveFailures: 12 },
       },
     });
+  });
+
+  /**
+   * EI-22499535458977879 — the FIFTH instance, and the one the fix is shaped by.
+   *
+   * `gitnexus-reindex` records its own failure streak, LadybugDB utilization and the
+   * embeddings-coverage verdict into `metadata.gitnexus_health` on every tick. The key was
+   * not in the allowlist, so `routines:list` answered `health: null` for it on both :3070
+   * and :3170 — the reader could not see a subsystem's own record of whether it was
+   * working. Found only because an acceptance grader happened to check ONE routine.
+   *
+   * This pins the concrete instance; the test below pins the class.
+   */
+  it('surfaces metadata.gitnexus_health so the reindex routine stops reading as health:null (EI-22499535458977879)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'gitnexus-reindex',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 35 * * * *' },
+        target_role: 'system:gitnexus-reindex',
+        // As with every instance before it: all four of these read HEALTHY.
+        active: true,
+        next_fire_at: new Date('2026-09-06T15:35:00Z'),
+        last_fired_at: new Date('2026-09-06T14:40:32Z'),
+        // Shape copied from the live row (workspace papercusp-workspace, 2026-09-06).
+        metadata: {
+          gitnexus_health: {
+            alerted: false,
+            consecutiveFailures: 0,
+            lastSuccessAt: 1788698646792,
+            dbUtilization: 0.07743704319000244,
+            vectorSearch: { degraded: false, expected: true, embeddings: 215253 },
+          },
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toMatchObject({
+      gitnexus_health: { consecutiveFailures: 0, vectorSearch: { embeddings: 215253 } },
+    });
+  });
+
+  /**
+   * ⭐ THE GUARD THAT ENDS THE CYCLE. Every previous fix here appended one literal and the
+   * header predicted the next instance; four arrived. This asserts the PROPERTY instead:
+   * a `<subsystem>_health` key this file has never heard of is projected anyway.
+   *
+   * `quasar_health` is invented — it exists in no writer, anywhere. If someone replaces the
+   * convention with a fifth hard-coded string, this test fails, which is the only way to
+   * tell a derived reader apart from a transcribed one that happens to be current today.
+   *
+   * The three keys beside it are REAL blobs that were being dropped alongside the filed
+   * one, so this also pins that the fix was applied to the class rather than the instance:
+   * `project_history_health` and `intake_health` each carry a `consecutiveFailures` /
+   * `last_error` that no agent could read, and the bare `health` is the admission canary's.
+   */
+  it('⭐ projects an UNKNOWN <subsystem>_health key, and the three real blobs dropped beside the filed one (EI-22499535458977879)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'multi-health',
+        trigger_kind: 'interval',
+        trigger_config: { interval_sec: 900 },
+        target_role: 'system:multi-health',
+        active: true,
+        next_fire_at: null,
+        last_fired_at: null,
+        metadata: {
+          project_history_health: { alerted: false, consecutiveFailures: 0 },
+          intake_health: { last_outcome: 'ok', total_scans: 7089 },
+          health: { dead_target: { state: 'root-missing', parked: false } },
+          // Invented. No writer emits this; it is here to prove the reader derives.
+          quasar_health: { consecutiveFailures: 3 },
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toMatchObject({
+      project_history_health: { consecutiveFailures: 0 },
+      intake_health: { total_scans: 7089 },
+      health: { dead_target: { state: 'root-missing' } },
+      quasar_health: { consecutiveFailures: 3 },
+    });
+  });
+
+  /**
+   * The predicate's own near-miss calibration. `endsWith('_health')` is easy to write in a
+   * way that also swallows unrelated keys, and the echo control below cannot catch that
+   * because it only sends one obviously-unrelated key. These are the boundary cases:
+   * a word CONTAINING "health" is not a health record, and a bare `_health` names no
+   * subsystem.
+   */
+  it('CALIBRATION: the health convention selects real blobs and rejects near-misses', () => {
+    for (const key of ['health', 'gate_health', 'gitnexus_health', 'project_history_health', 'intake_health']) {
+      expect(isHealthRecordKey(key), `${key} is a health record`).toBe(true);
+    }
+    for (const key of ['healthy', 'health_check', 'last_health_at', 'unhealthy', '_health', 'stealth']) {
+      expect(isHealthRecordKey(key), `${key} is NOT a health record`).toBe(false);
+    }
   });
 
   /**

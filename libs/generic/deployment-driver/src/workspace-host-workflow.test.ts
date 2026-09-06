@@ -49,7 +49,7 @@ function spec(
       operationId: 'op-1',
       planId: 'plan-1',
       target: 'gcp',
-      desiredGeneration: 3,
+      desiredRevision: 3,
     },
     action,
     resources: [resource('network'), resource('disk', ['network']), resource('vm', ['network', 'disk'])],

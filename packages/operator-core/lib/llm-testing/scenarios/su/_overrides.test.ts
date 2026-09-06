@@ -159,6 +159,28 @@ describe('SU S01/S02 populated scenario worlds', () => {
     const design = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('design-phase:search_registry', {
       query: 'status badge',
     }));
+    const designBatchWrite = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('code:run', {
+      script: 'await tools.capability.write({ file_path: "apps/operator-vite/src/components/harness-card/status-badge.tsx" });',
+    }));
+    const designDirectWrite = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('capability:write', {
+      file_path: 'apps/operator-vite/src/components/harness-card/index.tsx',
+      content: 'export function HarnessCard() {}',
+    }));
+    const designCardRead = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('capability:read', {
+      file_path: 'apps/operator-vite/src/components/harness-card/HarnessCard.tsx',
+    }));
+    const designWrongRead = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('capability:read', {
+      file_path: 'apps/operator-vite/src/components/cards/HarnessCard.tsx',
+    }));
+    const designPack = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('repomix:pack', {
+      path: 'apps/operator-vite/src/components/harness-card',
+    }));
+    const designTools = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('tools:find', {
+      query: 'write or create a file',
+    }));
+    const designCodeTools = textOf(DESIGN_STATUS_BADGE_CONTEXT.override('code:tools', {
+      namespaces: ['capability'],
+    }));
     const git = textOf(SHARED_TREE_GIT_CONTEXT.override('docs:get', {
       slugs: ['agent-insights/deploy-pipeline-is-async-self-healing'],
     }));
@@ -184,12 +206,27 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(pushPack).not.toContain('HarnessSyncProvider.tsx');
     expect(pushProviderPack).toContain('HarnessSyncProvider.tsx');
     expect(pushProviderPack).not.toContain('sync-resolver/index.ts');
+    expect(designBatchWrite).toContain('"ok":true');
+    expect(designBatchWrite).toContain('Hermetic file-write batch completed');
+    expect(designBatchWrite).toContain('status-badge.tsx');
+    expect(designBatchWrite).not.toContain('not available in this scenario world');
+    expect(designDirectWrite).toContain('"changed":true');
+    expect(designDirectWrite).toContain('harness-card/index.tsx');
+    expect(designCardRead).toContain('HarnessCardProps');
+    expect(designCardRead).toContain('"completeFile":true');
+    expect(designWrongRead).toContain('file_not_in_scenario_world');
+    expect(designWrongRead).toContain('components/harness-card/HarnessCard.tsx');
+    expect(designPack).toContain('HarnessCard.tsx');
+    expect(designPack).toContain('StatusPill.tsx');
+    expect(designTools).toContain('code:run');
+    expect(designTools).toContain('capability:write');
+    expect(designCodeTools).toContain('Use one code:run script');
     expect(design).toContain('StatusPill');
     expect(design).toContain('apps/operator-vite/src/components/ui/StatusPill.tsx');
     expect(git).toContain('dev:pipeline_position');
     expect(git).toContain('git-sync:run');
     expect(SU_S03_PUSH_NOT_POLL.version).toBe(4);
-    expect(SU_S04_DESIGN_FIRST.version).toBe(2);
+    expect(SU_S04_DESIGN_FIRST.version).toBe(4);
     expect(SU_S06_SHARED_TREE_GIT.version).toBe(2);
   });
 

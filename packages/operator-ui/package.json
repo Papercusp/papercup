@@ -52,6 +52,26 @@
       "types": "./src/accounts/use-account-override.ts",
       "import": "./src/accounts/use-account-override.ts",
       "default": "./src/accounts/use-account-override.ts"
+    },
+    "./papercup-chat": {
+      "types": "./src/papercup-chat/index.ts",
+      "import": "./src/papercup-chat/index.ts",
+      "default": "./src/papercup-chat/index.ts"
+    },
+    "./papercup-chat/parse-work-refs": {
+      "types": "./src/papercup-chat/parse-work-refs.ts",
+      "import": "./src/papercup-chat/parse-work-refs.ts",
+      "default": "./src/papercup-chat/parse-work-refs.ts"
+    },
+    "./papercup-chat/remark-work-refs": {
+      "types": "./src/papercup-chat/remark-work-refs.ts",
+      "import": "./src/papercup-chat/remark-work-refs.ts",
+      "default": "./src/papercup-chat/remark-work-refs.ts"
+    },
+    "./papercup-chat/message-timestamp": {
+      "types": "./src/papercup-chat/message-timestamp.tsx",
+      "import": "./src/papercup-chat/message-timestamp.tsx",
+      "default": "./src/papercup-chat/message-timestamp.tsx"
     }
   },
   "scripts": {
@@ -60,16 +80,26 @@
   },
   "devDependencies": {
     "@papercusp/test-config": "*",
+    "@testing-library/react": "^16.3.2",
+    "@types/mdast": "^4.0.4",
     "@types/react": "^19.2.15",
+    "jsdom": "^29.1.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
     "vitest": "^4.1.4"
   },
   "dependencies": {
+    "@papercusp/chat-cards": "file:../../libs/generic/chat-cards",
+    "@papercusp/chat-protocol": "file:../../libs/generic/chat-protocol",
     "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
     "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@radix-ui/react-collapsible": "^1.1.12",
+    "@tanstack/react-virtual": "^3.13.23",
     "lucide-react": "^0.544.0",
-    "nuqs": "^2.7.2"
+    "nuqs": "^2.7.2",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "peerDependencies": {
     "react": ">=19",

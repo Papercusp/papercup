@@ -8,12 +8,11 @@
 import { randomUUID } from 'node:crypto';
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import {
+  resolveWorkspaceHostProvider,
   workspaceHostWorkflowKeys,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderConnection,
 } from '@papercusp/deployment-driver';
-import { createConfiguredGcpWorkspaceHostProvider } from '../workspace-host/gcp-provider';
-import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
 import {
   runWorkspaceHostDestroy,
   runWorkspaceHostProvisioning,
@@ -108,9 +107,7 @@ export function setWorkspaceHostProvisioningExecutor(executor: WorkspaceHostProv
 async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHostProvisioningResult> {
   const injected = hooks().executor;
   if (injected) return injected(input);
-  const provider = createConfiguredGcpWorkspaceHostProvider(input.connection, {
-    resolveHostedAuth: resolveHostedGcpAuth,
-  });
+  const provider = resolveWorkspaceHostProvider(input.connection);
   if (input.action === 'destroy') {
     return runWorkspaceHostDestroy({ ...input, provider });
   }

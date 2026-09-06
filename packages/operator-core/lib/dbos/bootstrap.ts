@@ -271,6 +271,12 @@ async function startDbosOnce(): Promise<void> {
   // BYOC P-046 / D-100: every workspace-host provision enters this host-scoped
   // dedup workflow. It is always registered because the route is flag-ON and a
   // recovered in-flight host operation must bind even before a new request arrives.
+  const { registerWorkspaceHostProviderFactory } = await import('@papercusp/deployment-driver');
+  const { createConfiguredGcpWorkspaceHostProvider } = await import('../workspace-host/gcp-provider');
+  const { resolveHostedGcpAuth } = await import('../workspace-host/hosted-gcp-auth');
+  registerWorkspaceHostProviderFactory('gcp', (connection) =>
+    createConfiguredGcpWorkspaceHostProvider(connection, { resolveHostedAuth: resolveHostedGcpAuth }),
+  );
   await import('./workspace-host-provision-workflow');
   // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-
   // rebuild-2026-06-05 P-010 / D-009): it read `.papercusp/director-config.json`,

@@ -623,11 +623,119 @@ export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
   },
 };
 
-/** Existing design primitives and token vocabulary for SU-S04. */
+const DESIGN_STATUS_PILL_PATH = 'apps/operator-vite/src/components/ui/StatusPill.tsx';
+const DESIGN_HARNESS_CARD_PATH = 'apps/operator-vite/src/components/harness-card/HarnessCard.tsx';
+const DESIGN_STATUS_PILL_SOURCE = [
+  "import type { FC } from 'react';",
+  '',
+  "export type PillTone = 'good' | 'warn' | 'bad' | 'neutral';",
+  'export const StatusPill: FC<{ tone: PillTone; label: string; className?: string }> =',
+  '  ({ tone, label, className = \'\' }) => (',
+  '    <span className={`pclsb-pill pclsb-pill--${tone} ${className}`.trim()}>{label}</span>',
+  '  );',
+].join('\n');
+const DESIGN_HARNESS_CARD_SOURCE = [
+  "import type { ReactNode } from 'react';",
+  '',
+  "export type HarnessState = 'live' | 'idle' | 'stale';",
+  'export interface HarnessCardProps {',
+  '  slug: string;',
+  '  state: HarnessState;',
+  '  lastSeen: string;',
+  '  actions?: ReactNode;',
+  '}',
+  '',
+  'export function HarnessCard({ slug, lastSeen, actions }: HarnessCardProps) {',
+  '  return (',
+  '    <article className="harness-card">',
+  '      <header><span data-role="slug">{slug}</span></header>',
+  '      <span>Last seen {lastSeen}</span>',
+  '      {actions && <div className="harness-card__actions">{actions}</div>}',
+  '    </article>',
+  '  );',
+  '}',
+].join('\n');
+
+/** Existing design primitives, target source, write tools, and token vocabulary for SU-S04. */
 export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
   override(name, args) {
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'code:run') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        result: {
+          summary: 'Hermetic file-write batch completed.',
+          filesChanged: [
+            'apps/operator-vite/src/components/harness-card/status-badge.tsx',
+            'apps/operator-vite/src/components/harness-card/index.tsx',
+          ],
+          writes: 2,
+        },
+        note:
+          'The scenario models code:run composing the ordinary capability:write calls. ' +
+          'No files outside the hermetic scenario world were changed.',
+      }) }] };
+    }
+    if (canon === 'capability:write' || canon === 'capability:edit') {
+      const filePath = String(a.file_path ?? a.path ?? '');
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        file_path: filePath,
+        changed: true,
+        note: 'Hermetic write accepted; no file outside the scenario world was changed.',
+      }) }] };
+    }
+    if (canon === 'code:tools') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        namespaces: {
+          capability: {
+            write: { args: ['file_path', 'content'] },
+            edit: { args: ['file_path', 'old_string', 'new_string'] },
+          },
+        },
+        hint: 'Use one code:run script to compose the two approved file mutations.',
+      }) }] };
+    }
+    if (canon === 'tools:find') {
+      const query = String(a.query ?? '');
+      return { content: [{ text: JSON.stringify({
+        query,
+        count: 3,
+        totalMatches: 3,
+        activated: true,
+        hits: [
+          { tool: 'code:run', description: 'Compose multiple file operations in one script.' },
+          { tool: 'capability:write', description: 'Create or replace one file.' },
+          { tool: 'capability:edit', description: 'Apply a targeted edit to one file.' },
+        ],
+        howToCall: 'Call code:tools for typed signatures, then code:run for the two-file mutation.',
+      }) }] };
+    }
+    if (canon === 'capability:read') {
+      const requestedPath = String(a.file_path ?? a.path ?? '');
+      const source = requestedPath === DESIGN_STATUS_PILL_PATH || requestedPath.endsWith(DESIGN_STATUS_PILL_PATH)
+        ? { path: DESIGN_STATUS_PILL_PATH, content: DESIGN_STATUS_PILL_SOURCE }
+        : requestedPath === DESIGN_HARNESS_CARD_PATH || requestedPath.endsWith(DESIGN_HARNESS_CARD_PATH)
+          ? { path: DESIGN_HARNESS_CARD_PATH, content: DESIGN_HARNESS_CARD_SOURCE }
+          : null;
+      return { content: [{ text: JSON.stringify(source
+        ? {
+            ok: true,
+            file_path: source.path,
+            content: source.content,
+            sourceChars: source.content.length,
+            completeFile: true,
+          }
+        : {
+            ok: false,
+            error: 'file_not_in_scenario_world',
+            requestedPath,
+            canonicalPath: DESIGN_HARNESS_CARD_PATH,
+            availablePaths: [DESIGN_STATUS_PILL_PATH, DESIGN_HARNESS_CARD_PATH],
+          }) }] };
+    }
     if (canon === 'design-phase:search_registry') {
       return { content: [{ text: JSON.stringify({
         ok: true,
@@ -663,21 +771,32 @@ export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
       return { content: [{ text: JSON.stringify({
         ok: true,
         hits: [
-          { path: 'apps/operator-vite/src/components/ui/StatusPill.tsx', excerpt: "PillTone = 'good' | 'warn' | 'bad' | 'neutral'" },
+          { path: DESIGN_STATUS_PILL_PATH, excerpt: "PillTone = 'good' | 'warn' | 'bad' | 'neutral'" },
+          { path: DESIGN_HARNESS_CARD_PATH, excerpt: "export function HarnessCard({ slug, lastSeen, actions }: HarnessCardProps)" },
           { path: 'apps/operator-vite/src/components/left-sidebar/left-sidebar.styles.ts', excerpt: '.pclsb-pill and semantic tone modifiers' },
           { path: 'apps/operator/app/_semantic.css', excerpt: '--good, --warn, and --bad semantic tokens' },
         ],
       }) }] };
     }
     if (canon === 'repomix:pack') {
+      const requestedPath = String(a.path ?? '');
+      const includePill = requestedPath.length === 0
+        || requestedPath.includes('components')
+        || requestedPath.includes('StatusPill');
+      const includeCard = requestedPath.length === 0
+        || requestedPath.includes('harness-card')
+        || requestedPath.includes('HarnessCard')
+        || requestedPath.endsWith('/components')
+        || requestedPath.endsWith('/src');
+      const files = [
+        ...(includePill ? [{ path: DESIGN_STATUS_PILL_PATH, content: DESIGN_STATUS_PILL_SOURCE }] : []),
+        ...(includeCard ? [{ path: DESIGN_HARNESS_CARD_PATH, content: DESIGN_HARNESS_CARD_SOURCE }] : []),
+      ];
       return { content: [{ text: JSON.stringify({
         ok: true,
-        requestedPath: a.path ?? null,
-        files: [{
-          path: 'apps/operator-vite/src/components/ui/StatusPill.tsx',
-          content: "export type PillTone = 'good' | 'warn' | 'bad' | 'neutral'; export const StatusPill = ({ tone, label }) => <span className={`pclsb-pill pclsb-pill--${tone}`}>{label}</span>;",
-        }],
-        note: 'The requested shorthand paths are not canonical in this checkout; use the registry path above.',
+        requestedPath,
+        files,
+        canonicalTarget: DESIGN_HARNESS_CARD_PATH,
       }) }] };
     }
     return PASS_THROUGH;
