@@ -240,7 +240,7 @@ export default defineTool({
   name: 'work_items:create',
   profile: 'engineer',
   description:
-    "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation atomically assigns to a fleet MEMBER, the synthetic new item must match that member's claim spec or creation is refused before mutation; unassigned creation is unchanged. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
+    "Create ONE or MANY work-items. bug/change/task file tracked issues; feature enters the harness queue. New chunk creation is deprecated and rejected; historical chunk rows remain readable. If creation requests an assignment to a fleet MEMBER outside that member's claim scope, the finding is retained as an explicitly unassigned, claim-held filing with a visible downgrade — it never grants an out-of-scope claim. Single: { kind, title, … }; many: items:[…]. Returns per-item outcomes, including a visible warning when dedup coverage is degraded.",
   guidance: {
     when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). The retired `chunk` kind is history, not an option. A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.',
     notWhen: 'NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing peer question → coord:send with expects:"answer". A validator finding inside a live pipeline run → the validator pipeline, not here.',
@@ -498,6 +498,11 @@ export default defineTool({
                 at: new Date().toISOString(),
               },
             };
+            // EI-22430840507398884: stripping the refused assignment protects the
+            // fleet lane, but must not also erase the explicit-assignment admission
+            // bypass. The row remains unassigned + claim-held; this marker only keeps
+            // it from entering the duplicate-screening pending dead end.
+            spec.admissionBypass = 'bypass:explicit-assignment';
             spec.assign_to = undefined;
             fleetScopeDowngrade = {
               // EI-18673501896258575: the same concrete remedy fleetScopeLeaderRemedy

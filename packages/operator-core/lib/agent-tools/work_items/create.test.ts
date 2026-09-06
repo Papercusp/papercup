@@ -535,8 +535,33 @@ describe('work_items:create handler (keyed-array)', () => {
       expect(b.results[0]).toMatchObject({ ok: true });
       expect(createM).toHaveBeenCalledOnce();
       // ...but NO out-of-scope claim was created.
-      expect(createM.mock.calls[0][0]).toMatchObject({ title: 'outside', assign_to: undefined });
+      expect(createM.mock.calls[0][0]).toMatchObject({
+        title: 'outside',
+        assign_to: undefined,
+        admissionBypass: 'bypass:explicit-assignment',
+        payload: { _claimHold: true },
+      });
       expect(fleetAdmission.notify).toHaveBeenCalledOnce();
+    });
+
+    it('keeps a fleet_scope_missing downgrade born-admitted without granting the missing-scope claim', async () => {
+      fleetAdmission.decision = {
+        ...outOfScope,
+        code: 'fleet_scope_missing',
+        reason: 'member has no explicit per-member or inherited fleet claim spec',
+      };
+      const b = await body({ kind: 'task', title: 'plan ownership', assign_to: 'bee-7' });
+
+      expect(b.results[0]).toMatchObject({ ok: true });
+      expect(b.results[0].fleetScopeDowngrade).toMatch(/FILED UNASSIGNED/);
+      expect(createM.mock.calls[0][0]).toMatchObject({
+        assign_to: undefined,
+        admissionBypass: 'bypass:explicit-assignment',
+        payload: {
+          _claimHold: true,
+          fleetScopeDowngrade: { code: 'fleet_scope_missing', requestedAssignee: 'bee-7' },
+        },
+      });
     });
 
     it('records the requester as reporter so the filing stays attributable', async () => {
