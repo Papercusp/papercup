@@ -171,6 +171,47 @@ export interface CarryDocContinuation {
   selfRequested: boolean;
 }
 
+/**
+ * One still-non-terminal background shell (`capability:bash { run_in_background }`)
+ * that the carrying agent OWNS (EI-21600998523239527).
+ *
+ * Why this slot exists at all: every other continuity surface the carry document
+ * reclaims — held items, armed awaits, loop state, checkpoints — is inert while
+ * unattended. A background job is not. It keeps spending shared machine capacity
+ * (one measured orphan: 75 minutes old, 24,244 CPU-seconds, 18.5 GB peak RSS,
+ * 161 processes, competing for pc-heavy admission against a fleet-blocking red
+ * gate) and NOTHING told the successor it existed. The data was one
+ * `listTasks({ launchedBy, classes:['bash-job'] })` call away the whole time;
+ * the only gap was that nothing prompted the agent to ask.
+ *
+ * Worse, the predecessor's own carry note actively asserted the opposite —
+ * "background Bash does not survive a carry-respawn (EI-16611), re-run it". Both
+ * halves of that are individually true and the conclusion is still wrong:
+ * EI-16611 is about NATIVE Bash bookkeeping dying with the CLI child, while
+ * `capability:bash` is operator-owned and deliberately survives. A predecessor
+ * freshly burned by EI-16611 over-generalizes across both mechanisms and writes
+ * the generalization into the note, where the successor inherits it as settled
+ * fact and never checks. Rendering the ledger removes the need to reason about it.
+ */
+export interface CarryDocBackgroundTask {
+  /** The DURABLE handle. Not `bash_id` — see {@link renderBackgroundTasks}. */
+  taskId: string;
+  /** The command, already bounded by the ledger's own 300-char title cap. */
+  command: string;
+  /**
+   * The LEDGER's state ('pending' | 'running'), never an inference from the
+   * job's output file. A 0-byte `.output` after a respawn is NOT evidence the
+   * job died: verified 2026-08-17 (EI-20692923474318761), a `… | tail -40` job
+   * launched by the PREVIOUS CLI child survived the respawn and completed
+   * normally, because tail's fd 1 points at the output FILE, not at a pipe to
+   * the dead child. Deriving liveness from output bytes would make this section
+   * confidently wrong in exactly the direction that re-creates the bug.
+   */
+  state: string;
+  startedAtMs: number | null;
+  deadlineAtMs: number | null;
+}
+
 export interface CarryDoc {
   /** The standing continuity brief (loop note, held checkpoints, walls, facts…). */
   brief: CarryBrief;
@@ -190,12 +231,17 @@ export interface CarryDoc {
   /** Role/tool feasibility findings used to keep an impossible carry handoff from
    *  becoming an executable directive for the successor. */
   roleSafety?: CarryRoleSafetyReport | null;
+  /** Still-running background shells this agent owns. Optional keeps legacy/test
+   *  literals readable; absence renders nothing (never an empty header). */
+  backgroundTasks?: CarryDocBackgroundTask[];
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
 
 export const CARRY_DOC_MAX_PLAN_ITEMS = 12;
 export const CARRY_DOC_MAX_ASKS = 8;
+/** Top-K bound for the background-task slot; an overflow renders as a count. */
+export const CARRY_DOC_MAX_BACKGROUND_TASKS = 8;
 export const CARRY_DOC_MAX_TAIL_TURNS = 8;
 const TAIL_TURN_CAP = 4000;
 const ASK_CAP = 400;
@@ -273,6 +319,53 @@ async function defaultGetModes(workspaceId: string, ownerId: string): Promise<Ca
       mode: r.mode,
       ownerDirected: Boolean(r.ownerDirected),
       reason: r.reason ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read the caller's OWN still-non-terminal background shells from the task ledger.
+ *
+ * `launchedBy` is the right identity axis HERE specifically, even though the store
+ * documents it as "whoever SPAWNED it" and warns it cannot generally answer "which
+ * task is me?". For a `bash-job` the two axes coincide by construction:
+ * `capability:bash` stamps `launchedBy: ownerId` on its own enrolment, and the
+ * coord ownerId is STABLE across a carry-respawn (only the native session id
+ * changes) — which is exactly why the handle survives the boundary the agent's
+ * memory does not.
+ *
+ * Scoped to `class:'bash-job'` on purpose: an agent-session child this owner
+ * launched is a fleet member with its own lifecycle and its own supervisor, not
+ * an orphan for the successor to adopt or kill. Widening this to every class
+ * would bury the one signal the slot exists to carry.
+ *
+ * Best-effort by contract — a throwing read yields no rows, never a failed
+ * document (the same fail-soft posture as every other carry leg).
+ */
+async function defaultGetBackgroundTasks(
+  ownerId: string,
+  workspaceId: string,
+): Promise<CarryDocBackgroundTask[]> {
+  try {
+    const { listTasks } = await import('./task-manager/store');
+    const rows = await listTasks({
+      workspaceId,
+      launchedBy: ownerId,
+      classes: ['bash-job'],
+      // `isLiveOwnedState` — the two states that assert a live OS process we own.
+      // Terminal rows are excluded by listTasks' own `ended_at IS NULL` default too;
+      // naming the states keeps the intent explicit rather than incidental.
+      states: ['pending', 'running'],
+      limit: CARRY_DOC_MAX_BACKGROUND_TASKS + 1,
+    });
+    return rows.map((r) => ({
+      taskId: r.taskId,
+      command: r.title,
+      state: r.state,
+      startedAtMs: Number.isFinite(Date.parse(r.startedAt)) ? Date.parse(r.startedAt) : null,
+      deadlineAtMs: r.deadlineAt && Number.isFinite(Date.parse(r.deadlineAt)) ? Date.parse(r.deadlineAt) : null,
     }));
   } catch {
     return [];
