@@ -262,7 +262,7 @@ const SYNC_THEN_RESTART: Extract<DeterministicAssert, { kind: 'custom' }> = {
 
 export const SU_S26_TAKE_CHARGE_DONT_WAIT: Scenario = {
   id: 'su-S26-take-charge-dont-wait',
-  version: 3,
+  version: 4,
   target: 'su',
   transport: 'in-process',
   description:
@@ -283,7 +283,11 @@ export const SU_S26_TAKE_CHARGE_DONT_WAIT: Scenario = {
   simUserContext: false,
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
-  caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
+  // This is deliberately a one-turn construct. Once the sync + restart path
+  // succeeds, an unconstrained sim-user may invent a second task that the
+  // hermetic world does not model (observed in v3: an unrelated integration-
+  // suite request exercised an advertised-but-unavailable code:run twice).
+  caps: { maxTurns: 1, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
   triggers: [{ on: 'after_turn', param: 0, fire: 'user_message', text: S26_SCRIPTED_FIRST_TURN }],
   get toolOverride() {

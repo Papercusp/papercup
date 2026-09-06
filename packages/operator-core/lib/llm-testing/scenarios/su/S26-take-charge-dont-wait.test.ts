@@ -49,9 +49,9 @@ function assertByName(name: string) {
   return found;
 }
 
-describe('SU-S26 v3 stalled-git-sync world', () => {
+describe('SU-S26 v4 stalled-git-sync world', () => {
   it('starts uncommitted and names the existing manual commit lever', async () => {
-    expect(SU_S26_TAKE_CHARGE_DONT_WAIT.version).toBe(3);
+    expect(SU_S26_TAKE_CHARGE_DONT_WAIT.version).toBe(4);
     const world = makeS26StalledGitSyncWorld();
     const position = body(await world.override('dev:pipeline_position', { path: S26_RESOLVER_PATH }));
 
@@ -62,6 +62,7 @@ describe('SU-S26 v3 stalled-git-sync world', () => {
 
   it('delivers a deterministic first turn with the canonical dirty path', () => {
     expect(SU_S26_TAKE_CHARGE_DONT_WAIT.simUserContext).toBe(false);
+    expect(SU_S26_TAKE_CHARGE_DONT_WAIT.caps.maxTurns).toBe(1);
     expect(SU_S26_TAKE_CHARGE_DONT_WAIT.triggers).toEqual([
       expect.objectContaining({
         on: 'after_turn',
@@ -111,7 +112,7 @@ describe('SU-S26 v3 stalled-git-sync world', () => {
   });
 });
 
-describe('SU-S26 v3 deterministic take-charge contract', () => {
+describe('SU-S26 v4 deterministic take-charge contract', () => {
   const sync = { name: 'git-sync:run', input: { dryRun: false } };
   const restart = { name: 'dev:restart', input: { target: 'staging', confirm: true } };
 
