@@ -826,8 +826,10 @@ export async function seedAcceptanceBarsInTransaction(
     source_bar_key: string | null;
     plan_item_id: string;
     lifecycle_status: SpecClauseWrite['lifecycleStatus'];
+    exemption: SpecClauseWrite['exemption'];
   }>>`
-    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id, r.lifecycle_status
+    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id,
+           r.lifecycle_status, r.exemption
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
         ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -898,6 +900,7 @@ export async function seedAcceptanceBarsInTransaction(
         // evidence pins and acceptance provenance. New clauses still start draft;
         // changed contract fields still append a revision through setSpecClause.
         lifecycleStatus: prior?.lifecycle_status ?? projection.lifecycleStatus,
+        exemption: prior?.exemption ?? projection.exemption,
       },
       { executor: sql, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug },
     );

@@ -1294,7 +1294,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
-  it.each(['active', 'accepted'] as const)(
+  it.each(['active', 'accepted', 'exempt'] as const)(
     'activation re-audit preserves an unchanged %s clause and its exact evidence revision',
     async (lifecycleStatus) => {
       const { workspaceId, subject, rubricSlug } = await seedBarContract(`reaudit-${lifecycleStatus}`);
@@ -1305,15 +1305,34 @@ describe('template_data persistence boundary — the set-template-data door', ()
       expect(initial).toHaveLength(2);
       expect(initial.map((clause) => clause.lifecycleStatus)).toEqual(['draft', 'draft']);
       const draft = initial[0]!;
-      const write = { ...draft, ...scope, expectedRevision: draft.revision, lifecycleStatus, actorId: 'clause-reviewer' };
+      const exemption = lifecycleStatus === 'exempt'
+        ? { reason: 'This clause requires a non-automated review.' }
+        : undefined;
+      const write = {
+        ...draft,
+        ...scope,
+        expectedRevision: draft.revision,
+        lifecycleStatus,
+        ...(exemption ? { exemption } : {}),
+        actorId: 'clause-reviewer',
+      };
       expect(await setSpecClause(write)).toMatchObject({ status: 'revised', revision: 2 });
       const before = await listSpecClauses(scope);
       const reviewed = before[0]!;
-      expect(reviewed).toMatchObject({ lifecycleStatus, revision: 2, acceptedBy: 'clause-reviewer' });
-      expect(reviewed.acceptedAt).not.toBeNull();
-      // Permanent pre-fix control: replaying the builder's draft changes the
-      // content hash, invalidating an otherwise current evidence revision.
-      expect(specClauseContentHash({ ...write, lifecycleStatus: 'draft' })).not.toBe(reviewed.contentHash);
+      expect(reviewed).toMatchObject({ lifecycleStatus, revision: 2, exemption: exemption ?? null });
+      if (lifecycleStatus === 'exempt') {
+        expect(reviewed).toMatchObject({ acceptedBy: null, acceptedAt: null });
+      } else {
+        expect(reviewed).toMatchObject({ acceptedBy: 'clause-reviewer' });
+        expect(reviewed.acceptedAt).not.toBeNull();
+      }
+      // Permanent pre-fix control: the old re-audit projection either demoted
+      // a reviewed clause or preserved `exempt` while dropping its paired
+      // exemption payload. Both change the current evidence revision.
+      const preFixReplay = lifecycleStatus === 'exempt'
+        ? { ...write, exemption: undefined }
+        : { ...write, lifecycleStatus: 'draft' as const };
+      expect(specClauseContentHash(preFixReplay)).not.toBe(reviewed.contentHash);
 
       await db.adminSql`
         INSERT INTO harness_shared.plan_revisions
