@@ -925,6 +925,65 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'log', '--format=%B', 'main')).toContain(`Papercusp-Work-Item: ${workItem}`);
   });
 
+  it('EI-22485648475962061: a locked untracked dependency holds back its dirty importer while unrelated work syncs', async () => {
+    const dependencyPath = 'new-dep.ts';
+    const importerPath = 'importer.ts';
+    const controlPath = 'control.ts';
+
+    // Seed the importer so the first pass exercises a dirty tracked importer,
+    // matching the production failure rather than only an all-new pair.
+    writeFileSync(join(repo, importerPath), 'export const value = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed importer');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, dependencyPath), 'export const dep = 42;\n');
+    writeFileSync(join(repo, importerPath), "import { dep } from './new-dep';\nexport const value = dep;\n");
+    writeFileSync(join(repo, controlPath), 'export const control = true;\n');
+
+    const logs: string[] = [];
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      liveLockHoldings: [{
+        path: dependencyPath,
+        owner: 'su-peer',
+        intent: 'PreToolUse:Write',
+      }],
+      log: (message) => logs.push(message),
+    });
+
+    expect(first.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toBe('export const value = 1;');
+    expect(git(originDir, 'show', `main:${controlPath}`)).toBe('export const control = true;');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(dependencyPath);
+    expect(first.contentErrors).toEqual([
+      expect.objectContaining({
+        file: importerPath,
+        detectorKey: 'quarantined-importer',
+        error: expect.stringContaining('live-lock exclusion'),
+      }),
+    ]);
+    expect(git(repo, 'status', '--porcelain', '--', dependencyPath, importerPath)).toMatch(
+      /(?:new-dep|importer)\.ts/,
+    );
+    expect(git(repo, 'status', '--porcelain', '--', controlPath)).toBe('');
+
+    // Once the lock is gone, the dependency and importer publish together and
+    // the previous pass has not left a broken remote tree behind.
+    const second = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+    });
+
+    expect(second.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${dependencyPath}`)).toBe('export const dep = 42;');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toContain('export const value = dep;');
+    expect(git(repo, 'status', '--porcelain', '--', dependencyPath, importerPath)).toBe('');
+  });
+
   it('WI-40770: a repo with only live-held dirty paths still reports skipped-locked', async () => {
     writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
 
