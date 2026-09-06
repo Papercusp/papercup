@@ -32,6 +32,7 @@ function freshnessResult(over: Partial<ScorecardFreshness> = {}): ScorecardFresh
     rubricRef: COORDINATION_RUBRIC_REF,
     since: '2026-07-04T00:00:00Z',
     status: 'stale',
+    rubricKnown: true,
     emitted: false,
     complete: false,
     count: 0,
@@ -73,6 +74,16 @@ function mkDeps(over: Partial<ScorecardEmissionPulseDeps> = {}): {
 }
 
 describe('runScorecardEmissionPulse', () => {
+  it('unknown rubric → skipped without filing a floor', async () => {
+    const { deps, capture } = mkDeps({
+      freshness: async () => freshnessResult({ status: 'unknown-rubric', rubricKnown: false }),
+    });
+    const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);
+    expect(r.outcome).toBe('skipped');
+    expect(r.reason).toContain('unknown');
+    expect(capture).not.toHaveBeenCalled();
+  });
+
   it('empty window → files the floor (all 15 criteria, synthesized, synthSource scheduled-pulse) + records the fire', async () => {
     const { deps, capture, recordFire } = mkDeps();
     const r = await runScorecardEmissionPulse({ workspaceId: 'ws' }, deps);

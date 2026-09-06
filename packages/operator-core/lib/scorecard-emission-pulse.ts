@@ -224,6 +224,12 @@ export async function runScorecardEmissionPulse(
       lookbackMs: PULSE_WINDOW_MS,
       includeSynthesized: true,
     });
+    if (f.status === 'unknown-rubric') {
+      return {
+        outcome: 'skipped',
+        reason: `scorecard rubric '${COORDINATION_RUBRIC_REF}' is unknown — do not synthesize a floor for an invalid reference`,
+      };
+    }
     if (f.emitted) {
       return { outcome: 'skipped', reason: `scorecard already in-window (${f.count}, newest ${f.lastEmittedAt})` };
     }
