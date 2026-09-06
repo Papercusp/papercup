@@ -61,9 +61,6 @@ export interface OverwatchQueenHealth {
    *  nudges must use the stable `@role:mug` slot because concrete Mug owner
    *  ids are fresh-per-wake and can expire before Overwatch sends. */
   coordOwner: string | null;
-  /** Most-recent CONSECUTIVE Queen wakes that ran 0 LLM tokens (the LLM never executed —
-   *  infra/rate-limit loss). Feeds the queen-placement-stalled detector. */
-  consecutiveZeroTokenWakes: number;
 }
 
 /** The worker fleet's health (`fleet:assignments` / `coord:presence`). */
@@ -179,7 +176,6 @@ export interface OverwatchOwnerSteering {
  */
 export type AnomalyKind =
   | 'queen-stalled' // Queen's lastWakeAt older than the cadence threshold
-  | 'queen-placement-stalled' // Queen wakes on cadence but recent wakes ran 0 LLM tokens while a placeable frontier waits (infra/rate-limit stall the cadence signal misses)
   | 'queen-dark' // cross-monitor: the Queen's liveness has gone dark (D-004)
   | 'overwatch-dark' // cross-monitor: overwatch itself has gone dark (surfaced to the Queen)
   | 'token-paused' // a rate bucket (opus/sonnet) is paused — RPM saturation
@@ -320,7 +316,6 @@ export function emptyOverwatchBrief(potSlug: string): OverwatchBrief {
       workingTracked: 0,
       nextFireAt: null,
       coordOwner: null,
-      consecutiveZeroTokenWakes: 0,
     },
     bees: {
       running: 0,

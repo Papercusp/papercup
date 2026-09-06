@@ -184,11 +184,6 @@ export interface QueenHealth {
   decisionsWindow: { total: number; auto: number; gated: number };
   /** Open placements the Queen is currently tracking to completion. */
   workingTracked: number;
-  /** Count of the most-recent CONSECUTIVE Queen wakes that ran 0 LLM tokens — the
-   *  agent launched but the LLM never executed (infra / rate-limit loss), DISTINCT
-   *  from a healthy short wake (which still spends tokens deciding "nothing to do").
-   *  Feeds the queen-placement-stalled detector (hive-loop-supervision 2026-06-21). */
-  consecutiveZeroTokenWakes: number;
 }
 
 /** Bees / fleet. */

@@ -16,7 +16,6 @@ vi.mock('../system-health', async () => {
   return {
     computeSystemHealth: vi.fn(),
     deriveQueenAlive: real.deriveQueenAlive,
-    queenPlacementStalled: real.queenPlacementStalled,
     ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN: real.ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN,
   };
 });
@@ -81,7 +80,6 @@ test('detectAnomalies — a stalled Queen → a critical queen-stalled NUDGE (B-
     workingTracked: 2,
     nextFireAt: null,
     coordOwner: null,
-    consecutiveZeroTokenWakes: 0,
   };
   const a = only(detectAnomalies(b), 'queen-stalled');
   assert.equal(a.severity, 'critical');
@@ -277,7 +275,6 @@ test('detectAnomalies — owner pause with no eligible plans suppresses new-work
     pausedUntil: null,
     eligiblePlans: [],
   };
-  b.queen.consecutiveZeroTokenWakes = 4;
   b.workFeed = {
     frontier: 8,
     autoEligibleStuck: 0,
@@ -286,7 +283,6 @@ test('detectAnomalies — owner pause with no eligible plans suppresses new-work
   };
   b.plans = { active: 1, stalledItems: 0, agingEscalations: 3 };
   const kinds = detectAnomalies(b).map((a) => a.kind);
-  assert.ok(!kinds.includes('queen-placement-stalled'), 'paused owner steering is intentional idleness, not placement stall');
   assert.ok(!kinds.includes('work-feed-stuck'), 'paused owner steering suppresses Queen placement/re-open nudges');
   assert.ok(!kinds.includes('escalation-aging'), 'paused owner steering suppresses escalation triage nudges');
 });
@@ -342,7 +338,6 @@ test('detectAnomalies — a never-started hive suppresses frontier/stranded nudg
   b.plans = { active: 1, stalledItems: 0, agingEscalations: 2 };
   const kinds = detectAnomalies(b).map((a) => a.kind);
   assert.ok(!kinds.includes('work-feed-stuck'), 'a never-started hive is intentionally idle, not stuck');
-  assert.ok(!kinds.includes('queen-placement-stalled'), 'a never-started hive has no placement to stall');
   assert.ok(!kinds.includes('escalation-aging'), 'a never-started hive suppresses escalation triage nudges too');
 });
 
@@ -377,50 +372,6 @@ test('detectAnomalies — EI-2357 recurrence guard: dispatcher-lane backlog with
   };
   const hits = detectAnomalies(b).filter((a) => a.kind === 'work-feed-stuck');
   assert.equal(hits.length, 0);
-});
-
-test('detectAnomalies — Queen alive + on cadence but 0-token wakes with placeable frontier → queen-placement-stalled ESCALATE owner (D-009)', () => {
-  const b = base();
-  // The Queen looks healthy to the cadence signals (alive, not stalled) — this is the
-  // silent-stall gap the existing queen-stalled / queen-dark detectors MISS: she wakes on
-  // cadence but her wakes run 0 LLM tokens (the LLM never executes — infra/rate-limit loss).
-  b.queen.consecutiveZeroTokenWakes = 3;
-  b.workFeed = {
-    frontier: 7,
-    autoEligibleStuck: 0,
-    deadRoutines: 0,
-    blockedStranded: 0,
-  };
-  const a = only(detectAnomalies(b), 'queen-placement-stalled');
-  assert.equal(a.severity, 'warning');
-  assert.equal(a.suggestedAction.type, 'escalate');
-  assert.equal(a.suggestedAction.target, 'owner');
-  // Mutually exclusive with the cadence-liveness anomalies.
-  assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-stalled' || x.kind === 'queen-dark').length, 0);
-});
-
-test('detectAnomalies — queen-placement-stalled does NOT fire when frontier=0 (nothing to place)', () => {
-  const b = base();
-  b.queen.consecutiveZeroTokenWakes = 5;
-  b.workFeed = {
-    frontier: 0,
-    autoEligibleStuck: 0,
-    deadRoutines: 0,
-    blockedStranded: 0,
-  };
-  assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-placement-stalled').length, 0);
-});
-
-test('detectAnomalies — queen-placement-stalled does NOT fire on <3 zero-token wakes (one-off blip)', () => {
-  const b = base();
-  b.queen.consecutiveZeroTokenWakes = 2;
-  b.workFeed = {
-    frontier: 7,
-    autoEligibleStuck: 0,
-    deadRoutines: 0,
-    blockedStranded: 0,
-  };
-  assert.equal(detectAnomalies(b).filter((x) => x.kind === 'queen-placement-stalled').length, 0);
 });
 
 test('detectAnomalies — stranded-on-resolved-constraint → NUDGE queen to re-open', () => {
@@ -500,7 +451,6 @@ test('detectAnomalies — every escalate-type anomaly carries a count-free condi
   // of self-inflation bug affects any escalate anomaly whose message/detail
   // embeds a live count or duration, not just escalation-aging.
   const b = base();
-  b.queen.consecutiveZeroTokenWakes = 3;
   b.workFeed = { frontier: 5, deadRoutines: 0, autoEligibleStuck: 0, frontierStuck: 0, blockedStranded: 0 };
   b.bees.running = 1;
   b.tokens.pausedBuckets = ['opus'];
@@ -595,7 +545,6 @@ const queenData = (o: Partial<QueenHealth> = {}): QueenHealth => ({
   demand: { todoItems: 0, startedPlans: 0 },
   decisionsWindow: { total: 0, auto: 0, gated: 0 },
   workingTracked: 0,
-  consecutiveZeroTokenWakes: 0,
   ...o,
 });
 

@@ -202,61 +202,6 @@ export function deriveQueenAlive(queen: QueenHealth | null): boolean {
  * DISTINCT from a healthy short wake, which still spends tokens deciding "nothing to
  * do". (hive-loop-supervision 2026-06-21 — D-009: the Queen's 0-token-no-op outage.)
  */
-export function countLeadingZeroTokenWakes(
-  samples: ReadonlyArray<{
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-  }>,
-): number {
-  let n = 0;
-  for (const s of samples) {
-    const tokens = s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreationTokens;
-    if (tokens === 0) n += 1;
-    else break;
-  }
-  return n;
-}
-
-/**
- * PURE: is the Queen alive-but-not-placing-despite-placeable-work? (hive-loop-supervision
- * 2026-06-21, sibling of overwatchScorecardSkipped). True when her last ≥minConsecutive
- * wakes ran 0 LLM tokens (the LLM never executed — see countLeadingZeroTokenWakes) WHILE a
- * placeable frontier waits and placement is not paused. This catches the silent stall the
- * cadence-based `queen-stalled` signal MISSES: the Queen wakes ON cadence (looks healthy) but
- * her wakes are empty, so nothing is placed. A known bee-cap fullness suppresses it (a full
- * fleet, not a stall). Default threshold 3 (≈1.5h at a 30-min cadence) avoids a one-off blip.
- */
-export function queenPlacementStalled(args: {
-  consecutiveZeroTokenWakes: number;
-  frontier: number;
-  /** Of `frontier`, how many are long-unplaced/gated (WI-3597) — subtracted so a
-   *  frontier that is ALL stuck reads as correct idle, not a placement stall.
-   *  Absent/0 ⇒ every frontier item counts as fresh (prior behaviour). */
-  frontierStuck?: number;
-  paused: boolean;
-  beesBusy?: number;
-  beesCap?: number;
-  minConsecutive?: number;
-}): boolean {
-  if (args.paused) return false;
-  // Only FRESH frontier — unblocked AND not aged past the stuck window — is
-  // placeable work the Queen is expected to act on. When every ready item has
-  // been waiting for hours while she turns on cadence, the frontier is gated on
-  // something she can't resolve (owner decision / live rig / fixture): correct
-  // idle, not a stall (WI-3597, the false "queen-workitem-selection broken" grade).
-  const fresh = args.frontier - (args.frontierStuck ?? 0);
-  if (fresh <= 0) return false; // no FRESH placeable work → not a stall
-  if (
-    typeof args.beesCap === 'number' && args.beesCap > 0 &&
-    typeof args.beesBusy === 'number' && args.beesBusy >= args.beesCap
-  ) {
-    return false; // fleet is full — the lack of new placements isn't the bug
-  }
-  return args.consecutiveZeroTokenWakes >= (args.minConsecutive ?? 3);
-}
-
 /** Bees. crit = a cursed placement (failed past the breaker, escalated). warn =
  *  orphaned claims / stranded / recovering placements. ok otherwise. */
 export function beesStatus(d: BeesHealth): PanelStatus {

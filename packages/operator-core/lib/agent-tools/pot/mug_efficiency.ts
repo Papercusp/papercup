@@ -3,7 +3,7 @@
  * (queen-brief-cache-assembly-2026-06-13 B-06 / P-010: "expose it queryable").
  *
  * Read-only projection of `mugWakeEfficiency()` over `agent_usage_samples`
- * role='queen': the cache-hit ratio (Win-1, the frozen-prefix cache), avg
+ * role='mug': the cache-hit ratio (Win-1, the frozen-prefix cache), avg
  * turns/wake (Win-2, round-trip elimination — the precomputed brief should pull
  * it down), token totals, and the `cachedWakes` "the cache is real" signal
  * (P-003). The pot-eval efficiency class scores these PER RUN (D-016); this is

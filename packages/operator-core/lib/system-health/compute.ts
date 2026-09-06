@@ -101,7 +101,6 @@ import {
   overwatchStatus,
   worstStatus,
   deriveQueenAlive,
-  countLeadingZeroTokenWakes,
   loopsStatus,
   coordinationStatus,
   memoryStatus,
@@ -441,7 +440,6 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
         lastWakeAt: null, staleForMs: null, nextFireAt: null, cadenceOk: false,
         watchdogFires24h: 0, demand: { todoItems: 0, startedPlans: 0 },
         decisionsWindow: { total: 0, auto: 0, gated: 0 }, workingTracked: 0,
-        consecutiveZeroTokenWakes: 0,
       };
       return { status: 'unknown', summary: 'no hive registered in this workspace', metrics: [], data };
     }
@@ -477,23 +475,11 @@ async function collectQueen(ctx: HealthCtx): Promise<HealthPanel<QueenHealth>> {
     // reports "cadence OFF" for an actively-working Mug (EI-12553).
     const cadenceOk = started && (live.armed || midTurn) && !stalled;
 
-    // Monitor-the-monitor (hive-loop-supervision 2026-06-21 / D-009): are the Queen's
-    // recent wakes actually running the LLM? A 0-token wake = launched but never reached
-    // an LLM turn (infra / rate-limit loss) — the cadence signals above can't see it.
-    // Fail-soft: usage unreadable ⇒ leave 0, the detector simply won't fire.
-    let consecutiveZeroTokenWakes = 0;
-    try {
-      const { mugWakeEfficiency } = await import('../pot/mug-wake-efficiency');
-      const eff = await mugWakeEfficiency(ws, { harnessSlug: potSlug, limit: 10 });
-      consecutiveZeroTokenWakes = countLeadingZeroTokenWakes(eff.samples);
-    } catch { /* usage unreadable — leave 0 (fail-soft) */ }
-
     const data: QueenHealth = {
       potSlug, started, stalled, midTurn, armed: live.armed,
       lastWakeAt, staleForMs: live.staleForMs, nextFireAt, cadenceOk,
       watchdogFires24h, demand: { todoItems: demand.todoItems, startedPlans: demand.startedPlans },
       decisionsWindow, workingTracked: ctx.openPlacements?.workingTracked ?? 0,
-      consecutiveZeroTokenWakes,
     };
     const status = queenStatus(data);
     const summary = !started

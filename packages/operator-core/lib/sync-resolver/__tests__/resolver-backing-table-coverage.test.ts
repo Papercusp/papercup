@@ -512,7 +512,6 @@ describe('sync resolvers — every declared backing table actually invalidates i
       'harness_shared.pot_eval_runs',
       'harness_shared.pot_eval_scores',
     ]);
-    expect(declaredTables('learning.mugWakeEfficiency')).toEqual(['harness_shared.agent_usage_samples']);
     expect(declaredTables('learning.scoutDrafts')).toEqual([
       'harness_shared.scout_routed_ideas',
       'harness_shared.harness_plans',

@@ -12,7 +12,7 @@ function unhealthyBrief(): OverwatchBrief {
   return {
     potSlug: 'papercup-hive',
     wokeBy: 'timer',
-    queen: { started: true, lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, midTurn: false, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc', consecutiveZeroTokenWakes: 0 },
+    queen: { started: true, lastWakeAt: '2026-06-15T01:00:00Z', stalled: true, midTurn: false, cadenceOk: false, workingTracked: 3, nextFireAt: null, coordOwner: 's-queen-1781000000-abc' },
     bees: { running: 4, completed: 11, churning: 2, deadClaims: 1, invalidModelFailures: 3 },
     workFeed: { frontier: 7, autoEligibleStuck: 5, deadRoutines: 1, blockedStranded: 2 },
     tokens: { pausedBuckets: ['opus', 'sonnet'], gatewayFailovers: 3, gw429s: 12, accountsAvailable: 1, gatewayWedged: false, gatewaySustainedThrottle: false, gatewayAdmissionStarved: false },
@@ -180,7 +180,6 @@ test('renderOverwatchBrief — a mid-turn Mug reads on-cadence, not "cadence OFF
     workingTracked: 0,
     nextFireAt: null,
     coordOwner: null,
-    consecutiveZeroTokenWakes: 0,
   };
   const out = renderOverwatchBrief(brief);
   assert.match(out, /cadence ok/);

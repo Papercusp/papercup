@@ -239,7 +239,7 @@ export function diagnoseHealthTickStall(
 export interface BeesLivenessContext {
   /** Admissible cup-placeable frontier being left UNPLACED — the pot's FRESH,
    *  non-stuck placeable feature-family frontier (`frontier - frontierStuck`,
-   *  the same "placeable" definition reconcilePausedQueen/queenPlacementStalled
+   *  the same "placeable" definition as reconcilePausedQueen
    *  use). >0 means real cup work is waiting while 0 bees run ⇒ genuine starvation. */
   cupPlaceableFrontier: number;
   /** The survey backing `cupPlaceableFrontier` FAILED to read this tick, so that

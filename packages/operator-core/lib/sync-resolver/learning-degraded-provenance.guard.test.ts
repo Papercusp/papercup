@@ -102,7 +102,6 @@ describe('WI-6382 guard — learning.* catches must not return a bare empty', ()
       'learning.frontier',
       'learning.ekg',
       'learning.redQueen',
-      'learning.mugWakeEfficiency',
       'learning.soakReport',
     ]) {
       expect([...resolvers]).toContain(expected);

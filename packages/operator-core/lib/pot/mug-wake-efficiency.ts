@@ -4,7 +4,7 @@
  *
  * Each Mug wake is one governed subprocess run, so `harness_shared.agent_usage_samples`
  * already carries the per-wake token + cache breakdown (recordUsageSamplePg writes
- * input/output/cache_read/cache_creation/cost per run, tagged role='queen'). This
+ * input/output/cache_read/cache_creation/cost per run, tagged role='mug'). This
  * reader projects those rows into the cache-efficiency view the plan asks for:
  * per-wake cache-read ratio + the "caching is real" signal (cachedWakes > 0 — P-003's
  * non-zero `cache_read_input_tokens` assertion, now queryable rather than eyeballed).
@@ -62,7 +62,7 @@ export interface MugWakeEfficiency {
 }
 
 /** The zeroed aggregate — the fallback when the read fails (e.g. a not-yet-applied migration), so a
- *  consumer (the `learning.mugWakeEfficiency` sync resolver / its panel) renders a no-wakes state,
+ *  consumer (the gated `pot:mug_efficiency` read surface or pot-eval benchmark) renders a no-wakes state,
  *  never a 500. Identical to what {@link mugWakeEfficiency} returns over an empty window. */
 export const EMPTY_MUG_WAKE_EFFICIENCY: MugWakeEfficiency = {
   wakes: 0,

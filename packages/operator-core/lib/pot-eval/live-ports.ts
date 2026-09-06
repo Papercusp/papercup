@@ -161,8 +161,8 @@ export interface LiveHiveOps {
    */
   readRunTrace(input: {
     member: string;
-    /** The Queen-seat hive home slug — the per-wake Queen usage samples (role='queen') are tagged
-     *  with it, and it is unique per run, so it scopes queenWakeEfficiency to THIS run's wakes (B-06). */
+    /** The Mug-seat hive home slug — the per-wake Mug usage samples (role='mug') are tagged
+     *  with it, and it is unique per run, so it scopes mugWakeEfficiency to THIS run's wakes (B-06). */
     hiveHome: string;
     repoPath: string;
     scenario: HiveScenario;

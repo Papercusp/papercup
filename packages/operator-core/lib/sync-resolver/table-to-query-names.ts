@@ -763,10 +763,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // rides the same synthesized sweep tick; its pause/resume half is invalidated
     // explicitly by routines:group-set.
     'learning.loopControl',
-    // WI-6182: Queen/Mug wake efficiency is a projection of these samples.
-    // This table stays trigger-less; APPEND_HEAVY_POLL_SPECS below synthesizes
-    // one coalesced change event as its monotonic id advances.
-    'learning.mugWakeEfficiency',
   ],
 
   // ── Learning-tab push audit stragglers (WI-6182) ─────────────────

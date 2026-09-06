@@ -27,7 +27,7 @@
  */
 import { emptyOverwatchBrief } from './brief-types';
 import type { Anomaly, AnomalyKind, OverwatchBrief } from './brief-types';
-import { computeSystemHealth, deriveQueenAlive, queenPlacementStalled, ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN } from '../system-health';
+import { computeSystemHealth, deriveQueenAlive, ADMISSION_STARVATION_IDLE_ACCOUNTS_MIN } from '../system-health';
 import type { SystemHealth } from '../system-health/types';
 
 /**
@@ -119,39 +119,6 @@ export function detectAnomalies(brief: OverwatchBrief): Anomaly[] {
         target: 'mug',
         conditionKey: anomalyConditionKey('queen-stalled'),
         message: 'Mug — you have stalled past your cadence. Wake, clear your recovering placements, and declare a fresh wake.',
-      },
-    });
-  }
-
-  // ── Queen placement liveness (D-009) ───────────────────────────────────────
-  // The cadence signals above MISS the silent stall where the Queen wakes ON time
-  // (alive + !stalled) but her wakes run 0 LLM tokens (the LLM never executes — an
-  // infra / account rate-limit loss), so nothing is placed. Owner-actionable: it
-  // points at the account pool / launcher host, which the Queen cannot self-fix.
-  if (
-    crossMonitor.queenAlive &&
-    !queen.stalled &&
-    queenPlacementStalled({
-      consecutiveZeroTokenWakes: queen.consecutiveZeroTokenWakes,
-      frontier: workFeed.frontier,
-      frontierStuck: workFeed.frontierStuck,
-      paused: newWorkPaused,
-      beesBusy: bees.running,
-    })
-  ) {
-    out.push({
-      kind: 'queen-placement-stalled',
-      severity: 'warning',
-      subject: 'mug',
-      detail: `Mug is alive + waking on cadence but her last ${queen.consecutiveZeroTokenWakes} wake(s) ran 0 LLM tokens ` + `(the LLM never executed) while ${workFeed.frontier} placeable item(s) wait — placement is stalled, not idle.`,
-      suggestedAction: {
-        type: 'escalate',
-        target: 'owner',
-        conditionKey: anomalyConditionKey('queen-placement-stalled'),
-        message:
-          `Mug alive but ${queen.consecutiveZeroTokenWakes} consecutive wakes ran 0 LLM tokens while ${workFeed.frontier} items are placeable — ` +
-          `she launches but never reaches an LLM turn. Likely the account pool is rate-limit-exhausted (or the launcher host is down); ` +
-          `this is an infra/capacity stall the Mug cannot self-fix.`,
       },
     });
   }
@@ -468,7 +435,6 @@ export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): O
       // Resolved by the async computeOverwatchBrief wrapper (needs DB) — the pure
       // mapper leaves it null; SystemHealth.QueenHealth has no coord owner.
       coordOwner: null,
-      consecutiveZeroTokenWakes: queen.consecutiveZeroTokenWakes,
     };
   }
 
@@ -489,7 +455,7 @@ export function mapSystemHealthToBrief(health: SystemHealth, potSlug: string): O
   // the bees panel's placement dispositions (see mapping notes above).
   brief.workFeed = {
     frontier: workFeed?.frontier ?? 0,
-    frontierStuck: workFeed?.frontierStuck ?? 0, // WI-3597: long-unplaced/gated subset — credited as correct idle by queenPlacementStalled
+    frontierStuck: workFeed?.frontierStuck ?? 0, // WI-3597: long-unplaced/gated subset
     autoEligibleStuck: workFeed?.autoEligibleStuck ?? 0, // now wired from WorkFeedHealth — activates the work-feed-stuck detector
     keylessHumanReviewBacklog: workFeed?.keylessHumanReviewBacklog ?? 0, // EI-14223: the by-design, non-Mug-actionable keyless backlog, kept separate
     deadRoutines: workFeed?.deadRoutines ?? 0,

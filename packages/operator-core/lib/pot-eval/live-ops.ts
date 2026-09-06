@@ -117,7 +117,7 @@ export function queenEkgFromEfficiency(eff: MugWakeEfficiency): QueenEkg {
 
 /**
  * Read the Queen per-wake efficiency for a throwaway hive home (B-06 / P-010-P-011): the
- * `role='queen'` agent_usage_samples scoped to `hiveHome` — unique per run, so this is exact
+ * `role='mug'` agent_usage_samples scoped to `hiveHome` — unique per run, so this is exact
  * attribution, no time window — aggregated by {@link mugWakeEfficiency} (over the passed `sql`)
  * and mapped to the eval's queen EKG fields. Exported so the integration test exercises the real SQL.
  */
@@ -203,7 +203,7 @@ export async function captureRunData(
 
   const spawnRows = await readMemberSpawnRows(sql, member, workspaceId);
 
-  // Per-wake Queen efficiency (B-06, scoped to the unique home slug, role='queen') + per-bee
+  // Per-wake Mug efficiency (B-06, scoped to the unique home slug, role='mug') + per-bee
   // warm-inject carry (P-015, scoped to the member clone, role='bee' grouped by session_id) for THIS
   // run. Both are non-LLM reads of already-persisted rows; each fail-soft (a read error leaves its
   // half absent → those fields default to 0, the same conservative floor as the other EKG fields).

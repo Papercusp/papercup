@@ -114,7 +114,7 @@ export type BehaviorEkgFields = Partial<
     | 'costUsd'
     | 'idleWhileReadyMs'
     // Per-wake Queen cache + round-trip efficiency (B-06 / P-010-P-011), sourced from
-    // queenWakeEfficiency() over agent_usage_samples role='queen' scoped to the throwaway hive home
+    // mugWakeEfficiency() over agent_usage_samples role='mug' scoped to the throwaway hive home
     // (live-ops.readQueenEkg). The hive home slug is unique per run, so harness_slug scoping is exact.
     | 'queenCacheReadTokens'
     | 'queenCacheCreationTokens'

@@ -42,7 +42,7 @@ export interface RunBehavior {
   costUsd: number;
   // ── Per-wake Queen cache efficiency (queen-brief-cache P-011 / D-014) ──
   // The frozen-prefix cache (Win-1). Raw token totals across the run's Queen wakes, from
-  // queenWakeEfficiency() (hive/queen-wake-efficiency.ts) over agent_usage_samples role='queen'.
+  // mugWakeEfficiency() (pot/mug-wake-efficiency.ts) over agent_usage_samples role='mug'.
   /** Tokens served from the prompt cache across the run's Queen wakes. */
   queenCacheReadTokens: number;
   /** Tokens written INTO the cache (the frozen-prefix creation cost). */
