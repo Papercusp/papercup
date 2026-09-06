@@ -35,7 +35,7 @@ import { createHash } from 'node:crypto';
 import { open, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
@@ -417,7 +417,7 @@ async function main() {
   console.log(`PUBLIC_URL=${pub}`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (isCliEntry(import.meta.url)) {
   main().catch((error) => {
     console.error('');
     console.error(`PUBLISH_VERDICT=FAIL`);
