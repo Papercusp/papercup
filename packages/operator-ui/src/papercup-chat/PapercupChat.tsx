@@ -402,11 +402,9 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
         className="pc-chat__turn pc-chat__turn--assistant pc-chat__turn--live"
         style={style}
       >
-        <div className="pc-chat__turn-meta">
-          <span className="pc-chat__role" data-role="assistant">
-            {assistantLabel}
-          </span>
-        </div>
+        <span className="pc-chat__role pc-chat__sr-only" data-role="assistant">
+          {assistantLabel}
+        </span>
         <ToolTags calls={live.toolCalls} showInput={isOwner} />
         {live.text ? (
           <div className="pc-chat__body">
@@ -481,41 +479,43 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
       className={`pc-chat__turn pc-chat__turn--${turn.role} oracle-msg oracle-msg-${turn.role}${turn.error ? ' pc-chat__turn--error' : ''}${focused ? ' pc-chat__turn--focus-match' : ''}`}
       style={style}
     >
-      {renderAvatar ? <div className="pc-chat__avatar">{renderAvatar(turn)}</div> : null}
-      <div className="pc-chat__turn-meta">
-        <span className="pc-chat__role" data-role={turn.role}>
-          {roleLabel(turn.role, assistantLabel, userLabel)}
-        </span>
+      <div className="pc-chat__message-line">
+        {renderAvatar ? <div className="pc-chat__avatar">{renderAvatar(turn)}</div> : null}
         <MessageTimestamp ts={turn.createdAt} />
-      </div>
-      <ToolTags calls={tools} showInput={isOwner} />
-      {turn.report ? (
-        <div className="pc-chat__report">{renderReport(turn.report, turn)}</div>
-      ) : turn.error ? (
-        <p className="pc-chat__turn-error" role="alert">
-          {turn.text}
-        </p>
-      ) : turn.text ? (
-        <div className="pc-chat__body">
-          <ChatMarkdown
-            content={turn.text}
-            hostTrust={hostTrust}
-            allowImages={allowImages}
-            harnessSlug={harnessSlug}
+        <div className="pc-chat__message-content">
+          <span className="pc-chat__role pc-chat__sr-only" data-role={turn.role}>
+            {roleLabel(turn.role, assistantLabel, userLabel)}
+          </span>
+          <ToolTags calls={tools} showInput={isOwner} />
+          {turn.report ? (
+            <div className="pc-chat__report">{renderReport(turn.report, turn)}</div>
+          ) : turn.error ? (
+            <p className="pc-chat__turn-error" role="alert">
+              {turn.text}
+            </p>
+          ) : turn.text ? (
+            <div className="pc-chat__body">
+              <ChatMarkdown
+                content={turn.text}
+                hostTrust={hostTrust}
+                allowImages={allowImages}
+                harnessSlug={harnessSlug}
               planSlug={turn.planSlug ?? planSlug}
-            onWorkRefActivate={onWorkRefActivate}
-          />
+                onWorkRefActivate={onWorkRefActivate}
+              />
+            </div>
+          ) : turn.role === 'assistant' && cards.length === 0 ? (
+            <p className="pc-chat__body pc-chat__body--empty" role="status">
+              <em>{tools.length > 0 ? 'Papercup ran its tools but returned no answer for this turn.' : 'Papercup returned no answer for this turn.'} Ask again to retry.</em>
+            </p>
+          ) : null}
+          {cards}
+          <div className="pc-chat__turn-footer">
+            <Provenance provenance={turn.provenance} />
+            <LookedAt calls={tools} />
+            {renderActionBar ? <div className="pc-chat__actions">{renderActionBar(turn)}</div> : null}
+          </div>
         </div>
-      ) : turn.role === 'assistant' && cards.length === 0 ? (
-        <p className="pc-chat__body pc-chat__body--empty" role="status">
-          <em>{tools.length > 0 ? 'Papercup ran its tools but returned no answer for this turn.' : 'Papercup returned no answer for this turn.'} Ask again to retry.</em>
-        </p>
-      ) : null}
-      {cards}
-      <div className="pc-chat__turn-footer">
-        <Provenance provenance={turn.provenance} />
-        <LookedAt calls={tools} />
-        {renderActionBar ? <div className="pc-chat__actions">{renderActionBar(turn)}</div> : null}
       </div>
     </div>
   );
