@@ -81,12 +81,12 @@ describe('the addressing is applied where a caller-supplied note cannot bypass i
     // note entirely, so addressing applied inside defaultContinueNote would ship
     // caller-authored continuations unaddressed. EI-22131227584499489 (the focus-
     // integrity warning) introduced an intermediate `rawNote` binding between the
-    // `??` expression and the addressing call — the property under test now
-    // spans two source facts instead of one inline expression, so assert both:
-    // `rawNote` really IS the `continueNote ?? defaultContinueNote(...)` result,
-    // and it — not some other value — is what flows into the addressing wrap.
+    // `??` expression and the addressing call, and the later retraction guard added
+    // a safe alternate branch before that fallback. Assert that the non-retracted
+    // branch still contains the complete `continueNote ?? defaultContinueNote(...)`
+    // expression, and that `rawNote` — not some other value — flows into addressing.
     const rawNoteIsTheOrExpression =
-      /const\s+rawNote\s*=\s*\(\s*args\.continueNote\s*\?\?\s*defaultContinueNote\(/;
+      /const\s+rawNote\s*=\s*[\s\S]{0,180}?\(\s*args\.continueNote\s*\?\?\s*defaultContinueNote\(/;
     const addressingWrapsRawNote = /addressContinuationToOwner\(\s*[\s\S]{0,120}?rawNote/;
     expect(SOURCE).toMatch(rawNoteIsTheOrExpression);
     expect(SOURCE).toMatch(addressingWrapsRawNote);

@@ -883,12 +883,17 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
       fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
       fs.mkdirSync(bin, { recursive: true });
 
-      const index = '<html><body><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a></body></html>\n';
+      const index = '<html><body><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a><a href="changes/desktop-v1.2.3-alpha.html">Changes</a></body></html>\n';
       const history = '{"releases":[{"version":"1.2.3"}]}\n';
       const detail = '<html>detail</html>\n';
       fs.writeFileSync(path.join(site, 'index.html'), index);
       fs.writeFileSync(path.join(site, 'history.json'), history);
       fs.writeFileSync(path.join(site, 'work-items', 'WI-1.html'), detail);
+      for (const relative of ['changes/desktop-v1.2.3-alpha.html', 'changes/desktop-v1.2.3-alpha.json',
+        'assets/project-history.js', 'assets/project-history.css', 'assets/vditor/dist/js/lute/lute.min.js']) {
+        fs.mkdirSync(path.dirname(path.join(site, relative)), { recursive: true });
+        fs.writeFileSync(path.join(site, relative), 'shared-history fixture');
+      }
       fs.writeFileSync(
         path.join(home, '.papercusp', 'release-host.env'),
         'PAPERCUSP_UPDATE_BASE_URL=https://release.example/secret-path\n',
@@ -909,12 +914,12 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const out = args[args.indexOf('-o') + 1];
-const url = args[args.length - 1] || '';
+const url = args.find(arg => arg.startsWith('https://')) || '';
 if (url.endsWith('/index.html')) fs.copyFileSync(process.env.PROBE_SITE + '/index.html', out);
 else if (url.endsWith('/work-items/WI-1.html')) fs.copyFileSync(process.env.PROBE_SITE + '/work-items/WI-1.html', out);
 else if (url.endsWith('/history.json')) fs.writeFileSync(out, ${JSON.stringify(historyMode === 'match' ? history : '{"releases":[{"version":"0.0.1"}]}\\n')});
-else fs.writeFileSync(out, 'unexpected');
-process.stdout.write('200');
+else fs.copyFileSync(process.env.PROBE_SITE + '/' + url.split('/secret-path/')[1], out);
+if (args.includes('-w')) process.stdout.write('200');
 `,
         { mode: 0o755 },
       );

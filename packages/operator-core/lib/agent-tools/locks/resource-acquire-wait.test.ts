@@ -7,7 +7,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./su-lock-store', () => ({
-  getTxPool: vi.fn(),
+  // The tx pool is an opaque handle here: every store call is itself mocked, so the
+  // suite never touches it. Defaulting the stub in the factory (as
+  // coordination/audience-host.test.ts does) keeps it out of a per-test
+  // `.mockReturnValue(… as never)`, which check-mock-cast-escape.mjs ratchets.
+  // vi.clearAllMocks() clears calls, not factory implementations, so this survives beforeEach.
+  getTxPool: vi.fn(() => ({}) as never),
   pokeResource: vi.fn(),
   readResourceLockStatus: vi.fn(),
   readResourceQueue: vi.fn(),
