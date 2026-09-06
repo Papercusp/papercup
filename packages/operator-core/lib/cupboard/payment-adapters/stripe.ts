@@ -278,6 +278,19 @@ export function buildStripeCheckoutSessionParams(input: { order: Order; offer: O
       success_url: input.successUrl,
       cancel_url: input.cancelUrl,
       line_items: [{ quantity: 1, price_data: priceData }],
+      // Stripe enables Managed Payments by default on new accounts, and under it
+      // EVERY line item must carry a product tax code — which an ad-hoc
+      // `price_data` product cannot have, so the account default alone made every
+      // Checkout Session here a hard 400 ("the product tax code is missing").
+      // Measured against the live test-mode account 2026-09-06 (P-038).
+      //
+      // Disabling it is the CORRECT answer, not merely the smaller one: under
+      // Managed Payments Stripe becomes merchant of record and owns settlement,
+      // which is precisely what this system does NOT want — the DAO's own split
+      // manifest and settlement batches (P-033/P-034) distribute the proceeds, and
+      // that only works on a direct charge into our own balance. Setting some tax
+      // code instead would have silently handed payouts to a different rail.
+      managed_payments: { enabled: false },
       metadata: purchaseMetadata,
       // Charges/disputes are downstream of the PaymentIntent, not the Checkout
       // Session. Copy the complete purchase identity so a chargeback can still

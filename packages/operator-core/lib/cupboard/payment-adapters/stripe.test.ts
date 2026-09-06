@@ -511,6 +511,31 @@ describe('buildStripeCheckoutSessionParams', () => {
     expect(item.price_data.product_data).toEqual({ name: 'A Pot', metadata: { skuRef: 'sku-1', productId: 'prod-1' } });
   });
 
+  it('opts every session out of Managed Payments, on both pricing models that reach Checkout', () => {
+    // Regression guard for the live P-038 failure (2026-09-06): Stripe enables
+    // Managed Payments by default, which requires a product tax code on every
+    // line item. An ad-hoc `price_data` product cannot carry one, so without
+    // this opt-out the account default turned EVERY real Checkout Session into
+    // a 400 — the builder's unit tests all passed while no purchase could be
+    // opened. Removing it re-arms that trap, and it is invisible to any test
+    // that only inspects line_items.
+    for (const pricingModel of ['one-time', 'subscription'] as const) {
+      const result = build({ offer: { pricingModel } });
+      if (!result.ok) throw new Error(`expected a build, got ${result.code}`);
+      expect(result.params.managed_payments).toEqual({ enabled: false });
+    }
+  });
+
+  it('encodes the Managed Payments opt-out as a form field Stripe actually reads', () => {
+    // `false` must survive as the STRING "false" under the bracket path — not be
+    // dropped the way encodeStripeFormParams drops undefined/null, which would
+    // silently restore the account default.
+    const result = build();
+    if (!result.ok) throw new Error('expected a build');
+    const encoded = encodeStripeFormParams(result.params);
+    expect(encoded.get('managed_payments[enabled]')).toBe('false');
+  });
+
   it('builds a subscription session with a recurring price and no payment-intent metadata', () => {
     const result = build({ offer: { pricingModel: 'subscription' } });
     if (!result.ok) throw new Error('expected a build');
