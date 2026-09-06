@@ -274,7 +274,7 @@ function sourceRoleOf(issue: { payload?: unknown }): string | undefined {
  */
 async function inspectEvidenceCitations(
   issue: EvidenceIssue,
-  deps: Pick<TriageCoreDeps, 'getIssue'>,
+  deps: Pick<TriageCoreDeps, 'getCitedWorkItem'>,
 ): Promise<EvidenceCitationInspection> {
   const citedIds = extractCitedIds(`${issue.title ?? ''} ${issue.body ?? ''}`).filter((id) => id !== issue.id);
   const staleIds: string[] = [];
@@ -283,11 +283,18 @@ async function inspectEvidenceCitations(
   const lookupFailedIds: string[] = [];
   const resolvedIds: string[] = [];
   const sourceRole = sourceRoleOf(issue);
+  // WI-2147241: scope the lookup to the CITING item's harness. `WI-<n>` ids are minted from
+  // a per-database sequence starting at 1, so they are unique only within (workspace, harness)
+  // — an unscoped read can resolve `WI-3` to a stranger's row in another harness.
+  const harness = citationHarnessOf(issue);
 
   for (const id of citedIds) {
-    let cited: EngineerIssue | null = null;
+    let cited: CitedWorkItem | null = null;
     try {
-      cited = await deps.getIssue(id);
+      // WI-2147241: the MIXED-family door. Feature-family rows (`WI-`/`F-`) live in the
+      // canonical `work_items` base table and are invisible to the issue-family view, so
+      // resolving here through `getIssue` reported every real feature citation fabricated.
+      cited = await deps.getCitedWorkItem(id, harness);
     } catch {
       lookupFailedIds.push(id);
       continue; // best-effort — a lookup failure never blocks the decision
@@ -300,7 +307,10 @@ async function inspectEvidenceCitations(
     if (sourceRole && sourceRole !== 'human' && sourceRoleOf(cited) === sourceRole) {
       circularIds.push(id);
     }
-    if (ISSUE_TERMINAL_STATUSES.has(cited.state) && cited.terminalCompletionRef) {
+    // Cross-family terminal set: a feature row is terminal at `passed`/`deprecated`, which
+    // ISSUE_TERMINAL_STATUSES cannot see — so the staleness half of the guard went blind on
+    // exactly the family the resolver fix just made visible.
+    if (ALL_TERMINAL_STATUSES.has(cited.state) && cited.terminalCompletionRef) {
       staleIds.push(id);
     }
   }
@@ -317,7 +327,7 @@ async function inspectEvidenceCitations(
 
 export async function evidenceStalenessCheck(
   issue: EvidenceIssue,
-  deps: Pick<TriageCoreDeps, 'getIssue'>,
+  deps: Pick<TriageCoreDeps, 'getCitedWorkItem'>,
 ): Promise<{ stale: boolean; citedIds: string[]; staleIds: string[] }> {
   const check = await inspectEvidenceCitations(issue, deps);
   return { stale: check.stale, citedIds: check.citedIds, staleIds: check.staleIds };

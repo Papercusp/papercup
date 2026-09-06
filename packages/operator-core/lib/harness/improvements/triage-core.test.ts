@@ -121,11 +121,17 @@ function depsOf(
     getIssue: vi.fn(async (id: string) => (id in byId ? byId[id] : id === issue?.id ? issue : null)),
     // The MIXED-family door: the issue store first (so every pre-existing fixture keeps
     // resolving exactly as before), then the feature-family store the old guard could not see.
+    //
+    // Falls through on a FALSY issue result, not on key ABSENCE — that is what production
+    // does (`work-items.ts`: `const issue = await getIssue(id); if (issue) return ...; return
+    // getFeatureWorkItemOnly(id, harness)`). Keying the fall-through off `id in byId` instead
+    // made an explicit `{ 'WI-x': null }` — the fixtures' own way of spelling "the issue-family
+    // view genuinely does not hold feature rows" — short-circuit to null and never consult the
+    // feature registry, i.e. the mock reproduced the exact blindness WI-2147241 is about.
     getCitedWorkItem: vi.fn(async (id: string): Promise<CitedRow | null> => {
-      if (id in byId) return byId[id];
-      if (id === issue?.id) return issue;
-      if (id in featureRegistry) return featureRegistry[id];
-      return null;
+      const fromIssues = id in byId ? byId[id] : id === issue?.id ? issue : null;
+      if (fromIssues) return fromIssues;
+      return id in featureRegistry ? featureRegistry[id] : null;
     }),
     setIssueState: vi.fn(async (_id, state) => {
       states.push(state);
