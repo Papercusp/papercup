@@ -252,6 +252,50 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string | null)
   }
 }
 
+/**
+ * `extraArgs` is also the capability's escape hatch for psu's durable launch
+ * posture flags. Those flags are not part of a fleet's boot-baked profile:
+ * comparing them against the saved profile turns a redundant `--auto` on
+ * resume into a false saved_launch_spec_conflict. Keep the mode flags in the
+ * eventual command, but compare only profile-bearing args and preserve the
+ * canonical profile when the caller supplied mode flags alone.
+ */
+function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
+  profileArgs: string[];
+  modeArgs: string[];
+} {
+  const profileArgs: string[] = [];
+  const modeArgs: string[] = [];
+  let pendingModeValue = false;
+
+  for (const arg of extraArgs ?? []) {
+    if (pendingModeValue) {
+      modeArgs.push(arg);
+      pendingModeValue = false;
+      continue;
+    }
+    if (
+      arg === '--auto' ||
+      arg === '--no-auto' ||
+      arg === '--mode=drain' ||
+      arg === '--mode-owner-directed' ||
+      arg.startsWith('--mode-subject=') ||
+      arg.startsWith('--mode-instructions=')
+    ) {
+      modeArgs.push(arg);
+      continue;
+    }
+    if (arg === '--mode-subject' || arg === '--mode-instructions') {
+      modeArgs.push(arg);
+      pendingModeValue = true;
+      continue;
+    }
+    profileArgs.push(arg);
+  }
+
+  return { profileArgs, modeArgs };
+}
+
 export default defineTool({
   name: 'capability:launch-agent',
   description:
@@ -1009,6 +1053,17 @@ export default defineTool({
     } | null = null;
     if (fleetSlug) {
       if (sourceAction) {
+        const requestedExtraArgs = args.extraArgs;
+        const { profileArgs, modeArgs } = splitSavedProfileExtraArgs(requestedExtraArgs);
+        // A mode-only array is an explicit launch-posture request, not an
+        // explicit replacement for the fleet's saved profile. An empty array
+        // remains a real profile override and therefore still fails closed
+        // against a non-empty canonical profile.
+        const requestedProfileExtraArgs =
+          requestedExtraArgs !== undefined &&
+          (requestedExtraArgs.length === 0 || profileArgs.length > 0)
+            ? profileArgs
+            : undefined;
         const savedLaunchSpec = await resolveSavedFleetLaunchSpec({
           workspaceId,
           fleetSlug,
@@ -1016,7 +1071,7 @@ export default defineTool({
             account: args.account,
             model: args.model,
             headless: args.headless,
-            extraArgs: args.extraArgs,
+            extraArgs: requestedProfileExtraArgs,
           },
           reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
         });
@@ -1038,7 +1093,13 @@ export default defineTool({
             savedLaunchSpec.effective.member.model,
             savedLaunchSpec.effective.member.effort,
           );
-          args.extraArgs ??= savedLaunchSpec.effective.member.extraArgs;
+          if (requestedExtraArgs === undefined) {
+            args.extraArgs ??= savedLaunchSpec.effective.member.extraArgs;
+          } else if (requestedExtraArgs.length > 0 && profileArgs.length === 0) {
+            // Mode-only requests inherit the canonical profile while retaining
+            // the explicit posture flags in the actual resume/fork command.
+            args.extraArgs = [...(savedLaunchSpec.effective.member.extraArgs ?? []), ...modeArgs];
+          }
           savedLaunchCarry ??= savedLaunchSpec.effective.member.carry;
           savedLaunchSpecMeta = {
             provenance: savedLaunchSpec.provenance,

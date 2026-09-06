@@ -1285,6 +1285,41 @@ describe('resume + fork (D-004/D-007)', () => {
     });
   });
 
+  it('treats mode-only extraArgs as launch posture while preserving the canonical profile on resume', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-test',
+      fleetSlug: 'target-fleet',
+      target: 12,
+      config: {
+        plan: 'recovery-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        extraArgs: ['--context-size=trimmed'],
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, extraArgs: ['--auto'], brief: 'continue the recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--context-size=trimmed');
+    expect(command).toContain('--auto');
+    expect(textOf(res)).toContain('Applied canonical saved fleet launch spec');
+  });
+
   it("preserves a same-owner resume's target loop carry over a stale saved fleet carry", async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
