@@ -4,7 +4,7 @@ import type { DurableSuSessionRecord } from './su-session-persistence';
 const m = vi.hoisted(() => ({
   row: vi.fn(), spec: vi.fn(), acquire: vi.fn(), finalize: vi.fn(), release: vi.fn(), pid: vi.fn(), ended: vi.fn(),
   live: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
-  codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(),
+  codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
 }));
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
@@ -15,6 +15,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
   normalizeArgvProbeResumeLocalLivenessEvidence: m.witness,
   normalizeCodexResumeLocalLivenessEvidence: m.witness,
   ensureResumeTranscriptPresent: m.transcript,
+  tryRematerializeFromArchive: m.archive,
   ensureCodexHomeViaOperator: vi.fn(), ensureInteractiveConfigViaOperator: vi.fn(),
   isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true,
   rehealResumeCredentials: vi.fn(), rehealResumeCodexAuth: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('./adv-sessions', () => ({ getAdvSession: m.row, readSuLaunchSpecByOwner
   setAdvSessionPid: m.pid, markAdvSessionEnded: m.ended }));
 vi.mock('./su-persona-render', () => ({ parseSuLaunchSpecRecord: (value: unknown) => value }));
 vi.mock('./console-launcher', () => ({ buildConsoleEnvelope: m.envelope }));
+vi.mock('./interactive-safety-floor', () => ({ checkInteractiveSafetyFloor: async () => ({ ok: true }) }));
 vi.mock('./events/await/psu-pty-discovery', () => ({ findLiveHost: m.live }));
 vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3170' }));
 vi.mock('./session-transcript-resolvers', () => ({ findOmpSessionPath: m.ompPath }));
@@ -125,5 +127,14 @@ describe('structured exact resume preparation', () => {
     await resume.onExit();
     expect(m.release).toHaveBeenCalled();
     expect(m.ended).not.toHaveBeenCalled();
+  });
+
+  it('restores archived OMP files through the selected operator before exact resume', async () => {
+    const saved = fixture('omp');
+    m.ompPath.mockResolvedValueOnce(null);
+    const resume = await prepareStructuredSuResume(saved);
+    expect(m.archive).toHaveBeenCalledWith('saved-native', 'omp', { operatorUrl: 'http://localhost:3170' });
+    expect(resume.nativeSession).toMatchObject({ backend: 'omp', ompThreadId: 'saved-native', agentHome: '/saved/omp' });
+    await resume.release();
   });
 });
