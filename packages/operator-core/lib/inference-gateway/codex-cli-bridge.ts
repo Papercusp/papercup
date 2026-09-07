@@ -29,7 +29,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
-import { codexContextConfigArgs, resolveCodexModel } from '../model-context-budget.mjs';
+import { codexContextConfigArgs, resolveCodexModel, resolveCodexModelSelection } from '../model-context-budget.mjs';
 import * as os from 'node:os';
 import type { AccountEgress } from '../deployment/account-pool';
 
@@ -75,7 +75,9 @@ export function parseBridgeModel(model: string | undefined): { id: string; effor
   if (slash > 0) m = m.slice(slash + 1);
   // Resolve before splitting effort so omitted requests receive the managed
   // default and every explicit spelling crosses the Spark deny guard.
-  const resolved = resolveCodexModel(m || undefined);
+  const resolved = m
+    ? resolveCodexModel(m)
+    : resolveCodexModelSelection(undefined, { source: 'configured-default' }).model;
   let effort = 'medium';
   const colon = resolved.lastIndexOf(':');
   m = resolved;

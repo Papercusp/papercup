@@ -53,7 +53,10 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES, 'kettle', 'worker', 'cup'],
+  // The evidence-only gym judge must read the canonical clauses it is grading
+  // against. Keep this explicit: broadening SU_ROLES would grant unrelated
+  // roles access, while omitting judge forces it to substitute derived rows.
+  agentRoles: [...SU_ROLES, 'kettle', 'worker', 'cup', 'judge'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

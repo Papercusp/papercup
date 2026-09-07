@@ -256,6 +256,26 @@ function concrete(value?: string | null): string | null {
   return trimmed && trimmed !== '*' && trimmed !== 'all' ? trimmed : null;
 }
 
+/**
+ * A fleet registry row deliberately does not duplicate harness scope. When a
+ * leader takeover has no explicit/session harness, the fleet claim-spec
+ * sentinel is the narrow canonical fallback: it is the same binding inherited
+ * by fleet members and is workspace-scoped. Fail closed if that optional read
+ * cannot resolve a concrete scope.
+ */
+async function claimSpecHarnessForFleetLeader(workspaceId: string, fleetSlug: string): Promise<string | null> {
+  try {
+    const { fleetSpecBeeKey, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+    const record = await getClaimSpecRecord({
+      cupId: fleetSpecBeeKey(fleetSlug),
+      workspaceId,
+    });
+    return concrete(record.harnessSlug);
+  } catch {
+    return null;
+  }
+}
+
 function monitorGoal(fleetSlug: string, planSlug?: string | null): string {
   return planSlug
     ? `Continuously lead and monitor fleet ${fleetSlug} until plan ${planSlug} is terminal; repair unhealthy lanes and preserve completion evidence.`
@@ -358,7 +378,10 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
   } catch {
     presence = null;
   }
-  const harness = concrete(input.harnessSlug) ?? concrete(priorLoop?.harnessSlug) ?? concrete(presence?.potSlug);
+  let harness = concrete(input.harnessSlug) ?? concrete(priorLoop?.harnessSlug) ?? concrete(presence?.potSlug);
+  if (!harness && priorLoop?.active !== true) {
+    harness = await claimSpecHarnessForFleetLeader(input.workspaceId, input.fleetSlug);
+  }
   const loop = {
     healthy: false,
     changed: false,

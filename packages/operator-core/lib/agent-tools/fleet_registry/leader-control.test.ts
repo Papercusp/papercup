@@ -14,6 +14,7 @@ const registerAwait = vi.fn();
 const captureWakeHandleForOwner = vi.fn();
 const armInboxWake = vi.fn();
 const getPresence = vi.fn();
+const getClaimSpecRecord = vi.fn();
 const getFlag = vi.fn();
 const findMatchingActivePredicateWatch = vi.fn();
 const registerPredicateWatch = vi.fn();
@@ -59,6 +60,11 @@ vi.mock('@papercusp/flags/server', () => ({
 
 vi.mock('../coordination/presence', () => ({
   getPresence: (...args: unknown[]) => getPresence(...args),
+}));
+
+vi.mock('../../scheduler/claim-spec-store', () => ({
+  fleetSpecBeeKey: (fleetSlug: string) => `fleet:${fleetSlug}`,
+  getClaimSpecRecord: (...args: unknown[]) => getClaimSpecRecord(...args),
 }));
 
 import {
@@ -126,6 +132,7 @@ beforeEach(() => {
   retireLifecycleBoundWatches.mockResolvedValue({ awaits: 0, predicateWatches: 0 });
   armInboxWake.mockResolvedValue(undefined);
   getPresence.mockResolvedValue({ potSlug: 'papercusp', agentRole: 'su' });
+  getClaimSpecRecord.mockResolvedValue({ harnessSlug: null });
   findMatchingActivePredicateWatch.mockResolvedValue(null);
   registerPredicateWatch.mockResolvedValue({});
 });
@@ -288,6 +295,27 @@ describe('ensureFleetLeaderControl', () => {
     for (const eventKey of ['fleet:claim-released:alpha', 'fleet:drained:alpha', 'fleet:admission-blocked:alpha']) {
       expect(registrations.find((args) => args.eventKey === eventKey)).not.toHaveProperty('payloadFilter');
     }
+  });
+
+  it('falls back to the fleet claim-spec harness when a takeover has no session scope', async () => {
+    const noHarnessInput = { ...input, harnessSlug: undefined };
+    getLoopStatus.mockResolvedValue({
+      active: false,
+      harnessSlug: null,
+      intervalSec: 300,
+      mode: 'monitor',
+      carry: 'warm',
+    });
+    getPresence.mockResolvedValue({ potSlug: null, agentRole: 'su' });
+    getClaimSpecRecord.mockResolvedValue({ source: 'fleet', harnessSlug: 'papercusp' });
+
+    const out = await ensureFleetLeaderControl(noHarnessInput);
+
+    expect(getClaimSpecRecord).toHaveBeenCalledWith({ cupId: 'fleet:alpha', workspaceId: 'ws-1' });
+    expect(out.loop).toMatchObject({ healthy: true, harness: 'papercusp' });
+    expect(materializeLoop).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-1', harnessSlug: 'papercusp' }),
+    );
   });
 
   it('preserves an inactive loop control payload and pending watches during recovery', async () => {

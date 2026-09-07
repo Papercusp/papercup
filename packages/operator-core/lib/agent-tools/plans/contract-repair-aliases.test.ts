@@ -115,6 +115,12 @@ describe('plans:get-specs — singular plan-item aliases (EI-21722550422531809)'
   });
 });
 
+describe('plans:get-specs — canonical clause access for the gym judge (EI-22548266898865228)', () => {
+  it('admits judge so acceptance grading can read the authoritative clauses', () => {
+    expect(getSpecsTool.agentRoles).toContain('judge');
+  });
+});
+
 describe('plans:search — a single-string `scope` (EI-21166014275674822)', () => {
   it('widens a bare string into the one-element list', () => {
     const parsed = parseOk(searchTool.args, { query: 'contract repair', scope: 'items' });
