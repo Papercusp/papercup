@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-07T04:29:14.630Z",
+  "portalRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "portalHead": "88afe6a7cfff43b3e0517583bc0293fcc478cb80",
+  "mainHead": "0316f14b6268cc34dc86c27bbe9c1574470a7fb3",
+  "portalRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242",
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "_h24SwYOHfExTCskF1rTh",
+    "release": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T04:13:50.070Z",
+    "sourceRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242"
+  },
+  "immutableEntry": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+  "rootDigestMatches": true,
+  "readiness": [
+    {
+      "url": "http://127.0.0.1:3801/",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:3081/",
+      "status": 200
+    }
+  ],
+  "sourceFiles": [
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator-vite/src/components/adv/LearningTab.test.tsx",
+      "sha256": "2df555ef850b0d213131d5f2f207090b0a5b5c277b79decd0b5f8f27c950074f"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator-vite/src/components/adv/LearningTab.tsx",
+      "sha256": "da2c71c7503cb8490e2f498bffa07a34086900e681cc44439f5b5cfc19def084"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/adv/sessions/AgentOrders.tsx",
+      "sha256": "314100d2631be0d571ecfee33d2a95fa241e6fe101cf254df0eba8dce8168dd3"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/adv/sessions/AgentDossier.tsx",
+      "sha256": "af2a1b5f6118cf4480f369c69b027aca090033e25e97a1cab1863724d1bc98a3"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/plans/PlanPopupModal.tsx",
+      "sha256": "ca2a5fe6c71dfcdc6173c444433e3b89a1c419e1210d111c56d113a1f9dd5c7f"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/plans/PlanPopupModal.test.tsx",
+      "sha256": "12e9f0914c35e56da2fac3024959f0fd4ff7955a0803902e4575b63f8b1c6662"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/inbox/InboxPane.tsx",
+      "sha256": "65b9cbba610e31731adf0cd2e812f318a04eb782f7b9b187b3c36b97968d57bb"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/inbox/InboxPane.test.tsx",
+      "sha256": "68d2b65225021b69a14a5b8e5b42e9350498a3623196ba25858a63698d529e59"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/chat/SessionChatModal.tsx",
+      "sha256": "012690b6b1a0fd2740119225a18a0cef8575160b8e80fbdbcb25045ba68770fb"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/admin/plans/PlanDetail.tsx",
+      "sha256": "e7bfc4a0790323e39030a971efc7800464677bce23c94a7162d8fa50f55b32ac"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/admin/plans/plans.css",
+      "sha256": "dc2484feb382af7c8000ad7e5562c33ad051c96bf3b46f7ccf4c665cce486268"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/admin/plans/PlanOtherList.tsx",
+      "sha256": "a4bba18f1cc56baa92eed059bc987d54bc6e323665fe993fe010850107616ac8"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/chat/SessionChatModal.test.tsx",
+      "sha256": "4c4b723cb5a0912bbaf711ff88f4aeaf54456b28490d0ed5e091630104fd3582"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/chat/FleetPeersRail.tsx",
+      "sha256": "0db60d3bd7d7fb9a093acde0c363987613488d830b49a02646041054f3b2266b"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/chat/chat-controls.css",
+      "sha256": "a7d4245614101df809ad19757017283fd12f9abeaa820a04392588882e3ad9c8"
+    },
+    {
+      "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/chat/PanelToggleButton.tsx",
+      "sha256": "64bf3b7cf1dc42cc987f10f72c53a026113a9f92f6b64fb840b60f04b000f61c"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/index.tsx",
+      "sha256": "46de9f3e5fd60116361f08c265476821a84703ce37d14e5dc62445fd89e1fe47"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
+      "sha256": "7e46466e29927da4b6849068c26915baf00fb9e0209224870bfc907515860da8"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/workspaces.tsx",
+      "sha256": "8d94400b0b4f4f1f6a07d5ad87c95cba53b43b7bb09121e6dadfd29e26dcd06f"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/contracts/src/index.ts",
+      "sha256": "fd6d260bcbbeb463d0cd53c90cadc6ddbd1b8ea5674806f3e462fb0482ae2159"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/app/globals.css",
+      "sha256": "e93832713d410a249cb307490bf1025a8cef243168f9be3b1263ac1a0f238e1e"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/e2e/portal-mounted-surface.spec.ts",
+      "sha256": "2c45bff82f1289b165029a1f6f72249841971149c8a8aa390c62aad36f17ace2"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/tests/shell-ui.test.tsx",
+      "sha256": "e75d406e0c25b487be7b3aa48df5108deb008611a6485a865f6852820e8e32b4"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/email/packages/ui/src/index.tsx",
+      "sha256": "a5e9e57c52d13b3dab84fae2411b8784e2aa61b5f81f3464e02e0ba8bcd5825e"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/email/packages/ui/src/styles.css",
+      "sha256": "8d66a1cadac5c28573d1f000c50158071c5817a3b5103b41215a8ead13a87ea0"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/email/packages/contracts/src/index.ts",
+      "sha256": "0a240b2c775cfaf15089a3e0bc207f08ba0fbadd11495634c0230b6a2008aa2f"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/email/app/globals.css",
+      "sha256": "6e897824927206b7896d47d1eaa883f1fa738c00deb27cfd34214cfd72372660"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app/packages/ui/src/index.tsx",
+      "sha256": "1af135da8facdfbf439f3505ebf0daabc5b71b33827dc4f22f1a698713703513"
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app/packages/ui/src/styles.css",
+      "sha256": "a69f53a44a1f5a4b3466cc882a522507bab3b18343fa804774b1167373a4fdcf"
+    }
+  ],
+  "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+  "logs": [
+    {
+      "file": "portal-acceptance-startup-before.log",
+      "sha256": "6d6629650f1c4b2a252954bb87d12bcd4489ab7e36f00bed3f5e3e315745a48c"
+    },
+    {
+      "file": "portal-acceptance-startup-after.log",
+      "sha256": "504e57edf36eb8d3fd70bb5c61b40a9e2084df9a12c6a18fb060a0bd6f475c0a"
+    },
+    {
+      "file": "portal-plan-contrast-before.log",
+      "sha256": "66ac7bf10602b31ffb07f967aa803fb5ca141fc555ce47e7307bc8ac20a526bf"
+    },
+    {
+      "file": "portal-plan-contrast-after.log",
+      "sha256": "ec2b972fdf9e015a5362736107b3741cfb8fdff106d9fdadafda03eda2fffa6d"
+    },
+    {
+      "file": "portal-acceptance-final-types.log",
+      "sha256": "af9dd974a9170d842e22feb73eb78a7c3e1478b082fd3cce3c567533700794c8"
+    },
+    {
+      "file": "portal-acceptance-corrections-build.log",
+      "sha256": "3fe47bec7f34b2a1861fd489964765d4e834fc6fb8ef2e213ef037bdbf21e8e6"
+    },
+    {
+      "file": "portal-acceptance-corrections-handoff.log",
+      "sha256": "9136e958b5a105ae884c6411bdb7f63a766a60d55064daf4a280f2ea8da9ed54"
+    },
+    {
+      "file": "portal-learning-regression-after.log",
+      "sha256": "e3a50f9547a7305ec1983e48ae187a872cd24a54bbe705b9654e79125f0ba90f"
+    },
+    {
+      "file": "portal-learning-types.log",
+      "sha256": "80ba25f94891a022509dc6a5bc4b380250cc9397d8df6729dcda556b02926bd8"
+    },
+    {
+      "file": "portal-learning-build.log",
+      "sha256": "29c229f57f1cf73832f2560c4639fbfaac155015256226a734ec5528fb17397c"
+    },
+    {
+      "file": "portal-learning-handoff.log",
+      "sha256": "7c659e97e089c3b5fbcbb45a17714fef7d8a47da5184ec17e612b4eb5c5ecd77"
+    }
+  ],
+  "scopeNote": "Root digest excludes linked dependencies. sourceFiles records adopted linked modules separately; whole linked-tree drift during build is recorded in the build log, not claimed absent. Baseline188 is retained on its original release; exact affected-slot retakes and all16 interactions are on the correction release."
+}
