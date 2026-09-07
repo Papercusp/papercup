@@ -181,7 +181,12 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
           environmentFingerprint: null,
         },
         coverageEvidenceRef: null,
-        testRunId: null,
+        // Durable rerun anchor. classifySpecEvidenceLineage rates a binding
+        // 'unknown' when nothing identifies a rerunnable proof, and that
+        // propagates to the adequacy state — masking the test-LAYER logic these
+        // cases exist to exercise. Real evidence for an exercised outcome
+        // carries a test run id; the fixture must too.
+        testRunId: index + 1,
         details: {},
         observedAt: iso,
         bindingFingerprint: `binding-${index + 1}`,
