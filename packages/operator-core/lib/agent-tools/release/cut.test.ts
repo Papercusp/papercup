@@ -563,7 +563,9 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(b.dry_run).toBe(true);
     expect(b.localOnly).toBe(true);
     expect(b.wouldRun).toMatch(/systemd-run/);
-    expect(b.wouldRun).toMatch(/release-local\.sh '0\.0\.8' 'alpha'/);
+    expect(b.wouldRun).toContain(`bash -c 'source "$1" "$2" "$3"'`);
+    expect(b.wouldRun).toContain('/tmp/release-cut-fixture/papercusp-desktop/bin/release-local.sh');
+    expect(b.orchestratorRoot).toBe('/tmp/release-cut-fixture/papercusp-desktop');
     expect(b.wouldRun).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(b.wouldRun).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_OWNER_NAME='Avi'");
@@ -588,6 +590,7 @@ describe('release:cut — run (operator-gated write)', () => {
       runtime: { ownerName: 'Avi', ownerEmail: undefined, reuseSeed: undefined },
       legs: { mac: true, windows: undefined, arm64: undefined },
       root: expect.any(String),
+      orchestratorRoot: '/tmp/release-cut-fixture/papercusp-desktop',
     }));
   });
 });

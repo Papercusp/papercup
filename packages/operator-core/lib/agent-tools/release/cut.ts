@@ -850,6 +850,7 @@ export default defineTool({
       const channel = args.channel as Channel;
       const platform = args.platform as Platform;
       const legs = legsForPlatform(platform);
+      const orchestratorRoot = desktopRoot();
       const selected = await resolveCutRoot(
         args.root,
         undefined,
@@ -878,6 +879,7 @@ export default defineTool({
           '<PATH>',
           { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
           platform,
+          orchestratorRoot,
         );
         return json({
           ok: true,
@@ -888,6 +890,7 @@ export default defineTool({
           channel,
           sourceSha: args.sourceSha,
           root: selected.desktopRoot,
+          orchestratorRoot,
           ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
           legs,
           localOnly: true,
@@ -910,6 +913,7 @@ export default defineTool({
         legs,
         platform,
         root: selected.desktopRoot,
+        orchestratorRoot,
       });
       await recordCutAudit('run-leg', actor, {
         platform,
@@ -917,6 +921,7 @@ export default defineTool({
         channel,
         sourceSha: args.sourceSha,
         root: selected.desktopRoot,
+        orchestratorRoot,
         legs,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
@@ -934,6 +939,7 @@ export default defineTool({
         sourceSha: args.sourceSha,
         legs,
         root: selected.desktopRoot,
+        orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
         unit: launch.unit,
@@ -973,6 +979,7 @@ export default defineTool({
     }
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
+    const orchestratorRoot = desktopRoot();
     const selected = await resolveCutRoot(
       args.root,
       undefined,
@@ -1001,6 +1008,8 @@ export default defineTool({
         args.sourceSha,
         '<PATH>',
         { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+        undefined,
+        orchestratorRoot,
       );
       return json({
         ok: true,
@@ -1010,6 +1019,7 @@ export default defineTool({
         channel,
         sourceSha: args.sourceSha,
         root: selected.desktopRoot,
+        orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         legs,
         localOnly: true,
@@ -1030,12 +1040,14 @@ export default defineTool({
       runtime: { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
       legs,
       root: selected.desktopRoot,
+      orchestratorRoot,
     });
     await recordCutAudit('run', actor, {
       version: args.version,
       channel,
       sourceSha: args.sourceSha,
       root: selected.desktopRoot,
+      orchestratorRoot,
       legs,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
@@ -1052,6 +1064,7 @@ export default defineTool({
       sourceSha: args.sourceSha,
       legs,
       root: selected.desktopRoot,
+      orchestratorRoot,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
       unit: launch.unit,
