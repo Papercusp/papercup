@@ -2981,6 +2981,18 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             ),
             Theme::notify(),
         )
+    } else if app.su_pending_turn.is_some() && app.chat_streaming {
+        (
+            " Sending — awaiting acceptance · draft retained ",
+            format!("> {}", app.chat_input),
+            Theme::notify(),
+        )
+    } else if app.su_pending_turn.as_ref().is_some_and(|p| p.uncertain) {
+        (
+            " Delivery uncertain — Enter checks the same turn ",
+            format!("> {}", app.chat_input),
+            Theme::notify(),
+        )
     } else if app.chat_streaming {
         (
             " Running — input locked ",

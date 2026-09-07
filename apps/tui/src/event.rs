@@ -428,6 +428,11 @@ pub enum Event {
     /// Immediate acknowledgement from a SU-session control POST. Terminal
     /// completion/refusal still arrives on the ordered session stream.
     SuSessionCommandResult(String),
+    /// Owner-turn delivery is correlated separately from session controls.
+    /// A network failure retains the exact command for an idempotent retry.
+    SuTurnPrepared { command_id: String, command: serde_json::Value },
+    SuTurnAcknowledged { command_id: String, session: crate::su_session::SuSessionIdentity },
+    SuTurnFailed { command_id: String, message: String, uncertain: bool },
     /// Bounded startup inventory of every chat that has a durable SU-session
     /// binding.  This is separate from the selected session state so ended
     /// sessions remain inspectable in the picker.
