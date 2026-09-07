@@ -17,9 +17,9 @@ import {
 import readTool from '../sessions/read';
 import handoffTool from '../coordination/tools/handoff';
 import { openHandoff } from '../coordination/handoffs';
-import { applyResultProjection } from '../../result-projection/apply';
+import { applyResultProjection, type ProjectableResult } from '../../result-projection/apply';
 import { parseProjection } from '../../result-projection/parse';
-import { metadataHarness } from './coordination-metadata-fixtures';
+import { metadataHarness, metadataWorkflowTargets } from './coordination-metadata-fixtures';
 
 const io = vi.hoisted(() => ({
   database: vi.fn(() => { throw new Error('unexpected live database access in metadata fixture'); }),
@@ -161,7 +161,8 @@ describe('P-001 scoped progress preservation baseline', () => {
     // P-005 target: ONE authored progress field for this operation, with other
     // views deriving it. This fixture intentionally has TWO; it is not evidence
     // that every live agent copies progress, or that separate obligations merge.
-    expect([brief.loop?.carryNote, brief.heldItems[0].checkpoint].filter(Boolean)).toHaveLength(2);
+    expect([brief.loop?.carryNote, brief.heldItems[0].checkpoint].filter(Boolean))
+      .toHaveLength(metadataWorkflowTargets.authoredProgressFields.before);
   });
 });
 
@@ -207,7 +208,8 @@ describe('P-001 input-contract preservation baseline', () => {
     };
     const acceptedInput = handoffTool.args.parse({});
     const result = await handoffTool.handler(acceptedInput, context);
-    expect(result.isError).toBe(true);
+    expect(result).toMatchObject({ isError: true });
+    if (!('content' in result)) throw new Error('missing handler content');
     const text = result.content.find((part) => part.type === 'text');
     expect(text?.type).toBe('text');
     if (!text || text.type !== 'text') throw new Error('missing handler result');
@@ -224,7 +226,7 @@ describe('P-001 input-contract preservation baseline', () => {
     };
     expect(handoffTool.args.safeParse(input).success).toBe(true);
     const record = await openHandoff({
-      ownerId, ownerLabel: null, workspaceId, userId: null, source: 'omp-hook-session',
+      ownerId, ownerLabel: 'Metadata fixture', workspaceId, userId: null, source: 'omp-hook-session',
     }, input);
     expect(record.summary).toBe(input.summary);
     expect(record.body).toBe(input.body);
@@ -247,9 +249,10 @@ describe('P-001 projection root preservation', () => {
   ])('projects the emitted root rather than guessing an object root for every tool', ({ body, pick, expected }) => {
     const parsed = parseProjection({ pick });
     if (!parsed.ok) throw new Error(parsed.error);
-    const projected = applyResultProjection({
+    const input: ProjectableResult = {
       content: [{ type: 'text', text: JSON.stringify(body) }],
-    }, parsed.spec);
+    };
+    const projected = applyResultProjection(input, parsed.spec);
     const text = projected.content.find((part) =>
       part.type === 'text' && typeof part.text === 'string' && !part.text.includes('[projection:'));
     expect(text).toBeDefined();
