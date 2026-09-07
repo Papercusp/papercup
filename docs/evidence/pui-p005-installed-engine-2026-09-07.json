@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-005",
+  "workItem": "WI-10000427",
+  "status": "real-provider-verification-in-progress",
+  "installation": {
+    "command": "scripts/pc-heavy.sh bash apps/tui/scripts/install-update.sh",
+    "taskId": "0mtrhz0uohz26wmuz4a",
+    "log": ".papercusp/scratch/bash-44f744d7-952.log",
+    "sourceSha": "a107fef8be846f62254b65e80242c62f7ee62d47",
+    "binary": "/home/marsh-office/.cargo/bin/pui",
+    "manifest": "/home/marsh-office/.papercusp/pui-install.json",
+    "manifestVerification": "passed",
+    "installerExit": 1,
+    "exitExplanation": "Binary, companion and manifest installation completed. The final doctor reported an existing human pui-wb pane still running its old binary. The test uses the new installed binary in its own PTY; no existing pane was restarted or killed."
+  },
+  "firstLiveRun": {
+    "taskId": "0mtri3y5o1fwsahxnqj",
+    "log": ".papercusp/scratch/bash-1ba35819-cd2.log",
+    "result": "failed",
+    "liveCasesPassed": 0,
+    "liveCasesFailed": 1,
+    "protocolPeerCasesExcluded": 8,
+    "finding": "EI-22624091515777603",
+    "nativeSessionId": "2486fe11-5230-4666-91bf-57e92588eabb",
+    "evidence": "The native transcript contains only the synthetic non-query readiness append, no owner greeting. Installed SDK types document shouldQuery:false as an append without an assistant turn. The host waited for a turn result which the scripted protocol peer incorrectly fabricated.",
+    "secondaryDiagnostic": "Optional MCP initialization enrichment reached its bounded timeout; the production fallback remained visible. This warning is not established as the cause of the missing greeting."
+  },
+  "readinessChange": {
+    "source": "packages/operator-core/lib/su-session-claude-engine.ts",
+    "summary": "Wait for the exact non-query probe receipt with matching native identity, plus initialization and connected SU MCP controls. Validate system/init identity and project whenever emitted. Mark actual PUI owner turns with SDK origin kind human.",
+    "test": "packages/operator-core/lib/su-session-claude-engine.test.ts",
+    "unitTestsPassed": 13,
+    "unitTestsSkipped": 0,
+    "unitRunStartedAt": "2026-09-07T17:25:34.076Z",
+    "unitRunHead": "23f9c29c46",
+    "unitRunProvenance": "local modifications, test-file router stamped",
+    "counterexamples": [
+      "A real-style append receipt becomes ready without a system/init or turn result.",
+      "A synthetic init/result pair without the exact receipt cannot make the host ready.",
+      "An unrelated receipt cannot make the host ready.",
+      "Wrong native identity, wrong project and disconnected SU MCP remain refusals."
+    ]
+  },
+  "activeRuns": {
+    "live": "0mtriiiijvctn4j16iz",
+    "protocolPeer": "0mtriijb0vfixwygmoc"
+  },
+  "limits": [
+    "No real-provider passing result yet.",
+    "P005 is Linux and the first supported engine only; P006 owns backend parity.",
+    "P011 and P015 own public distribution and final publication verification.",
+    "The full approved plan includes P016 task management and the explicit P015 publication approval gate."
+  ]
+}

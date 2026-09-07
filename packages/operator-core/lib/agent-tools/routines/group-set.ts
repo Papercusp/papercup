@@ -308,6 +308,7 @@ export default defineTool({
         // The Learning tab's header pause/resume + spend chip reads the same group
         // state through learning.loopControl — keep it live on every bulk flip.
         notifySyncInvalidate('learning.loopControl');
+        notifySyncInvalidate('learning.dream');
       } catch {
         /* SSE hub unavailable — the pane still refreshes on its next poll */
       }

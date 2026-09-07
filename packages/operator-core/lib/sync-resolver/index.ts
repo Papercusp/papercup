@@ -4823,6 +4823,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  'learning.dream': {
+    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope'],
+    argsSchema: z.object({ potSlug: z.string().trim().min(1).max(120) }),
+    resolve: async (args: { potSlug: string }) => {
+      const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
+        import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
+      ]);
+      const workspaceId = activeWorkspaceId();
+      return routeWithWorkspace(async (tx) => [await readDreamControlSnapshot(tx as unknown as import('postgres').Sql, { workspaceId, potSlug: args.potSlug })]);
+    },
+  },
+
   // ── learning.loopControl — the Learnings-tab header pause/resume-all control ──
   //
   // (WI-39501). ONE snapshot of the self-improvement routine GROUP — member /

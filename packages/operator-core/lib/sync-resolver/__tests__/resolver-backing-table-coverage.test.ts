@@ -201,6 +201,15 @@ const PUSH_EXEMPT: Record<string, string> = {
   'learning.loopControl :: harness_shared.routines':
     'the routines row is rewritten on EVERY tick (nextFireAt/lastFiredAt) — a heartbeat, the coord_presence anti-pattern — so a row trigger would push every open Learnings tab on a timer while the control state it renders (active, metadata->pause) had not moved. agent-tools/routines/group-set.ts pushes notifySyncInvalidate(learning.loopControl) on the bulk pause/resume flip instead, which is the only write that changes what this query returns. The sibling agent_usage_samples IS bridged in table-to-query-names.ts.',
 
+  'learning.dream :: harness_shared.routines':
+    'Routine ticks are heartbeat-heavy. Dream control, routines:set/group-set and production cycle completion push learning.dream after committed changes; bridge this table if these producer pushes are removed.',
+  'learning.dream :: harness_shared.dream_runs':
+    'The production Dream adapter pushes learning.dream after every committed run/phase mutation, including reservation and settlement. Add a table bridge if another live writer bypasses that adapter.',
+  'learning.dream :: harness_shared.learning_spend_events':
+    'The production Dream adapter pushes learning.dream after committed recordDreamRunSpend; only dream:* events affect this query. Bridge if another Dream spend writer is added.',
+  'learning.dream :: harness_shared.learning_pot_scope':
+    'learning:set-pot-scope pushes learning.dream after the pot master switch commits; bridge if another live pot-scope writer is introduced.',
+
   // WI-39540 — the settings Memory page's denominator ("Showing 500 of 2,746").
   //
   // RE-ARM: drop this entry and wire memory_canonical in table-to-query-names.ts

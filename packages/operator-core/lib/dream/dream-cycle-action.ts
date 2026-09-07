@@ -122,7 +122,13 @@ export async function productionDreamCycle(
   const llmCall: ScoutLlmCall = (input) => llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });
   const sources = (values: import('./capability-contracts').CapabilityPacket[]) =>
     reviewSources.buildCapabilityReviewSources({ sql, scope, rootPath, manifest, packets: values });
-  return runDreamCycle(
+  const { notifySyncInvalidate } = await import('../sync-sse');
+  const changing = async <T>(write: () => Promise<T>): Promise<T> => {
+    const value = await write();
+    notifySyncInvalidate('learning.dream');
+    return value;
+  };
+  const result = await runDreamCycle(
     {
       ...scope,
       rootPath,
@@ -164,24 +170,24 @@ export async function productionDreamCycle(
       loadHistory: () => store.listDreamRuns(sql, { ...scope, limit: 500 }),
       reviewSources: sources,
       beginRun: ({ runId, capability }) =>
-        store.beginDreamRun(sql, {
+        changing(() => store.beginDreamRun(sql, {
           ...scope,
           runId,
           cycleId,
           mode: config.mode,
           capability,
-        }),
-      recordSelection: (input) => store.recordDreamRunSelection(sql, { ...input, workspaceId: ctx.workspaceId }),
-      beginCall: (input) => governor.admitDreamRunCall(sql, { ...input, ...scope, config: config.cycle }),
-      settleCall: (input) => store.settleDreamRunCall(sql, { ...input, workspaceId: ctx.workspaceId }),
-      recordReview: (input) => store.recordDreamRunReview(sql, { ...input, workspaceId: ctx.workspaceId }),
-      finalizeRun: (input) => store.finalizeDreamRun(sql, { ...input, workspaceId: ctx.workspaceId }),
+        })),
+      recordSelection: (input) => changing(() => store.recordDreamRunSelection(sql, { ...input, workspaceId: ctx.workspaceId })),
+      beginCall: (input) => changing(() => governor.admitDreamRunCall(sql, { ...input, ...scope, config: config.cycle })),
+      settleCall: (input) => changing(() => store.settleDreamRunCall(sql, { ...input, workspaceId: ctx.workspaceId })),
+      recordReview: (input) => changing(() => store.recordDreamRunReview(sql, { ...input, workspaceId: ctx.workspaceId })),
+      finalizeRun: (input) => changing(() => store.finalizeDreamRun(sql, { ...input, workspaceId: ctx.workspaceId })),
       recordSpend: (run) =>
-        governor.recordDreamRunSpend(sql, {
+        changing(() => governor.recordDreamRunSpend(sql, {
           workspaceId: ctx.workspaceId,
           runId: run.runId,
           potSlug: ctx.installSlug,
-        }),
+        })),
       sink: (runId, values) =>
         sink.sinkDreamInsight({
           kind: 'capability',
@@ -195,6 +201,21 @@ export async function productionDreamCycle(
         }),
     },
   );
+  // A refused/empty cycle may have no run row. Preserve its actual outcome in
+  // the existing routine metadata so the control never calls that "no run yet".
+  const summary = {
+    cycleId: result.cycleId, mode: config.mode, attempts: result.attempts,
+    accepted: result.accepted, running: 0, costUsd: result.costUsd,
+    reason: result.reason, updatedAt: new Date().toISOString(),
+  };
+  await sql`
+    UPDATE harness_shared.routines
+       SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{dreamLastCycle}', ${JSON.stringify(summary)}::text::jsonb),
+           updated_at = now()
+     WHERE workspace_id = ${ctx.workspaceId} AND install_slug = ${ctx.installSlug}
+       AND name = ${config.mode === 'auto' ? 'dream-cycle-auto' : 'dream-cycle-manual'}`;
+  notifySyncInvalidate('learning.dream');
+  return result;
 }
 
 registerSystemAction(DREAM_CYCLE_ACTION, makeDreamCycleAction());

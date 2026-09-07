@@ -939,6 +939,7 @@ import './db/migrate-policy';
 // live-configurability-audit-2026-06-20 P-002 — read/retune/pause the system routines (git-sync, …):
 import './routines/list';
 import './routines/set';
+import './learning/dream-control';
 import './routines/group-set';
 import './routines/revert';
 // git-sync:run — fire git-sync once on demand (WI-1320; the manual lever git-sync lacked,

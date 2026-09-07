@@ -21,11 +21,13 @@ const h = vi.hoisted(() => ({
   spend: vi.fn(),
   flag: vi.fn(),
   idle: vi.fn(),
+  notify: vi.fn(),
 }));
 vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { workflowID: 'workflow-stable' } }));
 vi.mock('@papercusp/db-org', async (original) => ({ ...(await original<object>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.flag }));
 vi.mock('../owner-steering', () => ({ idleActivityAllowed: h.idle }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: h.notify }));
 vi.mock('../scout/cadence-signals', () => ({ readHiveIdleRatio: vi.fn() }));
 vi.mock('../llm-testing/llm-client', () => ({ llmCall: vi.fn() }));
 vi.mock('../harness-registry', async (original) => ({
@@ -60,7 +62,7 @@ beforeEach(() => {
   h.sql.mockResolvedValue([{ active: true }]);
   h.idle.mockResolvedValue(true);
   h.packet.mockResolvedValue({ status: 'unavailable', reason: 'No fixture source', costUsd: 0, durationMs: 0 });
-  h.run.mockResolvedValue({ reason: 'completed' });
+  h.run.mockResolvedValue({ reason: 'completed', cycleId: 'workflow-stable', attempts: 0, accepted: 0, costUsd: 0 });
 });
 function captured() {
   const [input, deps] = h.run.mock.calls[0]! as [DreamCycleInput, DreamCycleDeps];
@@ -68,6 +70,18 @@ function captured() {
 }
 
 describe('production capability Dream adapter', () => {
+  it('records a refused cycle with no attempts and pushes the control snapshot', async () => {
+    h.run.mockResolvedValue({ reason: 'governor-refused', cycleId: 'workflow-stable', attempts: 0, accepted: 0, costUsd: 0 });
+    await productionDreamCycle(ctx, { mode: 'manual' });
+    const write = h.sql.mock.calls.find((call) => call[0].join('').includes('dreamLastCycle'));
+    expect(write).toBeDefined();
+    expect(JSON.parse(write![1])).toMatchObject({ reason: 'governor-refused', attempts: 0, running: 0, mode: 'manual' });
+    expect(write!.slice(2)).toEqual([ctx.workspaceId, ctx.installSlug, 'dream-cycle-manual']);
+    expect(h.notify).toHaveBeenCalledWith('learning.dream');
+    h.notify.mockClear();
+    await captured().deps.recordSelection({ runId: 'r', pair: {} as never, dreamerModel: 'm', reviewerModel: 'r' } as never);
+    expect(h.notify).toHaveBeenCalledWith('learning.dream');
+  });
   it('binds the registered repository, stable workflow identity and scoped persistent adapters', async () => {
     await productionDreamCycle(ctx, { mode: 'manual' });
     const { input } = captured();

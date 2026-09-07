@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 874,
+  "count": 875,
   "tools": [
     {
       "name": "ablation:report",
@@ -10495,6 +10495,36 @@
         "when": "You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.",
         "notWhen": "You do not know what to search for — call docs:outline first. For PG-stored prose (chats, escalations) use search:fulltext. To search another harness from outside, use cross_harness:docs_search. No `section` filter here (docs:outline has one) — scope via docs:outline { section } then docs:get.",
         "chaining": "docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading). A hit carrying `trust` is telling you something about its RELIABILITY (OKF v0.2): `stale:true` = past its author-set stale_after, so re-check its claims against the code before acting; `tier` = unverified/machine-verified/human-verified. NO `trust` field means unverified and not stale — the state of nearly every doc today, not an error."
+      }
+    },
+    {
+      "name": "dream:control",
+      "http": {
+        "path": "/api/agent-tools/dream/control",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Start/pause manual Dream cycles or explicitly enable/disable automatic Dream for one pot. Reuses its existing routines and owner setting; preserves the hard attempt/spend caps. Manual Start does not enable automatic dreaming.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner starts/pauses Dream or changes its separate automatic toggle in the Learning tab.",
+        "notWhen": "For other learning lanes or budget changes use their existing controls."
       }
     },
     {

@@ -39,7 +39,7 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; initOnly?: boolean; wrongProbe?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -52,8 +52,17 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
         prompts.push(message);
         if (message.shouldQuery === false) {
           if (config.holdInit) continue;
-          output.write({ type: 'system', subtype: 'init', session_id: config.identity ?? nativeId, cwd: config.cwd ?? dir });
-          output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+          if (config.cwd || config.initOnly) {
+            output.write({ type: 'system', subtype: 'init', session_id: config.identity ?? nativeId, cwd: config.cwd ?? dir });
+          }
+          if (config.initOnly) {
+            output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+            continue;
+          }
+          // The real CLI acknowledges transcript-only input without a query,
+          // system/init, or result. Never fabricate a model turn for readiness.
+          output.write({ ...message, isReplay: true, session_id: config.identity ?? nativeId,
+            uuid: config.wrongProbe ? 'unrelated-input' : message.uuid });
         } else if (!config.noAck) {
           output.write(message);
           if (config.holdResult) continue;
@@ -84,7 +93,7 @@ function command(engine: ClaudeSuEngine, type: 'owner_turn' | 'interrupt' | 'end
 }
 
 describe('structured Claude SU engine', () => {
-  it('requires the observed native identity, project and SU tools before ready', async () => {
+  it('requires the exact non-query receipt and SU tools before ready, without waiting for a model result', async () => {
     const p = peer(); const engine = open(p);
     expect(engine.adapter.host.descriptor().lifecycle).toBe('starting');
     expect((await engine.adapter.host.acceptCommand(command(engine))).accepted).toBeNull();
@@ -104,6 +113,7 @@ describe('structured Claude SU engine', () => {
     expect(result.status).toBe('completed');
     await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
     expect(p.prompts[1].message.content).toBe('  hi 雪\n\n');
+    expect(p.prompts[1].origin).toEqual({ kind: 'human' });
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
       type: 'transcript', role: 'assistant', turnId: 'owner-turn-1', content: 'Correlated reply',
     }));
@@ -132,6 +142,13 @@ describe('structured Claude SU engine', () => {
 
   it('bounds a stalled startup and closes its protocol peer', async () => {
     const p = peer({ holdInit: true }); const engine = open(p, { startupTimeoutMs: 20 });
+    await expect(engine.ready).rejects.toThrow('timed out');
+    expect(p.close).toHaveBeenCalled();
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
+  });
+
+  it.each([{ initOnly: true }, { wrongProbe: true }])('cannot replace the exact readiness receipt with other traffic: %j', async (config) => {
+    const p = peer(config); const engine = open(p, { startupTimeoutMs: 20 });
     await expect(engine.ready).rejects.toThrow('timed out');
     expect(p.close).toHaveBeenCalled();
     expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');

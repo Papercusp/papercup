@@ -783,7 +783,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'learning.analyzeCycle',
     'learning.scoutDrafts',
   ],
-  'harness_shared.learning_governor_loops': ['learning.frontier'],
+  'harness_shared.learning_governor_loops': ['learning.frontier', 'learning.dream'],
   'harness_shared.calibration_predictions': ['learning.frontier'],
   'harness_shared.regret_findings': ['learning.frontier'],
   'harness_shared.transfer_lessons': ['learning.frontier'],
@@ -851,7 +851,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
   // consent is keyed by the changed row's natural harness_slug so only that pot's
   // PotBeaconToggle refreshes after a federated write.
-  'harness_shared.pot_settings': ['hive.steering', { name: 'hive.beaconConsent', scope: potHomeSlugScope }],
+  'harness_shared.pot_settings': ['hive.steering', 'learning.dream', { name: 'hive.beaconConsent', scope: potHomeSlugScope }],
   'harness_shared.feature_claims': [
     'fleetAssignments.byHarness',
     'sidebar.fleetCups',
