@@ -27,6 +27,7 @@ vi.mock('../../fleet/lane-health', async (importOriginal) => ({
 
 import {
   buildExactPlanClaimSpec,
+  deriveExactPlanClaimKinds,
   evaluateExactPlanAdmission,
   preflightExactPlanAdmission,
 } from './plan-admission-preflight';
@@ -195,6 +196,22 @@ describe('evaluateExactPlanAdmission', () => {
       promotion: { byFamily: { feature: 0, issue: 1 }, coveredActionable: 1 },
       lane: { effective: { claimable: 1, basis: 'issue-family' } },
     });
+  });
+
+  it('derives a family lane only from active promoted rows and preserves mixed-family plans', () => {
+    expect(
+      deriveExactPlanClaimKinds([
+        { family: 'issue', state: 'open' },
+        { family: 'issue', state: 'done' },
+      ]),
+    ).toEqual(['bug', 'change', 'task']);
+    expect(
+      deriveExactPlanClaimKinds([
+        { family: 'issue', state: 'open' },
+        { family: 'feature', state: 'open' },
+      ]),
+    ).toBeUndefined();
+    expect(deriveExactPlanClaimKinds([{ family: 'feature', state: 'done' }])).toBeUndefined();
   });
 
   it('reports a fully blocked DAG with structural root classes instead of treating zero as drained', () => {
@@ -673,6 +690,48 @@ describe('preflightExactPlanAdmission IO wiring', () => {
     expect(mocks.readClaimSpecLaneHealth.mock.calls[0][0].record).toEqual(
       expect.objectContaining({ updatedBy: 'su-leader' }),
     );
+  });
+
+  it('narrows a single-family plan census but leaves mixed-family plans broad', async () => {
+    const issueOnly = await preflightExactPlanAdmission({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      actor: 'su-test',
+      claimant: 'su-test',
+      specId: 'plans-start-plan-a',
+    });
+
+    expect(issueOnly).toMatchObject({ claimKinds: ['bug', 'change', 'task'] });
+    expect(mocks.readClaimSpecLaneHealth.mock.calls.at(-1)?.[0].spec.view.filter).toEqual({
+      all: [
+        { field: 'plan', op: '=', value: 'plan-a' },
+        { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+      ],
+    });
+
+    mocks.planItemsForRow.mockReturnValue([item('P-001'), item('P-002')]);
+    mocks.listWorkItems.mockResolvedValue([
+      { id: 'WI-1', family: 'issue', state: 'open', sourcePlanItemIds: ['P-001'], payload: null },
+      { id: 'F-1', family: 'feature', state: 'open', sourcePlanItemIds: ['P-002'], payload: null },
+    ]);
+    mocks.readClaimSpecLaneHealth.mockResolvedValueOnce(lane({ issue: 1, feature: 1 }));
+
+    const mixed = await preflightExactPlanAdmission({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      actor: 'su-test',
+      claimant: 'su-test',
+      specId: 'plans-start-plan-a',
+    });
+
+    expect(mixed).toMatchObject({ ready: true, claimKinds: null });
+    expect(mocks.readClaimSpecLaneHealth.mock.calls.at(-1)?.[0].spec.view.filter).toEqual({
+      field: 'plan',
+      op: '=',
+      value: 'plan-a',
+    });
   });
 
   it('builds a validator-clean plan-only claim spec', () => {
