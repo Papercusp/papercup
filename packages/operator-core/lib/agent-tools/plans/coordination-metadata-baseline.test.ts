@@ -1,9 +1,9 @@
 /**
  * P-001 characterization, NOT acceptance of the old behavior.
  *
- * The first two tests intentionally measure the pre-change workflow. P-002
- * replaces their expectations, not their inputs; retain this run's receipt for
- * before/after comparison. Counts below are oracle/handler calls in a hermetic
+ * P-002 compares the repaired workflow against the frozen P-001 inputs/targets.
+ * Retain the original BEFORE receipt; it is not renewed by this suite.
+ * Counts below are oracle/handler calls in a hermetic
  * fixture, NOT network round trips, fleet telemetry, elapsed user time, or a
  * claim that the whole imported source tree was pinned.
  */
@@ -75,11 +75,10 @@ beforeEach(() => {
   });
 });
 
-describe('P-001 pre-change workflow measurements', () => {
-  it('measures three real input-tool requests separately from the oracle and repair writes', async () => {
+describe('P-002 workflow measurements against frozen P-001 targets', () => {
+  it('discovers both defects in one input-tool request and confirms the joint repair in one more', async () => {
     for (const templateData of [
       { attempts: 'invalid' },
-      { harness: 'fixture', attempts: 'invalid' },
       { harness: 'fixture', attempts: 1 },
     ]) {
       stores.getPlanRow.mockResolvedValueOnce({
@@ -90,48 +89,111 @@ describe('P-001 pre-change workflow measurements', () => {
     const responses = [
       await getInputSchemaTool.handler(args, context),
       await getInputSchemaTool.handler(args, context),
-      await getInputSchemaTool.handler(args, context),
     ];
-    expect(responses).toHaveLength(metadataWorkflowTargets.readinessToolRequests.before);
-    expect(stores.getPlanRow).toHaveBeenCalledTimes(metadataWorkflowTargets.readinessToolRequests.before);
+    expect(responses).toHaveLength(metadataWorkflowTargets.readinessToolRequests.maxAfter);
+    expect(stores.getPlanRow).toHaveBeenCalledTimes(metadataWorkflowTargets.readinessToolRequests.maxAfter);
     expect(responses[0]).toMatchObject({
-      data: { results: [{ ready: false, code: 'missing_required', missing: ['harness'], issues: [] }] },
+      data: { results: [{ ready: false, code: 'missing_required', missing: ['harness'], issues: [expect.stringContaining('attempts')] }] },
     });
-    expect(responses[1]).toMatchObject({
-      data: { results: [{ ready: false, code: 'invalid_data', missing: [] }] },
-    });
-    expect(responses[2]).toMatchObject({ data: { results: [{ ready: true, missing: [] }] } });
+    expect(responses[1]).toMatchObject({ data: { results: [{ ready: true, missing: [] }] } });
     // Actual handler request/response pairs, with persisted-state reads injected.
     // No network transport or caller repair WRITE is counted by this instrument.
   });
 
-  it('needs three readiness oracle calls to discover, repair and confirm two input defects', () => {
+  it('needs two readiness oracle calls to discover and confirm repair of the same two defects', () => {
     const calls = [
       evaluatePlanStartReadiness(metadataInputSchema, { attempts: 'invalid' }),
-      evaluatePlanStartReadiness(metadataInputSchema, { harness: 'fixture', attempts: 'invalid' }),
       evaluatePlanStartReadiness(metadataInputSchema, { harness: 'fixture', attempts: 1 }),
     ];
-    expect(calls).toHaveLength(metadataWorkflowTargets.readinessCalls.before);
-    expect(calls[0]).toMatchObject({ ready: false, code: 'missing_required', missing: ['harness'], issues: [] });
-    expect(calls[1]).toMatchObject({ ready: false, code: 'invalid_data', missing: [] });
-    expect(calls[2]).toEqual({ ready: true, source: 'input-schema' });
+    expect(calls).toHaveLength(metadataWorkflowTargets.readinessCalls.maxAfter);
+    expect(calls[0]).toMatchObject({
+      ready: false, code: 'missing_required', missing: ['harness'], issues: [expect.stringContaining('attempts')],
+    });
+    expect(calls[1]).toEqual({ ready: true, source: 'input-schema' });
   });
 
-  it('currently produces a spec-quality draft despite invalid start inputs and no persisted class lookup', async () => {
+  it('produces no draft for invalid inputs and reports an unavailable policy in the same request', async () => {
     const args = evaluateTool.args.parse({
       harness: metadataHarness, slug: metadataPlanSlug, classRef: 'plan-class-feature-ship',
     });
     const result = await evaluateTool.handler(args, context);
     expect(evaluatePlanStartReadiness(metadataInputSchema, { attempts: 'invalid' }).ready).toBe(false);
-    expect(result).toMatchObject({ data: { ok: true, verdict: 'pass', scorecardDraft: { rubricRef: 'spec-quality' } } });
+    expect(result).toMatchObject({ data: {
+      ok: false, error: 'plan_prerequisites_not_ready', unknownChecks: ['class'],
+      wouldBlock: expect.arrayContaining(['missing_required', 'class_read_unavailable']),
+    } });
+    expect(result).not.toHaveProperty('data.scorecardDraft');
     expect(stores.readPlan).toHaveBeenCalledTimes(1);
     expect(stores.listClauses).toHaveBeenCalledTimes(1);
-    expect(stores.listRubrics).not.toHaveBeenCalled();
-    // Explicitly supplied bookkeeping: one caller-selected class. P-002 target:
-    // zero selections when the persisted policy has one unambiguous class.
-    expect(Object.hasOwn(args, 'classRef')).toBe(true);
+    expect(stores.listRubrics).toHaveBeenCalledWith(metadataPlanSlug, { strict: true });
+  });
+
+  it('derives the unambiguous persisted class with no caller metadata and stable retry identity', async () => {
+    stores.readPlan.mockResolvedValue({
+      row: { items: [{ id: 'P-001' }], ...metadataInputSchema, templateData: { harness: 'fixture', attempts: 1 } },
+      parsed: { items: [{ id: 'P-001' }] },
+    });
+    stores.listRubrics.mockResolvedValue([{ classRef: 'plan-class-feature-ship' }]);
+    const args = evaluateTool.args.parse({ harness: metadataHarness, slug: metadataPlanSlug });
     expect(Object.keys(args).filter((key) => key === 'classRef'))
-      .toHaveLength(metadataWorkflowTargets.callerClassSelections.before);
+      .toHaveLength(metadataWorkflowTargets.callerClassSelections.maxAfter);
+    const first = await evaluateTool.handler(args, context);
+    expect(first).toMatchObject({ data: {
+      ok: true, classRef: 'plan-class-feature-ship', verdict: 'pass', scorecardDraft: { rubricRef: 'spec-quality' },
+    } });
+    expect(await evaluateTool.handler(args, context)).toEqual(first);
+  });
+
+  it.each([
+    ['missing', [], 'spec_quality_class_missing'],
+    ['ambiguous', [{ classRef: 'plan-class-feature-ship' }, { classRef: 'plan-class-bugfix' }], 'spec_quality_class_ambiguous'],
+    ['invalid', [{ classRef: 'arbitrary-policy' }], 'spec_quality_class_invalid'],
+    ['mismatched', [{ classRef: 'plan-class-bugfix' }], 'spec_quality_class_mismatch'],
+  ] as const)('refuses %s persisted class together with invalid inputs without a draft', async (_name, rubrics, code) => {
+    stores.listRubrics.mockResolvedValue(rubrics);
+    const args = evaluateTool.args.parse({
+      harness: metadataHarness, slug: metadataPlanSlug, classRef: 'plan-class-feature-ship',
+    });
+    const result = await evaluateTool.handler(args, context);
+    expect(result).toMatchObject({ data: {
+      ok: false, wouldBlock: expect.arrayContaining(['missing_required', code]),
+    } });
+    expect(result).not.toHaveProperty('data.scorecardDraft');
+  });
+
+  it('reports all independent unavailable reads as unknown rather than a pass or an empty corpus', async () => {
+    stores.readPlan.mockRejectedValue(new Error('plan unavailable'));
+    stores.listClauses.mockRejectedValue(new Error('clauses unavailable'));
+    stores.listRubrics.mockRejectedValue(new Error('policy unavailable'));
+    const result = await evaluateTool.handler(evaluateTool.args.parse({ slug: metadataPlanSlug }), context);
+    expect(result).toMatchObject({ data: { ok: false, unknownChecks: ['plan', 'clauses', 'class'] } });
+    expect(result).not.toHaveProperty('data.scorecardDraft');
+  });
+
+  it('does not manufacture a spec-quality draft for a legacy/no-clause plan', async () => {
+    stores.readPlan.mockResolvedValue({
+      row: { items: [], template: null, inputSchema: null, templateData: null },
+      parsed: { items: [] },
+    });
+    stores.listClauses.mockResolvedValue([]);
+    stores.listRubrics.mockResolvedValue([]);
+    const result = await evaluateTool.handler(evaluateTool.args.parse({ slug: metadataPlanSlug }), context);
+    expect(result).toMatchObject({ data: {
+      ok: false, readiness: { ready: true, source: 'none' },
+      wouldBlock: expect.arrayContaining(['spec_quality_class_missing', 'no_first_class_spec_clauses']),
+    } });
+    expect(result).not.toHaveProperty('data.scorecardDraft');
+  });
+
+  it('still refuses invalid inputs with an otherwise valid class and clause set', async () => {
+    stores.listRubrics.mockResolvedValue([{ classRef: 'plan-class-feature-ship' }]);
+    const result = await evaluateTool.handler(evaluateTool.args.parse({ slug: metadataPlanSlug }), context);
+    expect(result).toMatchObject({ data: { ok: false, wouldBlock: ['missing_required'], unknownChecks: [] } });
+    if (!('data' in result) || !result.data || typeof result.data !== 'object') {
+      throw new Error('Expected structured prerequisite result');
+    }
+    expect(Number(Object.hasOwn(result.data, 'scorecardDraft')))
+      .toBe(metadataWorkflowTargets.prematureDrafts.maxAfter);
   });
 });
 
