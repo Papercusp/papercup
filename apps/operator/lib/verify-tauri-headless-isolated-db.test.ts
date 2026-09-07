@@ -106,6 +106,23 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/Refusing to proceed — this would silently/);
   });
 
+  it('hands the verified disposable database and workspace identity to assertion commands', () => {
+    const handoff = src.match(
+      /# EI-22622028658305763:[\s\S]*?log "running assertion command: \$\*"/,
+    )?.[0];
+    expect(handoff).toBeTruthy();
+    expect(handoff).toContain('if [ "$ISOLATED_DB" = "1" ]');
+    expect(handoff).toContain('export PAPERCUSP_HOME="$ISOLATED_HOME"');
+    expect(handoff).toContain('export PAPERCUSP_WORKSPACE="$ISOLATED_WORKSPACE"');
+    expect(handoff).toContain(
+      'export HARNESS_ADMIN_DATABASE_URL="$ISOLATED_ADMIN_URL"',
+    );
+    expect(handoff).toContain(
+      'export HARNESS_DATABASE_URL="$ISOLATED_APP_URL"',
+    );
+    expect(handoff).toContain('export PAPERCUSP_VERIFY_TAURI_ISOLATED=1');
+  });
+
   it('discovers the frozen plain-node host as well as the legacy source-entry process', () => {
     expect(src).toContain(
       "OPERATOR_HOST_PROCESS_RE='bin/hono-host\\.ts|dist-verify/hono-host\\.mjs'",
