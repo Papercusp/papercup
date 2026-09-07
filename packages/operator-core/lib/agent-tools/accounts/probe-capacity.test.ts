@@ -157,6 +157,31 @@ describe('accounts:probe-capacity — failure persistence', () => {
     );
   });
 
+  it('bounds gateway readmit convergence with one shared deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      pool = registerAccount(pool, { id: 'b', credentialRef: 'token:~/.papercusp/b' }, T0 + 1);
+      pool = registerAccount(pool, { id: 'c', credentialRef: 'token:~/.papercusp/c' }, T0 + 2);
+      probeM.mockResolvedValue([
+        { accountId: 'a', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
+        { accountId: 'b', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
+        { accountId: 'c', ok: true, status: 200, windows: {}, before: {}, unwalls: false },
+      ]);
+      gatewayFetchM.mockImplementation(() => new Promise<Response>(() => undefined));
+
+      const pending = tool.handler({} as never, {} as never) as Promise<Out>;
+      await vi.advanceTimersByTimeAsync(mod.GATEWAY_READMIT_PHASE_TIMEOUT_MS);
+      const out = body(await pending);
+
+      expect(out.ok).toBe(true);
+      expect(out.gatewayConverged).toBe(false);
+      expect(out.warning).toMatch(/gateway's in-memory exclusions were NOT cleared for 3\/3/);
+      expect(gatewayFetchM).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a Luna reserve-meter reading (model:gpt-reserve) is reported but NEVER projected, never serving, never readmitted (EI-22103680502746318)', async () => {
     // The observed 2026-09-02 shape: 'aviynw5_codex' premium weekly at 1.00 (walled); a gpt-reserve
     // probe returns 200 with the reserve bucket at 4%. Before the fix that 0.04 overwrote the 1.00,

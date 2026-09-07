@@ -30,6 +30,8 @@ import { trackDetached } from '../../detached-imports';
 const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to the active workspace)');
 
 const gwBase = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PORT) || 8788}`;
+/** Keep best-effort gateway convergence bounded after the upstream probe has finished. */
+export const GATEWAY_READMIT_PHASE_TIMEOUT_MS = 5_000;
 
 /**
  * CONVERGE THE SECOND STORE. This tool writes the DB account-pool projection; the running gateway keeps a
@@ -54,39 +56,70 @@ async function readmitIntoGateway(accountIds: string[], provider: AccountProvide
   warning?: string;
 }> {
   if (accountIds.length === 0) return { converged: false, readmitted: [], healthyAccounts: null };
-  const readmitted: string[] = [];
-  let healthyAccounts: number | null = null;
-  for (const accountId of accountIds) {
-    try {
-      // Keep the account selector on every request so a successful probe cannot reopen confirmed-walled
-      // accounts (or a different provider's account) by accidentally invoking the endpoint's all-account
-      // form. The gateway defaults this endpoint to Claude, so Codex must carry its provider explicitly.
-      const providerQuery = provider === 'claude' ? '' : `&provider=${encodeURIComponent(provider)}`;
-      const r = await fetch(`${gwBase()}/admin/readmit?account=${encodeURIComponent(accountId)}${providerQuery}`, {
-        method: 'POST',
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!r.ok) {
-        return {
-          converged: false,
-          readmitted,
-          healthyAccounts,
-          warning: `projection updated, but the gateway's in-memory exclusions were NOT cleared (/admin/readmit for '${accountId}' → ${r.status}). fleet:capacity may still report these accounts as unusable.`,
-        };
-      }
-      const b = (await r.json().catch(() => ({}))) as { readmitted?: string[]; healthyAccounts?: number };
-      readmitted.push(...(Array.isArray(b.readmitted) ? b.readmitted : [accountId]));
-      if (typeof b.healthyAccounts === 'number') healthyAccounts = b.healthyAccounts;
-    } catch (e) {
-      return {
-        converged: false,
-        readmitted,
-        healthyAccounts,
-        warning: `projection updated, but the gateway was unreachable at ${gwBase()} while readmitting '${accountId}' (${e instanceof Error ? e.message : String(e)}), so its in-memory exclusions still stand. fleet:capacity may still report these accounts as unusable.`,
-      };
-    }
+  const controller = new AbortController();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineTimer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`gateway readmit phase exceeded ${GATEWAY_READMIT_PHASE_TIMEOUT_MS}ms`));
+    }, GATEWAY_READMIT_PHASE_TIMEOUT_MS);
+    deadlineTimer.unref?.();
+  });
+
+  try {
+    // Keep the account selector on every request so a successful probe cannot reopen confirmed-walled
+    // accounts (or a different provider's account) by accidentally invoking the endpoint's all-account
+    // form. The gateway defaults this endpoint to Claude, so Codex must carry its provider explicitly.
+    const providerQuery = provider === 'claude' ? '' : `&provider=${encodeURIComponent(provider)}`;
+    const results = await Promise.all(
+      accountIds.map(async (accountId) => {
+        try {
+          const result = await Promise.race([
+            (async () => {
+              const r = await fetch(`${gwBase()}/admin/readmit?account=${encodeURIComponent(accountId)}${providerQuery}`, {
+                method: 'POST',
+                signal: controller.signal,
+              });
+              if (!r.ok) return { accountId, ok: false as const, detail: `HTTP ${r.status}` };
+              const b = (await r.json().catch(() => ({}))) as { readmitted?: string[]; healthyAccounts?: number };
+              return {
+                accountId,
+                ok: true as const,
+                readmitted: Array.isArray(b.readmitted) ? b.readmitted : [accountId],
+                healthyAccounts: typeof b.healthyAccounts === 'number' ? b.healthyAccounts : null,
+              };
+            })(),
+            deadline,
+          ]);
+          return result;
+        } catch (e) {
+          return {
+            accountId,
+            ok: false as const,
+            detail: e instanceof Error ? e.message : String(e),
+          };
+        }
+      }),
+    );
+    const readmitted = results.flatMap((result) => (result.ok ? result.readmitted : []));
+    const healthyAccounts =
+      [...results].reverse().find((result) => result.ok && result.healthyAccounts !== null)?.healthyAccounts ?? null;
+    const failures = results.filter((result): result is Extract<(typeof results)[number], { ok: false }> => !result.ok);
+    if (failures.length === 0) return { converged: true, readmitted, healthyAccounts };
+
+    const details = failures
+      .slice(0, 3)
+      .map((failure) => `'${failure.accountId}' (${failure.detail})`)
+      .join(', ');
+    return {
+      converged: false,
+      readmitted,
+      healthyAccounts,
+      warning: `projection updated, but the gateway's in-memory exclusions were NOT cleared for ${failures.length}/${accountIds.length} account(s) (${details}${failures.length > 3 ? ', …' : ''}). fleet:capacity may still report these accounts as unusable.`,
+    };
+  } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
-  return { converged: true, readmitted, healthyAccounts };
 }
 
 // { data } shape (definetool-token-optimization P-003): the framework owns wire
