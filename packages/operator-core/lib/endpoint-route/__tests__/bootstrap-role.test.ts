@@ -73,17 +73,10 @@ vi.mock('../../workspace-registry', () => ({
     return 'default';
   },
 }));
-// bootstrap-role's spawn-hydration roster source (listHiveRoster → listFleetAssignments)
-// reconciles holder liveness against the recorded-session log (EI-6374/EI-8106) via these
-// adv-sessions reads. Without them on the mock, the roster's fire-and-forget
-// listFleetAssignments promise rejects UNHANDLED (the global onUnhandledError then fails
-// this file). Faithful empty-set stubs — these CODEX_HOME/config-dir cases assert nothing
-// about fleet reconciliation, so an empty result is correct and keeps the mock complete.
-vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()),
-  recordAdvSession: recordAdvSessionMock,
-  endedRecordedOwnerIds: async () => new Set<string>(),
-  recordedLiveOwnerIds: async () => new Set<string>(),
-}));
+// This route imports only recordAdvSession. Spawn hydration is mocked below, so
+// importing and spreading the complete production adv-sessions module here
+// needlessly pulls its database/liveness graph into the beforeAll transform.
+vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
@@ -115,6 +108,17 @@ vi.mock('../../saved-prompts-materialize', () => ({
   materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeCodexPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
 }));
+// SPAWN_HANDOFF_HYDRATION is disabled by the flag mock above and has its own
+// focused coverage. Loading its production dependency graph here made this
+// otherwise-hermetic unit suite spend >10s in beforeAll module import and time
+// out before any assertion ran. Stub both seams so this file tests bootstrap-role
+// rather than the unrelated roster/checkpoint/loop graph behind hydration.
+vi.mock('../../fleet/spawn-hydration', () => ({
+  assembleSpawnHydration: vi.fn(async () => ({ text: '', sources: [] })),
+}));
+vi.mock('../../fleet/spawn-hydration-deps', () => ({
+  productionSpawnHydrationDeps: vi.fn(() => ({})),
+}));
 const getPlanContextBySlugMock = vi.fn(async (_slug?: string) => '## Source Plan Context\n\n**Plan:** `p1`');
 vi.mock('../../plan-context-for-feature', () => ({ getPlanContextBySlug: (slug: string) => getPlanContextBySlugMock(slug) }));
 
@@ -143,7 +147,12 @@ beforeAll(async () => {
   const mod = await import('../routes/agent-mcp/bootstrap-role');
   post = (mod.default as Array<{ method: string; handler: typeof post }>)
     .find((r) => r.method === 'POST')!.handler;
-});
+// The dynamic import must run after Vitest installs the mocks above. Its Vite
+// transform is therefore charged to this hook (rather than file collection)
+// and the route's legitimate module graph can exceed Vitest's 10s default on
+// the shared runner. Give that one-time transform a bounded budget; individual
+// request tests retain their ordinary timeout.
+}, 30_000);
 
 async function callPost(body: unknown): Promise<Response> {
   const req = new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-role', {
