@@ -244,6 +244,7 @@ export interface SuLaunchSpecRecord {
   contextSize: 'trimmed' | 'steward';
   personaTier: 'full' | 'fleet' | null;
   model: string | null;
+  modelSource?: 'explicit' | 'inherited' | 'configured-default';
   planSlug: string | null;
   launchedBy: string | null;
   autoMode: boolean;
@@ -264,6 +265,10 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
   const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
   const normalizedContextSize = normalizeSuContextSize(r.contextSize);
   if (!normalizedContextSize.ok) return null;
+  const modelSource =
+    r.modelSource === 'explicit' || r.modelSource === 'inherited' || r.modelSource === 'configured-default'
+      ? r.modelSource
+      : null;
   return {
     v: 1,
     agent: r.agent,
@@ -273,6 +278,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     contextSize: normalizedContextSize.contextSize,
     personaTier: str(r.personaTier) as SuLaunchSpecRecord['personaTier'],
     model: str(r.model),
+    ...(modelSource ? { modelSource } : {}),
     planSlug: str(r.planSlug),
     launchedBy: str(r.launchedBy),
     autoMode: r.autoMode === true,
