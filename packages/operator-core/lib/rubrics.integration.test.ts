@@ -1636,6 +1636,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
       INSERT INTO harness_shared.plan_items
         (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
       VALUES (${seeded.workspaceId},'papercusp',${seeded.subject},'P-003',3,'todo','third outcome')`;
+    // Advance the rubric's subject-plan pin to match the version bumped above.
+    // The readiness gate refuses when `barContract.subjectPlanRevision !==
+    // plan.revision` (acceptance-bar-contract-snapshot.ts, third clause of
+    // bar_snapshot_rubric_revision_mismatch). Real callers never hit that,
+    // because every plan write goes through the door that re-pins it — this
+    // fixture edits harness_plans with raw SQL, so it has to re-pin too. Mirror
+    // the production writer exactly (acceptance-bar-amendment.ts:130) rather
+    // than inventing a fixture-only re-pin that could drift from it.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',
+               to_jsonb(${Number(subject!.version) + 1}::int))
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.rubricSlug}`;
 
     const check = {
       kind: 'tests' as const,
@@ -1680,7 +1694,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
       changedBars: ['R-3'],
       approvalRequired: true,
       projectionCount: 3,
-      revisionMovement: { rubric: { from: 1, to: 2 }, subject: { from: 2, to: 3 } },
+      // rubric starts at 2, not 1: seeding now authors METHOD/check first.
+      revisionMovement: { rubric: { from: 2, to: 3 }, subject: { from: 2, to: 3 } },
     });
     expect(preview!.approval.bars).toEqual([expect.objectContaining({ barKey: 'R-3', priorBarHash: null })]);
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-3', kinds: ['added'] }));
@@ -1709,7 +1724,12 @@ describe('template_data persistence boundary — the set-template-data door', ()
         spec_id: 'AUTO-BAR-R-3-P-003',
         source_bar_key: 'R-3',
         plan_item_id: 'P-003',
-        source_rubric_revision: 2,
+        // DERIVED, not hardcoded: the projection is stamped with the rubric revision the
+        // amendment produced. The concrete arithmetic is already asserted above by
+        // revisionMovement { rubric: { from: 2, to: 3 } }, so deriving here loses no coverage
+        // and survives the next seedBarContract() fixture change (same pattern as the
+        // source_rubric_revision assertions at the atomic-author and semantic-replay tests).
+        source_rubric_revision: after!.revision,
       }),
     );
     const [pinned] = await db.adminSql<
@@ -1873,7 +1893,23 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const results = await Promise.allSettled([rubrics.amendRubric(first), rubrics.amendRubric(second)]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     const refusal = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
-    expect(String(refusal.reason)).toContain('acceptance_bar_amendment_revision_conflict');
+    // The loser is refused by whichever serialization mechanism reaches it
+    // first, and BOTH are correct outcomes of this path: the revision CAS when
+    // it gets far enough to compare, or the row lock while the winner still
+    // holds it. amendRubric takes a BLOCKING `SELECT ... FOR UPDATE`
+    // (acceptance-bar-amendment.ts:97) under a 5s lock_timeout
+    // (txn-timeouts-config.ts), so when the winning transaction outlives that
+    // window the lock refuses first and the CAS branch is unreachable — which
+    // made this assertion fail for an environment reason while the system did
+    // exactly what the test is named for (serialize, admit one, write nothing
+    // partial). Those invariants are still asserted, above and below.
+    // This is NOT a loosening: the stale-CAS refusal is now pinned
+    // DETERMINISTICALLY by the sequential test immediately below, where no
+    // competing lock holder exists, so the specific code is still covered.
+    // That the lock path surfaces a RAW PostgresError instead of the typed
+    // OrgTxnTimeoutError the rest of operator-core maps 55P03 onto is a real
+    // gap, filed as EI-22629595262565099 rather than absorbed here.
+    expect(String(refusal.reason)).toMatch(/acceptance_bar_amendment_revision_conflict|lock timeout/);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
@@ -1881,6 +1917,29 @@ describe('template_data persistence boundary — the set-template-data door', ()
     // authoring write a real caller performs (2 seed + 2 author + 2 amend).
     // The assertion still pins that the amendment advanced BOTH clause pins.
     expect(history.n).toBe(6);
+  });
+
+  it('refuses a stale expectedRubricRevision with the revision-conflict code when no lock competes', async () => {
+    const seeded = await seedBarContract('sequential-stale-cas-subject', { authorMethods: true });
+    const before = await rubrics.getRubric(seeded.rubricSlug);
+    const inputs = ['live', 'deployed'].map((evidencePlane) => ({
+      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: `Require ${evidencePlane} evidence.`,
+      expectedRubricRevision: before!.revision,
+      criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: evidencePlane as 'live' | 'deployed' },
+    }));
+    // Both approvals are minted against the PRE-amendment state, so once the
+    // first amendment lands the second carries a genuinely stale
+    // expectedRubricRevision.
+    const first = { ...inputs[0]!, approvalRef: await postApproval(inputs[0]!) };
+    const second = { ...inputs[1]!, approvalRef: await postApproval(inputs[1]!) };
+    await rubrics.amendRubric(first);
+    // Sequential, so no competing row lock exists and the revision CAS is
+    // always REACHED. This is the deterministic home of the specific-code
+    // assertion that the concurrent test above cannot make reliably: there the
+    // 5s lock_timeout can refuse the loser first (see the comment there), here
+    // nothing holds the lock, so the conflict code is the only possible refusal.
+    await expect(rubrics.amendRubric(second)).rejects.toThrow(/acceptance_bar_amendment_revision_conflict/);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
   });
 
   /** Read the rubric's stored template_data straight off the row, so a resubmission is
