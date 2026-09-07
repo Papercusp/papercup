@@ -11,6 +11,10 @@
  *                                     on every attempt (packaged installs with dynamic ports)
  *   PAPERCUSP_MCP_PROXY_TARGET_HOST   upstream host (default 127.0.0.1)
  *   PAPERCUSP_MCP_PROXY_TARGET_PORT   upstream port (default PAPERCUSP_HONO_PORT or 3070)
+ *   PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT
+ *                                     unpinned dev-box fallback after :3070
+ *                                     (default 3170); explicit target/HONO pins
+ *                                     remain single-candidate fail-closed
  *   PAPERCUSP_MCP_PROXY_RETRY_MS      retry-on-refused window (default 90000 —
  *                                     a :3070 deploy restart measured ~45s wall
  *                                     on 2026-07-01, with recoveries landing at
@@ -31,7 +35,11 @@
  *   PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS     per-waiter queue-telemetry cadence
  *                                             (default 5000; 0 disables) — EI-21504897841052086.
  */
-import { readOperatorJsonTarget, startMcpProxy } from '../lib/mcp-proxy/proxy';
+import {
+  readOperatorJsonTarget,
+  resolveDefaultMcpProxyTargets,
+  startMcpProxy,
+} from '../lib/mcp-proxy/proxy';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 
 const dynamicTarget = process.env.PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET === '1';
@@ -42,6 +50,6 @@ startMcpProxy({
   listenPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071),
   ...(dynamicTarget
     ? { resolveTarget: () => readOperatorJsonTarget() ?? { host: targetHost, port: targetPort, source: 'fallback' } }
-    : { targetHost, targetPort }),
+    : { resolveTargets: () => resolveDefaultMcpProxyTargets() }),
   retryWindowMs: MCP_PROXY_RETRY_WINDOW_MS,
 });

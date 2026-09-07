@@ -254,6 +254,8 @@ export interface McpProxyOptions {
   targetPort?: number;
   /** Resolve the current upstream per attempt. Used by packaged installs whose operator port changes per boot. */
   resolveTarget?: () => McpProxyTarget;
+  /** Resolve ordered upstream candidates per attempt. A later candidate is selected only after a pre-connect refusal. */
+  resolveTargets?: () => McpProxyTarget[];
   /**
    * WI-41045 — the superuser MCP client config contains a bearer captured at
    * session boot. When the token file rotates, refresh it at the proxy boundary
@@ -478,6 +480,58 @@ export function staticMcpProxyTarget(
   return { host, port, source: "static" };
 }
 
+/** The canonical live operator port on the shared dev box. */
+export const DEFAULT_MCP_PROXY_TARGET_PORT = 3070;
+/** The canonical staging operator port, available only as an explicit dev topology fallback. */
+export const DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT = 3170;
+
+/** Build a deterministic ordered static target list, omitting a duplicate fallback. */
+export function staticMcpProxyTargets(
+  host: string,
+  port: number,
+  fallbackPort?: number,
+): McpProxyTarget[] {
+  const primary = staticMcpProxyTarget(host, port);
+  if (
+    !Number.isFinite(fallbackPort) ||
+    (fallbackPort as number) <= 0 ||
+    fallbackPort === port
+  )
+    return [primary];
+  return [
+    primary,
+    { host, port: fallbackPort as number, source: "static-fallback" },
+  ];
+}
+
+/**
+ * Resolve the unpinned dev-box topology. The staging fallback is deliberately
+ * enabled only when no target/host/host-port pin was supplied; packaged
+ * installs use `readOperatorJsonTarget` through `resolveTarget` instead.
+ */
+export function resolveDefaultMcpProxyTargets(
+  env: NodeJS.ProcessEnv = process.env,
+): McpProxyTarget[] {
+  const targetHost = env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? "127.0.0.1";
+  const targetPortEnv = env.PAPERCUSP_MCP_PROXY_TARGET_PORT;
+  const honoPortEnv = env.PAPERCUSP_HONO_PORT;
+  const targetPort = Number(
+    targetPortEnv ?? honoPortEnv ?? DEFAULT_MCP_PROXY_TARGET_PORT,
+  );
+  const explicitPin =
+    targetPortEnv !== undefined ||
+    honoPortEnv !== undefined ||
+    env.PAPERCUSP_MCP_PROXY_TARGET_HOST !== undefined;
+  const fallbackPort =
+    !explicitPin && targetPort === DEFAULT_MCP_PROXY_TARGET_PORT
+      ? Number(
+          env.PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT ??
+            DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT,
+        )
+      : undefined;
+  return staticMcpProxyTargets(targetHost, targetPort, fallbackPort);
+}
+
 export function readOperatorJsonTarget(
   path = join(homedir(), ".papercusp", "operator.json"),
 ): McpProxyTarget | null {
@@ -503,9 +557,15 @@ export function readOperatorJsonTarget(
   return null;
 }
 
-function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
+function resolveTargetCandidates(opts: McpProxyOptions): McpProxyTarget[] {
+  const candidates = opts.resolveTargets?.();
+  if (candidates) {
+    if (candidates.length === 0)
+      throw new Error("mcp proxy resolveTargets returned no targets");
+    return candidates;
+  }
   const dynamic = opts.resolveTarget?.();
-  if (dynamic) return dynamic;
+  if (dynamic) return [dynamic];
   const host = opts.targetHost ?? "127.0.0.1";
   const port = Number(opts.targetPort);
   if (!Number.isFinite(port) || port <= 0) {
@@ -513,7 +573,11 @@ function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
       "mcp proxy targetPort must be set when resolveTarget is not provided",
     );
   }
-  return staticMcpProxyTarget(host, port);
+  return [staticMcpProxyTarget(host, port)];
+}
+
+function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
+  return resolveTargetCandidates(opts)[0]!;
 }
 
 /**
@@ -1068,6 +1132,7 @@ interface ForwardOutcome {
  *  `clientGone` and breaks instead of replaying. */
 function forwardOnce(
   opts: McpProxyOptions,
+  target: McpProxyTarget,
   method: string,
   reqUrl: string,
   headers: http.IncomingHttpHeaders,
@@ -1077,13 +1142,6 @@ function forwardOnce(
   signal?: AbortSignal,
 ): Promise<ForwardOutcome> {
   return new Promise((resolve) => {
-    let target: McpProxyTarget;
-    try {
-      target = resolveTarget(opts);
-    } catch (err) {
-      resolve({ err: err as NodeJS.ErrnoException, connected: false });
-      return;
-    }
     let connected = false;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
@@ -3447,8 +3505,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let postConnectRetries = 0;
           let backpressureRetries = 0;
           let handshakeTimeoutRetries = 0;
+          let candidateIndex = 0;
+          let candidateCount = 0;
           let last: ForwardOutcome | undefined;
-          // Retry loop: refused → replay across the window (shouldRetry); post-connect →
+          // Retry loop: refused → walk ordered candidates, then replay the last candidate
+          // across the window (shouldRetry); post-connect →
           // replay only an idempotent/readonly request, bounded (postConnectRetryable);
           // upstream 429 (admission-control backpressure) → absorb + retry (P-010).
           // eslint-disable-next-line no-constant-condition
@@ -3484,9 +3545,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ? (): void => attemptAbort.abort()
               : null;
             let outcome: ForwardOutcome;
+            candidateCount = 0;
             try {
+              const candidates = resolveTargetCandidates(opts);
+              candidateCount = candidates.length;
+              candidateIndex = Math.min(candidateIndex, candidates.length - 1);
               outcome = await forwardOnce(
                 opts,
+                candidates[candidateIndex]!,
                 req.method ?? "GET",
                 req.url ?? "/",
                 fwd.headers,
@@ -3650,7 +3716,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               lastDataPlaneInstabilityAtMs,
             );
             if (!outcome.connected) {
-              // Refused / pre-connect: the request provably never reached :3070 → always safe to replay.
+              // Refused / pre-connect: the request provably never reached the selected
+              // upstream. Walk to the next candidate only in this safe state; a connected
+              // error must never fail over because the first target may have applied a write.
+              if (
+                candidateIndex + 1 < candidateCount &&
+                shouldRetry(false, elapsed, retryWindowMs)
+              ) {
+                candidateIndex++;
+                continue;
+              }
+              // Once every candidate has refused, keep retrying the last candidate until
+              // the same bounded window expires.
               if (shouldRetry(false, elapsed, retryWindowMs)) {
                 await new Promise((r) => setTimeout(r, backoff));
                 continue;
