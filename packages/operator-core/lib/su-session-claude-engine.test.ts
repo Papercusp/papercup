@@ -39,12 +39,13 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
   const close = vi.fn(() => output.end());
   const interrupt = vi.fn(async () => undefined);
+  let mcpReads = 0;
   const factory: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options }) => {
     receivedOptions = options;
     void (async () => {
@@ -69,6 +70,7 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
       }),
       mcpServerStatus: vi.fn(async () => {
         if (config.holdMcp) await new Promise(() => {});
+        if (config.pendingMcp && mcpReads++ === 0) return [{ name: 'papercusp-su', status: 'pending' as const }];
         return [{ name: 'papercusp-su', status: config.connected === false ? 'failed' as const : 'connected' as const }];
       }),
       interrupt, close,
@@ -129,10 +131,18 @@ describe('structured Claude SU engine', () => {
 
   it('cleans up a disconnected SU tool connection before ready', async () => {
     const p = peer({ connected: false }); const engine = open(p);
-    await expect(engine.ready).rejects.toThrow();
+    await expect(engine.ready).rejects.toThrow('SU tool connection is failed');
     expect(p.close).toHaveBeenCalled();
     expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'lifecycle' && event.state === 'ready')).toBe(false);
+  });
+
+  it('waits for a pending MCP handshake instead of mistaking it for a missing server', async () => {
+    const p = peer({ pendingMcp: true }); const engine = open(p, { startupTimeoutMs: 1_000 });
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('starting');
+    await engine.ready;
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('ready');
+    expect(p.prompts).toHaveLength(0);
   });
 
   it.each([{ holdInit: true }, { holdMcp: true }])('bounds a stalled SDK control handshake and closes its peer: %j', async (config) => {

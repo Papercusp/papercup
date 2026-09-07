@@ -52,7 +52,7 @@ function DreamControlBody({ potSlug }: { potSlug: string }) {
           </label>
           <p className="pc-dream-control__hint">Auto-dream runs when idle. Manual Start and Pause leave this setting unchanged. Pausing stops before the next phase; a call already in progress may finish.</p>
           {snapshot.blocker ? <p role="status">{snapshot.blocker}</p> : null}
-          <p>{snapshot.limits.attempts} attempts and ${snapshot.limits.cycleUsd.toFixed(2)} per cycle. Workspace last 24 hours: ${snapshot.rollingAccountedUsd.toFixed(2)} / ${snapshot.limits.rollingUsd.toFixed(2)}.</p>
+          <p>Hard ceilings: {snapshot.limits.attempts} attempts and ${snapshot.limits.cycleUsd.toFixed(2)} per cycle. Workspace last 24 hours: ${snapshot.rollingAccountedUsd.toFixed(2)} / ${snapshot.limits.rollingUsd.toFixed(2)}.</p>
           {last ? (
             <div role="status" data-testid="dream-last-cycle">
               <strong>{last.running ? 'Current cycle' : 'Last cycle'}</strong>

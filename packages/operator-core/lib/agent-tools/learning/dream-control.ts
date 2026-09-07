@@ -12,6 +12,8 @@ export default defineTool({
   description: 'Start/pause manual Dream cycles or explicitly enable/disable automatic Dream for one pot. Reuses its existing routines and owner setting; preserves the hard attempt/spend caps. Manual Start does not enable automatic dreaming.',
   capability: 'operator:write',
   requirePrincipal: false,
+  // The controller owns its short, explicitly workspace-scoped transaction.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   guidance: {
     when: 'The owner starts/pauses Dream or changes its separate automatic toggle in the Learning tab.',

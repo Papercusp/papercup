@@ -133,20 +133,29 @@ describe("createFilteredSeedProgressReporter", () => {
       minIntervalMs: 60_000,
       minPercentStep: 5,
     });
+    const reportProgress = (processed: number) => report({
+      phase: "filtered-source-scan",
+      sourceStart: 0,
+      sourceEnd: 10_000,
+      processed,
+      total: 10_000,
+      decodedOps: processed,
+      decodedBytes: processed,
+    });
 
-    report({ phase: "filtered-source-scan", processed: 256, total: 10_000 });
-    report({ phase: "filtered-source-scan", processed: 512, total: 10_000 });
+    reportProgress(256);
+    reportProgress(512);
     expect(warn).toHaveBeenCalledTimes(1);
 
-    report({ phase: "filtered-source-scan", processed: 768, total: 10_000 });
+    reportProgress(768);
     expect(warn).toHaveBeenCalledTimes(2);
 
     now += 60_000;
-    report({ phase: "filtered-source-scan", processed: 1_024, total: 10_000 });
+    reportProgress(1_024);
     expect(warn).toHaveBeenCalledTimes(3);
 
-    report({ phase: "filtered-source-scan", processed: 10_000, total: 10_000 });
-    report({ phase: "filtered-source-scan", processed: 10_000, total: 10_000 });
+    reportProgress(10_000);
+    reportProgress(10_000);
     expect(warn).toHaveBeenCalledTimes(4);
     expect(warn).toHaveBeenLastCalledWith(
       "[cut-seed] filtered-source-scan: 10000/10000 source blocks folded (100%).",

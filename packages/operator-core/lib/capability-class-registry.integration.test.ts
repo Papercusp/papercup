@@ -180,17 +180,6 @@ describe('capability class registry (real PG)', () => {
       classId: 'crm.email',
       classVersion: '1.0.0',
     })).toBeNull();
-    expect(await getPotCapabilityProviderBinding(db.sql, {
-      workspaceId,
-      potSlug: 'sales-ops',
-      classId: 'crm.email',
-      classVersion: '1.0.0',
-      includeInactiveProvider: true,
-    })).toMatchObject({
-      providerPackage: 'acme-crm',
-      status: 'retired',
-    });
-
     const candidates = await listActiveCapabilityProviderCandidates(
       db.sql,
       workspaceId,
@@ -216,6 +205,16 @@ describe('capability class registry (real PG)', () => {
       classId: 'crm.email',
       classVersion: '1.0.0',
     })).toBeNull();
+    expect(await getPotCapabilityProviderBinding(db.sql, {
+      workspaceId,
+      potSlug: 'sales-ops',
+      classId: 'crm.email',
+      classVersion: '1.0.0',
+      includeInactiveProvider: true,
+    })).toMatchObject({
+      providerPackage: 'acme-crm',
+      status: 'retired',
+    });
     expect(await listActiveCapabilityProviderCandidates(
       db.sql,
       workspaceId,
