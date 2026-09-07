@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import {
+  ADEQUACY_CRITERIA,
   classifySpecEvidenceLineage,
   evaluateSpecTestAdequacy,
   requiredProofFloor,
@@ -136,6 +137,33 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.traceability.evidence).toContain('kind=coverage-census');
     expect(result.ratings['execution-integrity'].evidence).toContain('testRunId=43');
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
+  });
+
+  it('puts an exact executable evaluator probe in every rating evidence string', () => {
+    const bound = evidence();
+    const current: EvidenceCurrentInput[] = [
+      {
+        evidenceKind: bound.evidenceKind,
+        evidenceRef: bound.evidenceRef,
+        ...bound.fingerprints,
+      },
+    ];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [bound],
+      current,
+      classRef: 'plan-class-feature-ship',
+    });
+    const recipe = result.scorecardDraft.rerunRecipe;
+    expect(evaluatorArgsSchema.safeParse(recipe.args).success).toBe(true);
+    const args = JSON.stringify(recipe.args);
+
+    for (const criterion of ADEQUACY_CRITERIA) {
+      expect(result.ratings[criterion].evidence).toContain(
+        `Re-run plans:evaluate-spec-test-adequacy with args=${args}; ` +
+          `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
+      );
+    }
   });
 
   it.each([

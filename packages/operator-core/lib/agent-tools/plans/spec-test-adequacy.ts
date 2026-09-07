@@ -504,6 +504,22 @@ function rerunRecipeFor(
   };
 }
 
+function appendRatingRerunProbes(
+  ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
+  rerunRecipe: SpecTestAdequacyRerunRecipe,
+): void {
+  const args = JSON.stringify(rerunRecipe.args);
+  for (const criterion of ADEQUACY_CRITERIA) {
+    const rating = ratings[criterion];
+    ratings[criterion] = {
+      ...rating,
+      evidence:
+        `${rating.evidence} Re-run ${rerunRecipe.evaluator} with args=${args}; ` +
+        `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
+    };
+  }
+}
+
 /** Grade one clause/evidence row into the exact ratings map accepted by scorecards:emit. */
 export function evaluateSpecTestAdequacy(input: {
   clause: SpecClauseRevision;
@@ -778,6 +794,9 @@ export function evaluateSpecTestAdequacy(input: {
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
   ratings['plan-class-risk-floor'] = risk.rating;
 
+  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, classRef);
+  appendRatingRerunProbes(ratings, rerunRecipe);
+
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
   const verdict = wouldBlock.some((key) => ratings[key].rating === 'fail')
     ? 'fail'
@@ -785,7 +804,6 @@ export function evaluateSpecTestAdequacy(input: {
       ? 'unknown'
       : 'pass';
   const evidenceRefs = [...new Set(evidence.map((row) => row.evidenceRef))].sort();
-  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, classRef);
   const subjectRef = specTestAdequacySubjectRef(
     rerunRecipe.selection.planSlug,
     rerunRecipe.selection.specId,
