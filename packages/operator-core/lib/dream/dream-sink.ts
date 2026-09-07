@@ -361,6 +361,7 @@ async function sinkCapabilityDream(
     title,
     addressesPatternRefs: sourceRefs,
     routedAt: new Date(run.startedAt).getTime(),
+    preserveExisting: true,
     workspaceId: run.workspaceId,
     ...(input.createdBy ? { createdBy: input.createdBy } : {}),
   });
