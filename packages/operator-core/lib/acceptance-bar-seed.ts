@@ -93,7 +93,7 @@ export interface AcceptanceBarSeedBuildInput {
   legacyCriterionMap?: Record<string, string>;
   adoptionEpoch: number;
   subjectPlanRevision: number;
-  /** Locked subject state; only the already-pinned started revision may reuse canonical BARs. */
+  /** Locked subject state; only the already-pinned revision may reuse canonical BARs. */
   planStatus?: string | null;
   rubricSlug: string;
   rubricRevision: number;
@@ -421,7 +421,11 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     return refusal([{ code: 'bar_rubric_conflict', detail: 'the active acceptance rubric has invalid template_data' }]);
   }
   const existing = existingParsed?.success ? existingParsed.data : null;
-  const preserveCanonicalBars = input.planStatus != null && input.planStatus !== 'draft' &&
+  // The contract can already be binding while its subject is still draft:
+  // activation seeds it before the plan advances, and a reviewed amendment can
+  // pin that draft's next revision. Match the contract pin, not the plan status,
+  // exactly as the write guard does when deciding whether BAR meaning is protected.
+  const preserveCanonicalBars = input.planStatus != null &&
     existing?.barContract != null &&
     existing.barContract.adoptionEpoch === input.adoptionEpoch &&
     existing.barContract.cohort === input.cohort &&
@@ -477,7 +481,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       });
     }
     const prior = existingByBar.get(bar.barKey);
-    // Once an amendment pins this exact started plan revision, the criterion is
+    // Once an amendment pins this exact plan revision, the criterion is
     // authoritative. Re-auditing must not replace its approved falsifier/plane
     // with the original human seed. A changed plan revision still takes the
     // normal meaning-change guard below the builder.
@@ -575,7 +579,24 @@ interface RubricRow {
   content_hash: string;
   version: number | string;
   title: string | null;
+  template: string | null;
+  template_slug: string | null;
+  archived: boolean;
   template_data: unknown;
+}
+
+/**
+ * The live-rubric discovery query intentionally excludes historical rows. When
+ * the deterministic slug is already occupied, however, the locked row may be
+ * that subject's superseded acceptance rubric rather than an unrelated plan.
+ * Classify the exact row from its persisted identity and validated metadata so a
+ * historical acceptance contract can be re-audited without weakening the slug
+ * collision guard for ordinary, instance, archived, or unrelated rows.
+ */
+function isHistoricalAcceptanceRubric(row: RubricRow, subjectPlan: string): boolean {
+  if (row.template !== 'rubric' || row.template_slug !== null || row.archived) return false;
+  const parsed = rubricTemplateDataAuthoringSchema.safeParse(row.template_data);
+  return parsed.success && parsed.data.kind === 'acceptance' && parsed.data.subjectPlan === subjectPlan;
 }
 
 export interface TransactionalAcceptanceBarSeedInput {
@@ -640,7 +661,8 @@ export async function seedAcceptanceBarsInTransaction(
 ): Promise<TransactionalAcceptanceBarSeedResult> {
   const sql = input.executor;
   const rubrics = await sql<RubricRow[]>`
-    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title, template_data
+    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title,
+           template, template_slug, archived, template_data
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${input.workspaceId}
        AND template = 'rubric'
@@ -673,14 +695,16 @@ export async function seedAcceptanceBarsInTransaction(
   }
 
   const lockedRows = await sql<RubricRow[]>`
-    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title, template_data
+    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title,
+           template, template_slug, archived, template_data
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${input.workspaceId}
        AND harness_slug = ${rubricHarness}
        AND plan_slug = ${rubricSlug}
      FOR UPDATE`;
   const existing = lockedRows[0] ?? null;
-  if (existing && (!discovered || existing.plan_slug !== discovered.plan_slug)) {
+  const existingIsHistoricalAcceptance = existing !== null && isHistoricalAcceptanceRubric(existing, input.planSlug);
+  if (existing && (!discovered || existing.plan_slug !== discovered.plan_slug) && !existingIsHistoricalAcceptance) {
     return refusal([{
       code: 'bar_rubric_conflict',
       detail: `deterministic rubric slug '${rubricSlug}' collides with an existing non-acceptance plan`,
