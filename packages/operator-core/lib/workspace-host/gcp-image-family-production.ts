@@ -8,11 +8,24 @@
  * release executor.  A factory by itself is not a production call path; the exported execute
  * function is the call path consumed by the release CLI.
  */
-import { access } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { delimiter, isAbsolute, resolve } from 'node:path';
+import { access, chmod, mkdtemp, readFile, realpath, rm, statfs, writeFile } from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
-import type { WorkspaceHostProviderConnection } from '@papercusp/deployment-driver';
+import {
+  WorkspaceHostRevokedCredentialGenerationError,
+  assertWorkspaceHostSecretIsolation,
+  describeWorkspaceHostCredentialBinding,
+  parseWorkspaceHostCredentialReference,
+  workspaceHostCredentialReferenceDigest,
+  workspaceHostGetOnlyGitCredentialEnvironment,
+  type AgentCredentialRef,
+  type GitCredentialRef,
+  type WorkspaceHostCredentialDelivery,
+  type WorkspaceHostProviderConnection,
+} from '@papercusp/deployment-driver';
 
 import {
   createGcpWorkspaceHostAcquireAuth,
@@ -34,6 +47,16 @@ import {
   type GcpImageFamilyCommandRunner,
   type GcpImageFamilyReleaseAdapterOptions,
 } from './gcp-image-family-adapter';
+import {
+  assertWorkspaceHostAgentCredentialAdmissionEvidence,
+  verifyWorkspaceHostAgentCredentialAdmission,
+  type WorkspaceHostAgentCredentialAdmissionEvidence,
+  type WorkspaceHostAgentCredentialAdmissionInput,
+} from './agent-credential-admission';
+import {
+  createOperatorWorkspaceHostCredentialMaterialSource,
+  type WorkspaceHostCredentialMaterialSource,
+} from './credential-material-source';
 
 const GCP_TARGET = 'gcp';
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -96,6 +119,776 @@ export interface GcpImageFamilyCredentialProbe {
   identity?: string;
   resolvedProjectId?: string;
   error?: string;
+}
+
+export const GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION =
+  'papercusp-gcp-image-family-exact-path-readiness-v1';
+
+const SOURCE_REVISION = /^[0-9a-f]{40,64}$/i;
+const DELIVERY_KINDS: readonly WorkspaceHostCredentialDelivery['kind'][] = [
+  'provider-identity',
+  'forwarded-agent',
+  'short-lived-delegation',
+  'encrypted-reference',
+];
+const AMBIENT_GIT_ENVIRONMENT =
+  /^(?:GIT_ASKPASS|SSH_ASKPASS|GCM_INTERACTIVE|GIT_CONFIG_(?:GLOBAL|SYSTEM|NOSYSTEM|COUNT|KEY_\d+|VALUE_\d+))$/;
+
+export interface GcpImageFamilyReadinessBinding<Reference extends GitCredentialRef | AgentCredentialRef> {
+  readonly credentialRef: Reference;
+  readonly delivery: WorkspaceHostCredentialDelivery;
+  /** Public high-water mark from the credential lifecycle record used to compose this request. */
+  readonly revokedThrough: number;
+}
+
+export interface GcpImageFamilySourceGitlink {
+  readonly path: string;
+  readonly revision: string;
+}
+
+/** Public, secret-free request data that pins every exact-path readiness observation. */
+export interface GcpImageFamilyExactPathReadinessConfig {
+  readonly contractVersion: typeof GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION;
+  readonly requestedAt: string;
+  readonly expected: {
+    readonly username: string;
+    readonly cwd: string;
+  };
+  readonly source: {
+    readonly repository: string;
+    readonly revision: string;
+    readonly gitlinks: readonly GcpImageFamilySourceGitlink[];
+  };
+  readonly credentials: {
+    readonly git: GcpImageFamilyReadinessBinding<GitCredentialRef>;
+    readonly agent: GcpImageFamilyReadinessBinding<AgentCredentialRef>;
+  };
+  readonly storage: {
+    readonly minimumFreeBytes: number;
+    readonly minimumFreeInodes: number;
+    readonly retainedPaths: readonly string[];
+  };
+}
+
+export type GcpImageFamilyExactPathReadinessFailureCode =
+  | 'invalid-config'
+  | 'revoked-credential'
+  | 'expired-credential'
+  | 'wrong-repository'
+  | 'wrong-identity'
+  | 'wrong-cwd'
+  | 'insufficient-storage'
+  | 'missing-retained-state'
+  | 'ambient-git-helper'
+  | 'source-revision-mismatch'
+  | 'source-origin-mismatch'
+  | 'gitlink-mismatch'
+  | 'credential-unavailable'
+  | 'git-helper-write'
+  | 'git-authentication-failed'
+  | 'agent-authentication-failed';
+
+export class GcpImageFamilyExactPathReadinessError extends Error {
+  constructor(
+    readonly code: GcpImageFamilyExactPathReadinessFailureCode,
+    detail: string,
+  ) {
+    super(`GCP image-family exact-path readiness '${code}' failed: ${detail}`);
+    this.name = 'GcpImageFamilyExactPathReadinessError';
+  }
+}
+
+export interface GcpImageFamilyExactPathRuntimeObservation {
+  readonly username: string;
+  readonly cwd: string;
+  readonly freeBytes: number;
+  readonly freeInodes: number;
+  readonly missingRetainedPaths: readonly string[];
+}
+
+export interface GcpImageFamilyExactPathReadinessEvidence {
+  readonly contractVersion: typeof GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION;
+  readonly ok: true;
+  readonly observedAt: string;
+  readonly identity: { readonly username: string; readonly cwd: string };
+  readonly storage: {
+    readonly freeBytes: number;
+    readonly freeInodes: number;
+    readonly retainedPathCount: number;
+  };
+  readonly source: {
+    readonly repositoryDigest: string;
+    readonly revision: string;
+    readonly gitlinkCount: number;
+    readonly gitlinksDigest: string;
+  };
+  readonly bindings: {
+    readonly git: {
+      readonly family: string;
+      readonly generation: number;
+      readonly referenceDigest: string;
+      readonly revokedThrough: number;
+      readonly repositoryScope: 'exact';
+      readonly materialImmutable: true;
+      readonly remoteReachable: true;
+    };
+    readonly agent: {
+      readonly family: string;
+      readonly generation: number;
+      readonly referenceDigest: string;
+      readonly revokedThrough: number;
+      readonly authenticated: true;
+    };
+  };
+}
+
+export interface GcpImageFamilyExactPathReadinessDependencies {
+  readonly commandRunner?: GcpImageFamilyCommandRunner;
+  readonly materialSource?: WorkspaceHostCredentialMaterialSource;
+  readonly verifyAgentCredentialAdmission?: (
+    input: WorkspaceHostAgentCredentialAdmissionInput,
+  ) => Promise<WorkspaceHostAgentCredentialAdmissionEvidence>;
+  readonly inspectRuntime?: (
+    config: GcpImageFamilyExactPathReadinessConfig,
+  ) => Promise<GcpImageFamilyExactPathRuntimeObservation>;
+  readonly now?: () => Date;
+  readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly temporaryParent?: string;
+}
+
+export interface GcpImageFamilyExactPathReadinessCapture {
+  readonly username: string;
+  readonly cwd: string;
+  readonly source: { readonly repository: string; readonly revision: string };
+  readonly requestedAt?: string;
+}
+
+function readinessFailure(code: GcpImageFamilyExactPathReadinessFailureCode, detail: string): never {
+  throw new GcpImageFamilyExactPathReadinessError(code, detail);
+}
+
+function readinessRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    readinessFailure('invalid-config', `${label} must be an object`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function readinessString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    readinessFailure('invalid-config', `${label} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function readinessCount(value: unknown, label: string, minimum = 0): number {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+    readinessFailure('invalid-config', `${label} must be a safe integer >= ${minimum}`);
+  }
+  return value as number;
+}
+
+function readinessPath(value: unknown, label: string): string {
+  const path = readinessString(value, label);
+  if (
+    isAbsolute(path) ||
+    path.includes('\\') ||
+    path.split('/').some((part) => part === '' || part === '.' || part === '..')
+  ) {
+    readinessFailure('invalid-config', `${label} must be a normalized repository-relative POSIX path`);
+  }
+  return path;
+}
+
+function parseReadinessBinding<Channel extends 'git' | 'agent'>(
+  value: unknown,
+  channel: Channel,
+): GcpImageFamilyReadinessBinding<Channel extends 'git' ? GitCredentialRef : AgentCredentialRef> {
+  const body = readinessRecord(value, `credentials.${channel}`);
+  const refBody = readinessRecord(body.credentialRef, `credentials.${channel}.credentialRef`);
+  if (refBody.kind !== channel) {
+    readinessFailure('invalid-config', `credentials.${channel}.credentialRef.kind must be '${channel}'`);
+  }
+  const deliveryBody = readinessRecord(body.delivery, `credentials.${channel}.delivery`);
+  if (typeof deliveryBody.kind !== 'string' || !DELIVERY_KINDS.some((kind) => kind === deliveryBody.kind)) {
+    readinessFailure('invalid-config', `credentials.${channel}.delivery.kind is unsupported`);
+  }
+  const expiresAt =
+    deliveryBody.expiresAt === undefined
+      ? undefined
+      : readinessString(deliveryBody.expiresAt, `credentials.${channel}.delivery.expiresAt`);
+  if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) {
+    readinessFailure('invalid-config', `credentials.${channel}.delivery.expiresAt must be an ISO timestamp`);
+  }
+  const binding = {
+    credentialRef: {
+      kind: channel,
+      ref: readinessString(refBody.ref, `credentials.${channel}.credentialRef.ref`),
+    },
+    delivery: {
+      kind: deliveryBody.kind as WorkspaceHostCredentialDelivery['kind'],
+      generation: readinessCount(deliveryBody.generation, `credentials.${channel}.delivery.generation`, 1),
+      audience: readinessString(deliveryBody.audience, `credentials.${channel}.delivery.audience`),
+      revocationRef: readinessString(deliveryBody.revocationRef, `credentials.${channel}.delivery.revocationRef`),
+      ...(expiresAt ? { expiresAt } : {}),
+    },
+    revokedThrough: readinessCount(body.revokedThrough, `credentials.${channel}.revokedThrough`),
+  };
+  return binding as unknown as GcpImageFamilyReadinessBinding<
+    Channel extends 'git' ? GitCredentialRef : AgentCredentialRef
+  >;
+}
+
+interface GithubRepositoryIdentity {
+  readonly owner: string;
+  readonly repository: string;
+  readonly credentialPath: string;
+}
+
+function githubRepositoryIdentity(repositoryUrl: string): GithubRepositoryIdentity {
+  let parsed: URL;
+  try {
+    parsed = new URL(repositoryUrl);
+  } catch {
+    readinessFailure('invalid-config', 'source.repository must be a valid URL');
+  }
+  const segments = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.hostname.toLowerCase() !== 'github.com' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    segments.length !== 2
+  ) {
+    readinessFailure(
+      'invalid-config',
+      'source.repository must be a credential-free https://github.com/<owner>/<repository>[.git] URL',
+    );
+  }
+  const owner = segments[0]!;
+  const repository = segments[1]!.replace(/\.git$/i, '');
+  if (!owner || !repository) readinessFailure('invalid-config', 'source.repository is incomplete');
+  return {
+    owner,
+    repository,
+    credentialPath: `${owner}/${repository}.git`,
+  };
+}
+
+/** Parse an untrusted request envelope into the closed, public readiness contract. */
+export function parseGcpImageFamilyExactPathReadinessConfig(value: unknown): GcpImageFamilyExactPathReadinessConfig {
+  assertWorkspaceHostSecretIsolation(value, 'gcpImageFamily.exactPathReadiness');
+  const body = readinessRecord(value, 'readiness');
+  if (body.contractVersion !== GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION) {
+    readinessFailure('invalid-config', 'readiness.contractVersion is unsupported');
+  }
+  const requestedAt = readinessString(body.requestedAt, 'readiness.requestedAt');
+  if (!Number.isFinite(Date.parse(requestedAt))) {
+    readinessFailure('invalid-config', 'readiness.requestedAt must be an ISO timestamp');
+  }
+  const expectedBody = readinessRecord(body.expected, 'readiness.expected');
+  const username = readinessString(expectedBody.username, 'readiness.expected.username');
+  const cwd = readinessString(expectedBody.cwd, 'readiness.expected.cwd');
+  if (username === 'root') readinessFailure('wrong-identity', 'the expected release identity may not be root');
+  if (!isAbsolute(cwd)) readinessFailure('invalid-config', 'readiness.expected.cwd must be absolute');
+
+  const sourceBody = readinessRecord(body.source, 'readiness.source');
+  const repository = readinessString(sourceBody.repository, 'readiness.source.repository');
+  githubRepositoryIdentity(repository);
+  const revision = readinessString(sourceBody.revision, 'readiness.source.revision').toLowerCase();
+  if (!SOURCE_REVISION.test(revision)) {
+    readinessFailure('invalid-config', 'readiness.source.revision must be a full Git object id');
+  }
+  if (!Array.isArray(sourceBody.gitlinks)) {
+    readinessFailure('invalid-config', 'readiness.source.gitlinks must be an array');
+  }
+  const gitlinks = sourceBody.gitlinks.map((entry, index) => {
+    const link = readinessRecord(entry, `readiness.source.gitlinks[${index}]`);
+    const linkRevision = readinessString(link.revision, `readiness.source.gitlinks[${index}].revision`).toLowerCase();
+    if (!SOURCE_REVISION.test(linkRevision)) {
+      readinessFailure('invalid-config', `readiness.source.gitlinks[${index}].revision must be a full Git object id`);
+    }
+    return {
+      path: readinessPath(link.path, `readiness.source.gitlinks[${index}].path`),
+      revision: linkRevision,
+    };
+  });
+  const uniqueGitlinks = new Set(gitlinks.map((entry) => entry.path));
+  if (uniqueGitlinks.size !== gitlinks.length) {
+    readinessFailure('invalid-config', 'readiness.source.gitlinks contains duplicate paths');
+  }
+
+  const credentialsBody = readinessRecord(body.credentials, 'readiness.credentials');
+  const git = parseReadinessBinding(credentialsBody.git, 'git');
+  const agent = parseReadinessBinding(credentialsBody.agent, 'agent');
+  try {
+    describeWorkspaceHostCredentialBinding({
+      channel: 'git',
+      credentialRef: git.credentialRef,
+      delivery: git.delivery,
+      requestedAt,
+    });
+    describeWorkspaceHostCredentialBinding({
+      channel: 'agent',
+      credentialRef: agent.credentialRef,
+      delivery: agent.delivery,
+      requestedAt,
+    });
+  } catch (error) {
+    readinessFailure('invalid-config', error instanceof Error ? error.message : 'credential binding is invalid');
+  }
+
+  const storageBody = readinessRecord(body.storage, 'readiness.storage');
+  if (!Array.isArray(storageBody.retainedPaths) || storageBody.retainedPaths.length === 0) {
+    readinessFailure('invalid-config', 'readiness.storage.retainedPaths must be a non-empty array');
+  }
+  const retainedPaths = storageBody.retainedPaths.map((path, index) =>
+    readinessPath(path, `readiness.storage.retainedPaths[${index}]`),
+  );
+  if (new Set(retainedPaths).size !== retainedPaths.length) {
+    readinessFailure('invalid-config', 'readiness.storage.retainedPaths contains duplicates');
+  }
+  const config: GcpImageFamilyExactPathReadinessConfig = {
+    contractVersion: GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION,
+    requestedAt,
+    expected: { username, cwd },
+    source: { repository, revision, gitlinks },
+    credentials: { git, agent },
+    storage: {
+      minimumFreeBytes: readinessCount(storageBody.minimumFreeBytes, 'readiness.storage.minimumFreeBytes', 1),
+      minimumFreeInodes: readinessCount(storageBody.minimumFreeInodes, 'readiness.storage.minimumFreeInodes', 1),
+      retainedPaths,
+    },
+  };
+  assertWorkspaceHostSecretIsolation(config, 'gcpImageFamily.exactPathReadiness');
+  return config;
+}
+
+/** Add producer-observed identity/cwd and manifest source pins to whitelisted public input. */
+export function buildGcpImageFamilyExactPathReadinessConfig(
+  value: unknown,
+  capture: GcpImageFamilyExactPathReadinessCapture,
+): GcpImageFamilyExactPathReadinessConfig {
+  // Scan BEFORE whitelisting. Silently dropping an ignored secret-shaped field would keep it out
+  // of the emitted request but conceal that an upstream producer tried to put material there.
+  assertWorkspaceHostSecretIsolation(value, 'gcpImageFamily.exactPathReadiness.input');
+  const body = readinessRecord(value, 'readiness input');
+  return parseGcpImageFamilyExactPathReadinessConfig({
+    contractVersion: GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION,
+    requestedAt: capture.requestedAt ?? new Date().toISOString(),
+    expected: { username: capture.username, cwd: capture.cwd },
+    source: {
+      repository: capture.source.repository,
+      revision: capture.source.revision,
+      gitlinks: body.sourceGitlinks ?? [],
+    },
+    credentials: body.credentials,
+    storage: body.storage,
+  });
+}
+
+async function inspectExactPathRuntime(
+  config: GcpImageFamilyExactPathReadinessConfig,
+): Promise<GcpImageFamilyExactPathRuntimeObservation> {
+  const [cwd, filesystem] = await Promise.all([realpath(process.cwd()), statfs(config.expected.cwd)]);
+  const missingRetainedPaths: string[] = [];
+  for (const retainedPath of config.storage.retainedPaths) {
+    try {
+      await access(resolve(config.expected.cwd, retainedPath), fsConstants.F_OK);
+    } catch {
+      missingRetainedPaths.push(retainedPath);
+    }
+  }
+  return {
+    username: userInfo().username,
+    cwd,
+    freeBytes: filesystem.bavail * filesystem.bsize,
+    freeInodes: filesystem.ffree,
+    missingRetainedPaths,
+  };
+}
+
+function canonicalGitlinks(entries: readonly GcpImageFamilySourceGitlink[]): readonly GcpImageFamilySourceGitlink[] {
+  return [...entries].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function parseGitSubmoduleStatus(stdout: string): readonly GcpImageFamilySourceGitlink[] {
+  const entries: GcpImageFamilySourceGitlink[] = [];
+  for (const line of stdout.split(/\r?\n/).filter(Boolean)) {
+    if (line[0] !== ' ') {
+      readinessFailure('gitlink-mismatch', 'a recursive submodule is absent, conflicted, or off its pinned revision');
+    }
+    const match = line.match(/^ ([0-9a-f]{40,64}) (.+?)(?: \(.+\))?$/i);
+    if (!match) readinessFailure('gitlink-mismatch', 'recursive submodule status is malformed');
+    entries.push({ path: readinessPath(match[2], 'recursive submodule path'), revision: match[1].toLowerCase() });
+  }
+  if (new Set(entries.map((entry) => entry.path)).size !== entries.length) {
+    readinessFailure('gitlink-mismatch', 'recursive submodule status contains duplicate paths');
+  }
+  return canonicalGitlinks(entries);
+}
+
+function gitlinksEqual(
+  left: readonly GcpImageFamilySourceGitlink[],
+  right: readonly GcpImageFamilySourceGitlink[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => entry.path === right[index]?.path && entry.revision === right[index]?.revision)
+  );
+}
+
+function publicDigest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32);
+}
+
+function safeGitEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string | undefined>> {
+  return {
+    ...environment,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '/bin/false',
+    SSH_ASKPASS: '/bin/false',
+    GCM_INTERACTIVE: 'never',
+  };
+}
+
+async function requireGitCommand(
+  runner: GcpImageFamilyCommandRunner,
+  input: GcpImageFamilyCommand,
+  code: GcpImageFamilyExactPathReadinessFailureCode,
+  detail: string,
+): Promise<string> {
+  const result = await runner.run(input);
+  if (result.exitCode !== 0) readinessFailure(code, detail);
+  return result.stdout;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function liveBinding(config: GcpImageFamilyExactPathReadinessConfig, channel: 'git' | 'agent', now: Date) {
+  const binding = config.credentials[channel];
+  const descriptor = describeWorkspaceHostCredentialBinding({
+    channel,
+    credentialRef: binding.credentialRef,
+    delivery: binding.delivery,
+    requestedAt: config.requestedAt,
+  });
+  if (descriptor.generation <= binding.revokedThrough) {
+    readinessFailure(
+      'revoked-credential',
+      `${channel} generation ${descriptor.generation} is at or below its revocation high-water mark`,
+    );
+  }
+  if (descriptor.expiresAt && Date.parse(descriptor.expiresAt) <= now.getTime()) {
+    readinessFailure('expired-credential', `${channel} generation ${descriptor.generation} has expired`);
+  }
+  return descriptor;
+}
+
+/**
+ * Run every exact-path check before the release executor can invoke Packer or a provider API.
+ * Every command here is read-only except Git's approve/reject protocol calls, which are confined
+ * to a get-only helper and followed by byte-for-byte immutability checks.
+ */
+export async function verifyGcpImageFamilyExactPathReadiness(
+  input: unknown,
+  dependencies: GcpImageFamilyExactPathReadinessDependencies = {},
+): Promise<GcpImageFamilyExactPathReadinessEvidence> {
+  const config = parseGcpImageFamilyExactPathReadinessConfig(input);
+  const now = dependencies.now ?? (() => new Date());
+  const observedAt = now();
+  const gitBinding = liveBinding(config, 'git', observedAt);
+  const agentBinding = liveBinding(config, 'agent', observedAt);
+  const gitRepository = githubRepositoryIdentity(config.source.repository);
+  if (
+    gitBinding.reference.fields.forge?.toLowerCase() !== 'github' ||
+    gitBinding.reference.fields.owner?.toLowerCase() !== gitRepository.owner.toLowerCase() ||
+    gitBinding.reference.fields.repository?.replace(/\.git$/i, '').toLowerCase() !==
+      gitRepository.repository.toLowerCase()
+  ) {
+    readinessFailure('wrong-repository', 'the selected Git reference is not scoped to the manifest repository');
+  }
+
+  const inspectRuntime = dependencies.inspectRuntime ?? inspectExactPathRuntime;
+  const runtime = await inspectRuntime(config);
+  if (runtime.username === 'root' || runtime.username !== config.expected.username) {
+    readinessFailure(
+      'wrong-identity',
+      'the actual release identity is root or differs from the producer-captured identity',
+    );
+  }
+  if (runtime.cwd !== config.expected.cwd) {
+    readinessFailure(
+      'wrong-cwd',
+      'the actual canonical working directory differs from the producer-captured repository root',
+    );
+  }
+  if (
+    !Number.isSafeInteger(runtime.freeBytes) ||
+    !Number.isSafeInteger(runtime.freeInodes) ||
+    runtime.freeBytes < config.storage.minimumFreeBytes ||
+    runtime.freeInodes < config.storage.minimumFreeInodes
+  ) {
+    readinessFailure(
+      'insufficient-storage',
+      `available storage (${runtime.freeBytes} bytes, ${runtime.freeInodes} inodes) is below the declared floor`,
+    );
+  }
+  if (runtime.missingRetainedPaths.length > 0) {
+    readinessFailure(
+      'missing-retained-state',
+      `required retained paths are absent (${runtime.missingRetainedPaths.join(', ')})`,
+    );
+  }
+
+  const environment = dependencies.environment ?? process.env;
+  const ambientEnvironment = Object.entries(environment)
+    .filter(([name, value]) => AMBIENT_GIT_ENVIRONMENT.test(name) && typeof value === 'string' && value.length > 0)
+    .map(([name]) => name);
+  if (ambientEnvironment.length > 0) {
+    readinessFailure(
+      'ambient-git-helper',
+      `ambient Git authorization settings are present (${ambientEnvironment.join(', ')})`,
+    );
+  }
+  const runner = dependencies.commandRunner ?? new NodeGcpImageFamilyCommandRunner();
+  const commandEnvironment = safeGitEnvironment(environment);
+  const ambientHelper = await runner.run({
+    command: 'git',
+    args: ['-C', config.expected.cwd, 'config', '--get-all', 'credential.helper'],
+    cwd: config.expected.cwd,
+    env: commandEnvironment,
+  });
+  if (ambientHelper.exitCode === 0 && ambientHelper.stdout.trim()) {
+    readinessFailure(
+      'ambient-git-helper',
+      'repository, global, or system Git configuration declares a credential helper',
+    );
+  }
+  if (ambientHelper.exitCode !== 0 && ambientHelper.exitCode !== 1) {
+    readinessFailure('ambient-git-helper', 'Git credential-helper configuration could not be inspected');
+  }
+
+  const head = (
+    await requireGitCommand(
+      runner,
+      {
+        command: 'git',
+        args: ['-C', config.expected.cwd, 'rev-parse', 'HEAD'],
+        cwd: config.expected.cwd,
+        env: commandEnvironment,
+      },
+      'source-revision-mismatch',
+      'the local source revision could not be resolved',
+    )
+  )
+    .trim()
+    .toLowerCase();
+  if (head !== config.source.revision) {
+    readinessFailure('source-revision-mismatch', 'local HEAD differs from the manifest source revision');
+  }
+  const origin = (
+    await requireGitCommand(
+      runner,
+      {
+        command: 'git',
+        args: ['-C', config.expected.cwd, 'remote', 'get-url', 'origin'],
+        cwd: config.expected.cwd,
+        env: commandEnvironment,
+      },
+      'source-origin-mismatch',
+      'the local origin could not be resolved',
+    )
+  ).trim();
+  let originIdentity: GithubRepositoryIdentity;
+  try {
+    originIdentity = githubRepositoryIdentity(origin);
+  } catch {
+    readinessFailure('source-origin-mismatch', 'local origin is not the manifest repository');
+  }
+  if (
+    originIdentity.owner.toLowerCase() !== gitRepository.owner.toLowerCase() ||
+    originIdentity.repository.toLowerCase() !== gitRepository.repository.toLowerCase()
+  ) {
+    readinessFailure('source-origin-mismatch', 'local origin is not the manifest repository');
+  }
+  const actualGitlinks = parseGitSubmoduleStatus(
+    await requireGitCommand(
+      runner,
+      {
+        command: 'git',
+        args: ['-C', config.expected.cwd, 'submodule', 'status', '--recursive'],
+        cwd: config.expected.cwd,
+        env: commandEnvironment,
+      },
+      'gitlink-mismatch',
+      'recursive submodule status could not be read',
+    ),
+  );
+  const expectedGitlinks = canonicalGitlinks(config.source.gitlinks);
+  if (!gitlinksEqual(actualGitlinks, expectedGitlinks)) {
+    readinessFailure('gitlink-mismatch', 'recursive submodule revisions differ from the request pins');
+  }
+
+  const materialSource = dependencies.materialSource ?? createOperatorWorkspaceHostCredentialMaterialSource();
+  let material;
+  try {
+    material = await materialSource.resolve({
+      channel: 'git',
+      credentialRef: config.credentials.git.credentialRef.ref,
+      family: gitBinding.family,
+      generation: gitBinding.generation,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceHostRevokedCredentialGenerationError) {
+      readinessFailure('revoked-credential', 'the selected Git generation is revoked');
+    }
+    readinessFailure('credential-unavailable', 'the exact Git generation is unavailable from its configured source');
+  }
+  const materialBytes = material.reveal();
+  const originalBytes = Buffer.from(materialBytes);
+  let temporary: string | undefined;
+  let filled = '';
+  try {
+    temporary = await mkdtemp(join(dependencies.temporaryParent ?? tmpdir(), 'papercusp-gcp-readiness-'));
+    await chmod(temporary, 0o700);
+    const materialPath = join(temporary, 'git-credential');
+    const ambientPath = join(temporary, 'ambient-credential');
+    const globalConfigPath = join(temporary, 'ambient.gitconfig');
+    await writeFile(materialPath, materialBytes, { flag: 'wx', mode: 0o600 });
+    await chmod(materialPath, 0o600);
+    await writeFile(globalConfigPath, `[credential]\n\thelper = store --file=${ambientPath}\n`, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    const credentialEnvironment = {
+      ...commandEnvironment,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: globalConfigPath,
+      ...workspaceHostGetOnlyGitCredentialEnvironment(materialPath),
+    };
+    const credentialInput = `protocol=https\nhost=github.com\npath=${gitRepository.credentialPath}\n\n`;
+    const fill = await runner.run({
+      command: 'git',
+      args: ['credential', 'fill'],
+      cwd: config.expected.cwd,
+      env: credentialEnvironment,
+      stdin: credentialInput,
+    });
+    filled = fill.stdout;
+    if (fill.exitCode !== 0 || !/(?:^|\n)username=[^\n]+/.test(filled) || !/(?:^|\n)password=[^\n]+/.test(filled)) {
+      readinessFailure(
+        'git-authentication-failed',
+        'the exact Git generation did not answer its scoped credential query',
+      );
+    }
+    for (const action of ['approve', 'reject'] as const) {
+      await requireGitCommand(
+        runner,
+        {
+          command: 'git',
+          args: ['credential', action],
+          cwd: config.expected.cwd,
+          env: credentialEnvironment,
+          stdin: `${filled}\n`,
+        },
+        'git-helper-write',
+        `the get-only Git helper rejected the ${action} protocol check`,
+      );
+    }
+    const afterProtocol = await readFile(materialPath);
+    if (!afterProtocol.equals(originalBytes) || (await pathExists(ambientPath))) {
+      readinessFailure('git-helper-write', 'Git approve/reject mutated delivered or ambient authorization state');
+    }
+    await requireGitCommand(
+      runner,
+      {
+        command: 'git',
+        args: ['ls-remote', '--exit-code', config.source.repository, 'HEAD'],
+        cwd: config.expected.cwd,
+        env: credentialEnvironment,
+      },
+      'git-authentication-failed',
+      'the exact Git generation cannot read the manifest repository',
+    );
+    const afterRemote = await readFile(materialPath);
+    if (!afterRemote.equals(originalBytes) || (await pathExists(ambientPath))) {
+      readinessFailure('git-helper-write', 'the repository access probe mutated authorization state');
+    }
+  } finally {
+    filled = '';
+    originalBytes.fill(0);
+    materialBytes.fill(0);
+    if (temporary) await rm(temporary, { recursive: true, force: true });
+  }
+
+  const verifyAgent = dependencies.verifyAgentCredentialAdmission ?? verifyWorkspaceHostAgentCredentialAdmission;
+  let agentAdmission: WorkspaceHostAgentCredentialAdmissionEvidence;
+  try {
+    agentAdmission = await verifyAgent({
+      credentialRef: config.credentials.agent.credentialRef,
+      delivery: config.credentials.agent.delivery,
+      materialSource,
+    });
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(agentAdmission, {
+      credentialRef: config.credentials.agent.credentialRef,
+      delivery: config.credentials.agent.delivery,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceHostRevokedCredentialGenerationError) {
+      readinessFailure('revoked-credential', 'the selected agent generation is revoked');
+    }
+    readinessFailure('agent-authentication-failed', 'the exact agent generation failed live authentication');
+  }
+
+  const evidence: GcpImageFamilyExactPathReadinessEvidence = {
+    contractVersion: GCP_IMAGE_FAMILY_EXACT_PATH_READINESS_CONTRACT_VERSION,
+    ok: true,
+    observedAt: observedAt.toISOString(),
+    identity: { username: runtime.username, cwd: runtime.cwd },
+    storage: {
+      freeBytes: runtime.freeBytes,
+      freeInodes: runtime.freeInodes,
+      retainedPathCount: config.storage.retainedPaths.length,
+    },
+    source: {
+      repositoryDigest: publicDigest(config.source.repository),
+      revision: config.source.revision,
+      gitlinkCount: expectedGitlinks.length,
+      gitlinksDigest: publicDigest(expectedGitlinks),
+    },
+    bindings: {
+      git: {
+        family: gitBinding.family,
+        generation: gitBinding.generation,
+        referenceDigest: workspaceHostCredentialReferenceDigest(config.credentials.git.credentialRef.ref),
+        revokedThrough: config.credentials.git.revokedThrough,
+        repositoryScope: 'exact',
+        materialImmutable: true,
+        remoteReachable: true,
+      },
+      agent: {
+        family: agentBinding.family,
+        generation: agentBinding.generation,
+        referenceDigest: workspaceHostCredentialReferenceDigest(config.credentials.agent.credentialRef.ref),
+        revokedThrough: config.credentials.agent.revokedThrough,
+        authenticated: true,
+      },
+    },
+  };
+  assertWorkspaceHostSecretIsolation(evidence, 'gcpImageFamily.exactPathReadiness.evidence');
+  return evidence;
 }
 
 function requiredProject(value: unknown, path: string): string {

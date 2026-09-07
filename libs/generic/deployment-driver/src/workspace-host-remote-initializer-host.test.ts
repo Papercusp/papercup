@@ -54,7 +54,10 @@ class RecordingSystem implements WorkspaceHostSystem {
   readonly commands: WorkspaceHostCommandInput[] = [];
   readonly present = new Set<string>();
   readonly files = new Map<string, Buffer>();
-  readonly results = new Map<string, { exitCode: number; stdout: string; stderr: string }>();
+  readonly results = new Map<
+    string,
+    { exitCode: number; stdout: string; stderr: string }
+  >();
 
   async run(input: WorkspaceHostCommandInput) {
     this.commands.push(input);
@@ -70,7 +73,10 @@ class RecordingSystem implements WorkspaceHostSystem {
     return { exitCode: 0, stdout: "", stderr: "" };
   }
 
-  setResult(args: readonly string[], result: { exitCode: number; stdout: string; stderr: string }): void {
+  setResult(
+    args: readonly string[],
+    result: { exitCode: number; stdout: string; stderr: string },
+  ): void {
     this.results.set(args.join("\u0000"), result);
   }
   async ensureDirectory(path: string) {
@@ -201,117 +207,149 @@ function fixture() {
 
 describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials", () => {
   it.each(
-    ["approve", "reject"].flatMap((action) =>
-      [false, true].flatMap((scoped) =>
-        [false, true].map((newline) => ({ action, scoped, newline, quoted: false })),
-      ),
-    ).concat([{ action: "approve", scoped: true, newline: false, quoted: true }]),
-  )("keeps delivered bytes immutable after real Git $action (scoped=$scoped, newline=$newline, quoted=$quoted)", async ({ action, scoped, newline, quoted }) => {
-    const directory = await mkdtemp(join(tmpdir(), "workspace-git-"));
-    try {
-      // Exercise shell quoting too: the helper's path is data, never shell code.
-      const materialRoot = join(directory, quoted ? "credential's $(false) store" : "credentials");
-      const materialPath = workspaceHostCredentialMaterialPath(
-        materialRoot,
-        "git-short-lived-delegation",
-        7,
-      );
-      const repositoryPath = "papercupai/private-canary.git";
-      const bytes = Buffer.from(
-        AUTHORIZATION_MATERIAL +
-          (scoped ? `/${repositoryPath}` : "") +
-          (newline ? "\n" : ""),
-      );
-      const request = parseWorkspaceHostCredentialDeliveryRequest({
-        protocolVersion: WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
-        channel: "git",
-        credentialRef: gitBinding().credentialRef.ref,
-        generation: 7,
-        material: bytes.toString("base64"),
-      });
-      const delivery = {
-        filesystem: new NodeWorkspaceHostCredentialDeliveryFilesystem(),
-        materialRoot,
-        now: () => NOW,
-      };
-      await executeWorkspaceHostCredentialDelivery(request, delivery);
+    ["approve", "reject"]
+      .flatMap((action) =>
+        [false, true].flatMap((scoped) =>
+          [false, true].map((newline) => ({
+            action,
+            scoped,
+            newline,
+            quoted: false,
+          })),
+        ),
+      )
+      .concat([
+        { action: "approve", scoped: true, newline: false, quoted: true },
+      ]),
+  )(
+    "keeps delivered bytes immutable after real Git $action (scoped=$scoped, newline=$newline, quoted=$quoted)",
+    async ({ action, scoped, newline, quoted }) => {
+      const directory = await mkdtemp(join(tmpdir(), "workspace-git-"));
+      try {
+        // Exercise shell quoting too: the helper's path is data, never shell code.
+        const materialRoot = join(
+          directory,
+          quoted ? "credential's $(false) store" : "credentials",
+        );
+        const materialPath = workspaceHostCredentialMaterialPath(
+          materialRoot,
+          "git-short-lived-delegation",
+          7,
+        );
+        const repositoryPath = "papercupai/private-canary.git";
+        const bytes = Buffer.from(
+          AUTHORIZATION_MATERIAL +
+            (scoped ? `/${repositoryPath}` : "") +
+            (newline ? "\n" : ""),
+        );
+        const request = parseWorkspaceHostCredentialDeliveryRequest({
+          protocolVersion: WORKSPACE_HOST_CREDENTIAL_DELIVERY_PROTOCOL_VERSION,
+          channel: "git",
+          credentialRef: gitBinding().credentialRef.ref,
+          generation: 7,
+          material: bytes.toString("base64"),
+        });
+        const delivery = {
+          filesystem: new NodeWorkspaceHostCredentialDeliveryFilesystem(),
+          materialRoot,
+          now: () => NOW,
+        };
+        await executeWorkspaceHostCredentialDelivery(request, delivery);
 
-      // Only the clone transport is recorded. Delivery and Git's credential protocol use the
-      // real filesystem and executable, without a network or any real authorization material.
-      const system = new RecordingSystem();
-      place(system, materialPath, bytes);
-      const deps = createProductionWorkspaceHostRemoteInitializerDeps({
-        system,
-        workspaceRoot: "/workspaces",
-        credentialMaterialRoot: materialRoot,
-        now: () => NOW,
-      });
-      await deps.credentials.run("bind", gitBinding());
-      await deps.host.cloneRepository({
-        repositoryUrl: `https://github.com/${repositoryPath}`,
-        visibility: "private",
-        destination: "repository",
-        credentialChannel: "git",
-      });
+        // Only the clone transport is recorded. Delivery and Git's credential protocol use the
+        // real filesystem and executable, without a network or any real authorization material.
+        const system = new RecordingSystem();
+        place(system, materialPath, bytes);
+        const deps = createProductionWorkspaceHostRemoteInitializerDeps({
+          system,
+          workspaceRoot: "/workspaces",
+          credentialMaterialRoot: materialRoot,
+          now: () => NOW,
+        });
+        await deps.credentials.run("bind", gitBinding());
+        await deps.host.cloneRepository({
+          repositoryUrl: `https://github.com/${repositoryPath}`,
+          visibility: "private",
+          destination: "repository",
+          credentialChannel: "git",
+        });
 
-      const ambientPath = join(directory, "ambient-material");
-      const configPath = join(directory, "gitconfig");
-      await writeFile(configPath, `[credential]\n\thelper = store --file=${ambientPath}\n`);
-      const env = {
-        PATH: process.env.PATH,
-        HOME: directory,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: configPath,
-        ...system.commands[0]!.env,
-      };
-      expect(system.commands[0]!.env).toEqual(
-        workspaceHostGetOnlyGitCredentialEnvironment(materialPath),
-      );
-      // useHttpPath requires a stored path to match a path-bearing request. A host-only
-      // fixture exercises the host-only protocol; it must not authorize arbitrary paths.
-      const query = `protocol=https\nhost=github.com\n${scoped ? `path=${repositoryPath}\n` : ""}\n`;
-      const filled = spawnSync("git", ["credential", "fill"], {
-        input: query,
-        encoding: "utf8",
-        env,
-        cwd: directory,
-        timeout: 5_000,
-      });
-      expect(filled.status, filled.stderr).toBe(0);
-      expect(filled.stdout).toContain("username=git-user\n");
-      expect(filled.stdout).toContain("password=private-token-value\n");
-      const outsideScope = spawnSync("git", ["credential", "fill"], {
-        input: "protocol=https\nhost=github.com\npath=other/repository.git\n\n",
-        encoding: "utf8",
-        env,
-        cwd: directory,
-        timeout: 5_000,
-      });
-      expect(outsideScope.status).toBe(128);
-      expect(outsideScope.stdout).not.toContain("private-token-value");
-      const result = spawnSync("git", ["credential", action], {
-        input: filled.stdout + "\n",
-        encoding: "utf8",
-        env,
-        cwd: directory,
-        timeout: 5_000,
-      });
-      expect(result.status, result.stderr).toBe(0);
-      expect(await readFile(materialPath)).toEqual(bytes);
-      expect((await stat(materialPath)).mode & 0o777).toBe(0o600);
-      await expect(stat(ambientPath)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(executeWorkspaceHostCredentialDelivery(request, delivery)).resolves.toMatchObject({
-        generation: 7,
-        present: true,
-      });
-      await expect(executeWorkspaceHostCredentialDelivery({
-        ...request,
-        material: new WorkspaceHostCredentialMaterial(Buffer.from("different material")),
-      }, delivery)).rejects.toBeInstanceOf(WorkspaceHostCredentialGenerationConflictError);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
+        const ambientPath = join(directory, "ambient-material");
+        const configPath = join(directory, "gitconfig");
+        await writeFile(
+          configPath,
+          `[credential]\n\thelper = store --file=${ambientPath}\n`,
+        );
+        const env = {
+          PATH: process.env.PATH,
+          HOME: directory,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: configPath,
+          ...system.commands[0]!.env,
+        };
+        expect(system.commands[0]!.env).toEqual(
+          workspaceHostGetOnlyGitCredentialEnvironment(materialPath),
+        );
+        // useHttpPath requires a stored path to match a path-bearing request. A host-only
+        // fixture exercises the host-only protocol; it must not authorize arbitrary paths.
+        const query = `protocol=https\nhost=github.com\n${scoped ? `path=${repositoryPath}\n` : ""}\n`;
+        const filled = spawnSync("git", ["credential", "fill"], {
+          input: query,
+          encoding: "utf8",
+          env,
+          cwd: directory,
+          timeout: 5_000,
+        });
+        expect(filled.status, filled.stderr).toBe(0);
+        expect(filled.stdout).toContain("username=git-user\n");
+        expect(filled.stdout).toContain("password=private-token-value\n");
+        const outsideScope = spawnSync("git", ["credential", "fill"], {
+          input:
+            "protocol=https\nhost=github.com\npath=other/repository.git\n\n",
+          encoding: "utf8",
+          env,
+          cwd: directory,
+          timeout: 5_000,
+        });
+        expect(outsideScope.status).toBe(128);
+        expect(outsideScope.stdout).not.toContain("private-token-value");
+        const result = spawnSync("git", ["credential", action], {
+          input: filled.stdout + "\n",
+          encoding: "utf8",
+          env,
+          cwd: directory,
+          timeout: 5_000,
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(await readFile(materialPath)).toEqual(bytes);
+        expect((await stat(materialPath)).mode & 0o777).toBe(0o600);
+        await expect(stat(ambientPath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        await expect(
+          executeWorkspaceHostCredentialDelivery(request, delivery),
+        ).resolves.toMatchObject({
+          generation: 7,
+          present: true,
+        });
+        await expect(
+          executeWorkspaceHostCredentialDelivery(
+            {
+              ...request,
+              material: new WorkspaceHostCredentialMaterial(
+                Buffer.from("different material"),
+              ),
+            },
+            delivery,
+          ),
+        ).rejects.toBeInstanceOf(
+          WorkspaceHostCredentialGenerationConflictError,
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("consumes only bound git-channel material outside argv and public evidence", async () => {
     const { system, deps } = fixture();
@@ -342,10 +380,15 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
     ]);
     expect(command.env).toMatchObject({
       GIT_TERMINAL_PROMPT: "0",
+      GIT_ASKPASS: "/bin/false",
+      SSH_ASKPASS: "/bin/false",
+      GCM_INTERACTIVE: "never",
       GIT_CONFIG_KEY_0: "credential.helper",
       GIT_CONFIG_VALUE_0: "",
       GIT_CONFIG_KEY_1: "credential.helper",
-      GIT_CONFIG_VALUE_1: expect.stringContaining(`--file='${MATERIAL_PATH}' get`),
+      GIT_CONFIG_VALUE_1: expect.stringContaining(
+        `--file='${MATERIAL_PATH}' get`,
+      ),
       GIT_CONFIG_KEY_2: "credential.useHttpPath",
       GIT_CONFIG_VALUE_2: "true",
     });
@@ -364,26 +407,35 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
     const destination = "/workspaces/repository";
     system.present.add(destination);
     system.present.add(join(destination, ".git"));
-    system.setResult(["-C", destination, "rev-parse", "--is-inside-work-tree"], {
-      exitCode: 0,
-      stdout: "true\n",
-      stderr: "",
-    });
+    system.setResult(
+      ["-C", destination, "rev-parse", "--is-inside-work-tree"],
+      {
+        exitCode: 0,
+        stdout: "true\n",
+        stderr: "",
+      },
+    );
     system.setResult(["-C", destination, "remote", "get-url", "origin"], {
       exitCode: 0,
       stdout: "https://github.com/papercupai/private-canary.git\n",
       stderr: "",
     });
-    system.setResult(["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"], {
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
-    });
-    system.setResult(["-C", destination, "rev-parse", "--verify", "main^{commit}"], {
-      exitCode: 0,
-      stdout: "abc123\n",
-      stderr: "",
-    });
+    system.setResult(
+      ["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"],
+      {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      },
+    );
+    system.setResult(
+      ["-C", destination, "rev-parse", "--verify", "main^{commit}"],
+      {
+        exitCode: 0,
+        stdout: "abc123\n",
+        stderr: "",
+      },
+    );
     system.setResult(["-C", destination, "rev-parse", "HEAD"], {
       exitCode: 0,
       stdout: "abc123\n",
@@ -409,7 +461,8 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
   it.each([
     {
       name: "different origin",
-      expected: "existing destination /workspaces/repository has a different origin",
+      expected:
+        "existing destination /workspaces/repository has a different origin",
       origin: "https://github.com/other-owner/other-repository.git\n",
       status: "",
       requested: "abc123\n",
@@ -417,7 +470,8 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
     },
     {
       name: "dirty worktree",
-      expected: "existing destination /workspaces/repository has uncommitted changes",
+      expected:
+        "existing destination /workspaces/repository has uncommitted changes",
       origin: "https://github.com/papercupai/private-canary.git\n",
       status: " M README.md\n",
       requested: "abc123\n",
@@ -425,53 +479,74 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
     },
     {
       name: "incompatible revision",
-      expected: "existing destination /workspaces/repository is not at requested revision main",
+      expected:
+        "existing destination /workspaces/repository is not at requested revision main",
       origin: "https://github.com/papercupai/private-canary.git\n",
       status: "",
       requested: "abc123\n",
       head: "def456\n",
     },
-  ])("refuses an unsafe existing checkout ($name)", async ({ expected, origin, status, requested, head }) => {
-    const { system, deps } = fixture();
-    const destination = "/workspaces/repository";
-    system.present.add(destination);
-    system.present.add(join(destination, ".git"));
-    system.setResult(["-C", destination, "rev-parse", "--is-inside-work-tree"], {
-      exitCode: 0,
-      stdout: "true\n",
-      stderr: "",
-    });
-    system.setResult(["-C", destination, "remote", "get-url", "origin"], {
-      exitCode: 0,
-      stdout: origin,
-      stderr: "",
-    });
-    system.setResult(["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"], {
-      exitCode: 0,
-      stdout: status,
-      stderr: "",
-    });
-    system.setResult(["-C", destination, "rev-parse", "--verify", "main^{commit}"], {
-      exitCode: 0,
-      stdout: requested,
-      stderr: "",
-    });
-    system.setResult(["-C", destination, "rev-parse", "HEAD"], {
-      exitCode: 0,
-      stdout: head,
-      stderr: "",
-    });
+  ])(
+    "refuses an unsafe existing checkout ($name)",
+    async ({ expected, origin, status, requested, head }) => {
+      const { system, deps } = fixture();
+      const destination = "/workspaces/repository";
+      system.present.add(destination);
+      system.present.add(join(destination, ".git"));
+      system.setResult(
+        ["-C", destination, "rev-parse", "--is-inside-work-tree"],
+        {
+          exitCode: 0,
+          stdout: "true\n",
+          stderr: "",
+        },
+      );
+      system.setResult(["-C", destination, "remote", "get-url", "origin"], {
+        exitCode: 0,
+        stdout: origin,
+        stderr: "",
+      });
+      system.setResult(
+        [
+          "-C",
+          destination,
+          "status",
+          "--porcelain=v1",
+          "--untracked-files=all",
+        ],
+        {
+          exitCode: 0,
+          stdout: status,
+          stderr: "",
+        },
+      );
+      system.setResult(
+        ["-C", destination, "rev-parse", "--verify", "main^{commit}"],
+        {
+          exitCode: 0,
+          stdout: requested,
+          stderr: "",
+        },
+      );
+      system.setResult(["-C", destination, "rev-parse", "HEAD"], {
+        exitCode: 0,
+        stdout: head,
+        stderr: "",
+      });
 
-    await expect(
-      deps.host.cloneRepository({
-        repositoryUrl: "https://github.com/papercupai/private-canary.git",
-        visibility: "public",
-        destination: "repository",
-        revision: "main",
-      }),
-    ).rejects.toThrow(expected);
-    expect(system.commands.some(({ args }) => args[0] === "clone")).toBe(false);
-  });
+      await expect(
+        deps.host.cloneRepository({
+          repositoryUrl: "https://github.com/papercupai/private-canary.git",
+          visibility: "public",
+          destination: "repository",
+          revision: "main",
+        }),
+      ).rejects.toThrow(expected);
+      expect(system.commands.some(({ args }) => args[0] === "clone")).toBe(
+        false,
+      );
+    },
+  );
 
   it("fails closed before spawning git when bound material is absent", async () => {
     const { system, deps } = fixture();
@@ -786,9 +861,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
       expect(invocation.env?.PATH).toBe(
         `${WORKSPACE_HOST_RELEASE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       );
-      expect(invocation.command.startsWith(WORKSPACE_HOST_RELEASE_BIN_DIR)).toBe(
-        false,
-      );
+      expect(
+        invocation.command.startsWith(WORKSPACE_HOST_RELEASE_BIN_DIR),
+      ).toBe(false);
     }
   });
 
@@ -842,9 +917,11 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
       system,
       workspaceRoot: "/workspaces",
       credentialMaterialRoot: MATERIAL_ROOT,
-      agentProbeRunner: { async run() {
-        throw new Error("probe must not run against a wrapper path");
-      } },
+      agentProbeRunner: {
+        async run() {
+          throw new Error("probe must not run against a wrapper path");
+        },
+      },
       now: () => NOW,
     }).host;
 
@@ -858,7 +935,11 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
     // runtime" and is a legitimate probe failure; MALFORMED means the attestation says something
     // unreadable, and treating that as absent would report a probe failure whose real cause was a
     // corrupt attestation nobody ever looked at.
-    for (const body of ["{not json", JSON.stringify({ runtime: { agentRuntimes: ["/usr/bin/claude"] } }), JSON.stringify({ runtime: { agentRuntimes: { claude: "claude" } } })]) {
+    for (const body of [
+      "{not json",
+      JSON.stringify({ runtime: { agentRuntimes: ["/usr/bin/claude"] } }),
+      JSON.stringify({ runtime: { agentRuntimes: { claude: "claude" } } }),
+    ]) {
       const system = new RecordingSystem();
       await system.writePrivateFile(
         WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
@@ -868,9 +949,11 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
         system,
         workspaceRoot: "/workspaces",
         credentialMaterialRoot: MATERIAL_ROOT,
-        agentProbeRunner: { async run() {
-          throw new Error("probe must not run against a corrupt attestation");
-        } },
+        agentProbeRunner: {
+          async run() {
+            throw new Error("probe must not run against a corrupt attestation");
+          },
+        },
         now: () => NOW,
       }).host;
       await expect(host.probeAgentVerification()).rejects.toThrow();

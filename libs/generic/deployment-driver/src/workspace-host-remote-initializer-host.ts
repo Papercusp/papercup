@@ -131,11 +131,16 @@ export function workspaceHostGetOnlyGitCredentialEnvironment(
   materialPath: string,
 ): Readonly<Record<string, string>> {
   if (!isAbsolute(materialPath) || /[\0\r\n]/.test(materialPath)) {
-    throw new Error("Git credential material path must be an absolute single-line path");
+    throw new Error(
+      "Git credential material path must be an absolute single-line path",
+    );
   }
   const quotedMaterialPath = `'${materialPath.replaceAll("'", "'\\''")}'`;
   return Object.freeze({
     GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "/bin/false",
+    SSH_ASKPASS: "/bin/false",
+    GCM_INTERACTIVE: "never",
     GIT_CONFIG_COUNT: "3",
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
@@ -873,7 +878,10 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
         command: this.gitCommand,
         args: ["-C", destination, "remote", "get-url", "origin"],
       });
-      if (remote.stdout.trim().replace(/\/+$/, "") !== input.repositoryUrl.trim().replace(/\/+$/, "")) {
+      if (
+        remote.stdout.trim().replace(/\/+$/, "") !==
+        input.repositoryUrl.trim().replace(/\/+$/, "")
+      ) {
         throw new WorkspaceHostOperationError(
           "cloneRepository.resume",
           1,
@@ -882,7 +890,13 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
       }
       const status = await this.require("cloneRepository.resume.status", {
         command: this.gitCommand,
-        args: ["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"],
+        args: [
+          "-C",
+          destination,
+          "status",
+          "--porcelain=v1",
+          "--untracked-files=all",
+        ],
       });
       if (status.stdout.trim() !== "") {
         throw new WorkspaceHostOperationError(
@@ -892,10 +906,19 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
         );
       }
       if (input.revision) {
-        const requested = await this.require("cloneRepository.resume.revision", {
-          command: this.gitCommand,
-          args: ["-C", destination, "rev-parse", "--verify", `${input.revision}^{commit}`],
-        });
+        const requested = await this.require(
+          "cloneRepository.resume.revision",
+          {
+            command: this.gitCommand,
+            args: [
+              "-C",
+              destination,
+              "rev-parse",
+              "--verify",
+              `${input.revision}^{commit}`,
+            ],
+          },
+        );
         const head = await this.require("cloneRepository.resume.head", {
           command: this.gitCommand,
           args: ["-C", destination, "rev-parse", "HEAD"],
