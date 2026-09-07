@@ -7,16 +7,21 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { describeStoreIdentityMismatch, storeIdentityViolation } from '@papercusp/db-org';
+import {
+  describeStoreIdentityMismatch,
+  pgResultDiagnosticSnapshot,
+  storeIdentityViolation,
+} from '@papercusp/db-org';
 import { pgHealth } from '../../dev-data';
 
 export default defineTool({
   name: 'dev:pg_health',
   profile: 'engineer',
-  description: 'PostgreSQL version + connection counts (total/active/idle) for the operator database.',
+  description:
+    'PostgreSQL version + connection counts and bounded completed-query diagnostics from this process. localOnly skips the database health query.',
   capability: 'intel:read',
   guidance: {
-    when: `Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard.`,
+    when: `Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained completed results without a health query; this does not measure in-flight queries or other processes.`,
     notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
     seeAlso: [
       'dev:pg_active_queries (currently-running queries)',
@@ -26,9 +31,36 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
-  args: z.object({}),
-  async handler() {
-    const result = await pgHealth();
+  args: z.object({
+    localOnly: z.boolean().optional().describe('Return only process-local diagnostics; skip the database health query.'),
+  }),
+  async handler(args) {
+    const resultLimitPerPool = 4;
+    const processDiagnostics = {
+      source: 'current-process' as const,
+      pid: process.pid,
+      capturedAt: new Date().toISOString(),
+      coverage: 'completed-results-in-selected-pools-only' as const,
+      resultLimitPerPool,
+      limitations:
+        'Only completed results in the named pools of this process are observed; in-flight queries, ' +
+        'other pools and processes are not covered. An empty ring does not prove an idle database or connectivity. ' +
+        'dropped counts ring eviction; omittedRetained counts retained results outside this response window.',
+      pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => {
+        const snapshot = pgResultDiagnosticSnapshot(pool, resultLimitPerPool);
+        const retained = snapshot.totalRecorded - snapshot.dropped;
+        return {
+          ...snapshot,
+          observed: snapshot.totalRecorded > 0,
+          retained,
+          omittedRetained: retained - snapshot.results.length,
+        };
+      }),
+    };
+    const result = {
+      ...(args.localOnly ? {} : await pgHealth()),
+      processDiagnostics,
+    };
     // DELIVERY, not detection (plan outage-must-not-be-silent-2026-08-02, D-004).
     //
     // The store-identity guard already DETECTS a wrong-store read — it just reports it via

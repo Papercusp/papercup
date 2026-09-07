@@ -9605,7 +9605,7 @@
           "POST"
         ]
       },
-      "description": "PostgreSQL version + connection counts (total/active/idle) for the operator database.",
+      "description": "PostgreSQL version + connection counts and bounded completed-query diagnostics from this process. localOnly skips the database health query.",
       "capabilities": [
         "intel:read"
       ],
@@ -9617,7 +9617,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard.",
+        "when": "Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard. Use localOnly during pool contention to inspect this process's retained completed results without a health query; this does not measure in-flight queries or other processes.",
         "notWhen": "For application-level health, use `harness:health`. pg_health is the database layer."
       }
     },
