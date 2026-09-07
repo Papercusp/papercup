@@ -113,6 +113,7 @@ export function validateCapabilityDreamSelection(
     const packet = packets[i]!;
     if (
       ids.has(packet.unit.id) ||
+      packet.manifestRevision !== packets[0]!.manifestRevision ||
       packet.coverage.truncated ||
       packet.coverage.unresolved.length ||
       capabilityContentVersion(packet) !== entries[i]!.contentVersion
@@ -216,6 +217,15 @@ export function parseCapabilityDreamPayload(
       c.thirdContribution.sources.some((ref) => ref.unit !== 'C')
     )
       return { ok: false, error: 'C must contribute in its declared role with its own evidence' };
+    if (
+      (['A', 'B'] as const).some(
+        (unit) =>
+          normalize(c.thirdContribution!.uniqueContribution) ===
+          normalize(c.primaryContributions[unit].uniqueContribution),
+      )
+    ) {
+      return { ok: false, error: 'C must add a contribution distinct from the primaries' };
+    }
   } else if (c.thirdContribution !== null) return { ok: false, error: 'A pair cannot invent C' };
   return { ok: true, outcome: parsed.data };
 }
