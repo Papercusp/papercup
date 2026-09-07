@@ -1857,6 +1857,11 @@ async fn run<B: Backend>(
                     let pending = initial_turn
                         .and_then(|text| app.su_pending_turn.clone().filter(|p| p.content == text));
                     let existing_chat = pending.as_ref().and(app.agent_chat_id.clone());
+                    let session_tx = SuSessionEventSender {
+                        tx: tx.clone(),
+                        harness: harness.clone(),
+                        load_token: app.next_agent_chat_load_token(),
+                    };
                     tokio::spawn(open_su_session_task(
                         harness,
                         role,
@@ -1864,7 +1869,7 @@ async fn run<B: Backend>(
                         carry,
                         launch,
                         (pending, existing_chat),
-                        tx.clone(),
+                        session_tx,
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
@@ -1878,7 +1883,11 @@ async fn run<B: Backend>(
                                 chat_id,
                                 state.binding.clone(),
                                 pending,
-                                tx.clone(),
+                                SuSessionEventSender {
+                                    tx: tx.clone(),
+                                    harness: app.harness.clone(),
+                                    load_token: app.chat_load_token,
+                                },
                             ));
                         } else {
                             app.update(Event::SuSessionError(
@@ -1894,11 +1903,13 @@ async fn run<B: Backend>(
                     chat_id,
                     command,
                 } => {
+                    let session_tx = SuSessionEventSender {
+                        tx: tx.clone(),
+                        harness: harness.clone(),
+                        load_token: app.chat_load_token,
+                    };
                     tokio::spawn(send_su_session_command_task(
-                        harness,
-                        chat_id,
-                        command,
-                        tx.clone(),
+                        harness, chat_id, command, session_tx,
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
@@ -1908,12 +1919,17 @@ async fn run<B: Backend>(
                     adv_session_id,
                     backend,
                 } => {
+                    let session_tx = SuSessionEventSender {
+                        tx: tx.clone(),
+                        harness: harness.clone(),
+                        load_token: app.next_agent_chat_load_token(),
+                    };
                     tokio::spawn(attach_su_session_task(
                         harness,
                         chat_id,
                         adv_session_id,
                         backend,
-                        tx.clone(),
+                        session_tx,
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
@@ -4810,6 +4826,11 @@ async fn agent_chat_load(
             // an older legacy chat and must not be treated as a fallback
             // success for the corrected path.
             if let Ok(snapshot) = client.su_session_snapshot(&harness, &chat.id).await {
+                let tx = SuSessionEventSender {
+                    tx: tx.clone(),
+                    harness: harness.clone(),
+                    load_token,
+                };
                 let identity = snapshot.descriptor.identity.clone();
                 let binding = crate::su_session::SuSessionBinding {
                     operation: "attached".into(),
@@ -4860,6 +4881,23 @@ async fn probe_su_session_inventory(
 /// turn is held until the stream's identity snapshot arrives, which gives us a
 /// complete target identity (including native session id) and prevents a
 /// create/attach race from dispatching to the wrong runtime.
+#[derive(Clone)]
+struct SuSessionEventSender {
+    tx: UnboundedSender<Event>,
+    harness: String,
+    load_token: u64,
+}
+
+impl SuSessionEventSender {
+    fn send(&self, event: Event) -> Result<(), tokio::sync::mpsc::error::SendError<Event>> {
+        self.tx.send(Event::SuSessionAsync {
+            harness: self.harness.clone(),
+            load_token: self.load_token,
+            event: Box::new(event),
+        })
+    }
+}
+
 async fn open_su_session_task(
     harness: String,
     role: String,
@@ -4867,7 +4905,7 @@ async fn open_su_session_task(
     carry: String,
     launch: crate::su_session::SuSessionLaunchOptions,
     (initial_turn, existing_chat): (Option<crate::app::PendingSuTurn>, Option<String>),
-    tx: UnboundedSender<Event>,
+    tx: SuSessionEventSender,
 ) {
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
@@ -4934,7 +4972,7 @@ async fn attach_su_session_task(
     chat_id: String,
     adv_session_id: i64,
     backend: crate::su_session::SuSessionBackend,
-    tx: UnboundedSender<Event>,
+    tx: SuSessionEventSender,
 ) {
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
@@ -4969,7 +5007,7 @@ async fn stream_su_session_events(
     chat_id: String,
     binding: crate::su_session::SuSessionBinding,
     mut initial_turn: Option<crate::app::PendingSuTurn>,
-    tx: UnboundedSender<Event>,
+    tx: SuSessionEventSender,
 ) {
     // Readiness is an executor/stream property, not the mere existence of a
     // descriptor. Bound retries also cover a reconnect during host startup.
@@ -5089,7 +5127,7 @@ async fn send_su_session_turn_task(
     chat_id: String,
     binding: crate::su_session::SuSessionBinding,
     pending: crate::app::PendingSuTurn,
-    tx: UnboundedSender<Event>,
+    tx: SuSessionEventSender,
 ) {
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
@@ -5111,12 +5149,21 @@ fn su_turn_target_matches(
     harness: &str,
     chat_id: &str,
 ) -> bool {
+    let native_id = binding
+        .native_session
+        .as_ref()
+        .and_then(|handle| match handle {
+            models::NativeSessionHandle::Claude { session_id, .. } => session_id.as_deref(),
+            models::NativeSessionHandle::Codex { rollout_id, .. } => rollout_id.as_deref(),
+            models::NativeSessionHandle::Omp { omp_thread_id, .. } => omp_thread_id.as_deref(),
+        });
     identity.adv_session_id == binding.adv_session_id
         && identity.backend == binding.backend
         && identity.agent_chat_id == chat_id
         && identity.harness_slug.as_deref() == Some(harness)
         && binding.owner_id.as_deref() == Some(identity.owner_id.as_str())
         && binding.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
+        && native_id.is_none_or(|expected| expected == identity.native_session_id)
 }
 
 async fn send_su_turn_with_client(
@@ -5125,7 +5172,7 @@ async fn send_su_turn_with_client(
     chat_id: &str,
     binding: &crate::su_session::SuSessionBinding,
     pending: crate::app::PendingSuTurn,
-    tx: &UnboundedSender<Event>,
+    tx: &SuSessionEventSender,
 ) {
     let fail = |message: String, uncertain| {
         let _ = tx.send(Event::SuTurnFailed {
@@ -5240,7 +5287,7 @@ async fn send_su_session_command_task(
     harness: String,
     chat_id: String,
     command: serde_json::Value,
-    tx: UnboundedSender<Event>,
+    tx: SuSessionEventSender,
 ) {
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
@@ -6661,6 +6708,37 @@ mod tests {
             inventory[0].reconciliation = reconciliation;
             assert!(default_operator_chat(&chats, &inventory).is_none());
         }
+    }
+
+    #[test]
+    fn initial_turn_rejects_a_different_native_runtime_on_the_same_saved_session() {
+        let mut binding: crate::su_session::SuSessionBinding =
+            serde_json::from_value(serde_json::json!({
+                "operation":"created", "backend":"claude", "advSessionId":7,
+                "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup",
+                "nativeSession": {"backend":"claude", "source":"adv_sessions", "ownerId":"su-1",
+                    "sessionId":"native-1", "configDir":"/fixture", "exactResumeSupported":true}
+            }))
+            .unwrap();
+        let mut identity: crate::su_session::SuSessionIdentity = serde_json::from_value(serde_json::json!({
+            "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+            "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+        })).unwrap();
+        assert!(su_turn_target_matches(
+            &binding, &identity, "papercup", "chat-1"
+        ));
+        identity.native_session_id = "replaced-native".into();
+        assert!(!su_turn_target_matches(
+            &binding, &identity, "papercup", "chat-1"
+        ));
+        binding.native_session = None; // A resumed history binds from its canonical snapshot.
+        assert!(su_turn_target_matches(
+            &binding, &identity, "papercup", "chat-1"
+        ));
+        identity.owner_id = "unrelated-owner".into();
+        assert!(!su_turn_target_matches(
+            &binding, &identity, "papercup", "chat-1"
+        ));
     }
 
     #[test]
