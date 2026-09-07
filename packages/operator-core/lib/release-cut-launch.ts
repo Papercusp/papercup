@@ -154,6 +154,12 @@ export function buildCutEnv(
     PAPERCUSP_PUBLISH_GITHUB: '0',
     PAPERCUSP_EXPECTED_SOURCE_SHA: expectedSourceSha,
     PAPERCUSP_RELEASE_OWNER_NAME: requiredOwnerName(runtime.ownerName),
+    // A release cut may execute a frozen exact-source dependency-generation
+    // script while using current orchestration fixes. Force that older script's
+    // already-supported independent-copy path too: otherwise its historical
+    // same-filesystem default can hardlink a predecessor generation, and
+    // platform packaging then shares mutable inodes across Linux and Darwin.
+    DEPENDENCY_GENERATION_FORCE_COPY: '1',
     // This is the desktop release cutter. release-local.sh otherwise auto-enables
     // Android whenever a sibling mobile checkout + SDK happen to exist, which makes
     // an explicitly Linux/macOS/Windows cut depend on ambient fourth-product state.
