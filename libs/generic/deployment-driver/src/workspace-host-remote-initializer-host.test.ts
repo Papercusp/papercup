@@ -726,7 +726,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
     const { system, deps } = fixture();
     const bundle = encodeWorkspaceHostAgentHomeBundle({
       claude: Buffer.from('{"account":"claude-canary"}'),
-      codex: Buffer.from('{"account":"codex-canary"}'),
+      codex: Buffer.from(
+        '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access","refresh_token":"canonical-writer-only"}}',
+      ),
       omp: Buffer.from('{"account":"omp-canary"}'),
     });
     const materialPath = workspaceHostCredentialMaterialPath(
@@ -757,7 +759,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
       Buffer.from('{"account":"claude-canary"}'),
     );
     expect(system.files.get(paths.codex)).toEqual(
-      Buffer.from('{"account":"codex-canary"}'),
+      Buffer.from(
+        '{"account":"codex-canary","auth_mode":"chatgpt","tokens":{"access_token":"codex-canary-access"}}',
+      ),
     );
     expect(system.files.get(paths.omp)).toEqual(
       Buffer.from('{"account":"omp-canary"}'),
