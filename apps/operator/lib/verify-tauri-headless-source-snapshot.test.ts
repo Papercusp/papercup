@@ -8,7 +8,15 @@
  * own source. Pin the startup snapshot/re-exec contract on the real script.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -86,6 +94,87 @@ describe("EI-22587788892654404 — a repo-local temp root cannot enter its own s
   it("excludes and defensively removes local Papercusp state before the isolated sidecar boots", () => {
     expect(operatorSnapshotSource).toContain("--exclude='.papercusp'");
     expect(operatorSnapshotSource).toContain('"$snapshot_root/.papercusp"');
+  });
+});
+
+describe("EI-22590231221058313 — workspace runtime exports survive the snapshot", () => {
+  function requireSnapshot(output: "dist" | "build", blanketExclude = false) {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-runtime-export-"));
+    const donor = resolve(fixture, "donor");
+    const copy = resolve(fixture, "copy");
+    try {
+      const runtime = resolve(donor, "libs/runtime");
+      mkdirSync(resolve(runtime, output), { recursive: true });
+      writeFileSync(
+        resolve(runtime, "package.json"),
+        JSON.stringify({
+          name: "@fixture/runtime",
+          exports: { require: `./${output}/index.js` },
+        }),
+      );
+      writeFileSync(
+        resolve(runtime, output, "index.js"),
+        "module.exports = 42;\n",
+      );
+      const excluded = ["dist", "build", "apps/operator-vite/dist"];
+      for (const path of excluded) {
+        mkdirSync(resolve(donor, path), { recursive: true });
+        writeFileSync(resolve(donor, path, "artifact.js"), "unrelated output");
+      }
+      mkdirSync(copy);
+      const filters = [
+        ...operatorSnapshotSource.matchAll(/--exclude='([^']+)'/g),
+      ].map((match) => `--exclude=${match[1]}`);
+      expect(filters.length).toBeGreaterThan(0);
+      const snapshot = spawnSync(
+        "rsync",
+        [
+          "-a",
+          ...filters,
+          ...(blanketExclude ? [`--exclude=${output}`] : []),
+          `${donor}/`,
+          `${copy}/`,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(snapshot.status, snapshot.stderr).toBe(0);
+      // The pinned dependency helper preserves relative workspace symlinks.
+      mkdirSync(resolve(copy, "node_modules/@fixture"), { recursive: true });
+      symlinkSync(
+        "../../libs/runtime",
+        resolve(copy, "node_modules/@fixture/runtime"),
+      );
+      const result = spawnSync(
+        process.execPath,
+        ["-e", "console.log(require('@fixture/runtime'))"],
+        {
+          cwd: copy,
+          encoding: "utf8",
+        },
+      );
+      return {
+        ...result,
+        excluded: excluded.map((path) => existsSync(resolve(copy, path))),
+      };
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  it.each(["dist", "build"] as const)(
+    "resolves a workspace package's %s entrypoint from the copy",
+    (output) => {
+      const result = requireSnapshot(output);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe("42");
+      expect(result.excluded).toEqual([false, false, false]);
+    },
+  );
+
+  it("detects the original blanket-exclusion failure", () => {
+    const result = requireSnapshot("dist", true);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("MODULE_NOT_FOUND");
   });
 });
 
@@ -174,6 +263,116 @@ describe("EI-22588292228855829 — dependency snapshot stays on the donor filesy
     );
     expect(src).toContain(
       '[ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK"',
+    );
+  });
+});
+
+describe("EI-22589054433344154 — aggregate disk admission precedes bulk allocation", () => {
+  const reservationStart = src.indexOf("reserve_verifier_disk() {");
+  const releaseStart = src.indexOf("release_verifier_disk_reservations() {");
+  const releaseEnd = src.indexOf(
+    "cleanup_operator_source_snapshot() {",
+    releaseStart,
+  );
+
+  function reserve(
+    sameMount: boolean,
+    freeSource: number,
+    freeBulk: number,
+    isolated = true,
+  ) {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-disk-admission-"));
+    try {
+      const desktop = resolve(fixture, "desktop");
+      mkdirSync(resolve(desktop, "bin/lib"), { recursive: true });
+      mkdirSync(resolve(fixture, "source"));
+      mkdirSync(resolve(fixture, "bulk"));
+      // Exercise the real shared reservation writer with deterministic device
+      // measurements. Each test has a private ledger and reserves no real disk.
+      writeFileSync(
+        resolve(desktop, "bin/lib/disk-preflight.sh"),
+        [
+          `. ${JSON.stringify(resolve(__dirname, "../../../papercusp-desktop/bin/lib/disk-preflight.sh"))}`,
+          'papercusp_mount_key() { if [ "$TEST_SAME_MOUNT" = 1 ] || [ "$1" = "$OPERATOR_SNAPSHOT_PARENT" ]; then printf source; else printf bulk; fi; }',
+          'papercusp_free_gb() { if [ "$TEST_SAME_MOUNT" = 1 ] || [ "$1" = "$OPERATOR_SNAPSHOT_PARENT" ]; then printf "%s" "$TEST_FREE_SOURCE"; else printf "%s" "$TEST_FREE_BULK"; fi; }',
+        ].join("\n"),
+      );
+      return spawnSync(
+        "bash",
+        [
+          "-c",
+          [
+            "VERIFIER_DISK_RESERVATIONS=()",
+            src.slice(releaseStart, releaseEnd),
+            src.slice(reservationStart, operatorSnapshotIdx),
+            "reserve_verifier_disk 1073741824",
+            "status=$?",
+            'printf "status=%s claims=%s\\n" "$status" "${#VERIFIER_DISK_RESERVATIONS[@]}"',
+            'for f in "${VERIFIER_DISK_RESERVATIONS[@]}"; do sed -n "/^gb=/p" "$f"; done',
+            "release_verifier_disk_reservations",
+            'find "$PAPERCUSP_DISK_RESERVATION_DIR" -name "*.res" -print',
+            'exit "$status"',
+          ].join("\n"),
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            DESKTOP_DIR: desktop,
+            REPO_DIR: fixture,
+            OPERATOR_SNAPSHOT_PARENT: resolve(fixture, "source"),
+            WORK: resolve(fixture, "bulk"),
+            PAPERCUSP_DISK_RESERVATION_DIR: resolve(fixture, "ledger"),
+            VERIFY_TAURI_ISOLATED_DB: isolated ? "1" : "0",
+            TEST_SAME_MOUNT: sameMount ? "1" : "0",
+            TEST_FREE_SOURCE: String(freeSource),
+            TEST_FREE_BULK: String(freeBulk),
+          },
+        },
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  it("refuses aggregate demand even when each individual payload would fit", () => {
+    const result = reserve(true, 10, 10);
+    expect(result.status).toBe(28);
+    expect(result.stdout).toBe("status=28 claims=0\n");
+    expect(result.stderr).toContain("need ~11GB");
+  });
+
+  it("reserves separate source and bulk demands and releases both", () => {
+    const result = reserve(false, 3, 10);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("status=0 claims=2\ngb=2\ngb=9\n");
+  });
+
+  it("rolls back the source reservation when bulk admission fails", () => {
+    const result = reserve(false, 3, 8);
+    expect(result.status).toBe(28);
+    expect(result.stdout).toBe("status=28 claims=0\n");
+  });
+
+  it("omits the database budget for a read-only shared-database run", () => {
+    const result = reserve(true, 3, 3, false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("status=0 claims=1\ngb=3\n");
+  });
+
+  it("estimates with the copy filters and admits before rsync can allocate bytes", () => {
+    expect(
+      operatorSnapshotSource.indexOf('reserve_verifier_disk "$source_bytes"'),
+    ).toBeLessThan(
+      operatorSnapshotSource.indexOf(
+        'rsync -a --delete "${source_filters[@]}"',
+      ),
+    );
+    expect(operatorSnapshotSource).toContain(
+      'rsync -an --stats "${source_filters[@]}"',
+    );
+    expect(src.slice(src.indexOf('BOOT_ONLY_ENV="$WORK/env.sh"'))).toContain(
+      "release_verifier_disk_reservations",
     );
   });
 });

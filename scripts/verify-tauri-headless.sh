@@ -820,7 +820,16 @@ LOG="$WORK/tauri.log"
 # lifetime after this process hands the rig to the caller.
 OPERATOR_SOURCE_ROOT=""
 OPERATOR_SOURCE_WORK=""
+VERIFIER_DISK_RESERVATIONS=()
+release_verifier_disk_reservations() {
+  local reservation
+  for reservation in "${VERIFIER_DISK_RESERVATIONS[@]}"; do
+    PAPERCUSP_DISK_RESERVATION_FILE="$reservation" papercusp_release_disk_reservation
+  done
+  VERIFIER_DISK_RESERVATIONS=()
+}
 cleanup_operator_source_snapshot() {
+  release_verifier_disk_reservations
   if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then
     rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null || true
     OPERATOR_SOURCE_WORK=""
@@ -868,8 +877,44 @@ write_run_marker "$$" || {
 # EI-22478219188163557: freeze the operator source/dependency graph before the
 # isolated Tauri launch. The source copy is independent; dependency trees use
 # the reusable pinned-deps hardlink snapshot under the donor install mutex.
+reserve_verifier_disk() {
+  local source_bytes="$1" spa_kib=0 source_gb bulk_gb source_key bulk_key status
+  local disk_helper="$DESKTOP_DIR/bin/lib/disk-preflight.sh"
+  [ -f "$disk_helper" ] || { echo "FATAL: missing shared disk preflight: $disk_helper" >&2; return 1; }
+  # Reuse the build reservation ledger so other verifiers/builds see this demand.
+  # shellcheck source=/dev/null
+  . "$disk_helper" || return 1
+  if [ -d "$REPO_DIR/apps/operator-vite/dist" ]; then
+    spa_kib="$(du -sk "$REPO_DIR/apps/operator-vite/dist" | awk '{print $1}')" || return 1
+  fi
+  case "$source_bytes:$spa_kib" in *[!0-9:]*|:*|*:) echo "FATAL: cannot estimate verifier disk footprint" >&2; return 1 ;; esac
+  # Source bytes are measured by the same rsync filter set as the real copy.
+  # Dependencies are hardlinked: allow 1 GiB for directory/metadata growth.
+  source_gb=$(( (source_bytes + 1073741823) / 1073741824 + 1 ))
+  # Measured SPA copy plus 1 GiB for the profile/logs. Fresh migrated PG has
+  # exceeded 4.7 GiB in real runs; reserve an explicit 8 GiB bootstrap budget.
+  bulk_gb=$(( (spa_kib + 1048575) / 1048576 + 1 ))
+  [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ] || bulk_gb=$((bulk_gb + 8))
+  source_key="$(papercusp_mount_key "$OPERATOR_SNAPSHOT_PARENT")"
+  bulk_key="$(papercusp_mount_key "$WORK")"
+  if [ -n "$source_key" ] && [ "$source_key" = "$bulk_key" ]; then
+    papercusp_require_free_gb "$WORK" "$((source_gb + bulk_gb))" "verifier source + SPA + profile + database" >&2 || return $?
+    VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
+  else
+    papercusp_require_free_gb "$OPERATOR_SNAPSHOT_PARENT" "$source_gb" "verifier source + hardlink metadata" >&2 || return $?
+    VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
+    papercusp_require_free_gb "$WORK" "$bulk_gb" "verifier SPA + profile + database" >&2 || {
+      status=$?
+      release_verifier_disk_reservations
+      return "$status"
+    }
+    VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
+  fi
+}
+
 snapshot_operator_source() {
   local snapshot_root
+  local source_bytes
   local pinned_deps_lib="$DESKTOP_DIR/bin/lib/pinned-deps.sh"
   local pinned_deps_copy="$WORK/pinned-deps.sh"
   command -v rsync >/dev/null 2>&1 || {
@@ -889,20 +934,26 @@ snapshot_operator_source() {
   OPERATOR_SOURCE_ROOT="$snapshot_root"
   write_run_marker "$$" || return 1
   mkdir -p "$snapshot_root" || return 1
-  rsync -a --delete \
-    --exclude='node_modules' \
-    --exclude='papercusp-desktop' \
-    --exclude='.git' \
-    --exclude='.gitnexus' \
-    --exclude='.papercusp' \
-    --exclude='target' \
-    --exclude='.turbo' \
-    --exclude='.next' \
-    --exclude='dist' \
-    --exclude='build' \
-    --exclude='coverage' \
-    --exclude='.cache' \
-    --exclude='.pnpm-store' \
+  local source_filters=(
+    --exclude='node_modules'
+    --exclude='papercusp-desktop'
+    --exclude='.git'
+    --exclude='.gitnexus'
+    --exclude='.papercusp'
+    --exclude='target'
+    --exclude='.turbo'
+    --exclude='.next'
+    --exclude='/dist'
+    --exclude='/build'
+    --exclude='/apps/operator-vite/dist'
+    --exclude='coverage'
+    --exclude='.cache'
+    --exclude='.pnpm-store'
+  )
+  source_bytes="$(LC_ALL=C rsync -an --stats "${source_filters[@]}" "$REPO_DIR/" "$snapshot_root/" |
+    awk '/^Total file size:/ { gsub(/,/, "", $4); print $4 }')" || return 1
+  reserve_verifier_disk "$source_bytes" || return $?
+  rsync -a --delete "${source_filters[@]}" \
     "$REPO_DIR/" "$snapshot_root/" || {
       echo "FATAL: could not copy an independent verifier operator source snapshot" >&2
       return 1
@@ -3306,6 +3357,9 @@ if [ "${1:-}" = "--boot-only" ]; then
 
   BOOT_ONLY_ENV="$WORK/env.sh"
   write_boot_only_env_script || exit 1
+  # The allocations are complete and visible in df; no future copy is promised
+  # by the exiting launcher. The persistent rig owns its ordinary disk usage.
+  release_verifier_disk_reservations
   # The only stdout contract is this one source command. The env file is
   # private to this run and re-checks caller/target provenance when sourced;
   # no raw export block can be reconstructed from a shared log.
