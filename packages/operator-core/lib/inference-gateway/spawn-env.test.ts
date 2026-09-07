@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
   gatewaySpawnEnv,
   gatewayLlmEnv,
+  applyGatewayLlmEnv,
+  isDirectAnthropicApiUrl,
   gatewayPort,
   GATEWAY_BASE_URL_ENV,
   GATEWAY_SDK_URL_ENV,
@@ -68,6 +70,43 @@ test('gatewayLlmEnv — enabled patches BOTH the CLI and the anthropic-direct SD
   });
   // distinct env vars so the in-process judge (SDK) and spawned agents (CLI) both route through it
   assert.notEqual(GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV);
+});
+
+test('isDirectAnthropicApiUrl — recognizes the public API endpoint, including a path, but not custom endpoints', () => {
+  assert.equal(isDirectAnthropicApiUrl('https://api.anthropic.com'), true);
+  assert.equal(isDirectAnthropicApiUrl('https://api.anthropic.com/v1'), true);
+  assert.equal(isDirectAnthropicApiUrl('http://api.anthropic.com/'), true);
+  assert.equal(isDirectAnthropicApiUrl('http://127.0.0.1:8788'), false);
+  assert.equal(isDirectAnthropicApiUrl('https://proxy.example.test'), false);
+  assert.equal(isDirectAnthropicApiUrl('api.anthropic.com'), false);
+});
+
+test('applyGatewayLlmEnv — replaces inherited public API defaults but preserves explicit local/custom endpoints', () => {
+  delete process.env.PAPERCUSP_GATEWAY_PORT;
+  const env: NodeJS.ProcessEnv = {
+    [GATEWAY_BASE_URL_ENV]: 'https://api.anthropic.com/v1',
+    [GATEWAY_SDK_URL_ENV]: 'https://api.anthropic.com',
+  };
+  assert.deepEqual(applyGatewayLlmEnv(true, env), [GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV]);
+  assert.equal(env[GATEWAY_BASE_URL_ENV], 'http://127.0.0.1:8788');
+  assert.equal(env[GATEWAY_SDK_URL_ENV], 'http://127.0.0.1:8788');
+
+  const custom: NodeJS.ProcessEnv = {
+    [GATEWAY_BASE_URL_ENV]: 'http://127.0.0.1:9901',
+    [GATEWAY_SDK_URL_ENV]: 'http://localhost:9902',
+  };
+  assert.deepEqual(applyGatewayLlmEnv(true, custom), []);
+  assert.equal(custom[GATEWAY_BASE_URL_ENV], 'http://127.0.0.1:9901');
+  assert.equal(custom[GATEWAY_SDK_URL_ENV], 'http://localhost:9902');
+});
+
+test('applyGatewayLlmEnv — fills unset values and leaves the environment unchanged when disabled', () => {
+  const env: NodeJS.ProcessEnv = {};
+  assert.deepEqual(applyGatewayLlmEnv(false, env), []);
+  assert.deepEqual(env, {});
+  assert.deepEqual(applyGatewayLlmEnv(true, env), [GATEWAY_BASE_URL_ENV, GATEWAY_SDK_URL_ENV]);
+  assert.equal(env[GATEWAY_BASE_URL_ENV], 'http://127.0.0.1:8788');
+  assert.equal(env[GATEWAY_SDK_URL_ENV], 'http://127.0.0.1:8788');
 });
 
 test('gatewaySpawnEnv — with an accountId emits the x-papercusp-account routing header (P-004)', () => {

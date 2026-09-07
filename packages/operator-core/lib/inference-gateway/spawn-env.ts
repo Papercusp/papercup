@@ -229,6 +229,51 @@ export function gatewayLlmEnv(enabled: boolean): Record<string, string> {
 }
 
 /**
+ * Whether an inherited endpoint is the public Anthropic API default rather than
+ * an intentional local/custom endpoint. The llm-test CLI runs inside operator
+ * processes whose environment can carry the public default from an earlier
+ * direct-credential path; leaving that value in place silently bypasses the
+ * enabled local gateway. Keep explicit local/custom endpoints intact.
+ */
+export function isDirectAnthropicApiUrl(value: string | undefined): boolean {
+  const trimmed = value?.trim();
+  if (!trimmed) return false;
+  try {
+    const url = new URL(trimmed);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:')
+      && url.hostname.toLowerCase() === 'api.anthropic.com'
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply the in-process gateway patch to an environment. Empty values and the
+ * canonical public Anthropic API endpoint are replaceable; an explicit custom
+ * endpoint (including a loopback test gateway) is preserved.
+ *
+ * Returns the keys whose values changed so callers/tests can make the routing
+ * decision observable without diffing the whole process environment.
+ */
+export function applyGatewayLlmEnv(
+  enabled: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const patch = gatewayLlmEnv(enabled);
+  const changed: string[] = [];
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = env[key]?.trim();
+    if (!existing || isDirectAnthropicApiUrl(existing)) {
+      if (env[key] !== value) changed.push(key);
+      env[key] = value;
+    }
+  }
+  return changed;
+}
+
+/**
  * Resolve the COMPLETE gateway+account spawn-env for a spawned agent — the ONE routing decision
  * BOTH spawn chokepoints must apply (the bee path `fleet/operator-spawn.ts` AND the `/invoke`
  * route `endpoint-route/routes/harness/spawn.ts`), so a routing change can't be added to one path

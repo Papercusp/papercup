@@ -232,17 +232,16 @@ Plan: apps/operator/docs/plans/llm-testing-framework-2026-05-14.md
  * missing patch here 429s every one of those on one account's cap while the
  * pooled gateway accounts sit idle (spawn-env.ts D-011) — observed twice trying
  * to record the Lane-C de-risk verdict for agent-tool-delta-protocol. Same class
- * as gym/autoloop-cycle.ts + scout/register-scout-action.ts. Flag-OFF or a
- * pre-set override leaves env untouched.
+ * as gym/autoloop-cycle.ts + scout/register-scout-action.ts. Flag-OFF leaves env
+ * untouched; the enabled path preserves deliberate custom endpoints but replaces
+ * an inherited public api.anthropic.com default.
  */
 async function applyGatewayEnv(): Promise<void> {
   const { FLAGS } = await import('@papercusp/flags');
   const { getFlag } = await import('@papercusp/flags/server');
   if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
-    const { gatewayLlmEnv, gatewayPort } = await import('@papercusp/operator-core/lib/inference-gateway/spawn-env');
-    for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
-      if (!process.env[k]) process.env[k] = v;
-    }
+    const { applyGatewayLlmEnv, gatewayPort } = await import('@papercusp/operator-core/lib/inference-gateway/spawn-env');
+    applyGatewayLlmEnv(true);
     console.log(`[llm-test] inference-gateway ON → routing LLM calls through http://127.0.0.1:${gatewayPort()}`);
   }
 }
