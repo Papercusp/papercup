@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   acceptanceBarApprovalSchema,
+  approvalReceiptJsonSource,
+  resolveAcceptanceBarApproval,
   acceptanceBarAmendmentKey,
   acceptanceBarSourceFingerprint,
   synchronizeAcceptanceBarSubjectRevision,
@@ -355,5 +357,70 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
       }),
     ).resolves.toBe(false);
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+describe('approval receipt parsing (EI-22617748468342848)', () => {
+  const RECEIPT = {
+    schemaVersion: 1,
+    kind: 'acceptance-bar-amendment-approval',
+    rubricRef: 'acceptance-plan',
+    subjectPlan: 'plan',
+    bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
+  } as const;
+
+  const expected = {
+    schemaVersion: 1 as const,
+    kind: 'acceptance-bar-amendment-approval' as const,
+    rubricRef: 'acceptance-plan',
+    subjectPlan: 'plan',
+    bars: [{ barKey: 'R-1', priorBarHash: 'a'.repeat(64), nextBarHash: 'b'.repeat(64) }],
+  };
+
+  function sqlReturning(body: string) {
+    return (() =>
+      Promise.resolve([
+        { author_id: 'su-reviewer', body, approved_at: '2026-09-07T00:00:00.000Z' },
+      ])) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+  }
+
+  const resolve = (body: string) =>
+    resolveAcceptanceBarApproval(sqlReturning(body), {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    });
+
+  it('strips a ```json fence before parsing, and leaves an unfenced body untouched', () => {
+    expect(approvalReceiptJsonSource('```json\n{"a":1}\n```')).toBe('{"a":1}');
+    expect(approvalReceiptJsonSource('```\n{"a":1}\n```')).toBe('{"a":1}');
+    expect(approvalReceiptJsonSource('{"a":1}')).toBe('{"a":1}');
+  });
+
+  it('accepts a fenced reviewer receipt', async () => {
+    await expect(resolve('```json\n' + JSON.stringify(RECEIPT) + '\n```')).resolves.toMatchObject({
+      approvalRef: 'thread-post:123',
+      approvedBy: 'su-reviewer',
+    });
+  });
+
+  it('still accepts a raw receipt', async () => {
+    await expect(resolve(JSON.stringify(RECEIPT))).resolves.toMatchObject({
+      approvedBy: 'su-reviewer',
+    });
+  });
+
+  it('reports a non-JSON body as _unparseable, naming the cause', async () => {
+    await expect(resolve('Approved! see above.')).rejects.toThrow(
+      /acceptance_bar_approval_unparseable/,
+    );
+  });
+
+  // The case that proves the split is real rather than cosmetic: well-formed JSON
+  // that fails the schema must KEEP the old code, one line below the new one.
+  it('keeps _invalid_receipt for well-formed JSON that fails the schema', async () => {
+    const wrongSchema = JSON.stringify({ schemaVersion: 1, kind: 'not-an-approval' });
+    await expect(resolve(wrongSchema)).rejects.toThrow(/acceptance_bar_approval_invalid_receipt/);
+    await expect(resolve(wrongSchema)).rejects.not.toThrow(/unparseable/);
   });
 });
