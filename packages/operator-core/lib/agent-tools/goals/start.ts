@@ -49,11 +49,14 @@ import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal, teardownDrainFleetMint } from '../../goals/drain-fleet-mint';
 import {
+  goalLaunchSettingsSchema,
   goalHolderPolicyProblem,
   goalHolderPolicySchema,
+  launchProfileSchema,
   renderGoalPortfolioBrief,
   resolveGoalLaunchForGoal,
   type GoalPortfolioBrief,
+  type LaunchProfile,
 } from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
@@ -202,6 +205,96 @@ function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
 
+/**
+ * A typed start contract can make the goal agent the SOLE actor. The goal
+ * agent already exists by the time the drain lane would be minted, so adding
+ * the usual headless drain member would violate that contract and create two
+ * independent behavioral subjects. Require both the declaration and the
+ * validated input value: an incidental `inputs.allowedMembers = 1` must not
+ * disable the drain fleet when the goal never declared that constraint.
+ */
+function declaresSoleMemberContract(
+  inputSchema: Record<string, unknown> | undefined,
+  inputs: Record<string, unknown> | null,
+): boolean {
+  if (!inputSchema || !inputs || inputs.allowedMembers !== 1) return false;
+
+  const required = inputSchema.required;
+  if (!Array.isArray(required) || !required.includes('allowedMembers')) return false;
+
+  const properties = inputSchema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return false;
+
+  const allowedMembers = (properties as Record<string, unknown>).allowedMembers;
+  return (
+    !!allowedMembers &&
+    typeof allowedMembers === 'object' &&
+    !Array.isArray(allowedMembers) &&
+    (allowedMembers as Record<string, unknown>).const === 1
+  );
+}
+
+/** Build the durable launch policy from the start request before the row exists. */
+function buildStartLaunchSettings(args: {
+  launchSettings?: unknown;
+  holder?: unknown;
+  agent?: unknown;
+  model?: unknown;
+  effort?: unknown;
+  account?: unknown;
+  carry?: unknown;
+  contextSize?: unknown;
+  compactionLimit?: unknown;
+  headless?: unknown;
+  maxAgents?: unknown;
+  maxPerFleet?: unknown;
+  soleMember?: boolean;
+}): { settings: Record<string, unknown> | null; requested: LaunchProfile; error?: string } {
+  const baseResult = goalLaunchSettingsSchema.safeParse(args.launchSettings ?? {});
+  if (!baseResult.success) {
+    return { settings: null, requested: {}, error: 'launchSettings is invalid' };
+  }
+
+  const profileInput = Object.fromEntries(
+    Object.entries({
+      agent: args.agent,
+      model: args.model,
+      effort: args.effort,
+      account: args.account,
+      carry: args.carry,
+      contextSize: args.contextSize,
+      compactionLimit: args.compactionLimit,
+      headless: args.headless,
+    }).filter(([, value]) => value !== undefined),
+  );
+  const profileResult = launchProfileSchema.safeParse(profileInput);
+  if (!profileResult.success) {
+    return { settings: null, requested: {}, error: 'launch profile is invalid' };
+  }
+
+  const settings: Record<string, unknown> = { ...baseResult.data };
+  const defaults = { ...(baseResult.data.defaults ?? {}), ...profileResult.data };
+  if (Object.keys(defaults).length) settings.defaults = defaults;
+  if (args.holder !== undefined) settings.holder = args.holder;
+  if (args.maxAgents !== undefined) settings.maxAgents = args.maxAgents;
+  if (args.maxPerFleet !== undefined) settings.maxPerFleet = args.maxPerFleet;
+  if (args.soleMember) {
+    // The typed allowedMembers=1 contract is a hard one-agent ceiling, not just
+    // a hint for skipping the standing drain member.
+    settings.maxAgents = 1;
+    settings.maxPerFleet = 1;
+  }
+
+  const parsed = goalLaunchSettingsSchema.safeParse(settings);
+  if (!parsed.success) {
+    return { settings: null, requested: {}, error: 'computed launch settings are invalid' };
+  }
+  return {
+    settings: Object.keys(parsed.data).length ? parsed.data : null,
+    requested: profileResult.data,
+  };
+}
+
 export default defineTool({
   name: 'goals:start',
   needsWorkspaceTx: true,
@@ -333,6 +426,30 @@ export default defineTool({
       .describe(
         "Account routing: 'default' (system credential, the default), 'auto' (gateway-routed with failover), or a pool account id.",
       ),
+    effort: z.string().min(1).max(40).optional().describe('Reasoning effort for the spawned agent.'),
+    carry: z.enum(['warm', 'cold']).optional().describe('Warm/cold auto-mode carry for the spawned agent.'),
+    contextSize: z.enum(['trimmed', 'steward']).optional().describe('Initial tool-surface context size.'),
+    compactionLimit: z
+      .number()
+      .int()
+      .min(50_000)
+      .max(2_000_000)
+      .optional()
+      .describe('Soft compaction limit in tokens for the spawned agent.'),
+    maxAgents: z
+      .union([z.number().int().positive().max(1000), z.literal('unlimited')])
+      .nullable()
+      .optional()
+      .describe('Per-goal concurrent-agent ceiling persisted in launch_settings.'),
+    maxPerFleet: z
+      .union([z.number().int().positive().max(1000), z.literal('unlimited')])
+      .nullable()
+      .optional()
+      .describe('Per-fleet concurrent-agent ceiling persisted in launch_settings.'),
+    launchSettings: goalLaunchSettingsSchema
+      .nullable()
+      .optional()
+      .describe('Validated launch profile and ceilings to persist before spawning.'),
     headless: z
       .boolean()
       .optional()
@@ -404,15 +521,6 @@ export default defineTool({
     // header describes, which this door has already been on the wrong side of
     // once (it reaches the shared insert directly).
     //
-    // This tool has the strongest claim of the three: it SPAWNS the session that
-    // holds the goal, so "does this goal need a live holder" is a question its
-    // caller is uniquely positioned to answer. Same placement as the criterion
-    // check above — before the ownerId pre-pin and the row write, so a refusal
-    // costs no minted identity and no rollback.
-    const launchSettings = args.holder ? { holder: args.holder } : null;
-    const holderProblem = goalHolderPolicyProblem(launchSettings);
-    if (holderProblem) return err(holderProblem);
-
     // ── P-021: IO-schema compilability + typed-input readiness ─────────────
     // Same placement as the criterion + holder checks above: before the
     // ownerId pre-pin and the row write, so a refusal costs no minted identity
@@ -433,6 +541,26 @@ export default defineTool({
     if (!inputsVerdict.ready) {
       return err(`inputs refused (${inputsVerdict.code}): ${inputsVerdict.hint}`);
     }
+    const soleMemberGoal = declaresSoleMemberContract(args.inputSchema, inputsVerdict.inputs);
+    const launchSettingsResult = buildStartLaunchSettings({
+      launchSettings: args.launchSettings,
+      holder: args.holder,
+      agent: args.agent,
+      model: args.model,
+      effort: args.effort,
+      account: args.account,
+      carry: args.carry,
+      contextSize: args.contextSize,
+      compactionLimit: args.compactionLimit,
+      headless: args.headless,
+      maxAgents: args.maxAgents,
+      maxPerFleet: args.maxPerFleet,
+      soleMember: soleMemberGoal,
+    });
+    if (launchSettingsResult.error) return err(launchSettingsResult.error);
+    const launchSettings = launchSettingsResult.settings;
+    const holderProblem = goalHolderPolicyProblem(launchSettings);
+    if (holderProblem) return err(holderProblem);
     // ── P-023: typed property DECLARATIONS — validated-on-declare (datatype
     // refs must resolve in datatype_registry; defaults must satisfy their
     // datatype's payload_schema), same placement as the IO-schema gates above.
@@ -566,7 +694,9 @@ export default defineTool({
     // the goal agent below, so the rollback never has to unwind a process.)
     let drainFleet: { slug: string; specRevision: number | null } | null = null;
     const drainWarnings: string[] = [];
-    if (await drainFleetAutoMintEnabled()) {
+    // The goal agent is already the one actor for an explicitly typed
+    // `allowedMembers: 1` contract. Do not mint a second actor's lane for it.
+    if (!soleMemberGoal && (await drainFleetAutoMintEnabled())) {
       try {
         const minted = await mintDrainFleetForGoal({
           workspaceId,
@@ -639,11 +769,8 @@ export default defineTool({
       workspaceId,
       goalId: id,
       goalRole: 'goal',
-      requested: {
-        ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
-        ...(args.account ? { account: args.account } : {}),
-        ...(args.model ? { model: args.model } : {}),
-      },
+      requested: launchSettingsResult.requested,
+      sql: ctx.tx as never,
     });
     if (goalLaunch.refusal) {
       await rollback();
@@ -660,8 +787,10 @@ export default defineTool({
         account: goalLaunch.effective.account ?? args.account ?? null,
         model: goalLaunch.effective.model ?? args.model ?? null,
         effort: goalLaunch.effective.effort ?? null,
+        carry: goalLaunch.effective.carry ?? null,
         contextSize: goalLaunch.effective.contextSize ?? null,
-        headless: !!args.headless,
+        compactionLimit: goalLaunch.effective.compactionLimit ?? null,
+        headless: goalLaunch.effective.headless ?? !!args.headless,
       });
     } catch (e) {
       await rollback();
@@ -729,6 +858,11 @@ export default defineTool({
           agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
           harness: installSlug,
           account: goalLaunch.effective.account ?? args.account ?? null,
+          model: goalLaunch.effective.model ?? args.model ?? null,
+          effort: goalLaunch.effective.effort ?? null,
+          carry: goalLaunch.effective.carry ?? null,
+          contextSize: goalLaunch.effective.contextSize ?? null,
+          compactionLimit: goalLaunch.effective.compactionLimit ?? null,
           headless: true,
         });
         memberCmd = injectFleetArg(memberCmd, drainFleet.slug).command;

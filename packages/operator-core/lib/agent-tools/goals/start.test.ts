@@ -283,6 +283,49 @@ describe('goals:start — the happy path', () => {
     expect(dataOf(res).budget_cents).toBe(50_000);
   });
 
+  it('persists and reuses the requested launch profile and ceilings', async () => {
+    await call({
+      agent: 'claude',
+      model: 'sonnet',
+      effort: 'xhigh',
+      account: 'default',
+      carry: 'cold',
+      contextSize: 'trimmed',
+      compactionLimit: 200_000,
+      maxAgents: 3,
+      maxPerFleet: 2,
+      headless: true,
+    });
+
+    const insert = sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text));
+    const settings = JSON.parse(String(insert!.values[13]));
+    expect(settings).toMatchObject({
+      holder: { requireLive: true },
+      maxAgents: 3,
+      maxPerFleet: 2,
+      defaults: {
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'xhigh',
+        account: 'default',
+        carry: 'cold',
+        contextSize: 'trimmed',
+        compactionLimit: 200_000,
+        headless: true,
+      },
+    });
+
+    const goalCommand = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
+    const drainCommand = (spawnHeadlessMock.mock.calls[1][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
+    for (const command of [goalCommand, drainCommand]) {
+      expect(command).toContain('--model=sonnet:xhigh');
+      expect(command).toContain('--account=default');
+      expect(command).toContain('--carry=cold');
+      expect(command).toContain('--context-size=trimmed');
+      expect(command).toContain('--compaction-limit=200000');
+    }
+  });
+
   it('routes a headless launch through spawnHeadless', async () => {
     await call({ headless: true });
     // TWO headless spawns since P-001: the goal agent AND the drain-fleet
@@ -295,6 +338,35 @@ describe('goals:start — the happy path', () => {
 });
 
 describe('goals:start — the standing drain fleet (P-001)', () => {
+  it('does not mint or spawn a second actor for an explicit allowedMembers=1 contract', async () => {
+    const res = await call({
+      inputSchema: {
+        type: 'object',
+        required: ['allowedMembers'],
+        properties: { allowedMembers: { type: 'integer', const: 1 } },
+        additionalProperties: false,
+      },
+      inputs: { allowedMembers: 1 },
+    });
+
+    expect(isError(res)).toBe(false);
+    expect(mintMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(dataOf(res).drain_fleet).toBeNull();
+    const insert = sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text));
+    expect(JSON.parse(String(insert!.values[13]))).toMatchObject({ maxAgents: 1, maxPerFleet: 1 });
+  });
+
+  it('keeps the drain member when allowedMembers=1 is only an incidental input', async () => {
+    const res = await call({ inputs: { allowedMembers: 1 } });
+
+    expect(isError(res)).toBe(false);
+    expect(mintMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(dataOf(res).drain_fleet).toBe('goal-drain-test');
+  });
+
   it('mints AFTER the mode stamp and BEFORE the spawn, and reports the fleet', async () => {
     const res = await call();
     const mint = order.indexOf('drain-mint');
