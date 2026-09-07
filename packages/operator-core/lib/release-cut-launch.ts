@@ -160,6 +160,12 @@ export function buildCutEnv(
     // same-filesystem default can hardlink a predecessor generation, and
     // platform packaging then shares mutable inodes across Linux and Darwin.
     DEPENDENCY_GENERATION_FORCE_COPY: '1',
+    // D-186: a desktop release never consumes npm-install-safe's immutable
+    // dependency generation. Exact-source retries execute the frozen cutter,
+    // so the current launcher must carry this invariant across that boundary;
+    // relying only on the current release-local.sh would silently restore the
+    // multi-GB copy whenever `root` selects an older frozen worktree.
+    PAPERCUSP_SKIP_DEP_GENERATION: '1',
     // This is the desktop release cutter. release-local.sh otherwise auto-enables
     // Android whenever a sibling mobile checkout + SDK happen to exist, which makes
     // an explicitly Linux/macOS/Windows cut depend on ambient fourth-product state.

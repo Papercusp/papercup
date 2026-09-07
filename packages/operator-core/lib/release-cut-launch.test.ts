@@ -66,6 +66,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
+      PAPERCUSP_SKIP_DEP_GENERATION: '1',
       PAPERCUSP_SKIP_MOBILE: '1',
     });
     expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha, runtime)).toEqual({
@@ -73,6 +74,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
+      PAPERCUSP_SKIP_DEP_GENERATION: '1',
       PAPERCUSP_SKIP_MOBILE: '1',
       WITH_MAC: '1',
       WITH_WINDOWS: '1',
@@ -85,6 +87,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       PAPERCUSP_RELEASE_OWNER_EMAIL: 'owner@example.test',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
+      PAPERCUSP_SKIP_DEP_GENERATION: '1',
       PAPERCUSP_SKIP_SEED_CUT: '1',
       PAPERCUSP_SKIP_MOBILE: '1',
     });
@@ -120,6 +123,7 @@ describe('buildCutArgv', () => {
     expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(inner).toContain(`PAPERCUSP_RELEASE_OWNER_NAME='Avi O'\"'\"'Neil'`);
     expect(inner).toContain("DEPENDENCY_GENERATION_FORCE_COPY='1'");
+    expect(inner).toContain("PAPERCUSP_SKIP_DEP_GENERATION='1'");
     expect(inner).toContain("PAPERCUSP_SKIP_MOBILE='1'");
     expect(inner).toContain("WITH_MAC='1'");
     expect(inner).toContain("bin/release-local.sh '0.0.8' 'alpha'");
