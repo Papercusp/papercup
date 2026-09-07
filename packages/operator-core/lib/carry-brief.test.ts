@@ -1556,6 +1556,55 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
   });
 });
 
+describe('EI-22436560948423011 — carry-note superseded by later session activity', () => {
+  const now = Date.parse('2026-07-26T05:30:00.000Z');
+  const brief = (carryNoteUpdatedAtMs: number | null): CarryBrief => ({
+    ownerId: 'x',
+    workspaceId: 'ws-test',
+    loop: {
+      harness: 'h',
+      active: true,
+      intervalSec: 60,
+      goal: null,
+      carryNote: '## Next action\nresume the carried work',
+      carryNoteUpdatedAtMs,
+    },
+    heldItems: [],
+    directives: [],
+    directivesTotalOpen: 0,
+    walls: [],
+    facts: [],
+    awaits: [],
+    fleet: null,
+  });
+
+  it('flags a carry-note written well before the latest known session activity', () => {
+    const out = renderCarryBriefColdExtras(brief(now - 10 * 60_000), { sessionActivityMs: now });
+    expect(out).toContain('⚠ CARRY-NOTE SUPERSEDED');
+    expect(out).toContain('session active until');
+    expect(out).toContain("verify via sessions:search { session:'self', mode:'verbatim' }");
+    expect(out).toContain('"Next action"');
+  });
+
+  it('does not flag a carry-note written just before the boundary and preserves the no-tail result', () => {
+    const out = renderCarryBriefColdExtras(brief(now - 5_000), { sessionActivityMs: now });
+    expect(out).not.toContain('CARRY-NOTE SUPERSEDED');
+    expect(out).toBe('');
+  });
+
+  it('does not flag when the activity or carry-note write time is unknown', () => {
+    expect(renderCarryBriefColdExtras(brief(now - 60 * 60_000))).toBe('');
+    expect(renderCarryBriefColdExtras(brief(null), { sessionActivityMs: now })).toBe('');
+  });
+
+  it('preserves the note and appends the warning on the full carry-brief path', () => {
+    const out = renderCarryBriefText(brief(now - 10 * 60_000), now, { sessionActivityMs: now });
+    expect(out).toContain('resume the carried work');
+    expect(out).toContain('⚠ CARRY-NOTE SUPERSEDED');
+    expect(out.indexOf('resume the carried work')).toBeLessThan(out.indexOf('CARRY-NOTE SUPERSEDED'));
+  });
+});
+
 describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)', () => {
   it('leads with the loop note + write age, then the extras sections', async () => {
     const now = Date.now();

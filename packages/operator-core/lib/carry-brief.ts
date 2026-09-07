@@ -1607,10 +1607,11 @@ export interface RenderCarryBriefColdExtrasOpts {
   /** EI-18684357744098956: the epoch ms of the LATEST demonstrable session
    *  activity (e.g. the last verbatim tail turn) known to the caller — the
    *  "session active until" half of the staleness comparison. A held item's
-   *  checkpoint written more than {@link HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS}
-   *  before this instant is flagged SUPERSEDED rather than rendered as current.
-   *  Omitted/null ⇒ no comparison is possible (e.g. no transcript available);
-   *  every checkpoint renders as before — this is purely additive. */
+   *  checkpoint or the loop's carry-note written more than
+   *  {@link HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS} before this instant is flagged
+   *  SUPERSEDED rather than rendered as current. Omitted/null ⇒ no comparison is
+   *  possible (e.g. no transcript available); every carry surface renders as
+   *  before — this is purely additive. */
   sessionActivityMs?: number | null;
 }
 
@@ -1636,6 +1637,24 @@ export function renderCarryBriefColdExtras(
     .map(({ item }) => item);
   const unverifiedHeldItems = heldOwnership.filter(({ assessment }) => !assessment.verified);
   const sections: string[] = [];
+  // EI-22436560948423011: the loop carry-note is the first imperative a cold
+  // successor reads, but its write can predate later turns in the predecessor
+  // session. Keep the note intact and add a nearby warning rather than silently
+  // presenting that earlier snapshot as the current agenda.
+  const carryNoteUpdatedAtMs = brief.loop?.carryNoteUpdatedAtMs;
+  if (
+    brief.loop?.carryNote &&
+    sessionActivityMs != null &&
+    carryNoteUpdatedAtMs != null &&
+    sessionActivityMs - carryNoteUpdatedAtMs > HELD_ITEM_CHECKPOINT_STALE_MARGIN_MS
+  ) {
+    sections.push(
+      `⚠ CARRY-NOTE SUPERSEDED — written ${fmtClock(carryNoteUpdatedAtMs)}, session active until ` +
+        `${fmtClock(sessionActivityMs)} (more happened after this note was written; its imperatives ` +
+        `may be flat-out wrong — verify via sessions:search { session:'self', mode:'verbatim' } and ` +
+        `the actual files/state before trusting the note or its "Next action" at face value).`,
+    );
+  }
   // EI-19362981097884026: FIRST, because these extras are appended directly
   // beneath the carry-note and this is the block that can contradict it. The
   // cold wake previously rendered the note's imperative with no liveness signal
