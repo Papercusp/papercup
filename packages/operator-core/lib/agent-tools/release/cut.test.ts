@@ -56,7 +56,13 @@ const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);
 const execFileSyncM = vi.mocked(execFileSync);
-const { default: tool, resolveCutRoot, isAutoManagedCutWorktree, validateReleaseResumeResidue } = await import('./cut');
+const {
+  default: tool,
+  defaultWorktreeStatus,
+  resolveCutRoot,
+  isAutoManagedCutWorktree,
+  validateReleaseResumeResidue,
+} = await import('./cut');
 
 // The real live operator runs from an auto-managed `papercup-release` checkout,
 // which the production guard must refuse. Most handler tests exercise unrelated
@@ -99,6 +105,20 @@ beforeEach(() => {
 describe('release:cut — constrained root selector', () => {
   const worktreeRoot = '/registered/isolated-worktree';
   const desktopRoot = `${worktreeRoot}/papercusp-desktop`;
+
+  it('reads worktree status without optional Git index writes', () => {
+    execFileSyncM.mockReturnValue('');
+
+    expect(defaultWorktreeStatus(worktreeRoot)).toBe('');
+    expect(execFileSyncM).toHaveBeenCalledWith(
+      'git',
+      ['-C', worktreeRoot, 'status', '--porcelain'],
+      expect.objectContaining({
+        timeout: 10_000,
+        env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+      }),
+    );
+  });
 
   it('resolves a registered project slug to a clean linked worktree desktop root', async () => {
     const loadRegistry = vi.fn(async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }));

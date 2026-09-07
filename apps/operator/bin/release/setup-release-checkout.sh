@@ -474,6 +474,20 @@ extract_submodule_source() {  # <repo-relative path> <pinned sha>
   return 0
 }
 
+# Return the device id for a path or its nearest existing ancestor. Both the
+# submodule clone and node_modules materializer use this: local Git clones
+# hardlink objects by default and fail with EXDEV rather than falling back to a
+# copy when the destination is on another filesystem.
+filesystem_device() {
+  local path="$1" parent
+  while [ ! -e "$path" ]; do
+    parent="$(dirname "$path")"
+    [ "$parent" = "$path" ] && break
+    path="$parent"
+  done
+  stat -c '%d' "$path"
+}
+
 # EI-19299565558496583: clone a REAL submodule repository at the pinned sha. This
 # is the PRIMARY path; extract_submodule_source above is the FALLBACK and is
 # deliberately retained rather than replaced — it carries its own incident
@@ -508,10 +522,18 @@ clone_submodule_repo() {  # <repo-relative path> <pinned sha>
   # `local` before the builtin assigns any of them, so folding this into the
   # line above makes `$rel_path` unbound under `set -u` (caught in test).
   local dest="$RELEASE_ROOT/$rel_path"
+  local source_device dest_device
+  local clone_args=(--quiet --local --no-checkout)
   rm -rf "${dest:?}"
+  source_device="$(filesystem_device "$INTEGRATION_ROOT/$rel_path")" || return 1
+  dest_device="$(filesystem_device "$dest")" || return 1
+  # `--local` tries to hardlink every object and aborts with EXDEV across mount
+  # points. Preserve that near-zero-disk fast path on one filesystem; opt into
+  # Git's real object copy only when the devices differ.
+  [ "$source_device" = "$dest_device" ] || clone_args+=(--no-hardlinks)
   # --no-checkout: the clone's default HEAD may be a different commit, and the
   # ONLY working-tree files this may write are the pinned ones.
-  git clone --quiet --local --no-checkout "$INTEGRATION_ROOT/$rel_path" "$dest" 2>/dev/null || return 1
+  git clone "${clone_args[@]}" "$INTEGRATION_ROOT/$rel_path" "$dest" 2>/dev/null || return 1
   git -C "$dest" checkout --quiet --detach "$sha" 2>/dev/null || return 1
   # Pin correctness: HEAD must be EXACTLY the gitlink sha, never merely "close".
   [ "$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)" = "$sha" ] || return 1
@@ -730,17 +752,8 @@ need_node_modules() {
 # Hardlinks require source and destination to share a filesystem. Resolve the
 # nearest existing destination ancestor because the release root may not exist
 # yet on a first setup. Explicit copy mode is portable across mount points and
-# deliberately bypasses this guard.
-filesystem_device() {
-  local path="$1" parent
-  while [ ! -e "$path" ]; do
-    parent="$(dirname "$path")"
-    [ "$parent" = "$path" ] && break
-    path="$parent"
-  done
-  stat -c '%d' "$path"
-}
-
+# deliberately bypasses this guard. `filesystem_device` is shared with the
+# submodule-clone path above.
 assert_hardlink_compatible_roots() {
   [ "${NODE_MODULES_COPY_MODE:-hardlink}" = "hardlink" ] || return 0
   local integration_device release_device

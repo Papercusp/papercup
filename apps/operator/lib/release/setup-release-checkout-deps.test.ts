@@ -524,6 +524,101 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
   });
 });
 
+describe('clone_submodule_repo — filesystem-aware local object transport', () => {
+  function makeFixture(): {
+    work: string;
+    integrationRoot: string;
+    releaseRoot: string;
+    sha: string;
+    sourceObject: string;
+  } {
+    const work = realpathSync(mkdtempSync(join(tmpdir(), 'release-submodule-clone-')));
+    const integrationRoot = join(work, 'integration');
+    const releaseRoot = join(work, 'release');
+    const source = join(integrationRoot, 'libs', 'sub');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(releaseRoot, { recursive: true });
+    const git = (...args: string[]) => spawnSync(
+      'git',
+      ['-C', source, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8' },
+    );
+    expect(git('init', '-q').status).toBe(0);
+    writeFileSync(join(source, 'tracked.txt'), 'pinned source\n');
+    expect(git('add', 'tracked.txt').status).toBe(0);
+    expect(git('commit', '-qm', 'fixture').status).toBe(0);
+    const sha = git('rev-parse', 'HEAD').stdout.trim();
+    const sourceObject = join(source, '.git', 'objects', sha.slice(0, 2), sha.slice(2));
+    expect(existsSync(sourceObject)).toBe(true);
+    return { work, integrationRoot, releaseRoot, sha, sourceObject };
+  }
+
+  function runClone(
+    fixture: ReturnType<typeof makeFixture>,
+    simulatedSameDevice: boolean,
+  ): ReturnType<typeof spawnSync> {
+    const wrapper = [
+      'set -uo pipefail',
+      'source <(sed -n "/^filesystem_device()/,/^}/p; /^clone_submodule_repo()/,/^}/p" "$SETUP_SCRIPT")',
+      simulatedSameDevice
+        ? 'filesystem_device() { echo source-device; }'
+        : 'filesystem_device() { case "$1" in "$INTEGRATION_ROOT"/*) echo source-device ;; *) echo destination-device ;; esac; }',
+      'clone_submodule_repo "libs/sub" "$SHA"',
+    ].join('\n');
+    return spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: fixture.integrationRoot,
+        RELEASE_ROOT: fixture.releaseRoot,
+        SHA: fixture.sha,
+      },
+    });
+  }
+
+  it('keeps local-object hardlinks on the same filesystem', () => {
+    const fixture = makeFixture();
+    try {
+      const result = runClone(fixture, true);
+      expect(result.status).toBe(0);
+      const clonedObject = join(
+        fixture.releaseRoot,
+        'libs',
+        'sub',
+        '.git',
+        'objects',
+        fixture.sha.slice(0, 2),
+        fixture.sha.slice(2),
+      );
+      expect(statSync(clonedObject).ino).toBe(statSync(fixture.sourceObject).ino);
+    } finally {
+      rmSync(fixture.work, { recursive: true, force: true });
+    }
+  });
+
+  it('copies local objects when source and destination devices differ', () => {
+    const fixture = makeFixture();
+    try {
+      const result = runClone(fixture, false);
+      expect(result.status).toBe(0);
+      const cloned = join(fixture.releaseRoot, 'libs', 'sub');
+      const clonedObject = join(
+        cloned,
+        '.git',
+        'objects',
+        fixture.sha.slice(0, 2),
+        fixture.sha.slice(2),
+      );
+      expect(statSync(clonedObject).ino).not.toBe(statSync(fixture.sourceObject).ino);
+      expect(spawnSync('git', ['-C', cloned, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()).toBe(fixture.sha);
+      expect(spawnSync('git', ['-C', cloned, 'status', '--porcelain', '-uno'], { encoding: 'utf8' }).stdout).toBe('');
+    } finally {
+      rmSync(fixture.work, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * sync_one_node_modules() — the ATOMIC node_modules refresh (2026-06-25 all-pages
  * connection-refused outage). The old in-place `rm -rf "$dest"; cp -al` left the LIVE
@@ -1096,11 +1191,13 @@ describe('setup-release-checkout.sh — symlinked INTEGRATION_ROOT node_modules 
   });
 
   it('prunes .papercusp repair worktrees and .git metadata before dependency matching', () => {
-    const dirs = enumerate(realTree, /* normalize */ false);
+    // `find` does not promise directory-entry order; this contract is the exact
+    // membership of the census and its pruning boundaries, not traversal order.
+    const dirs = enumerate(realTree, /* normalize */ false).sort();
     expect(dirs).toEqual([
       join(realTree, 'node_modules'),
       join(realTree, 'packages/scheduled-registry/node_modules'),
-    ]);
+    ].sort());
     expect(dirs.every((d) => !d.includes('/.papercusp/') && !d.includes('/.git/'))).toBe(true);
   });
 

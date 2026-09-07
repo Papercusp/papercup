@@ -223,12 +223,17 @@ function defaultListWorktrees(repoPath: string): CutWorktree[] {
   return parseWorktreeList(String(stdout));
 }
 
-function defaultWorktreeStatus(worktreePath: string): string {
+export function defaultWorktreeStatus(worktreePath: string): string {
   return String(
     execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], {
       encoding: 'utf8',
       maxBuffer: 4 * 1024 * 1024,
       timeout: 10_000,
+      // This is a proof read, not an opportunity to refresh the index. On a
+      // newly materialized 38-submodule release tree Git's optional index write
+      // exceeded the otherwise adequate 10s guard; the identical read-only
+      // status completed in 0.41s and preserved the full cleanliness result.
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
     }),
   );
 }
