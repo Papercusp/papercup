@@ -190,6 +190,8 @@ export async function detectAcceptanceGraderTerminalFailure(
     maxRechecks = ACCEPTANCE_GRADER_TERMINAL_LOG_MAX_RECHECKS,
     startupStallDelayMs = ACCEPTANCE_GRADER_STARTUP_STALL_RECHECK_DELAY_MS,
     startupStallMaxRechecks = ACCEPTANCE_GRADER_STARTUP_STALL_MAX_RECHECKS,
+    allowStandaloneWeeklyLimit = false,
+    detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
     sleep?: (ms: number) => Promise<void>;
@@ -197,6 +199,16 @@ export async function detectAcceptanceGraderTerminalFailure(
     maxRechecks?: number;
     startupStallDelayMs?: number;
     startupStallMaxRechecks?: number;
+    /**
+     * A controlled launch brief that cannot itself quote incident evidence may
+     * opt into Claude's standalone weekly-limit headline. Acceptance grading
+     * leaves this false because its frozen evidence can legitimately contain
+     * the same prose; callers must make that ambiguity impossible first.
+     */
+    allowStandaloneWeeklyLimit?: boolean;
+    /** Some consumers only need terminal quota detection and must not spend the
+     * longer connection-stall window inside their synchronous dispatch path. */
+    detectStartupStall?: boolean;
   },
 ): Promise<AcceptanceGraderTerminalFailure | null> {
   if (!logPath) return null;
@@ -205,10 +217,14 @@ export async function detectAcceptanceGraderTerminalFailure(
   let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
     latestRawLog = await readLogTail(logPath);
-    const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog);
+    const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
+      allowStandaloneWeeklyLimit,
+    });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
   }
+
+  if (!detectStartupStall) return null;
 
   let startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
   if (!startupStall) return null;
@@ -218,7 +234,9 @@ export async function detectAcceptanceGraderTerminalFailure(
   for (let recheck = 0; recheck < boundedStartupRechecks; recheck += 1) {
     await sleep(boundedStartupDelay);
     latestRawLog = await readLogTail(logPath);
-    const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog);
+    const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
+      allowStandaloneWeeklyLimit,
+    });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
     if (!startupStall) return null;
@@ -244,7 +262,10 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
  * plan evidence is rendered in the same log, so broad words would create false
  * positives from the material the judge was asked to inspect.
  */
-export function classifyAcceptanceGraderTerminalFailure(rawLog: string): AcceptanceGraderTerminalFailure | null {
+export function classifyAcceptanceGraderTerminalFailure(
+  rawLog: string,
+  { allowStandaloneWeeklyLimit = false }: { allowStandaloneWeeklyLimit?: boolean } = {},
+): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
   const legacyQuota = normalized.match(
     /You've reached your [^\n]{1,120} limit\.[\s\S]{0,240}?Run \/usage-credits to continue or switch models with \/model\./i,
@@ -257,7 +278,14 @@ export function classifyAcceptanceGraderTerminalFailure(rawLog: string): Accepta
   const sessionQuota = normalized.match(
     /You've hit your session limit\s*·\s*resets [^\n]{1,120}[\s\S]{0,480}?(?:\/usage-credits to finish what you(?:'|’)re working on\.|\/limit-reset to reset your session limit now)/i,
   );
-  const quota = legacyQuota ?? sessionQuota;
+  // EI-22591830493584927: one Claude account tier emits ONLY this headline,
+  // with no recovery prompt. It is unsafe for acceptance's frozen-evidence
+  // prompt (the phrase can be quoted there), so recognition is explicit and
+  // reserved for controlled briefs such as the grading-integrity dispatcher.
+  const standaloneWeeklyQuota = allowStandaloneWeeklyLimit
+    ? normalized.match(/You've hit your weekly limit\s*·\s*resets [^\n]{1,120}/i)
+    : null;
+  const quota = legacyQuota ?? sessionQuota ?? standaloneWeeklyQuota;
   if (!quota) return null;
   return {
     code: 'model_quota_exhausted',
@@ -297,7 +325,7 @@ export function classifyAcceptanceGraderStartupStall(rawLog: string): Acceptance
   return { code: 'startup_connection_stalled', evidence };
 }
 
-function readAcceptanceGraderLogTail(path: string): string {
+export function readAcceptanceGraderLogTail(path: string): string {
   let fd: number | null = null;
   try {
     fd = openSync(path, 'r');

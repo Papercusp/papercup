@@ -523,6 +523,16 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it('matches the standalone Claude weekly-limit headline only for a controlled caller', () => {
+    const raw = "\u001b[38;5;211mYou've hit your weekly limit · resets Sep 10, 7am (America/New_York)\u001b[0m";
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowStandaloneWeeklyLimit: true })).toEqual({
+      code: 'model_quota_exhausted',
+      evidence: "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)",
+    });
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),
@@ -570,6 +580,24 @@ describe('detectAcceptanceGraderTerminalFailure', () => {
 
     expect(readLogTail).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets a synchronous caller disable the longer startup-stall classification', async () => {
+    const readLogTail = vi.fn(() => '/rc connecting…');
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', {
+        readLogTail,
+        sleep,
+        delayMs: 0,
+        maxRechecks: 0,
+        detectStartupStall: false,
+      }),
+    ).resolves.toBeNull();
+
+    expect(readLogTail).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('waits for the bounded startup window before classifying a persistent connection stall', async () => {

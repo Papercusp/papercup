@@ -52,9 +52,9 @@ function standardRubric(): Rubric {
 function deps() {
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
-  const launch = vi.fn<Launch>().mockResolvedValue(
-    launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } }),
-  );
+  const launch = vi
+    .fn<Launch>()
+    .mockResolvedValue(launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } }));
   return { listScorecards, getRubric, launch };
 }
 
@@ -169,10 +169,7 @@ describe('dispatchPendingGradingAudits', () => {
     );
 
     expect(d.launch).toHaveBeenCalledTimes(1);
-    expect(d.launch).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: 'grading-audit:EI-current' }),
-      ctx,
-    );
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'grading-audit:EI-current' }), ctx);
     expect(d.launch.mock.calls[0]?.[0]).not.toHaveProperty('harness');
     expect(result.receipts).toEqual([
       expect.objectContaining({ issueId: 'EI-current', state: 'launched', rubricRef: 'standard-rubric' }),
@@ -193,10 +190,7 @@ describe('dispatchPendingGradingAudits', () => {
     const targetIds = Array.from({ length: GRADING_AUDIT_DISPATCH_LIMIT + 5 }, (_, i) => `EI-audit-${i + 1}`);
     d.listScorecards.mockResolvedValue(targetIds.map((issueId) => card(issueId)));
 
-    const result = await dispatchPendingGradingAudits(
-      { targetIds: [...targetIds, ...targetIds.slice(0, 3)], ctx },
-      d,
-    );
+    const result = await dispatchPendingGradingAudits({ targetIds: [...targetIds, ...targetIds.slice(0, 3)], ctx }, d);
 
     expect(result.requestedTargetIds).toHaveLength(GRADING_AUDIT_DISPATCH_LIMIT);
     expect(result.requestedTargetIds).toEqual(targetIds.slice(0, GRADING_AUDIT_DISPATCH_LIMIT));
@@ -207,5 +201,110 @@ describe('dispatchPendingGradingAudits', () => {
       limit: GRADING_AUDIT_DISPATCH_LIMIT,
     });
     expect(d.launch).toHaveBeenCalledTimes(GRADING_AUDIT_DISPATCH_LIMIT);
+  });
+
+  it('retires a standalone weekly-limit auditor and launches one deterministic Codex fallback', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-weekly-limit')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-quota', logPath: '/tmp/grading-quota.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-fallback', logPath: '/tmp/grading-fallback.log' }] },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const readLogTail = vi.fn((path: string) =>
+      path.includes('quota')
+        ? "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)"
+        : 'healthy fallback boot',
+    );
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-weekly-limit'], ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail,
+        sleep: async () => undefined,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-quota', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(d.launch.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        agent: 'codex',
+        account: 'default',
+        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' }],
+        idempotencyKey: expect.stringMatching(/^grading-audit:EI-weekly-limit:recovery:[a-f0-9]{16}$/),
+      }),
+    );
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-weekly-limit',
+        state: 'launched',
+        terminalRecovery: {
+          retiredTaskIds: ['task-quota'],
+          attempts: 2,
+          codes: ['model_quota_exhausted'],
+          fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' },
+        },
+      }),
+    ]);
+  });
+
+  it('stops after one recovery when the fallback is quota-terminal too', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-double-quota')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-primary', logPath: '/tmp/primary.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-fallback', logPath: '/tmp/fallback.log' }] },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-double-quota'], ctx },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)",
+        sleep: async () => undefined,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(killTask).toHaveBeenCalledTimes(2);
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-double-quota',
+        state: 'failed',
+        reason: expect.stringContaining('one-retry ceiling'),
+        terminalRecovery: expect.objectContaining({
+          retiredTaskIds: ['task-primary', 'task-fallback'],
+          attempts: 2,
+          codes: ['model_quota_exhausted', 'model_quota_exhausted'],
+        }),
+      }),
+    ]);
   });
 });

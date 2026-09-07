@@ -12,10 +12,16 @@
  *      code path here.
  */
 
+import { createHash } from 'node:crypto';
 import launchAgentTool from './agent-tools/capability/launch-agent';
+import {
+  detectAcceptanceGraderTerminalFailure,
+  readAcceptanceGraderLogTail,
+  type AcceptanceGraderTerminalFailureCode,
+} from './acceptance-grader';
 import { getRubric } from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
-
+import { killTask } from './task-manager/control';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -33,6 +39,15 @@ export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
  * system/default credential cannot strand the audit queue before kickoff.
  */
 export const GRADING_AUDIT_ACCOUNT = 'auto' as const;
+const GRADING_AUDIT_MAX_TERMINAL_FALLBACKS = 1;
+const GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS = 250;
+const GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS = 4;
+const GRADING_AUDIT_FALLBACK = {
+  agent: 'codex' as const,
+  model: 'gpt-5.6-sol' as const,
+  effort: 'high' as const,
+  account: 'default' as const,
+};
 
 export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
 type GradingAuditLaunchHandler = typeof launchAgentTool.handler;
@@ -46,6 +61,12 @@ export interface PendingGradingAuditDispatchReceipt {
   idempotencyKey?: string;
   launch?: unknown;
   reason?: string;
+  terminalRecovery?: {
+    retiredTaskIds: string[];
+    attempts: number;
+    codes: AcceptanceGraderTerminalFailureCode[];
+    fallback: typeof GRADING_AUDIT_FALLBACK;
+  };
 }
 
 export interface PendingGradingAuditDispatchResult {
@@ -70,6 +91,11 @@ export interface DispatchPendingGradingAuditsDeps {
   listScorecards?: typeof listScorecards;
   getRubric?: typeof getRubric;
   launch?: GradingAuditLaunchHandler;
+  readLogTail?: (path: string) => string | Promise<string>;
+  killTask?: typeof killTask;
+  sleep?: (ms: number) => Promise<void>;
+  terminalLogRecheckDelayMs?: number;
+  terminalLogMaxRechecks?: number;
 }
 
 function currentPendingScorecard(card: ScorecardRow): boolean {
@@ -89,7 +115,7 @@ function gradingAuditBrief(card: ScorecardRow): string {
   return [
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
-    "Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.",
+    'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...} }. Include concrete evidence for every criterion in the grading-integrity rubric.`,
     'A successful audit emission settles the target scorecard; do not emit any second audit or other scorecard.',
   ].join('\n\n');
@@ -161,49 +187,176 @@ export async function dispatchPendingGradingAudits(
 
     const idempotencyKey = `grading-audit:${issueId}`;
     const harness = input.harness?.trim();
+    const retiredTaskIds: string[] = [];
+    const terminalCodes: AcceptanceGraderTerminalFailureCode[] = [];
+    let currentIdempotencyKey = idempotencyKey;
+    let terminalFallbacks = 0;
+    let attempts = 0;
+    const recoveryFields = () =>
+      retiredTaskIds.length
+        ? {
+            terminalRecovery: {
+              retiredTaskIds,
+              attempts,
+              codes: terminalCodes,
+              fallback: GRADING_AUDIT_FALLBACK,
+            },
+          }
+        : {};
     try {
-      const result = (await launch(
-        {
-          brief: gradingAuditBrief(card),
-          ...(harness && harness !== '*' ? { harness } : {}),
-          headless: true,
-          account: GRADING_AUDIT_ACCOUNT,
-          count: 1,
-          members: [{ role: 'judge', account: GRADING_AUDIT_ACCOUNT }],
-          label: `grading-audit:${issueId}`,
-          idempotencyKey,
-        } as never,
-        input.ctx,
-      )) as {
-        isError?: boolean;
-        content?: Array<{ text?: string }>;
-        data?: { deduped?: boolean; launch?: unknown };
-      };
-      if (result.isError) {
-        receipts.push({
+      const terminateTask = deps.killTask ?? killTask;
+      const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+      let launchBackend: 'claude' | 'codex' = 'claude';
+      let receipt: PendingGradingAuditDispatchReceipt | null = null;
+
+      for (let attempt = 0; attempt <= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS; attempt += 1) {
+        attempts = attempt + 1;
+        const useFallback = launchBackend === GRADING_AUDIT_FALLBACK.agent;
+        const result = (await launch(
+          {
+            brief: gradingAuditBrief(card),
+            ...(harness && harness !== '*' ? { harness } : {}),
+            headless: true,
+            account: useFallback ? GRADING_AUDIT_FALLBACK.account : GRADING_AUDIT_ACCOUNT,
+            ...(useFallback ? { agent: GRADING_AUDIT_FALLBACK.agent } : {}),
+            count: 1,
+            members: [
+              useFallback
+                ? {
+                    role: 'judge',
+                    agent: GRADING_AUDIT_FALLBACK.agent,
+                    model: GRADING_AUDIT_FALLBACK.model,
+                    effort: GRADING_AUDIT_FALLBACK.effort,
+                    account: GRADING_AUDIT_FALLBACK.account,
+                  }
+                : { role: 'judge', account: GRADING_AUDIT_ACCOUNT },
+            ],
+            label: `grading-audit:${issueId}`,
+            idempotencyKey: currentIdempotencyKey,
+          } as never,
+          input.ctx,
+        )) as {
+          isError?: boolean;
+          content?: Array<{ text?: string }>;
+          data?: { deduped?: boolean; launch?: unknown };
+        };
+        const launchData = result.data?.launch as
+          | { tasks?: Array<{ taskId?: unknown; logPath?: unknown }> }
+          | undefined;
+        const launchedTask = launchData?.tasks?.[0];
+        const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
+        const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
+        const terminalFailure = logPath
+          ? await detectAcceptanceGraderTerminalFailure(logPath, {
+              readLogTail,
+              ...(deps.sleep ? { sleep: deps.sleep } : {}),
+              delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
+              maxRechecks: deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
+              allowStandaloneWeeklyLimit: true,
+              detectStartupStall: false,
+            })
+          : null;
+
+        if (terminalFailure) {
+          if (!taskId) {
+            receipt = {
+              issueId,
+              rubricRef: card.rubricRef,
+              state: 'failed',
+              idempotencyKey: currentIdempotencyKey,
+              launch: result.data?.launch,
+              reason:
+                `grading auditor ended on ${terminalFailure.code}, but its launch receipt carried no task id; ` +
+                'refusing an untracked fallback',
+              ...recoveryFields(),
+            };
+            break;
+          }
+          const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+          if (
+            !killed.ok &&
+            killed.error !== 'not_live' &&
+            killed.error !== 'task_not_found' &&
+            killed.error !== 'already_gone'
+          ) {
+            receipt = {
+              issueId,
+              rubricRef: card.rubricRef,
+              state: 'failed',
+              idempotencyKey: currentIdempotencyKey,
+              launch: result.data?.launch,
+              reason:
+                `grading auditor '${taskId}' ended on ${terminalFailure.code}, but its failed mission ` +
+                `could not be retired: ${killed.error}`,
+              ...recoveryFields(),
+            };
+            break;
+          }
+          retiredTaskIds.push(taskId);
+          terminalCodes.push(terminalFailure.code);
+          if (terminalFallbacks >= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            receipt = {
+              issueId,
+              rubricRef: card.rubricRef,
+              state: 'failed',
+              idempotencyKey: currentIdempotencyKey,
+              launch: result.data?.launch,
+              reason:
+                `grading auditor fallback also ended on ${terminalFailure.code}; ` +
+                'the one-retry ceiling stopped another launch',
+              ...recoveryFields(),
+            };
+            break;
+          }
+          terminalFallbacks += 1;
+          launchBackend = GRADING_AUDIT_FALLBACK.agent;
+          const retryIdentity = createHash('sha256')
+            .update(`${currentIdempotencyKey}\0${taskId}\0${terminalFailure.code}\0${launchBackend}`)
+            .digest('hex')
+            .slice(0, 16);
+          currentIdempotencyKey = `${idempotencyKey}:recovery:${retryIdentity}`;
+          continue;
+        }
+
+        receipt = result.isError
+          ? {
+              issueId,
+              rubricRef: card.rubricRef,
+              state: 'failed',
+              idempotencyKey: currentIdempotencyKey,
+              launch: result.data?.launch,
+              reason: result.content?.[0]?.text ?? 'grading auditor launch failed',
+              ...recoveryFields(),
+            }
+          : {
+              issueId,
+              rubricRef: card.rubricRef,
+              state: result.data?.deduped ? 'deduped' : 'launched',
+              idempotencyKey: currentIdempotencyKey,
+              launch: result.data?.launch,
+              ...recoveryFields(),
+            };
+        break;
+      }
+
+      receipts.push(
+        receipt ?? {
           issueId,
           rubricRef: card.rubricRef,
           state: 'failed',
-          idempotencyKey,
-          launch: result.data?.launch,
-          reason: result.content?.[0]?.text ?? 'grading auditor launch failed',
-        });
-      } else {
-        receipts.push({
-          issueId,
-          rubricRef: card.rubricRef,
-          state: result.data?.deduped ? 'deduped' : 'launched',
-          idempotencyKey,
-          launch: result.data?.launch,
-        });
-      }
+          idempotencyKey: currentIdempotencyKey,
+          reason: 'grading auditor terminal recovery exhausted without a receipt',
+          ...recoveryFields(),
+        },
+      );
     } catch (error) {
       receipts.push({
         issueId,
         rubricRef: card.rubricRef,
         state: 'failed',
-        idempotencyKey,
+        idempotencyKey: currentIdempotencyKey,
         reason: error instanceof Error ? error.message : String(error),
+        ...recoveryFields(),
       });
     }
   }
@@ -216,10 +369,7 @@ export async function dispatchPendingGradingAudits(
  *  an audit annotation. */
 export async function gradingAuditGateEnabled(): Promise<boolean> {
   try {
-    const [{ getFlag }, { FLAGS }] = await Promise.all([
-      import('@papercusp/flags/server'),
-      import('@papercusp/flags'),
-    ]);
+    const [{ getFlag }, { FLAGS }] = await Promise.all([import('@papercusp/flags/server'), import('@papercusp/flags')]);
     return await getFlag(FLAGS.GRADING_INTEGRITY_AUDIT_GATE, 'system');
   } catch {
     return false;
@@ -239,9 +389,5 @@ export function needsGradingAudit(input: {
   rubricRef: string;
   provisional: boolean;
 }): boolean {
-  return (
-    input.rubricKind === 'standard' &&
-    !input.provisional &&
-    input.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF
-  );
+  return input.rubricKind === 'standard' && !input.provisional && input.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF;
 }
