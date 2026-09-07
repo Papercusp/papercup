@@ -1151,13 +1151,17 @@ async fn run<B: Backend>(
     // Show the first-run tutorial until this device has dismissed it once (P9).
     app.show_tutorial = !tutorial::seen();
     spawn_input_listener(tx.clone());
+    let sync_pane = PaneFetchScope {
+        pinned,
+        selected: Arc::new(Mutex::new(app.tab)),
+    };
     spawn_sync(
         tx.clone(),
         app.active_harness.clone(),
         app.active_doc.clone(),
         app.active_plan.clone(),
         app.network_focus.clone(),
-        pinned,
+        sync_pane.clone(),
     );
     // Debounced persistence of the quiet view-state (P12 / D-002): the run loop
     // ships a snapshot on each nav change; the saver coalesces a burst + PUTs.
@@ -1246,6 +1250,7 @@ async fn run<B: Backend>(
         let prior_context_target = app.context_projection_target.clone();
         let is_key = matches!(ev, Event::Key(_));
         let is_tick = matches!(ev, Event::Tick);
+        let restoring_view = matches!(ev, Event::ViewStateLoaded(_));
         // The operator voice socket dropped (P-013 reconnect-on-drop): detect it
         // before the reducer consumes the event so we can free the run-loop-owned
         // handles below.
@@ -1281,6 +1286,13 @@ async fn run<B: Backend>(
             if app.tab != p {
                 app.tab = p;
             }
+        }
+        if let Ok(mut selected) = sync_pane.selected.lock() {
+            *selected = app.tab;
+        }
+        // A saved Network view bypasses the normal tab-entry action.
+        if restoring_view && app.tab == app::Tab::Network && app.pinned.is_none() {
+            tokio::spawn(fetch_network_board(tx.clone()));
         }
         // Per-bee wake-pane lifecycle (owner ask 2026-06-11): an Owner-scoped
         // wake-pane exits once its bee is gone AND its queue is drained — the
@@ -5734,7 +5746,7 @@ fn spawn_sync(
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     network_focus: Option<String>,
-    pinned: Option<app::Tab>,
+    pane: PaneFetchScope,
 ) {
     // Internal signal channel: invalidation_loop -> refetch_loop. Keep the
     // plans-heavy reads scoped so unrelated high-volume invalidations do not
@@ -5746,7 +5758,7 @@ fn spawn_sync(
         active_doc,
         active_plan,
         network_focus,
-        pinned,
+        pane,
         sig_rx,
     ));
     // Coord-inbox push (P-002 / D-003b): a 3rd task on its own SSE stream.
@@ -5761,6 +5773,23 @@ fn spawn_sync(
 enum RefetchSignal {
     IncludePlanReads,
     SkipPlanReads,
+}
+
+/// Keep background reads aligned with the pane the workbench currently shows.
+/// Tab entry already fetches Network immediately; this scope governs later
+/// invalidations and the safety refresh as the owner navigates away and back.
+#[derive(Clone)]
+struct PaneFetchScope {
+    pinned: Option<app::Tab>,
+    selected: Arc<Mutex<app::Tab>>,
+}
+
+impl PaneFetchScope {
+    fn fetches_network(&self) -> bool {
+        self.pinned
+            .or_else(|| self.selected.lock().ok().map(|selected| *selected))
+            == Some(app::Tab::Network)
+    }
 }
 
 impl RefetchSignal {
@@ -5944,7 +5973,7 @@ async fn refetch_loop(
     active_doc: Arc<Mutex<Option<String>>>,
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     network_focus: Option<String>,
-    pinned: Option<app::Tab>,
+    pane: PaneFetchScope,
     mut sig_rx: UnboundedReceiver<RefetchSignal>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -5962,7 +5991,7 @@ async fn refetch_loop(
         &active_harness,
         &active_doc,
         &active_plan,
-        pinned,
+        &pane,
         true,
     )
     .await;
@@ -6017,7 +6046,7 @@ async fn refetch_loop(
                     &active_harness,
                     &active_doc,
                     &active_plan,
-                    pinned,
+                    &pane,
                     include_plan_reads,
                 )
                 .await;
@@ -6033,7 +6062,7 @@ async fn refetch_loop(
                     &active_harness,
                     &active_doc,
                     &active_plan,
-                    pinned,
+                    &pane,
                     true,
                 )
                 .await;
@@ -6384,9 +6413,10 @@ async fn refetch_all(
     active_harness: &Arc<Mutex<String>>,
     active_doc: &Arc<Mutex<Option<String>>>,
     active_plan: &Arc<Mutex<Option<(String, String)>>>,
-    pinned: Option<app::Tab>,
+    pane: &PaneFetchScope,
     include_plan_reads: bool,
 ) {
+    let pinned = pane.pinned;
     if let Some(pinned) = pinned {
         match pinned_hydration_plan(Some(pinned)) {
             PinnedHydrationPlan::Full => {}
@@ -6446,12 +6476,13 @@ async fn refetch_all(
     if let Ok(fr) = client.deploy_frames().await {
         let _ = tx.send(Event::Frames(fr));
     }
-    // The cross-Hive network board (hive-network-surface B-09): pinned-C-3
-    // rows from B-08's data endpoint, riding this loop's standard cadence
-    // (SSE invalidate + 60s safety net). Quietly optional: a host without the
-    // endpoint renders the pane's empty state, no status-bar toast per pass.
-    if let Ok(rows) = client.network_board().await {
-        let _ = tx.send(Event::NetworkBoard(rows));
+    // Network is an explicit destination. Loading its cross-hive read graph
+    // during Agent Chat startup competes with the first session's context IO.
+    // Preserve the normal push/safety cadence while Network is selected.
+    if pane.fetches_network() {
+        if let Ok(rows) = client.network_board().await {
+            let _ = tx.send(Event::NetworkBoard(rows));
+        }
     }
     if include_plan_reads && pane_fetches_attention(pinned) {
         match client.attention_typed().await {
@@ -7079,6 +7110,31 @@ mod tests {
             refetch_signal_for_frame_data(r#"{"args":{"x":1}}"#),
             RefetchSignal::IncludePlanReads
         );
+    }
+
+    #[test]
+    fn network_hydration_follows_navigation_and_pinned_panes() {
+        let selected = Arc::new(Mutex::new(app::Tab::Operator));
+        let pane = PaneFetchScope {
+            pinned: None,
+            selected: selected.clone(),
+        };
+        assert!(!pane.fetches_network());
+        *selected.lock().unwrap() = app::Tab::Network;
+        assert!(pane.fetches_network());
+        *selected.lock().unwrap() = app::Tab::Plans;
+        assert!(!pane.fetches_network());
+        assert!(PaneFetchScope {
+            pinned: Some(app::Tab::Network),
+            selected: selected.clone(),
+        }
+        .fetches_network());
+        *selected.lock().unwrap() = app::Tab::Network;
+        assert!(!PaneFetchScope {
+            pinned: Some(app::Tab::Fleet),
+            selected,
+        }
+        .fetches_network());
     }
 
     fn coord_msg(

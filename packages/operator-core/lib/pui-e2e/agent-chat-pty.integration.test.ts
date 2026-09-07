@@ -23,6 +23,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { Session as InspectorSession } from 'node:inspector';
+import { performance } from 'node:perf_hooks';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuSessionCommand, SuSessionEvent, SuSessionToolEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -117,6 +119,50 @@ const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
 const OWNER = 'pui-agent-chat-e2e-owner';
+
+// Opt-in diagnosis uses the actual worker (including cold module evaluation),
+// preserves every console warning, and writes no request bodies or credentials.
+const timingTrace: Array<Record<string, unknown>> = [];
+const namedQueryRequests: string[] = [];
+let timingInspector: InspectorSession | undefined;
+let timingInterval: ReturnType<typeof setInterval> | undefined;
+function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
+  if (process.env.PUI_TIMING_DIR && timingTrace.length < 20_000) {
+    timingTrace.push({ atMs: performance.now(), kind, ...fields });
+  }
+}
+function profileCommand(method: string): Promise<unknown> {
+  return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
+    if (error) reject(error);
+    else resolve(result);
+  }));
+}
+
+async function startTimingProfile(): Promise<void> {
+  if (!process.env.PUI_TIMING_DIR) return;
+  timingInspector = new InspectorSession();
+  timingInspector.connect();
+  await profileCommand('Profiler.enable');
+  await profileCommand('Profiler.start');
+  traceTiming('profile-start', { timeOriginMs: performance.timeOrigin });
+  let expected = performance.now() + 25;
+  timingInterval = setInterval(() => {
+    const now = performance.now();
+    if (now - expected > 100) traceTiming('event-loop-delay', { delayMs: now - expected });
+    expected = now + 25;
+  }, 25);
+}
+
+afterAll(async () => {
+  if (!timingInspector) return;
+  if (timingInterval) clearInterval(timingInterval);
+  const { profile } = await profileCommand('Profiler.stop') as { profile: unknown };
+  traceTiming('profile-stop');
+  timingInspector.disconnect();
+  mkdirSync(process.env.PUI_TIMING_DIR!, { recursive: true });
+  writeFileSync(path.join(process.env.PUI_TIMING_DIR!, `worker-${process.pid}.json`),
+    JSON.stringify({ trace: timingTrace, profile }));
+});
 
 function cargoTargetDir(): string | null {
   const probe = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps'], {
@@ -487,10 +533,18 @@ beforeAll(async () => {
   await scaffoldHarnessSchema(HARNESS);
   await putViewState('Plans');
 
+  await startTimingProfile();
   const { app } = await import('../../../../apps/operator/bin/host-app');
   operatorServer = createAdaptorServer({
     fetch: async (request, env) => {
-      const pathname = new URL(request.url).pathname;
+      const requestUrl = new URL(request.url);
+      const pathname = requestUrl.pathname;
+      const requestStarted = performance.now();
+      const traceFields = { path: pathname, query: requestUrl.searchParams.get('name') };
+      traceTiming('request-start', traceFields);
+      if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
+        namedQueryRequests.push(traceFields.query);
+      }
       const isLaunch = pathname === '/api/adv/sessions/launch-su';
       const launchInput = isLaunch ? await request.clone().json() : null;
       const isCommand = request.method === 'POST' && pathname.endsWith('/su-session/commands');
@@ -502,6 +556,7 @@ beforeAll(async () => {
       const host = scriptedEngine.engines.at(-1)?.adapter.host;
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
       let response = await app.fetch(request, env);
+      traceTiming('request-end', { ...traceFields, elapsedMs: performance.now() - requestStarted, status: response.status });
       if (isCommand) {
         const body = await response.clone().json();
         commandReplies.push({ status: response.status, replayed: body.replayed });
@@ -585,6 +640,7 @@ afterAll(async () => {
 afterEach(stopEngines);
 
 beforeEach(async () => {
+  namedQueryRequests.length = 0;
   sessionTraffic = [];
   commandPosts = [];
   commandReplies = [];
@@ -664,9 +720,32 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(reopened.screen().split('PUI exact Unicode draft')).toHaveLength(2);
         expect(reopened.screen().split(scriptedEngine.successText)).toHaveLength(2);
       } finally { await reopened.stop(); }
+      expect(namedQueryRequests).not.toContain('network.board');
       console.info('PUI_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256,
         chatId: chat.id, exactText: scriptedEngine.requests[0], traffic: sessionTraffic }));
     } finally { await pane.stop().catch(() => {}); }
+  });
+
+  test('Network loads on navigation, manual refresh, and saved-view restoration', async () => {
+    const pane = new PuiPane(bin, operatorPort, home);
+    const networkReads = () => namedQueryRequests.filter((name) => name === 'network.board').length;
+    try {
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      expect(networkReads()).toBe(0);
+      pane.write('n');
+      await pane.waitFor('Network');
+      await vi.waitFor(() => expect(networkReads()).toBeGreaterThan(0), { timeout: 30_000 });
+      const beforeRefresh = networkReads();
+      pane.write('g');
+      await vi.waitFor(() => expect(networkReads()).toBeGreaterThan(beforeRefresh), { timeout: 30_000 });
+    } finally { await pane.stop(); }
+    await putViewState('Network');
+    const beforeRestore = networkReads();
+    const restored = new PuiPane(bin, operatorPort, home);
+    try {
+      await restored.waitFor('Network', { timeoutMs: 40_000 });
+      await vi.waitFor(() => expect(networkReads()).toBeGreaterThan(beforeRestore), { timeout: 30_000 });
+    } finally { await restored.stop(); }
   });
 
   test('delayed readiness sends the first draft once and accepts a follow-up after completion', async () => {
