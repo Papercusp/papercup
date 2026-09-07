@@ -43,6 +43,7 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
+import { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -99,6 +100,15 @@ export { DUP_THRESHOLD };
 
 /** Keep the lexical dedup leg from holding the whole capture request hostage. */
 export const CAPTURE_LEXICAL_SEARCH_BUDGET_MS = 1_500;
+
+/**
+ * A capture's final INSERT is an atomic bounded transaction. A transient PG
+ * contention timeout aborts that transaction before commit, so retrying the
+ * complete create is safe and prevents the failure-reporting path from losing
+ * the finding it is trying to record. Keep this to one retry: the caller still
+ * receives the typed timeout envelope when contention is sustained.
+ */
+export const CAPTURE_CONTENTION_BACKOFFS_MS = [500] as const;
 
 /**
  * Fraction of the SHORTER title that must be covered for a candidate to be SURFACED as a
@@ -2625,7 +2635,9 @@ export async function captureImprovement(
 
   let issue: EngineerIssue;
   try {
-    issue = await deps.createIssue(createInput);
+    issue = await acquireWithContentionRetry(() => deps.createIssue(createInput), {
+      backoffsMs: CAPTURE_CONTENTION_BACKOFFS_MS,
+    });
   } catch (error) {
     // The SELECT-before-INSERT exact-key path above is advisory.  Migration 865
     // is the authority under a race: recover ONLY its unique-index violation,

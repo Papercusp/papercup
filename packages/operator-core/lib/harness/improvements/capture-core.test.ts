@@ -8,6 +8,7 @@ import {
   CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
   type CaptureDeps,
 } from './capture-core';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import type { SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
@@ -137,6 +138,23 @@ describe('captureImprovement — initialState seam (observation-lane-scorecard-c
     expect(d.created).toHaveLength(1);
     expect(d.created[0].state).toBe('done');
     expect(merges).toEqual([]);
+  });
+});
+
+describe('captureImprovement — retries transient atomic-write contention (EI-21869609589204831)', () => {
+  it('retries a 55P03 create timeout and preserves the capture when the next attempt succeeds', async () => {
+    const d = deps();
+    let attempts = 0;
+    d.createIssue = async (input) => {
+      attempts += 1;
+      if (attempts === 1) throw new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
+      return existing({ id: 'EI-recovered', title: input.title, kind: (input.kind as 'bug' | 'change') ?? 'bug' });
+    };
+
+    const result = await captureImprovement({ title: 'capture after transient contention', kind: 'bug' }, d);
+
+    expect(result).toMatchObject({ ok: true, created: true, issue: { id: 'EI-recovered' } });
+    expect(attempts).toBe(2);
   });
 });
 
