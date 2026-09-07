@@ -60,11 +60,13 @@ export function startClaudeSuEngine(
   const input = new PassThrough({ objectMode: true });
   const abortController = new AbortController();
   const initialized = deferred<void>();
-  // The readiness probe is synthetic, transcript-only and never asks the model
-  // to run. It makes the CLI emit its actual system/init identity before PUI
-  // accepts the first owner turn. A PID/control response alone cannot prove it.
+  // shouldQuery:false appends to the native transcript without a model turn,
+  // so it produces no turn result or system/init. Its exact replay receipt
+  // proves that the stream consumed input; initialization and MCP controls
+  // separately prove the executor/tool connection. system/init is validated
+  // whenever the CLI later emits it for an actual owner turn.
+  const probeId = randomUUID();
   let probing = true;
-  let sawIdentity = false;
   let ready = false;
   let closed = false;
   let processId: number | null = null;
@@ -95,7 +97,8 @@ export function startClaudeSuEngine(
           finishActiveTurn = () => finished.resolve();
           adapter.correlateOwnerTurn(turnId);
           timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
-          input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null, message: { role: 'user', content } } satisfies SDKUserMessage);
+          input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
+            origin: { kind: 'human' }, message: { role: 'user', content } } satisfies SDKUserMessage);
           await finished.promise;
           finishActiveTurn = undefined;
         }).catch((error: unknown) => receipt.resolve(unavailable(String(error))));
@@ -214,13 +217,13 @@ export function startClaudeSuEngine(
           if ('session_id' in event && event.session_id && event.session_id !== nativeId) {
             throw new Error('Claude stream identity differs from the bootstrapped session');
           }
+          if (event.type === 'system' && event.subtype === 'init'
+            && (event.session_id !== nativeId || resolve(event.cwd) !== resolve(boot.cwd))) {
+            throw new Error('Claude startup identity or project does not match');
+          }
           if (probing) {
-            if (event.type === 'system' && event.subtype === 'init') {
-              if (event.session_id !== nativeId || resolve(event.cwd) !== resolve(boot.cwd)) throw new Error('Claude startup identity or project does not match');
-              sawIdentity = true;
-            }
-            if (event.type === 'result') {
-              if (!sawIdentity || event.is_error) throw new Error('Claude startup did not produce a valid identity handshake');
+            if (event.type === 'user' && event.uuid === probeId) {
+              if (event.session_id !== nativeId) throw new Error('Claude readiness receipt has no matching session identity');
               probing = false;
               initialized.resolve();
             }
@@ -250,7 +253,7 @@ export function startClaudeSuEngine(
       }
     })();
     await sdk.initializationResult();
-    input.write({ type: 'user', uuid: randomUUID(), session_id: nativeId, parent_tool_use_id: null,
+    input.write({ type: 'user', uuid: probeId, session_id: nativeId, parent_tool_use_id: null,
       isSynthetic: true, shouldQuery: false,
       message: { role: 'user', content: 'PUI transport connected. This is a synthetic readiness record, not an owner request.' },
     } satisfies SDKUserMessage);

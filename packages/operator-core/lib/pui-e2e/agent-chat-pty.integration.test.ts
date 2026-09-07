@@ -54,7 +54,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
         })();
         return engine;
       }
-      const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options }) => {
+      const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt }) => {
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
         const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
@@ -63,8 +63,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
             nativeId = message.session_id;
             if (message.shouldQuery === false) {
               if (scriptedEngine.mode === 'startup-exit') { output.end(); return; }
-              output.write({ type: 'system', subtype: 'init', session_id: nativeId, cwd: options.cwd });
-              result();
+              output.write({ ...message, isReplay: true });
               continue;
             }
             scriptedEngine.requests.push(String(message.message.content));
@@ -225,11 +224,15 @@ class PuiPane {
   }
 
   async waitForReply(needle: string): Promise<void> {
-    await vi.waitFor(() => {
-      // One occurrence is the owner's echoed request; the second must render
-      // as the assistant's reply. A matching composer draft alone cannot pass.
-      expect(this.screen().split(needle).length - 1).toBeGreaterThanOrEqual(2);
-    }, { timeout: 120_000, interval: 100 });
+    try {
+      await vi.waitFor(() => {
+        // One occurrence is the owner's echoed request; the second must render
+        // as the assistant's reply. A matching composer draft alone cannot pass.
+        expect(this.screen().split(needle).length - 1).toBeGreaterThanOrEqual(2);
+      }, { timeout: 120_000, interval: 100 });
+    } catch (cause) {
+      throw new Error(`Correlated reply was not rendered:\n${this.screen()}\nProduction traffic: ${JSON.stringify(sessionTraffic)}`, { cause });
+    }
     await this.waitFor('Message — Enter send', { timeoutMs: 120_000 });
   }
 
@@ -342,6 +345,7 @@ type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'w
 let transportFault: TransportFault = 'none';
 let commandPosts: SuSessionCommand[] = [];
 let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
+let initializeWarnings: Array<Record<string, unknown>> = [];
 
 // Drop command frames only for deliberate acknowledgement-loss cases. All other
 // production SSE events still traverse the real HTTP connection to the PTY.
@@ -555,6 +559,21 @@ beforeEach(async () => {
   scriptedEngine.successText = 'PUI structured engine replied';
   scriptedEngine.requests = [];
   scriptedEngine.events = [];
+  initializeWarnings = [];
+  if (scriptedEngine.real) {
+    const warn = console.warn.bind(console);
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      if (args[0] === '[mcp-initialize-stage]') {
+        // Optional memory enrichment has a bounded production fallback in a
+        // fresh test DB. Retain that diagnostic and prove the actual MCP
+        // connection works; any other warning remains a test failure.
+        const detail = args[1] as Record<string, unknown>;
+        expect(['base', 'enriched', 'timeout']).toContain(detail.outcome);
+        initializeWarnings.push(detail);
+        console.info('PUI_MCP_INITIALIZE_DIAGNOSTIC', JSON.stringify(detail));
+      } else warn(...args);
+    });
+  }
   await db.adminSql`
     TRUNCATE harness_shared.agent_chat_locks,
       harness_shared.agent_loop_approvals,
@@ -836,7 +855,7 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
         greetingReply, fileResult, followupReply, readStart, readEnd,
-        commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
+        commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic, initializeWarnings,
       }));
     } finally { await pane.stop().catch(() => {}); }
   }, 600_000);
