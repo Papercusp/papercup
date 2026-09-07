@@ -97,6 +97,16 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.075))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.07))",
+  "operator/app/_components/inbox/inbox-pane.css :: .op-inbox__detail-copy code :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/_components/inbox/inbox-pane.css :: .op-inbox__detail-why :: color:--warn on background:--warn-bg
+    black:background:unsupported-function(rgba(251, 191, 36, 0.1))
+    default:background:unsupported-function(rgba(251, 191, 36, 0.1))
+    frost:background:unsupported-function(rgba(251, 191, 36, 0.1))
+    honeycomb:background:unsupported-function(rgba(198, 142, 36, 0.11))",
   "operator/app/_components/plans/plan-cleanup-report.css :: .plan-cleanup-report__recovery-actions button :: color:--fg on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
@@ -433,11 +443,6 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .stageNumber :: color:--fg-dim on background:--bg-2
-    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
-    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
-    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
-    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
-  "operator/app/cloud-workspaces/hosted-workspace-session.module.css :: .desktopRosterToolbar button, .desktopRosterActions button :: color:--fg-dim on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))

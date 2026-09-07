@@ -234,10 +234,13 @@ const SUBSTRATE_UI = new Map([
     'LearningPotPicker',
     'Live every-pot learning-scope picker: reads automation.catalog/harnessProjects.lite and writes learning:set-pot-scope — no retired-tier route',
   ],
-  [
-    'LearningPotRail',
-    'Live per-pot learning rail: reads automation.catalog and writes learning:set-pot-scope, gym:arm and governor:arm — no retired-tier route',
-  ],
+  // 'LearningPotRail' sat here until 2026-09-07, when its chips were folded
+  // into the Learning tab's start/pause dropdown and the component was deleted.
+  // The exemption is REMOVED rather than renamed onto its successor: this list
+  // exempts components whose BASENAME names the retiring tier (that is what
+  // raises the finding at all), and LearningLoopControl does not — it writes
+  // learning:set-pot-scope but is never flagged, so an entry for it would be
+  // the dead exemption the dangling-check below exists to reject.
 ]);
 
 /* ══════════════════════════════════════════════════════════════════════════════════
