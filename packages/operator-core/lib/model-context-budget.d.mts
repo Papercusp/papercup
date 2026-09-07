@@ -4,14 +4,24 @@
 /** True when a model spec resolves to the retired/forbidden Spark model. */
 export function isCodexModelDenied(model: any): boolean;
 /**
- * Resolve a managed Codex model to a safe explicit id, or throw on the deny
- * list.  Empty/omitted input is intentionally resolved here (rather than at a
- * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
- * Reasoning suffixes are preserved for callers that split them into config.
- * @param {string | null | undefined} [model] optional model spec; omission uses
- * the managed safe default.
+ * Resolve a supplied managed Codex model to a safe explicit id. Empty input is
+ * a policy error: callers that deliberately choose the configured default must
+ * say so through resolveCodexModelSelection instead of disguising absence as a
+ * choice. Reasoning suffixes are preserved for callers that split them into
+ * config.
  */
-export function resolveCodexModel(model?: string | null | undefined): string;
+export function resolveCodexModel(model: any): string;
+/**
+ * Resolve a model together with the authority that selected it.  The
+ * configured-default branch is the ONLY branch allowed to turn absence into a
+ * model, making that policy choice visible to launch ledgers and callers.
+ */
+export function resolveCodexModelSelection(model: any, { source }?: {
+    source?: string | undefined;
+}): {
+    model: string;
+    source: string;
+};
 /**
  * Render the root model settings that must survive a model-less resume.  The
  * model id and effort are separated because Codex's TOML schema accepts the
@@ -258,15 +268,20 @@ export const MAX_LAUNCH_CONTEXT_BYTES: number;
 export const CODEX_SAFE_DEFAULT_MODEL: "gpt-5.6-sol:xhigh";
 export const CODEX_DEFAULT_MODEL: "gpt-5.6-sol:xhigh";
 export const CODEX_DENIED_MODEL_IDS: readonly string[];
+export const CODEX_MODEL_SOURCES: readonly string[];
+/** Stable policy error consumed by launch/request boundaries. */
+export class CodexModelPolicyError extends Error {
+    constructor(code: any, message: any);
+    code: any;
+}
 /**
- * Resolve a managed Codex model to a safe explicit id, or throw on the deny
- * list.  Empty/omitted input is intentionally resolved here (rather than at a
- * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
- * Reasoning suffixes are preserved for callers that split them into config.
- * @param {string | null | undefined} [model] optional model spec; omission uses
- * the managed safe default.
+ * Resolve a supplied managed Codex model to a safe explicit id. Empty input is
+ * a policy error: callers that deliberately choose the configured default must
+ * say so through resolveCodexModelSelection instead of disguising absence as a
+ * choice. Reasoning suffixes are preserved for callers that split them into
+ * config.
  */
-export function assertCodexModelAllowed(model?: string | null | undefined): string;
+export function assertCodexModelAllowed(model: any): string;
 /**
  * Codex models officially documented with a 1,050,000-token context window
  * that Papercusp exposes as selectors. The configured value is deliberately

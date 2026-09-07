@@ -727,7 +727,14 @@ export async function reportIdleRecipients(
       const { resolveSessionStates } = await import('./liveness-oracle');
       const verdicts = await resolveSessionStates(
         idle.map((ownerId) => ({ ownerId })),
-        { hydratePerId: true },
+        {
+          hydratePerId: true,
+          // EI-22546045794068839: this miss classifier must use the same
+          // psu-host positive-authority leg as gate ownership / coord:presence.
+          // Otherwise a live hosted session can read `held-live` in
+          // state:read while this required-wake path calls it dead.
+          psuHostPositiveAuthority: true,
+        },
       );
       for (let i = idle.length - 1; i >= 0; i--) {
         const v = verdicts.get(idle[i]);

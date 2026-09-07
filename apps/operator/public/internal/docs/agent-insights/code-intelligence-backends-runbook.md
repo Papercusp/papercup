@@ -1,9 +1,9 @@
 # Code intelligence: which backend answers which question, and how to operate them
 URL: /internal/docs/agent-insights/code-intelligence-backends-runbook
 
-The operator runbook for code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, pinned versions, six high-risk failure modes (including the fail-closed raw query path), and automatic GitNexus crash-residue recovery.
+The operator runbook for code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, pinned versions, six high-risk failure modes (including the fail-closed raw query path), automatic GitNexus crash-residue recovery, and — new 2026-09-05 — the GitNexus embeddings leg: how the vector index is populated and refreshed by the hourly full rebuild, what a live tick costs (6,446 s vs 2,343 s isolated), and how it fails (WI-39394, gitnexus-embeddings-enablement-2026-09-05).
 
-The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20.
+The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20; the GitNexus embeddings leg (§8) was added 2026-09-05 under plan gitnexus-embeddings-enablement-2026-09-05.
 
 > Authored as P-019 of `code-intelligence-routing-lsp-gitnexus-2026-08-20`. The
 > routing contract is D-001; the exact backend/version record with every rejected
@@ -15,6 +15,14 @@ The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-
 > routes to `graph:query` (D-058), and GitNexus crash residue is now recovered
 > AUTOMATICALLY (§4) — the older "delete these two files by hand" instruction is
 > superseded and should not be followed.
+>
+> Extended 2026-09-05 under `gitnexus-embeddings-enablement-2026-09-05` (its
+> D-002; WI-39394): the GitNexus VECTOR leg is now populated and refreshed by the
+> hourly reindex, which became a FULL rebuild per tick with an embedding-cache
+> restore. The old §5 "unexplained `analyze` duration" caveat is retired — the
+> incremental write set was the driver — and §8 is the operating guide for the
+> embeddings leg, including the one failure mode that needed a vendored patch and
+> the re-provision step (§2) that patch adds.
 
 ## 1. The routing contract — question class decides the backend
 
@@ -91,7 +99,17 @@ Re-provision the vendored backends with the same isolation:
 npm install --prefix ~/.papercusp/vendor/lsp \
   typescript-language-server@6.0.0 'typescript@npm:@typescript/typescript6@6.0.2'
 npm install --prefix ~/.papercusp/vendor/gitnexus gitnexus@1.6.9
+node scripts/vendor-gitnexus-patch.mjs          # REQUIRED after any gitnexus (re)install — §8.4
+node scripts/vendor-gitnexus-patch.mjs --check  # VENDOR_GITNEXUS_PATCH status=present
 ```
+
+**The gitnexus install is NOT complete until the vendor patch is applied.** Stock
+1.6.9 aborts every post-bootstrap `--embeddings` run on a duplicated primary key
+(§8.4). `scripts/vendor-gitnexus-patch.mjs` is idempotent (re-running on a patched
+tree is a no-op), `--check` reports `present`/`absent` without writing, and
+`packages/operator-core/lib/doc-claims/gitnexus-vendor-embedding-upsert.test.ts`
+pins the marker on this box — a fresh install that skips the step goes red there
+rather than at the first hourly tick after bootstrap.
 
 ## 3. Six high-risk failure modes: confident wrong answers or a hard-crashed evidence channel
 
@@ -248,12 +266,40 @@ The practical consequence: warm-up, if it is ever added, must be **per-project
 and demand-driven**. An eager version is actively harmful — tsserver serialises,
 so prewarming projects nobody asks about delays the queries someone is waiting on.
 
-**Honest caveat on `analyze` duration — it is unexplained, and backlog size does
-NOT predict it.** Two measured runs straddle the 20-minute (1200s) timeout in the
-wrong order: 592s at 77 commits behind SUCCEEDED, while 1201s at 35 commits behind
-TIMED OUT. Do not size a timeout, or reason about whether a reindex will finish,
-from how far behind the index is. This is a known open question, not a settled
-model.
+**`analyze` duration is a settled model now — the INCREMENTAL WRITE SET was the
+driver, and backlog size never predicted it.** The caveat that used to sit here
+recorded two runs straddling the 20-minute timeout in the wrong order (592s at 77
+commits behind succeeded; 1,201s at 35 commits behind timed out) and called the
+duration unexplained. It is explained: gitnexus 1.6.9 defaults to an INCREMENTAL
+path whose cost is the changed-files + importer-BFS write set, which bears no
+relation to commits-behind — and on this graph a large write set does not merely
+run long. Measured 2026-09-05, twice, on a 296-changed / 91-added / +6,839-importer
+set: the incremental writeback breached the 16 GiB LadybugDB ceiling \~35–45 min in
+(`Maximum database size of 17179869184 bytes has been reached` → `manual WAL
+checkpoint failed after retries` → SIGSEGV), after the same path had timed out the
+hourly tick \~10× over the preceding three days. The routine therefore passes
+`--force` on EVERY tick (D-002 of `gitnexus-embeddings-enablement-2026-09-05`), and
+a full rebuild has a stable, measurable cost:
+
+| pass (2026-09-05, 246,622 nodes, under fleet load)                                                 | wall             | peak RSS                                                                            | notes                                                                                    |
+| -------------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| full rebuild, no embedding work                                                                    | \~14.5–27.7 min  | \~15 GiB                                                                            | parse \~10 min + LadybugDB load; 27.7 min was the busy-box run                           |
+| + COLD embedding of 217,120 nodes (the one-shot bootstrap, §8.3)                                   | 3,139s (52 min)  | 14.9 GiB (15,633,516 kB)                                                            | embedding phase 2,265s ≈96 nodes/s on cuda, 2.3–3.2 GiB RSS, 1.3 GiB GPU                 |
+| + cache RESTORE + re-embed of changed nodes (every hourly tick)                                    | 2,343s (39 min)  | 15.7 GiB (17.3 GiB on run #3)                                                       | run #4, `/tmp/wi39394/run4-embed-run.log`; database file 5.3 GiB                         |
+| the SAME tick as the routine runs it — LIVE root, pc-heavy nice 10 / ionice idle, \~75 live agents | 6,446s (107 min) | \~5.2 GB RSS observed (4.5→5.2 GB in the insert phase, 1.3 GiB GPU while embedding) | first live tick 2026-09-05 18:32:12Z→20:19:38Z (§8.2); 248,736 nodes, 201,473 embeddings |
+
+`GITNEXUS_ANALYZE_TIMEOUT_MS` is sized from the LAST row — the LIVE tick — with
+\~1.54× headroom (165 min, D-004). It was first cut from the isolated run #4 at 70 min
+(D-002) and the very first live tick exceeded that by 37 minutes: the routine runs
+analyze NICED on a LOADED box, and the isolated measurement under-predicts it 2.75×.
+Do not size it from an isolated re-measurement, do not size it from the 309s cold
+figure of the 2026-08 graph, and do not read the hourly cron as a ceiling on it: a
+tick that fires while a slow run is still writing is skipped by the in-flight check
+(§8.2), so the timeout only has to bound a genuinely wedged indexer. Two more
+ceilings sit around it: the DBOS per-fire ceiling (`GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS`,
+analyze budget + 15 min, registered as `routineTimeoutMs` — without it the fire runs
+under the 2-hour default, which is BELOW the analyze budget, §8.2) and the child's own
+scope deadline (`managedSpawn` `RuntimeMaxSec`, which is what bounds an orphan, §8.2).
 
 **Index footprint.** `.gitnexus/` measured 6,558 MB on 2026-09-03 (`lbug` 4,946 MB
 
@@ -319,3 +365,309 @@ quantities measuring different things; collapsing them loses both signals.
 **Pinning the rust-analyzer cold start in both directions.** Rejected (D-046): it
 drifts \~562ms run to run, so a two-sided pin produces flakes rather than signal.
 The exceedance is accounted and bounded instead.
+
+**Incremental `analyze` (gitnexus's default) for the hourly tick.** Rejected on
+measurement (§5, D-002 of `gitnexus-embeddings-enablement-2026-09-05`): on a large
+write set it breaches the 16 GiB LadybugDB ceiling and segfaults, and it had
+timed out the tick \~10× in three days. Every tick passes `--force`.
+
+**A bigger `GITNEXUS_LBUG_MAX_DB_BYTES` ceiling so the incremental path survives.**
+Rejected (same D-002): the breach is a write set that scales with importers, not a
+cap that is slightly too small; a bigger ceiling moves the cliff (the live root has
+\~70 GB free, so it would take weeks to find again) while the full rebuild lands at
+a stable 5.3 GiB database file.
+
+**Upgrading to gitnexus 1.6.11 now instead of backporting its upsert fix.**
+Rejected for this lane (§8.4): 1.6.11 bumps `@ladybugdb/core` to ^0.19 — a native
+binding change — and reshapes the MCP surface mid-lane. The three-line backport is
+reversible (`patch -R`), pinned by a doc-claim test, and leaves the upgrade as its
+own lane with its own measurement.
+
+**Running the cold embedding bootstrap inside the routine under a one-time extended
+timeout.** Rejected: the cold pass is 52 minutes against an hourly cadence, and a
+timeout kill mid-embedding leaves the D-016 residue. A supervised one-shot outside
+the routine, with the routine paused, is cheaper and observable (§8.3).
+
+**`--embeddings` with gitnexus's default node cap.** Rejected on measurement
+(2026-09-04): the 50,000-node cap SKIPS embedding wholesale on this 246,622-node
+graph and exits 0 with a one-line notice, which is exactly how the vector leg sat
+empty for a month. Only `--embeddings 0` (uncapped) populates it.
+
+## 8. The embeddings leg: how the vector index is populated, and how it fails
+
+Added 2026-09-05 (plan `gitnexus-embeddings-enablement-2026-09-05`, D-002;
+WI-39394). Until then the vector leg of the graph had been EMPTY since WI-35557 —
+0 of \~246k nodes embedded — while every health count read green, because
+nothing ever passed `--embeddings`.
+
+### 8.1 `--embeddings` semantics (gitnexus 1.6.9) — four traps
+
+* **Without the flag an analyze PRESERVES embeddings already in the index and
+  never embeds a new node.** Dropping the flag does not turn embeddings off; it
+  freezes the vector leg at bootstrap time while every count still reads healthy.
+  The reindex canary therefore treats `embeddings == 0` after an
+  embeddings-enabled run as DEGRADED (`vectorSearchProbe`, persisted as
+  `gitnexus_health.vectorSearch { embeddings, expected, degraded }`).
+* **The value is OPTIONAL in gitnexus's commander definition, so `--embeddings`
+  must be the LAST argv token** — a positional after it is swallowed as the cap.
+  `buildAnalyzeArgs` places it last and a test pins the order.
+* **The default node cap is 50,000; this graph has 246,622 nodes.** Anything but
+  `--embeddings 0` (uncapped) skips embedding wholesale and exits 0 (§7).
+* **Device and threads come from env**, pinned in `analyzeEnv`:
+  `GITNEXUS_EMBEDDING_DEVICE=cuda`, `GITNEXUS_EMBEDDING_THREADS=4`. gitnexus falls
+  back to cpu internally when the CUDA provider cannot load, so the cuda pin is
+  never a hard dependency on the GPU.
+
+### 8.2 Every tick is a FULL rebuild that RESTORES the embedding cache
+
+`--force --embeddings 0` loads the embedding cache from the existing index BEFORE
+the wipe, restores it into the fresh database, and embeds only new and changed
+nodes (`core/run-analyze.js`: "We *always* load the embedding cache when one is
+requested"). So the hourly tick never re-pays the 52-minute cold pass; it pays the
+full rebuild plus the restore and a re-embed of the changed nodes (§5 table).
+gitnexus's incremental path is not used at all (§5, §7).
+
+Two overlap facts, because a run can now outlast the hour: the routine row is
+`concurrency: 'skip'` (`seed-gitnexus-reindex-routine.ts`), so a cron fire while the
+previous action is still awaiting its analyze is skipped rather than double-spawned;
+and the 45-minute `min_interval_sec` floor is measured from the previous run's END
+(`indexedAt`), so a \~35-minute run yields an effective refresh every SECOND tick.
+That two-hour cadence is accepted in D-002; lower the floor deliberately if
+staleness ever bites, never by "fixing" the skip.
+
+**`incrementalInProgress` in `.gitnexus/meta.json`.** A crashed analyze leaves this
+marker set, and gitnexus then FORCES a full rebuild on the next analyze regardless
+of argv. The routine deliberately REPORTS the marker rather than clearing it
+(EI-22172147268902766). A set marker beside `stats.embeddings: 0` is the "bootstrap
+died" signature — read it as that, not as corruption.
+
+**A tick that outlives its bg-host is INVISIBLE to the successor host (WI-2146606).**
+The analyze is a `managedSpawn` child in its own systemd scope (`pc-<taskId>.scope`),
+so a bg-host restart does not kill it — it keeps writing the index — but
+`concurrency: 'skip'` only sees the actions of the host that launched them. Before
+the fix, the successor's preflight read the live run's `lbug.wal` as ORPHAN-WAL
+residue, deleted it, and spawned a SECOND analyze against the same root. Measured
+2026-09-05: bg-host was restarted at 19:16:35Z while the 18:32:12Z tick was mid-insert;
+the successor deleted the WAL at 19:16:59Z, spawned the duplicate at 19:17:03Z, and
+the duplicate was killed by hand at 19:21:31Z. The fix asks the KERNEL who holds the
+index files open, and in what MODE: `detectLiveAnalyzeWriter(root)` scans `/proc/*/fd`
+
+* `fdinfo` for a process holding `lbug` or `lbug.wal` `O_WRONLY`/`O_RDWR` — a reader
+  (`gitnexus cypher`, the MCP bridge) never pins the tree, a writer always does — and the
+  action then logs `[gitnexus-reindex] skip: an analyze writer is ALIVE on <root> — pid(s)
+  … hold lbug + lbug.wal open for write; not cleaning residue, not spawning (WI-2146606)`
+  and returns BEFORE residue cleanup and BEFORE the spawn. `cleanCrashResidue` runs the
+  same probe: a WAL with a live writer is never touched, and an unheld fresh WAL is
+  spared for `DEAD_SHADOW_STALE_MS` (5 min) unless the caller stands at the kill site
+  (`writerKnownDead`). There is deliberately no lock file (it would record only the
+  writer THIS host launched — the one that matters is the one it did not) and no kill
+  (a routine-launched run is bounded by its own scope deadline; a manual run is not ours).
+
+**The scope deadline is the only timeout an orphan has — and it fires as SIGKILL.**
+`managedSpawn` puts `RuntimeMaxSec` on `pc-<taskId>.scope` from the action's timeout.
+When the launching host dies, that deadline is the one thing still bounding the run,
+and its expiry reproduces exactly the residue of §4. If an orphan is close to its
+deadline and the index it is building is worth keeping, MOVE its pids into a fresh
+scope with a longer deadline instead of letting it die: `systemd-run --user --scope --unit=<name> -p RuntimeMaxSec=<s> -p MemoryMax=<bytes> sleep infinity`, then write
+every pid of the analyze tree into the new scope's `cgroup.procs` (the 2026-09-05
+rescue of pid 1871544 at 19:31:50Z, ten minutes before its 70-min deadline). Stop the
+keeper unit only after the analyze has exited — stopping it earlier kills the tree.
+
+**Live tick timeline (2026-09-05, the first tick after the seeded resume).**
+`analyze --force --embeddings 0` under pc-heavy (nice 10, ionice idle) on a box with
+\~75 live agents: spawned 18:32:12Z; first WAL write 18:41:46Z
+(`incrementalInProgress.startedAt`); DB-insert phase through \~20:10Z at 4.5–5.2 GB RSS
+and \~90–130% of one core; GPU embedding phase (1.3 GiB GPU) by 20:16Z; `indexedAt`
+20:19:38Z — 6,446 s (107 min) wall; result 248,736 nodes, 201,473 `CodeEmbedding`
+rows, no `incrementalInProgress`, no `lbug.wal`/`lbug.shadow` left behind, cypher
+count and a paraphrase query both answering in the live root. This — not the 39-minute
+isolated run #4 — is what `GITNEXUS_ANALYZE_TIMEOUT_MS` is sized from (D-004): the
+routine runs analyze NICED on a LOADED box, and the isolated measurement under-predicts
+the live tick by 2.75×. Progress is visible ONLY through `lbug`/`lbug.wal` mtimes, the
+scope's `cpu.stat` delta and `nvidia-smi` — the analyze's stdout goes to a pc-heavy
+coalesce FIFO whose `.part` file stops after the banner.
+
+**An orphaned run can finish its index and still leave the REGISTRY stale — and the
+cadence floor used to read only the registry (D-005).** gitnexus writes freshness
+twice at the tail of a run: `saveMeta` stamps `.gitnexus/meta.json` (`indexedAt`,
+`lastCommit`, `stats`) the moment the index is complete, and `registerRepo` refreshes
+the `~/.gitnexus/registry.json` row AFTER that and after the parse-cache save. The
+orphaned 18:32Z tick above completed its meta.json at 20:19:38Z and never touched the
+registry (row still at the seed's 17:07:51Z / lastCommit c2f48806 — the mechanism is
+unproven; the parent's stdout pipe was gone after the restart). The next cron fire,
+20:32Z, read the registry alone: "3.4h old, 196 commits behind", straight past the
+45-minute floor, and a second 107-minute full pass started 13 minutes after the first
+finished. The fix is `pickIndexFreshness`: the cadence gates take the FRESHER
+`indexedAt` of the registry row and meta.json (with its own `lastCommit`), and refuse
+a meta.json still carrying `incrementalInProgress` — gitnexus's mid-build writes spread
+the PREVIOUS run's `indexedAt` forward under that marker, so only a completed run can
+ever look fresh. `registered` stays a registry question (a repo the MCP cannot resolve
+by name must be rebuilt regardless). When meta wins, the tick logs
+`[gitnexus-reindex] freshness: meta.json (<ts>) is newer than the registry row (<ts>)`.
+A stale `gitnexus list` row is the only remaining cost of a lost registry write.
+
+**The DBOS per-fire ceiling must clear the analyze budget.** A system action with no
+`routineTimeoutMs` on its registration fires under the 2-hour `ROUTINE_FIRE_TIMEOUT_MS`
+default — below the 165-minute analyze budget. The 107:26 live tick was 12 minutes from
+a silent cancellation: DBOS would have released the routine's dedup id (so the next cron
+fire launches the action beside a live writer — only the WI-2146606 skip then prevents a
+double spawn) and the health record for the tick completing minutes later would never
+be written. `GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS` (= analyze budget + 15 min) is now
+registered on the action; check `routineFireTimeoutMs` whenever an action's child
+budget grows.
+
+### 8.3 The first population is a ONE-SHOT supervised run outside the routine
+
+The cold pass (217,120 nodes, 52 minutes on an idle box; 1 h 44 min on the live
+root under fleet load) exceeds any sane tick timeout, so it runs once, as a
+transient user unit against the live root, while the routine is PAUSED — two
+analyzes on one `.gitnexus` race on the shadow.
+
+**Prefer SEEDING over a cold pass when a sibling index of the same repo exists.**
+The first live cold pass (2026-09-05, /tmp/wi39394/bootstrap-live2/run.log) died
+rc=139 after 6,270 s with `Maximum database size of 17179869184 bytes has been
+reached` → `manual WAL checkpoint failed after retries`, three seconds into the
+embedding INSERT, while the database file sat at 5.27 GB (31% of the ceiling) —
+the identical run on an isolated checkout had passed. The ceiling is a VIRTUAL
+frame reservation that gitnexus's 5-second manual WAL-checkpoint cadence consumes
+over a long run, not bytes on disk (D-003). Two consequences: the routine now pins
+`GITNEXUS_LBUG_MAX_DB_SIZE` at 64 GiB (VA only), and the fast path is to copy an
+already-embedded index of the same repo — node ids are repo-relative, only
+`meta.json`/`gitnexus.json` carry `repoPath` —
+(`npx tsx .papercusp/scratch/wi39394-seed-live-index.mts <src .gitnexus> <live root>`:
+atomic `lbug` rename, repoPath rewrite, parse cache, registry entry). The routine's
+next `--force --embeddings 0` tick then runs the restore path (§8.2), which is the
+39-minute shape, not the cold one.
+
+Recipe for a genuinely cold pass, with the SAME argv and env the routine uses:
+
+```bash
+# 1. routines:set { name:'gitnexus-reindex', installSlug:'papercusp', active:false, reason:'…' }
+#    and wait for any in-flight tick to finish (no lbug.shadow in <root>/.gitnexus).
+# 2. one supervised pass:
+ROOT=$(git rev-parse --show-superproject-working-tree); ROOT=${ROOT:-$(git rev-parse --show-toplevel)}
+systemd-run --user --unit="gitnexus-bootstrap-$(date +%s)" -p MemoryMax=24G bash -c "
+  cd $ROOT && [ ! -e .gitnexus/lbug.shadow ] || exit 3
+  export NODE_OPTIONS='--max-old-space-size=16384 --max-semi-space-size=128'
+  export GITNEXUS_LBUG_MAX_DB_SIZE=68719476736 GITNEXUS_LBUG_BUFFER_POOL_SIZE=8589934592
+  export GITNEXUS_EMBEDDING_DEVICE=cuda GITNEXUS_EMBEDDING_THREADS=4
+  /usr/bin/time -v node --stack-size=4096 \
+    ~/.papercusp/vendor/gitnexus/node_modules/gitnexus/dist/cli/index.js \
+    analyze $ROOT --skip-agents-md --name papercusp --force --embeddings 0 \
+    > /tmp/gitnexus-bootstrap.log 2>&1"
+# 3. on exit: rc 0 AND .gitnexus/meta.json stats.embeddings > 0; then
+#    dev:restart bg-host (if the routine code changed) and routines:set active:true.
+```
+
+Verify per §6, plus the two vector-leg probes: `gitnexus cypher 'MATCH (e:CodeEmbedding)
+RETURN count(e)'` must be > 0, and the next tick must write
+`gitnexus_health.vectorSearch` with `degraded:false`.
+
+Three log-reading traps seen while doing this:
+
+* `/usr/bin/time -v` prints `Exit status: 0` AFTER `Command terminated by signal
+  11` — the exit-status line is boilerplate after a signal; read the signal line.
+* gdb's post-exit `ABORT/CRASH` echo followed by `No stack.` is not a crash.
+* If the bootstrap dies mid-write the live index is wedged until the routine's
+  preflight next runs, and the routine is paused. Run that preflight out of band —
+  `WRITER_KNOWN_DEAD=1 npx tsx .papercusp/scratch/wi39394-clean-residue.mts <root>`
+  calls the routine's own `cleanCrashResidue` — do not hand-delete (§4).
+
+### 8.4 The one failure that needed a vendored patch: `Found duplicated primary key value <nodeId>:0`
+
+Stock 1.6.9's `batchInsertEmbeddings` CREATEs `CodeEmbedding` rows without first
+deleting the row it just RESTORED from cache for the same node. So `--force --embeddings` on an index that ALREADY holds embeddings aborts on the first CHANGED
+node — which is every hourly tick after bootstrap:
+
+```
+Analysis failed: Batch execution failed for rows 1-4: Runtime exception:
+Found duplicated primary key value Function:apps/…/listings.ts:registerListingEndpoints:0
+```
+
+(run #3: rc=1 twenty seconds into the embedding phase, after restoring 217,124
+cached embeddings; `/tmp/wi39394/run3-embed-run.log`). A COLD pass — zero existing
+embeddings — never hits it, which is why the bootstrap succeeds and the first
+steady-state tick fails, and why "the bootstrap worked" is not evidence the tick
+will.
+
+It was diagnosed in minutes with probes against the vendored LadybugDB adapter on
+a scratch database (`/tmp/wi39394/pk-probe.mjs`: `await import('<vendor>/dist/core/
+lbug/lbug-adapter.js')`, `initLbug(path)`) rather than by re-running 28-minute
+analyzes: DELETE-then-CREATE of the same primary key works, an in-batch duplicate
+leaves the first row, and the chunker yields unique chunk indices — so the CREATE
+collided with a PRE-EXISTING row. Upstream fixed exactly this in 1.6.11 (DELETE by
+embedding id before CREATE). That fix is BACKPORTED as a vendor patch, and the
+patch is part of the install (§2):
+
+* `patches/gitnexus-vendor+1.6.9-embedding-upsert.patch` — the three-line
+  DELETE-by-id-before-CREATE, marker `papercusp-patch:gitnexus-1.6.9-embedding-upsert`
+  (reversible: `patch -p1 -R --dry-run` was verified before it was applied).
+* `scripts/vendor-gitnexus-patch.mjs` — idempotent apply; `--check` is read-only.
+* `packages/operator-core/lib/doc-claims/gitnexus-vendor-embedding-upsert.test.ts`
+  — pins the marker on this box (skips where there is no vendor install).
+
+Verified on the restore + re-embed path with the patched vendor (run #4,
+`/tmp/wi39394/run4-embed-run.log`): rc=0 after 2,343s; 216,843 embeddings over 247,540 nodes (217k restored from cache, the changed nodes re-embedded in a \~2-minute GPU phase); zero `duplicated primary key` lines in the log.
+
+### 8.5 Reading the vector leg's health
+
+`gitnexus_health.vectorSearch` rides beside the failure streak in the routine's
+health record (visible in `/admin/schedules` and `routines:list`): `embeddings` is
+`stats.embeddings` after the analyze (null when the registry did not report it),
+`expected` is whether the argv asked for embeddings (`analyzeEmbeddingsExpected`),
+and `degraded` is `expected && (embeddings == 0 || null)`. A degraded verdict never
+flips the tick healthy — a graph that answers definitions but not a paraphrase is
+a partial outage, and the summary carries `(DEGRADED: …)` so it is not read as
+green.
+
+**What the first live tick read (2026-09-05).** The seeded index carried 216,843
+embeddings (run #4); the first live tick rebuilt the graph to 248,736 nodes and
+finished with 201,473 `CodeEmbedding` rows — `embeddings > 0`, `expected: true`,
+`degraded: false`, and both R-2 probes (cypher count, paraphrase `gitnexus query`)
+answer. The 7% DROP against the seed is the number to watch across ticks, not the
+absolute count: the cache restore keeps an embedding only for a node whose content
+hash still matches, and on a tree that \~75 agents rewrite hourly a real share of
+nodes churn between ticks and are re-embedded (or, for deleted symbols, dropped).
+A count that falls tick over tick while the node count holds is the signature of a
+restore that stopped matching (a model or chunking change, a cache path that moved)
+and is worth a look before it reaches the `embeddings == 0` cliff this probe
+catches. Read the record with `routines:list { name:'gitnexus-reindex',
+installSlug:'papercusp' }` → `health.gitnexus_health.vectorSearch`; it is written
+only by a tick that actually ran analyze — a cadence skip leaves the previous
+record in place, so its `checkedAt` is the tick it describes.
+
+### 8.6 The failure that is NOT gitnexus's: a full disk (2026-09-05, D-006)
+
+A routine tick that runs its whole \~1h50 pass and then exits 1 with a stack frame at
+the vendored `run-analyze.js:1035` (`runEmbeddingPipeline`), minutes before the
+bg-host log fills with `database system is in recovery mode`, reads like a native
+crash coincident with a Postgres outage. It was one event: the root filesystem hit
+100% at \~22:24Z (an unrelated Operator Vite production build, EI-22462478663416972),
+the analyze's stderr says `Cannot write to file … .gitnexus/lbug.wal … No space left
+on device` → `Analysis failed: Batch execution failed for rows 5-8` inside
+`batchInsertEmbeddings`, and Postgres — which shares `/` on this box — PANICked on
+`pg_wal` in the same minute (WAL writer SIGABRT 22:29:36Z, recovery until 22:30:40Z),
+so the tick's own health write failed too. **Read `df /` before reading gitnexus
+code.** The incomplete-index marker (§8.2) then did its job: the next fire cleaned the
+orphan WAL and ran a full rebuild.
+
+What the routine does about it now: `decideReindex` has a LOW DISK step (after load
+and memory pressure, before the cold-build override). A `--force` rebuild writes a
+second database (`lbug.shadow`, 5.28 GB on this graph) plus a streamed WAL BESIDE the
+live one and promotes only at the end, so it needs roughly one more database than it
+holds. When the free space on the `.gitnexus` filesystem is below
+`max(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES = 16 GiB, 2 × live lbug size)` the tick logs
+`[gitnexus-reindex] skip: low disk (N GiB free on the index filesystem < M GiB a full
+rebuild needs) — deferring to the next tick …` and leaves the complete old index
+serving. The floor is per-install trigger config `min_free_disk_bytes`; an
+unmeasurable reading (statfs failure) is fail-soft — unknown is not low. The gate
+cannot rescue a run that is already in flight when the disk fills; that case is the
+marker + full-rebuild-on-next-fire path above, and the fleet-wide signal is the
+`[disk-space-alarm]` line in the same journal.
+
+One restart trap sits next to this: a `dev:restart { target:'bg-host' }` does NOT
+kill a routine-owned analyze (it runs in its own `pc-…` systemd scope and
+`detectLiveAnalyzeWriter` makes the new host yield to it), but it DOES lose the
+in-process await — no `ok in` line, no canary, no `vectorSearch` health record for
+that tick, and the next fire skips on freshness. Restart between ticks, never during
+one you need evidence from.

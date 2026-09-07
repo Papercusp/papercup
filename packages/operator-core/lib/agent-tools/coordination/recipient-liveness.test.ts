@@ -47,7 +47,7 @@ describe('describeMissedRecipients — federated recipients never hit the local 
     expect(out).toEqual([{ ownerId: 'su-local-1', sessionState: 'ended', wakeable: false }]);
     expect(resolveSessionStatesM).toHaveBeenCalledWith(
       [{ ownerId: 'su-local-1' }],
-      { hydratePerId: true },
+      { hydratePerId: true, psuHostPositiveAuthority: true },
     );
   });
 

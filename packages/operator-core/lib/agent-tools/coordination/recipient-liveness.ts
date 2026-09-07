@@ -94,7 +94,12 @@ export async function describeMissedRecipients(
     const { resolveSessionStates } = await import('./liveness-oracle');
     const verdicts = await resolveSessionStates(
       localIds.map((ownerId) => ({ ownerId })),
-      { hydratePerId: true },
+      {
+        hydratePerId: true,
+        // EI-22546045794068839: keep the required-wake liveness projection
+        // aligned with gate ownership / coord:presence for hosted sessions.
+        psuHostPositiveAuthority: true,
+      },
     );
     const localResults = localIds.map((ownerId) => {
       const v = verdicts.get(ownerId);

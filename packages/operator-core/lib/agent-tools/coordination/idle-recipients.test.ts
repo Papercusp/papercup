@@ -260,6 +260,10 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
     const r = await reportIdleRecipients(['su-cup-1'], {});
     expect(r.idle).toEqual([]);
     expect(r.aliveNotWakeable).toEqual(['su-cup-1']);
+    expect(resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-cup-1' }],
+      { hydratePerId: true, psuHostPositiveAuthority: true },
+    );
   });
 
   it('a `live` verdict (mid-turn, EI-12699) also reclassifies out of idle', async () => {
