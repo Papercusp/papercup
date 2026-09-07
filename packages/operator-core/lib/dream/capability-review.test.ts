@@ -14,6 +14,7 @@ import { capabilityContentVersion, capabilityPairKey, type CapabilitySelection }
 import {
   CAPABILITY_PRIOR_KINDS,
   capabilityProposalHash,
+  capabilityReviewEvidenceHash,
   capabilityReviewQueries,
   runCapabilityDreamReview,
   type CapabilityReviewControl,
@@ -92,6 +93,7 @@ function prior(ref = 'plan:existing', kind: CapabilityReviewPrior['kind'] = 'pla
     contentHash: capabilityHash(text),
     sourceHash: capabilityHash(text),
     candidateHash: null,
+    evidenceHash: null,
   };
 }
 function judgment(priors: CapabilityReviewPrior[]): CapabilityReviewJudgment {
@@ -247,7 +249,7 @@ async function fixture() {
       return {
         scope,
         kinds: CAPABILITY_PRIOR_KINDS,
-        status: 'current',
+        status: 'current' as const,
         matches: priors,
         truncated: false,
         note: 'Fixture corpus, including rejected history.',
@@ -324,6 +326,7 @@ describe('independent capability source and skeptical review', () => {
       'State-dependent evaluation replay.',
     );
     expect(f.calls).toHaveLength(3);
+    expect(f.calls.map((call) => call.maxTokens)).toEqual([1_024, 1_024, 4_096]);
     const aOnly = JSON.parse(f.calls[0]!.messages[0]!.content as string);
     const bOnly = JSON.parse(f.calls[1]!.messages[0]!.content as string);
     expect(aOnly.retained.label).toBe('A');
@@ -400,6 +403,19 @@ describe('independent capability source and skeptical review', () => {
     });
     expect(f.calls).toHaveLength(0);
   });
+  it('retains every attempted facet and the source failure in its coverage record', async () => {
+    const f = await fixture();
+    f.sources.search = async () => {
+      throw new Error('history backend unavailable');
+    };
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result.verdict).toBe('unverified');
+    expect(result.coverage.searches.map((s) => s.facet)).toEqual(['purpose', 'mechanism', 'evaluation']);
+    expect(
+      result.coverage.searches.every((s) => s.status === 'unavailable' && s.note === 'history backend unavailable'),
+    ).toBe(true);
+    expect(f.calls).toHaveLength(0);
+  });
   it.each(['missing', 'stale'] as const)('refuses %s supporting prior sources', async (mode) => {
     const f = await fixture();
     f.sources.readCurrent = vi.fn(async (p) => (mode === 'missing' ? null : { ...p, text: p.text + ' changed' }));
@@ -441,10 +457,21 @@ describe('independent capability source and skeptical review', () => {
   it('recognizes an exact recorded candidate without a paid review but rechecks its source first', async () => {
     const f = await fixture();
     f.priors[0]!.candidateHash = capabilityProposalHash(f.options.candidate);
+    f.priors[0]!.evidenceHash = capabilityReviewEvidenceHash(f.options.selection);
     const result = await runCapabilityDreamReview(f.options, f.deps);
     expect(result).toMatchObject({ verdict: 'reject', reason: 'duplicate' });
     expect(f.sources.readCurrent).toHaveBeenCalled();
     expect(f.calls).toHaveLength(0);
+  });
+  it('reconsiders unchanged proposal wording when its supporting capability versions differ', async () => {
+    const f = await fixture();
+    f.priors[0]!.candidateHash = capabilityProposalHash(f.options.candidate);
+    f.priors[0]!.evidenceHash = capabilityHash('previous capability sources');
+    expect(await runCapabilityDreamReview(f.options, f.deps)).toMatchObject({
+      verdict: 'accept',
+      reason: 'supported-delta',
+    });
+    expect(f.calls).toHaveLength(3);
   });
   it('requires the reranker to actually score candidates and preserves rejected prior attempts', async () => {
     const f = await fixture();
@@ -576,15 +603,33 @@ describe('production capability and Blender source adapter', () => {
         humanFeedback: 'Check scoped state.',
       },
     ];
-    const run = {
+    const run: DreamRun = {
       workspaceId: scope.workspaceId,
       potSlug: scope.potSlug,
       runId: 'rejected-1',
+      cycleId: 'cycle-1',
+      mode: 'manual',
       status: 'rejected',
+      fragmentRefs: [],
+      fragmentKinds: [],
+      pairing: null,
+      similarity: null,
+      dreamerModel: 'generator-model',
+      reviewerModel: 'reviewer-model',
+      dreamUsage: null,
+      reviewUsage: null,
       outcome: { insight: { text: 'Restore the complete system' } },
       review: { note: 'The state scope was not bounded.' },
       routedRef: null,
-    } as DreamRun;
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      error: null,
+      startedAt: '2026-09-07T10:00:00Z',
+      completedAt: '2026-09-07T10:01:00Z',
+      spendRecordedAt: null,
+      updatedAt: '2026-09-07T10:01:00Z',
+    };
     const deps: CapabilityReviewSourceDeps = {
       plans: vi.fn(async () => ({ rows: [plan], truncated: false })),
       plan: vi.fn(async () => plan),

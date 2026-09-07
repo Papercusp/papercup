@@ -13,16 +13,51 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import type { LearningLoopControl as LoopSnapshot } from '@papercusp/operator-core/lib/harness/improvements/loop-control';
+import type {
+  AutomationArming,
+  AutomationGymArm,
+  AutomationLaneArm,
+} from '@papercusp/operator-core/lib/automation/catalog';
 
 const H = vi.hoisted(() => ({
   enabled: true,
   snap: undefined as unknown,
+  arming: undefined as unknown,
   invalidate: { fn: (() => {}) as () => void },
+  catalogInvalidate: { fn: (() => {}) as () => void },
+  runTool: { fn: (async () => {}) as (...args: unknown[]) => Promise<unknown> },
+  openDrawer: { fn: ((_slug: string) => {}) as (slug: string) => void },
+  openPicker: { fn: (() => {}) as () => void },
 }));
 
+// TWO queries now, and they must be told apart: the control absorbed the pot
+// rail, so it reads automation.catalog for the scopes alongside its own
+// loopControl snapshot. A single undiscriminated mock would hand the loop
+// snapshot to the pot list and quietly render nothing.
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: H.snap ? [H.snap] : undefined, invalidate: H.invalidate.fn }),
+  useSyncQuery: (opts: { queryName?: string }) => {
+    if (opts?.queryName === 'automation.catalog') {
+      return {
+        data: H.arming ? [{ arming: H.arming }] : undefined,
+        invalidate: H.catalogInvalidate.fn,
+      };
+    }
+    return { data: H.snap ? [H.snap] : undefined, invalidate: H.invalidate.fn };
+  },
 }));
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon:
+    () => (_key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+      const word = opts?.plural ? 'Pots' : 'Pot';
+      return opts?.lower ? word.toLowerCase() : word;
+    },
+}));
+vi.mock('@/lib/pot-label', () => ({ potHomeLabel: (slug: string) => slug }));
+vi.mock('./run-tool', () => ({
+  runAgentTool: (...args: unknown[]) => H.runTool.fn(...args),
+}));
+vi.mock('./LearningPotDrawer', () => ({ useOpenPotDrawer: () => H.openDrawer.fn }));
+vi.mock('./LearningPotPicker', () => ({ useOpenPotPicker: () => H.openPicker.fn }));
 vi.mock('@papercusp/flags/client', () => ({
   useFlag: () => H.enabled,
 }));
@@ -65,6 +100,41 @@ function makeSnap(overrides: Partial<LoopSnapshot> = {}): LoopSnapshot {
   };
 }
 
+// Arming fixtures, same shapes learning-pot-rail.test.ts builds — the model is
+// unchanged by the fold, only its consumer moved.
+function gym(harnessSlug: string, enabled: boolean, spentUsd = 0): AutomationGymArm {
+  return { harnessSlug, enabled, budgetUsd: null, spentUsd, status: 'idle' };
+}
+function lane(
+  loopId: string,
+  potSlug: string | null,
+  enabled: boolean,
+  spentUsd = 0,
+): AutomationLaneArm {
+  return {
+    loopId,
+    displayName: loopId,
+    potSlug,
+    enabled,
+    budgetUsd: null,
+    budgetKind: 'lifetime',
+    spentUsd,
+    enforcement: 'governor',
+  };
+}
+function makeArming(over: Partial<AutomationArming> = {}): AutomationArming {
+  return { gymPots: [], lanes: [], scoutCeiling: null, potScope: null, ...over };
+}
+const scope = (disabledPots: string[]): AutomationArming['potScope'] => ({
+  disabledPots,
+  rows: [],
+});
+
+/** The dropdown trigger — the chip is the lexicon's plural pot word now. */
+function openDropdown() {
+  fireEvent.click(screen.getByRole('button', { name: /Pots/ }));
+}
+
 function okFetch() {
   return vi.fn(async () => ({
     ok: true,
@@ -78,7 +148,14 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   H.enabled = true;
   H.snap = makeSnap();
+  // Default: no catalog row, so no verdict and no pot list — the pre-fold
+  // shape, which keeps the loop-control contract tests about the loop control.
+  H.arming = undefined;
   H.invalidate.fn = vi.fn();
+  H.catalogInvalidate.fn = vi.fn();
+  H.runTool.fn = vi.fn(async () => ({}));
+  H.openDrawer.fn = vi.fn();
+  H.openPicker.fn = vi.fn();
   fetchMock = okFetch() as unknown as ReturnType<typeof vi.fn>;
   vi.stubGlobal('fetch', fetchMock);
 });
@@ -101,19 +178,22 @@ describe('<LearningLoopControl>', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('running: chip says "learning" with today spend; button offers pause', () => {
+  it('running: the chip is the pot dropdown and keeps today spend; button offers pause', () => {
     render(<LearningLoopControl />);
-    expect(screen.getByText('learning')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Pots/ })).toBeTruthy();
+    // With no catalog row there is no verdict beside it, so the chip still
+    // carries the spend rather than dropping it on the floor.
     expect(screen.getByText('$4.62')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Pause all learning loops' })).toBeTruthy();
   });
 
-  it('paused: chip says "paused", root carries the paused class, button offers resume', () => {
+  it('paused: root carries the paused class, dropdown says paused, button offers resume', () => {
     H.snap = makeSnap({ status: 'paused', activeCount: 0, heldCount: 16, pausedAtMs: Date.UTC(2026, 7, 16, 18, 57), pausedBy: 'su-23c9e' });
     const { container } = render(<LearningLoopControl />);
-    expect(screen.getByText('paused')).toBeTruthy();
     expect(container.querySelector('.pc-lloop--paused')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Resume all learning loops' })).toBeTruthy();
+    openDropdown();
+    expect(screen.getByText('paused')).toBeTruthy();
   });
 
   it('pause sends routines:group-set { active:false, reason } through the gated bridge, then refetches', async () => {
@@ -153,7 +233,7 @@ describe('<LearningLoopControl>', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<LearningLoopControl />);
     // Open the popover so the error paragraph has somewhere to render.
-    fireEvent.click(screen.getByText('learning'));
+    openDropdown();
     fireEvent.click(screen.getByRole('button', { name: 'Pause all learning loops' }));
     await waitFor(() => {
       const alert = screen.getByRole('alert');
@@ -164,7 +244,7 @@ describe('<LearningLoopControl>', () => {
 
   it('popover shows the spend rollup and the role breakdown labels', async () => {
     render(<LearningLoopControl />);
-    fireEvent.click(screen.getByText('learning'));
+    openDropdown();
     expect(screen.getByRole('dialog', { name: 'Learning loops' })).toBeTruthy();
     expect(screen.getByText('Today')).toBeTruthy();
     expect(screen.getByText('Last 7 days')).toBeTruthy();

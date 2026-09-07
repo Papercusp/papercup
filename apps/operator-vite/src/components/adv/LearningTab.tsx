@@ -129,7 +129,6 @@ import { FrontierPanel } from "./FrontierPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
 import LearningLoopControl from "./LearningLoopControl";
-import LearningPotRail from "./LearningPotRail";
 import LearningPotPicker, { useOpenPotPicker } from "./LearningPotPicker";
 import LearningPotDrawer from "./LearningPotDrawer";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
@@ -894,17 +893,20 @@ export default function LearningTab() {
         <LearningLoopControl />
       </div>
 
-      {/* learning-pot-scope-gate P-006: which pots are actually learning, and
-          what each of their lanes has armed. It sits between the stepper (the
-          loop's STAGES) and the view controls (this stage's VIEWS) because it
-          answers a third question — the loop's SCOPE — that belongs to neither.
-          Renders nothing until a pot has a gym row or a governor lane. */}
-      <LearningPotRail />
+      {/* The pot RAIL used to sit here — one chip per learning pot, on its own
+          row between the stepper and the view controls. It is gone (owner,
+          2026-09-07): with every pot switched off, seven near-identical pills
+          said "learning off" only through a dashed border and 62% opacity, and
+          the one fact that mattered — nothing is learning — was invisible. Its
+          scope question is now answered in WORDS by the verdict on the stage
+          row above, and its per-pot controls live in that control's dropdown.
+          The model it was built on (learning-pot-rail.ts) is unchanged and now
+          feeds both. */}
       {/* P-008's every-pot scope picker. Mounted here rather than inside the
-          rail because the rail renders nothing when no pot has a learning row,
-          and the picker must still be reachable then — it is the surface that
-          enumerates every pot, including the ones the rail has nothing to say
-          about. It is a modal driven by URL state, so it costs nothing closed. */}
+          loop control because it enumerates EVERY pot, including ones with no
+          learning setup at all — a population buildLearningPotRail omits, so
+          the dropdown's list cannot reach them. It is a modal driven by URL
+          state, so it costs nothing closed. */}
       <LearningPotPicker />
       {/* P-012's per-pot drawer, mounted beside the picker for the same reason
           and one more: it must be openable for a pot with NO rail chip. D-008
@@ -7439,8 +7441,14 @@ export function LearningStyles() {
         display: grid; grid-auto-flow: column; grid-auto-columns: minmax(90px, 1fr);
         align-items: start; width: 100%; max-width: 720px; margin: 0 auto; padding: 0 22px; box-sizing: border-box;
       }
-      /* WI-39501: the stage row anchors the header loop control at its right edge. */
-      .pc-learning__stagerow { position: relative; }
+      /* WI-39501 put the loop control at this row's right edge, absolutely
+         positioned. It is a real FLEX MEMBER now (owner, 2026-09-07: "fit it
+         all on one line"): the stepper, the verdict and the pause controls
+         share one line and negotiate width, which is what let the pot rail's
+         whole extra row go away. The stepper keeps its 720px ceiling but may
+         shrink; the control cluster takes what is left and right-aligns. */
+      .pc-learning__stagerow { display: flex; align-items: center; gap: 14px; }
+      .pc-learning__stages { flex: 0 1 720px; min-width: 0; }
       /* Paused learning loop = the header's EXISTING dormant vocabulary applied
          loop-wide, keyed off the control's state class via :has() so the
          LearningTab hotspot itself needs no extra sync hook. */

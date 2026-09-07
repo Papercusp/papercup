@@ -33,18 +33,19 @@ This extends the existing datatype-registry pattern: definitions are local, vers
 - A published `id@version` is immutable. An identical `classes:define` replay is a no-op; changed contract bytes require a new semantic version.
 - Provider conformance is derived evidence. Callers never set a `conformance_status` field. `classes:validate` reads the actual projected-tool schemas and their registry revision, then records the result.
 - Every validation attempt is retained in `capability_class_conformance_runs`. A failed run cannot create or replace a provider binding.
+- The database FK requires a binding to reference a passing run for the same workspace, class version, provider package, and provider version. The binding does not duplicate `verb_bindings`; reads derive that map from the attested run.
 - `classes:get` reports providers by joining the binding to its passing run. Treat that join—not a provider claim or a copied emitter list—as the source of truth.
 - Publisher/review status, provider conformance, and runtime authorization are separate decisions. Passing conformance does not grant a principal permission to call the provider.
 
 ## Storage model
 
-Migration `1140-capability-class-registry.sql` creates four workspace-scoped tables:
+Migration `1140-capability-class-registry.sql` creates four workspace-scoped tables. Migration `1141-enforce-capability-class-passing-bindings.sql` forward-hardens the provider/run relationship after 1140: it adds the exact-identity passing-run FK and removes the duplicated verb map.
 
 | Table | Meaning |
 | --- | --- |
 | `capability_class_registry` | Immutable `id@version` definition, discovery fields, lifecycle/review state, and optional behavioral-suite reference. |
 | `capability_class_conformance_runs` | Append-only structural result, exact registry revision, verb mapping, report, and future behavioral status. |
-| `capability_class_provider_bindings` | Active provider implementation backed by one passing conformance run. |
+| `capability_class_provider_bindings` | Active provider implementation backed by one matching passing conformance run. |
 | `pot_capability_class_bindings` | Referentially safe remembered provider choice for a pot; P-017 owns selection policy. |
 
 All four tables use workspace RLS. Approved class definitions also have the global read policy used by reviewed registry content.
@@ -100,9 +101,10 @@ P-016 proves structural compatibility only. A future behavioral runner may advan
 
 ## Code and verification map
 
-- Migration: `libs/papercusp/libs/db/sql/1140-capability-class-registry.sql`
+- Base migration: `libs/papercusp/libs/db/sql/1140-capability-class-registry.sql`
+- Passing-run forward guard: `libs/papercusp/libs/db/sql/1141-enforce-capability-class-passing-bindings.sql`
 - Store and pure conformance logic: `packages/operator-core/lib/capability-class-registry-store.ts`
 - Tool handlers: `packages/operator-core/lib/agent-tools/classes/`
 - Pure guard: `capability-class-registry-store.test.ts`
-- Real-Postgres migration/store guard: `capability-class-registry.integration.test.ts`
+- Real-Postgres 1140→1141/store guard: `capability-class-registry.integration.test.ts`
 - Projected-tool registration guard: `agent-tools/tool-alias-contract.test.ts`

@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "specEvidenceBindings": [
+    1456,
+    1457,
+    1458,
+    1459,
+    1460
+  ],
+  "adequacyCurrent": [
+    {
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+      "sourceFingerprint": "f6b84a98f1a771c63a7ca375777db42afbe2546dfa8d1c38564f4e84260d1234",
+      "testFingerprint": "ac7acf7f7e3a3ad3806b4c9942f0f94ffd10c4863a70b1df2ec7751e3fa03e7b",
+      "fixtureFingerprint": "ac7acf7f7e3a3ad3806b4c9942f0f94ffd10c4863a70b1df2ec7751e3fa03e7b",
+      "environmentFingerprint": "linux-x86_64:claude-agent-sdk-0.3.263:pg-current-source"
+    },
+    {
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/su-session-commands.integration.test.ts",
+      "sourceFingerprint": "f6b84a98f1a771c63a7ca375777db42afbe2546dfa8d1c38564f4e84260d1234",
+      "testFingerprint": "70c18bfb2c81779b081e9591d093056a1978fda88a0a15c97c389e807002bbd1",
+      "fixtureFingerprint": "70c18bfb2c81779b081e9591d093056a1978fda88a0a15c97c389e807002bbd1",
+      "environmentFingerprint": "linux-x86_64:claude-agent-sdk-0.3.263:pg-current-source"
+    },
+    {
+      "evidenceKind": "counterexample",
+      "evidenceRef": "packages/operator-core/lib/su-session-commands.integration.test.ts#targeted-counterexamples",
+      "sourceFingerprint": "f6b84a98f1a771c63a7ca375777db42afbe2546dfa8d1c38564f4e84260d1234",
+      "testFingerprint": "70c18bfb2c81779b081e9591d093056a1978fda88a0a15c97c389e807002bbd1",
+      "fixtureFingerprint": "70c18bfb2c81779b081e9591d093056a1978fda88a0a15c97c389e807002bbd1",
+      "environmentFingerprint": "linux-x86_64:claude-agent-sdk-0.3.263:pg-current-source"
+    },
+    {
+      "evidenceKind": "counterexample",
+      "evidenceRef": "packages/operator-core/lib/su-session-claude-engine.test.ts#targeted-counterexamples",
+      "sourceFingerprint": "f6b84a98f1a771c63a7ca375777db42afbe2546dfa8d1c38564f4e84260d1234",
+      "testFingerprint": "e92e5fca3ddc6bb663ebebe3be7f84c8aff244bab241dc290399555ec50774d7",
+      "fixtureFingerprint": "e92e5fca3ddc6bb663ebebe3be7f84c8aff244bab241dc290399555ec50774d7",
+      "environmentFingerprint": "linux-x86_64:claude-agent-sdk-0.3.263:pg-current-source"
+    }
+  ],
+  "adequacyVerdict": {
+    "pass": 3,
+    "fail": 0,
+    "unknown": 0,
+    "floors": {
+      "AUTO-BAR-R-01-P-003": "l3",
+      "AUTO-BAR-R-02-P-003": "l4",
+      "AUTO-BAR-R-03-P-003": "l4"
+    },
+    "evaluatedAt": "2026-09-07T15:00:00Z",
+    "cardsEmitted": false
+  },
+  "pending": "Emit the three complete scorecardDraft objects, then obtain independent grading-integrity audits before closing P-003. Full drafts were retrieved to the work-item checkpoint's scratch-reference.",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "WI-10000425",
+  "planItem": "P-003",
+  "scope": {
+    "backend": "claude",
+    "engineSdk": "@anthropic-ai/claude-agent-sdk@0.3.263",
+    "platform": "Linux x86_64",
+    "plane": "current source / working tree",
+    "publicRelease": false
+  },
+  "head": "a4c49dabc86f50dbeef838e30b56a78140ab80a7",
+  "sourceFingerprint": "f6b84a98f1a771c63a7ca375777db42afbe2546dfa8d1c38564f4e84260d1234",
+  "sourceFiles": {
+    "packages/operator-core/lib/su-session-claude-engine.ts": "4cc07116dba940dbf25854cb685f8baa22fcc845684d050ccbc8d489db4c337a",
+    "packages/operator-core/lib/su-session-attached-launch.ts": "4be06028dd4afe6b0aea28b1bf9a5714670bf0f652ca9daf8629bd2622a9541c",
+    "packages/operator-core/lib/su-session-claude-adapter.ts": "0730bd40c5a17169198cc5e59223168236b926737fe23d2f7ee8820051478345",
+    "packages/operator-core/lib/su-session-host.ts": "b4fa229407b4d4243240dc52c08126b3890954fff750c349409356f813365bb5",
+    "packages/operator-core/lib/su-session-commands.ts": "f4a6990ce23928813a6efb29d0fc2c645c0ca73ece06d3339d3f933680eb6ea4",
+    "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts": "40dc63a010780d09466fa46a37e7c28fc70d88970a07166d043559e3ae247a66",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts": "a0c8d268c2fd2ee457fa786fc69c97e15a7e40b6b419fad782e49a3e14b446ed",
+    "packages/operator-core/lib/launch-agent.ts": "1b52939dbeda093259696f63847789d975f230e06e8c3908259009e754aec68b",
+    "apps/operator/scripts/psu-launcher.mjs": "f8df4ea1447d1dc033ec391d30e41329497c944b614eb101e15cbb8a84478eac",
+    "apps/tui/src/su_session.rs": "fea0dab382518e4fb1ee9f5eb7421c4cff339db200e41261d9176154345242ec",
+    "apps/tui/src/main.rs": "122e260db871e22287b9787bc6a92c5ba83922cf53581257af96b3f4ad5f85d4",
+    "packages/operator-core/vitest.integration.config.ts": "2aa767c32f8edb3eb836197bdbc67cbd4e25addf178ca92956f105bd50446327"
+  },
+  "testFiles": {
+    "packages/operator-core/lib/su-session-commands.integration.test.ts": "70c18bfb2c81779b081e9591d093056a1978fda88a0a15c97c389e807002bbd1",
+    "packages/operator-core/lib/su-session-attached-live.integration.test.ts": "ac7acf7f7e3a3ad3806b4c9942f0f94ffd10c4863a70b1df2ec7751e3fa03e7b",
+    "packages/operator-core/lib/su-session-claude-engine.test.ts": "e92e5fca3ddc6bb663ebebe3be7f84c8aff244bab241dc290399555ec50774d7"
+  },
+  "runEvidence": {
+    "live": [
+      "{\"acceptance\":\"attached-su-identity\",\"workspaceId\":\"papercusp-workspace\",\"harness\":\"papercusp\",\"chatId\":\"1110206f-0720-4aaf-96d8-1d10dd8bb16c\",\"ownerId\":\"su-aa521551-c703-47b8-868f-b3b08e0730b3\",\"nativeSessionId\":\"49b889f5-36a2-469c-a802-44738f2f857b\",\"toolIdentity\":true,\"reply\":true}",
+      " Test Files  1 passed (1)",
+      "      Tests  1 passed (1)",
+      "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=26ccfc018e uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-07T14:46:46.648Z skippedTests=0"
+    ],
+    "pg": [
+      " Test Files  1 passed (1)",
+      "      Tests  5 passed (5)",
+      "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=26ccfc018e uncommittedPaths=0/1 provenance=unknown startedAt=2026-09-07T14:53:23.916Z skippedTests=0"
+    ],
+    "unit": [
+      " Test Files  4 passed (4)",
+      "      Tests  37 passed (37)",
+      " Test Files  1 failed (1)",
+      "      Tests  5 skipped (5)",
+      "TEST_FILE_RESULT requested=5 executed=5 matched=5 status=failed head=26ccfc018e uncommittedPaths=2/5 provenance=stamped startedAt=2026-09-07T14:45:27.071Z skippedTests=5"
+    ],
+    "launch": [
+      " Test Files  3 passed (3)",
+      "      Tests  52 passed (52)",
+      " Test Files  1 failed (1)",
+      "      Tests  1 failed | 3 passed (4)",
+      "TEST_FILE_RESULT requested=4 executed=4 matched=4 status=failed head=26ccfc018e uncommittedPaths=2/4 provenance=stamped startedAt=2026-09-07T14:22:35.339Z skippedTests=0"
+    ],
+    "rust": [
+      "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 878 filtered out; finished in 0.01s"
+    ],
+    "typecheck": [
+      "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean at=2026-09-07T14:49:20.284Z head=26ccfc018e"
+    ]
+  },
+  "commands": {
+    "live": "PAPERCUSP_REAL_ATTACHED_ENGINE=1 PAPERCUSP_WORKSPACE_ID=papercusp-workspace npm run test:file -- packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+    "pg": "npm run test:file -- packages/operator-core/lib/su-session-commands.integration.test.ts",
+    "unit": "npm run test:file -- packages/operator-core/lib/su-session-claude-engine.test.ts packages/operator-core/lib/su-session-attached-launch.test.ts packages/operator-core/lib/su-session-host.test.ts packages/operator-core/lib/detached-imports/index.test.ts",
+    "rust": "cd apps/tui && ../../scripts/pc-heavy.sh cargo test su_session -- --nocapture"
+  },
+  "acceptance": [
+    {
+      "specId": "AUTO-BAR-R-01-P-003",
+      "revision": 6,
+      "proof": "Production launch-su creates the shared host with an SDK process, not a PTY/pane. Live test checks real task-ledger argv for structured input/output and a persona file, ready executor/stream, correlated reply, task teardown and archived fixture.",
+      "test": "packages/operator-core/lib/su-session-attached-live.integration.test.ts"
+    },
+    {
+      "specId": "AUTO-BAR-R-02-P-003",
+      "revision": 6,
+      "proof": "Real PostgreSQL tests assert commit before HTTP 202, exact Unicode text, concurrent reservation of one receipt, crash/restart around dispatch, no duplicate execution and uncertain finish handling. These are targeted counterexamples at the transaction/dispatch boundary.",
+      "test": "packages/operator-core/lib/su-session-commands.integration.test.ts"
+    },
+    {
+      "specId": "AUTO-BAR-R-03-P-003",
+      "revision": 6,
+      "proof": "Live engine's real SU tool result contains its assigned ownerId and workspace. Scripted protocol peers inject foreign session IDs, wrong project cwd, and missing SU MCP connection; each must fail startup without a ready event and close the peer.",
+      "test": "packages/operator-core/lib/su-session-attached-live.integration.test.ts",
+      "counterexamples": "packages/operator-core/lib/su-session-claude-engine.test.ts"
+    }
+  ],
+  "interpretation": [
+    "Live run: 1/1 passed, no skips. The fixture is archived and tracked child teardown is asserted.",
+    "Unit group in the final regression invocation: 37/37 passed. The SAME invocation's PG group timed out in beforeAll, so the whole invocation failed and 5 PG tests were skipped. The unchanged dedicated PG rerun then passed 5/5. Do not report the mixed invocation as wholly green.",
+    "The earlier expanded run had 52 unit assertions pass and one obsolete deferred-launch expectation fail in an adapter test. The expectation was updated, then all 13 backend-adapter tests passed in the contract run; no current source relies on native deferred launch for ordinary PUI create.",
+    "The PG rerun's HEAD changed due to git-sync (26ccfc018e to a4c49dabc8); its named test stayed clean. Source file hashes above identify the tested implementation rather than equating global HEAD stability with file stability.",
+    "Scoped typecheck was clean at 14:49:20Z. Rust su_session filter passed 23 assertions. Only the selected test scope is claimed.",
+    "EI-22614046794182414 fixed the missing integration detached-import drain; the final live test has no teardown warnings. EI-22614713938386539 retains the unconfirmed test-DB setup timeout investigation; no root cause or durable fix is claimed for that transient.",
+    "P-004 recovery/rematerialization and the remaining full-plan work are not completed here. Codex/OMP attached transports remain explicit unavailable responses until their advertised-support wave; this is first-engine acceptance, not the public release."
+  ],
+  "fingerprintMethod": "SHA256 of sorted source path + NUL + each file SHA256 + newline; see sourceFiles. Test fingerprints are each test file's SHA256."
+}

@@ -16,6 +16,7 @@ import { capabilityContentVersion } from './capability-sampler';
 import { getDreamRun, listDreamRuns, type DreamRun } from './dream-run-store';
 import {
   CAPABILITY_PRIOR_KINDS,
+  CAPABILITY_REVIEW_VERSION,
   capabilityProposalHash,
   type CapabilityReviewPrior,
   type CapabilityReviewSearch,
@@ -73,6 +74,7 @@ function prior(
     contentHash: capabilityHash(text),
     sourceHash: sourceHash ?? capabilityHash(fullText),
     candidateHash: null,
+    evidenceHash: null,
   };
 }
 function planPrior(scope: Scope, row: PlanRow): CapabilityReviewPrior {
@@ -97,6 +99,12 @@ function runPrior(scope: Scope, run: DreamRun): CapabilityReviewPrior {
   const insight = run.outcome?.insight as Record<string, unknown> | undefined;
   const parsed = CapabilityProposalSchema.safeParse(insight?.capability ?? run.outcome?.capability);
   if (parsed.success) result.candidateHash = capabilityProposalHash(parsed.data);
+  if (
+    run.review?.schemaVersion === CAPABILITY_REVIEW_VERSION &&
+    typeof run.review.evidenceHash === 'string' &&
+    /^[a-f0-9]{64}$/.test(run.review.evidenceHash)
+  )
+    result.evidenceHash = run.review.evidenceHash;
   return result;
 }
 function packetPriors(packet: CapabilityPacket): CapabilityReviewPrior[] {

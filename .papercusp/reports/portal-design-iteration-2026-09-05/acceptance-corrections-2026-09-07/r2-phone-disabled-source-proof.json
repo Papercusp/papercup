@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-07T15:02:00Z",
+  "author": "su-872eeb6b-06e7-4f37-84a6-b3955700a650",
+  "workItem": "WI-2146962",
+  "plan": "portal-design-iteration-2026-09-05",
+  "criterion": "r-2",
+  "governingDecision": "portal-design-iteration-2026-09-05#D-013",
+
+  "supersedes": {
+    "artifact": "state-proofs.mjs phone block (lines 10-14) and additional-states.json .phone",
+    "why": "Both encode the D-011 reasoning that D-013 OVERTURNED. They assert the disabled witness is unobtainable because 'Acceptance forbids calling, sending, launching', and cite phone-app/packages/ui/src/index.tsx. D-013 established that the no-launch/no-call clause is a CONSTRAINT ON THE METHOD, not proof of unreachability: the matrix asks for a source decision plus a visible explanation, which is exactly what this artifact supplies. additional-states.json .phone.disabled is [] and phone-disabled.png (sha256 8fac1449...) shows the ENABLED 'Book a call / Create invite' form, so neither is r-2 evidence for the disabled case."
+  },
+
+  "method": {
+    "prescribedBy": "acceptance-matrix-2026-09-07.json stateCases[1]",
+    "verbatim": "read source decision and visible unavailable explanation; no desktop launch or call",
+    "complied": "No call was placed, no desktop launched, no send/resolve performed, and no state was injected or faked. This is a pure source read.",
+    "corroboratingCase": "stateCases[5] — 'compare displayed claim to its source fields and read disabled/reconciling/unavailable explanations'"
+  },
+
+  "sourceDecision": {
+    "repo": "portal",
+    "path": "packages/ui/src/voice-session.tsx",
+    "repoQualifiedPath": "portal/packages/ui/src/voice-session.tsx",
+    "function": "portalVoiceCapture",
+    "lines": "122-129",
+    "gitBlobSha": "8ab1bee7f63255550619bea0572f01fb954dc6ba",
+    "workingTreeSha256": "c935f250f3535a8224a3129bad803998a72ea75b684c466461955335cfbf83b8",
+    "returns": "{ can: boolean; reason: string | null }",
+    "note": "This is a literal source decision returning a machine-readable availability verdict plus a human reason. No live call is required to read it."
+  },
+
+  "releaseIndependence": {
+    "claim": "This evidence is valid for BOTH the previously graded subject and the rebuilt one.",
+    "measured": "git rev-parse '88afe6a7:packages/ui/src/voice-session.tsx' == git rev-parse '6090a4d6:packages/ui/src/voice-session.tsx' == 8ab1bee7f63255550619bea0572f01fb954dc6ba",
+    "consequence": "The 4-file drift set (package.json, package-lock.json, tests/build-standalone.test.ts, scripts/build-standalone.mjs) contains no UI source, so the Phone/voice availability logic is byte-identical across the two revisions. A rebuild cannot stale this artifact.",
+    "recheck": "cd portal && git rev-parse 88afe6a7:packages/ui/src/voice-session.tsx 6090a4d6:packages/ui/src/voice-session.tsx"
+  },
+
+  "unavailableBranches": [
+    { "condition": "state.serviceUnavailable || state.phase === 'error'", "captureReason": "Voice is unavailable", "visibleStatus": "Voice service unavailable — retry, or type instead", "remedyNamed": true },
+    { "condition": "state.micUnavailable", "captureReason": "The microphone is unavailable", "visibleStatus": "Microphone unavailable — allow access, or type instead", "remedyNamed": true },
+    { "condition": "state.phase === 'reconnecting'", "captureReason": "Voice is reconnecting", "visibleStatus": "Voice interrupted — reconnecting…", "remedyNamed": false },
+    { "condition": "state.phase === 'disconnected'", "captureReason": "Voice is disconnected", "visibleStatus": "Voice disconnected — retry", "remedyNamed": true },
+    { "condition": "state.phase !== 'live' (connecting / off)", "captureReason": "Voice is not connected yet", "visibleStatus": "Connecting voice… | Starting voice… | Voice off", "remedyNamed": false },
+    { "condition": "otherwise", "captureReason": null, "visibleStatus": "Ready — hold to talk", "enabled": true }
+  ],
+
+  "additionalStatusOnlyBranch": {
+    "condition": "state.playbackBlocked",
+    "visibleStatus": "Papercup's voice is blocked by this browser — press Enable audio",
+    "note": "Explains a blocked OUTPUT without disabling INPUT capture — the treatment matches the real actionable state rather than over-disabling."
+  },
+
+  "visibleExplanationSurfaces": [
+    { "line": 322, "code": "const capture = portalVoiceCapture(state);", "role": "the decision is read once and drives every surface below" },
+    { "line": 327, "code": "<span role=\"status\" aria-live=\"polite\">{portalVoiceStatus(state)}</span>", "role": "VISIBLE status line, announced to assistive tech" },
+    { "line": 347, "code": "aria-label={capture.can ? \"Hold to talk\" : `Hold to talk — ${capture.reason}`}", "role": "accessible name carries the state-specific reason" },
+    { "line": 348, "code": "title={capture.reason ?? undefined}", "role": "hover tooltip carries the reason" },
+    { "line": 349, "code": "disabled={!capture.can}", "role": "the control is GENUINELY disabled by the same decision, so the treatment cannot drift from the state" }
+  ],
+
+  "designIntentInSource": {
+    "lines": "340-344",
+    "verbatim": "Offered-but-disabled with an explanatory title, the same choice workspaces.tsx argues for: removing the control entirely reads as \"this surface has no push-to-talk\", where a quiet disabled one with its precondition teaches what has to be true. What it must NOT do is stay live and swallow the press.",
+    "why_it_matters": "r-2 asks whether disabled treatments describe the real actionable state. The source states that requirement as its own design rule and implements it: one decision function drives the disabled attribute, the visible status, the tooltip and the accessible name together."
+  },
+
+  "verdictForR2Phone": {
+    "assessment": "healthy",
+    "reasoning": "The Phone/voice surface's disabled state is decided in one auditable source function whose every unavailable branch returns a distinct reason, and that reason reaches the viewer through a visible aria-live status line, a tooltip and the control's accessible name, while the control is genuinely disabled by the same verdict. Four of six branches also name the remedy. This satisfies stateCases[1] by its own prescribed method.",
+    "scope": "This artifact proves the PHONE half of the 'workspaces-and-phone' surface group. The WORKSPACES half was already accepted by the prior grader ('disabled Workspace actions with state-specific explanations'), and workspace-disabled-status.png is the standing capture for it."
+  },
+
+  "processGapDisposition": {
+    "claim": "The second r-2 gap named by the grader (the Process capture froze the loading overlay) was ALREADY CLOSED by evidence produced after the grade was emitted.",
+    "evidence": "preference-fixed-state-proofs.json .process[] — both themes record initialText 'Loading Process manager…' then settledAt with result:'settled', loading:false, and real panel content (MEMORY 19.6 GB; ENROLLED 124 / SCANNED 728 / STRANDED 0 / UNACCOUNTED 3; 'Ledger + kernel scan agree'), with captures preference-fixed-process-settled-{light,dark}.png and their sha256.",
+    "timing": "Captured 2026-09-07T05:15:55Z-05:16:16Z. The independent scorecard EI-22577547772880485 was emitted 05:00:27Z, ~15 minutes EARLIER, so the grader could not have seen it.",
+    "stillOwed": "These proofs describe release Jk8vf6ox...051125119. They are re-captured against the rebuilt release before the fresh grade so the whole evidence set describes one subject."
+  }
+}

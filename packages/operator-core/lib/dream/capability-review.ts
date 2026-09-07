@@ -12,6 +12,7 @@ import {
 } from './capability-pass';
 import { verifyCapabilityPacket, type BuildCapabilityPacketInput } from './capability-packets';
 import type { CapabilitySelection } from './capability-sampler';
+import { capabilityContentVersion } from './capability-sampler';
 import { resolveDreamReviewConfig, type DreamReviewConfig } from './dream-config';
 import type { DreamReviewUsage } from './dream-review';
 
@@ -31,6 +32,7 @@ const PriorSchema = z
     sourceHash: hash,
     // Only a source-owned, freshly resolved identity can take the cheap duplicate path.
     candidateHash: hash.nullable(),
+    evidenceHash: hash.nullable(),
   })
   .strict();
 export type CapabilityReviewPrior = z.infer<typeof PriorSchema>;
@@ -110,6 +112,7 @@ export interface CapabilityReviewCoverage {
 export interface CapabilityReviewResult {
   schemaVersion: typeof CAPABILITY_REVIEW_VERSION;
   candidateHash: string;
+  evidenceHash: string;
   verdict: 'accept' | 'reject' | 'unverified';
   reason: string;
   note: string;
@@ -173,6 +176,19 @@ function samePrior(a: unknown, b: CapabilityReviewPrior): boolean {
 export function capabilityProposalHash(candidate: CapabilityProposal): string {
   return capabilityHash(JSON.stringify(CapabilityProposalSchema.parse(candidate)));
 }
+export function capabilityReviewEvidenceHash(selection: CapabilitySelection): string {
+  return capabilityHash(
+    JSON.stringify({
+      scope: selection.a.packet.scope,
+      units: [selection.a, selection.b, ...(selection.c ? [selection.c.entry] : [])].map((entry) => ({
+        id: entry.packet.unit.id,
+        unitHash: entry.packet.unitHash,
+        sources: capabilityContentVersion(entry.packet),
+      })),
+      thirdRole: selection.c?.declaration ?? null,
+    }),
+  );
+}
 
 /** All three facets, including both primary units, drive independent bounded retrieval. */
 export function capabilityReviewQueries(
@@ -234,7 +250,7 @@ export async function runCapabilityDreamReview(
   options: RunCapabilityReviewOptions,
   deps: CapabilityReviewDeps = defaultDeps,
 ): Promise<CapabilityReviewResult> {
-  const config = resolveDreamReviewConfig(options.config);
+  const config = resolveDreamReviewConfig({ maxOutputTokens: 4_096, ...options.config });
   const packets = validateCapabilityDreamSelection(options.selection);
   const candidate = CapabilityProposalSchema.parse(options.candidate);
   const admitted = parseCapabilityDreamPayload(
@@ -259,6 +275,7 @@ export async function runCapabilityDreamReview(
   const result: CapabilityReviewResult = {
     schemaVersion: CAPABILITY_REVIEW_VERSION,
     candidateHash: capabilityProposalHash(candidate),
+    evidenceHash: capabilityReviewEvidenceHash(options.selection),
     verdict: 'unverified',
     reason: 'not-reviewed',
     note: 'Review has not completed.',
@@ -311,10 +328,18 @@ export async function runCapabilityDreamReview(
     const queries = capabilityReviewQueries(candidate, options.selection);
     const searches = await Promise.allSettled(
       queries.map(async ({ facet, query }) => {
-        const answer = await options.sources.search(
-          { facet, query, scope, kinds: CAPABILITY_PRIOR_KINDS, limit: 8 },
-          options.signal,
-        );
+        const answer = await options.sources
+          .search({ facet, query, scope, kinds: CAPABILITY_PRIOR_KINDS, limit: 8 }, options.signal)
+          .catch(
+            (error): CapabilityReviewSearchResult => ({
+              scope,
+              kinds: CAPABILITY_PRIOR_KINDS,
+              status: 'unavailable',
+              matches: [],
+              truncated: false,
+              note: (error instanceof Error ? error.message : String(error)).slice(0, 600),
+            }),
+          );
         const { matches, ...searchCoverage } = answer;
         coverage.searches.push({ ...searchCoverage, facet, query, refs: matches.map((p) => p.ref) });
         if (!sameScope(answer.scope, scope) || CAPABILITY_PRIOR_KINDS.some((kind) => !answer.kinds.includes(kind)))
@@ -353,7 +378,9 @@ export async function runCapabilityDreamReview(
       }),
     );
     result.priorMatches = priors;
-    const exact = priors.find((p) => p.candidateHash === result.candidateHash);
+    const exact = priors.find(
+      (p) => p.candidateHash === result.candidateHash && p.evidenceHash === result.evidenceHash,
+    );
     if (exact) return finish('reject', 'duplicate', 'Exact candidate content already recorded at ' + exact.ref);
     if (!priors.length)
       return unavailable('empty-search', 'No supporting prior sources were retrieved; global novelty remains unknown.');
@@ -388,7 +415,7 @@ export async function runCapabilityDreamReview(
         system: SYSTEM,
         messages: [{ role: 'user', content: user }],
         responseFormat: 'json',
-        maxTokens: config.maxOutputTokens,
+        maxTokens: phase.endsWith('-only') ? Math.min(config.maxOutputTokens, 1_024) : config.maxOutputTokens,
       },
     });
     result.usage.costUsd += response.costUsd;
