@@ -45,7 +45,7 @@ function json(result: unknown): Record<string, any> {
   return JSON.parse(text(result)) as Record<string, any>;
 }
 
-describe('SU-S31 v5 — executable stateful world and non-gating experiment metrics', () => {
+describe('SU-S31 v6 — executable stateful world and non-gating experiment metrics', () => {
   it('keeps every pre-registered metric observable as a warning', () => {
     const violations = [
       ...ASSERT_NO_REDERIVATION.eval(metricHitRun),
@@ -84,7 +84,7 @@ describe('SU-S31 v5 — executable stateful world and non-gating experiment metr
 
   it('bumps the experiment version and retains the real cost gate', () => {
     const scenario = makeAsymmetryArm('su-S31-test-control', HANDOFF_CONTROL);
-    expect(scenario.version).toBe(5);
+    expect(scenario.version).toBe(6);
     expect(scenario.simUserContext).toBe(SHARED_SIM_USER_CONTEXT);
     expect(scenario.asserts).toContainEqual({ kind: 'cost_under', usd: 2.0 });
   });
@@ -97,6 +97,13 @@ describe('SU-S31 v5 — executable stateful world and non-gating experiment metr
     expect(scenario.description).toMatch(/scopeDiscipline error or any other judge error/);
     expect(scenario.description).toMatch(/Reserve judge errors for actual fabrication/);
     expect(SHARED_SIM_USER_CONTEXT).not.toMatch(/warning-only|judge-error|judge errors|pre-2026-07-01|archived log/i);
+  });
+
+  it('gives the sim-user stable task identifiers without planting asymmetry facts', () => {
+    expect(SHARED_SIM_USER_CONTEXT).toMatch(/WI-7301/);
+    expect(SHARED_SIM_USER_CONTEXT).toMatch(/reconciler-idempotency-2026-07-27/);
+    expect(SHARED_SIM_USER_CONTEXT).toMatch(/P-003/);
+    expect(SHARED_SIM_USER_CONTEXT).not.toMatch(/harness, external_id|1,?204|pre-?2026-07-01|archived[- ]log/i);
   });
 
   it('gives every matrix repeat a fresh mutable world', async () => {
