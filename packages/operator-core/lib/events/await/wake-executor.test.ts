@@ -56,7 +56,7 @@ beforeAll(() => {
 });
 
 describe('bounded quota recovery contract (measured-agent-productivity P-004)', () => {
-  const host = {
+  const host: Parameters<typeof decideQuotaWakeRecovery>[0]['host'] = {
     sock: '/tmp/quota.sock',
     ownerId: 'su-quota',
     bridgeTty: false,
@@ -73,7 +73,7 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
       accountMode: 'auto',
     })).toEqual({ eligible: true, reason: 'eligible', operationId: '901' });
 
-    const mutations = [
+    const mutations: Array<[typeof host, ReturnType<typeof decideQuotaWakeRecovery>['reason']]> = [
       [{ ...host, ownerId: 'su-other' }, 'wrong-owner'],
       [{ ...host, quotaBlocked: false }, 'not-quota-blocked'],
       [{ ...host, bridgeTty: true }, 'not-headless'],
@@ -129,7 +129,7 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
       subscriberId: ownerId,
       wakeHandle: advHandle({ advSessionId: 901, agent: 'codex', pid: 1234 }),
     });
-    const confirming = vi.fn(async () => ({
+    const confirming = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(async () => ({
       ok: true,
       confirmation: 'acked' as const,
       reason: 'duplicate-delivery-id',
@@ -390,7 +390,7 @@ describe('executeWake — delivery-time fleet claim-release freshness (EI-215553
 
   it('fresh unclaimed item still follows the normal wake ladder', async () => {
     const findPty = vi.fn(() => ({ id: 'pty-fresh' }));
-    const write = vi.fn(() => true);
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
     const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42197', assignee: null })) as never;
     const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
 
