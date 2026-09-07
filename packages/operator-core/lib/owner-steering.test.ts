@@ -26,6 +26,7 @@ import {
   effectiveCadenceFloorSec,
   effectiveMaxBees,
   idleActivityEnabled,
+  idleActivityAllowed,
   isAutoScaleOutEnabled,
   hasActiveThrottle,
   IDLE_ACTIVITY_KINDS,
@@ -428,6 +429,21 @@ describe('throttle accessors (P-006)', () => {
     expect(idleActivityEnabled({ ...base, idleActivities: { gym: false } }, 'gym')).toBe(false);
     expect(idleActivityEnabled({ ...base, idleActivities: { gym: false } }, 'scout')).toBe(true);
     expect(idleActivityEnabled({ ...base, idleActivities: { scout: true } }, 'scout')).toBe(true);
+  });
+
+  it('AUTO-REQ-M-004-P-005-default-off: Dream requires explicit opt-in while other activities keep their defaults', () => {
+    expect(idleActivityEnabled(base, 'dream')).toBe(false);
+    expect(idleActivityEnabled({ ...base, idleActivities: {} }, 'dream')).toBe(false);
+    expect(idleActivityEnabled({ ...base, idleActivities: { dream: false } }, 'dream')).toBe(false);
+    expect(idleActivityEnabled({ ...base, idleActivities: { dream: true } }, 'dream')).toBe(true);
+    expect(idleActivityEnabled(base, 'gym')).toBe(true);
+  });
+
+  it('AUTO-REQ-M-004-P-005-counterexample: unavailable steering cannot authorize automatic Dream spend', async () => {
+    listHiveSettings.mockRejectedValue(new Error('settings unavailable'));
+    expect(await idleActivityAllowed('ws', 'dream', 'pot')).toBe(false);
+    // Calibrated control: the inherited fail-open behavior remains reachable for Scout.
+    expect(await idleActivityAllowed('ws', 'scout', 'pot')).toBe(true);
   });
 
   it('plan-review is a registered idle-activity kind that gates the Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20 D-003 #2)', () => {

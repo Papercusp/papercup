@@ -235,9 +235,7 @@ async function hostedRerankDecision(): Promise<HostedRerankDecision> {
     try {
       const { readCredentials } = await import('../../credentials');
       const creds = await readCredentials();
-      const decision = creds.zeroentropy_api_key
-        ? { apiKey: creds.zeroentropy_api_key }
-        : envHostedRerankDecision();
+      const decision = creds.zeroentropy_api_key ? { apiKey: creds.zeroentropy_api_key } : envHostedRerankDecision();
       hostedRerankDecisionCache = {
         decision,
         expiresAtMs: Date.now() + PROSE_RERANK_ENGINE_DECISION_TTL_MS,
@@ -317,9 +315,7 @@ export function _resetLocalRerankScorerForTests(): void {
  * FLAGS.LOCAL_RERANK is OFF and no hosted key is configured, which is exactly
  * the pre-P-007 dark seam this flag can restore.
  */
-type ResolvedRerankEngine =
-  | { engine: 'zeroentropy'; apiKey: string }
-  | { engine: 'local'; scorer: RerankScoreFn };
+type ResolvedRerankEngine = { engine: 'zeroentropy'; apiKey: string } | { engine: 'local'; scorer: RerankScoreFn };
 
 /**
  * Is the local engine allowed? Read per query, never latched at module load:
@@ -332,10 +328,7 @@ type ResolvedRerankEngine =
  */
 async function localRerankEnabled(): Promise<boolean> {
   try {
-    const [{ FLAGS }, { getFlag }] = await Promise.all([
-      import('@papercusp/flags'),
-      import('@papercusp/flags/server'),
-    ]);
+    const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
     return await getFlag(FLAGS.LOCAL_RERANK, 'system:search-rerank');
   } catch {
     return true;
@@ -466,9 +459,12 @@ export async function rerankRows<T>(
   }
 
   try {
-    const resolved = opts.engine === 'local'
-      ? (await localRerankEnabled()) ? { engine: 'local' as const, scorer: await localRerankScorer() } : null
-      : await resolveProseRerankEngine();
+    const resolved =
+      opts.engine === 'local'
+        ? (await localRerankEnabled())
+          ? { engine: 'local' as const, scorer: await localRerankScorer() }
+          : null
+        : await resolveProseRerankEngine();
     // Local engine flagged off and no hosted key → the pre-P-007 dark seam.
     if (!resolved) {
       opts.onOutcome?.({ attempted: false, reason: 'no-engine' });
@@ -629,11 +625,7 @@ export async function rerankProseHits(
  * gets genuine over-fetch (the reranker can pull a buried hit INTO the page).
  * Same fail-safe contract throughout: any failure degrades to retrieval order.
  */
-export async function rerankPageHead(
-  query: string,
-  hits: SearchHit[],
-  limit: number,
-): Promise<SearchHit[]> {
+export async function rerankPageHead(query: string, hits: SearchHit[], limit: number): Promise<SearchHit[]> {
   if (hits.length <= RERANK_MAX_CANDIDATES) return rerankProseHits(query, hits, limit);
   const head = await rerankProseHits(query, hits.slice(0, RERANK_MAX_CANDIDATES), RERANK_MAX_CANDIDATES);
   return [...head, ...hits.slice(RERANK_MAX_CANDIDATES)].slice(0, limit);

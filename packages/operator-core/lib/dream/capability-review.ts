@@ -162,18 +162,18 @@ const defaultDeps: CapabilityReviewDeps = {
 
 /** Dream uses the shared local cross-encoder; a configured hosted key cannot add unmetered spend. */
 export async function rerankCapabilityPriors(query: string, priors: CapabilityReviewPrior[]) {
-    let outcome: RerankStageOutcome = { attempted: false, reason: 'no-outcome' };
-    const ranked = await rerankRows(query, priors, {
-      engine: 'local',
-      limit: 8,
-      id: (p) => p.ref,
-      text: (p) => p.text,
-      rerankTimeoutMs: 5_000,
-      onOutcome: (value) => {
-        outcome = value;
-      },
-    });
-    return { priors: ranked, outcome };
+  let outcome: RerankStageOutcome = { attempted: false, reason: 'no-outcome' };
+  const ranked = await rerankRows(query, priors, {
+    engine: 'local',
+    limit: 8,
+    id: (p) => p.ref,
+    text: (p) => p.text,
+    rerankTimeoutMs: 5_000,
+    onOutcome: (value) => {
+      outcome = value;
+    },
+  });
+  return { priors: ranked, outcome };
 }
 
 function sameScope(a: Scope, b: Scope): boolean {

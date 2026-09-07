@@ -143,6 +143,18 @@ export interface SpecTestAdequacyCurrentFingerprint {
 }
 
 /**
+ * Build identity of the evaluator process that generated a rerun recipe.
+ *
+ * This is optional on the wire for historical recipes that predate the stamp;
+ * newly generated recipes always include it so a terminal card can be compared
+ * with the evaluator build that was actually running when it was minted.
+ */
+export interface SpecTestAdequacyEvaluatorBuild {
+  sha: string | null;
+  version: string;
+}
+
+/**
  * The canonical replay contract emitted with a spec-test-adequacy scorecard.
  * It records both the exact clause/evidence selection and the caller's
  * currentness inputs; without those two pieces a persisted scorecard can only
@@ -152,24 +164,31 @@ export interface SpecTestAdequacyRerunRecipe {
   schemaVersion: 1;
   evaluator: 'plans:evaluate-spec-test-adequacy';
   /**
+   * Loaded evaluator identity at mint time. Absent only on historical recipes
+   * written before evaluator build stamping was introduced.
+   */
+  evaluatorBuild?: SpecTestAdequacyEvaluatorBuild;
+  /**
    * The plan class the recorded verdicts were produced under.
    *
    * REQUIRED by `evaluator`, which rejects a call that omits it, and it materially
    * moves `plan-class-risk-floor`. A recipe that did not record it forced a
-   * re-runner to GUESS one of four values, and a wrong guess silently changes the
-   * verdict it is supposed to reproduce.
-   */
+  * re-runner to GUESS one of four values, and a wrong guess silently changes the
+  * verdict it is supposed to reproduce.
+  */
   classRef: string;
   /**
    * The exact argument object to submit to `evaluator` to reproduce these verdicts.
    *
-   * `selection` below is the human-readable identity of what was graded; it is NOT
-   * submittable — it spells `planSlug`/`specId`/`specRevision`/`specFingerprint`,
-   * while the evaluator accepts `slug`/`specIds` and refuses the rest as
-   * unrecognized keys. Submit THIS. A rerun recipe its own evaluator rejects is not
-   * a rerun recipe, so this field is what makes the card independently checkable.
-   */
+  * `selection` below is the human-readable identity of what was graded; it is NOT
+  * submittable — it spells `planSlug`/`specId`/`specRevision`/`specFingerprint`,
+  * while the evaluator accepts `slug`/`specIds` and refuses the rest as
+  * unrecognized keys. Submit THIS. A rerun recipe its own evaluator rejects is not
+  * a rerun recipe, so this field is what makes the card independently checkable.
+  */
   args: {
+    /** Persist the resolved harness so an operator-scope replay can resolve its data plane. */
+    harness?: string;
     slug: string;
     classRef: string;
     specIds: string[];
@@ -1038,6 +1057,26 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   // an apparently replayable but incomplete attestation.
   if (o.rerunRecipe && typeof o.rerunRecipe === 'object' && !Array.isArray(o.rerunRecipe)) {
     const recipe = o.rerunRecipe as Record<string, unknown>;
+    const hasEvaluatorBuild = Object.prototype.hasOwnProperty.call(recipe, 'evaluatorBuild');
+    let evaluatorBuild: SpecTestAdequacyEvaluatorBuild | null | undefined;
+    if (hasEvaluatorBuild) {
+      const rawBuild = recipe.evaluatorBuild;
+      if (rawBuild && typeof rawBuild === 'object' && !Array.isArray(rawBuild)) {
+        const build = rawBuild as Record<string, unknown>;
+        const sha =
+          build.sha === null
+            ? null
+            : typeof build.sha === 'string' && build.sha.trim()
+              ? build.sha
+              : undefined;
+        evaluatorBuild =
+          sha !== undefined && typeof build.version === 'string' && build.version.trim()
+            ? { sha, version: build.version }
+            : null;
+      } else {
+        evaluatorBuild = null;
+      }
+    }
     const rawSelection = recipe.selection;
     const rawCurrent = recipe.current;
     const rawDerivation = recipe.derivation;
@@ -1105,6 +1144,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     if (
       recipe.schemaVersion === 1 &&
       recipe.evaluator === 'plans:evaluate-spec-test-adequacy' &&
+      (!hasEvaluatorBuild || evaluatorBuild !== null) &&
       // A recipe that does not record classRef is NOT re-runnable: the evaluator
       // requires it, and a re-runner guessing among four values silently moves
       // plan-class-risk-floor. Legacy rows that predate this field therefore fail
@@ -1134,6 +1174,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       out.rerunRecipe = {
         schemaVersion: 1,
         evaluator: 'plans:evaluate-spec-test-adequacy',
+        ...(evaluatorBuild ? { evaluatorBuild } : {}),
         classRef: recipe.classRef as string,
         // Reconstruct from the validated selection AND currentness inputs, never
         // from stored args, so readback preserves the original evidence cohort.

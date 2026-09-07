@@ -101,6 +101,32 @@ describe('summarizeItemParse — plans:new mode (hintOnZeroItems:true)', () => {
     expect(s.hint).toBeUndefined();
   });
 
+  it('PRECISION: ordinary prose bullets with an inline P-NNN citation are NOT flagged', () => {
+    const body = [
+      '## Reuse map',
+      '',
+      '- The initial mapping step ends with P-001 and must resolve source/owner overlap before edits.',
+      '',
+      '## Requirements',
+      '',
+      '- See P-002 for the related acceptance context.',
+    ].join('\n');
+
+    expect(detectUnparsedItemLines(written(body), new Set())).toEqual([]);
+  });
+
+  it('still flags a malformed P-NNN item when the reference starts the bullet', () => {
+    const body = [
+      '## Requirements',
+      '',
+      '- P-001 missing the canonical status token',
+    ].join('\n');
+
+    const found = detectUnparsedItemLines(written(body), new Set());
+    expect(found).toHaveLength(1);
+    expect(found[0]?.text).toContain('P-001');
+  });
+
   it('PRECISION: bullets inside a fenced code block are ignored', () => {
     const body = [
       '## Background',

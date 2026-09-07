@@ -97,9 +97,7 @@ describe('rerankProseHits — fail-safe', () => {
 
 describe('rerankProseHits — engine selection', () => {
   it('no key anywhere → LOCAL engine with the sidecar-aware scorer (the seam is no longer dark)', async () => {
-    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) =>
-      docs.map((d) => d.row as SearchHit).reverse(),
-    );
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) => docs.map((d) => d.row as SearchHit).reverse());
 
     const out = await rerankProseHits('q', HITS, 5);
     expect(out.map((h) => h.source_id)).toEqual(['c', 'b', 'a']);
@@ -294,9 +292,7 @@ describe('rerankProseHits — active', () => {
   it('key present → maps hits to {id,text,row}, passes generic opts, returns reranker order', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
     // Reranker reverses the order to prove the new order is honored.
-    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) =>
-      docs.map((d) => d.row as SearchHit).reverse(),
-    );
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) => docs.map((d) => d.row as SearchHit).reverse());
 
     const out = await rerankProseHits('q', HITS, 5);
     expect(out.map((h) => h.source_id)).toEqual(['c', 'b', 'a']);
@@ -415,7 +411,10 @@ describe('rerankPageHead — candidate budget, not page size', () => {
   // whether the pool the reranker chose from was bigger than the page.
   const reverseRerank = () =>
     vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, opts) =>
-      docs.map((d) => d.row as SearchHit).reverse().slice(0, opts.limit),
+      docs
+        .map((d) => d.row as SearchHit)
+        .reverse()
+        .slice(0, opts.limit),
     );
 
   it('pool at or below the cap → plain rerankProseHits (real over-fetch)', async () => {
@@ -480,11 +479,18 @@ describe('rerankRows — the generic core', () => {
     vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
     vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) => docs.map((d) => d.row));
     await rerankRows('q', HITS, {
-      engine: 'local', limit: 3, id: (r) => r.source_id, text: (r) => r.excerpt, rerankTimeoutMs: 1000,
+      engine: 'local',
+      limit: 3,
+      id: (r) => r.source_id,
+      text: (r) => r.excerpt,
+      rerankTimeoutMs: 1000,
     });
     expect(readCredentials).not.toHaveBeenCalled();
-    expect(rankWithReranker).toHaveBeenCalledWith('q', expect.any(Array),
-      expect.objectContaining({ engine: 'local', scorer }));
+    expect(rankWithReranker).toHaveBeenCalledWith(
+      'q',
+      expect.any(Array),
+      expect.objectContaining({ engine: 'local', scorer }),
+    );
     expect(vi.mocked(rankWithReranker).mock.calls[0]![2]).not.toHaveProperty('rerankApiKey');
   });
   type Row = { id: string; text: string; q: number };
@@ -506,7 +512,10 @@ describe('rerankRows — the generic core', () => {
   /** Reverse the pool, honouring whatever `limit` the caller passed. */
   const reversing = () =>
     vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) =>
-      [...docs].reverse().slice(0, (o as { limit: number }).limit).map((d) => d.row),
+      [...docs]
+        .reverse()
+        .slice(0, (o as { limit: number }).limit)
+        .map((d) => d.row),
     );
 
   it('REORDERS WITHOUT CUTTING when limit === rows.length — the corpus leg depends on this', async () => {
@@ -588,9 +597,7 @@ describe('rerankRows — the generic core', () => {
       const seen: Outcome[] = [];
       const out = await rerankRows<Row>('q', rows, opts({ onOutcome: (o: Outcome) => seen.push(o) }));
       expect(out.map((r) => r.id)).toEqual(['r1', 'r2', 'r3', 'r4']); // retrieval order
-      expect(seen).toEqual([
-        { attempted: false, reason: 'degraded:timeout', engine: 'local', scored: 0 },
-      ]);
+      expect(seen).toEqual([{ attempted: false, reason: 'degraded:timeout', engine: 'local', scored: 0 }]);
     });
 
     it('falls back to a generic reason when the library named none', async () => {
@@ -675,8 +682,9 @@ describe('rerankProseHits — cross-encoder score exposure', () => {
   const scoringWith = (scores: Array<number | null>) =>
     vi.mocked(rankWithReranker).mockImplementation(async (_q, docs, o) => {
       const rows = docs.map((d) => d.row as SearchHit);
-      (o as { onRerankScores?: (r: Array<{ row: SearchHit; score: number | null }>) => void })
-        .onRerankScores?.(rows.map((row, i) => ({ row, score: scores[i] ?? null })));
+      (o as { onRerankScores?: (r: Array<{ row: SearchHit; score: number | null }>) => void }).onRerankScores?.(
+        rows.map((row, i) => ({ row, score: scores[i] ?? null })),
+      );
       return rows.slice(0, o.limit);
     });
 

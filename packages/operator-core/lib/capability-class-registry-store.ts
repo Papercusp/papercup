@@ -348,6 +348,37 @@ export interface ProviderBindingRow {
   updatedAt: string;
 }
 
+/**
+ * Install-time evidence for one active provider candidate.
+ *
+ * Price is intentionally not stored here: it belongs to the distributable
+ * provider listing, not the conformance registry. P-017's resolver joins that
+ * evidence through an injected seam and represents an unavailable price as
+ * null rather than inventing a free/zero value. The registry does own the two
+ * facts below: immutable structural-run history and current pot adoption.
+ */
+export interface CapabilityProviderCandidateRow extends ProviderBindingRow {
+  passingStructuralRuns: number;
+  totalStructuralRuns: number;
+  activePotBindings: number;
+}
+
+export interface PotCapabilityProviderBindingRow extends ProviderBindingRow {
+  potSlug: string;
+  boundBy: string | null;
+  boundAt: string;
+}
+
+export interface CapabilityProviderDependentRow {
+  potSlug: string;
+  classRef: string;
+  providerPackage: string;
+  providerVersion: string;
+  boundBy: string | null;
+  boundAt: string;
+  updatedAt: string;
+}
+
 type BindingDbRow = {
   class_id: string;
   class_version: string;
@@ -360,6 +391,29 @@ type BindingDbRow = {
   behavioral_run_ref: string | null;
   registry_revision: string;
   status: string;
+  updated_at: Date | string;
+};
+
+type CandidateDbRow = BindingDbRow & {
+  passing_structural_runs: number | string;
+  total_structural_runs: number | string;
+  active_pot_bindings: number | string;
+};
+
+type PotBindingDbRow = BindingDbRow & {
+  pot_slug: string;
+  bound_by: string | null;
+  bound_at: Date | string;
+};
+
+type ProviderDependentDbRow = {
+  pot_slug: string;
+  class_id: string;
+  class_version: string;
+  provider_package: string;
+  provider_version: string;
+  bound_by: string | null;
+  bound_at: Date | string;
   updated_at: Date | string;
 };
 
@@ -477,6 +531,148 @@ export async function listProviderBindings(
        AND r.structural_passed = true
      ORDER BY b.provider_package, b.provider_version DESC`;
   return rows.map(mapBinding);
+}
+
+function mapCandidate(row: CandidateDbRow): CapabilityProviderCandidateRow {
+  return {
+    ...mapBinding(row),
+    passingStructuralRuns: Number(row.passing_structural_runs),
+    totalStructuralRuns: Number(row.total_structural_runs),
+    activePotBindings: Number(row.active_pot_bindings),
+  };
+}
+
+function mapPotBinding(row: PotBindingDbRow): PotCapabilityProviderBindingRow {
+  return {
+    ...mapBinding(row),
+    potSlug: row.pot_slug,
+    boundBy: row.bound_by,
+    boundAt: asIso(row.bound_at),
+  };
+}
+
+/**
+ * Exact current pot choice. Only an active provider backed by a passing run can
+ * satisfy a new identity install; a retired provider therefore cannot silently
+ * satisfy a grant merely because an old pot row still points at it.
+ */
+export async function getPotCapabilityProviderBinding(
+  sql: postgres.Sql | postgres.TransactionSql,
+  input: {
+    workspaceId: string;
+    potSlug: string;
+    classId: string;
+    classVersion: string;
+  },
+): Promise<PotCapabilityProviderBindingRow | null> {
+  const rows = await sql<PotBindingDbRow[]>`
+    SELECT ${BINDING_SELECT(sql)},
+           p.pot_slug, p.bound_by, p.bound_at
+      FROM harness_shared.pot_capability_class_bindings p
+      JOIN harness_shared.capability_class_provider_bindings b
+        ON b.workspace_id = p.workspace_id
+       AND b.class_id = p.class_id
+       AND b.class_version = p.class_version
+       AND b.provider_package = p.provider_package
+       AND b.provider_version = p.provider_version
+      JOIN harness_shared.capability_class_conformance_runs r
+        ON r.id = b.conformance_run_id
+     WHERE p.workspace_id = ${input.workspaceId}
+       AND p.pot_slug = ${input.potSlug}
+       AND p.class_id = ${input.classId}
+       AND p.class_version = ${input.classVersion}
+       AND b.status = 'active'
+       AND r.structural_passed = true
+     LIMIT 1`;
+  return rows[0] ? mapPotBinding(rows[0]) : null;
+}
+
+/**
+ * Active conformant candidates plus the evidence the local registry can prove.
+ * Marketplace price evidence is deliberately joined by the install resolver,
+ * because a missing price must remain unknown rather than becoming zero.
+ */
+export async function listActiveCapabilityProviderCandidates(
+  sql: postgres.Sql | postgres.TransactionSql,
+  workspaceId: string,
+  classId: string,
+  classVersion: string,
+): Promise<CapabilityProviderCandidateRow[]> {
+  const rows = await sql<CandidateDbRow[]>`
+    SELECT ${BINDING_SELECT(sql)},
+           (
+             SELECT count(*)::int
+               FROM harness_shared.capability_class_conformance_runs history
+              WHERE history.workspace_id = b.workspace_id
+                AND history.class_id = b.class_id
+                AND history.class_version = b.class_version
+                AND history.provider_package = b.provider_package
+                AND history.provider_version = b.provider_version
+                AND history.structural_passed = true
+           ) AS passing_structural_runs,
+           (
+             SELECT count(*)::int
+               FROM harness_shared.capability_class_conformance_runs history
+              WHERE history.workspace_id = b.workspace_id
+                AND history.class_id = b.class_id
+                AND history.class_version = b.class_version
+                AND history.provider_package = b.provider_package
+                AND history.provider_version = b.provider_version
+           ) AS total_structural_runs,
+           (
+             SELECT count(*)::int
+               FROM harness_shared.pot_capability_class_bindings pot_binding
+              WHERE pot_binding.workspace_id = b.workspace_id
+                AND pot_binding.class_id = b.class_id
+                AND pot_binding.class_version = b.class_version
+                AND pot_binding.provider_package = b.provider_package
+                AND pot_binding.provider_version = b.provider_version
+           ) AS active_pot_bindings
+      FROM harness_shared.capability_class_provider_bindings b
+      JOIN harness_shared.capability_class_conformance_runs r
+        ON r.id = b.conformance_run_id
+     WHERE b.workspace_id = ${workspaceId}
+       AND b.class_id = ${classId}
+       AND b.class_version = ${classVersion}
+       AND b.status = 'active'
+       AND r.structural_passed = true
+     ORDER BY b.provider_package, b.provider_version DESC`;
+  return rows.map(mapCandidate);
+}
+
+/**
+ * Reverse edge used by provider uninstall review. These are current pot/class
+ * dependents, regardless of whether the provider binding has since retired:
+ * retirement must make the warning louder, not erase the dependency.
+ */
+export async function listCapabilityProviderDependents(
+  sql: postgres.Sql | postgres.TransactionSql,
+  input: {
+    workspaceId: string;
+    providerPackage: string;
+    providerVersion?: string;
+  },
+): Promise<CapabilityProviderDependentRow[]> {
+  const versionClause = input.providerVersion
+    ? sql`AND provider_version = ${input.providerVersion}`
+    : sql``;
+  const rows = await sql<ProviderDependentDbRow[]>`
+    SELECT pot_slug, class_id, class_version, provider_package, provider_version,
+           bound_by, bound_at, updated_at
+      FROM harness_shared.pot_capability_class_bindings
+     WHERE workspace_id = ${input.workspaceId}
+       AND provider_package = ${input.providerPackage}
+       ${versionClause}
+     ORDER BY pot_slug, class_id, class_version, provider_version`;
+  return rows.map((row) => ({
+    potSlug: row.pot_slug,
+    classRef: `${row.class_id}@${row.class_version}`,
+    providerPackage: row.provider_package,
+    providerVersion: row.provider_version,
+    boundBy: row.bound_by,
+    boundAt: asIso(row.bound_at),
+    updatedAt: asIso(row.updated_at),
+  }));
 }
 
 /** Storage seam for P-017's resolver/picker; FK proves the provider already conformed. */

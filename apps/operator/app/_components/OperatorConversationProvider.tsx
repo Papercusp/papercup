@@ -113,6 +113,16 @@ interface OperatorTurnRow {
   report?: ParsedReport | null;
 }
 
+function createdAtIso(createdAt: unknown): string | undefined {
+  const epochMs = Number(createdAt);
+  if (!Number.isFinite(epochMs)) return undefined;
+  try {
+    return new Date(epochMs).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
 /** deterministic-status-cards-2026-07-17 P-003: map a turn's `report` onto
  *  ChatMessage.report ONLY for a curator `source:'system'` turn — so `report`
  *  present ⟺ a curator status CARD (renders in the chat via ReportBlockCard).
@@ -123,6 +133,21 @@ function reportForTurn(t: {
   report?: ParsedReport | null;
 }): ParsedReport | undefined {
   return t.source === "system" && t.report ? t.report : undefined;
+}
+
+/** One persisted-turn mapper for initial hydration, scrollback and live tail.
+ * EI-22622748977343550: the three former inline copies all dropped createdAt,
+ * so OperatorChat converted every missing timestamp to epoch 0. */
+function turnRowToChatMessage(t: OperatorTurnRow): ChatMessage {
+  return {
+    role: t.role,
+    content: t.text,
+    id: typeof t.id === "string" ? t.id : undefined,
+    seq: typeof t.seq === "number" ? t.seq : undefined,
+    ts: createdAtIso(t.createdAt),
+    tools: Array.isArray(t.tools) ? t.tools : undefined,
+    report: reportForTurn(t),
+  };
 }
 
 // ─── State + actions ────────────────────────────────────────────────────
@@ -216,7 +241,7 @@ type Action =
   | { type: "set_mode"; mode: OperatorMode }
   | { type: "set_sub"; sub: SubState }
   | { type: "append_message"; message: ChatMessage }
-  | { type: "replace_message_id"; oldId: string; newId: string; seq?: number }
+  | { type: "replace_message_id"; oldId: string; newId: string; seq?: number; ts?: string }
   /**
    * Backfill the persisted seq onto a local message identified by id.
    * A message created in-session (optimistic user turn, streamed
@@ -225,7 +250,7 @@ type Action =
    * silently drops chat:ask_choice clicks on a seq-less message, so a
    * card streamed live was unanswerable until a full reload (P-011).
    */
-  | { type: "set_message_seq"; id: string; seq: number }
+  | { type: "set_message_seq"; id: string; seq: number; ts?: string }
   | { type: "append_assistant_delta"; id: string; text: string }
   | { type: "finalize_assistant_stream"; id: string; message: ChatMessage }
   | { type: "remove_message_id"; id: string }
@@ -284,14 +309,24 @@ function reducer(state: State, action: Action): State {
         ...next[idx],
         id: action.newId,
         ...(typeof action.seq === "number" ? { seq: action.seq } : {}),
+        ...(action.ts ? { ts: action.ts } : {}),
       };
       return { ...state, messages: next };
     }
     case "set_message_seq": {
       const idx = state.messages.findIndex((m) => m.id === action.id);
-      if (idx < 0 || state.messages[idx].seq === action.seq) return state;
+      if (
+        idx < 0 ||
+        (state.messages[idx].seq === action.seq &&
+          (!action.ts || state.messages[idx].ts === action.ts))
+      )
+        return state;
       const next = state.messages.slice();
-      next[idx] = { ...next[idx], seq: action.seq };
+      next[idx] = {
+        ...next[idx],
+        seq: action.seq,
+        ...(action.ts ? { ts: action.ts } : {}),
+      };
       return { ...state, messages: next };
     }
     case "update_message_tools": {
@@ -314,7 +349,12 @@ function reducer(state: State, action: Action): State {
           ...state,
           messages: [
             ...state.messages,
-            { role: "assistant", content: action.text, id: action.id },
+            {
+              role: "assistant",
+              content: action.text,
+              id: action.id,
+              ts: new Date().toISOString(),
+            },
           ],
         };
       }
@@ -1144,14 +1184,7 @@ export function OperatorConversationProvider({
       setHasMoreEarlier(initialPage.hasMoreEarlier);
       dispatch({
         type: "replace_messages",
-        messages: turns.map((t) => ({
-          role: t.role,
-          content: t.text,
-          id: typeof t.id === "string" ? t.id : undefined,
-          seq: typeof t.seq === "number" ? t.seq : undefined,
-          tools: Array.isArray(t.tools) ? t.tools : undefined,
-          report: reportForTurn(t),
-        })),
+        messages: turns.map(turnRowToChatMessage),
         lastTurnAtMs: turns[turns.length - 1].createdAt ?? 0,
       });
     } else {
@@ -1189,14 +1222,7 @@ export function OperatorConversationProvider({
       setHasMoreEarlier(page.hasMoreEarlier);
       dispatch({
         type: "prepend_messages",
-        messages: page.turns.map((t) => ({
-          role: t.role,
-          content: t.text,
-          id: typeof t.id === "string" ? t.id : undefined,
-          seq: typeof t.seq === "number" ? t.seq : undefined,
-          tools: Array.isArray(t.tools) ? t.tools : undefined,
-          report: reportForTurn(t),
-        })),
+        messages: page.turns.map(turnRowToChatMessage),
       });
     }
     setOlderBeforeSeq(null);
@@ -1307,7 +1333,12 @@ export function OperatorConversationProvider({
         // assistant turn after persistTurn's id-swap) — the reducer
         // no-ops when it already matches.
         if (typeof t.seq === "number") {
-          dispatch({ type: "set_message_seq", id: t.id, seq: t.seq });
+          dispatch({
+            type: "set_message_seq",
+            id: t.id,
+            seq: t.seq,
+            ts: createdAtIso(t.createdAt),
+          });
         }
         newestLoadedSeqRef.current = t.seq;
         continue;
@@ -1320,6 +1351,7 @@ export function OperatorConversationProvider({
           oldId: optId,
           newId: t.id,
           ...(typeof t.seq === "number" ? { seq: t.seq } : {}),
+          ...(createdAtIso(t.createdAt) ? { ts: createdAtIso(t.createdAt) } : {}),
         });
         optimisticByKey.delete(optKey);
         newestLoadedSeqRef.current = t.seq;
@@ -1327,14 +1359,7 @@ export function OperatorConversationProvider({
       }
       dispatch({
         type: "append_message",
-        message: {
-          role: t.role,
-          content: t.text,
-          id: typeof t.id === "string" ? t.id : undefined,
-          seq: typeof t.seq === "number" ? t.seq : undefined,
-          tools: Array.isArray(t.tools) ? t.tools : undefined,
-          report: reportForTurn(t),
-        },
+        message: turnRowToChatMessage(t),
       });
       newestLoadedSeqRef.current = t.seq;
       if (oldestLoadedSeqRef.current === null)
@@ -1417,7 +1442,7 @@ export function OperatorConversationProvider({
             );
             if (!r.ok) throw new Error(`persist ${r.status}`);
             const j = (await r.json()) as {
-              turn?: { id?: string; seq?: number };
+              turn?: { id?: string; seq?: number; createdAt?: number };
               conversationId?: string;
             };
             // Adopt the server-resolved conversation when we posted to
@@ -1433,6 +1458,7 @@ export function OperatorConversationProvider({
             }
             const seq = j?.turn?.seq;
             const realId = j?.turn?.id;
+            const persistedTs = createdAtIso(j?.turn?.createdAt);
             if (typeof seq === "number") {
               if (
                 newestLoadedSeqRef.current === null ||
@@ -1449,9 +1475,15 @@ export function OperatorConversationProvider({
                 oldId: optimisticId,
                 newId: realId,
                 ...(typeof seq === "number" ? { seq } : {}),
+                ...(persistedTs ? { ts: persistedTs } : {}),
               });
             } else if (optimisticId && typeof seq === "number") {
-              dispatch({ type: "set_message_seq", id: optimisticId, seq });
+              dispatch({
+                type: "set_message_seq",
+                id: optimisticId,
+                seq,
+                ...(persistedTs ? { ts: persistedTs } : {}),
+              });
             }
             return;
           } catch (err) {
@@ -1872,6 +1904,7 @@ export function OperatorConversationProvider({
             role: "assistant",
             content: sayContent,
             id: assistantMessageId,
+            ts: new Date().toISOString(),
           };
           if (collectedTools) assistantMessage.tools = collectedTools;
           if (streamedAssistantId) {
@@ -2682,12 +2715,13 @@ export function OperatorConversationProvider({
       // dedupes by id, so a fast Zero echo won't double-render the
       // user's message. G19.
       const optimisticId = `opt-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      const nowMs = Date.now();
       const userMsg: ChatMessage = {
         role: "user",
         content: trimmed,
         id: optimisticId,
+        ts: new Date(nowMs).toISOString(),
       };
-      const nowMs = Date.now();
       dispatch({ type: "append_message", message: userMsg });
       dispatch({ type: "record_user_turn", tsMs: nowMs });
       dispatch({ type: "mark_turn", tsMs: nowMs });
@@ -2942,6 +2976,7 @@ export function OperatorConversationProvider({
         role: "user",
         content: joined,
         id: optimisticId,
+        ts: new Date(answeredAt).toISOString(),
       };
       dispatch({ type: "append_message", message: userMsg });
       dispatch({ type: "record_user_turn", tsMs: answeredAt });

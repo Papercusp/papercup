@@ -601,10 +601,10 @@ export function effectiveMaxBees(s: OwnerSteering, systemCeiling: number): numbe
   return s.maxBees != null ? Math.min(systemCeiling, s.maxBees) : systemCeiling;
 }
 
-/** Whether an idle activity (gym / Scout / curation) may run. Default ON — only an
- *  explicit `false` toggle suppresses it. */
+/** Dream spend requires explicit opt-in. Other idle activities retain their default-ON policy. */
 export function idleActivityEnabled(s: OwnerSteering, kind: IdleActivityKind): boolean {
   const t = s.idleActivities;
+  if (kind === 'dream') return t?.dream === true;
   return !t || t[kind] !== false;
 }
 
@@ -618,8 +618,8 @@ export function isAutoScaleOutEnabled(s: OwnerSteering): boolean {
  * Resolve whether an idle background activity (gym / Scout / curation) may run for a
  * workspace's home hive — the single gate the idle-activity seams call (P-006, D-005).
  * Resolves the home hive (the slug the owner steers on the 👑 tab) unless one is
- * passed, then checks the toggle. Fail-soft / un-steered / no home hive ⇒ ON
- * (today's behaviour). Async + a dynamic import of resolvePotHomeSlug so this leaf
+ * passed, then checks the toggle. Dream fails closed without scope/settings;
+ * other activities retain their fail-soft ON policy. Async + a dynamic import of resolvePotHomeSlug so this leaf
  * module keeps no static edge to the hive layer.
  */
 export async function idleActivityAllowed(
@@ -634,11 +634,11 @@ export async function idleActivityAllowed(
       const { resolvePotHomeSlug } = await import('./pot/wake');
       home = resolvePotHomeSlug();
     }
-    if (!home) return true;
+    if (!home) return kind !== 'dream';
     const s = await getOwnerSteering(workspaceId, home, sql);
     return idleActivityEnabled(s, kind);
   } catch {
-    return true;
+    return kind !== 'dream';
   }
 }
 

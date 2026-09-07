@@ -82,12 +82,12 @@ export interface ChatMessage {
    * gui").
    *
    * OPTIONAL, and deliberately so: only a feed that genuinely KNOWS the instant
-   * sets it. Today that is the session-transcript mapper, whose source entries
-   * carry a `ts` stamped by every backend parser (claude/codex/omp). The
-   * operator's own conversation store does not set it yet, so those surfaces are
-   * unchanged — a message with no `ts` renders no stamp rather than an invented
-   * one. Never default this to "now" at render time: a backfilled transcript
-   * would then claim every historical turn happened at page load.
+   * sets it. Session transcripts carry a parser-stamped `ts`; the operator
+   * conversation mapper carries its persisted `operator_turns.created_at` and
+   * optimistic rows carry their local creation instant until PG returns the
+   * authoritative value. A message with no `ts` renders no stamp rather than an
+   * invented one. Never default this to "now" at render time: a backfilled
+   * transcript would then claim every historical turn happened at page load.
    *
    * NOT validated here. The renderer parses it and declines on an unparseable
    * value, which keeps this type a plain carrier of what the source said.

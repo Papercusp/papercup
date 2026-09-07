@@ -78,8 +78,10 @@ const ITEM_GRAMMAR =
  *
  * HIGH-PRECISION by design — a plain prose bullet in ## Background is NEVER
  * flagged. A list-like line counts as an "attempted item" only when it is a
- * `[ ]` checkbox, OR carries a `P-NNN` token, OR sits under a `## Phase`
- * heading (where content is items by convention). The special ## Now / ##
+ * `[ ]` checkbox, starts with a `P-NNN` item reference, OR sits under a
+ * `## Phase` heading (where content is items by convention). A P-NNN citation
+ * later in an ordinary prose bullet is not enough to classify that bullet as
+ * an attempted item. The special ## Now / ##
  * Decisions sections are inspected for list-like lines carrying `P-NNN`, since
  * the parser intentionally skips those sections and would otherwise silently
  * drop a misplaced item. Ordinary prose bullets there remain unflagged. Lines
@@ -144,11 +146,17 @@ export function detectUnparsedItemLines(
     if (!isBullet && !isOrdered) continue;
 
     const isCheckbox = /^\s*[-*+]\s+\[[ xX]\]/.test(masked);
-    const hasPNN = /\bP-\d{3,}\b/.test(masked);
+    // A P-NNN token at the beginning of a list item is a strong signal that
+    // the author intended an item but missed bold/status syntax. A reference
+    // later in prose (for example, "...resolve P-001 before edits") is not:
+    // ordinary reuse-map/requirements bullets commonly cite plan items.
+    const hasItemRefPrefix = isBullet
+      ? /^\s*[-*+]\s+(?:[*_]{1,3})?P-\d{3,}\b/.test(masked)
+      : /^\s*\d+\.\s+(?:[*_]{1,3})?P-\d{3,}\b/.test(masked);
     // Now/Decisions are not item-bearing parser sections, so only a list-like
     // line that names a plan item is suspicious there. In normal prose/Phase
     // sections retain the original checkbox/P-NNN/Phase heuristics.
-    if (misplacedSection ? !hasPNN : !(isCheckbox || hasPNN || underPhase)) continue;
+    if (misplacedSection ? !hasItemRefPrefix : !(isCheckbox || hasItemRefPrefix || underPhase)) continue;
 
     out.push({ line: i + 1, text: real.trim().slice(0, 160) });
   }

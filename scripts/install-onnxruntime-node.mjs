@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export const ONNXRUNTIME_NODE_VERSION = '1.24.3';
 export const CUDA_PROVIDER_FILES = Object.freeze([
@@ -239,7 +240,7 @@ export function main() {
   installCudaProvider();
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   try {
     main();
   } catch (error) {

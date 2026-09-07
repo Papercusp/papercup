@@ -174,8 +174,7 @@ export function resolveDreamCycleConfig(override: Partial<DreamCycleConfig> = {}
     if (!Number.isFinite(value) || value < 0) {
       throw new RangeError(`${name} must be a non-negative finite number`);
     }
-    if (value > DEFAULT_DREAM_CYCLE_CONFIG[name])
-      throw new RangeError(name + ' exceeds the approved Dream ceiling');
+    if (value > DEFAULT_DREAM_CYCLE_CONFIG[name]) throw new RangeError(name + ' exceeds the approved Dream ceiling');
   }
 
   return config;

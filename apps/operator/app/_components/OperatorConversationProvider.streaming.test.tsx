@@ -104,6 +104,7 @@ function Probe() {
             key={`${message.id ?? "none"}-${index}`}
             data-role={message.role}
             data-seq={typeof message.seq === "number" ? message.seq : "none"}
+            data-ts={message.ts ?? "none"}
           >
             {message.content}
           </div>
@@ -231,6 +232,42 @@ describe("OperatorConversationProvider streamed say projection", () => {
         .getByTestId("messages")
         .querySelectorAll('[data-role="assistant"]'),
     ).toHaveLength(1);
+  });
+
+  it("preserves a persisted operator turn's createdAt as the message ISO timestamp", async () => {
+    const conversationId = "timestamp-conversation";
+    const createdAt = new Date("2026-09-07T16:58:12.345Z").getTime();
+    SYNC.turnPage = {
+      turns: [
+        {
+          id: "timestamp-turn",
+          conversationId,
+          seq: 7,
+          role: "assistant",
+          text: "Persisted with time",
+          createdAt,
+        },
+      ],
+      hasMoreEarlier: false,
+    };
+
+    render(
+      <OperatorConversationProvider
+        generationFn={vi.fn()}
+        target={{ kind: "work-item", conversationId }}
+      >
+        <Probe />
+      </OperatorConversationProvider>,
+    );
+
+    await waitFor(() => {
+      const row = screen
+        .getByTestId("messages")
+        .querySelector('[data-role="assistant"]');
+      expect(row?.getAttribute("data-ts")).toBe(
+        "2026-09-07T16:58:12.345Z",
+      );
+    });
   });
 
   it("backfills the persisted seq onto in-session messages so a streamed chat:ask_choice card is answerable without a reload (P-011)", async () => {

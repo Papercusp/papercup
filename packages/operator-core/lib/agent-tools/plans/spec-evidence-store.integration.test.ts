@@ -445,12 +445,13 @@ describe('exact spec evidence bindings', () => {
       specRevision: 1,
       currentRevision: 1,
       currentness: {
-        overall: 'current',
+        overall: 'unknown',
+        provenance: 'attested-current',
         staleReasons: [],
-        unknownReasons: [],
+        unknownReasons: ['current-fingerprints-attested-not-independently-measured'],
       },
     });
-    expect(read.data.currentness).toEqual({ current: 1, stale: 0, unknown: 0 });
+    expect(read.data.currentness).toEqual({ current: 0, stale: 0, unknown: 1 });
   });
 
   it('keeps historical proof while spec and supplied fingerprints make staleness explicit', async () => {

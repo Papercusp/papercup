@@ -9,36 +9,67 @@ import type { DreamRun } from './dream-run-store';
 
 type Fixture = Awaited<ReturnType<typeof createDreamCapabilityFixture>>;
 let f: Fixture;
-beforeEach(async () => { f = await createDreamCapabilityFixture('ws-cycle', 'papercusp'); });
-afterEach(async () => { await rm(f.root, { recursive: true, force: true }); });
+beforeEach(async () => {
+  f = await createDreamCapabilityFixture('ws-cycle', 'papercusp');
+});
+afterEach(async () => {
+  await rm(f.root, { recursive: true, force: true });
+});
 
 function harness() {
   const input: DreamCycleInput = {
-    ...f.scope, rootPath: f.root, manifest: f.manifest, mode: 'manual', cycleId: 'cycle-1',
-    cycle: { maxDreamsPerCycle: 1 }, pass: { model: 'dreamer' }, review: { model: 'reviewer' },
+    ...f.scope,
+    rootPath: f.root,
+    manifest: f.manifest,
+    mode: 'manual',
+    cycleId: 'cycle-1',
+    cycle: { maxDreamsPerCycle: 1 },
+    pass: { model: 'dreamer' },
+    review: { model: 'reviewer' },
   };
   const runs = new Map<string, DreamRun>();
   const charged = new Set<string>();
-  const row = (id: string) => { const r = runs.get(id); if (!r) throw new Error('missing run'); return r; };
+  const row = (id: string) => {
+    const r = runs.get(id);
+    if (!r) throw new Error('missing run');
+    return r;
+  };
   const tally = (run: DreamRun) => Object.assign(run, dreamCallTotals(dreamCapabilityRun(run)!.calls));
   const llm = vi.fn<DreamCycleDeps['llmCall']>().mockResolvedValue({
-    text: '', json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
-    costUsd: 0.01, inputTokens: 100, outputTokens: 10,
+    text: '',
+    json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
+    costUsd: 0.01,
+    inputTokens: 100,
+    outputTokens: 10,
   });
   const d: DreamCycleDeps = {
     llmCall: llm,
     estimateCall: () => 0.05,
-    preflight: vi.fn(async () => ({ allow: true as const, loopId: 'dream:papercusp',
-      cycleRemainingUsd: 1, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 })),
+    preflight: vi.fn(async () => ({
+      allow: true as const,
+      loopId: 'dream:papercusp',
+      cycleRemainingUsd: 1,
+      rollingSpentUsd: 0,
+      rollingRemainingUsd: 5,
+      rollingLoopCount: 0,
+    })),
     loadPackets: vi.fn(async () => f.packets),
     loadHistory: vi.fn(async () => []),
     reviewSources: () => f.sources,
     sample: vi.fn(() => f.sampling),
     beginRun: vi.fn(async ({ runId, cycleId, capability }) => {
       if (runs.has(runId)) return { created: false, run: structuredClone(row(runId)) };
-      const r: DreamRun = { ...structuredClone(f.run), runId, cycleId, status: 'running',
-        startedAt: new Date().toISOString(), review: null, routedRef: null, costUsd: 0,
-        outcome: { capabilityRun: newDreamCapabilityRun(capability) } };
+      const r: DreamRun = {
+        ...structuredClone(f.run),
+        runId,
+        cycleId,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        review: null,
+        routedRef: null,
+        costUsd: 0,
+        outcome: { capabilityRun: newDreamCapabilityRun(capability) },
+      };
       runs.set(runId, r);
       return { created: true, run: structuredClone(r) };
     }),
@@ -48,59 +79,93 @@ function harness() {
       return structuredClone(r);
     }),
     beginCall: vi.fn(async ({ runId, call }) => {
-      const r = row(runId), p = dreamCapabilityRun(r)!;
+      const r = row(runId),
+        p = dreamCapabilityRun(r)!;
       const existing = p.calls.find((c) => c.callId === call.callId);
       if (existing) return { started: false, run: structuredClone(r), call: existing };
       const used = [...runs.values()].reduce((n, r) => n + r.costUsd, 0);
       if (used >= (input.cycle?.maxCostUsd ?? 1) || used + call.reservedUsd > (input.cycle?.maxCostUsd ?? 1))
         throw new DreamAdmissionError('cycle-cost-cap');
       const saved = { ...call, status: 'reserved' as const, usage: null, error: null };
-      p.calls.push(saved); r.outcome!.capabilityRun = p; tally(r);
+      p.calls.push(saved);
+      r.outcome!.capabilityRun = p;
+      tally(r);
       return { started: true, run: structuredClone(r), call: saved };
     }),
     settleCall: vi.fn(async ({ runId, callId, usage, error }) => {
-      const r = row(runId), p = dreamCapabilityRun(r)!;
+      const r = row(runId),
+        p = dreamCapabilityRun(r)!;
       const c = p.calls.find((c) => c.callId === callId)!;
       Object.assign(c, { usage, error: error ?? null, status: usage ? 'settled' : 'unknown' });
-      r.outcome!.capabilityRun = p; tally(r); return structuredClone(r);
+      r.outcome!.capabilityRun = p;
+      tally(r);
+      return structuredClone(r);
     }),
     recordReview: vi.fn(async ({ runId, outcome, review }) => {
       const r = row(runId);
       r.outcome = { ...outcome, capabilityRun: r.outcome!.capabilityRun };
-      r.review = review; return structuredClone(r);
+      r.review = review;
+      return structuredClone(r);
     }),
     finalizeRun: vi.fn(async (value) => {
       const r = row(value.runId);
-      if (r.status === 'running') Object.assign(r, {
-        status: value.status, error: value.error ?? null,
-        outcome: value.outcome ? { ...value.outcome, capabilityRun: r.outcome!.capabilityRun } : r.outcome,
-      });
+      if (r.status === 'running')
+        Object.assign(r, {
+          status: value.status,
+          error: value.error ?? null,
+          outcome: value.outcome ? { ...value.outcome, capabilityRun: r.outcome!.capabilityRun } : r.outcome,
+        });
       return structuredClone(r);
     }),
     recordSpend: vi.fn(async (r) => {
       if (charged.has(r.runId)) return { recorded: false, costUsd: r.costUsd };
-      charged.add(r.runId); return { recorded: r.costUsd > 0, costUsd: r.costUsd };
+      charged.add(r.runId);
+      return { recorded: r.costUsd > 0, costUsd: r.costUsd };
     }),
     sink: vi.fn(async (id) => {
       row(id).routedRef = 'WI-proposal';
-      return { sunk: true as const, ideaId: 'dream:' + id, workItemId: 'WI-proposal', routedRef: 'WI-proposal',
-        sourceRefs: [], created: true };
+      return {
+        sunk: true as const,
+        ideaId: 'dream:' + id,
+        workItemId: 'WI-proposal',
+        routedRef: 'WI-proposal',
+        sourceRefs: [],
+        created: true,
+      };
     }),
     review: vi.fn(async (options, deps) => {
       await deps!.rerank('query', f.review.priorMatches);
-      const values = await Promise.allSettled((['control-a', 'control-b'] as const).map((p) =>
-        options.callForPhase!(p)({ model: 'reviewer', messages: [{ role: 'user', content: p }], signal: options.signal })));
+      const values = await Promise.allSettled(
+        (['control-a', 'control-b'] as const).map((p) =>
+          options.callForPhase!(p)({
+            model: 'reviewer',
+            messages: [{ role: 'user', content: p }],
+            signal: options.signal,
+          }),
+        ),
+      );
       const failed = values.find((v) => v.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
-      const last = await options.callForPhase!('review')({ model: 'reviewer',
-        messages: [{ role: 'user', content: 'review' }], signal: options.signal });
-      const usage = [...values.flatMap((v) => v.status === 'fulfilled' ? [v.value] : []), last];
-      return { ...f.review, usage: { model: 'reviewer',
-        costUsd: usage.reduce((n, u) => n + u.costUsd, 0),
-        inputTokens: usage.reduce((n, u) => n + u.inputTokens, 0),
-        outputTokens: usage.reduce((n, u) => n + u.outputTokens, 0) } };
+      const last = await options.callForPhase!('review')({
+        model: 'reviewer',
+        messages: [{ role: 'user', content: 'review' }],
+        signal: options.signal,
+      });
+      const usage = [...values.flatMap((v) => (v.status === 'fulfilled' ? [v.value] : [])), last];
+      return {
+        ...f.review,
+        usage: {
+          model: 'reviewer',
+          costUsd: usage.reduce((n, u) => n + u.costUsd, 0),
+          inputTokens: usage.reduce((n, u) => n + u.inputTokens, 0),
+          outputTokens: usage.reduce((n, u) => n + u.outputTokens, 0),
+        },
+      };
     }),
-    rerank: vi.fn(async (_q, priors) => ({ priors, outcome: { attempted: true, engine: 'local', scored: priors.length } })),
+    rerank: vi.fn(async (_q, priors) => ({
+      priors,
+      outcome: { attempted: true, engine: 'local', scored: priors.length },
+    })),
   };
   return { input, d, runs, llm, row };
 }
@@ -113,21 +178,36 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
   });
 
   it('estimates known models and refuses to treat unknown prices as free', () => {
-    expect(estimateDreamCall({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'source' }] })).toBeGreaterThan(0);
+    expect(
+      estimateDreamCall({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'source' }] }),
+    ).toBeGreaterThan(0);
     expect(() => estimateDreamCall({ model: 'unpriced-provider', messages: [] })).toThrow('unpriced');
   });
 
   it('refused admission reads no source and sends no model call', async () => {
     const h = harness();
-    h.d.preflight = async () => ({ allow: false, loopId: 'dream:papercusp', reason: 'governor-dark',
-      cycleRemainingUsd: null, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 });
+    h.d.preflight = async () => ({
+      allow: false,
+      loopId: 'dream:papercusp',
+      reason: 'governor-dark',
+      cycleRemainingUsd: null,
+      rollingSpentUsd: 0,
+      rollingRemainingUsd: 5,
+      rollingLoopCount: 0,
+    });
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ fired: false, reason: 'governor-refused' });
-    expect(h.d.loadPackets).not.toHaveBeenCalled(); expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.loadPackets).not.toHaveBeenCalled();
+    expect(h.llm).not.toHaveBeenCalled();
   });
 
   it('a pre-aborted cycle performs no admission or source work', async () => {
-    const h = harness(), ctrl = new AbortController(); ctrl.abort();
-    expect(await runDreamCycle({ ...h.input, signal: ctrl.signal }, h.d)).toMatchObject({ reason: 'aborted', attempts: 0 });
+    const h = harness(),
+      ctrl = new AbortController();
+    ctrl.abort();
+    expect(await runDreamCycle({ ...h.input, signal: ctrl.signal }, h.d)).toMatchObject({
+      reason: 'aborted',
+      attempts: 0,
+    });
     expect(h.d.preflight).not.toHaveBeenCalled();
   });
 
@@ -137,8 +217,17 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     const saved = h.row(dreamRunId('cycle-1', 0));
     expect(saved.review?.verdict).toBe('accept');
     const calls = dreamCapabilityRun(saved)!.calls;
-    expect(calls.map((c) => c.callId)).toEqual(['packet:catalogue', 'retrieval:history', 'retrieval:snapshot',
-      'generation', 'retrieval:review', 'rerank', 'control-a', 'control-b', 'review']);
+    expect(calls.map((c) => c.callId)).toEqual([
+      'packet:catalogue',
+      'retrieval:history',
+      'retrieval:snapshot',
+      'generation',
+      'retrieval:review',
+      'rerank',
+      'control-a',
+      'control-b',
+      'review',
+    ]);
     expect(calls.every((c) => c.status === 'settled')).toBe(true);
     expect(dreamCallTotals(calls).costUsd).toBeCloseTo(0.04);
     const replay = await runDreamCycle(h.input, h.d);
@@ -149,30 +238,60 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
   });
 
   it('runs the real skeptical reviewer with governed phase identities', async () => {
-    const h = harness(); delete h.d.review;
+    const h = harness();
+    delete h.d.review;
     const judgment = structuredClone(f.review.judgment)!;
     judgment.observations[1]!.evidence = f.review.controls.bOnly!.evidence;
     judgment.relation.evidence = [...f.review.controls.aOnly!.evidence, ...f.review.controls.bOnly!.evidence];
     const prior = f.review.priorMatches[0]!;
     h.d.reviewSources = () => ({
       readCurrent: async () => prior,
-      search: async (request) => ({ scope: request.scope, kinds: CAPABILITY_PRIOR_KINDS,
-        status: 'current', matches: [prior], truncated: false, note: 'fixture scope' }),
+      search: async (request) => ({
+        scope: request.scope,
+        kinds: CAPABILITY_PRIOR_KINDS,
+        status: 'current',
+        matches: [prior],
+        truncated: false,
+        note: 'fixture scope',
+      }),
     });
-    h.llm.mockReset()
-      .mockResolvedValueOnce({ text: '', json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate }, costUsd: 0.01, inputTokens: 100, outputTokens: 10 })
-      .mockResolvedValueOnce({ text: '', json: f.review.controls.aOnly, costUsd: 0.02, inputTokens: 100, outputTokens: 10 })
-      .mockResolvedValueOnce({ text: '', json: f.review.controls.bOnly, costUsd: 0.03, inputTokens: 100, outputTokens: 10 })
+    h.llm
+      .mockReset()
+      .mockResolvedValueOnce({
+        text: '',
+        json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
+        costUsd: 0.01,
+        inputTokens: 100,
+        outputTokens: 10,
+      })
+      .mockResolvedValueOnce({
+        text: '',
+        json: f.review.controls.aOnly,
+        costUsd: 0.02,
+        inputTokens: 100,
+        outputTokens: 10,
+      })
+      .mockResolvedValueOnce({
+        text: '',
+        json: f.review.controls.bOnly,
+        costUsd: 0.03,
+        inputTokens: 100,
+        outputTokens: 10,
+      })
       .mockResolvedValueOnce({ text: '', json: judgment, costUsd: 0.04, inputTokens: 100, outputTokens: 10 });
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ accepted: 1, costUsd: 0.1 });
     expect(h.d.sink).toHaveBeenCalledTimes(1);
   });
 
   it('source scope refusal produces no pair before any model dispatch', async () => {
-    const h = harness(); delete h.d.sample;
+    const h = harness();
+    delete h.d.sample;
     h.d.loadPackets = async () => f.packets.map((p) => ({ ...p, scope: { ...p.scope, workspaceId: 'foreign' } }));
-    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'no-pair', accepted: 0,
-      sources: { eligible: 0 } });
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({
+      reason: 'no-pair',
+      accepted: 0,
+      sources: { eligible: 0 },
+    });
     expect(h.llm).not.toHaveBeenCalled();
   });
 
@@ -180,39 +299,67 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     const h = harness();
     h.d.loadHistory = async () => [f.run];
     await runDreamCycle(h.input, h.d);
-    expect(h.d.sample).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      seed: 'cycle-1:dream:1', exposures: { 'capability:A': 1, 'capability:B': 1 },
-      history: [{ pairKey: f.selection.pairKey, selectedAt: Date.parse(f.run.startedAt) }],
-    }));
+    expect(h.d.sample).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        seed: 'cycle-1:dream:1',
+        exposures: { 'capability:A': 1, 'capability:B': 1 },
+        history: [{ pairKey: f.selection.pairKey, selectedAt: Date.parse(f.run.startedAt) }],
+      }),
+    );
   });
 
   it.each(['none', 'malformed'] as const)('records %s generation with its bill and no review', async (verdict) => {
     const h = harness();
-    h.llm.mockResolvedValue({ text: verdict === 'malformed' ? 'not-json' : '',
+    h.llm.mockResolvedValue({
+      text: verdict === 'malformed' ? 'not-json' : '',
       ...(verdict === 'none' ? { json: { schemaVersion: 'dream-capability-result-v1', verdict: 'none' } } : {}),
-      costUsd: 0.03, inputTokens: 100, outputTokens: 10 });
-    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ accepted: 0, costUsd: 0.03,
-      runs: [{ status: verdict === 'none' ? 'abstained' : 'malformed' }] });
-    expect(h.d.review).not.toHaveBeenCalled(); expect(h.d.sink).not.toHaveBeenCalled();
+      costUsd: 0.03,
+      inputTokens: 100,
+      outputTokens: 10,
+    });
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({
+      accepted: 0,
+      costUsd: 0.03,
+      runs: [{ status: verdict === 'none' ? 'abstained' : 'malformed' }],
+    });
+    expect(h.d.review).not.toHaveBeenCalled();
+    expect(h.d.sink).not.toHaveBeenCalled();
   });
 
   it('an actual generation overrun is fully charged and prevents the next phase', async () => {
     const h = harness();
-    h.llm.mockResolvedValue({ text: '', json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
-      costUsd: 1.05, inputTokens: 100, outputTokens: 10 });
+    h.llm.mockResolvedValue({
+      text: '',
+      json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
+      costUsd: 1.05,
+      inputTokens: 100,
+      outputTokens: 10,
+    });
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'cycle-cost-cap', costUsd: 1.05, accepted: 0 });
-    expect(h.llm).toHaveBeenCalledTimes(1); expect(h.d.review).not.toHaveBeenCalled();
+    expect(h.llm).toHaveBeenCalledTimes(1);
+    expect(h.d.review).not.toHaveBeenCalled();
   });
 
   it('AUTO-REQ-M-002-P-005-counterexamples: failed controls retain successful sibling cost and unknown reservations', async () => {
     const h = harness();
     h.llm.mockImplementation(async (input) => {
-      if (input.model === 'dreamer') return { text: '', json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
-        costUsd: 0.01, inputTokens: 100, outputTokens: 10 };
+      if (input.model === 'dreamer')
+        return {
+          text: '',
+          json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate },
+          costUsd: 0.01,
+          inputTokens: 100,
+          outputTokens: 10,
+        };
       if (input.messages[0]?.content === 'control-b') throw new Error('provider disconnected');
       return { text: '', costUsd: 0.07, inputTokens: 100, outputTokens: 10 };
     });
-    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ accepted: 0, costUsd: 0.13, runs: [{ status: 'error' }] });
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({
+      accepted: 0,
+      costUsd: 0.13,
+      runs: [{ status: 'error' }],
+    });
     const calls = dreamCapabilityRun(h.row(dreamRunId('cycle-1', 0)))!.calls;
     expect(calls.find((c) => c.phase === 'control-b')).toMatchObject({ status: 'unknown', reservedUsd: 0.05 });
     expect(calls.some((c) => c.phase === 'review')).toBe(false);
@@ -223,18 +370,22 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     const h = harness();
     h.d.canContinue = async () => h.llm.mock.calls.length === 0;
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'aborted', costUsd: 0.01 });
-    expect(h.d.review).not.toHaveBeenCalled(); expect(h.d.sink).not.toHaveBeenCalled();
+    expect(h.d.review).not.toHaveBeenCalled();
+    expect(h.d.sink).not.toHaveBeenCalled();
   });
 
   it('abort reaches transport and settles unknown cost even if the provider ignores cancellation', async () => {
-    const h = harness(), ctrl = new AbortController();
+    const h = harness(),
+      ctrl = new AbortController();
     h.llm.mockImplementation(async (input) => {
       expect(input.signal).toBeDefined();
       ctrl.abort(new Error('owner cancelled'));
       return await new Promise<never>(() => {});
     });
     expect(await runDreamCycle({ ...h.input, signal: ctrl.signal }, h.d)).toMatchObject({
-      reason: 'aborted', costUsd: 0.05, runs: [{ status: 'error' }],
+      reason: 'aborted',
+      costUsd: 0.05,
+      runs: [{ status: 'error' }],
     });
     expect(h.d.sink).not.toHaveBeenCalled();
   });
@@ -243,18 +394,47 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     const h = harness();
     h.runs.set(dreamRunId('cycle-1', 0), { ...f.run, startedAt: new Date().toISOString() });
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'in-progress', attempts: 0 });
-    expect(h.llm).not.toHaveBeenCalled(); expect(h.d.finalizeRun).not.toHaveBeenCalled();
+    expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.finalizeRun).not.toHaveBeenCalled();
   });
 
   it('an expired interrupted run preserves uncertain spend without repeating the call', async () => {
     const h = harness();
-    const r = structuredClone(f.run); r.runId = dreamRunId('cycle-1', 0); r.review = null;
+    const r = structuredClone(f.run);
+    r.runId = dreamRunId('cycle-1', 0);
+    r.review = null;
     const p = dreamCapabilityRun(r)!;
-    p.calls = [{ callId: 'generation', phase: 'generation', model: 'dreamer', reservedUsd: 0.2,
-      status: 'reserved', usage: null, error: null }];
-    r.outcome = { capabilityRun: p }; r.costUsd = 0.2;
+    p.calls = [
+      {
+        callId: 'generation',
+        phase: 'generation',
+        model: 'dreamer',
+        reservedUsd: 0.2,
+        status: 'reserved',
+        usage: null,
+        error: null,
+      },
+    ];
+    r.outcome = { capabilityRun: p };
+    r.costUsd = 0.2;
     h.runs.set(r.runId, r);
-    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ costUsd: 0.2, runs: [{ status: 'error', replayed: true }] });
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({
+      costUsd: 0.2,
+      runs: [{ status: 'error', replayed: true }],
+    });
+    expect(h.llm).not.toHaveBeenCalled();
+  });
+
+  it('an exclusive durable-workflow replay recovers immediately instead of stranding a recent interrupted row', async () => {
+    const h = harness();
+    h.d.exclusiveReplay = true;
+    h.runs.set(dreamRunId('cycle-1', 0), {
+      ...f.run,
+      runId: dreamRunId('cycle-1', 0),
+      review: null,
+      startedAt: new Date().toISOString(),
+    });
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ runs: [{ status: 'error', replayed: true }] });
     expect(h.llm).not.toHaveBeenCalled();
   });
 
@@ -262,6 +442,7 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     const h = harness();
     h.runs.set(dreamRunId('cycle-1', 0), { ...f.run, runId: dreamRunId('cycle-1', 0) });
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ accepted: 1, runs: [{ replayed: true }] });
-    expect(h.d.sink).toHaveBeenCalledTimes(1); expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.sink).toHaveBeenCalledTimes(1);
+    expect(h.llm).not.toHaveBeenCalled();
   });
 });

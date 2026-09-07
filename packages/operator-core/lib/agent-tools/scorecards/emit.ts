@@ -126,10 +126,20 @@ export const SCORECARD_EMIT_TIMEOUT_SEC = 15 * 60;
 export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 13 * 60_000;
 
 const specTestAdequacyFingerprintSchema = z.string().trim().min(1).max(256);
+const specTestAdequacyEvaluatorBuildSchema = z
+  .object({
+    // `sha:null` is an honest identity for a bundled evaluator that cannot prove
+    // its source revision; the version remains useful for distinguishing builds.
+    sha: z.string().trim().min(1).max(256).nullable(),
+    version: z.string().trim().min(1).max(120),
+  })
+  .strict();
 const specTestAdequacyRerunRecipeSchema = z
   .object({
     schemaVersion: z.literal(1),
     evaluator: z.literal('plans:evaluate-spec-test-adequacy'),
+    // Optional for historical cards; current evaluator output always stamps it.
+    evaluatorBuild: specTestAdequacyEvaluatorBuildSchema.optional(),
     // The plan class the recorded verdicts were produced under. REQUIRED by the
     // evaluator and it materially moves `plan-class-risk-floor`, so a card that did
     // not record it forced a re-runner to GUESS one of four values — a wrong guess

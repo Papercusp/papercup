@@ -1182,6 +1182,16 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-22613070628418671: db:migrate declares timeoutSec=1020
+// (MAX_DRAIN_SEC 300 + 2*MAX_LOCK_TIMEOUT_SQL_SEC 600 + 120). The MCP
+// transport adds a 5s settlement buffer, so the effective server deadline is
+// 1,025s. The old foreground 60s client deadline could report MCP -32001
+// while the migration was still legitimately draining behind a holder. Keep
+// this migration-specific client budget above that effective deadline with a
+// 5s delivery margin, preserving the server's typed result for both direct
+// and tools:invoke-wrapped calls.
+export const PTOOL_DB_MIGRATE_TIMEOUT_MS = 1_030_000;
+
 // EI-22361433147291495: work_items:complete declares a 120s server budget after
 // a legitimate proxy continuation took 61.8s. The MCP transport adds its 5s
 // handler buffer, so keep this client deadline above the effective 125s boundary
@@ -1436,11 +1446,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // exceed the ordinary 30s client budget during a busy fleet; preserve the
   // server's structured roster or typed timeout instead of -32001.
   ['coord:presence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  // EI-21276159817895096: `db:migrate` declares a 1020s server-side timeout,
-  // but the client must stay above the MCP transport cap to observe its
-  // structured verdict instead of cutting the request off at 30s. The
-  // foreground budget is the smallest existing client deadline that does so.
-  ['db:migrate', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-22613070628418671: `db:migrate` declares a 1020s server-side timeout;
+  // the generic foreground budget is only 60s and can still cut the client off
+  // while the server is legitimately draining behind a holder. Keep the client
+  // above the effective 1025s MCP deadline so the structured verdict wins.
+  ['db:migrate', PTOOL_DB_MIGRATE_TIMEOUT_MS],
   // EI-21574172453638335: locks:acquire permits a bounded blocking wait up to
   // MAX_LOCK_WAIT_SEC (45s) plus its final-busy/cleanup tail. Keep the direct
   // and deferred tools:invoke paths outside the MCP transport cap so a queued

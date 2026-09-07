@@ -9,8 +9,7 @@
  */
 import http from 'node:http';
 import net from 'node:net';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
@@ -176,7 +175,4 @@ export function startPortalProxy(overrides = {}) {
   return server;
 }
 
-const invokedAsScript = process.argv[1]
-  ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-  : false;
-if (invokedAsScript) startPortalProxy();
+if (isCliEntry(import.meta.url)) startPortalProxy();

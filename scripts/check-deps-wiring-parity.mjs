@@ -777,6 +777,18 @@ const XHIVE_ROLE_ASYMMETRY =
   'hive-B (:119) only receives, and cross-hive-wiring.ts:455 reads the seam only on the send leg.';
 
 /**
+ * `McpProxyOptions` has two intentionally exclusive dynamic-target modes.
+ * The packaged CLI selects `resolveTargets` for ordered multi-candidate failover,
+ * while host-bootstrap's stale-bundle fallback selects `resolveTarget` so it can
+ * re-read operator.json and preserve the static-port fallback on every attempt.
+ * resolveTargetCandidates checks the plural resolver first, so wiring both would
+ * silently disable the fallback path rather than recover a missing concern.
+ */
+const MCP_PROXY_TARGET_MODE =
+  'benign: mutually exclusive target modes — the packaged CLI uses resolveTargets for ordered failover; ' +
+  'host-bootstrap uses resolveTarget for operator.json plus static-port fallback, and wiring both would shadow the latter.';
+
+/**
  * 2026-09-05 (gate red on frozen candidate 50ed2739, adjudicated by the LIVE_GATE_OPS holder) —
  * `GuardSpec` / `ExclusiveWaitParams` carry two seam FAMILIES that are mutually exclusive BY
  * THE INTERFACE'S OWN CONTRACT (resource-lock-guard.ts `GuardSpec` doc comments):
@@ -852,6 +864,7 @@ const FAIL_BASELINE = new Map([
   ['GuardSpec|apps/operator/lib/release/deploy-deps.ts|onTick', WAIT_MODE_SPECIFIC_SEAM],
   ['GuardSpec|packages/operator-core/lib/agent-tools/db/migrate.ts|hostLocalOwnerPid,onStaleHolderReclaimed', WAIT_MODE_SPECIFIC_SEAM],
   ['GuardSpec|packages/operator-core/lib/agent-tools/dev/restart.ts|hostLocalOwnerPid,onStaleHolderReclaimed', WAIT_MODE_SPECIFIC_SEAM],
+  ['McpProxyOptions|apps/operator/bin/host-bootstrap.ts|resolveTargets', MCP_PROXY_TARGET_MODE],
 ]);
 
 /** The line-independent identity a baseline row matches on. */

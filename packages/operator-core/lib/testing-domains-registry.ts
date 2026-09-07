@@ -1450,6 +1450,15 @@ defineTestDomain({
   tier: 'domain',
   sections: [
     {
+      id: 'feature-change-reconciliation',
+      label: 'Feature-change reconciliation',
+      description:
+        'Durable aggregate validation for feature-change candidate settlement, terminal-shard coverage, and honest zero-state readiness.',
+      globs: [
+        'scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-aggregate.test.mjs',
+      ],
+    },
+    {
       id: 'wake-liveness',
       label: 'C4 liveness matrix + EI-152',
       description: 'The wake-executor liveness×handle/socket matrix over the REAL socket seam; EI-152 (no-handle + live socket → socket-inject, not park) verified red-on-pre-fix.',

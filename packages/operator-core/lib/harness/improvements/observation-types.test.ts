@@ -255,6 +255,44 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
   });
 
+  it('round-trips the evaluator build stamp while preserving historical unstamped recipes', () => {
+    const recipe = {
+      schemaVersion: 1 as const,
+      evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      classRef: 'plan-class-feature-ship',
+      selection: {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidence: [],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness' as const,
+        classifier: 'classifySpecEvidenceCurrentness' as const,
+        unknownWhenMissing: true as const,
+      },
+    };
+    const stamped = asStructuredObservation({
+      rerunRecipe: {
+        ...recipe,
+        evaluatorBuild: { sha: 'abc1234', version: '0.0.13' },
+      },
+    });
+    expect(stamped?.rerunRecipe?.evaluatorBuild).toEqual({ sha: 'abc1234', version: '0.0.13' });
+
+    const historical = asStructuredObservation({ rerunRecipe: recipe });
+    expect(historical?.rerunRecipe).toBeDefined();
+    expect(historical?.rerunRecipe).not.toHaveProperty('evaluatorBuild');
+
+    expect(
+      asStructuredObservation({
+        rerunRecipe: { ...recipe, evaluatorBuild: { sha: 42, version: '0.0.13' } },
+      })?.rerunRecipe,
+    ).toBeUndefined();
+  });
+
   it('round-trips native Cargo check runs and drops malformed native records', () => {
     const out = asStructuredObservation({
       rubricRef: 'pui-tui-remediation-and-consolidation-2026-08-27-acceptance',

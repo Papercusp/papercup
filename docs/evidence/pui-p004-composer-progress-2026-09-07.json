@@ -3,7 +3,7 @@
   "plan": "pui-first-party-public-release-2026-09-07",
   "planItem": "P-004",
   "workItem": "WI-10000426",
-  "status": "all-local-verification-passed-acceptance-audits-pending",
+  "status": "local-verification-and-independent-acceptance-audits-passed",
   "verifiedAt": "2026-09-07T16:46:20.155752+00:00",
   "files": {
     "apps/tui/src/app.rs": "74e096492d503e2348325ea1e35470fca3d77a015a57f3026cd8722df32f9593",
@@ -148,8 +148,7 @@
     "draftGuidance": "EI-22620231573194732 done"
   },
   "remaining": [
-    "Bind exact revision6 R01/R02 evidence, evaluate adequacy, emit cards and obtain independent audit",
-    "Complete P004, proceed P005 onward including fullP016; preserve explicitP015publicpublicationgate"
+    "Proceed through P005 and the remaining approved plan, including full P016; preserve the explicit P015 public-publication gate"
   ],
   "finalRegression": {
     "command": "cd apps/tui && ../../scripts/pc-heavy.sh bash -c 'cargo test -- --quiet && cargo clippy --all-targets -- -D warnings'",
@@ -173,5 +172,31 @@
   "sourceCapture": {
     "beforeAndAfterMatched": true,
     "binaryMatched": true
+  },
+  "specEvidenceBindings": [
+    1518,
+    1519,
+    1520
+  ],
+  "adequacyVerdict": {
+    "pass": 2,
+    "fail": 0,
+    "unknown": 0,
+    "revision": 6,
+    "scorecards": {
+      "AUTO-BAR-R-01-P-004": "EI-22622187900686088",
+      "AUTO-BAR-R-02-P-004": "EI-22622190068860687"
+    }
+  },
+  "independentAudits": {
+    "status": "passed",
+    "reviewWorkItem": "WI-10000571",
+    "reviewer": "su-6ec466fb-ee6b-4b41-9cb4-6279a5116b77",
+    "cards": {
+      "AUTO-BAR-R-01-P-004": "EI-22622671356059891",
+      "AUTO-BAR-R-02-P-004": "EI-22622764744696660"
+    },
+    "verification": "Reviewer independently reran the real PTY/Hono/isolated-PG suite (8/8, no skips), replayed both exact evaluators, checked source/fixture/test/binary hashes, and confirmed both base scorecards carry passing audits. All named source and fixture hashes plus the binary were checked again before closure and still matched.",
+    "scope": "P004 only; installed real-provider acceptance remains P005."
   }
 }

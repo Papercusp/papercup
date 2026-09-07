@@ -306,6 +306,43 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('accepts and persists the evaluator build identity while keeping unstamped history compatible', async () => {
+    const stamped = {
+      ...RERUN_RECIPE,
+      evaluatorBuild: { sha: 'abc1234', version: '0.0.13' },
+    };
+    expect(
+      scorecardEmitArgs.safeParse({
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        rerunRecipe: stamped,
+      }).success,
+    ).toBe(true);
+
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS, rerunRecipe: stamped },
+      { createdBy: 'su-1' },
+    );
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rerunRecipe: stamped } },
+    });
+  });
+
+  it('rejects a malformed evaluator build stamp instead of accepting an unidentifiable recipe', () => {
+    const malformed = {
+      ...RERUN_RECIPE,
+      evaluatorBuild: { sha: 42, version: '0.0.13' },
+    };
+    expect(
+      scorecardEmitArgs.safeParse({
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        rerunRecipe: malformed,
+      }).success,
+    ).toBe(false);
+  });
+
   // EI-21670417404287969 / EI-21723288985786146 (and EI-21597519978995942, filed a
   // third time from a validator pass): the four nullable fingerprint dimensions were
   // `.nullable()` WITHOUT `.optional()`, making each a REQUIRED key that merely accepts
