@@ -493,7 +493,16 @@ describe('testing:run (integration)', () => {
   }, 180_000);
 
   it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {
-    const out = await body(call({ files: [GREEN_TARGET] }));
+    const out = await body(
+      call(
+        { files: [GREEN_TARGET] },
+        {
+          projectDir: REPO_ROOT,
+          harnessSlug: 'papercusp',
+          workspaceId: 'papercusp-workspace',
+        },
+      ),
+    );
 
     expect(out.ok, JSON.stringify(out)).toBe(true);
     if (typeof out.runId !== 'string') {
@@ -501,12 +510,21 @@ describe('testing:run (integration)', () => {
     }
 
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ file_path: string; status: string }>>`
-      SELECT file_path, status
+    const rows = await sql<Array<{ file_path: string; status: string; harness_slug: string | null; workspace_id: string | null }>>`
+      SELECT file_path, status, harness_slug, workspace_id
       FROM harness_shared.test_runs
       WHERE run_group_id = ${out.runId}
     `;
-    expect(rows).toEqual(expect.arrayContaining([{ file_path: GREEN_TARGET, status: 'pass' }]));
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        {
+          file_path: GREEN_TARGET,
+          status: 'pass',
+          harness_slug: 'papercusp',
+          workspace_id: 'papercusp-workspace',
+        },
+      ]),
+    );
   }, 180_000);
 
   it('accepts a workspace-relative test path and expands it before routing', async () => {

@@ -1399,6 +1399,9 @@ export async function runTestFilesCore(opts: {
   maxFailures?: number;
   testNamePattern?: string;
   signal?: AbortSignal;
+  /** Request scope to stamp on the reporter's durable test-run rows. */
+  workspaceId?: string;
+  harnessSlug?: string;
 }): Promise<TestFilesCoreResult> {
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
@@ -1481,6 +1484,12 @@ export async function runTestFilesCore(opts: {
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
+      ...(opts.harnessSlug && opts.harnessSlug !== '*'
+        ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug }
+        : {}),
+      ...(opts.workspaceId && opts.workspaceId !== '*'
+        ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId }
+        : {}),
     };
     // `testing:run` can itself be invoked from the repository's pc-heavy
     // wrapper. That wrapper exports a one-shot readiness/finalization marker
@@ -1874,6 +1883,8 @@ export default defineTool({
       root: rootSelection.root,
       timeoutMs,
       signal: ctx.signal,
+      ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
+      ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
