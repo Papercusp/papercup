@@ -1,0 +1,73 @@
+[
+  {
+    "app": "learning",
+    "elapsed": 0,
+    "url": "http://127.0.0.1:3081/?app=learning",
+    "placeholder": true,
+    "text": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\nStart voice chat\nDownload TUI\nAlso available as a desktop app.\nDownload desktop version\nNot in the web portal yet\n\nApp is on the way. Everything else in the rail is live, and you can ask Papercup about it from the search bar above."
+  },
+  {
+    "app": "learning",
+    "elapsed": 3000,
+    "url": "http://127.0.0.1:3081/?app=learning&scope=all",
+    "theme": "dark",
+    "placeholder": false,
+    "text": "Learning\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡41 AGENTS RUNNING · 33 THINKING\n703 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nObserve\nAnalyze\ndata unavailable\nImprove\nRetain\nVerify\npaused\n$0.00\nLearning controls for\npapercusp\nlearning off\nscout\ngym\nlanes\n11/11\n$560.67+\nLearning controls for\ncalendar\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nemail\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nphone-app\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nportal\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nstonebrook-android-20260821\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nthornbury-iphone-20260821\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\n+19 off\n\nWhat the learning loop produced: each idea "
+  },
+  {
+    "app": "learning",
+    "elapsed": 5000,
+    "url": "http://127.0.0.1:3081/?app=learning&scope=all",
+    "theme": "dark",
+    "placeholder": false,
+    "text": "Learning\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡41 AGENTS RUNNING · 33 THINKING\n703 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nObserve\nAnalyze\ndata unavailable\nImprove\nRetain\nVerify\npaused\n$0.00\nLearning controls for\npapercusp\nlearning off\nscout\ngym\nlanes\n11/11\n$560.67+\nLearning controls for\ncalendar\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nemail\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nphone-app\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nportal\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nstonebrook-android-20260821\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nthornbury-iphone-20260821\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\n+19 off\n\nWhat the learning loop produced: each idea "
+  },
+  {
+    "app": "workflows",
+    "elapsed": 0,
+    "url": "http://127.0.0.1:3081/?app=workflows",
+    "theme": "dark",
+    "placeholder": true,
+    "text": "Workflow Editor\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\nStart voice chat\nDownload TUI\nAlso available as a desktop app.\nDownload desktop version\nNot in the web portal yet\n\nApp is on the way. Everything else in the rail is live, and you can ask Papercup about it from the search bar above."
+  },
+  {
+    "app": "workflows",
+    "elapsed": 3000,
+    "url": "http://127.0.0.1:3081/?app=workflows",
+    "theme": "dark",
+    "placeholder": false,
+    "text": "Workflow Editor\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡41 AGENTS RUNNING · 32 THINKING\n700 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nAUTOMATION CONTROL\nWorkflows\n12 triggered · 4764 routines · 264 system tasks\n\nCreate, monitor, and repair everything that runs without you.\n\nSchedule\n6/10\nContacts\ndisabled\nGcal\n1/3\nGmail\n1/4\nRefresh\nNew workflow\nBuild with the workflow agent\n\nDescribe the trigger and outcome. The agent assembles the workflow for review.\n\nWhat should happen automatically?\nWire it\nWhen an email from a client arrives…\nNeeds you\ngcal is disabled\nReconnect\nGmail is disabled\nReconnect\n47 workflows need attention\nReview\nVIEW\nWorkflows\nActivity\nSTATE\nAll\n5040\nNeeds attention\n47\nRunning\n268\nPaused\n4732\nKIND\nEvery kind\n5040\nTriggered\n12\nRoutines\n4764\nSystem\n264\nFIND\nSORT\nAttention "
+  },
+  {
+    "app": "workflows",
+    "elapsed": 5000,
+    "url": "http://127.0.0.1:3081/?app=workflows",
+    "theme": "dark",
+    "placeholder": false,
+    "text": "Workflow Editor\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡41 AGENTS RUNNING · 32 THINKING\n700 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nAUTOMATION CONTROL\nWorkflows\n12 triggered · 4764 routines · 264 system tasks\n\nCreate, monitor, and repair everything that runs without you.\n\nSchedule\n6/10\nContacts\ndisabled\nGcal\n1/3\nGmail\n1/4\nRefresh\nNew workflow\nBuild with the workflow agent\n\nDescribe the trigger and outcome. The agent assembles the workflow for review.\n\nWhat should happen automatically?\nWire it\nWhen an email from a client arrives…\nNeeds you\ngcal is disabled\nReconnect\nGmail is disabled\nReconnect\n47 workflows need attention\nReview\nVIEW\nWorkflows\nActivity\nSTATE\nAll\n5040\nNeeds attention\n47\nRunning\n268\nPaused\n4732\nKIND\nEvery kind\n5040\nTriggered\n12\nRoutines\n4764\nSystem\n264\nFIND\nSORT\nAttention "
+  },
+  {
+    "app": "settings",
+    "elapsed": 0,
+    "url": "http://127.0.0.1:3081/?app=settings",
+    "theme": "dark",
+    "placeholder": true,
+    "text": "Settings\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\nStart voice chat\nDownload TUI\nNot in the web portal yet\n\nApp is on the way. Everything else in the rail is live, and you can ask Papercup about it from the search bar above."
+  },
+  {
+    "app": "settings",
+    "elapsed": 3000,
+    "url": "http://127.0.0.1:3081/?app=settings",
+    "theme": "dark",
+    "placeholder": false,
+    "text": "Settings\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡41 AGENTS RUNNING · 32 THINKING\n729 PROCESSES\nStart voice chat\nDownload TUI\n87\nPortal\n\nHow this portal looks on this device, and which agent answers for the workspace. Everything else is the workspace's own Settings, below.\n\nAPPEARANCE\n\nTheme for the portal. System follows your operating system.\n\nAsk Papercup\n\nWhich agent and model answers questions asked from the search bar.\n\nModel\nUse the default (sonnet[1m]:high)\nquick — claude-opus-5:xhigh\nstandard — claude-opus-5:xhigh\nsonnet-high — claude-opus-5:xhigh\ndeep — claude-opus-5:xhigh\nmax — claude-opus-5:xhigh\nox-alpha — openrouter/stealth/ox-alpha:max\nSomething else…\nBackend\nUse the default (claude-code)\nclaude-code\nomp\ncodex\n\nThe operator’s own default backend is claude-code. Ask Papercup does not follow it — it runs on the backend stored here.\n\n"
+  },
+  {
+    "app": "settings",
+    "elapsed": 5000,
+    "url": "http://127.0.0.1:3081/?app=settings",
+    "theme": "dark",
+    "placeholder": false,
+    "text": "Settings\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡41 AGENTS RUNNING · 32 THINKING\n729 PROCESSES\nStart voice chat\nDownload TUI\n87\nPortal\n\nHow this portal looks on this device, and which agent answers for the workspace. Everything else is the workspace's own Settings, below.\n\nAPPEARANCE\n\nTheme for the portal. System follows your operating system.\n\nAsk Papercup\n\nWhich agent and model answers questions asked from the search bar.\n\nModel\nUse the default (sonnet[1m]:high)\nquick — claude-opus-5:xhigh\nstandard — claude-opus-5:xhigh\nsonnet-high — claude-opus-5:xhigh\ndeep — claude-opus-5:xhigh\nmax — claude-opus-5:xhigh\nox-alpha — openrouter/stealth/ox-alpha:max\nSomething else…\nBackend\nUse the default (claude-code)\nclaude-code\nomp\ncodex\n\nThe operator’s own default backend is claude-code. Ask Papercup does not follow it — it runs on the backend stored here.\n\n"
+  }
+]

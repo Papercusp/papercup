@@ -129,11 +129,18 @@ export function isTestFile(file) {
  * directory. Derived by scanning the tracked file list, never hand-listed, so a module
  * added or deleted re-classifies itself with no edit here.
  *
+ * `git ls-files` intentionally includes an index-known path that is deleted in the
+ * working tree until that deletion is committed. The optional `exists` predicate lets
+ * a current-tree caller exclude those paths immediately; otherwise the guard asks the
+ * operator to DELETE a module and continues reporting it after the file is gone.
+ *
  * @param {string[]} files repo-relative tracked paths
+ * @param {(file:string)=>boolean} [exists] current-tree existence predicate
  * @returns {string[]} sorted repo-relative module paths
  */
-export function selectDetectorModules(files) {
+export function selectDetectorModules(files, exists = () => true) {
   return files
+    .filter((f) => exists(f))
     .filter((f) => /^(?:apps|packages|libs)\//.test(f))
     .filter((f) => DETECTOR_DIR_RE.test(f))
     .filter((f) => /\.tsx?$/.test(f))

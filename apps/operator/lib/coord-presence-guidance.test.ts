@@ -15,6 +15,21 @@ const PROMPT = join(
   'pot-instances',
   'papercup-pot.su.md',
 );
+const PROMPT_PROJECTIONS = [
+  join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    'papercusp-desktop',
+    'src-tauri',
+    'env-sidecars',
+    'staging',
+    'prompts',
+    'pot-instances',
+    'papercup-pot.su.md',
+  ),
+];
 
 describe('Papercusp SU fleet-monitoring guidance', () => {
   it('does not prescribe the rejected coord:presence fleet filter', () => {
@@ -22,5 +37,13 @@ describe('Papercusp SU fleet-monitoring guidance', () => {
 
     expect(source).toContain('`fleet:assignments`; use `coord:presence` for the live roster or a targeted owner lookup');
     expect(source).not.toContain('`coord:presence` filtered to the fleet');
+  });
+
+  it('keeps the committed desktop prompt projection byte-identical to its source', () => {
+    const source = readFileSync(PROMPT, 'utf8');
+
+    for (const projection of PROMPT_PROJECTIONS) {
+      expect(readFileSync(projection, 'utf8'), projection).toBe(source);
+    }
   });
 });
