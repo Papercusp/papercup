@@ -1515,6 +1515,12 @@ export default defineTool({
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
         const targetOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
+        // Any scripted brief is a real first-turn obligation. The headless
+        // spawner already has a native-transcript receipt for that obligation;
+        // require it here so a stale wrapper that ignores the option (missing
+        // receipt) and a host that reports negative proof both fail closed
+        // before the slower session-ledger verifier can return `null`.
+        const requireKickoffProof = Boolean(memberBrief || args.plan);
         try {
           return await spawnGovernedAgentProcess(
           {
@@ -1529,33 +1535,51 @@ export default defineTool({
               headless: !!foldedConfigs[i].headless,
             },
           },
-          (admissionContext) => {
+          async (admissionContext) => {
             const governedEnv = {
               ...env,
               PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),
             };
-            return foldedConfigs[i].headless
-              ? spawnHeadless({
-                  envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
-                  writeMcpJson: true,
-                  label: memberLabel,
-                  logDir: headlessLogDir,
-                  launchedBy: callerOwnerId ?? undefined,
-                  fleetSlug,
-                  // A successor is explicitly pre-pinned to the source owner; an
-                  // in-place resume re-attaches that owner. A fork deliberately gets
-                  // no stamp because it mints a distinct identity at boot.
-                  coordOwnerId: targetOwnerId,
-                })
-              : spawnConsole({
-                  envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
-                  label: memberLabel,
-                  writeMcpJson: true,
-                  scheme,
-                  allowDesktopBridge: true,
-                  // `pid` is the terminal emulator (or its launcher), not the
-                  // interactive shell that owns the tab. Capture the shell's
-                  // authenticated PID so respawn cleanup can pass it to
+            if (foldedConfigs[i].headless) {
+              const result = await spawnHeadless({
+                envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
+                writeMcpJson: true,
+                label: memberLabel,
+                logDir: headlessLogDir,
+                launchedBy: callerOwnerId ?? undefined,
+                fleetSlug,
+                kickoffProof: requireKickoffProof,
+                // A successor is explicitly pre-pinned to the source owner; an
+                // in-place resume re-attaches that owner. A fork deliberately gets
+                // no stamp because it mints a distinct identity at boot.
+                coordOwnerId: targetOwnerId,
+              });
+              if (result.status === 'ok' && requireKickoffProof && result.kickoffProof?.persisted !== true) {
+                return {
+                  status: 'error' as const,
+                  code: 502,
+                  error:
+                    `headless agent kickoff was not proven in the backend's native transcript ` +
+                    `(${result.kickoffProof?.reason ?? 'kickoff-proof-missing'}). ` +
+                    `Refusing launch success before the first turn; see ${result.logPath ?? 'the headless launch log'}.`,
+                };
+              }
+              return result;
+            }
+            return spawnConsole({
+              envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
+              label: memberLabel,
+              writeMcpJson: true,
+              scheme,
+              allowDesktopBridge: true,
+              // capability:launch-agent consumes this return value as proof
+              // that a member exists, so it must pay the visible spawner's
+              // bounded greeting-command receipt instead of treating a
+              // surviving terminal emulator as an agent.
+              verifyBootReceipt: true,
+              // `pid` is the terminal emulator (or its launcher), not the
+              // interactive shell that owns the tab. Capture the shell's
+              // authenticated PID so respawn cleanup can pass it to
                   // fleet:kill's terminal_pids path.
                   captureTerminalPid: true,
                   displayOverride: memberSpecs[i]?.display ?? args.display,
@@ -1565,8 +1589,8 @@ export default defineTool({
                   // exists) and resume/fork launches (EI-11578). Every visible agent
                   // launch is command-bearing, so reliability outranks the owner's
                   // normal client-server terminal preference here.
-                  preferProcessPerWindow: true,
-                });
+              preferProcessPerWindow: true,
+            });
           },
           );
         } catch (error) {

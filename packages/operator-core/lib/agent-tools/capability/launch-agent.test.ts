@@ -12,7 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import type { SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
+import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
@@ -124,7 +124,14 @@ const spawnConsoleMock = vi.fn(
     desktopEnvResolvedVia: 'active-seat',
   }),
 );
-const headlessSpawnResult = (childExit?: Promise<SpawnChildExit>): SpawnConsoleResult => ({
+const headlessSpawnResult = (
+  childExit?: Promise<SpawnChildExit>,
+  kickoffProof: KickoffProofResult | null = {
+    persisted: true,
+    nativeRef: '/native/launch.jsonl',
+    reason: null,
+  },
+): SpawnConsoleResult => ({
     status: 'ok',
     pid: 777,
     terminal: 'headless',
@@ -135,6 +142,7 @@ const headlessSpawnResult = (childExit?: Promise<SpawnChildExit>): SpawnConsoleR
     display: null,
     desktopEnvResolvedVia: null,
     ...(childExit ? { childExit } : {}),
+    ...(kickoffProof ? { kickoffProof } : {}),
 });
 const HEADLESS_RESUME_LOG_PATH = '/tmp/papercusp-ws/fleet-logs/judge.log';
 const spawnHeadlessMock = vi.fn(
@@ -873,6 +881,7 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       logDir: '/tmp/papercusp-ws/fleet-logs',
       launchedBy: 'su-caller',
       fleetSlug: null,
+      kickoffProof: true,
     });
     expect(dataOf(res)?.launch).toMatchObject({
       deduped: false,
@@ -888,6 +897,25 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
     });
     expect(textOf(res)).toContain('grep-safe log: /tmp/papercusp-ws/fleet-logs/judge.normalized.log');
     expect(textOf(res)).toContain('EI-9748');
+  });
+
+  it.each([
+    ['missing', null, 'kickoff-proof-missing'],
+    [
+      'negative',
+      { persisted: false, nativeRef: null, reason: 'native-turn-marker-timeout' },
+      'native-turn-marker-timeout',
+    ],
+  ])('fails closed on a %s native kickoff proof before reporting a headless launch', async (_label, proof, reason) => {
+    spawnHeadlessMock.mockResolvedValueOnce(headlessSpawnResult(undefined, proof));
+
+    const res = await launchAgent.handler({ brief: 'grade the item independently', headless: true }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain(reason);
+    expect(textOf(res)).toContain('Refusing launch success before the first turn');
+    expect(verifyFreshLaunchStartedMock).not.toHaveBeenCalled();
+    expect(dataOf(res)?.launch).toMatchObject({ opened: 0, failed: 1 });
   });
 });
 
@@ -1208,7 +1236,10 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('EI-21010422711013687: a FRESH launch also forces process-per-window so gnome-terminal cannot drop the psu command', async () => {
     await launchAgent.handler({ brief: 'fresh work' }, ctx);
-    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({
+      preferProcessPerWindow: true,
+      verifyBootReceipt: true,
+    });
   });
 
   it('resumes a dead agent BY AGENT ID — no uuid hunting', async () => {
