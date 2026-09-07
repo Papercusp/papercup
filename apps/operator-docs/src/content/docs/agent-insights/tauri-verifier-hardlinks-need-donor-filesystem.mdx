@@ -5,27 +5,32 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Tauri verifier hardlink snapshots need the donor filesystem"
-description: "Select verifier scratch on the dependency donor filesystem; keep disk-capacity checks separate from hardlink compatibility."
+description: "Keep dependency hardlinks on their donor filesystem and bulk verifier state on TMPDIR."
 type: Insight
 discovered: 2026-09-07
 tags: ["testing", "tauri", "filesystem"]
 status: active
+documents:
+  - "scripts/verify-tauri-headless.sh"
+  - "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts"
 plans:
   - "shared-agent-obligations-and-briefs-2026-09-05"
 ---
 
 ## Failure and cause
 
-The headless verifier copied its operator source under TMPDIR and then invoked the existing pinned-deps hardlink snapshot. On this host the canonical repository and /tmp are different filesystems. The dependency helper correctly refused before desktop startup; changing retries or the Tauri bridge cannot repair that mismatch.
+The headless verifier copied its operator source under TMPDIR and invoked the existing pinned-deps hardlink snapshot. On this host the repository and /tmp are different filesystems. The dependency helper correctly refused before desktop startup. A first same-device workaround moved every verifier artifact to the donor device; this unnecessarily moved the frozen SPA and temporary database onto the constrained root filesystem too.
 
 ## Current behavior
 
-scripts/verify-tauri-headless.sh now selects its work root with select_verifier_work_root. It preserves a compatible TMPDIR. If its filesystem differs from the donor, it creates the work directory beneath the repository's ignored .papercusp/tmp, verifies that filesystem too, and refuses if no compatible root exists. The existing snapshot exclusions already omit .papercusp, preventing recursive copies. No new invocation flag is needed.
+scripts/verify-tauri-headless.sh selects OPERATOR_SNAPSHOT_PARENT with select_verifier_snapshot_root. It preserves a compatible TMPDIR; otherwise it uses the repository's ignored .papercusp/tmp and verifies its device. Only the operator source/dependency snapshot uses that parent. WORK stays on TMPDIR, so the SPA, WebView profile and optional isolated database retain the larger temp volume.
+
+Both scratch roots receive the same live-owner marker, including boot-only handoff. Normal teardown, generated stop.sh and snapshot-allocation failure clean the operator snapshot container. Existing .papercusp snapshot exclusions prevent recursive copies. No new invocation flag is needed.
 
 ## Verification and limits
 
-EI-22588292228855829 records the original cross-device refusal, eight passing source-snapshot regression tests including three executable chooser cases, and a subsequent real boot that successfully snapshotted the dependency trees. The tests cover same-device preference, cross-device fallback, and a fallback mounted on the wrong device.
+EI-22588292228855829 records the original cross-device refusal and a real boot that subsequently snapshotted dependencies successfully. The current focused source-snapshot/SPA-isolation/boot-only-ownership suite passes17tests, including executable chooser cases for same-device preference, cross-device fallback and an incompatible fallback.
 
-Filesystem compatibility does not prove capacity. The subsequent boot hit a separate ENOSPC during npm startup; aggregate source, SPA, database and runtime capacity belongs to EI-22589054433344154 / EI-22588975697224744. Do not describe successful snapshot allocation as successful GUI verification.
+Filesystem compatibility does not prove capacity. The first all-bulk fallback hit ENOSPC during npm startup. The separate aggregate estimate/reservation preflight remains tracked as EI-22589054433344154; EI-22588975697224744 records the actual startup incident. A third real boot is verifying the split-root layout; do not infer GUI success from a successful copy or these unit tests.
 
-Re-run: node scripts/test-files.mjs apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts; then use the normal headless verifier entrypoint. Preserve its per-run ownership and teardown rather than deleting other sessions' scratch.
+Re-run node scripts/test-files.mjs apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts apps/operator/lib/verify-tauri-headless-spa-isolation.test.ts apps/operator/lib/verify-tauri-headless-boot-only-ownership.test.ts, then use the normal verifier entrypoint. Preserve its per-run ownership and teardown.
