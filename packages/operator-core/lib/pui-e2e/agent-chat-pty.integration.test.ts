@@ -124,6 +124,7 @@ const OWNER = 'pui-agent-chat-e2e-owner';
 // preserves every console warning, and writes no request bodies or credentials.
 const timingTrace: Array<Record<string, unknown>> = [];
 const namedQueryRequests: string[] = [];
+const namedQueryReplies: Array<{ name: string; status: number }> = [];
 let timingInspector: InspectorSession | undefined;
 let timingInterval: ReturnType<typeof setInterval> | undefined;
 function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
@@ -557,6 +558,9 @@ beforeAll(async () => {
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
       let response = await app.fetch(request, env);
       traceTiming('request-end', { ...traceFields, elapsedMs: performance.now() - requestStarted, status: response.status });
+      if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
+        namedQueryReplies.push({ name: traceFields.query, status: response.status });
+      }
       if (isCommand) {
         const body = await response.clone().json();
         commandReplies.push({ status: response.status, replayed: body.replayed });
@@ -641,6 +645,7 @@ afterEach(stopEngines);
 
 beforeEach(async () => {
   namedQueryRequests.length = 0;
+  namedQueryReplies.length = 0;
   sessionTraffic = [];
   commandPosts = [];
   commandReplies = [];
@@ -728,10 +733,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
 
   test('Network loads on navigation, manual refresh, and saved-view restoration', async () => {
     const pane = new PuiPane(bin, operatorPort, home);
-    const networkReads = () => namedQueryRequests.filter((name) => name === 'network.board').length;
+    const networkReads = () => namedQueryReplies.filter((reply) => reply.name === 'network.board' && reply.status === 200).length;
     try {
       await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      expect(networkReads()).toBe(0);
+      expect(namedQueryRequests).not.toContain('network.board');
       pane.write('n');
       await pane.waitFor('Network');
       await vi.waitFor(() => expect(networkReads()).toBeGreaterThan(0), { timeout: 30_000 });
