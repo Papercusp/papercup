@@ -794,7 +794,10 @@ export function projectAcceptanceBarContractSnapshot(
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
     const adequacyChecks = requiredTestLayers.length === 0 ? [] : clauses.map((clause) => {
-      const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers },
+      // A clause may add proof obligations above its BAR's minimum. Keep those
+      // obligations when grading instead of replacing them with the BAR floor.
+      const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
+      const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers: clauseTestLayers },
         evidence: currentEvidence, classRef });
       return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
         wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
@@ -845,7 +848,7 @@ export function projectAcceptanceBarContractSnapshot(
           clause.sourceBar?.rubricSlug !== rubric?.rubricId ||
           clause.sourceBar?.rubricRevision !== rubricRevision ||
           clause.sourceBar?.evidencePlane !== criterion.evidencePlane ||
-          JSON.stringify(normalized(clause.requiredTestLayers)) !== JSON.stringify(requiredTestLayers),
+          requiredTestLayers.some((layer) => !normalized(clause.requiredTestLayers).includes(layer)),
       )
     )
       addCode('bar_snapshot_projection_stale');
