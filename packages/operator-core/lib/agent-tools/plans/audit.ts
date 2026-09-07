@@ -561,14 +561,15 @@ export default defineTool({
               SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker, turns.text
                 FROM harness_shared.session_turns AS turns
                WHERE turns.workspace_id = ${workspaceId}
-                 -- Keep the two columns paired with one unnest. Bind each JS array
-                 -- directly: sql.array(...) expands a comma-separated SQL fragment
-                 -- here, which is invalid as one unnest argument on getOrgPg.
+                 -- Keep the two columns paired with one unnest. sql.array() is
+                 -- required here: binding a JS array directly expands it as a
+                 -- comma-separated SQL fragment, which is invalid as one unnest
+                 -- argument on getOrgPg.
                  AND EXISTS (
                    SELECT 1
                      FROM unnest(
-                       ${sourceKinds}::text[],
-                       ${sessionIds}::text[]
+                       ${sql.array(sourceKinds)}::text[],
+                       ${sql.array(sessionIds)}::text[]
                      ) AS wanted(source_kind, session_id)
                     WHERE wanted.source_kind = turns.source_kind
                       AND wanted.session_id = turns.session_id
@@ -623,13 +624,13 @@ export default defineTool({
                   FROM harness_shared.session_turns AS turns
                  WHERE turns.workspace_id = ${workspaceId}
                    -- Keep the two key columns paired; a pair of independent ANY
-                   -- predicates would admit cross-session combinations. Bind each
-                   -- JS array directly rather than expanding a sql.array(...) list.
+                   -- predicates would admit cross-session combinations. Use
+                   -- sql.array() so each array remains one SQL argument.
                    AND EXISTS (
                      SELECT 1
                        FROM unnest(
-                         ${sourceKinds}::text[],
-                         ${sessionIds}::text[]
+                         ${sql.array(sourceKinds)}::text[],
+                         ${sql.array(sessionIds)}::text[]
                        ) AS wanted(source_kind, session_id)
                       WHERE wanted.source_kind = turns.source_kind
                         AND wanted.session_id = turns.session_id

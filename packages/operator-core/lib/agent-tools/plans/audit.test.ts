@@ -694,7 +694,14 @@ describe('plans:audit phase:activation', () => {
       unmeasuredSessions: [],
       gapTurns: 0,
     });
-    expect(mockOrgSqlArray).not.toHaveBeenCalled();
+    // The real postgres tagged template must serialize each JS array as one
+    // array parameter. Direct interpolation expands a multi-value array into
+    // comma-separated SQL and causes the production syntax error near `,`.
+    expect(mockOrgSqlArray).toHaveBeenCalledTimes(4);
+    expect(mockOrgSqlArray).toHaveBeenNthCalledWith(1, ['codex', 'claude']);
+    expect(mockOrgSqlArray).toHaveBeenNthCalledWith(2, ['session-full-id', 'session-b']);
+    expect(mockOrgSqlArray).toHaveBeenNthCalledWith(3, ['codex', 'claude']);
+    expect(mockOrgSqlArray).toHaveBeenNthCalledWith(4, ['session-full-id', 'session-b']);
     const unnestCalls = mockOrgSql.mock.calls.filter(([strings]) => (
       Array.isArray(strings) &&
       'raw' in strings &&
