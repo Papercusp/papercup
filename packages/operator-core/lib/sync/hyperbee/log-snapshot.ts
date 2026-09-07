@@ -131,6 +131,9 @@ export type SnapshotValueTransform = (
   },
 ) => unknown;
 
+/** Sentinel so a decoded `null`/`undefined` value is still treated as read-once. */
+const NO_DECODED_VALUE = Symbol('no-decoded-value');
+
 /** True iff `op` is a snapshot op (reserved table tag). */
 export function isSnapshotOp(op: { table?: string } | null | undefined): boolean {
   return !!op && op.table === SNAPSHOT_TABLE_TAG;
@@ -234,11 +237,12 @@ export class SnapshotRowFolder {
   /** Fold ONE op. Must be called in ascending log-index order (see the class note).
    * `decodedValue` is an internal read-once seam used by the producer diagnostics;
    * callers that do not already have the decoded value keep the original behavior. */
-  add(op: PeerLogOp, decodedValue?: unknown): void {
+  add(op: PeerLogOp, decodedValue: unknown = NO_DECODED_VALUE): void {
+    const decoded = decodedValue === NO_DECODED_VALUE ? op.value : decodedValue;
     if (isSnapshotOp(op)) {
       // A PRIOR snapshot expands: its rows (live AND tombstone) fold in as if they
       // were the ops they summarize, so re-snapshotting is correct + idempotent.
-      const payload = (decodedValue ?? op.value) as SnapshotPayload | undefined;
+      const payload = decoded as SnapshotPayload | undefined;
       if (payload && Array.isArray(payload.rows)) {
         for (const r of payload.rows) {
           if (this.excludeTables.has(r.table)) continue;
@@ -260,10 +264,10 @@ export class SnapshotRowFolder {
     if (this.excludeTables.has(op.table)) return;
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
-      const value = this.transformValue
-        ? this.transformValue(decodedValue ?? op.value, { table: op.table, hbKey: op.hbKey })
-        : (decodedValue ?? op.value);
-      if (value === DROP_SNAPSHOT_ROW) {
+      const rowValue = this.transformValue
+        ? this.transformValue(decoded, { table: op.table, hbKey: op.hbKey })
+        : decoded;
+      if (rowValue === DROP_SNAPSHOT_ROW) {
         // The key may have an earlier accepted winner. Dropping the latest PUT must
         // remove that stale winner rather than silently resurrecting it in the seed.
         this.latest.delete(key);
@@ -272,7 +276,7 @@ export class SnapshotRowFolder {
       this.latest.set(key, {
         table: op.table,
         hbKey: op.hbKey,
-        value,
+        value: rowValue,
         ts: op.ts,
         schema_version: op.schema_version,
         ...(op.hlc ? { hlc: op.hlc } : {}),

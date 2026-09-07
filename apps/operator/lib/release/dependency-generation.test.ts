@@ -504,12 +504,12 @@ describe('immutable dependency generation', () => {
       expect(oneChangedIdentity).not.toBe(fullIdentity);
       expect(
         statSync(join(oneChangedPath, 'tree/node_modules/pkg/index.js')).ino,
-      ).toBe(statSync(join(fullPath, 'tree/node_modules/pkg/index.js')).ino);
+      ).not.toBe(statSync(join(fullPath, 'tree/node_modules/pkg/index.js')).ino);
       expect(
         statSync(
           join(oneChangedPath, 'tree/packages/b/node_modules/other/index.js'),
         ).ino,
-      ).toBe(
+      ).not.toBe(
         statSync(join(fullPath, 'tree/packages/b/node_modules/other/index.js')).ino,
       );
       expect(
@@ -1375,12 +1375,13 @@ describe('immutable dependency generation', () => {
     expect(publishedPath(second.stdout)).toBe(publishedPath(first.stdout));
   }, NATIVE_SHELL_TIMEOUT_MS);
 
-  it('hardlinks on one filesystem and has an independent portable-copy fallback', () => {
+  it('materializes independent copies by default; hardlinks require an explicit opt-in', () => {
     const integration = makeIntegration();
     const result = publish(integration);
     expect(result.status, result.stderr).toBe(0);
     const generation = publishedPath(result.stdout);
     const source = join(generation, 'tree/node_modules');
+    const independent = join(integration, 'materialized-independent');
     const hardlinked = join(integration, 'materialized-hardlink');
     const copied = join(integration, 'materialized-copy');
     const wrapper = [
@@ -1389,8 +1390,23 @@ describe('immutable dependency generation', () => {
       'dependency_generation_materialize_tree "$SOURCE" "$DEST"',
     ].join('\n');
 
+    const independentResult = spawnSync('bash', ['-c', wrapper], {
+      env: { ...process.env, SCRIPT, SOURCE: source, DEST: independent },
+      encoding: 'utf8',
+    });
+    expect(independentResult.status, String(independentResult.stderr ?? '')).toBe(0);
+    expect(statSync(join(independent, 'pkg/index.js')).ino).not.toBe(
+      statSync(join(source, 'pkg/index.js')).ino,
+    );
+
     const hardlinkResult = spawnSync('bash', ['-c', wrapper], {
-      env: { ...process.env, SCRIPT, SOURCE: source, DEST: hardlinked },
+      env: {
+        ...process.env,
+        SCRIPT,
+        SOURCE: source,
+        DEST: hardlinked,
+        DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1',
+      },
       encoding: 'utf8',
     });
     expect(hardlinkResult.status, String(hardlinkResult.stderr ?? '')).toBe(0);

@@ -72,9 +72,17 @@ const goalLaunchMocks = vi.hoisted(() => ({
 vi.mock('../agent-tools/goals/start', () => ({
   buildGoalKickoffBrief: (o: { goalId: string }) => goalLaunchMocks.buildBrief(o),
 }));
-vi.mock('../goal-launch-settings', () => ({
-  resolveGoalLaunchForGoal: (input: unknown) => goalLaunchMocks.resolve(input),
-}));
+vi.mock('../goal-launch-settings', async () => {
+  // The shared bootstrap imports the complete goal write surface (create +
+  // update), so a partial hand-shaped mock silently loses whichever export the
+  // next tool adds. Preserve every real binding and replace only the resolver
+  // this ordering test controls; the DB module is already mocked above.
+  const actual = await vi.importActual<typeof import('../goal-launch-settings')>('../goal-launch-settings');
+  return {
+    ...actual,
+    resolveGoalLaunchForGoal: (input: unknown) => goalLaunchMocks.resolve(input),
+  };
+});
 
 type OkSpawn = Extract<SpawnConsoleResult, { status: 'ok' }>;
 const okHeadless = (): SpawnConsoleResult =>

@@ -1326,10 +1326,12 @@ dependency_generation_prune_ephemeral() {
     -exec rm -rf -- {} +
 }
 
-# Materialize from an immutable generation. Same-filesystem hardlinks are safe
-# because generation files have no write bits; directories are distinct, so a
-# checkpoint may prune/add directory entries without changing the generation.
-# Cross-filesystem and explicitly forced paths fall back to an independent copy.
+# Materialize from an immutable generation. Independent copy/reflink materialization
+# is the default: a release leg may run patchers or package tooling that changes files
+# in its checkout, and a hardlink would turn that write into a mutation of the
+# supposedly immutable generation (or of a predecessor that was itself hardlinked
+# to a live checkout). Hardlinks remain an explicit opt-in for callers that have
+# independently proved the source tree is immutable and never patched.
 dependency_generation_materialize_tree() {
   local src="$1" dest="$2" tmp old
   local source_device dest_device mode='copy'
@@ -1339,7 +1341,9 @@ dependency_generation_materialize_tree() {
   mkdir -p "$(dirname "$dest")"
   source_device="$(dependency_generation_device "$src")" || return 1
   dest_device="$(dependency_generation_device "$(dirname "$dest")")" || return 1
-  if [ "${DEPENDENCY_GENERATION_FORCE_COPY:-0}" != '1' ] && [ "$source_device" = "$dest_device" ]; then
+  if [ "${DEPENDENCY_GENERATION_ALLOW_HARDLINK:-0}" = '1' ] \
+    && [ "${DEPENDENCY_GENERATION_FORCE_COPY:-0}" != '1' ] \
+    && [ "$source_device" = "$dest_device" ]; then
     if cp -al "$src" "$tmp" 2>/dev/null; then
       mode='hardlink'
     else
@@ -1352,7 +1356,7 @@ dependency_generation_materialize_tree() {
   if [ -e "$dest" ]; then
     mv "$dest" "$old"
     mv "$tmp" "$dest"
-    # `cp -al` shares file inodes with the immutable generation, while
+    # A hardlink opt-in shares file inodes with the immutable generation, while
     # directories remain distinct. Make only retired directories writable so
     # rm -rf can remove their entries; recursively chmodding files would
     # mutate the published generation before deleting the retired checkout.
