@@ -240,9 +240,19 @@ export function startClaudeSuEngine(
       }
     })();
     await sdk.initializationResult();
-    const servers = await sdk.mcpServerStatus();
-    if (!servers.some((server) => server.name === 'papercusp-su' && server.status === 'connected')) {
-      throw new Error('Claude connected without the Papercusp SU tool server; reconnect the SU tool connection');
+    let servers = await sdk.mcpServerStatus();
+    let suServer = servers.find((server) => server.name === 'papercusp-su');
+    // SDK initialization can finish while an MCP connection is still pending.
+    // Keep the host starting within its existing deadline until that handshake
+    // settles; failed/missing/unauthenticated connections remain refusals.
+    while (suServer && new Set(['pending', 'connecting']).has(suServer.status)) {
+      if (closed) throw new Error('Claude connection closed during SU tool initialization');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      servers = await sdk.mcpServerStatus();
+      suServer = servers.find((server) => server.name === 'papercusp-su');
+    }
+    if (suServer?.status !== 'connected') {
+      throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
     }
     if (closed) throw new Error('Claude connection closed during startup');
     ready = true;
