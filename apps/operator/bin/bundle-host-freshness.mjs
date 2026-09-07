@@ -68,13 +68,17 @@ function sourceIdentity(repoRoot) {
   return { repoRoot: resolvedRoot, headSha };
 }
 
-function transientOutputName(path, manifestPath) {
+function transientOutputName(path, manifestPath, outfile) {
   const name = basename(path);
   return (
     resolve(path) === resolve(manifestPath) ||
     name === ".bundle-stale.json" ||
     name.endsWith(".build.lock") ||
     name.endsWith(".build-error.log") ||
+    // bundle-host.sh stamps before its EXIT trap removes the esbuild tmp
+    // metafile. It is build-private state, not part of the runnable output
+    // tree, so its later cleanup must not invalidate an otherwise exact proof.
+    name.startsWith(`${basename(outfile)}.tmp.`) ||
     name.startsWith(`${basename(manifestPath)}.tmp.`)
   );
 }
@@ -88,7 +92,8 @@ function outputTreeIdentity(outfile, manifestPath) {
       a.name.localeCompare(b.name),
     )) {
       const absolute = join(dir, entry.name);
-      if (transientOutputName(absolute, manifestPath)) continue;
+      if (transientOutputName(absolute, manifestPath, resolvedOutfile))
+        continue;
       const rel = relative(outDir, absolute).split("\\").join("/");
       if (entry.isDirectory()) {
         visit(absolute);

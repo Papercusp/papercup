@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,6 +102,15 @@ describe("bundle-host-freshness proof", () => {
 
   it("accepts the same clean HEAD, entry and complete output tree", () => {
     expect(run("stamp").status).toBe(0);
+    expect(run("check").status).toBe(0);
+  });
+
+  it("ignores the esbuild metafile removed by bundle-host.sh's EXIT trap after stamping", () => {
+    const metafile = `${outfile}.tmp.12345.meta.json`;
+    writeFileSync(metafile, '{"inputs":{}}\n');
+
+    expect(run("stamp").status).toBe(0);
+    unlinkSync(metafile);
     expect(run("check").status).toBe(0);
   });
 
