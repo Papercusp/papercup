@@ -9518,6 +9518,18 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
 });
 
 describe("startSupervisorBeat (WI-3898 P1: the beat self-reports its own pid/host)", () => {
+  it("an attached host reports its engine child's pid", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true }));
+    startSupervisorBeat("su-attached", {
+      pid: 4321,
+      fetchImpl,
+      token: "fixture",
+      setIntervalImpl: () => ({ unref() {} }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({ ownerId: "su-attached", pid: 4321 });
+  });
+
   it("the immediate first beat POSTs { ownerId, pid: process.pid, host: hostname() }", async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => {
