@@ -2426,6 +2426,7 @@ describe("psu-launcher arg parsing", () => {
       fork: false,
       agent: null,
       role: null,
+      stack: [],
       feature: null,
       workspace: null,
       harness: null,
@@ -2576,6 +2577,7 @@ describe("psu-launcher arg parsing", () => {
       fork: false,
       agent: "claude",
       role: null,
+      stack: [],
       feature: null,
       workspace: "ws1",
       harness: "papercup",
@@ -2613,6 +2615,13 @@ describe("psu-launcher arg parsing", () => {
       label: null,
       tui: null,
     });
+  });
+
+  it("parses repeatable identity stack refs in equals and space forms", () => {
+    expect(parseArgs(["--stack=domain:researcher", "--stack", "practice:concise"]).stack).toEqual([
+      "domain:researcher",
+      "practice:concise",
+    ]);
   });
 
   it("parses --resume (picker mode — no id)", () => {
