@@ -253,7 +253,7 @@ describe('readLastAssistantTurn / resolveTranscriptPath', () => {
   });
 });
 
-describe('readVerbatimTail (P-009 carry-document tail leg)', () => {
+describe('P-005-native-request-final-delivery-correlation: readVerbatimTail', () => {
   let sandbox: string;
   const claudeLine = (role: 'user' | 'assistant', text: string, ts: string) =>
     JSON.stringify({ type: role, timestamp: ts, sessionId: 'sess-1', message: { role, content: [{ type: 'text', text }] } });

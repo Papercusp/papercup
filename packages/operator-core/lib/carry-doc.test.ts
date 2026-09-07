@@ -875,7 +875,7 @@ describe('renderCarryDoc (pure)', () => {
   });
 });
 
-describe('deriveContinuation (pure, P-010)', () => {
+describe('P-005-request-settlement-regressions: deriveContinuation (pure, P-010)', () => {
   const ownerTurn = (text: string, requestId = 'request-1'): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, requestId, provenance: { verdict: 'owner-typed', origin: null } });
   const ownerDialog = (text: string, requestId = 'dialog-1'): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, requestId, provenance: { verdict: 'owner-dialog', origin: null } });
   const wake = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'agent-injected', origin: 'wake-pump' } });
