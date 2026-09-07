@@ -1744,7 +1744,11 @@ describe('template_data persistence boundary — the set-template-data door', ()
        WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
          AND plan_slug=${seeded.subject}`;
     expect(Number(pinned!.version)).toBe(3);
-    expect(Number(pinned!.acceptance_bar_rubric_revision)).toBe(2);
+    // DERIVED, matching this file's own convention for this exact property (the atomic-author
+    // test asserts it as after!.revision, the replay test as current!.revision) and the
+    // barSetHash line directly below. The concrete arithmetic stays pinned by revisionMovement
+    // above; hardcoding it here only re-encoded how many times the fixture authored first.
+    expect(Number(pinned!.acceptance_bar_rubric_revision)).toBe(after!.revision);
     expect(pinned!.acceptance_bar_set_hash).toBe(after!.barSetHash);
   });
 
