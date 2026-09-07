@@ -731,6 +731,7 @@ impl OperatorClient {
         let expected_scope = format!("workspace:{}", server.workspace_id);
         if server.agent_chat.scope != expected_scope {
             return Err(anyhow::Error::new(crate::http::IdentityMismatchError {
+                endpoint: self.endpoint.clone(),
                 detail: format!(
                     "operator identity is internally inconsistent: workspace {} but agent-chat scope {}",
                     server.workspace_id, server.agent_chat.scope
