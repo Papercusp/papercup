@@ -17,10 +17,14 @@
  * The routine-side consumption (ledger persist + gate_health refresh) is pinned in
  * packages/operator-core/lib/harness/routines/release-actions*.test.ts.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createFrozenCandidateQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import {
   augmentWithRepairTickLegs,
+  checkNpmScript,
   measureRepairTickLegs,
   NON_TEST_GATE_SCRIPTS,
   type CheckpointResult,
@@ -102,6 +106,76 @@ describe("measureRepairTickLegs", () => {
       expect(leg.status).toBe("pass");
       expect(leg).not.toHaveProperty("outputTail");
     }
+  });
+
+  it("skips absent platform scripts for a subject hive without false failures", async () => {
+    const subjectRoot = mkdtempSync(join(tmpdir(), "repair-tick-subject-"));
+    try {
+      // A repo-less subject hive has ordinary build/typecheck/test scripts but none of
+      // Papercusp's platform lint registry. This is the production shape that used to
+      // turn every registry id into a false Missing script failure.
+      writeFileSync(
+        join(subjectRoot, "package.json"),
+        JSON.stringify({ scripts: { build: "echo build", typecheck: "echo typecheck", test: "echo test" } }),
+      );
+      const runScript = vi.fn(async (_script: string) => ({ code: 1, tail: "Missing script" }));
+      const measured = await measureRepairTickLegs(
+        makeIo({
+          runScript,
+          scriptAvailability: (script) => checkNpmScript(subjectRoot, script),
+        }),
+        HEAD,
+        {
+          "lint:tsc": ["lint:tsc"],
+          "lint:identity-leak": ["lint:no-owner-name-tags", "lint:no-box-identity"],
+        },
+      );
+
+      expect(runScript).not.toHaveBeenCalled();
+      expect(measured).toMatchObject({ ok: true, failingSignatures: [] });
+      expect(measured?.legs).toEqual([
+        { id: "lint:tsc", status: "skipped", durationMs: 0 },
+        { id: "lint:identity-leak", status: "skipped", durationMs: 0 },
+      ]);
+    } finally {
+      rmSync(subjectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("still measures declared scripts when a registry id mixes absent and present scripts", async () => {
+    const runScript = vi.fn(async (script: string) =>
+      script === "real-fail" ? { code: 1, tail: "boom" } : { code: 0, tail: "" },
+    );
+    const scriptAvailability = vi.fn((script: string) =>
+      script === "optional" ? ("absent" as const) : ("present" as const),
+    );
+    const measured = await measureRepairTickLegs(
+      makeIo({ runScript, scriptAvailability }),
+      HEAD,
+      { gate: ["optional", "real-fail"] },
+    );
+
+    expect(runScript.mock.calls.map(([script]) => script)).toEqual(["real-fail"]);
+    expect(measured?.legs).toEqual([
+      { id: "gate", status: "fail", durationMs: 0, outputTail: "real-fail: exit 1 — boom" },
+    ]);
+    expect(measured?.failingSignatures).toEqual(["gate"]);
+  });
+
+  it("fails closed when the subject package metadata is unreadable", async () => {
+    const runScript = vi.fn(async (_script: string) => ({ code: 0, tail: "" }));
+    const measured = await measureRepairTickLegs(
+      makeIo({ runScript, scriptAvailability: vi.fn(() => "unreadable" as const) }),
+      HEAD,
+      { gate: ["lint:tsc"] },
+    );
+
+    expect(runScript).not.toHaveBeenCalled();
+    expect(measured?.legs).toEqual([
+      { id: "gate", status: "errored", durationMs: 0, outputTail: "lint:tsc: package.json unreadable" },
+    ]);
+    expect(measured?.failingSignatures).toEqual(["gate"]);
+    expect(measured?.ok).toBe(false);
   });
 
   it("returns null on a head mismatch — results must never be attributed to a sha the tree is not at", async () => {

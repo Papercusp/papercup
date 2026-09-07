@@ -4036,3 +4036,20 @@ export async function findIssuesByWatchdogKeys(keys: string[]): Promise<Engineer
      ORDER BY updated_at DESC`;
   return rows.map(toIssue);
 }
+
+/**
+ * Tool-failure class lifecycle feed. Unlike `findIssuesByWatchdogKeys`, this
+ * deliberately ignores the report-shaped watchdog key and finds every row whose
+ * nested probation payload carries the same stable class identity. The capture
+ * path uses this to coalesce differently-worded reports into one class item.
+ */
+export async function findIssuesByToolFailureClassKeys(keys: string[]): Promise<EngineerIssue[]> {
+  if (keys.length === 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<IssueRowDb[]>`
+    SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+     WHERE workspace_id = ANY(${dedupScopeWorkspaces()}::text[])
+       AND payload->'toolFailureProbation'->>'classKey' = ANY(${keys}::text[])
+     ORDER BY updated_at DESC`;
+  return rows.map(toIssue);
+}

@@ -735,6 +735,14 @@ function checksSpec() {
                 'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
                 'telling a successor to run `recheck` before relying on the claim.',
             ).optional(),
+            // EI-22575327388783364: completion records call this evidence field
+            // `testResult`. Publish the compatibility spelling because clients may
+            // validate the nested row before the shared preprocessor maps it to
+            // canonical `verified`.
+            testResult: carryRowTextSchema(
+              CARRY_ROW_SOFT_CAPS.verified,
+              'Compatibility alias for completion-style `testResult`; normalized to the canonical `verified` evidence string before storage. Prefer `verified`.',
+            ).optional(),
             ok: z
               .boolean()
               .optional()

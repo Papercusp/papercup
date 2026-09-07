@@ -670,6 +670,13 @@ export default defineTool({
                   CARRY_ROW_SOFT_CAPS.verified,
                   'Compatibility alias for `verified` in structured verification rows; prefer `verified`.',
                 ).optional(),
+                // EI-22575327388783364: keep loop:checkpoint's published row
+                // schema in parity with the shared checks coercion and the
+                // work_items:checkpoint surface.
+                testResult: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.verified,
+                  'Compatibility alias for completion-style `testResult`; normalized to the canonical `verified` evidence string before storage. Prefer `verified`.',
+                ).optional(),
                 // EI-21922421392042550: the preprocessor above lifts these flattened
                 // executable-probe fields into `probe` (normalizeFlattenedContinuityProbeRow,
                 // shared with work_items:checkpoint). They must still be present in the

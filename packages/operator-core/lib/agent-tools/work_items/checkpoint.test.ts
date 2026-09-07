@@ -267,6 +267,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
       properties?: {
         checkpoint?: unknown;
+        checks?: unknown;
         items?: { items?: unknown };
       };
     };
@@ -290,6 +291,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     expect(hasStructuredCheckpoint(json.properties?.checkpoint)).toBe(true);
     expect(hasStructuredCheckpoint(json.properties?.items?.items)).toBe(true);
+
+    const hasProperty = (value: unknown, key: string): boolean => {
+      if (!value || typeof value !== 'object') return false;
+      const record = value as Record<string, unknown>;
+      const properties = record.properties;
+      if (properties && typeof properties === 'object' && key in properties) return true;
+      return Object.values(record).some((child) => hasProperty(child, key));
+    };
+    expect(hasProperty(json.properties?.checks, 'testResult')).toBe(true);
+    expect(hasProperty(json.properties?.items?.items, 'testResult')).toBe(true);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
@@ -1864,6 +1875,25 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('evidence: STILL RUNNING at 09:15Z');
       // The whole point of the tier: it must NEVER read as the affirmative one.
       expect(stored).not.toContain('- ✓ the suite is green');
+    });
+
+    it('ACCEPTS completion-style `testResult` as verified evidence (EI-22575327388783364)', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'focused validation',
+        checks: [
+          {
+            claim: 'the focused checkpoint test passes',
+            recheck: 'npm run test:file -- checkpoint.test.ts',
+            testResult: '8/8 tests passed',
+          },
+        ],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ the focused checkpoint test passes');
+      expect(stored).toContain('evidence: 8/8 tests passed');
     });
 
     it('CARRIES ROWS FORWARD across a plain replace that drops the body — the silent-drop guard', async () => {

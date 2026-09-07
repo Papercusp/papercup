@@ -701,6 +701,10 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
   const hasStatus = 'status' in r;
   const hasEvidence = 'evidence' in r;
+  // Completion records call the same evidence string `testResult`. Checks use
+  // `verified` canonically, but accepting this completion-style spelling keeps a
+  // caller's measured result lossless at the checkpoint boundary (EI-22575327388783364).
+  const hasTestResult = isChecksRow && 'testResult' in r;
   // `probe` historically meant the human recheck command. WI-42290 adds a
   // canonical OBJECT at the same key, so only the legacy string remains an
   // alias; a typed object must pass through untouched to the row schema.
@@ -722,6 +726,7 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     !hasKind &&
     !hasCommand &&
     !hasResult &&
+    !hasTestResult &&
     !claimlessWithIdentity &&
     typeof r.verified !== 'boolean' &&
     booleanOk === undefined
@@ -757,6 +762,23 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
           (kept ? `the canonical \`${canonical}\` value was kept` : `the value was mapped to \`${canonical}\``),
       });
     }
+  }
+
+  if (hasTestResult) {
+    // `verified` is canonical. When both spellings are supplied, preserve the
+    // explicit canonical value while still removing the compatibility key before
+    // strict validation; otherwise map the completion evidence losslessly.
+    const testResult = r.testResult;
+    const hadCanonicalVerified = 'verified' in r;
+    delete r.testResult;
+    if (!hadCanonicalVerified) r.verified = testResult;
+    repairs.push({
+      field: `${path}.testResult`,
+      kind: 'renamed',
+      detail:
+        'completion-style `testResult` is accepted as an alias for `verified`; ' +
+        (hadCanonicalVerified ? 'the canonical verified value was kept' : 'the value was mapped to `verified`'),
+    });
   }
 
   if (claimAliases.length) {

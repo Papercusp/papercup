@@ -2174,9 +2174,11 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(rowProperties.kind).toMatchObject({ type: 'string' });
       expect(rowProperties.command).toMatchObject({ type: 'string' });
       expect(rowProperties.result).toMatchObject({ type: 'string' });
+      expect(rowProperties.testResult).toMatchObject({ type: 'string' });
       expect(rowProperties.kind.description).toContain('Compatibility alias for `claim`');
       expect(rowProperties.command.description).toContain('Compatibility alias for `recheck`');
       expect(rowProperties.result.description).toContain('Compatibility alias for `verified`');
+      expect(rowProperties.testResult.description).toContain('completion-style `testResult`');
     });
 
     it('truncates an overlong narrative field to the soft cap rather than rejecting the call', async () => {

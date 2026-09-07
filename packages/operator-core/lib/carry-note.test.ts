@@ -743,6 +743,38 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(canonicalRepairs).toHaveLength(3);
   });
 
+  it('maps completion-style testResult evidence to verified without losing canonical precedence (EI-22575327388783364)', () => {
+    const repairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        {
+          claim: 'the focused checkpoint test passes',
+          recheck: 'npm run test:file -- checkpoint.test.ts',
+          testResult: '8/8 tests passed',
+        },
+        'checks[0]',
+        repairs,
+      ),
+    ).toEqual({
+      claim: 'the focused checkpoint test passes',
+      recheck: 'npm run test:file -- checkpoint.test.ts',
+      verified: '8/8 tests passed',
+    });
+    expect(repairs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'checks[0].testResult', kind: 'renamed' })]),
+    );
+
+    const canonicalRepairs: CarryArgRepair[] = [];
+    expect(
+      coerceCarryRowShape(
+        { claim: 'canonical wins', testResult: 'ignored completion result', verified: 'canonical evidence' },
+        'checks[1]',
+        canonicalRepairs,
+      ),
+    ).toEqual({ claim: 'canonical wins', verified: 'canonical evidence' });
+    expect(canonicalRepairs[0]?.detail).toContain('canonical verified value was kept');
+  });
+
   /**
    * The failure this whole coercion exists to prevent, at its sharpest: `claim`
    * is the ONE required field, so a single under-specified row used to reject the
