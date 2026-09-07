@@ -2447,7 +2447,7 @@ not seen this run) — by whichever of these two routes your host gave you:
   work-items, unanswered directed messages, and whether a wake source (armed loop)
   exists came WITH it: the server read them for you. Do NOT spend a
   \`coord:orient\` round-trip re-fetching them — you are oriented. Claim your lane
-  with \`coord:declare-intent { intent, planItems }\`, and reach for
+  with \`coord:declare-intent { intent, items }\`, and reach for
   \`coord:orient\` only for what that block deliberately EXCLUDES: the claimable
   backlog, full inbox bodies, a mem0 recall. Judge by PRESENCE ONLY — the block is
   emitted just when that state CHANGES, and only to hosts that inject it, so its
