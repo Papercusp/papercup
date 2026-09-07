@@ -863,6 +863,11 @@ export async function seedAcceptanceBarsInTransaction(
      WHERE c.workspace_id = ${input.workspaceId}
        AND c.harness_slug = ${input.harnessSlug}
        AND c.plan_slug = ${input.planSlug}
+       -- The seeder owns only its deterministic AUTO-BAR namespace. Reviewed
+       -- plan-specific clauses may carry the same sourceBar pin so their proof
+       -- stays tied to the governing requirement; they are additive contracts,
+       -- not stale seed projections to replace or reject on a re-audit.
+       AND c.spec_id LIKE 'AUTO-BAR-%'
      ORDER BY c.spec_id
      LIMIT ${MAX_BAR_PROJECTION_EDGES + 1}`;
   if (identities.length > MAX_BAR_PROJECTION_EDGES) {
@@ -873,8 +878,7 @@ export async function seedAcceptanceBarsInTransaction(
   }
   const expectedProjectionIds = new Set(built.projections.map((projection) => projection.specId));
   const unexpected = identities.filter(
-    (row) => (row.source_bar_key !== null || row.spec_id.startsWith('AUTO-BAR-')) &&
-      !expectedProjectionIds.has(row.spec_id),
+    (row) => !expectedProjectionIds.has(row.spec_id),
   );
   if (unexpected.length > 0) {
     throw new AcceptanceBarSeedAbort(refusal([{

@@ -18,7 +18,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
 const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
-import type { SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
+import { setSpecClause, type SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
 
 const WORKSPACE = 'acceptance-bar-seed-historical-test';
 const HARNESS = 'papercusp';
@@ -146,6 +146,98 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
     `).resolves.toEqual([{ status: 'superseded', archived: false, version: 1 }]);
   });
 
+  it('preserves additive plan-specific clauses pinned to a BAR during re-audit', async () => {
+    const planSlug = 'additive-pinned-clause-reaudit';
+    const planContent = contentFor(planSlug);
+    await insertSubject(planSlug, planContent);
+
+    const first = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, planContent, 'su-seeder'),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.message);
+
+    const [managed] = await db.adminSql<{
+      source_bar_key: string;
+      source_bar_hash: string;
+      source_bar_set_hash: string;
+      source_rubric_slug: string;
+      source_rubric_revision: number;
+      evidence_plane: 'tree' | 'deployed' | 'live';
+    }[]>`
+      SELECT r.source_bar_key, r.source_bar_hash, r.source_bar_set_hash,
+             r.source_rubric_slug, r.source_rubric_revision, r.evidence_plane
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id
+         AND r.revision = c.current_revision
+       WHERE c.workspace_id = ${WORKSPACE}
+         AND c.harness_slug = ${HARNESS}
+         AND c.plan_slug = ${planSlug}
+         AND c.spec_id = 'AUTO-BAR-R-1-P-001'`;
+    expect(managed).toBeDefined();
+
+    const custom = await db.adminSql.begin((tx) => setSpecClause({
+      planSlug,
+      specId: 'PUI-TASK-ADD',
+      expectedRevision: 0,
+      planItemId: 'P-001',
+      behavior: 'The task editor adds one owner-authored task to the canonical store.',
+      behaviorClass: 'happy-path',
+      requiredEvidence: ['tree'],
+      requiredTestLayers: ['integration'],
+      mutationRequired: true,
+      lifecycleStatus: 'accepted',
+      falsifier: { observation: 'The submitted task is absent from the canonical store.' },
+      acceptanceRef: `${managed.source_rubric_slug}@${managed.source_rubric_revision}:${managed.source_bar_key}`,
+      sourceBar: {
+        barKey: managed.source_bar_key,
+        barHash: managed.source_bar_hash,
+        barSetHash: managed.source_bar_set_hash,
+        rubricSlug: managed.source_rubric_slug,
+        rubricRevision: Number(managed.source_rubric_revision),
+        evidencePlane: managed.evidence_plane,
+      },
+      actorId: 'su-spec-author',
+    }, {
+      executor: tx as unknown as SpecClauseSql,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+    }));
+    expect(custom).toMatchObject({ status: 'created', revision: 1 });
+
+    const reaudit = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, planContent, 'su-reauditor'),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(reaudit, JSON.stringify(reaudit)).toMatchObject({
+      ok: true,
+      rubricSlug: `acceptance-${planSlug}`,
+      rubricChanged: false,
+    });
+
+    await expect(db.adminSql`
+      SELECT c.current_revision::int AS current_revision, r.lifecycle_status,
+             r.source_bar_key, r.required_test_layers
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id
+         AND r.revision = c.current_revision
+       WHERE c.workspace_id = ${WORKSPACE}
+         AND c.harness_slug = ${HARNESS}
+         AND c.plan_slug = ${planSlug}
+         AND c.spec_id = 'PUI-TASK-ADD'
+    `).resolves.toEqual([{
+      current_revision: 1,
+      lifecycle_status: 'accepted',
+      source_bar_key: 'R-1',
+      required_test_layers: ['integration'],
+    }]);
+  });
+
   it('still refuses a deterministic slug occupied by a non-rubric plan', async () => {
     const planSlug = 'non-rubric-bar-collision';
     const planContent = contentFor(planSlug);
@@ -161,6 +253,7 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       executor: tx as unknown as SpecClauseSql,
     }));
     expect(result).toMatchObject({ ok: false, error: 'bar_rubric_conflict' });
+    if (result.ok) throw new Error('expected the deterministic non-rubric collision to be refused');
     expect(result.message).toMatch(/deterministic rubric slug.*non-acceptance plan/);
   });
 });
