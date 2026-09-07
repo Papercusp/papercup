@@ -43,6 +43,7 @@ import {
   type CheckpointEligibilityWaitReceipt,
 } from '../../release-checkpoint-launch';
 import {
+  assessFrozenLineageLaunchCas,
   assessFrozenRepairQueuePreflight,
   assessRequiredAncestorPreflight,
 } from '../../release/checkpoint-required-ancestor';
@@ -1030,6 +1031,10 @@ export default defineTool({
         : null;
     const launchCandidate =
       requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
+    const frozenLineageIdentity =
+      requiredAncestorPreflight?.frozenLineageIdentity ??
+      frozenRepairQueuePreflight?.frozenLineageIdentity ??
+      null;
 
     // P-004 / WI-41489: one action-instant eligibility snapshot replaces the old
     // cross-turn stable-zero checklist. The request-time readers stay in their
@@ -1342,6 +1347,7 @@ export default defineTool({
             frozenRepairNextAttempt: frozenRepairQueuePreflight.nextAttempt,
           }
         : {}),
+      ...(frozenLineageIdentity ? { frozenLineageIdentity } : {}),
       ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       logicalQualificationAttemptId: logicalAttemptId,
       ...(preflight.refuse
@@ -1518,6 +1524,52 @@ export default defineTool({
               active_runner: transaction?.currentPhysicalRunner ?? null,
               outcome: transaction?.outcome ?? null,
               error: 'error' in qualificationReservation ? qualificationReservation.error : undefined,
+            }),
+          },
+        ],
+      };
+    }
+    // FC-GUARD-P004-LAUNCH: the first queue read selected the candidate; this second read is
+    // execution authority. It deliberately happens after the logical-runner reservation and
+    // immediately before the detached launch call. Any queue creation, retirement, phase/head
+    // advance, or update-stamp drift invalidates the captured identity. The reservation is put
+    // back into a durable waiting state on refusal so a failed CAS cannot strand a phantom
+    // physical runner for the full lease.
+    const liveFrozenRepairQueuePreflight = await assessFrozenRepairQueuePreflight(
+      preflight.candidate,
+      checkpointRoot,
+    );
+    const frozenLineageCas = assessFrozenLineageLaunchCas(
+      frozenLineageIdentity,
+      liveFrozenRepairQueuePreflight,
+      launchCandidate,
+    );
+    if (!frozenLineageCas.allowed) {
+      const casWait = await recordLogicalWait(
+        'repair-in-progress',
+        'frozen-lineage-launch-cas',
+        frozenLineageCas.detail,
+        completionEvents,
+      );
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: 'frozen_lineage_identity_changed',
+              error: 'frozen_candidate_lineage_violation',
+              logical_attempt_id: logicalAttemptId,
+              selection_source: frozenLineageCas.selectionSource,
+              expectedIdentity: frozenLineageCas.expectedIdentity,
+              liveIdentity: frozenLineageCas.liveIdentity,
+              checkoutHead: frozenLineageCas.checkoutHead,
+              mismatchedIdentityFields: frozenLineageCas.mismatchedIdentityFields,
+              queue_decision: frozenLineageCas.queueDecision,
+              sanctionedRoute: frozenLineageCas.sanctionedRoute,
+              qualification_wait_status: casWait.status,
+              note: `NOT launched: ${frozenLineageCas.detail}`,
             }),
           },
         ],
@@ -1889,6 +1941,8 @@ export default defineTool({
           status: 'exact-transported' as const,
           transportedCandidate: transportedCandidateSha,
           actualCandidate: transportedCandidateSha,
+          frozenLineageIdentity: frozenLineageCas.liveIdentity,
+          queueCas: frozenLineageCas.reason,
         }
       : null;
     const reportedContainment = containment
@@ -1982,6 +2036,9 @@ export default defineTool({
                 }
               : {}),
             ...(candidateBinding ? { candidateBinding } : {}),
+            ...(frozenLineageCas.liveIdentity
+              ? { frozenLineageIdentity: frozenLineageCas.liveIdentity }
+              : {}),
             ...(reportedContainment ? { callerEditsInCandidate: reportedContainment } : {}),
             note: result.launched
               ? result.replacedStale

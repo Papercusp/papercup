@@ -158,6 +158,7 @@ beforeEach(() => {
         candidate: null,
         candidateSource: 'unresolved' as const,
         repairQueue: null,
+        frozenLineageIdentity: null,
         queueDecision: 'run-normal-gate' as const,
         nextAttempt: null,
         fixerSpawnId: null,
@@ -1256,6 +1257,8 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
   const REQUIRED = '65b369adb8a9eb3fd7a2e3a93ab4eaedcad7c35e';
   const QUEUE_HEAD = '7490aaa814f1e2f6513bb8467e13acccf1ccace6';
   const CURRENT = 'b8360abde13b0000000000000000000000000000';
+  const QUEUE_CANDIDATE = 'ed20de6dcb05c0c780437990f7f1070c3a92c853';
+  const QUEUE_REVISION = 1_788_820_000_000;
 
   function mockQueue(queue: Record<string, unknown> | null | 'throws', fixerAlive: boolean | null = true) {
     vi.doMock('../../release/checkpoint-required-ancestor', async () =>
@@ -1323,6 +1326,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
           candidate: CURRENT,
           candidateSource: 'current-quiet-cut' as const,
           repairQueue: null,
+          frozenLineageIdentity: null,
           queueDecision: 'run-normal-gate' as const,
           nextAttempt: null,
           fixerSpawnId: null,
@@ -1360,7 +1364,13 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const { default: tool } = await import('./checkpoint-run');
     const result = parse((await tool.handler({}, MAKE_CTX())) as never);
 
-    expect(order).toEqual(['begin-successor', 'read-queue-policy']);
+    expect(order).toEqual([
+      'begin-successor',
+      'read-queue-policy',
+      // FC-GUARD-P004-LAUNCH: selection first, then a second live read after the
+      // physical-runner reservation and immediately before spawn.
+      'read-queue-policy',
+    ]);
     expect(qualificationMocks.begin).toHaveBeenCalledWith(
       expect.any(Object),
       expect.objectContaining({ candidate: CURRENT }),
@@ -1462,7 +1472,17 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
         reason: 'clear' as const,
         candidate: QUEUE_HEAD,
         candidateSource: 'frozen-repair-queue' as const,
-        repairQueue: null,
+        repairQueue: {
+          candidate: QUEUE_CANDIDATE,
+          repairHead: QUEUE_HEAD,
+          updatedAtMs: QUEUE_REVISION,
+          phase: 'ready-to-verify',
+        },
+        frozenLineageIdentity: {
+          candidate: QUEUE_CANDIDATE,
+          repairHead: QUEUE_HEAD,
+          queueRevision: QUEUE_REVISION,
+        },
         queueDecision: 'verify-repair' as const,
         nextAttempt: null,
         fixerSpawnId: null,
@@ -1511,9 +1531,103 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
         status: 'exact-transported',
         transportedCandidate: QUEUE_HEAD,
         actualCandidate: QUEUE_HEAD,
+        frozenLineageIdentity: {
+          candidate: QUEUE_CANDIDATE,
+          repairHead: QUEUE_HEAD,
+          queueRevision: QUEUE_REVISION,
+        },
+        queueCas: 'repair-head-match',
+      },
+      frozenLineageIdentity: {
+        candidate: QUEUE_CANDIDATE,
+        repairHead: QUEUE_HEAD,
+        queueRevision: QUEUE_REVISION,
       },
     });
   });
+
+  it.each([
+    ['candidate', { candidate: 'd'.repeat(40) }],
+    ['repairHead', { repairHead: 'e'.repeat(40) }],
+    ['queueRevision', { queueRevision: QUEUE_REVISION + 1 }],
+  ] as const)(
+    'FC-GUARD-P004-LAUNCH: refuses before spawn when the second queue read changes %s',
+    async (field, change) => {
+      const expectedIdentity = {
+        candidate: QUEUE_CANDIDATE,
+        repairHead: QUEUE_HEAD,
+        queueRevision: QUEUE_REVISION,
+      };
+      const liveIdentity = { ...expectedIdentity, ...change };
+      const queueReads = vi.fn()
+        .mockResolvedValueOnce({
+          proceed: true,
+          reason: 'clear' as const,
+          candidate: QUEUE_HEAD,
+          candidateSource: 'frozen-repair-queue' as const,
+          repairQueue: {
+            candidate: expectedIdentity.candidate,
+            repairHead: expectedIdentity.repairHead,
+            updatedAtMs: expectedIdentity.queueRevision,
+            phase: 'ready-to-verify',
+          },
+          frozenLineageIdentity: expectedIdentity,
+          queueDecision: 'verify-repair' as const,
+          nextAttempt: null,
+          fixerSpawnId: null,
+          fixerAlive: false,
+        })
+        .mockResolvedValueOnce({
+          proceed: true,
+          reason: 'clear' as const,
+          candidate: liveIdentity.repairHead,
+          candidateSource: 'frozen-repair-queue' as const,
+          repairQueue: {
+            candidate: liveIdentity.candidate,
+            repairHead: liveIdentity.repairHead,
+            updatedAtMs: liveIdentity.queueRevision,
+            phase: 'ready-to-verify',
+          },
+          frozenLineageIdentity: liveIdentity,
+          queueDecision: 'verify-repair' as const,
+          nextAttempt: null,
+          fixerSpawnId: null,
+          fixerAlive: false,
+        });
+      vi.doMock('../../release/checkpoint-required-ancestor', async (orig) => ({
+        ...(await orig()),
+        assessFrozenRepairQueuePreflight: queueReads,
+      }));
+      const launchSpy = vi.fn();
+      vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+        ...(await orig()),
+        assessPreLaunchExclusion: PRELAUNCH_OPEN,
+        checkpointCandidateContainment: NO_CONTAINMENT,
+        launchDetachedCheckpoint: launchSpy,
+      }));
+
+      const { default: tool } = await import('./checkpoint-run');
+      const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+      expect(queueReads).toHaveBeenCalledTimes(2);
+      expect(launchSpy).not.toHaveBeenCalled();
+      expect(b).toMatchObject({
+        ok: false,
+        launched: false,
+        reason: 'frozen_lineage_identity_changed',
+        error: 'frozen_candidate_lineage_violation',
+        selection_source: 'live-repair-head',
+        expectedIdentity,
+        liveIdentity,
+        checkoutHead: QUEUE_HEAD,
+        mismatchedIdentityFields: [field],
+        sanctionedRoute: expect.stringContaining("release:repair-queue { op:'admit'"),
+      });
+      expect(String(b.note)).toContain(`candidate=${liveIdentity.candidate}`);
+      expect(String(b.note)).toContain(`repairHead=${liveIdentity.repairHead}`);
+      expect(String(b.note)).toContain(`queueRevision=${liveIdentity.queueRevision}`);
+    },
+  );
 
   it('fails closed with the live fixer identity when the queue is waiting for a fixer', async () => {
     mockQueue(awaitingFixerQueue({ fixerSpawnId: 's-live' }), true);
