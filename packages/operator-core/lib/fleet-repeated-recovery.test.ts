@@ -28,6 +28,26 @@ const cycle = (
   ...over,
 });
 
+/**
+ * Deliberately wrong classifier kept permanently in-test as the mutation
+ * control. It broadens the recovery allowlist to every named tool while still
+ * delegating interval/count validation to the real classifier. That makes it
+ * wrong in exactly one dimension without mutating the shared checkout.
+ */
+function overbroadRecoveryClassifierControl(
+  cycles: readonly RepeatedRecoveryCycleObservation[],
+) {
+  const eraseUsefulWork = (tools: readonly string[]) =>
+    tools.map((tool) => (isRecoveryOnlyTool(tool) ? tool : 'coord:orient'));
+  return classifyRepeatedRecoveryCycles(
+    cycles.map((observation) => ({
+      ...observation,
+      activityTools: eraseUsefulWork(observation.activityTools),
+      transcriptTools: eraseUsefulWork(observation.transcriptTools),
+    })),
+  );
+}
+
 describe('repeated recovery-only classifier', () => {
   it('requires two fully observed recovery-only cycles', () => {
     expect(classifyRepeatedRecoveryCycles([cycle(1)])).toMatchObject({
@@ -102,6 +122,30 @@ describe('repeated recovery-only classifier', () => {
       consecutiveRecoveryOnlyCycles: null,
       reason: 'progressing-claim',
     });
+  });
+});
+
+describe('repeated recovery-only classifier falsifiability control', () => {
+  const usefulWork = [cycle(1, ['coord:orient', 'Read', 'loop:checkpoint']), cycle(2)];
+  const recoveryOnly = [cycle(1), cycle(2)];
+
+  it('CALIBRATION: the real classifier resets on useful work', () => {
+    expect(classifyRepeatedRecoveryCycles(usefulWork)).toMatchObject({
+      status: 'measured',
+      consecutiveRecoveryOnlyCycles: 0,
+    });
+  });
+
+  it('CONTROL: an overbroad false classifier fails the same useful-work assertion', () => {
+    const falseResult = overbroadRecoveryClassifierControl(usefulWork);
+    expect(falseResult).toMatchObject({ status: 'measured', consecutiveRecoveryOnlyCycles: 2 });
+    expect(falseResult.consecutiveRecoveryOnlyCycles).not.toBe(0);
+  });
+
+  it('CONTROL: the false classifier otherwise matches a genuine recovery-only run', () => {
+    expect(overbroadRecoveryClassifierControl(recoveryOnly)).toEqual(
+      classifyRepeatedRecoveryCycles(recoveryOnly),
+    );
   });
 });
 
