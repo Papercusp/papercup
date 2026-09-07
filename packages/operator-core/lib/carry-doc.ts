@@ -49,6 +49,7 @@ import {
   AUTOMATIC_COMPACTION_RECOVERY_MARKER,
   MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION,
   type AutomaticCompactionRecovery,
+  type CompactionPlanAuthority,
 } from './agent-tools/coordination/compaction-recovery';
 import {
   FLEET_ENVELOPE_ROLES,
@@ -1169,7 +1170,7 @@ export function renderAutomaticCompactionRecovery(
       : judgeSafe
         ? 'Automatic recovery is incomplete. Continue the assigned evaluation using the permitted evidence; do not initiate engineering coordination.'
         : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',
-    `- recovery coverage: selfSession=${recovery.coverage.selfSession} control=${recovery.coverage.control} heldItems=${recovery.coverage.heldItems} staleness=${recovery.coverage.staleness ?? 'not-applicable'}`,
+    `- recovery coverage: selfSession=${recovery.coverage.selfSession} control=${recovery.coverage.control} heldItems=${recovery.coverage.heldItems} planAuthority=${recovery.coverage.planAuthority ?? 'not-applicable'} staleness=${recovery.coverage.staleness ?? 'not-applicable'}`,
     `- held checkpoints automatically delivered below: ${recovery.checkpoints?.length ?? 0}`,
     judgeSafe
       ? `- recovery source: ${JUDGE_SAFE_SELF_RECALL_POINTER}`
@@ -1177,6 +1178,9 @@ export function renderAutomaticCompactionRecovery(
   ];
   if (recovery.control) {
     lines.push(`- control generation ${recovery.control.generation}: ${JSON.stringify(recovery.control.state)}`);
+  }
+  if (recovery.planAuthority) {
+    lines.push(renderCompactionPlanAuthority(recovery.planAuthority));
   }
   if (recovery.staleness_warnings?.warnings.length) {
     lines.push(
@@ -1187,6 +1191,51 @@ export function renderAutomaticCompactionRecovery(
     lines.push(postCompactionRecoveryInstruction(role));
   }
   return `## Post-compaction recovery (automatically delivered)\n${lines.join('\n')}`;
+}
+
+function singleLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Current plan authority is rendered inside the automatic-recovery block,
+ * before the standing carry/checkpoints. That order is the P-006 invariant: a
+ * stale carried summary can add context, but cannot masquerade as newer than the
+ * current plan version, decisions, item states, or spec revisions. */
+export function renderCompactionPlanAuthority(authority: CompactionPlanAuthority): string {
+  if (authority.resolution === 'unavailable') {
+    return (
+      `- current plan authority: UNAVAILABLE for ${authority.planSlug} ` +
+      `(harness=${authority.harness ?? 'missing'}, controlGeneration=${authority.controlGeneration}, ` +
+      `reason=${authority.reason}${authority.detail ? `, detail=${singleLine(authority.detail)}` : ''}). ` +
+      'The recovery marker is incomplete; use its one-shot coord:orient fallback before trusting carried summaries.'
+    );
+  }
+  const lines = [
+    `- current plan authority (PRECEDES carried summaries): plan=${authority.planSlug} harness=${authority.harness} ` +
+      `version=${authority.version} contentHash=${authority.contentHash} status=${authority.planStatus ?? 'unknown'} ` +
+      `controlGeneration=${authority.controlGeneration}`,
+  ];
+  if (authority.decisions.length > 0) {
+    lines.push(
+      `  - latest governing decisions${authority.decisionsMore ? ` (+${authority.decisionsMore} older)` : ''}:`,
+      ...authority.decisions.map(
+        (decision) =>
+          `    - ${decision.id} ${singleLine(decision.title)} — ${singleLine(decision.body)}` +
+          (decision.truncated ? ` … (full: plans:get { slug: '${authority.planSlug}', decisionId: '${decision.id}', harness: '${authority.harness}' })` : ''),
+      ),
+    );
+  } else {
+    lines.push('  - latest governing decisions: none');
+  }
+  lines.push(
+    `  - scoped item states: ${authority.items.length > 0
+      ? authority.items.map((item) => `${item.id}=${item.missing ? 'MISSING' : item.status ?? 'unknown'}`).join(', ')
+      : 'none'}`,
+    `  - current scoped specs${authority.specsMore ? ` (+${authority.specsMore} more)` : ''}: ${authority.specs.length > 0
+      ? authority.specs.map((spec) => `${spec.specId}@${spec.revision}#${spec.contentHash}`).join(', ')
+      : 'none'}`,
+  );
+  return lines.join('\n');
 }
 
 function renderIdentity(id: CarryDocIdentity): string {
