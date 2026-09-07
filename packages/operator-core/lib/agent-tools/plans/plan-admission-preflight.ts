@@ -3,11 +3,18 @@ import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-p
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { readClaimSpecLaneHealth, type FleetLaneHealth } from '../../fleet/lane-health';
-import { isSettledWorkItemState, listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
+import {
+  ACTIVE_FEATURE_FAMILY_KINDS,
+  isSettledWorkItemState,
+  ISSUE_FAMILY_KINDS,
+  listWorkItems,
+  WORK_ITEMS_MAX_LIMIT,
+  type WorkItem,
+} from '../../work-items';
 import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
 
-const ISSUE_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_KINDS);
 
 export function claimableStatesForKinds(kinds: readonly string[]): string[] | undefined {
   return kinds.some((kind) => ISSUE_KINDS.has(kind)) ? ['open'] : undefined;
@@ -50,6 +57,8 @@ export interface ExactPlanAdmission {
   status: 'ready' | 'blocked' | 'refused';
   reason: ExactPlanAdmissionReason;
   plan: string;
+  /** Effective kind narrowing; null preserves a mixed-family or not-yet-promoted plan. */
+  claimKinds: string[] | null;
   planItems: {
     total: number;
     actionable: number;
@@ -93,6 +102,24 @@ function provenanceIds(item: AdmissionWorkItem): string[] {
   const stamp = record(payload.plan_item ?? payload.planItem);
   const one = stamp.item_id ?? stamp.itemId ?? stamp.item;
   return typeof one === 'string' && one ? [one] : [];
+}
+
+/**
+ * Derive a safe family narrowing from the current promoted plan rows.
+ *
+ * A plan-only claim spec is structurally reachable in both scheduler storage
+ * families. Narrow it only when every active promoted row is from one family;
+ * mixed families (and an empty promotion census) must retain the broad plan
+ * predicate so a later-unblocked row cannot be starved by a stale narrowing.
+ */
+export function deriveExactPlanClaimKinds(
+  workItems: ReadonlyArray<Pick<AdmissionWorkItem, 'family' | 'state'>>,
+): string[] | undefined {
+  const families = new Set(
+    workItems.filter((item) => !isSettledWorkItemState(item.state)).map((item) => item.family),
+  );
+  if (families.size !== 1) return undefined;
+  return families.has('issue') ? [...ISSUE_FAMILY_KINDS] : [...ACTIVE_FEATURE_FAMILY_KINDS];
 }
 
 function rootsFor(items: ReturnType<typeof resolveEffectiveStatusForItems>): Record<RootClass, number> {
@@ -181,6 +208,8 @@ export function evaluateExactPlanAdmission(args: {
   /** Allow plans:start to report success when this caller already owns every ready row. */
   assignee?: string;
   allowCallerHeld?: boolean;
+  /** Explicit narrowing supplied by a caller; omitted means derive from active rows. */
+  claimKinds?: readonly string[];
 }): ExactPlanAdmission {
   const resolved = resolveEffectiveStatusForItems(args.planItems);
   const parallelism = analyzePlanDagParallelism(args.planItems);
@@ -198,6 +227,9 @@ export function evaluateExactPlanAdmission(args: {
   // beside its live successor permanently looks like duplicate actionable
   // coverage and fleet:launch-on-plan can never admit the plan again.
   const activePromotedRows = promotedRows.filter((item) => !isSettledWorkItemState(item.state));
+  const claimKinds = args.claimKinds?.length
+    ? [...args.claimKinds]
+    : deriveExactPlanClaimKinds(activePromotedRows);
   for (const item of activePromotedRows) {
     for (const id of provenanceIds(item).filter((candidate) => planIds.has(candidate))) {
       coverage.set(id, [...(coverage.get(id) ?? []), item.id]);
@@ -268,6 +300,7 @@ export function evaluateExactPlanAdmission(args: {
     );
   const base = {
     plan: args.planSlug,
+    claimKinds: claimKinds ?? null,
     planItems: {
       total: resolved.items.length,
       actionable: actionable.length,
@@ -432,7 +465,16 @@ export async function preflightExactPlanAdmission(args: {
     });
     return { ...empty, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
   }
-  const built = buildExactPlanClaimSpec(args.specId, args.planSlug, args.claimKinds);
+  const workItems = await listWorkItems({
+    harness: args.harnessSlug,
+    sourcePlanSlug: args.planSlug,
+    includeChildren: true,
+    limit: WORK_ITEMS_MAX_LIMIT,
+  });
+  const effectiveClaimKinds = args.claimKinds?.length
+    ? [...args.claimKinds]
+    : deriveExactPlanClaimKinds(workItems);
+  const built = buildExactPlanClaimSpec(args.specId, args.planSlug, effectiveClaimKinds);
   const validation = validateClaimSpec(built);
   if (!validation.ok || !validation.spec)
     throw new Error(`invalid exact-plan claim spec: ${validation.errors.join('; ')}`);
@@ -446,12 +488,6 @@ export async function preflightExactPlanAdmission(args: {
     harnessSlug: args.harnessSlug,
     fleetSlug: args.fleetSlug ?? `exact-plan:${args.planSlug}`,
   };
-  const workItems = await listWorkItems({
-    harness: args.harnessSlug,
-    sourcePlanSlug: args.planSlug,
-    includeChildren: true,
-    limit: WORK_ITEMS_MAX_LIMIT,
-  });
   const laneHealth = await readClaimSpecLaneHealth({
     spec,
     record,
@@ -470,5 +506,6 @@ export async function preflightExactPlanAdmission(args: {
     requestedSeats: args.requestedSeats,
     assignee: args.claimant,
     allowCallerHeld: args.allowCallerHeld,
+    claimKinds: effectiveClaimKinds,
   });
 }

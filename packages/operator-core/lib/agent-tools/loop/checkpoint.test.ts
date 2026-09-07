@@ -59,6 +59,7 @@ const withBoundedTimeout = vi.fn(
   }),
 );
 const listVerifiedWaitTakeoversForSubscribers = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
+const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -196,6 +197,10 @@ vi.mock('../../events/await/store', async (importOriginal) => ({
   listVerifiedWaitTakeoversForSubscribers: (...a: unknown[]) => listVerifiedWaitTakeoversForSubscribers(...a),
   listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
 }));
+vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
+  readFrozenRepairMarker,
+}));
 
 const checkpointModule = await import('./checkpoint');
 const tool = checkpointModule.default;
@@ -241,6 +246,8 @@ beforeEach(() => {
   readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
   withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
   listVerifiedWaitTakeoversForSubscribers.mockResolvedValue([]);
+  readFrozenRepairMarker.mockReset();
+  readFrozenRepairMarker.mockReturnValue(null);
 });
 
 describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () => {
@@ -361,6 +368,85 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
+  it('refuses the historical staging-candidate instruction before calling the carry-note store', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const out = await call({
+      note: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'loop-checkpoint',
+      unsafeSource: 'staging',
+      liveIdentity: {
+        candidate: 'c'.repeat(40),
+        repairHead: 'r'.repeat(40),
+        queueRevision: 1_788_763_360_000,
+      },
+    });
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('refuses a rows-only merge when it would preserve the stale instruction from the locked prior', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    getLoopCarryNote.mockResolvedValue(
+      'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    );
+
+    const out = await call({ checks: [{ claim: 'the focused unit suite is green' }] });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'loop-checkpoint',
+      unsafeSource: 'staging',
+    });
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(1);
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicit correction to replace the stale prior while the marker remains frozen', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    getLoopCarryNote.mockResolvedValue(
+      'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    );
+
+    const out = await call({
+      note: 'The earlier instruction to pin current staging/current HEAD was wrong and is retracted.',
+    });
+
+    expect(body(out)).toMatchObject({ ok: true });
+    expect(setLoopCarryNote).toHaveBeenCalledTimes(1);
+  });
+
   it('returns a retryable structured result when the carry write hits transient PostgreSQL contention', async () => {
     setLoopCarryNoteWithPrior.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
 

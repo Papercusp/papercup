@@ -64,6 +64,10 @@ import {
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
 } from '../../native-bg-task-ledger';
+import {
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
 
 // Preserve the established import surface while sharing the pure guard with
 // loop-turn-outcome and the compaction watchdog.
@@ -388,6 +392,23 @@ function hintString(max: number) {
   return z.preprocess((v) => (typeof v === 'string' ? truncateHint(v, max) : v), z.string().max(max));
 }
 
+/** Refuse an unsafe successor instruction before it reaches a loop carry-note
+ * or the psu host. Empty text is not a carry instruction and stays on the
+ * existing fast path. */
+function frozenCompactionCarryRefusal(text: string) {
+  if (!text.trim()) return null;
+  const verdict = evaluateFrozenLineageCarryText({
+    surface: 'compaction-continuation',
+    text,
+  });
+  const payload = frozenLineageCarryViolationPayload(verdict);
+  if (!payload) return null;
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    isError: true,
+  };
+}
+
 export default defineTool({
   name: 'session:request-compaction',
   description:
@@ -463,6 +484,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // Check caller-authored hints before ANY fallback can seed them into a cold
+    // loop carry-note. A later check covers generated/default carry text too.
+    const explicitCarryRefusal = frozenCompactionCarryRefusal(
+      [args.focus, args.continueNote].filter((text): text is string => Boolean(text?.trim())).join('\n'),
+    );
+    if (explicitCarryRefusal) return explicitCarryRefusal;
     // EI-20209826138488049: the host gate is read through the SHARED predicate the
     // continuation gate / context gauge / inbox use to decide whether to RECOMMEND
     // self-compaction — so a recommendation and this refusal cannot drift apart.
@@ -582,6 +609,8 @@ export default defineTool({
     // calls before this pass).
     const brief = await loadCarryBrief(identity.ownerId, identity.workspaceId);
     const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
+    const focusCarryRefusal = frozenCompactionCarryRefusal(focus);
+    if (focusCarryRefusal) return focusCarryRefusal;
     const rawStaleCheckpoints = staleCheckpointWarnings(brief);
     // P-016 enforcement gate: the WARN above becomes teeth. Unflushed state
     // (missing/stale held checkpoint, or an armed loop with no carry-note) HOLDS
@@ -728,6 +757,13 @@ export default defineTool({
           return note; // provenance must never break a boundary
         }
       })();
+    // The deterministic addendum is itself successor authority. Checking the
+    // exact host payload closes the case where a stale plan decision/fact was
+    // assembled into the carry even though the caller supplied a safe focus.
+    const hostCarryRefusal = frozenCompactionCarryRefusal(
+      [firstPrompt, spec.systemPromptAddendum].filter(Boolean).join('\n'),
+    );
+    if (hostCarryRefusal) return hostCarryRefusal;
     // EI-19480099650947832: read what happened to this session's PREVIOUS
     // carry-respawn BEFORE injecting this one, so the verdict describes prior
     // history rather than the request we are about to make. `respawn: true` only

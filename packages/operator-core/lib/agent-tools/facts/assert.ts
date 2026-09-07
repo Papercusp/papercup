@@ -60,6 +60,10 @@ import {
 } from '../../cell-transcription-detector';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
+import {
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -937,6 +941,26 @@ export default defineTool({
         }
       : null;
     const slotted = normalizeFactInput(args.key, args.body, args.slot);
+    // frozen-candidate-carry-and-launch-fail-closed P-002: a standing fact is
+    // injected verbatim into every future orient, so persisting a positive
+    // instruction to recut the judged candidate from a moving source is already
+    // an authority change. Refuse it before the bounded store transaction (and
+    // before any eviction/version append) while a live frozen marker exists.
+    const frozenCarryVerdict = evaluateFrozenLineageCarryText({
+      surface: 'fact',
+      text: slotted.body,
+    });
+    if (!frozenCarryVerdict.allowed) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(frozenLineageCarryViolationPayload(frozenCarryVerdict)),
+          },
+        ],
+        isError: true,
+      };
+    }
     // WI-2142026: a caller who spells the slot intent into the KEY ITSELF
     // (`wall-unified-web-portal-blocked-on-byoc-gates`) instead of passing
     // `slot:` receives NONE of the slot's protection — the cap exemption, the

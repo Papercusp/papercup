@@ -25,6 +25,7 @@ const handlerMocks = vi.hoisted(() => ({
   planRevisionCapture: vi.fn(),
   emitPlanEventForCaller: vi.fn(async () => {}),
   emitDecisionAdded: vi.fn(),
+  readFrozenRepairMarker: vi.fn(),
   // WI-42142: the provenance stamp does transcript IO. Mocked so these tests pin
   // the WIRING (refusal + advisory fold), while falsifiedOwnerAnchors itself stays
   // REAL here — its own contract is unit-tested in carry-surface-provenance-stamp.test.ts.
@@ -57,6 +58,10 @@ vi.mock('../coordination/plan-events', () => ({
 }));
 vi.mock('../../harness/usage-emitters', () => ({
   emitDecisionAdded: handlerMocks.emitDecisionAdded,
+}));
+vi.mock('../../release/frozen-repair-edit-marker', async (orig) => ({
+  ...(await orig<typeof import('../../release/frozen-repair-edit-marker')>()),
+  readFrozenRepairMarker: handlerMocks.readFrozenRepairMarker,
 }));
 vi.mock('../../carry-surface-provenance-stamp', async (orig) => ({
   ...(await orig<typeof import('../../carry-surface-provenance-stamp')>()),
@@ -374,6 +379,7 @@ describe('plans:add-decision — retry-safety (EI-19383795443003151)', () => {
 describe('plans:add-decision — exact-slug harness recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    handlerMocks.readFrozenRepairMarker.mockReturnValue(null);
     handlerMocks.carryProvenanceFields.mockResolvedValue({});
     handlerMocks.planRevisionCapture.mockReturnValue({
       afterWrite: undefined,
@@ -444,6 +450,46 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       expect.any(Function),
     );
     expect(result.results[0]).toMatchObject({ ok: true, slug: 'handler-plan', decisionId: 'D-001' });
+  });
+
+  it('refuses the historical staging-candidate decision before taking the plan lock', async () => {
+    handlerMocks.readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Canonical candidate source',
+        body: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+      },
+      handlerContext(),
+    );
+
+    // Bulk transport remains healthy even when the sole item is refused; the
+    // per-item result and failed count carry the policy verdict.
+    expect(result).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'plan-decision',
+      unsafeSource: 'staging',
+      liveIdentity: {
+        candidate: 'c'.repeat(40),
+        repairHead: 'r'.repeat(40),
+        queueRevision: 1_788_763_360_000,
+      },
+    });
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(handlerMocks.carryProvenanceFields).not.toHaveBeenCalled();
   });
 
   it('resolves affected plans against the source write scope (same-harness cross-plan repro)', async () => {

@@ -86,6 +86,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: {} }) };
 });
 
+const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
+vi.mock('../../release/frozen-repair-edit-marker', async (orig) => ({
+  ...(await orig<typeof import('../../release/frozen-repair-edit-marker')>()),
+  readFrozenRepairMarker,
+}));
+
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
 vi.mock('../../events/await/psu-pty-discovery', () => {
@@ -236,6 +242,7 @@ beforeEach(async () => {
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   buildCarryBrief.mockResolvedValue(emptyBrief);
   getWorkItem.mockResolvedValue({ state: 'wip' });
+  readFrozenRepairMarker.mockReturnValue(null);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
   contextWindowForOwner.mockResolvedValue(null);
   getLoopStatus.mockResolvedValue(null);
@@ -388,6 +395,71 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
       budgetChars: 24_000,
       firstPromptSource: 'continuation-note',
     });
+  });
+
+  it('refuses the historical staging-candidate focus before any host or fallback persistence', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const out = await call({
+      focus: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'compaction-continuation',
+      unsafeSource: 'staging',
+      liveIdentity: {
+        candidate: 'c'.repeat(40),
+        repairHead: 'r'.repeat(40),
+        queueRevision: 1_788_763_360_000,
+      },
+    });
+    expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('refuses the same stale instruction when carry assembly hides it in the host addendum', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      systemPromptAddendum:
+        'D-017 — Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    });
+
+    const out = await call({ focus: 'Resume the currently held work-item from live state.' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'compaction-continuation',
+      unsafeSource: 'staging',
+    });
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledTimes(1);
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('keeps moving-tip behavior when no frozen marker exists', async () => {
+    await call({ focus: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.' });
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
   it('host WITHOUT the carry-respawn cap → loud host_predates_carry_respawn error, NOTHING injected (no /compact fallback exists — P-022)', async () => {

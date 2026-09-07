@@ -43,6 +43,10 @@ import {
 import { neutralizeToolCallTags } from '../../text-safety';
 import { planDecisionRef } from '../../agent-goal-ref';
 import { allocateNextDecisionId, appendDecisionToBody, normalizeAffects } from './decision-body';
+import {
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -302,6 +306,22 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     title: neutralizeToolCallTags(rawIt.title),
     body: neutralizeToolCallTags(rawIt.body),
   };
+  // frozen-candidate-carry-and-launch-fail-closed P-002: plan decisions are
+  // durable execution authority. Do not let a positive moving-tip candidate
+  // instruction reach the plan lock, revision, event, or propagation paths
+  // while the live queue remains frozen.
+  const frozenCarryVerdict = evaluateFrozenLineageCarryText({
+    surface: 'plan-decision',
+    text: `${it.title}\n${it.body}`,
+  });
+  if (!frozenCarryVerdict.allowed) {
+    const refusal = frozenLineageCarryViolationPayload(frozenCarryVerdict);
+    if (!refusal) throw new Error('frozen lineage refusal payload missing for a refused plan decision');
+    return {
+      ...refusal,
+      slug: it.slug,
+    };
+  }
   // WI-42142 — decision provenance, resolved BEFORE the plan lock (the helper's
   // header carries the full rationale and the measurement behind enforced-vs-advisory).
   const { fields: provenance, anchors } = await decisionProvenance(`${it.title}\n${it.body}`, ctx);

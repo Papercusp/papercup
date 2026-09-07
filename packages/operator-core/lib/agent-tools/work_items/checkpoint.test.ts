@@ -26,6 +26,7 @@ const attestWorkItemCheckpointUnchanged = vi.fn();
 const getWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
+const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
   setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
@@ -42,6 +43,10 @@ vi.mock('../../freshness/resolvers', async () => {
   const actual = await vi.importActual<typeof import('../../freshness/resolvers')>('../../freshness/resolvers');
   return { ...actual, resolveCurrentTokens };
 });
+vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
+  readFrozenRepairMarker,
+}));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress (last_progress_at
@@ -131,6 +136,8 @@ beforeEach(() => {
   getWorkItem.mockReset();
   readSuccessfulActionInvocations.mockReset();
   resolveCurrentTokens.mockReset();
+  readFrozenRepairMarker.mockReset();
+  readFrozenRepairMarker.mockReturnValue(null);
   readSuccessfulActionInvocations.mockResolvedValue([]);
   resolveCurrentTokens.mockResolvedValue(new Map());
   // EI-9325: checkpoint.ts routes every PLAIN replace-on-write (non-append,
@@ -169,6 +176,73 @@ beforeEach(() => {
 describe('work_items:checkpoint (bulk keyed-array)', () => {
   it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
     expect((checkpoint as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('refuses the historical staging-candidate instruction before calling the checkpoint store', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const result = await one({
+      id: 'WI-7',
+      checkpoint: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      id: 'WI-7',
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'work-item-checkpoint',
+      unsafeSource: 'staging',
+      liveIdentity: {
+        candidate: 'c'.repeat(40),
+        repairHead: 'r'.repeat(40),
+        queueRevision: 1_788_763_360_000,
+      },
+    });
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it('refuses a metadata-only patch when its locked merge would preserve the stale instruction', async () => {
+    const stale = 'Then pin whatever staging resolves to at that instant, still never a quoted sha.';
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpointWithPrior.mockImplementationOnce(
+      async (
+        ref: unknown,
+        checkpointText: string | null | undefined,
+        opts?: Parameters<typeof import('../../work-item-checkpoint').setWorkItemCheckpointWithPrior>[2],
+      ) => {
+        const stored = opts?.transform ? opts.transform(stale, checkpointText) : checkpointText;
+        await setWorkItemCheckpoint(ref, stored);
+        return { stored, priorLength: stale.length };
+      },
+    );
+
+    const result = await one({ id: 'WI-7', checks: [{ claim: 'the focused unit suite is green' }] });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'work-item-checkpoint',
+      unsafeSource: 'staging',
+    });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
   it('teaches that rowsMode controls rows only and gives the complete body+rows replacement recipe', () => {

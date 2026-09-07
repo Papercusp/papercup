@@ -414,7 +414,7 @@ export function renderFrozenLineageCarryRefusal(verdict: FrozenLineageCarryPolic
   if (verdict.allowed) return null;
   const identity = verdict.liveIdentity;
   return (
-    `${FROZEN_CANDIDATE_LINEAGE_VIOLATION} — ${verdict.surface} would persist an instruction selecting ` +
+    `${FROZEN_CANDIDATE_LINEAGE_VIOLATION} — ${verdict.surface} would persist an instruction selecting source ` +
     `'${verdict.unsafeSource}' as the judged frozen candidate. Live queue identity is ` +
     `candidate=${identity.candidate}, repairHead=${identity.repairHead}, queueRevision=${identity.queueRevision}. ` +
     `Detected instruction: "${verdict.matchedText}". ${verdict.sanctionedRoute}`

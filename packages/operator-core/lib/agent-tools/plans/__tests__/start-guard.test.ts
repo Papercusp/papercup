@@ -155,7 +155,7 @@ vi.mock('../with-plan-lock', async (orig) => {
   return { ...actual, withPlanLock: planLockMocks.withPlanLock };
 });
 
-import tool from '../start';
+import tool, { PLANS_START_TIMEOUT_SEC } from '../start';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { promotePlanItems, type PromotePlanResult } from '../../../plan-workitem-promotion-run';
 
@@ -208,6 +208,7 @@ beforeEach(() => {
     status: 'ready',
     reason: 'ready',
     message: 'exact-plan admission ready',
+    claimKinds: ['bug', 'change', 'task'],
   });
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
@@ -266,6 +267,11 @@ describe('plans:start terminal guard', () => {
     // handler's structured outcome when the retry-safe saga finishes after the
     // abort, rather than replacing it with an ambiguous timeout.
     expect((tool as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+
+  it('declares a transport budget above the flat MCP deadline for the saga', () => {
+    expect((tool as { timeoutSec?: number }).timeoutSec).toBe(PLANS_START_TIMEOUT_SEC);
+    expect(PLANS_START_TIMEOUT_SEC).toBeGreaterThan(55);
   });
 
   it('rejects a draft forward ref at activation before any gate, row write, or promotion', async () => {
@@ -514,7 +520,33 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       potSlug: 'papercup',
       spec: expect.objectContaining({
         specId: 'plans-start-live-plan-2026-06-02',
-        view: { filter: { field: 'plan', op: '=', value: 'live-plan-2026-06-02' } },
+        view: {
+          filter: {
+            all: [
+              { field: 'plan', op: '=', value: 'live-plan-2026-06-02' },
+              { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+            ],
+          },
+        },
+      }),
+    }));
+  });
+
+  it('keeps a mixed-family admission binding broad', async () => {
+    admissionMocks.preflight.mockResolvedValueOnce({
+      ready: true,
+      status: 'ready',
+      reason: 'ready',
+      message: 'exact-plan admission ready',
+      claimKinds: null,
+    });
+
+    const res = await run({ slug: 'mixed-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(claimSpecMocks.setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({
+      spec: expect.objectContaining({
+        view: { filter: { field: 'plan', op: '=', value: 'mixed-plan-2026-06-02' } },
       }),
     }));
   });

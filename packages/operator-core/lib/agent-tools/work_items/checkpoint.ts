@@ -194,6 +194,10 @@ import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { describeUnreadRun } from '../../carry-note-unread-run';
 import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { postLearnedAtLevel, describeCaptureGaps } from '../../effort-thread';
+import {
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
 
 /**
  * D-010: the note length below which the capture advisory stays SILENT.
@@ -521,6 +525,29 @@ class RetireIdsMismatchError extends Error {
   ) {
     super('checkpoint_retire_ids_mismatch');
   }
+}
+
+type FrozenCarryViolationPayload = NonNullable<ReturnType<typeof frozenLineageCarryViolationPayload>>;
+
+/** Thrown from the store's locked transform so the transaction aborts before a
+ * final merged checkpoint can preserve an unsafe moving-tip instruction. */
+class FrozenCarryCheckpointError extends Error {
+  constructor(readonly payload: FrozenCarryViolationPayload) {
+    super(payload.error);
+  }
+}
+
+function frozenWorkItemCarryViolation(text: string | null | undefined): FrozenCarryViolationPayload | null {
+  if (!text?.trim()) return null;
+  return frozenLineageCarryViolationPayload(
+    evaluateFrozenLineageCarryText({ surface: 'work-item-checkpoint', text }),
+  );
+}
+
+function enforceFrozenWorkItemCarry<T extends string | null | undefined>(text: T): T {
+  const violation = frozenWorkItemCarryViolation(text);
+  if (violation) throw new FrozenCarryCheckpointError(violation);
+  return text;
 }
 
 /** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
@@ -1573,6 +1600,13 @@ export default defineTool({
           checkpointToStore = markUnverifiedOwnerAttribution(checkpointToStore);
           currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
         }
+        // Reject caller-authored authority before entering the checkpoint store.
+        // The locked transform below checks the FINAL merged bytes as well, which
+        // is what catches a checks/dependency-only patch preserving stale prior text.
+        const directFrozenCarryViolation = frozenWorkItemCarryViolation(currentProvenanceText);
+        if (directFrozenCarryViolation) {
+          return { ...directFrozenCarryViolation, id: it.id };
+        }
         isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
         newLength = checkpointToStore?.length ?? 0;
         const isClear = !(checkpointToStore && checkpointToStore.length > 0);
@@ -1790,9 +1824,9 @@ export default defineTool({
                 } else if (rowsMode === 'replace' && !wantsConfirmRetire && droppedCheckClaims.length > 0) {
                   throw new ReplaceWouldDropError(droppedCheckClaims);
                 }
-                if (merged.length === 0) return body.length > 0 ? body : null;
+                if (merged.length === 0) return enforceFrozenWorkItemCarry(body.length > 0 ? body : null);
                 const rendered = withCarryNoteChecks(body, merged);
-                if (rendered.length <= CHECKPOINT_CAP) return rendered;
+                if (rendered.length <= CHECKPOINT_CAP) return enforceFrozenWorkItemCarry(rendered);
                 // Over cap: trim the BODY and re-attach, so the checks — bounded to
                 // CARRY_NOTE_MAX_CHECKS rows — are never the part that gets cut.
                 // EI-21472322403787688: trim DIRECTION follows the body's ordering.
@@ -1805,7 +1839,7 @@ export default defineTool({
                 const trimmedBody = shouldAppendRefresh
                   ? body.slice(0, keepBody) + TRUNCATION_MARKER
                   : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
-                return withCarryNoteChecks(trimmedBody, merged);
+                return enforceFrozenWorkItemCarry(withCarryNoteChecks(trimmedBody, merged));
               }
             : undefined;
         /**
@@ -2084,6 +2118,7 @@ export default defineTool({
             ...depsOpt,
           });
         } catch (error) {
+          if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
           if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
           if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
           if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);
@@ -2123,6 +2158,7 @@ export default defineTool({
               },
             );
           } catch (error) {
+            if (error instanceof FrozenCarryCheckpointError) return { ...error.payload, id: it.id };
             if (error instanceof RetireIdsMismatchError) return retireIdsMismatchResponse(error);
           if (error instanceof ReplaceWouldDropError) return replaceWouldDropResponse(error);
             if (error instanceof OrgTxnTimeoutError) return timeoutResponse(error);

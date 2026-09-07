@@ -95,6 +95,10 @@ import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/stor
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 import { postLearnedAtLevel } from '../../effort-thread';
+import {
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -115,6 +119,28 @@ class ReplaceWouldDropError extends Error {
   ) {
     super('checkpoint_replace_would_drop_rows');
   }
+}
+
+type FrozenCarryViolationPayload = NonNullable<ReturnType<typeof frozenLineageCarryViolationPayload>>;
+
+/** Abort the locked carry-note transform before an unsafe final merge commits. */
+class FrozenCarryCheckpointError extends Error {
+  constructor(readonly payload: FrozenCarryViolationPayload) {
+    super(payload.error);
+  }
+}
+
+function frozenLoopCarryViolation(text: string | null | undefined): FrozenCarryViolationPayload | null {
+  if (!text?.trim()) return null;
+  return frozenLineageCarryViolationPayload(
+    evaluateFrozenLineageCarryText({ surface: 'loop-checkpoint', text }),
+  );
+}
+
+function enforceFrozenLoopCarry<T extends string | null | undefined>(text: T): T {
+  const violation = frozenLoopCarryViolation(text);
+  if (violation) throw new FrozenCarryCheckpointError(violation);
+  return text;
 }
 
 /* A merge whose union exceeds the durable row cap still must not commit a partial ROW
@@ -1293,6 +1319,21 @@ export default defineTool({
     if (ownerEnforcement.unverified) {
       currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
     }
+    // Refuse the caller-authored portion before touching the carry-note store.
+    // The transform also checks its final authoritative merge so rows-only
+    // updates cannot preserve a stale candidate-selection instruction.
+    const directFrozenCarryViolation = frozenLoopCarryViolation(currentProvenanceText);
+    if (directFrozenCarryViolation) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ...directFrozenCarryViolation, harness, ownerId }),
+          },
+        ],
+        isError: true,
+      };
+    }
     // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
     // silently switching every existing caller to merge would make a clear impossible.
     const rowsMode = args.rowsMode ?? 'merge';
@@ -1406,13 +1447,13 @@ export default defineTool({
                 // rows, so re-merging it would re-trigger the very overflow being refused.
                 const priorWallParts = splitCarryNoteWalls(priorNote ?? '');
                 const priorCheckParts = splitCarryNoteChecks(priorWallParts.body);
-                return withCarryNoteWalls(
+                return enforceFrozenLoopCarry(withCarryNoteWalls(
                   withCarryNoteChecks(merged.narrativeBody, priorCheckParts.checks),
                   priorWallParts.walls,
-                );
+                ));
               }
             }
-            return merged.note;
+            return enforceFrozenLoopCarry(merged.note);
           },
         },
       );
@@ -1501,6 +1542,17 @@ export default defineTool({
         };
       }
     } catch (error) {
+      if (error instanceof FrozenCarryCheckpointError) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ ...error.payload, harness, ownerId }),
+            },
+          ],
+          isError: true,
+        };
+      }
       // EI-21503907176334936: the confirmed-retirement refusal — thrown by the
       // transform BEFORE any store write, so nothing was committed. Surface the
       // exact drop set so one retry can fix it (full re-send, merge default, or
