@@ -163,10 +163,10 @@ index a3392d2..035b660 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..97dbfe7 100644
+index 249847c..cc6d907 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
-@@ -54,6 +54,17 @@ function profilePath(name) {
+@@ -54,6 +54,23 @@ function profilePath(name) {
  const { chromium } = await import('playwright');
  
  let browser, context, page;
@@ -181,10 +181,16 @@ index 249847c..97dbfe7 100644
 +// in a shorter `timeout`, which kills it before it can print its own error —
 +// which is why this failure was reported as "prints nothing at all").
 +const FRAME_TIMEOUT_MS = parseInt(process.env.VERDICT_FRAME_TIMEOUT_MS) || 5000;
++// Bound Playwright's optional network-idle drain; long-lived fetch/SSE requests
++// must not hold a chain response behind the 30s default per navigation.
++const NETWORK_IDLE_TIMEOUT_MS = Math.max(
++  1,
++  Number.parseInt(process.env.VERDICT_NETWORK_IDLE_TIMEOUT_MS ?? '', 10) || 5000,
++);
  let idleTimer;
  const refs = new Map();
  const cursorRefs = new Map();
-@@ -62,6 +73,27 @@ let cursorRefCounter = 0;
+@@ -62,6 +79,27 @@ let cursorRefCounter = 0;
  let lastSnapshot = '';
  let previousSnapshot = '';
  const styleHistory = [];
@@ -212,13 +218,14 @@ index 249847c..97dbfe7 100644
  
  function resetIdle() {
    clearTimeout(idleTimer);
-@@ -136,13 +168,14 @@ const commands = {
+@@ -136,13 +174,14 @@ const commands = {
    async goto(args) {
      const url = args[0];
      if (!url) return 'Error: URL required';
 +    clearNavigationEvidence();
      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-     await page.waitForLoadState('networkidle').catch(() => {});
+-    await page.waitForLoadState('networkidle').catch(() => {});
++    await page.waitForLoadState('networkidle', { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
      return `Navigated to ${page.url()}`;
    },
 -  async back() { await page.goBack({ waitUntil: 'domcontentloaded' }); return `Back to ${page.url()}`; },
@@ -230,7 +237,16 @@ index 249847c..97dbfe7 100644
    async url() { return page.url(); },
    async title() { return await page.title(); },
  
-@@ -405,6 +438,7 @@ const commands = {
+@@ -225,7 +264,7 @@ const commands = {
+   async click(args) {
+     const sel = args[0]; if (!sel) return 'Error: selector required';
+     await (await resolveRef(sel)).click({ timeout: 5000 });
+-    await page.waitForLoadState('networkidle').catch(() => {});
++    await page.waitForLoadState('networkidle', { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
+     return `Clicked ${sel}`;
+   },
+   async fill(args) {
+@@ -405,6 +444,7 @@ const commands = {
      browser = await chromium.launch({ headless: false });
      context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
      page = await context.newPage();
@@ -238,7 +254,7 @@ index 249847c..97dbfe7 100644
      if (cookies.length) await context.addCookies(cookies);
      if (currentUrl && currentUrl !== 'about:blank') await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
      return `Switched to headed mode. Browser visible.\nURL: ${page.url()}\nComplete manual work, then run: resume`;
-@@ -419,8 +453,6 @@ const commands = {
+@@ -419,8 +459,6 @@ const commands = {
      page = await context.newPage();
      if (cookies.length) await context.addCookies(cookies);
      if (currentUrl && currentUrl !== 'about:blank') { await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); await page.evaluate((s) => { for (const [k, v] of Object.entries(s.localStorage || {})) localStorage.setItem(k, v); }, storage); }
@@ -247,15 +263,18 @@ index 249847c..97dbfe7 100644
      return `Resumed headless mode.\nURL: ${page.url()}\nCookies: ${cookies.length}\nUse auth-save <name> to persist.`;
    },
    async 'goto-auth'(args) {
-@@ -430,6 +462,7 @@ const commands = {
+@@ -430,8 +468,9 @@ const commands = {
      if (pi !== -1) { profileName = args[pi + 1]; clean.splice(pi, 2); }
      const url = clean[0]; if (!url) return 'Error: URL required';
      if (profileName) { const r = await commands['auth-load']([profileName]); if (r.startsWith('Error')) return r; }
 +    clearNavigationEvidence();
      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-     await page.waitForLoadState('networkidle').catch(() => {});
+-    await page.waitForLoadState('networkidle').catch(() => {});
++    await page.waitForLoadState('networkidle', { timeout: NETWORK_IDLE_TIMEOUT_MS }).catch(() => {});
      const finalUrl = page.url();
-@@ -467,21 +500,48 @@ const commands = {
+     if (finalUrl.includes('/login') || finalUrl.includes('/oauth') || finalUrl.includes('sso.'))
+       return `Redirected to login: ${finalUrl}\nSession expired. Run: handoff -> login manually -> resume -> auth-save ${profileName || 'default'}`;
+@@ -467,21 +506,48 @@ const commands = {
  
    // Tabs
    async tabs() { return context.pages().map((p, i) => `${i}: ${p.url()}${p === page ? ' (active)' : ''}`).join('\n'); },
@@ -312,7 +331,7 @@ index 249847c..97dbfe7 100644
  
    // Advanced
    async diff(args) {
-@@ -508,10 +568,7 @@ const commands = {
+@@ -508,10 +574,7 @@ const commands = {
  };
  
  // Console & network collectors

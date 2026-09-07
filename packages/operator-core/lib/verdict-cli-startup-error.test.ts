@@ -259,6 +259,108 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     }
   }, 20_000);
 
+  it('bounds networkidle waits so a chain returns after DOMContentLoaded', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-networkidle-bound-'));
+    const dataDir = join(fixtureRoot, 'data');
+    const sessionName = 'networkidle-bound';
+    const sockets = new Set<{ destroy(): void }>();
+    const server = createServer((req, res) => {
+      sockets.add(req.socket);
+      req.socket.once('close', () => sockets.delete(req.socket));
+
+      if (req.url === '/pending') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.write('intentionally pending');
+        return;
+      }
+
+      const pageName =
+        req.url === '/one' ? 'CHAIN-PAGE-ONE' : req.url === '/two' ? 'CHAIN-PAGE-TWO' : null;
+      if (!pageName) {
+        res.writeHead(404);
+        res.end('missing');
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(
+        `<!doctype html><body>${pageName}</body>` +
+          `<script>fetch('/pending', { cache: 'no-store' });</script>`,
+      );
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('fixture server did not bind');
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const env = {
+        ...process.env,
+        VERDICT_DATA_DIR: dataDir,
+        VERDICT_SESSION: sessionName,
+        PAPERCUSP_SID: '',
+        CODEX_SESSION_ID: '',
+        VERDICT_START_TIMEOUT_MS: '5000',
+        VERDICT_IDLE_TIMEOUT: '60000',
+        VERDICT_NETWORK_IDLE_TIMEOUT_MS: '100',
+      };
+      const run = (command: string, ...args: string[]) =>
+        execFileAsync(
+          process.execPath,
+          [require.resolve('verdict-cli/bin/browse.mjs'), command, ...args],
+          { env, maxBuffer: 32 * 1024, timeout: 10_000 },
+        );
+
+      // Warm the daemon so this assertion measures the per-navigation wait,
+      // rather than browser startup.
+      await run('status');
+      const chain = JSON.stringify([
+        ['goto', `${baseUrl}/one`],
+        ['url'],
+        ['goto', `${baseUrl}/two`],
+        ['js', 'document.body.innerText'],
+      ]);
+      const startedAt = Date.now();
+      const { stdout } = await run('chain', chain);
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(elapsedMs).toBeLessThan(5_000);
+      expect(stdout).toContain(`goto: Navigated to ${baseUrl}/one`);
+      expect(stdout).toContain(`url: ${baseUrl}/one`);
+      expect(stdout).toContain(`goto: Navigated to ${baseUrl}/two`);
+      expect(stdout).toContain('js: CHAIN-PAGE-TWO');
+    } finally {
+      await execFileAsync(
+        process.execPath,
+        [require.resolve('verdict-cli/bin/browse.mjs'), 'stop'],
+        {
+          env: {
+            ...process.env,
+            VERDICT_DATA_DIR: dataDir,
+            VERDICT_SESSION: sessionName,
+            PAPERCUSP_SID: '',
+            CODEX_SESSION_ID: '',
+          },
+          maxBuffer: 32 * 1024,
+          timeout: 10_000,
+        },
+      ).catch(() => undefined);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => {
+        if (!server.listening) {
+          resolve();
+          return;
+        }
+        server.close(() => resolve());
+      });
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('exits after a successful first command while the detached daemon stays alive', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-startup-unref-'));
     const fakeNode = join(fixtureRoot, 'node');
