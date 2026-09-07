@@ -5,7 +5,7 @@
  * covers the locate→validate→dep-check→copy flow without real git, network, or
  * the tool catalog. `cloneRepo` is faked by copying a local fixture dir.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,7 @@ import {
   InstallBlueprintError,
   type InstallBlueprintCoreDeps,
 } from './install-blueprint-core';
+import type { CapabilityProviderCandidate } from './capability-grant-resolver';
 
 let root: string;        // scratch root for fixtures + install target
 let fixtureRepo: string; // the "remote" repo a fake clone copies from
@@ -29,6 +30,24 @@ const RUNNABLE_YAML = [
   'workItem: { kind: feature }',
   'spine: { edges: { DONE: { to: done } } }',
 ].join('\n');
+
+const capabilityCandidate = (): CapabilityProviderCandidate => ({
+  classRef: 'crm.email@1.0.0',
+  providerPackage: 'acme-crm',
+  providerVersion: '2.0.0',
+  verbBindings: { send: 'acme:send-email' },
+  conformanceRunId: 'run-acme',
+  conformanceStatus: 'passed',
+  behavioralStatus: 'not-required',
+  behavioralRunRef: null,
+  registryRevision: 'registry-r1',
+  status: 'active',
+  updatedAt: '2026-09-07T00:00:00.000Z',
+  price: null,
+  activePotBindings: 4,
+  passingStructuralRuns: 3,
+  totalStructuralRuns: 3,
+});
 
 async function writeBlueprint(dir: string, yaml: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
@@ -257,6 +276,76 @@ describe('installBlueprintFromCupboardCore', () => {
       requirements: [{ state: 'absent', optional: true }],
     });
     expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
+  });
+
+  it('persists an agent-selected exact provider before committing the identity release', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const rollback = vi.fn(async () => {});
+    const commitCapabilitySelections = vi.fn(async () => ({ rollback }));
+    const result = await installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'agent',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate()],
+        },
+        commitCapabilitySelections,
+      }),
+    );
+
+    expect(commitCapabilitySelections).toHaveBeenCalledWith([
+      expect.objectContaining({
+        classRef: 'crm.email@1.0.0',
+        providerPackage: 'acme-crm',
+        providerVersion: '2.0.0',
+        reason: 'evidence-policy',
+      }),
+    ]);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(result.capabilityGrants?.disclosures).toHaveLength(1);
+  });
+
+  it('compensates a new provider binding when the identity release fails', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const rollback = vi.fn(async () => {});
+    await expect(installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        expectedRelease: { contentHash: 'sha256:' + 'f'.repeat(64) },
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'agent',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate()],
+        },
+        commitCapabilitySelections: async () => ({ rollback }),
+      }),
+    )).rejects.toBeInstanceOf(InstallBlueprintError);
+
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 
   it('rejects an invalid github_url', async () => {

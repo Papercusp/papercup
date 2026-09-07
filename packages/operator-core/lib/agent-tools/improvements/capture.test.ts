@@ -14,6 +14,7 @@ import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { computeObservationsImpact } from '../../scout/observation-impact-leg';
 import { getModes } from '../../modes/store';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { metadataToolFailure, metadataWorkflowTargets } from '../plans/coordination-metadata-fixtures';
 
 const drainAdmission = vi.hoisted(() => ({
   blocked: false,
@@ -413,6 +414,39 @@ describe('improvements:capture tool envelope', () => {
     );
     const body = mockCapture.mock.calls[0]?.[0].body ?? '';
     expect(body.length).toBeLessThanOrEqual(16_000);
+  });
+
+  it('P-001 R-7 measures manual retry fields separately from already-derived incident prose', async () => {
+    const requests = [
+      { toolFailure: { ...metadataToolFailure } },
+      { toolFailure: { ...metadataToolFailure } },
+    ];
+    for (const request of requests) {
+      await callTool(captureTool.args.parse(request));
+    }
+    expect(mockCapture).toHaveBeenCalledTimes(requests.length);
+    expect(requests.reduce((sum, request) => sum + Object.keys(request.toolFailure).length, 0))
+      .toBe(metadataWorkflowTargets.retryIncidentFields.before);
+    expect(requests.reduce((sum, request) =>
+      sum + ['title', 'body'].filter((key) => Object.hasOwn(request, key)).length, 0))
+      .toBe(metadataWorkflowTargets.retryIncidentNarratives.before);
+    for (const [input] of mockCapture.mock.calls) {
+      expect(input).toMatchObject({
+        title: 'coord:send tool-call failure (invalid_args)',
+        body: expect.stringContaining(`Message: ${metadataToolFailure.message}`),
+        lane: 'observation',
+        payloadExtra: {
+          toolFailureProbation: {
+            state: 'probation',
+            class: 'caller',
+            report: metadataToolFailure,
+            reporters: ['su-test'],
+          },
+        },
+      });
+    }
+    // This test measures the real parser/handler boundary, not persistence or
+    // automatic invocation-ledger delivery. Same-row proof lives in capture-core.
   });
 
   it('files a reproduced server failure directly as claimable bug work', async () => {

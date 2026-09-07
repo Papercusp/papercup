@@ -16,6 +16,8 @@ import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
 import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
+import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
+import { normalizeSuspectedToolFailure } from './tool-error-classifier';
 
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
@@ -513,6 +515,66 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     correlationFingerprint: 'coord:send|invalid_args|42|body|codex-1.2|invalid-args-body-must-be',
     intendedKind: 'change' as const,
     reporters: [reporter],
+  });
+
+  it('P-001 R-7 coalesces two same-reporter retries without creating or promoting another identity', async () => {
+    const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
+    const report = {
+      ...normalized,
+      state: 'probation' as const,
+      intendedKind: 'change' as const,
+      reporters: ['su-a'],
+      report: metadataToolFailure,
+    };
+    const prior = existing({
+      id: 'EI-METADATA-FRICTION',
+      title: 'coord:send tool-call failure (invalid_args)',
+      severity: 'nit',
+      kind: 'change',
+      payload: { lane: 'observation', watchdogKey: normalized.watchdogKey, toolFailureProbation: report },
+    });
+    const tagIssue = vi.fn();
+    const untagIssue = vi.fn();
+    const d = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async () => [prior],
+      findIssuesByToolFailureClassKeys: async () => [prior],
+      updateIssuePatch: async (_id: string, patch: object) => Object.assign(prior, patch),
+      mergeIssuePayload: async (_id: string, patch: object) => {
+        prior.payload = { ...(prior.payload as object), ...patch };
+        return prior;
+      },
+      tagIssue,
+      untagIssue,
+    } satisfies CaptureDeps;
+    const ids: string[] = [];
+    for (let retry = 0; retry < 2; retry++) {
+      const result = await captureImprovement({
+        title: prior.title,
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: normalized.watchdogKey,
+        createdBy: 'su-a',
+        payloadExtra: { toolFailureProbation: report },
+      }, d);
+      expect(result).toMatchObject({ ok: true, created: false, reason: 'coalesced', issue: { id: prior.id } });
+      ids.push(result.issue!.id);
+    }
+    expect(new Set(ids).size).toBe(metadataWorkflowTargets.repeatedFrictionIdentities.before);
+    expect(d.created).toHaveLength(0);
+    expect(prior.payload).toMatchObject({
+      lane: 'observation',
+      toolFailureProbation: { state: 'probation', reporters: ['su-a'], report: metadataToolFailure },
+    });
+    expect(tagIssue).not.toHaveBeenCalled();
+    expect(untagIssue).not.toHaveBeenCalled();
+    expect(d.occurrences).toHaveLength(2);
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({ canonicalId: prior.id, reporter: 'su-a', reportKind: 'coalesced' }),
+      expect.objectContaining({ canonicalId: prior.id, reporter: 'su-a', reportKind: 'coalesced' }),
+    ]);
+    // A distinct reporter's promotion and watchdog promotion remain covered by
+    // the adjacent tests. Repetition by one reporter must not impersonate either.
   });
 
   it('keeps the first report in the observation lane and preserves its correlation dimensions', async () => {

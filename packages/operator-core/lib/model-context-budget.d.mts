@@ -306,6 +306,7 @@ export const CODEX_EXTENDED_WINDOW_FALLBACK: Readonly<{
     'gpt-5.6-terra': 1000000;
     'gpt-5.6-luna': 1000000;
     'gpt-5.4': 1000000;
+    'gpt-6-astra': 1000000;
 }>;
 /** Ceiling on the window we will DECLARE to the Codex CLI (plan D-002). */
 export const CODEX_MAX_CONFIGURED_WINDOW: 1000000;

@@ -35,6 +35,53 @@ import {
   type ToolErrorClass,
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
+import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
+
+describe('P-001 R-7 frozen friction correlation controls', () => {
+  it('replays the same report with stable identities but without an authority escalation', () => {
+    const first = normalizeSuspectedToolFailure(metadataToolFailure);
+    const replay = normalizeSuspectedToolFailure({ ...metadataToolFailure });
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({
+      class: 'caller',
+      direct: false,
+      contractFingerprint: 'metadata-schema-v1~body',
+      deployedRevision: 'metadata-runtime-v1',
+    });
+    expect(first.correlationFingerprint)
+      .toContain('coord:send|invalid_args|metadata-schema-v1|body|metadata-runtime-v1|');
+  });
+
+  it.each([
+    { schemaRevision: 'metadata-schema-v2' },
+    { fieldPath: 'expects' },
+    { runtimeVersion: 'metadata-runtime-v2' },
+  ])('does not collapse a changed contract/runtime into the same lifecycle identity: %j', (change) => {
+    const original = normalizeSuspectedToolFailure(metadataToolFailure);
+    const changed = normalizeSuspectedToolFailure({ ...metadataToolFailure, ...change });
+    expect(changed.classKey).not.toBe(original.classKey);
+    expect(changed.correlationFingerprint).not.toBe(original.correlationFingerprint);
+    // The watchdog's tool/class/message key intentionally has a narrower scope.
+    expect(changed.watchdogKey).toBe(original.watchdogKey);
+  });
+
+  it('keeps missing dimensions explicit instead of claiming the known fixture contract', () => {
+    const unknown = normalizeSuspectedToolFailure({
+      toolName: metadataToolFailure.toolName,
+      message: metadataToolFailure.message,
+      errorCode: metadataToolFailure.errorCode,
+    });
+    expect(unknown.contractFingerprint).toBe('schema-unknown~field-unknown');
+    expect(unknown.deployedRevision).toBe('runtime-unknown');
+    expect(unknown.classKey).not.toBe(normalizeSuspectedToolFailure(metadataToolFailure).classKey);
+  });
+
+  it('a repeated caller rejection does not become direct evidence through legacy booleans', () => {
+    expect(normalizeSuspectedToolFailure({
+      ...metadataToolFailure, reproduced: true, clearServerMismatch: true, hardInternal: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+});
 
 describe('classifyToolError — real-corpus regression (P-011)', () => {
   it.each(TOOL_ERROR_CORPUS.map((r) => [r.message.slice(0, 60), r] as const))(
