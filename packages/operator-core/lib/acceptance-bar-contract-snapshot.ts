@@ -388,6 +388,42 @@ function addProblem(problems: AcceptanceBarSnapshotProblem[], problem: Acceptanc
   if (!problems.some((candidate) => problemKey(candidate) === key)) problems.push(problem);
 }
 
+/**
+ * Is a card recorded at `cardRevision` still current for `rubricRevision`?
+ *
+ * Revision equality alone answers this WRONG in the expensive direction. The
+ * rubric revision counter advances on every amendment, including ones that
+ * change only METHOD (how a BAR is probed) and leave every BAR's meaning — and
+ * so its `barHash` — byte-identical. Judged by the counter, a typo fix voids a
+ * peer's completed independent grading pass and the vetting attestation with
+ * it, and the only recorded consequence is that the party who did the work
+ * correctly is told to do it again.
+ *
+ * `barContract.meaningRevision` — the MEANING EPOCH, written by the same
+ * `ACCEPTANCE_BAR_MEANING_FIELDS` classifier that decides whether an amendment
+ * needs approval — records the revision at which BAR meaning last actually
+ * changed. A card recorded at or after that revision judged the BAR contract
+ * still in force, whatever the counter has done since.
+ *
+ * When no epoch is recorded (a rubric last written before the field existed)
+ * this falls back to strict equality. That fallback is the conservative
+ * direction on purpose: absence means "meaning history unknown", and treating
+ * unknown as "unchanged" would bless a card graded before an untracked meaning
+ * change, which is the failure the epoch exists to prevent.
+ */
+function revisionRecordCurrent(
+  cardRevision: number | null | undefined,
+  rubricRevision: number | null,
+  meaningRevision: number | null | undefined,
+): boolean {
+  if (cardRevision == null) return cardRevision === rubricRevision;
+  if (cardRevision === rubricRevision) return true;
+  if (meaningRevision == null || rubricRevision == null) return false;
+  // Never treat a card from the FUTURE of the current revision as current: that
+  // is a read anomaly, not a meaning-preserving amendment.
+  return cardRevision >= meaningRevision && cardRevision <= rubricRevision;
+}
+
 function scorecardAcceptance(card: ScorecardRow): {
   verdict?: string;
   reasoning?: string;
