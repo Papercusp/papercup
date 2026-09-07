@@ -890,7 +890,7 @@ mug-memory-hybrid L1b).
   conclusions without the derivation that produced them.
   - **Goal** → `coord:orient { intent }` at the start (it DECLARES to peers in
     the same call) — or, when an `## Orientation` block already arrived and
-    oriented you, `coord:declare-intent { intent, planItems }` alone, which
+    oriented you, `coord:declare-intent { intent, items }` alone, which
     declares + claims your lane without re-paying orient's full read;
     `loop:arm { goal }` for an armed loop, and `why: { goalRef }`
     on a `coord:send` so the recipient queries the goal's LIVE state instead of

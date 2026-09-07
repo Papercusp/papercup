@@ -702,7 +702,7 @@ fact to the next reader** — including your own next self, who inherits your
 conclusions without the derivation that produced them. **Goal** →
 `coord:orient { intent }` at the start (it DECLARES to peers in the same
 call) — or, when an `## Orientation` block already arrived and oriented you,
-`coord:declare-intent { intent, planItems }` alone, which declares + claims
+`coord:declare-intent { intent, items }` alone, which declares + claims
 your lane without re-paying orient's full read; `loop:arm { goal }` for an
 armed loop, and `why: { goalRef }` on a
 `coord:send` so the recipient queries the goal's LIVE state rather than
