@@ -92,14 +92,10 @@ export async function readFleetExecutableFrontier(input: {
   workspaceId: string;
 }): Promise<FleetExecutableFrontier | null> {
   try {
-    const [presence, fleets, specs, lane, plans, dag] = await Promise.all([
-      import('../agent-tools/coordination/presence-fleet'),
-      import('../agent-fleets-store'),
-      import('../scheduler/claim-spec-store'),
-      import('./lane-health'),
-      import('../agent-tools/plans/source'),
-      import('../agent-tools/plans/plan-dag-parallelism'),
-    ]);
+    // Fresh solo sessions have no fleet frontier. Resolve that inexpensive
+    // discriminator before loading the fleet planning/read-model graph into
+    // their bounded turn-start path.
+    const presence = await import('../agent-tools/coordination/presence-fleet');
     const membership = await presence.resolvePresenceFleet(input.ownerId, {
       fleetSlug: null,
       fleetRole: null,
@@ -107,6 +103,10 @@ export async function readFleetExecutableFrontier(input: {
     const fleetSlug = membership.fleetSlug;
     if (!fleetSlug) return null;
 
+    const [fleets, specs] = await Promise.all([
+      import('../agent-fleets-store'),
+      import('../scheduler/claim-spec-store'),
+    ]);
     const [fleet, resolved] = await Promise.all([
       fleets.getFleet(input.workspaceId, fleetSlug),
       specs.resolveFleetClaimSpec({ spec: fleetSlug, workspaceId: input.workspaceId }),
@@ -117,6 +117,11 @@ export async function readFleetExecutableFrontier(input: {
     const harnessSlug = resolved.record.harnessSlug;
     if (!planSlug || !harnessSlug) return null;
 
+    const [lane, plans, dag] = await Promise.all([
+      import('./lane-health'),
+      import('../agent-tools/plans/source'),
+      import('../agent-tools/plans/plan-dag-parallelism'),
+    ]);
     const [planRow, laneHealth] = await Promise.all([
       plans.getPlanRow(planSlug, { workspaceId: input.workspaceId, harnessSlug }),
       lane.readClaimSpecLaneHealth({
