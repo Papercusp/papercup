@@ -242,6 +242,119 @@ describe('<LearningLoopControl>', () => {
     expect(H.invalidate.fn).not.toHaveBeenCalled();
   });
 
+  // ── the pot rail, folded in (owner ask 2026-09-07) ──────────────────────
+  //
+  // The defect this replaced: seven chips all reading "learning off" through a
+  // dashed border and 62% opacity, with nothing to compare against — so the one
+  // fact that mattered was invisible. These pin that it is now stated in WORDS,
+  // and that folding the rail in did not lose a control.
+  describe('the pot verdict and list', () => {
+    it('says nothing is learning, in words, when every pot scope is off', () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true), gym('beta', true)],
+        potScope: scope(['alpha', 'beta']),
+      });
+      render(<LearningLoopControl />);
+      expect(screen.getByText('Nothing is learning')).toBeTruthy();
+      expect(screen.getByText(/0 of 2 on/)).toBeTruthy();
+    });
+
+    /** Learning is the group switch AND the pot's own scope — never either
+     *  alone. A running group over switched-off scopes is still nothing. */
+    it('reports nothing learning when the GROUP is paused even though scopes are on', () => {
+      H.snap = makeSnap({ status: 'paused', activeCount: 0, heldCount: 16 });
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true)],
+        potScope: scope([]),
+      });
+      render(<LearningLoopControl />);
+      expect(screen.getByText('Nothing is learning')).toBeTruthy();
+      expect(screen.getByText(/1 pot paused/)).toBeTruthy();
+    });
+
+    it('counts the learning pots when the group runs and scopes are on', () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true), gym('beta', true)],
+        potScope: scope([]),
+      });
+      render(<LearningLoopControl />);
+      expect(screen.getByText('2 of 2 pots learning')).toBeTruthy();
+    });
+
+    it("a row's switch writes that pot's SCOPE only, then refetches the catalog", async () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true)],
+        lanes: [lane('lane-1', 'alpha', true)],
+        potScope: scope([]),
+      });
+      render(<LearningLoopControl />);
+      openDropdown();
+      fireEvent.click(
+        screen.getByRole('switch', { name: 'Switch off learning for alpha' }),
+      );
+      await waitFor(() => expect(H.runTool.fn).toHaveBeenCalledTimes(1));
+      expect(H.runTool.fn).toHaveBeenCalledWith('learning:set-pot-scope', {
+        pots: ['alpha'],
+        enabled: false,
+      });
+      // Never a lane write: a lane's arming is its OWN state, so switching the
+      // pot off must leave it untouched for the switch back on to restore.
+      expect(H.runTool.fn).not.toHaveBeenCalledWith(
+        'governor:arm',
+        expect.anything(),
+      );
+      await waitFor(() =>
+        expect(H.catalogInvalidate.fn).toHaveBeenCalledTimes(1),
+      );
+    });
+
+    it("the pot name opens that pot's fields drawer — where the lane switches live", () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true)],
+        potScope: scope([]),
+      });
+      render(<LearningLoopControl />);
+      openDropdown();
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Open fields for alpha' }),
+      );
+      expect(H.openDrawer.fn).toHaveBeenCalledWith('alpha');
+    });
+
+    /** An unreadable scope cannot be drawn as a two-state switch without
+     *  asserting a position we never read — but the WRITE is well-defined, so
+     *  the row must stay operable rather than disabled-and-unrecoverable. */
+    it('offers an explicit set action for an unreadable scope, not a switch', () => {
+      H.arming = makeArming({ gymPots: [gym('alpha', true)], potScope: null });
+      render(<LearningLoopControl />);
+      openDropdown();
+      expect(screen.queryByRole('switch', { name: /alpha/ })).toBeNull();
+      expect(screen.getByText('set')).toBeTruthy();
+    });
+
+    it('renders a zero-spend pot as a dash, never as $0.00', () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true, 0), gym('beta', true, 12.5)],
+        potScope: scope([]),
+      });
+      render(<LearningLoopControl />);
+      openDropdown();
+      expect(screen.queryByText('$0.00')).toBeNull();
+      expect(screen.getByText('$12.50')).toBeTruthy();
+    });
+
+    it('keeps a route to every pot, including ones the rail model omits', () => {
+      H.arming = makeArming({
+        gymPots: [gym('alpha', true)],
+        potScope: scope([]),
+      });
+      render(<LearningLoopControl />);
+      openDropdown();
+      fireEvent.click(screen.getByRole('button', { name: /See every pot/ }));
+      expect(H.openPicker.fn).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('popover shows the spend rollup and the role breakdown labels', async () => {
     render(<LearningLoopControl />);
     openDropdown();

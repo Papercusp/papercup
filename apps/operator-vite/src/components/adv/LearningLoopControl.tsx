@@ -39,6 +39,7 @@ import { useOpenPotDrawer } from "./LearningPotDrawer";
 import { useOpenPotPicker } from "./LearningPotPicker";
 import {
   buildLearningPotRail,
+  partitionLearningPotRail,
   type LearningPotChip,
 } from "./learning-pot-rail";
 // Native `title=` on a button is blocked by lint:design-primitives — Tooltip is
@@ -353,7 +354,17 @@ export default function LearningLoopControl() {
    * did, and is rendered from the data rather than hard-coded.
    */
   const verdict = useMemo(() => {
-    const chips = buildLearningPotRail(arming);
+    // ONE POPULATION, ALL THREE FIGURES — the ACTIVE partition, i.e. the pots
+    // with something actually armed under them. This is the population the rail
+    // gave chips to (7 here), not every pot with a learning setup (54 here, the
+    // rail's own measurement): a pot with nothing armed is not waiting to learn,
+    // so counting it would say "54 paused" about a pause holding 7. Mixing the
+    // two across the clauses is exactly the miscounting the rail's dormant-chip
+    // comment warns about, so spend is summed over the same set rather than
+    // over all pots — and the trailing `+` already states it is a floor.
+    const { active: chips } = partitionLearningPotRail(
+      buildLearningPotRail(arming),
+    );
     if (chips.length === 0) return null;
     const potsOn = chips.filter((chip) => chip.learning === "on").length;
     const lanesArmed = chips.reduce((sum, chip) => sum + chip.lanes.armed, 0);

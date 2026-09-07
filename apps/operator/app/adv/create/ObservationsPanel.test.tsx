@@ -75,6 +75,9 @@ vi.mock("@papercusp/sync", () => ({
   },
 }));
 vi.mock("@papercusp/grid-core", () => ({
+  // The pane took Retain's persisted, resizable widths; the mock only has to
+  // satisfy the [value, setter] shape the component destructures.
+  usePersistedColumnWidths: () => [{}, () => {}],
   VirtualGrid: ({
     rows,
     columns,
@@ -396,11 +399,11 @@ describe("<ObservationsPanel />", () => {
     );
     // The rendered body node's own textContent must contain the FULL string,
     // including the long token and everything after it — not merely a
-    // truncated head.
+    // truncated head. It lives in the DETAIL ASIDE now rather than inside the
+    // row (owner ask: "side panel like Retain"); the no-JS-truncation contract
+    // this pins is unchanged, only its address is.
     const bodyNode = screen
-      .getByRole("button", {
-        name: "Collapse observation Deploy-diff triage recipe (long-token real shape)",
-      })
+      .getByRole("complementary", { name: "Observation detail" })
       .querySelector(".pc-observations__body");
     expect(bodyNode?.textContent ?? "").toContain(longToken);
     expect(bodyNode?.textContent ?? "").toContain(tail.trim());

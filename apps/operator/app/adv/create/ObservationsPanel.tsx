@@ -803,6 +803,8 @@ function ObservationDetailAside({
         </button>
       </header>
       <strong className="pc-observations__detailtitle">{headline}</strong>
+      {/* Just the timestamp: role / scope / confidence are already in the
+          context line below, and saying them twice in one panel is noise. */}
       <div className="pc-observations__detailmeta">
         <span>
           {new Date(row.createdAt).toLocaleString(undefined, {
@@ -814,9 +816,6 @@ function ObservationDetailAside({
             second: "2-digit",
           })}
         </span>
-        {context.map((value) => (
-          <span key={value}>{value}</span>
-        ))}
       </div>
       {bodyTail ? (
         <span className="pc-observations__body">{bodyTail}</span>

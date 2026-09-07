@@ -20,6 +20,16 @@
  * spaces) and asserts the expanded row shows the FULL body with no
  * vertical (virtualizer slot) or horizontal (unwrapped long-token) clipping.
  *
+ * ⚠ THE STRUCTURE THIS GUARDED CHANGED ON 2026-09-07. The pane took Retain's
+ * index + detail split (owner ask: "side panel like Retain"), so the body is
+ * no longer rendered inside a virtualized row — the row is a fixed 30px index
+ * entry and the full text lives in the detail aside. The virtualizer-slot
+ * under-measurement that caused WI-5419 therefore has no subject any more; it
+ * is designed out rather than fixed. This spec is KEPT because the other half
+ * of the report — a long unbroken token overflowing its container, and a
+ * container clipping its own text — is still possible in the aside, and that
+ * is what it now measures.
+ *
  * Why an e2e, not jsdom: jsdom performs no real layout (scrollHeight /
  * getBoundingClientRect always read 0), so it cannot detect a CSS overflow
  * clip or a virtualizer slot that undershoots real content height — only a
@@ -172,7 +182,15 @@ test.describe('/adv Learning tab — Observations pane, real long-body row', () 
     });
     await expect(collapseBtn).toBeVisible({ timeout: 10_000 });
 
-    const bodyEl = collapseBtn.locator('.pc-observations__body');
+    // The body lives in the DETAIL ASIDE now, not inside the row (owner ask
+    // 2026-09-07: "side panel like Retain"). The row is a fixed 30px index
+    // entry, so the virtualizer-slot half of this defect is STRUCTURALLY gone
+    // rather than merely fixed — see the vertical-clip assertion below.
+    const aside = page.getByRole('complementary', {
+      name: 'Observation detail',
+    });
+    await expect(aside).toBeVisible({ timeout: 10_000 });
+    const bodyEl = aside.locator('.pc-observations__body');
     await expect(bodyEl).toBeVisible();
 
     // 1. FULL TEXT PRESENT — the tail string after the long token must be in
@@ -186,29 +204,30 @@ test.describe('/adv Learning tab — Observations pane, real long-body row', () 
     //    means the token pushed content past the visible box instead of
     //    wrapping.
     const horizontalOverflow = await bodyEl.evaluate((el) => {
-      const row = el.closest('[role="row"]') as HTMLElement | null;
-      const target = row ?? (el as HTMLElement);
+      const panel = el.closest('.pc-observations__detail') as HTMLElement | null;
+      const target = panel ?? (el as HTMLElement);
       return target.scrollWidth - target.clientWidth;
     });
     expect(horizontalOverflow).toBeLessThanOrEqual(1); // 1px rounding slack
 
-    // 3. NO VERTICAL CLIP — the virtualizer's absolutely-positioned row slot
-    //    (data-index ancestor) must be at least as tall as the actual
-    //    rendered content (BodyRow's real scrollHeight). If the slot is
-    //    shorter, `measureVariableHeight`/measureElement under-measured this
-    //    real content shape and the next row will paint over the tail of
-    //    this one — the exact "text cut off" symptom.
+    // 3. NO VERTICAL CLIP — the aside must be at least as tall as the body it
+    //    renders. This used to compare the virtualizer's absolutely-positioned
+    //    row slot against the row's scrollHeight, because the body was drawn
+    //    INSIDE a measured row: an under-measured slot let the next row paint
+    //    over this one's tail, which was the reported "text cut off". The body
+    //    is no longer in a virtualized slot at all, so that comparison has no
+    //    subject — the guard now asserts the property that still has teeth,
+    //    which is that the panel itself does not clip its own content.
     const clipping = await bodyEl.evaluate((el) => {
-      const slot = el.closest('[data-index]') as HTMLElement | null;
-      const bodyRow = el.closest('[role="row"]') as HTMLElement | null;
-      if (!slot || !bodyRow) return { slotHeight: -1, contentHeight: -1 };
+      const panel = el.closest('.pc-observations__detail') as HTMLElement | null;
+      if (!panel) return { panelHeight: -1, contentHeight: -1 };
       return {
-        slotHeight: slot.getBoundingClientRect().height,
-        contentHeight: bodyRow.scrollHeight,
+        panelHeight: panel.clientHeight,
+        contentHeight: panel.scrollHeight,
       };
     });
-    expect(clipping.slotHeight).toBeGreaterThan(0);
-    expect(clipping.slotHeight).toBeGreaterThanOrEqual(clipping.contentHeight - 1);
+    expect(clipping.panelHeight).toBeGreaterThan(0);
+    expect(clipping.panelHeight).toBeGreaterThanOrEqual(clipping.contentHeight - 1);
 
     await page.screenshot({
       path: 'test-results/wi-5419-observations-long-body-expanded.png',
