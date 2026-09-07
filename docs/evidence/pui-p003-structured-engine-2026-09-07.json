@@ -58,7 +58,14 @@
       "AUTO-BAR-R-03-P-003": "EI-22616128914387622"
     }
   },
-  "pending": "Independent grading-integrity audits are assigned to reviewer work-item WI-10000541. P-003 stays open until those verdicts pass.",
+  "pending": null,
+  "independentAudits": {
+    "verifiedAt": "2026-09-07T15:36:00Z",
+    "AUTO-BAR-R-01-P-003": "EI-22617509556777169",
+    "AUTO-BAR-R-02-P-003": "EI-22617512278672967",
+    "AUTO-BAR-R-03-P-003": "EI-22616705247176123",
+    "result": "All three source scorecards have gradingAudit.state=passed, verified by full work-item readback. Earlier failed/retracted audits remain in history. Independent reviewer WI-10000541 reproduced the PostgreSQL cases and corrected the R01/R02 audit through staging tooling."
+  },
   "plan": "pui-first-party-public-release-2026-09-07",
   "workItem": "WI-10000425",
   "planItem": "P-003",
@@ -159,5 +166,24 @@
     "EI-22614046794182414 fixed the missing integration detached-import drain; the final live test has no teardown warnings. EI-22614713938386539 retains the unconfirmed test-DB setup timeout investigation; no root cause or durable fix is claimed for that transient.",
     "P-004 recovery/rematerialization and the remaining full-plan work are not completed here. Codex/OMP attached transports remain explicit unavailable responses until their advertised-support wave; this is first-engine acceptance, not the public release."
   ],
-  "fingerprintMethod": "SHA256 of sorted source path + NUL + each file SHA256 + newline; see sourceFiles. Test fingerprints are each test file's SHA256."
+  "fingerprintMethod": "SHA256 of sorted source path + NUL + each file SHA256 + newline; see sourceFiles. Test fingerprints are each test file's SHA256.",
+  "postTestSourceReview": "At 15:35Z the only changed P003 source file was psu-launcher.mjs: a peer replaced its bottom CLI-entry detector with the shared isCliEntry helper. The launch/bootstrap exports exercised here were unchanged. All other recorded source/test hashes still matched. The stored fingerprint identifies the tested source; this review does not relabel it as a new global HEAD verification.",
+  "reproduction": {
+    "evaluator": "plans:evaluate-spec-test-adequacy",
+    "args": {
+      "harness": "papercusp",
+      "slug": "pui-first-party-public-release-2026-09-07",
+      "classRef": "plan-class-feature-ship",
+      "specIds": ["AUTO-BAR-R-01-P-003", "AUTO-BAR-R-02-P-003", "AUTO-BAR-R-03-P-003"],
+      "includeDraft": true
+    },
+    "currentInput": "Pass this document's adequacyCurrent array as args.current. Do not pass the rerunRecipe.current wrapper object.",
+    "counterexampleLocator": "The evidenceRef suffix #targeted-counterexamples names the selected adversarial cases in the file, not a separate file or an exact test-name filter. Run commands.pg to execute all five cases.",
+    "counterexampleTests": [
+      "survives a restart between reservation and dispatch without silently re-executing",
+      "rejects cross-workspace, wrong-owner and archived targets without persisting text",
+      "does not repeat execution when the host loses persistence after acknowledgement"
+    ],
+    "executionEvidence": "The test runner's stdout and exit evidence are retained in runEvidence.pg, with the exact rerun command in commands.pg. No central test-run ledger row is claimed. Absence in testing:runs is not evidence that a visible successful Vitest execution did not occur. Independent reviewer WI-10000541 reran the same five tests."
+  }
 }

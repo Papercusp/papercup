@@ -29,7 +29,10 @@ impl fmt::Display for HttpStatusError {
         write!(
             f,
             "{} {} -> {}: {}",
-            self.method, self.path, self.status, self.body
+            self.method,
+            self.path,
+            self.status,
+            self.body.chars().take(200).collect::<String>()
         )
     }
 }
@@ -437,7 +440,10 @@ impl HttpClient {
         let status = resp.status();
         let bytes = resp.bytes().await.context("read body")?;
         if !(status.is_success() || status.is_redirection()) {
-            let txt: String = String::from_utf8_lossy(&bytes).chars().take(200).collect();
+            let txt: String = String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(65_536)
+                .collect();
             return Err(anyhow::Error::new(HttpStatusError {
                 method: method.to_string(),
                 path: path.to_string(),

@@ -273,9 +273,14 @@ impl IpcClient {
         if !(200..400).contains(&status) {
             let txt: String = String::from_utf8_lossy(&body_bytes)
                 .chars()
-                .take(200)
+                .take(65_536)
                 .collect();
-            return Err(anyhow!("{method} {path} -> {status}: {txt}"));
+            return Err(anyhow::Error::new(crate::http::HttpStatusError {
+                method: method.to_string(),
+                path: path.to_string(),
+                status: status as u16,
+                body: txt,
+            }));
         }
         Ok(body_bytes)
     }

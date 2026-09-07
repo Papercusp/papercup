@@ -2544,6 +2544,35 @@ export function decodeDeliveryId(o) {
   return deliveryId !== undefined ? { deliveryId } : {};
 }
 
+/** Parse the additive quota-recovery descriptor carried only by a durable
+ * mode:recycle wake. Every identity is repeated and cross-checked here: a
+ * mutated operation id or owner must degrade to an ordinary recycle, never
+ * gain permission to kill/restart a different session. Pure for mutation tests. */
+export function decodeQuotaRecovery(o) {
+  const q = o?.quotaRecovery;
+  if (!q || typeof q !== 'object') return {};
+  const operationId =
+    typeof q.operationId === 'string' && q.operationId.length > 0
+      ? q.operationId.slice(0, 200)
+      : undefined;
+  const recoveryOwnerId =
+    typeof q.ownerId === 'string' && q.ownerId.length > 0
+      ? q.ownerId.slice(0, 200)
+      : undefined;
+  const startedAtMs =
+    typeof q.startedAtMs === 'number' && Number.isFinite(q.startedAtMs) && q.startedAtMs > 0
+      ? q.startedAtMs
+      : undefined;
+  if (
+    operationId === undefined ||
+    recoveryOwnerId === undefined ||
+    startedAtMs === undefined ||
+    operationId !== o?.deliveryId ||
+    recoveryOwnerId !== o?.ownerId
+  ) return {};
+  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs } };
+}
+
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn. Pure — exported for tests. */
 export function decodeControl(payload) {
@@ -2613,6 +2642,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeQuotaRecovery(o),
         };
       // carry-respawn (deterministic-context-carry P-018): a clean-boundary
       // RECYCLE whose fresh Claude child receives the deterministic carry as a
@@ -4798,7 +4828,11 @@ export function hostThroughPty(o) {
     // caps-gates on hostSupports(host, 'compact') now skips cleanly instead of
     // sending a message the handler will loudly drop.
     // 'shutdown' (WI-6638): wind down + exit, closing this session's terminal tab.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown'],
+    // 'quota-recovery' (measured-agent-productivity P-004): the operator may
+    // convert one durable, headless account:auto wake into the existing recycle
+    // path and then verify pickup by delivery id. Older hosts lack the cap and
+    // therefore retain the old defer-only behavior.
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'quota-recovery'],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -7069,9 +7103,25 @@ export function hostThroughPty(o) {
     // (a spawn failure leaves the host running, carry stays in the inbox).
     recycleChild = async (
       carryText,
-      { systemPromptAddendum = '', drillId = '', sessionClass = '' } = {},
+      { systemPromptAddendum = '', drillId = '', sessionClass = '', quotaRecovery = null } = {},
     ) => {
-      if (recycling) return;
+      const settleQuotaRecovery = (delivered, reason, extra = {}) => {
+        if (quotaRecovery) {
+          appendHostEvent(
+            ownerId,
+            delivered ? 'quota-recovery-ready' : 'quota-recovery-dropped',
+            {
+              operationId: quotaRecovery.operationId,
+              recoveryOwnerId: quotaRecovery.ownerId,
+              startedAtMs: quotaRecovery.startedAtMs,
+              reason,
+              ...extra,
+            },
+          );
+        }
+        return { delivered, reason };
+      };
+      if (recycling) return settleQuotaRecovery(false, 'recycle-already-running');
       recycling = true;
       // WI-5075 observability: the drill-only rows below made a WATCHDOG-initiated
       // carry-respawn (no drillId) completely invisible in the per-owner event log
@@ -7199,7 +7249,7 @@ export function hostThroughPty(o) {
           /* diagnostic only */
         }
         recycling = false;
-        return;
+        return settleQuotaRecovery(false, 'argv-build-failed');
       }
       // WI-38292 ADOPTION. A respawn is the ONLY safe moment to swap host code:
       // the session is being cut anyway, the successor's argv is already minted
@@ -7220,7 +7270,12 @@ export function hostThroughPty(o) {
       // hosts (there is no human TTY to tear down); keep interactive hosts on
       // the in-process respawn path so the PTY, socket, and terminal remain
       // continuous even when git-sync updates this module on disk.
-      if (shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty })) {
+      // A quota recovery carries an in-flight delivery-id handshake in this
+      // host's memory. Keep that one recycle in-process; adopting the host here
+      // would throw away the pending/completed dedup state before the operator
+      // can confirm pickup. Ordinary respawns still adopt current code exactly
+      // as before.
+      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty })) {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();
@@ -7441,7 +7496,7 @@ export function hostThroughPty(o) {
           });
         }
         recycling = false;
-        return;
+        return settleQuotaRecovery(false, 'spawn-failed');
       }
       // EI-20287339148365013: a respawn REPLACES the agent, so any line staged
       // against the predecessor is stale BY DEFINITION — nobody is mid-sentence
@@ -7518,7 +7573,7 @@ export function hostThroughPty(o) {
           appendHostEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
           appendSharedDrillLedgerEvent(ownerId, 'carry-drill-carry-dropped', dropExtra);
         }
-        return;
+        return settleQuotaRecovery(false, 'no-first-prompt');
       }
       // Open the fresh process on the carry-note once it has booted to its prompt
       // (boot output quiesces → the agent-busy gate clears), via the shared
@@ -7648,6 +7703,15 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, terminalKind, terminalExtra);
         appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);
       }
+      return settleQuotaRecovery(
+        Boolean(carryResult.delivered),
+        carryResult.delivered ? 'turn-start-verified' : (carryResult.reason ?? 'carry-dropped'),
+        {
+          nativeId: nativeId ?? null,
+          nativeRef: turnStartProof?.nativeRef ?? null,
+          attempts: carryResult.attempts,
+        },
+      );
     };
 
     // Raw-mode keyboard Ctrl-C remains a byte forwarded to the target. A real

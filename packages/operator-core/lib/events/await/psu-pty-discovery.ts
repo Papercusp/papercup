@@ -1003,6 +1003,17 @@ export function injectIntoHostWithConfirmation(
      * corresponds to a durable delivery row.
      */
     deliveryId?: string;
+    /** P-004 measured quota recovery: an operator-authorized conversion of this
+     * durable wake into the existing same-owner recycle path. The descriptor is
+     * deliberately redundant with ownerId/deliveryId so the receiving host can
+     * reject any mutated or cross-owner operation before it recycles a child.
+     * Older hosts ignore this additive v1 field; callers must require the
+     * `quota-recovery` capability before sending it. */
+    quotaRecovery?: {
+      operationId: string;
+      ownerId: string;
+      startedAtMs: number;
+    };
   },
   timeoutMs = 2000,
 ): Promise<InjectHostResult> {
@@ -1019,6 +1030,11 @@ export function injectIntoHostWithConfirmation(
     routineId?: string;
     ownerId?: string;
     deliveryId?: string;
+    quotaRecovery?: {
+      operationId: string;
+      ownerId: string;
+      startedAtMs: number;
+    };
   } = {
     v: 1,
     mode: msg.mode,
@@ -1033,6 +1049,7 @@ export function injectIntoHostWithConfirmation(
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
   if (msg.deliveryId !== undefined) envelope.deliveryId = msg.deliveryId;
+  if (msg.quotaRecovery !== undefined) envelope.quotaRecovery = msg.quotaRecovery;
   const payload = JSON.stringify(envelope);
   if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES)
     return Promise.resolve({ ok: false, confirmation: 'oversize' as const });

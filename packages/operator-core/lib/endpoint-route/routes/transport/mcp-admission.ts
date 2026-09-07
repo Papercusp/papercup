@@ -144,11 +144,16 @@ export function resetMcpAdmissionForTests(): void {
  * `classifyMcpRequest` (⇒ classified 'diagnostic', which `shouldShedForCapacity` returns false
  * for). `diagnosticReserve` is a floor carved out of the ORDINARY ceiling for diagnostics, NOT a
  * cap on them, so a listed tool is bounded only by the global `maxInFlight`. Do not add anything
- * here whose per-call cost you have not read. `work_items:get` is admitted only for one item with
- * the default shallow read; bulk, detail, and thread reads remain shed under critical pressure.
+ * here whose per-call cost you have not read. `tools:find` is the bounded catalog-discovery door
+ * used to locate recovery tools and already has a proxy-side control-plane reservation; direct
+ * ptool/staging calls need the same inner exemption. `work_items:get` is admitted only for one
+ * item with the default shallow read; bulk, detail, and thread reads remain shed under critical
+ * pressure.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
-  ['dev:service_health', 'dev:pg_query', 'dev:dogfood_substrate_status', 'work_items:get'].map(normalizeMcpName),
+  ['dev:service_health', 'dev:pg_query', 'dev:dogfood_substrate_status', 'tools:find', 'work_items:get'].map(
+    normalizeMcpName,
+  ),
 );
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');

@@ -905,6 +905,19 @@ export function decodeDeliveryId(o: any): {
 } | {
     deliveryId?: undefined;
 };
+/** Parse the additive quota-recovery descriptor carried only by a durable
+ * mode:recycle wake. Every identity is repeated and cross-checked here: a
+ * mutated operation id or owner must degrade to an ordinary recycle, never
+ * gain permission to kill/restart a different session. Pure for mutation tests. */
+export function decodeQuotaRecovery(o: any): {
+    quotaRecovery?: undefined;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+};
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
  *  a legacy idle-gated turn. Pure — exported for tests. */
 export function decodeControl(payload: any): {
@@ -930,6 +943,7 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    quotaRecovery?: undefined;
     deliveryId: any;
     ownerId: any;
     fireNumber: any;
@@ -938,6 +952,20 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    deliveryId: any;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
     deliveryId?: undefined;
     ownerId: any;
     fireNumber: any;
@@ -946,6 +974,20 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    deliveryId?: undefined;
+    ownerId: any;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
     deliveryId: any;
     ownerId?: undefined;
     fireNumber: any;
@@ -954,6 +996,33 @@ export function decodeControl(payload: any): {
     data: string;
     gated: boolean;
 } | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
+    deliveryId: any;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery?: undefined;
+    deliveryId?: undefined;
+    ownerId?: undefined;
+    fireNumber: any;
+    routineId: any;
+    mode: string;
+    data: string;
+    gated: boolean;
+} | {
+    quotaRecovery: {
+        operationId: any;
+        ownerId: any;
+        startedAtMs: any;
+    };
     deliveryId?: undefined;
     ownerId?: undefined;
     fireNumber: any;

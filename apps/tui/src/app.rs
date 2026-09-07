@@ -2677,11 +2677,17 @@ impl App {
     }
 
     fn acknowledge_su_turn(&mut self, command_id: &str) {
-        let Some(pending) = self.su_pending_turn.as_ref() else { return };
-        if pending.command_id != command_id { return; }
+        let Some(pending) = self.su_pending_turn.as_ref() else {
+            return;
+        };
+        if pending.command_id != command_id {
+            return;
+        }
         let text = pending.content.clone();
         self.su_pending_turn = None;
-        if self.chat_input == text { self.chat_input.clear(); }
+        if self.chat_input == text {
+            self.chat_input.clear();
+        }
         self.chat_history_push(&text);
         self.chat_messages.push(ChatMessage::user(&text));
         // The stream can beat the HTTP acknowledgement. Do not create a second
@@ -2693,14 +2699,17 @@ impl App {
     fn fail_su_turn(&mut self, message: &str, uncertain: bool) {
         if let Some(pending) = self.su_pending_turn.as_mut() {
             pending.uncertain = uncertain;
-            if self.chat_input.is_empty() { self.chat_input = pending.content.clone(); }
+            if self.chat_input.is_empty() {
+                self.chat_input = pending.content.clone();
+            }
         }
         self.finish_chat_turn();
         self.last_error = Some(message.to_string());
         self.session_note = Some(if uncertain {
             "Delivery uncertain — draft retained. Enter checks the same turn.".into()
         } else {
-            "Message not accepted — draft retained. Enter retries; Esc then s opens Sessions.".into()
+            "Message not accepted — draft retained. Enter retries; Esc then s opens Sessions."
+                .into()
         });
     }
 
@@ -2912,10 +2921,33 @@ impl App {
         let envelope = event.envelope();
         if envelope.session.adv_session_id != state.binding.adv_session_id
             || envelope.session.backend != state.binding.backend
+            || state
+                .binding
+                .owner_id
+                .as_ref()
+                .is_some_and(|id| id != &envelope.session.owner_id)
+            || state
+                .binding
+                .workspace_id
+                .as_ref()
+                .is_some_and(|id| id != &envelope.session.workspace_id)
+            || state
+                .binding
+                .harness_slug
+                .as_ref()
+                .is_some_and(|id| Some(id) != envelope.session.harness_slug.as_ref())
+            || self
+                .agent_chat_id
+                .as_ref()
+                .is_some_and(|id| id != &envelope.session.agent_chat_id)
         {
             state.error = Some("SU-session event identity mismatch".into());
             state.stale = true;
             state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
+            self.fail_su_turn(
+                "Session identity changed — reconnect before sending. Draft retained.",
+                false,
+            );
             return Action::Render;
         }
         if envelope.sequence <= state.last_sequence {
@@ -3039,22 +3071,45 @@ impl App {
                 }
             }
             crate::su_session::SuSessionEvent::CommandResult {
-                command_id, command_type, status, refusal, ..
+                envelope,
+                command_id,
+                command_type,
+                status,
+                refusal,
             } => {
                 if status == "refused" {
-                    let uncertain = refusal.as_ref().is_some_and(|r| r.code == "command_delivery_unknown");
+                    let uncertain = refusal
+                        .as_ref()
+                        .is_some_and(|r| r.code == "command_delivery_unknown");
                     let message = refusal
                         .map(|r| format!("{}: {}", r.code, r.message))
                         .unwrap_or_else(|| "SU-session command refused".into());
                     state.error = Some(message.clone());
-                    if command_type != "owner_turn" || self.su_pending_turn.as_ref().is_some_and(|p| p.command_id == command_id) {
+                    if command_type != "owner_turn"
+                        || self
+                            .su_pending_turn
+                            .as_ref()
+                            .is_some_and(|p| p.command_id == command_id)
+                    {
                         self.fail_su_turn(&message, uncertain);
                     }
                 } else if status == "accepted" || status == "completed" {
                     self.session_note = Some(format!("SU-session command {status}"));
                     if command_type == "owner_turn" {
-                        self.acknowledge_su_turn(&command_id);
-                        if status == "completed" { self.finish_chat_turn(); }
+                        let matches = self
+                            .su_pending_turn
+                            .as_ref()
+                            .and_then(|p| p.command.as_ref())
+                            .is_some_and(|command| {
+                                command["target"]
+                                    == serde_json::to_value(&envelope.session).unwrap_or_default()
+                            });
+                        if matches {
+                            self.acknowledge_su_turn(&command_id);
+                        }
+                        if status == "completed" {
+                            self.finish_chat_turn();
+                        }
                     } else if status == "completed" {
                         self.finish_chat_turn();
                     }
@@ -3068,7 +3123,10 @@ impl App {
             crate::su_session::SuSessionEvent::Error { message, .. } => {
                 state.error = Some(message.clone());
                 state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
-                let uncertain = self.su_pending_turn.as_ref().is_some_and(|p| p.command.is_some());
+                let uncertain = self
+                    .su_pending_turn
+                    .as_ref()
+                    .is_some_and(|p| p.command.is_some());
                 self.fail_su_turn(&format!("SU-session: {message}"), uncertain);
             }
             crate::su_session::SuSessionEvent::Card {
@@ -8186,7 +8244,10 @@ impl App {
                         state.reconciliation =
                             crate::su_session::SuSessionReconciliation::FailedOrphaned;
                     }
-                    let uncertain = self.su_pending_turn.as_ref().is_some_and(|p| p.command.is_some());
+                    let uncertain = self
+                        .su_pending_turn
+                        .as_ref()
+                        .is_some_and(|p| p.command.is_some());
                     self.fail_su_turn(&format!("SU-session: {message}"), uncertain);
                 }
                 Action::Render
@@ -8195,20 +8256,45 @@ impl App {
                 self.session_note = Some(format!("SU-session command {status}"));
                 Action::Render
             }
-            Event::SuTurnPrepared { command_id, command } => {
-                if let Some(pending) = self.su_pending_turn.as_mut().filter(|p| p.command_id == command_id) {
+            Event::SuTurnPrepared {
+                command_id,
+                command,
+            } => {
+                if let Some(pending) = self
+                    .su_pending_turn
+                    .as_mut()
+                    .filter(|p| p.command_id == command_id)
+                {
                     pending.command = Some(command);
                 }
                 Action::Render
             }
-            Event::SuTurnAcknowledged { command_id, session } => {
-                let matches = self.su_pending_turn.as_ref().and_then(|p| p.command.as_ref())
-                    .is_some_and(|command| command["target"] == serde_json::to_value(&session).unwrap_or_default());
-                if matches { self.acknowledge_su_turn(&command_id); }
+            Event::SuTurnAcknowledged {
+                command_id,
+                session,
+            } => {
+                let matches = self
+                    .su_pending_turn
+                    .as_ref()
+                    .and_then(|p| p.command.as_ref())
+                    .is_some_and(|command| {
+                        command["target"] == serde_json::to_value(&session).unwrap_or_default()
+                    });
+                if matches {
+                    self.acknowledge_su_turn(&command_id);
+                }
                 Action::Render
             }
-            Event::SuTurnFailed { command_id, message, uncertain } => {
-                if self.su_pending_turn.as_ref().is_some_and(|p| p.command_id == command_id) {
+            Event::SuTurnFailed {
+                command_id,
+                message,
+                uncertain,
+            } => {
+                if self
+                    .su_pending_turn
+                    .as_ref()
+                    .is_some_and(|p| p.command_id == command_id)
+                {
                     self.fail_su_turn(&message, uncertain);
                 }
                 Action::Render
@@ -9388,12 +9474,16 @@ impl App {
                     // Unknown delivery must reconcile the original command;
                     // never mint a second turn because its acknowledgement fell
                     // off the wire. Keep any newly edited draft separately.
-                    let text = if let Some(pending) = self.su_pending_turn.as_ref().filter(|p| p.uncertain) {
+                    let text = if let Some(pending) =
+                        self.su_pending_turn.as_ref().filter(|p| p.uncertain)
+                    {
                         pending.content.clone()
                     } else {
                         self.su_pending_turn = Some(PendingSuTurn {
                             command_id: format!("pui-{}", crate::command_nonce()),
-                            content: text.clone(), command: None, uncertain: false,
+                            content: text.clone(),
+                            command: None,
+                            uncertain: false,
                         });
                         text
                     };
@@ -16031,16 +16121,31 @@ mod tests {
         let text = "  exact draft λ  ";
         let mut app = composing(text);
         let action = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(action, Action::OpenSuSession { initial_turn: Some(ref s), .. } if s == text));
+        assert!(
+            matches!(action, Action::OpenSuSession { initial_turn: Some(ref s), .. } if s == text)
+        );
         assert_eq!(app.chat_input, text);
-        assert!(app.chat_messages.is_empty(), "unaccepted text is still a draft");
+        assert!(
+            app.chat_messages.is_empty(),
+            "unaccepted text is still a draft"
+        );
         let pending = app.su_pending_turn.clone().unwrap();
-        let identity = serde_json::from_value(su_event_base("backend", 1)["session"].clone()).unwrap();
+        let identity: crate::su_session::SuSessionIdentity =
+            serde_json::from_value(su_event_base("backend", 1)["session"].clone()).unwrap();
         // A reply for another command must never clear this draft.
-        app.update(Event::SuTurnPrepared { command_id: pending.command_id.clone(), command: json!({"target":identity}) });
-        app.update(Event::SuTurnAcknowledged { command_id: "foreign".into(), session: identity.clone() });
+        app.update(Event::SuTurnPrepared {
+            command_id: pending.command_id.clone(),
+            command: json!({"target":identity}),
+        });
+        app.update(Event::SuTurnAcknowledged {
+            command_id: "foreign".into(),
+            session: identity.clone(),
+        });
         assert_eq!(app.chat_input, text);
-        app.update(Event::SuTurnAcknowledged { command_id: pending.command_id.clone(), session: identity });
+        app.update(Event::SuTurnAcknowledged {
+            command_id: pending.command_id.clone(),
+            session: identity,
+        });
         assert!(app.chat_input.is_empty());
         assert!(app.su_pending_turn.is_none());
         assert_eq!(app.chat_messages.len(), 1);
@@ -16053,14 +16158,31 @@ mod tests {
         app.on_key(KeyCode::Enter, KeyModifiers::NONE);
         let pending = app.su_pending_turn.clone().unwrap();
         let command = json!({"commandId":pending.command_id,"content":pending.content});
-        app.update(Event::SuTurnPrepared { command_id: pending.command_id.clone(), command: command.clone() });
-        app.update(Event::SuTurnFailed { command_id: pending.command_id.clone(), message: "connection lost".into(), uncertain: true });
+        app.update(Event::SuTurnPrepared {
+            command_id: pending.command_id.clone(),
+            command: command.clone(),
+        });
+        app.update(Event::SuTurnFailed {
+            command_id: pending.command_id.clone(),
+            message: "connection lost".into(),
+            uncertain: true,
+        });
         assert!(!app.chat_streaming);
         assert_eq!(app.chat_input, "do it once");
         app.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.su_pending_turn.as_ref().unwrap().command_id, pending.command_id);
-        assert_eq!(app.su_pending_turn.as_ref().unwrap().command.as_ref(), Some(&command));
-        app.update(Event::SuTurnFailed { command_id: pending.command_id, message: "not accepted".into(), uncertain: false });
+        assert_eq!(
+            app.su_pending_turn.as_ref().unwrap().command_id,
+            pending.command_id
+        );
+        assert_eq!(
+            app.su_pending_turn.as_ref().unwrap().command.as_ref(),
+            Some(&command)
+        );
+        app.update(Event::SuTurnFailed {
+            command_id: pending.command_id,
+            message: "not accepted".into(),
+            uncertain: false,
+        });
         assert!(!app.chat_streaming);
         assert_eq!(app.chat_input, "do it once");
     }

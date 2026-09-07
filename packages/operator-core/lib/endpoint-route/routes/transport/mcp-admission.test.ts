@@ -61,6 +61,17 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
   });
 
   it.each([
+    'tools:find',
+    'tools_find',
+    'mcp__papercusp-su__tools_find',
+    'mcp__papercusp_su__tools_find',
+  ])('does NOT shed catalog discovery under critical pressure: %s', (name) => {
+    const body = toolsCall(11, name, { query: 'grading integrity scorecard tools' });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
     'work_items:get',
     'work_items_get',
     'mcp__papercusp-su__work_items_get',
@@ -88,6 +99,20 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
       params: {
         name: 'tools:invoke',
         arguments: { name: 'mcp__papercusp-su__work_items_get', args: { id: 'EI-1' } },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it('recognizes tools:find through tools:invoke', () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 13,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__tools_find', args: { query: 'grading integrity scorecard tools' } },
       },
     });
     expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
@@ -310,6 +335,26 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(8, 'work_items:get', { id: 'EI-22381211295936796' }));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('work_items:get');
+  });
+  it('admits tools:find under critical pressure so discovery can locate recovery tools', async () => {
+    const req = post(toolsCall(8, 'tools:find', { query: 'grading integrity scorecard tools' }));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:find');
+  });
+  it('admits tools:find through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 8,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: { name: 'mcp__papercusp_su__tools_find', args: { query: 'grading integrity scorecard tools' } },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
   });
   it('still sheds an unbounded work_items:get read under critical pressure', async () => {
     const shed = await evaluateAdmission(
