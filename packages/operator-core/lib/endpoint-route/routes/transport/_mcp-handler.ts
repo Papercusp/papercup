@@ -1238,7 +1238,10 @@ export type TrySpawnContextResult =
  *      explicitly unsets the env var. Kept for the (uncommon) case
  *      of re-rolling out a new signing scheme.
  */
-async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResult> {
+async function tryBuildSpawnContext(
+  extra: unknown,
+  options: { allowStalePlanRecovery?: boolean } = {},
+): Promise<TrySpawnContextResult> {
   const url = urlFromExtra(extra);
   if (!url) return { kind: 'none' };
   const requestOrigin = buildMcpRequestOrigin(extra);
@@ -1371,6 +1374,10 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         ownerId: sidForLookup,
         workspaceId: workspaceId || '*',
         sessionHarness: null,
+        // coord:orient is the one transport call that can re-declare intent and
+        // clear a retired launch-bound plan. Keep the recovery opt-in so all
+        // ordinary calls remain fail-closed on stale durable bindings.
+        allowStalePlanFallback: options.allowStalePlanRecovery === true,
       });
       if (inheritedHarness.kind === 'harness') {
         harnessParam = inheritedHarness.slug;
@@ -2799,7 +2806,11 @@ const handler = createMcpHandler(
         // from the tool's capability suffix at defineTool time — skip both
         // the lookup and the store when it resolves to 'read'.
         const skipReplayForReadOnly = projected?.effect === 'read';
-        const spawnRes = await tryBuildSpawnContext(extra);
+        const spawnRes = await tryBuildSpawnContext(extra, {
+          // A stale bound plan can otherwise prevent the recovery bootstrap from
+          // reaching the current fleet binding that would scope this request.
+          allowStalePlanRecovery: toolName === 'coord:orient',
+        });
 
         // Hard-fail spawn ctx with invalid signature — do NOT fall through
         // to legacy bearer dispatch. That's the whole point of the
