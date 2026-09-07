@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 import {
   compareFrozenLineageIdentity,
+  detectUnsafeFrozenCarryInstruction,
   evaluateFrozenLineagePolicy,
+  evaluateFrozenLineageCarryText,
+  frozenLineageCarryViolationPayload,
   frozenLineageIdentityFromMarker,
   frozenLineageIdentityMatches,
   isUnsafeFrozenCandidateSource,
+  renderFrozenLineageCarryRefusal,
   renderFrozenLineagePolicyRefusal,
   type FrozenLineageIdentity,
 } from './frozen-lineage-execution-policy';
@@ -192,5 +196,61 @@ describe('frozen lineage execution policy', () => {
     expect(rendered).toContain(`queueRevision=${REVISION}`);
     expect(rendered).toContain("source 'current-head'");
     expect(rendered).toContain("release:repair-queue { op:'admit', paths:[...] }");
+  });
+});
+
+describe('frozen lineage carry policy', () => {
+  it.each([
+    ['staging', 'Then pin whatever `staging` resolves to at that instant, still never a quoted sha.'],
+    ['current-head', 'Create the canonical verification worktree pinned to current HEAD and run the root test.'],
+    ['integration-branch', 'Use integrationBranch as the judged candidate for the canonical verdict.'],
+  ] as const)('detects a positive %s candidate instruction', (unsafeSource, text) => {
+    expect(detectUnsafeFrozenCarryInstruction(text)).toMatchObject({ unsafeSource });
+  });
+
+  it.each([
+    'Run focused unit tests on staging while the repair is admitted separately.',
+    'The earlier instruction to pin current staging/current HEAD was wrong and is retracted.',
+    'Never derive the judged candidate from staging; use the live repairHead.',
+    'A checkpoint that instructs a successor to use current HEAD as the judged candidate is rejected.',
+    'The policy refuses candidate selection from integrationBranch.',
+  ])('allows ordinary, negated, or corrective prose: %s', (text) => {
+    expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
+  });
+
+  it('fails closed with the exact incident identity and actionable repair route', () => {
+    const verdict = evaluateFrozenLineageCarryText(
+      {
+        surface: 'work-item-checkpoint',
+        text: 'Then pin whatever staging resolves to at that instant.',
+      },
+      { marker: marker() },
+    );
+    expect(verdict).toMatchObject({
+      allowed: false,
+      errorCode: 'frozen_candidate_lineage_violation',
+      unsafeSource: 'staging',
+      liveIdentity: identity(),
+    });
+    const rendered = renderFrozenLineageCarryRefusal(verdict);
+    expect(rendered).toContain(`candidate=${CANDIDATE}`);
+    expect(rendered).toContain(`repairHead=${REPAIR_HEAD}`);
+    expect(rendered).toContain(`queueRevision=${REVISION}`);
+    expect(rendered).toContain("source");
+    expect(rendered).toContain("release:repair-queue { op:'admit', paths:[...] }");
+    expect(frozenLineageCarryViolationPayload(verdict)).toMatchObject({
+      ok: false,
+      error: 'frozen_candidate_lineage_violation',
+      surface: 'work-item-checkpoint',
+    });
+  });
+
+  it('allows the same text when no frozen marker exists', () => {
+    expect(
+      evaluateFrozenLineageCarryText(
+        { surface: 'compaction-continuation', text: 'Pin staging as the canonical candidate.' },
+        { marker: null },
+      ),
+    ).toMatchObject({ allowed: true, reason: 'no-frozen-queue' });
   });
 });
