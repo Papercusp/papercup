@@ -51,6 +51,59 @@ function fakeIo() {
   };
 }
 
+describe('Codex resume quota history (EI-22609012864215464)', () => {
+  it.each(['control', 'kickoff'] as const)('%s submits after a replayed wall and still blocks a new wall', async (route) => {
+    const ownerId = `su-quota-replay-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const meta = metaPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode =
+      "process.stdout.write(\"You've hit your usage limit.\\n60% context left\\n\");" +
+      "process.stdin.setEncoding('utf8');let b='';" +
+      "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+      "if(line==='QUIT')process.exit(0);" +
+      "if(line==='WALL')process.stdout.write(\"You've hit your usage limit.\\n\");" +
+      "else process.stdout.write('ECHO:'+line+'\\n');}});" +
+      'setTimeout(()=>process.exit(0),12000);';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode, 'resume', '11111111-1111-4111-8111-111111111111'],
+      cwd: '/tmp',
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      kickoff: route === 'kickoff' ? 'RECOVERED' : null,
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('60% context left'), { timeout: 3000 });
+      if (route === 'control') await controlInject(sock, 'turn', 'RECOVERED');
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:RECOVERED'), { timeout: 3000 });
+      expect(JSON.parse(readFileSync(meta, 'utf8')).quotaBlocked).toBe(false);
+
+      await rawInject(sock, 'WALL\n');
+      await vi.waitFor(() => expect(JSON.parse(readFileSync(meta, 'utf8')).quotaBlocked).toBe(true));
+      await controlInject(sock, 'turn', 'SHOULD-NOT-RUN');
+      await vi.waitFor(() => expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+        .toContain('turn-deferred-quota-blocked'));
+      expect(captured()).not.toContain('ECHO:SHOULD-NOT-RUN');
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done;
+    }
+  }, 18000);
+});
+
 // EI-18683281603125383: the server (psu-pty-host.mjs, WI-5872/EI-18676244363359331)
 // now writes a JSON-line ACK/NACK back on the connection (`allowHalfOpen:true`)
 // BEFORE calling `conn.end()`. A client that never attaches a 'data' listener
