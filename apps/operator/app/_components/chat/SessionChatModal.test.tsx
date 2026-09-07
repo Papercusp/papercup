@@ -117,7 +117,7 @@ vi.mock('../../adv/sessions/AgentOrders', () => ({
   },
 }));
 
-// jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
+// jsdom-vs-virtualization seam (same as PapercupChat's shared-view tests): the real
 // @tanstack/react-virtual renders nothing without real layout, and the
 // scroll-to-bottom / load-earlier effects need stand-ins for APIs jsdom lacks.
 const scrollToIndexSpy = vi.fn();
@@ -749,7 +749,7 @@ describe('SessionChatModal', () => {
       });
 
       await waitFor(() => expect(screen.getByText('no roster row')).toBeTruthy());
-      expect(screen.queryByText('su-live-1')).toBeNull();
+      expect(document.querySelector('.oracle-msg-avatar--identity')).toBeNull();
 
       // WI-6503 [owner 2026-07-27]: "remove the papercup icon from the chatbox
       // for the chatboces where the conversation isnt with papercup." THIS is
@@ -782,7 +782,7 @@ describe('SessionChatModal', () => {
       // suppressing the icon wholesale — the item forbids a title match in
       // either direction.
       //
-      // Observed via the pane icon's always-rendered instance: ChatConversation
+      // Observed via the pane icon's always-rendered instance: PapercupChat
       // uses `emptyState.icon` as the composer's input icon too, so this holds
       // whether or not the transcript has rows. lucide stamps `lucide-<name>`.
       expect(document.querySelector('.lucide-cup-soda')).toBeTruthy();
@@ -2024,7 +2024,7 @@ describe('SessionChatModal', () => {
 
       const pill = await waitFor(() => screen.getByLabelText('WI-1234'));
       // No harnessSlug ⇒ OperatorChat's handleWorkRefActivate no-ops rather
-      // than opening a popup pointed at no harness — but ChatConversation
+      // than opening a popup pointed at no harness — but PapercupChat
       // still WIRES onWorkRefActivate (renders an interactive <button>); the
       // click itself is the thing that safely does nothing.
       fireEvent.click(pill);
