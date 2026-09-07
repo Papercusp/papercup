@@ -53,8 +53,27 @@ function listBlueprintIdsIn(root: string): string[] {
  * `builtinBlueprintPath` so enumeration never drifts from resolution.
  */
 export function availableBlueprintIds(): Set<string> {
-  const builtinRoot = dirname(dirname(builtinBlueprintPath('probe')));
-  return new Set([...listBlueprintIdsIn(builtinRoot), ...listBlueprintIdsIn(INSTALLED_BLUEPRINTS_DIR())]);
+  return new Set(availableBlueprintSources().map((entry) => entry.id));
+}
+
+export interface BlueprintSourceLocation {
+  id: string;
+  tier: 'builtin' | 'installed' | 'local';
+  file: string;
+}
+
+/** The existing file catalog, with the same local → installed → built-in precedence as resolution. */
+export function availableBlueprintSources(opts: { localDirs?: string[] } = {}): BlueprintSourceLocation[] {
+  const roots: Array<{ root: string; tier: BlueprintSourceLocation['tier'] }> = [
+    { root: dirname(dirname(builtinBlueprintPath('probe'))), tier: 'builtin' },
+    { root: INSTALLED_BLUEPRINTS_DIR(), tier: 'installed' },
+    ...(opts.localDirs ?? []).slice().reverse().map((root) => ({ root, tier: 'local' as const })),
+  ];
+  const selected = new Map<string, BlueprintSourceLocation>();
+  for (const { root, tier } of roots) {
+    for (const id of listBlueprintIdsIn(root)) selected.set(id, { id, tier, file: join(root, id, 'blueprint.yaml') });
+  }
+  return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**

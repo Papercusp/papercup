@@ -247,7 +247,9 @@ describe('selectAdmissionRecurrenceCanonicals', () => {
       expect(guarded.dispositions).toContainEqual({ itemId: independent.id, action: 'promote' });
       expect(guarded.dispositions).toContainEqual({ itemId: historical.id, action: 'merge', canonicalId: keyed.id });
       expect(guarded.dispositions).toContainEqual({ itemId: keyed.id, action: 'promote' });
-      expect(guarded.adjudications).toEqual([expect.objectContaining({ pairKey: compatiblePair.pairKey, canonical: keyed.id })]);
+      expect(guarded.adjudications).toEqual([
+        expect.objectContaining({ pairKey: compatiblePair.pairKey, canonical: keyed.id }),
+      ]);
       expect(guarded.relatedPairs).toEqual([]);
       expect(plan.adjudications).toHaveLength(4);
     },
@@ -257,7 +259,11 @@ describe('selectAdmissionRecurrenceCanonicals', () => {
     const first = item('WI-1');
     const second = item('WI-2');
     const candidatePair = pair(first, second);
-    const plan = planPromoterDispositions([first, second], [candidatePair], [judgement(candidatePair, 'r-finding-merge')]);
+    const plan = planPromoterDispositions(
+      [first, second],
+      [candidatePair],
+      [judgement(candidatePair, 'r-finding-merge')],
+    );
 
     expect(() =>
       selectAdmissionRecurrenceCanonicals(plan, new Map([[first.id, first]]), { onConflict: 'hold' }),

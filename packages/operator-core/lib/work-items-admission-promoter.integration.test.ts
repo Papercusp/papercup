@@ -718,15 +718,24 @@ describe('work-item admission promoter (real Postgres)', () => {
 
     expect(modelCall).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ batchSize: 3, promoted: 1, merged: 0, held: 2, writerCoverageGap: [] });
-    const rows = await db.sql<Array<{ feature_id: string; status: string; admission: string; watchdog_key: string | null }>>`
+    const rows = await db.sql<
+      Array<{ feature_id: string; status: string; admission: string; watchdog_key: string | null }>
+    >`
       SELECT feature_id, status, admission, payload->>'watchdogKey' AS watchdog_key
         FROM harness_shared.work_items ORDER BY feature_id`;
     expect(rows).toEqual([
       { feature_id: 'WI-independent-review', status: 'open', admission: 'admitted', watchdog_key: null },
-      ...conflictingIds.map((id) => ({ feature_id: id, status: 'open', admission: 'pending', watchdog_key: `watchdog:${id}` })),
+      ...conflictingIds.map((id) => ({
+        feature_id: id,
+        status: 'open',
+        admission: 'pending',
+        watchdog_key: `watchdog:${id}`,
+      })),
     ]);
     expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
-    const [run] = await db.sql<Array<{ status: string; held: number; reasons: Array<{ itemId: string; reason: string }> }>>`
+    const [run] = await db.sql<
+      Array<{ status: string; held: number; reasons: Array<{ itemId: string; reason: string }> }>
+    >`
       SELECT detail->>'status' AS status, held, detail->'heldReasons' AS reasons
         FROM harness_shared.admission_runs WHERE id = 'promoter-recurrence-component-hold'`;
     expect(run).toMatchObject({

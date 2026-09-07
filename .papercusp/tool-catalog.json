@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 866,
+  "count": 870,
   "tools": [
     {
       "name": "ablation:report",
@@ -14529,6 +14529,151 @@
         "when": "As the resolver behind host.memoryPressure. Direct use is mainly for debugging the state-cell wiring.",
         "notWhen": "General service health, process forensics, or waiting for the condition to change. Use state:read/state:subscribe on host.memoryPressure.",
         "chaining": "state:read { cell:\"host.memoryPressure\" } → branch on assessment.code and follow assessment.safeAction; inspect value/evidence for diagnosis. state:subscribe { cell:\"host.memoryPressure\" } waits for a semantic band transition."
+      }
+    },
+    {
+      "name": "identities:create",
+      "http": {
+        "path": "/api/agent-tools/identities/create",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Author an identity as a blueprint source with its own slots declaration. Returns validated canonical YAML to persist in the existing blueprint directory; creates no file, table, session or listing.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "Authoring a new identity module, including an abstract module without a runnable workItem/spine.",
+        "notWhen": "Authoring a plain executable blueprint — blueprint:create/extend. Attaching a live session is a separate operation.",
+        "chaining": "Persist valid YAML at <repo>/.papercusp/blueprints/<id>/blueprint.yaml; use identities:get/validate, then the existing blueprint:publish path when sharing."
+      }
+    },
+    {
+      "name": "identities:get",
+      "http": {
+        "path": "/api/agent-tools/identities/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read an identity source by blueprint id, with its authored fields, source-document hash, layers and validation. Local sources precede installed and built-in sources; inherited slots never reclassify a plain blueprint.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "Inspecting one identity source before composing or changing it.",
+        "notWhen": "Reading a session activation or applied specification; these are separate contracts."
+      }
+    },
+    {
+      "name": "identities:list",
+      "http": {
+        "path": "/api/agent-tools/identities/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List authored identities from the existing blueprint file catalog. Pages scan at most limit source documents; follow nextAfter even when the identity page is empty. Broken sources appear in unreadable; use identities:get for composition validation.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "Choosing identity modules to compose or inspect.",
+        "notWhen": "Browsing marketplace listings or enumerating live sessions."
+      }
+    },
+    {
+      "name": "identities:validate",
+      "http": {
+        "path": "/api/agent-tools/identities/validate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Validate an identity by id or inline YAML/JSON using the blueprint source schema, inheritance and structural checks. Abstract modules are valid sources without becoming executable blueprints. Returns issues instead of throwing.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "Checking identity source, slots, bundle conflicts, attestations and mode authority before persisting or composing.",
+        "notWhen": "Certifying publisher signatures or runtime grants; publication, conformance and authorization remain separate."
       }
     },
     {
