@@ -125,6 +125,10 @@ export type AcceptanceCriterionRole = 'outcome' | 'disclosure';
 export type AcceptanceEvidencePlane = TemplateAcceptanceEvidencePlane;
 export type AcceptanceBarContract = TemplateAcceptanceBarContract;
 
+function isAcceptanceEvidencePlane(value: string): value is AcceptanceEvidencePlane {
+  return value === 'tree' || value === 'deployed' || value === 'live';
+}
+
 /** When an acceptance BAR entered the subject plan's lifecycle. Historical rows
  * omit this; every post-adoption writer supplies it before the lifecycle gates
  * introduced by requirements-with-teeth-bar-before-method-2026-09-04 apply. */
@@ -2746,7 +2750,17 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
         'invalid_args: criterionEvidencePlane requires an existing acceptance criterion and a structural tree/deployed/live token',
       );
     }
-    criteria = criteria.map((criterion) => (criterion.key === key ? { ...criterion, evidencePlane } : criterion));
+    criteria = criteria.map((criterion) => {
+      if (criterion.key !== key) return criterion;
+      const requiredScope = criterion.requiredScope?.map((scope) =>
+        isAcceptanceEvidencePlane(scope) ? evidencePlane : scope,
+      );
+      return {
+        ...criterion,
+        ...(requiredScope ? { requiredScope } : {}),
+        evidencePlane,
+      };
+    });
   }
 
   return {

@@ -89,6 +89,23 @@ cheaply fetchable from node (`/api/sync?queryName=advRoster.list` 404s on both `
 `:3070`). If a grader considers a parameterised fixture insufficient for R-2, that is a
 legitimate call to make against this note rather than against a silent green.
 
+## Evidence-durability limit you should know about (pre-existing, not introduced here)
+
+**Every log entry in `provenance.json` is gitignored.** `.gitignore:55` is a blanket `*.log`,
+which covers all 13 entries — the 11 originals as much as the two run7 logs added here. I
+verified this with `git check-ignore -v`: none of them is in `staging`. `git status` shows the
+directory clean, which makes them *look* committed; they are simply invisible.
+
+Consequence: the log half of the provenance manifest is verifiable **only on this machine**.
+Hashes recompute correctly here (so grading from this box is sound), but an auditor working from
+a fresh checkout would find 13 referenced files that do not exist, which reads like fabricated
+evidence rather than an ignore rule. The source-file half (29 entries) is unaffected — those are
+tracked.
+
+I did not "fix" this by force-adding the logs or renaming them out of the ignore pattern: that
+would change the repo's ignore policy unilaterally and would make these two logs inconsistent
+with the 11 that came before. Recorded on EI-22625672287203701 instead.
+
 ## What is NOT claimed here
 
 - No acceptance verdict. The rubric author is `su-ca863adf-6074-40a3-84c3-ed9c4606da11` and

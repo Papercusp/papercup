@@ -23,6 +23,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { parse as parseYaml } from 'yaml';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
 import {
+  bindCapabilityProviderToPot,
+  deletePotCapabilityProviderBinding,
   getPotCapabilityProviderBinding,
   listActiveCapabilityProviderCandidates,
   parseCapabilityClassRef,
@@ -187,6 +189,99 @@ function makeInstallCoreDeps(
           );
           return rows.map((row) => ({ ...row, price: null }));
         },
+      },
+      async commitCapabilitySelections(selections) {
+        const sql = getOrgPg().sql;
+        const applied = await sql.begin(async (tx) => {
+          const changes: Array<{
+            classId: string;
+            classVersion: string;
+            providerPackage: string;
+            providerVersion: string;
+            previous: Awaited<ReturnType<typeof getPotCapabilityProviderBinding>>;
+          }> = [];
+          for (const selection of selections) {
+            const parsed = parseCapabilityClassRef(selection.classRef);
+            if (!parsed) throw new Error('invalid selected class ref ' + selection.classRef);
+            const previous = await getPotCapabilityProviderBinding(tx, {
+              ...capabilityScope,
+              classId: parsed.id,
+              classVersion: parsed.version,
+              includeInactiveProvider: true,
+            });
+            if (previous?.status === 'active') {
+              if (
+                previous.providerPackage === selection.providerPackage &&
+                previous.providerVersion === selection.providerVersion
+              ) {
+                continue;
+              }
+              throw new Error(
+                selection.classRef + ' was concurrently bound to ' +
+                  previous.providerPackage + '@' + previous.providerVersion,
+              );
+            }
+            await bindCapabilityProviderToPot(tx, {
+              ...capabilityScope,
+              classId: parsed.id,
+              classVersion: parsed.version,
+              providerPackage: selection.providerPackage,
+              providerVersion: selection.providerVersion,
+              boundBy: 'cupboard:install-blueprint',
+            });
+            changes.push({
+              classId: parsed.id,
+              classVersion: parsed.version,
+              providerPackage: selection.providerPackage,
+              providerVersion: selection.providerVersion,
+              previous,
+            });
+          }
+          return changes;
+        });
+
+        return {
+          rollback: async () => {
+            await sql.begin(async (tx) => {
+              for (const change of [...applied].reverse()) {
+                const current = await getPotCapabilityProviderBinding(tx, {
+                  ...capabilityScope,
+                  classId: change.classId,
+                  classVersion: change.classVersion,
+                  includeInactiveProvider: true,
+                });
+                if (
+                  !current ||
+                  current.providerPackage !== change.providerPackage ||
+                  current.providerVersion !== change.providerVersion
+                ) {
+                  throw new Error(
+                    change.classId + '@' + change.classVersion +
+                      ' changed after install-time selection; refusing to clobber the newer binding',
+                  );
+                }
+                if (change.previous) {
+                  await bindCapabilityProviderToPot(tx, {
+                    ...capabilityScope,
+                    classId: change.classId,
+                    classVersion: change.classVersion,
+                    providerPackage: change.previous.providerPackage,
+                    providerVersion: change.previous.providerVersion,
+                    boundBy: change.previous.boundBy,
+                  });
+                } else {
+                  await deletePotCapabilityProviderBinding(tx, {
+                    ...capabilityScope,
+                    classId: change.classId,
+                    classVersion: change.classVersion,
+                    expectedProviderPackage: change.providerPackage,
+                    expectedProviderVersion: change.providerVersion,
+                  });
+                }
+              }
+            });
+          },
+        };
       },
     } : {}),
   };

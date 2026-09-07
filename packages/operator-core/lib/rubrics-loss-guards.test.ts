@@ -702,6 +702,32 @@ describe('applyRubricAmendment (rubrics:amend pure core)', () => {
     expect(normalizeAcceptanceBarCriterion(patched).barHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it('re-derives the evidence-plane requiredScope token without dropping other scope entries', () => {
+    const existing = rubric(
+      [
+        crit({
+          key: 'r-1',
+          barKey: 'R-1',
+          role: 'outcome',
+          mandatory: true,
+          requiredScope: ['tree', 'cohort:post-epoch'],
+          evidencePlane: 'tree',
+          passRatings: ['healthy'],
+        }),
+      ],
+      { kind: 'acceptance', subjectPlan: 'subject-plan' },
+    );
+    const out = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      criterionEvidencePlane: { key: 'r-1', evidencePlane: 'deployed' },
+    });
+
+    expect(out.criteria[0]).toMatchObject({
+      evidencePlane: 'deployed',
+      requiredScope: ['deployed', 'cohort:post-epoch'],
+    });
+  });
+
   it('methodRef-only amendment keeps criteria byte-identical', () => {
     const out = applyRubricAmendment(stored(), { rubricId: 'su-agent-behavior', methodRef: 'su-agent-behavior-grading-runbook' });
     expect(out.methodRef).toBe('su-agent-behavior-grading-runbook');
