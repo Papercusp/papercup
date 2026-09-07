@@ -1427,6 +1427,21 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(dir!.startsWith("/")).toBe(false); // relative, so join(home, dir) resolves correctly
   });
 
+  it("isolates OMP writes and resumes under the configured session root", () => {
+    const root = join(home, 'isolated-omp');
+    vi.stubEnv('PAPERCUSP_SU_OMP_HOMES_DIR', root);
+    try {
+      const dir = writeOmpSessionConfigDir('isolated', {}, home);
+      const agentHome = join(root, 'session-isolated', 'agent');
+      expect(join(home, dir!, 'agent')).toBe(agentHome);
+      expect(existsSync(join(agentHome, 'config.yml'))).toBe(true);
+      expect(existsSync(join(home, relDir('isolated')))).toBe(false);
+      expect(ompTrackedResumeEnv({ agent: 'omp', id: 'isolated' }, { home })).toEqual({
+        PI_CONFIG_DIR: dir, PI_CODING_AGENT_DIR: agentHome,
+      });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   // NOT "full mode": discoveryOff accompanies the trimmed SEED and is explicitly not
   // the retired whole-catalog mode (see the discoveryOff doc on writeOmpSessionConfigDir).
   it("discoveryOff flips discoveryMode OFF, preserving modelRoles", () => {
