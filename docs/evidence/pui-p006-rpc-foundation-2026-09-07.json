@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "workItem": "WI-10000428",
+  "status": "in-progress; RPC foundation only",
+  "recordedAt": "2026-09-07T23:03:36.109967+00:00",
+  "sourceHashesAtCheckpoint": {
+    "packages/operator-core/lib/su-session-host.ts": "bf0fa69d8eb3fc59689dc3da18e3a4506e170dc58305775dbabefe61322554f4",
+    "packages/operator-core/lib/su-session-host.test.ts": "ef18884b64cd8dbb37786583803324dae72c08831600ac22f6088ddd4785efb1",
+    "packages/operator-core/lib/su-session-codex-adapter.ts": "a381851f58dd10c0d1908c5319e9467c5987726359606f888cba388739a5cbbc",
+    "packages/operator-core/lib/su-session-omp-adapter.ts": "cacbb201dfdcfb6a2ab79ccacd43933c9e7633b0ddea2899d4a6a406bfd6bee3",
+    "packages/operator-core/lib/su-session-attached-launch.ts": "e6404af9048bda3b06a7be07e29f3515c3b26f28b67bd0662e110bf8f5aa8662",
+    "packages/operator-core/lib/su-session-attached-launch.test.ts": "9a16b5aa4bce9ee92dfecc08e0d56f2bea8ca8922f80393b670abd316947fc7d",
+    "packages/operator-core/lib/su-session-stdio-peer.ts": "36129558b5632102ac6e9f50b2553917ccd260c80926c915d508e4a933a465e0",
+    "packages/operator-core/lib/su-session-stdio-peer.integration.test.ts": "fa5e5d896f80871b3631644fee9f3283425e75b5fd54b8c992cedc0c377fe786",
+    "packages/operator-core/lib/su-session-rpc-engine.ts": "cd2a8a43529f6bf29a43f7406f589569323d43dbf032c0bbae872a3b41988acf",
+    "packages/operator-core/lib/su-session-rpc-engine.test.ts": "9343dba12d713e535cab88ef7d7caf0689f8d0abfd4e68b17162f2f6a91eee76",
+    "packages/operator-core/lib/su-session-native-cards.ts": "f718997836660c65d81d5bca60dfcc8283d72f3983846246915dc2144131581b",
+    "packages/operator-core/lib/su-session-native-cards.test.ts": "4aa7bf4a1190eaba280c6d56830a5f40fc3f86aee249f858b5784219d2d6e6a7"
+  },
+  "evidenceOrigin": "Observed native exec tool results in Codex session 01a07df6-b836-7a32-a835-43eff59586fb. Temporary Vitest report paths were not present when checked; no retained report-file claim is made.",
+  "tests": [
+    {
+      "suite": "su-session-host.test.ts",
+      "passed": 16,
+      "result": "passed",
+      "scope": "initial native identity and existing host behavior"
+    },
+    {
+      "suite": "su-session-attached-launch.test.ts",
+      "passed": 9,
+      "result": "passed",
+      "scope": "three-backend launch authority with mocked native engines"
+    },
+    {
+      "suite": "su-session-rpc-engine.test.ts",
+      "passed": 16,
+      "result": "passed",
+      "scope": "scripted protocol peers with production adapters, host and card correlator",
+      "at": "2026-09-07T22:58:54.696Z",
+      "head": "2790786114",
+      "limitation": "Before final thread-check ordering edit"
+    },
+    {
+      "suite": "su-session-rpc-engine.test.ts",
+      "filter": "different thread before opening",
+      "passed": 1,
+      "filteredOut": 16,
+      "result": "passed",
+      "at": "2026-09-07T23:01:55.042Z",
+      "head": "2790786114",
+      "scope": "reject another thread's approval before opening a card"
+    },
+    {
+      "suite": "su-session-native-cards.test.ts",
+      "passed": 5,
+      "result": "passed",
+      "scope": "workspace checks, validated once-only approval, decline, native questions, cancellation"
+    },
+    {
+      "suite": "su-session-stdio-peer.integration.test.ts",
+      "passed": 5,
+      "result": "passed",
+      "at": "2026-09-07T22:53:29.563Z",
+      "scope": "three real-process framing cases and actual installed Codex/OMP protocol-only startup",
+      "limitation": "No model inference or installed PUI; process-ledger enrollment replaced under the test runner's process tree. Wrapper marked source provenance UNKNOWN because HEAD moved during run."
+    }
+  ],
+  "typecheck": {
+    "command": "scripts/pc-heavy.sh node scripts/lint-tsc.mjs --files=<seven P006 source files> --all-errors",
+    "result": "clean",
+    "at": "2026-09-07T22:59:06.303Z",
+    "head": "2790786114",
+    "limitation": "Scoped baseline gate only; before final thread-check statement reordering. No baseline was edited."
+  },
+  "learned": [
+    "Installed Codex thread/start requires sandbox danger-full-access, not dangerFullAccess.",
+    "A newly allocated Codex thread has no rollout until its first turn. Readiness is distinct from exact-resume support; exactResumeSupported now checks native transcript existence.",
+    "The existing PUI event reducer already accepts initial native-id materialization while checking the fixed SU scope; no reducer change was made.",
+    "OMP RPC client source uses Bun; the operator keeps its Node process manager and connects to the maintained OMP RPC wire instead of importing that Bun-only client."
+  ],
+  "remaining": [
+    "Exercise actual Codex and OMP full SU configuration/model/tool connections through the installed PUI, along with Claude, using the shared greeting/tool/approval/resume scenario.",
+    "Implement and verify structured reattachment after operator restart with existing resume leases, credential/config reconstruction and exact native handles. Current rehydrated hosts have no executor; attached launch still refuses lost executors.",
+    "Review transcript completion payloads against installed PUI and persist/restore the required scope, modes, carry and task state on every backend.",
+    "Bind both P006 specification revisions to measured evidence and obtain independent exact-spec audits before completing P006.",
+    "Continue all remaining approved plan items through full P016; P015 public publication still requires explicit approval."
+  ]
+}
