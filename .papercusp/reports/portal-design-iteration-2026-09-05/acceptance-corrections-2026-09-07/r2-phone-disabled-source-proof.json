@@ -34,8 +34,16 @@
   "releaseIndependence": {
     "claim": "This evidence is valid for BOTH the previously graded subject and the rebuilt one.",
     "measured": "git rev-parse '88afe6a7:packages/ui/src/voice-session.tsx' == git rev-parse '6090a4d6:packages/ui/src/voice-session.tsx' == 8ab1bee7f63255550619bea0572f01fb954dc6ba",
-    "consequence": "The 4-file drift set (package.json, package-lock.json, tests/build-standalone.test.ts, scripts/build-standalone.mjs) contains no UI source, so the Phone/voice availability logic is byte-identical across the two revisions. A rebuild cannot stale this artifact.",
-    "recheck": "cd portal && git rev-parse 88afe6a7:packages/ui/src/voice-session.tsx 6090a4d6:packages/ui/src/voice-session.tsx"
+    "consequence": "THIS FILE is byte-identical across the graded and current revisions, so the Phone/voice availability logic a rebuild would ship is the same logic cited here. A rebuild cannot stale this artifact.",
+    "recheck": "cd portal && git rev-parse 88afe6a7:packages/ui/src/voice-session.tsx 6090a4d6:packages/ui/src/voice-session.tsx",
+
+    "correction": {
+      "issuedAt": "2026-09-07T15:23:00Z",
+      "what": "An earlier revision of this file justified the claim above by asserting that 'the 4-file drift set contains no UI source'. That rationale was WRONG and is withdrawn. The blob-identity measurement it was attached to was and remains correct; only the reasoning offered for it was false.",
+      "why": "It conflated two different baselines. D-012's 4-file drift set is measured against the RUNNING RELEASE BUILD EPOCH (05:11:25Z), not against the graded commit. The graded-commit delta is larger: git diff --stat 88afe6a7 6090a4d6 = 7 files, and it DOES include UI source — packages/ui/src/shell.tsx and packages/ui/src/shell-model.ts (the preference-race fix), plus tests/preference-refresh.test.ts.",
+      "why_it_does_not_change_the_claim": "Release-independence here rests on a per-file blob comparison of voice-session.tsx, not on a whole-tree assertion. Other UI files changing is irrelevant to whether THIS file did, and it did not.",
+      "note_for_the_grader": "The preference fix was authored at 05:07Z, entered the running release built at 05:11:25Z, and was only COMMITTED at 05:44Z by git-sync. So release Jk8vf6ox...051125119 contains UI source that its nominal graded HEAD 88afe6a7 does not. Judge that release by its sourceRootDigest and source manifest, not by the graded commit id."
+    }
   },
 
   "unavailableBranches": [

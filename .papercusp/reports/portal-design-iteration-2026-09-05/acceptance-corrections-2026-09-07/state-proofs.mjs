@@ -7,11 +7,28 @@ const out = path.dirname(new URL(import.meta.url).pathname);
 const runTag = process.env.PORTAL_ACCEPTANCE_RUN_TAG ?? '';
 const releaseFile = '/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/current/.papercusp-release.json';
 const release = JSON.parse(fs.readFileSync(releaseFile, 'utf8'));
+// SUPERSEDED REASONING REPLACED (2026-09-07, plan Decision D-013).
+//
+// This block previously reported result:'unexercised' and argued the disabled
+// witness was unobtainable because "Acceptance forbids calling, sending,
+// launching". D-013 OVERTURNED that: matrix stateCases[1] asks to "read source
+// decision and visible unavailable explanation; no desktop launch or call" — the
+// no-call clause is a CONSTRAINT ON THE METHOD, not proof of unreachability. The
+// proof is a source read, and it is satisfiable, so 'unexercised' was wrong.
+//
+// It also pointed at the wrong file. The Phone surface's availability verdict is
+// decided PORTAL-side in packages/ui/src/voice-session.tsx, not in the proxied
+// phone app's index.tsx.
+const portalVoiceSessionPath = '/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/voice-session.tsx';
 const result = { schemaVersion: 1, startedAt: new Date().toISOString(), release, process: [], reads: [], phone: {
-  result: 'unexercised',
-  reason: 'The live idle and scheduled views have no disabled control. Source disables mute while a call connects, hangup while ending, incoming/screening actions while writes are pending, and Create invite while saving. Acceptance forbids calling, sending, launching and other decision actions. No such action or injected phone state was used.',
-  source: 'phone-app/packages/ui/src/index.tsx',
-  sourceSha256: crypto.createHash('sha256').update(fs.readFileSync('/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app/packages/ui/src/index.tsx')).digest('hex'),
+  result: 'proved-by-source-decision',
+  method: 'acceptance-matrix-2026-09-07.json stateCases[1]: read source decision and visible unavailable explanation; no desktop launch or call.',
+  decision: 'portalVoiceCapture(state) -> { can:false, reason } on 5 distinct unavailable branches (serviceUnavailable/error, micUnavailable, reconnecting, disconnected, not-yet-live).',
+  visibleExplanation: 'portalVoiceStatus(state) rendered in <span role="status" aria-live="polite">; the same reason also reaches the viewer as the control title and as its aria-label ("Hold to talk — <reason>"), while disabled={!capture.can} is driven by that same verdict.',
+  source: 'portal/packages/ui/src/voice-session.tsx',
+  sourceSha256: crypto.createHash('sha256').update(fs.readFileSync(portalVoiceSessionPath)).digest('hex'),
+  fullProof: 'r2-phone-disabled-source-proof.json',
+  supersedes: 'the prior unexercised/unreachable claim, and additional-states.json .phone (disabled:[] with phone-disabled.png showing the ENABLED Book-a-call form)',
 } };
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
