@@ -23,11 +23,18 @@ export const argsSchema = z.object({
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   current: z
-    .array(evidenceCurrentInputSchema)
-    .max(500)
+    .union([
+      z.array(evidenceCurrentInputSchema).max(500),
+      z
+        .object({
+          supplied: z.boolean(),
+          fingerprints: z.array(evidenceCurrentInputSchema).max(500),
+        })
+        .strict(),
+    ])
     .optional()
     .describe(
-      'Caller-supplied fingerprints are labeled attested-current; matching stored values remain unknown for freshness and cannot produce freshness:pass without an internal server-measured comparison.',
+      'Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false means current was omitted. Matching stored values remain unknown for freshness and cannot produce freshness:pass without an internal server-measured comparison.',
     ),
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
@@ -54,13 +61,21 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    const current =
+      args.current === undefined
+        ? undefined
+        : Array.isArray(args.current)
+          ? args.current
+          : args.current.supplied
+            ? args.current.fingerprints
+            : undefined;
     const evidenceLimit = args.limit ?? 1000;
     const allEvidence = await listSpecEvidence({
       harnessSlug,
       planSlugs: [args.slug],
       workItemIds: args.workItemIds,
       specIds: args.specIds,
-      current: args.current,
+      current,
       limit: evidenceLimit,
     });
     if (allEvidence.length >= evidenceLimit) {
@@ -140,7 +155,14 @@ export default defineTool({
     }
     const now = args.now ? new Date(args.now) : new Date();
     const rows = eligible.map((clause) =>
-      evaluateSpecTestAdequacy({ clause, evidence: allEvidence, classRef: args.classRef, current: args.current, now }),
+      evaluateSpecTestAdequacy({
+        clause,
+        evidence: allEvidence,
+        classRef: args.classRef,
+        harness: harnessSlug,
+        current,
+        now,
+      }),
     );
     return {
       data: {

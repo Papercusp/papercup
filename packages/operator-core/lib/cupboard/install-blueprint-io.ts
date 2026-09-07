@@ -19,8 +19,15 @@
 import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { parseDepSpec } from '@papercusp/blueprint-distribution';
+import { getOrgPg } from '@papercusp/db-org';
 import { parse as parseYaml } from 'yaml';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
+import {
+  getPotCapabilityProviderBinding,
+  listActiveCapabilityProviderCandidates,
+  parseCapabilityClassRef,
+} from '../capability-class-registry-store';
+import { activeWorkspaceId } from '../workspace-registry';
 import { resolveCupboardBaseUrl } from './base-url';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
@@ -55,6 +62,12 @@ export interface InstallBlueprintFromCupboardInput {
   /** Combined install-and-activate preflight: ids already chosen for the stack.
    *  The actual desired/applied transition remains the P-040 activation door. */
   activationStack?: string[];
+  /** Workspace/pot receiving any capability-class grants declared by the identity. */
+  workspaceId?: string;
+  potSlug?: string;
+  capabilityMode?: 'interactive' | 'agent';
+  /** Exact class ref to provider package or provider package@version. */
+  capabilityProviderSelections?: Readonly<Record<string, string>>;
 }
 
 export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResult {
@@ -64,7 +77,7 @@ export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResul
 
 export type InstallBlueprintFromCupboardResult =
   | { ok: true; result: InstallBlueprintClosureResult | Awaited<ReturnType<typeof rollbackBlueprintRelease>> | Awaited<ReturnType<typeof uninstallBlueprintRelease>> }
-  | { ok: false; status: number; error: string; detail?: string };
+  | { ok: false; status: number; error: string; detail?: string; data?: unknown };
 
 /** Resolve a Cupboard listing id → { githubUrl, listingRef }, kind-checked. */
 async function resolveBlueprintListing(
@@ -139,7 +152,9 @@ export async function fetchCupboardBlueprintIds(): Promise<Set<string>> {
  *  top-level install and the recursive spawned-blueprint closure install so both
  *  resolve `dependencies.blueprints` against the same built-in/installed/Cupboard
  *  tiers (blueprint-role-bundling P-007). */
-function makeInstallCoreDeps(): InstallBlueprintCoreDeps {
+function makeInstallCoreDeps(
+  capabilityScope?: { workspaceId: string; potSlug: string },
+): InstallBlueprintCoreDeps {
   return {
     cloneRepo: gitCloneShallow,
     installedBlueprintsDir: INSTALLED_BLUEPRINTS_DIR,
@@ -150,6 +165,30 @@ function makeInstallCoreDeps(): InstallBlueprintCoreDeps {
       const cupboardBlueprints = await fetchCupboardBlueprintIds();
       return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints, cupboardReachable: catalog.cupboardReachable };
     },
+    ...(capabilityScope ? {
+      capabilityGrantDeps: {
+        async getPotBinding(classRef: string) {
+          const parsed = parseCapabilityClassRef(classRef);
+          if (!parsed) return null;
+          return getPotCapabilityProviderBinding(getOrgPg().sql, {
+            ...capabilityScope,
+            classId: parsed.id,
+            classVersion: parsed.version,
+          });
+        },
+        async listCandidates(classRef: string) {
+          const parsed = parseCapabilityClassRef(classRef);
+          if (!parsed) return [];
+          const rows = await listActiveCapabilityProviderCandidates(
+            getOrgPg().sql,
+            capabilityScope.workspaceId,
+            parsed.id,
+            parsed.version,
+          );
+          return rows.map((row) => ({ ...row, price: null }));
+        },
+      },
+    } : {}),
   };
 }
 
@@ -194,13 +233,29 @@ export async function installBlueprintFromCupboard(
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
+  const potSlug = input.potSlug?.trim();
+  const capabilityScope = potSlug
+    ? {
+        workspaceId: input.workspaceId?.trim() || activeWorkspaceId(),
+        potSlug,
+      }
+    : undefined;
+  const capabilityContext = capabilityScope
+    ? {
+        ...capabilityScope,
+        mode: input.capabilityMode ?? 'interactive' as const,
+        selections: input.capabilityProviderSelections,
+      }
+    : undefined;
+
   try {
     const result = await installBlueprintFromCupboardCore({
       githubUrl,
       listingRef,
       activationStack: activationLayers(input.activationStack),
       expectedRelease,
-    }, makeInstallCoreDeps());
+      ...(capabilityContext ? { capabilityContext } : {}),
+    }, makeInstallCoreDeps(capabilityScope));
 
     // D-001's consent-gated plugin fetch: with `installPlugins: true`, install
     // each declared plugin resolvable from the Cupboard (not yet installed).
@@ -246,7 +301,11 @@ export async function installBlueprintFromCupboard(
           const listing = (data.results ?? []).find((l) => l.listing_ref === name);
           const url = typeof listing?.github_url === 'string' ? listing.github_url : '';
           if (!url) throw new Error('no blueprint listing with that ref');
-          await installBlueprintFromCupboardCore({ githubUrl: url, listingRef: name }, makeInstallCoreDeps());
+          await installBlueprintFromCupboardCore({
+            githubUrl: url,
+            listingRef: name,
+            ...(capabilityContext ? { capabilityContext } : {}),
+          }, makeInstallCoreDeps(capabilityScope));
           blueprintInstalls.push({ blueprint: name, ok: true });
         } catch (e) {
           blueprintInstalls.push({ blueprint: name, ok: false, error: e instanceof Error ? e.message.slice(0, 200) : String(e) });
@@ -257,7 +316,13 @@ export async function installBlueprintFromCupboard(
     return { ok: true, result: { ...result, pluginInstalls, blueprintInstalls } };
   } catch (e) {
     if (e instanceof InstallBlueprintError) {
-      return { ok: false, status: e.status, error: e.message };
+      return {
+        ok: false,
+        status: e.status,
+        error: e.code ?? e.message,
+        ...(e.code ? { detail: e.message } : {}),
+        ...(e.data === undefined ? {} : { data: e.data }),
+      };
     }
     return { ok: false, status: 500, error: 'install failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
   }

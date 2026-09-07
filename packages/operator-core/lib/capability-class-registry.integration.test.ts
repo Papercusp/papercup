@@ -9,6 +9,7 @@ import {
 import { PROSE_VECTOR_DIMS } from './search/prose-vector-dims';
 import {
   bindCapabilityProviderToPot,
+  deletePotCapabilityProviderBinding,
   defineCapabilityClass,
   getCapabilityClass,
   getPotCapabilityProviderBinding,
@@ -179,6 +180,16 @@ describe('capability class registry (real PG)', () => {
       classId: 'crm.email',
       classVersion: '1.0.0',
     })).toBeNull();
+    expect(await getPotCapabilityProviderBinding(db.sql, {
+      workspaceId,
+      potSlug: 'sales-ops',
+      classId: 'crm.email',
+      classVersion: '1.0.0',
+      includeInactiveProvider: true,
+    })).toMatchObject({
+      providerPackage: 'acme-crm',
+      status: 'retired',
+    });
 
     const candidates = await listActiveCapabilityProviderCandidates(
       db.sql,
@@ -229,6 +240,18 @@ describe('capability class registry (real PG)', () => {
       workspaceId,
       providerPackage: 'acme-crm',
       providerVersion: '9.9.9',
+    })).toEqual([]);
+    expect(await deletePotCapabilityProviderBinding(db.sql, {
+      workspaceId,
+      potSlug: 'sales-ops',
+      classId: 'crm.email',
+      classVersion: '1.0.0',
+      expectedProviderPackage: 'acme-crm',
+      expectedProviderVersion: '2.0.0',
+    })).toBe(true);
+    expect(await listCapabilityProviderDependents(db.sql, {
+      workspaceId,
+      providerPackage: 'acme-crm',
     })).toEqual([]);
   });
 });

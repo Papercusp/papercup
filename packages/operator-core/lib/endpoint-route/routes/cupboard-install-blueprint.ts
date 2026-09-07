@@ -27,6 +27,8 @@ export default defineTool({
       githubUrl?: string;
       listingRef?: string;
       installPlugins?: boolean;
+      potSlug?: string;
+      capabilityProviderSelections?: Record<string, string>;
     };
     try {
       body = await req.json();
@@ -39,11 +41,23 @@ export default defineTool({
       ...(typeof body.githubUrl === 'string' ? { githubUrl: body.githubUrl } : {}),
       ...(typeof body.listingRef === 'string' ? { listingRef: body.listingRef } : {}),
       installPlugins: body.installPlugins === true,
+      ...(typeof body.potSlug === 'string' ? { potSlug: body.potSlug } : {}),
+      capabilityMode: 'interactive',
+      ...(body.capabilityProviderSelections &&
+      typeof body.capabilityProviderSelections === 'object' &&
+      !Array.isArray(body.capabilityProviderSelections)
+        ? { capabilityProviderSelections: body.capabilityProviderSelections }
+        : {}),
     });
 
     if (!outcome.ok) {
       return Response.json(
-        { ok: false, error: outcome.error, ...(outcome.detail ? { detail: outcome.detail } : {}) },
+        {
+          ok: false,
+          error: outcome.error,
+          ...(outcome.detail ? { detail: outcome.detail } : {}),
+          ...(outcome.data === undefined ? {} : { data: outcome.data }),
+        },
         { status: outcome.status },
       );
     }

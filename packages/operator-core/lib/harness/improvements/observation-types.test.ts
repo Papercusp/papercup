@@ -275,16 +275,19 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       },
     };
     const stamped = asStructuredObservation({
+      sourceHive: 'papercusp',
       rerunRecipe: {
         ...recipe,
         evaluatorBuild: { sha: 'abc1234', version: '0.0.13' },
       },
     });
     expect(stamped?.rerunRecipe?.evaluatorBuild).toEqual({ sha: 'abc1234', version: '0.0.13' });
+    expect(stamped?.rerunRecipe?.args).toMatchObject({ harness: 'papercusp' });
 
     const historical = asStructuredObservation({ rerunRecipe: recipe });
     expect(historical?.rerunRecipe).toBeDefined();
     expect(historical?.rerunRecipe).not.toHaveProperty('evaluatorBuild');
+    expect(historical?.rerunRecipe?.args).not.toHaveProperty('harness');
 
     expect(
       asStructuredObservation({

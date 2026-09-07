@@ -563,8 +563,10 @@ export async function getPotCapabilityProviderBinding(
     potSlug: string;
     classId: string;
     classVersion: string;
+    includeInactiveProvider?: boolean;
   },
 ): Promise<PotCapabilityProviderBindingRow | null> {
+  const statusClause = input.includeInactiveProvider ? sql`` : sql`AND b.status = 'active'`;
   const rows = await sql<PotBindingDbRow[]>`
     SELECT ${BINDING_SELECT(sql)},
            p.pot_slug, p.bound_by, p.bound_at
@@ -581,7 +583,7 @@ export async function getPotCapabilityProviderBinding(
        AND p.pot_slug = ${input.potSlug}
        AND p.class_id = ${input.classId}
        AND p.class_version = ${input.classVersion}
-       AND b.status = 'active'
+       ${statusClause}
        AND r.structural_passed = true
      LIMIT 1`;
   return rows[0] ? mapPotBinding(rows[0]) : null;
@@ -677,7 +679,7 @@ export async function listCapabilityProviderDependents(
 
 /** Storage seam for P-017's resolver/picker; FK proves the provider already conformed. */
 export async function bindCapabilityProviderToPot(
-  sql: postgres.Sql,
+  sql: postgres.Sql | postgres.TransactionSql,
   input: {
     workspaceId: string;
     potSlug: string;
@@ -701,4 +703,32 @@ export async function bindCapabilityProviderToPot(
       provider_version = EXCLUDED.provider_version,
       bound_by = EXCLUDED.bound_by,
       updated_at = now()`;
+}
+
+/**
+ * Compensation seam for an install that selected a new binding but failed
+ * before its blueprint release committed. The expected provider tuple prevents
+ * deleting a choice another concurrent actor changed after this installer ran.
+ */
+export async function deletePotCapabilityProviderBinding(
+  sql: postgres.Sql | postgres.TransactionSql,
+  input: {
+    workspaceId: string;
+    potSlug: string;
+    classId: string;
+    classVersion: string;
+    expectedProviderPackage: string;
+    expectedProviderVersion: string;
+  },
+): Promise<boolean> {
+  const rows = await sql<{ pot_slug: string }[]>`
+    DELETE FROM harness_shared.pot_capability_class_bindings
+     WHERE workspace_id = ${input.workspaceId}
+       AND pot_slug = ${input.potSlug}
+       AND class_id = ${input.classId}
+       AND class_version = ${input.classVersion}
+       AND provider_package = ${input.expectedProviderPackage}
+       AND provider_version = ${input.expectedProviderVersion}
+    RETURNING pot_slug`;
+  return rows.length > 0;
 }

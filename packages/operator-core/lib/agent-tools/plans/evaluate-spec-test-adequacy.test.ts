@@ -94,6 +94,36 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result.rows).toHaveLength(1);
   });
 
+  it('accepts the persisted rerunRecipe.current wrapper and normalizes it to current[]', async () => {
+    const current = [
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+        sourceFingerprint: 'git:abc',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+    ];
+    listEvidence.mockResolvedValue([]);
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      includeDraft: true,
+      current: { supplied: true, fingerprints: current },
+    });
+
+    expect(result).toMatchObject({ ok: true, count: 1 });
+    expect(listEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ current }),
+    );
+  });
+
   it('keeps an unfiltered plan with no eligible clauses as a valid empty read', async () => {
     listEvidence.mockResolvedValue([]);
     listClauses.mockResolvedValue([]);

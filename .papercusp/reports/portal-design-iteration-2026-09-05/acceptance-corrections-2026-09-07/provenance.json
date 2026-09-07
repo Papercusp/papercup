@@ -1,19 +1,20 @@
 {
   "schemaVersion": 1,
-  "measuredAt": "2026-09-07T04:29:14.630Z",
+  "measuredAt": "2026-09-07T17:47:59.623Z",
   "portalRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-  "portalHead": "88afe6a7cfff43b3e0517583bc0293fcc478cb80",
-  "mainHead": "0316f14b6268cc34dc86c27bbe9c1574470a7fb3",
-  "portalRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242",
+  "portalHead": "0f1f5569de319b83ea7cf2b01e322a151bd0a384",
+  "portalWorkingTreeDirty": false,
+  "mainHead": "7d405a7955913c62477bf57c27c60039c28c1fc4",
+  "portalRootDigest": "8d35ca25cc6f770961f35e70a0356271e56321a3d5d5f476d58c436fc2876788",
   "release": {
     "schemaVersion": 2,
-    "buildId": "_h24SwYOHfExTCskF1rTh",
-    "release": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+    "buildId": "YxRyV_UAAFRVEiCtonjA4",
+    "release": "YxRyV_UAAFRVEiCtonjA4-20260907173044320-3334230-098fe40a",
     "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-    "publishedAt": "2026-09-07T04:13:50.070Z",
-    "sourceRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242"
+    "publishedAt": "2026-09-07T17:30:44.320Z",
+    "sourceRootDigest": "8d35ca25cc6f770961f35e70a0356271e56321a3d5d5f476d58c436fc2876788"
   },
-  "immutableEntry": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+  "immutableEntry": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/YxRyV_UAAFRVEiCtonjA4-20260907173044320-3334230-098fe40a",
   "rootDigestMatches": true,
   "readiness": [
     {
@@ -32,7 +33,7 @@
     },
     {
       "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator-vite/src/components/adv/LearningTab.tsx",
-      "sha256": "da2c71c7503cb8490e2f498bffa07a34086900e681cc44439f5b5cfc19def084"
+      "sha256": "6dde7e015a26e72e25880492802d4490cd996e334db23dc9d21f3aa74160d418"
     },
     {
       "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/adv/sessions/AgentOrders.tsx",
@@ -56,7 +57,7 @@
     },
     {
       "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/inbox/InboxPane.test.tsx",
-      "sha256": "68d2b65225021b69a14a5b8e5b42e9350498a3623196ba25858a63698d529e59"
+      "sha256": "f03ba0a5982c2d5be6f58ec5d41a5c37e1b6875803dde0460cdca31e009e8a47"
     },
     {
       "file": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/app/_components/chat/SessionChatModal.tsx",
@@ -96,7 +97,7 @@
     },
     {
       "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
-      "sha256": "7e46466e29927da4b6849068c26915baf00fb9e0209224870bfc907515860da8"
+      "sha256": "c3868dc72b2021ed9df3b6e48dd2f5a85dff3b6e0c1da9fcb7f26703dad6abdc"
     },
     {
       "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/workspaces.tsx",
@@ -143,7 +144,8 @@
       "sha256": "a69f53a44a1f5a4b3466cc882a522507bab3b18343fa804774b1167373a4fdcf"
     }
   ],
-  "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+  "sourceFingerprint": "8d3c703d1f12ae0fcbb665c0500afe91165486e654da4de5dc5081c7ce94a747",
+  "sourceFingerprintMethod": "sha256 over sourceFiles sorted by `file`, each rendered as `${file}:${sha256}` and joined with '\\n' (no trailing newline)",
   "logs": [
     {
       "file": "portal-acceptance-startup-before.log",
@@ -188,9 +190,26 @@
     {
       "file": "portal-learning-handoff.log",
       "sha256": "7c659e97e089c3b5fbcbb45a17714fef7d8a47da5184ec17e612b4eb5c5ecd77"
+    },
+    {
+      "file": "portal-run7-build.log",
+      "sha256": "b171aa3777da02c5ac6bff0792333d79b28ac747ae6437343341579cc4c95ea4"
+    },
+    {
+      "file": "portal-run7-handoff.log",
+      "sha256": "edfd928030f8cd5b85b490975740295f22333ae814e0042c0d8ade9fd5275901"
     }
   ],
   "scopeNote": "Root digest excludes linked dependencies. sourceFiles records adopted linked modules separately; whole linked-tree drift during build is recorded in the build log, not claimed absent. Baseline188 is retained on its original release; exact affected-slot retakes and all16 interactions are on the correction release.",
+  "supersedes": {
+    "note": "Refreshed onto the release published 2026-09-07T17:30:44Z after the guarded standalone rebuild (run7) and the deploy-cloud-portal.sh --handoff cutover. The prior measurement below is superseded in full.",
+    "priorMeasuredAt": "2026-09-07T04:29:14.630Z",
+    "priorPortalHead": "88afe6a7cfff43b3e0517583bc0293fcc478cb80",
+    "priorPortalRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242",
+    "priorRelease": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+    "priorSourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+    "priorSourceFingerprintMethodRecoverable": false
+  },
   "baselineComparison": {
     "baselinePortalHead": "2301512e",
     "baselineMainHead": "6ce0fe234d0c21e7d3db6b7e6d07de47849fd7e4",
@@ -219,6 +238,42 @@
       "e2e/portal-mounted-surface.spec.ts",
       "packages/ui/src/shell.tsx",
       "tests/shell-ui.test.tsx"
-    ]
-  }
+    ],
+    "carriedForwardUnverified": true,
+    "carriedForwardNote": "The linked-adopted comparison arrays (changedLinkedAdopted / equalLinkedAdopted / unresolvableLinkedBaseline) are CARRIED FORWARD from the prior measurement and were NOT recomputed here: the derivation that produced them is not recorded and could not be reproduced. Do not read them as fresh measurements of this release. portalRootChangedPathsSinceBaseline below IS freshly derived.",
+    "portalRootChangedPathsSinceBaseline": [
+      ".papercusp/scratch/lag-sampler-control.mts",
+      "apps/host/src/workspace-hosts.ts",
+      "e2e/portal-mounted-surface.spec.ts",
+      "package-lock.json",
+      "package.json",
+      "packages/ui/src/shell-model.ts",
+      "packages/ui/src/shell.tsx",
+      "perf/baseline.json",
+      "perf/fixcheck.json",
+      "perf/floor-v1.json",
+      "perf/moretest.json",
+      "perf/reconcile-v1.json",
+      "perf/reconcile-v2.json",
+      "perf/smoke.json",
+      "perf/smoke3.json",
+      "perf/smoke4.json",
+      "perf/smoke5.json",
+      "perf/smoke6.json",
+      "perf/warm-rtfix.json",
+      "perf/warm-split.json",
+      "scripts/build-standalone.mjs",
+      "scripts/cpu-profile-probe.mts",
+      "scripts/perf-probe.mts",
+      "scripts/timer-probe.mts",
+      "scripts/waterfall-probe.mts",
+      "tests/build-standalone.test.ts",
+      "tests/preference-refresh.test.ts",
+      "tests/shell-ui.test.tsx",
+      "tests/workspace-hosts.test.ts",
+      "tsconfig.json"
+    ],
+    "portalRootChangedPathsSinceBaselineBase": "2301512e"
+  },
+  "recomputedSourceRootDigest": "8d35ca25cc6f770961f35e70a0356271e56321a3d5d5f476d58c436fc2876788"
 }

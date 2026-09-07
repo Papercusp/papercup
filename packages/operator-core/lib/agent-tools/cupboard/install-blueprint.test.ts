@@ -97,12 +97,30 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         release: { version: '2.0.0', contentHash: `sha256:${'a'.repeat(64)}`, packageContentHash: 'b'.repeat(64) },
         diff: { promptText: [{ path: 'identity/prompts/p.md', patch: '-old\n+new' }], burnKnobs: [] },
         activationPreflight: { ok: true, candidate: { id: 'identity', slots: ['domain'] }, conflicts: [] },
+        capabilityGrants: {
+          ok: true,
+          requirements: [{ classRef: 'crm.email@1.0.0', state: 'choosable' }],
+          selected: [{
+            classRef: 'crm.email@1.0.0',
+            providerPackage: 'acme-crm',
+            providerVersion: '2.0.0',
+            reason: 'explicit-selection',
+            disclosureRequired: true,
+          }],
+          disclosures: ['Selected acme-crm@2.0.0 for crm.email@1.0.0 by explicit-selection.'],
+        },
         pluginInstalls: [],
         blueprintInstalls: [],
       },
     } as never);
 
-    const result = await call({ operation: 'update', listingId: 'listing', activationStack: ['practice'] });
+    const result = await call({
+      operation: 'update',
+      listingId: 'listing',
+      activationStack: ['practice'],
+      potSlug: 'sales-ops',
+      capabilityProviderSelections: { 'crm.email@1.0.0': 'acme-crm@2.0.0' },
+    });
 
     expect(mockGate).toHaveBeenCalledWith(expect.objectContaining({ operation: 'install' }));
     expect(mockInstall).toHaveBeenCalledWith(
@@ -110,6 +128,10 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         operation: 'update',
         listingId: 'listing',
         activationStack: ['practice'],
+        workspaceId: 'ws-principal',
+        potSlug: 'sales-ops',
+        capabilityMode: 'agent',
+        capabilityProviderSelections: { 'crm.email@1.0.0': 'acme-crm@2.0.0' },
       }),
     );
     expect(result).toMatchObject({
@@ -118,6 +140,9 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
       activationRequired: true,
       activationPreflight: { ok: true },
       diff: { promptText: [{ path: 'identity/prompts/p.md' }] },
+      capabilityGrants: {
+        selected: [{ providerPackage: 'acme-crm', disclosureRequired: true }],
+      },
     });
   });
 });

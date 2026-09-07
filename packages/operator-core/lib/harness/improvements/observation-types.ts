@@ -1141,6 +1141,17 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
             : null;
         })
       : null;
+    const rawArgs =
+      recipe.args && typeof recipe.args === 'object' && !Array.isArray(recipe.args)
+        ? (recipe.args as Record<string, unknown>)
+        : null;
+    // Historical cards omitted args.harness even though the scorecard itself
+    // carries sourceHive. Prefer an explicitly recorded evaluator arg, then use
+    // sourceHive as the lossless fallback needed to replay those cards.
+    const recipeHarness =
+      typeof rawArgs?.harness === 'string' && rawArgs.harness.trim()
+        ? rawArgs.harness
+        : out.sourceHive;
     if (
       recipe.schemaVersion === 1 &&
       recipe.evaluator === 'plans:evaluate-spec-test-adequacy' &&
@@ -1179,6 +1190,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         // Reconstruct from the validated selection AND currentness inputs, never
         // from stored args, so readback preserves the original evidence cohort.
         args: {
+          ...(recipeHarness ? { harness: recipeHarness } : {}),
           slug: selection.planSlug,
           classRef: recipe.classRef as string,
           specIds: [selection.specId],

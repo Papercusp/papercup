@@ -49,6 +49,7 @@ import {
   type CapabilityGrantSet,
   type CapabilityGrantResolutionVerdict,
   type CapabilityGrantResolverDeps,
+  type CapabilityProviderSelection,
   type ResolveCapabilityGrantOptions,
 } from './capability-grant-resolver';
 
@@ -118,6 +119,9 @@ export interface InstallBlueprintCoreDeps {
    */
   resolveHostSets: () => Promise<DependencyHostSets & { cupboardReachable: boolean }>;
   capabilityGrantDeps?: CapabilityGrantResolverDeps;
+  commitCapabilitySelections?: (
+    selections: readonly CapabilityProviderSelection[],
+  ) => Promise<{ rollback: () => Promise<void> }>;
 }
 
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
@@ -356,6 +360,31 @@ export async function installBlueprintFromCupboardCore(
       }
     }
 
+    let rollbackCapabilitySelections: (() => Promise<void>) | null = null;
+    if ((capabilityGrantResolution?.selected.length ?? 0) > 0) {
+      if (!deps.commitCapabilitySelections) {
+        throw new InstallBlueprintError(
+          'capability provider choices resolved but this install path cannot persist pot bindings',
+          500,
+          'capability_binding_writer_unavailable',
+          capabilityGrantResolution,
+        );
+      }
+      try {
+        rollbackCapabilitySelections = (
+          await deps.commitCapabilitySelections(capabilityGrantResolution!.selected)
+        ).rollback;
+      } catch (error) {
+        throw new InstallBlueprintError(
+          'capability provider binding failed before blueprint install: ' +
+            (error instanceof Error ? error.message : String(error)),
+          409,
+          'capability_provider_binding_failed',
+          capabilityGrantResolution,
+        );
+      }
+    }
+
     const version = typeof raw.version === 'string'
       ? raw.version
       : depCheck.pins?.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id)?.revision ?? 'unversioned';
@@ -372,6 +401,23 @@ export async function installBlueprintFromCupboardCore(
         expectedRelease: input.expectedRelease,
       });
     } catch (error) {
+      let rollbackFailure: unknown;
+      if (rollbackCapabilitySelections) {
+        try {
+          await rollbackCapabilitySelections();
+        } catch (rollbackError) {
+          rollbackFailure = rollbackError;
+        }
+      }
+      if (rollbackFailure) {
+        throw new InstallBlueprintError(
+          'blueprint release failed and capability binding rollback also failed: ' +
+            (rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)),
+          500,
+          'capability_binding_rollback_failed',
+          { releaseError: error, capabilityGrants: capabilityGrantResolution },
+        );
+      }
       if (error instanceof BlueprintLifecycleError) {
         throw new InstallBlueprintError(error.message, error.status);
       }
