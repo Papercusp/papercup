@@ -20,6 +20,9 @@ const installPreflightIdx = src.indexOf('install_in_flight_preflight || exit $?'
 const workAllocationIdx = src.indexOf('WORK="$(mktemp -d');
 const sourceReexecIdx = src.indexOf('exec bash "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" "$@"');
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
+const operatorSnapshotIdx = src.indexOf('snapshot_operator_source() {');
+const operatorSnapshotCallIdx = src.indexOf('snapshot_operator_source || exit $?');
+const operatorSnapshotSource = src.slice(operatorSnapshotIdx, operatorSnapshotCallIdx);
 
 describe('EI-21590235587564636 — verifier source is immutable for the run', () => {
   it('captures and syntax-checks the source before parsing arguments or allocating resources', () => {
@@ -47,5 +50,21 @@ describe('EI-21590235587564636 — verifier source is immutable for the run', ()
     expect(src.indexOf('cleanup_verifier_source_snapshot', teardownIdx)).toBeGreaterThan(teardownIdx);
     const bootOnlyExitIdx = src.indexOf('cleanup_verifier_source_snapshot\n  exit 0', argumentParserIdx);
     expect(bootOnlyExitIdx).toBeGreaterThan(argumentParserIdx);
+  });
+});
+
+describe('EI-22586651291409125 — derived indexes stay out of the immutable operator snapshot', () => {
+  it('excludes and defensively removes .gitnexus before the isolated sidecar boots', () => {
+    expect(operatorSnapshotIdx).toBeGreaterThan(-1);
+    expect(operatorSnapshotCallIdx).toBeGreaterThan(operatorSnapshotIdx);
+    expect(operatorSnapshotSource).toContain("--exclude='.gitnexus'");
+    expect(operatorSnapshotSource).toContain('"$snapshot_root/.gitnexus"');
+  });
+});
+
+describe('EI-22587788892654404 — a repo-local temp root cannot enter its own snapshot', () => {
+  it('excludes and defensively removes local Papercusp state before the isolated sidecar boots', () => {
+    expect(operatorSnapshotSource).toContain("--exclude='.papercusp'");
+    expect(operatorSnapshotSource).toContain('"$snapshot_root/.papercusp"');
   });
 });

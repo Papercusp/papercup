@@ -863,6 +863,8 @@ snapshot_operator_source() {
     --exclude='node_modules' \
     --exclude='papercusp-desktop' \
     --exclude='.git' \
+    --exclude='.gitnexus' \
+    --exclude='.papercusp' \
     --exclude='target' \
     --exclude='.turbo' \
     --exclude='.next' \
@@ -886,6 +888,7 @@ snapshot_operator_source() {
   # excluded product directories; remove those orphaned trees from the source
   # root after the locked snapshot completes.
   rm -rf -- "$snapshot_root/papercusp-desktop" "$snapshot_root/.git" \
+    "$snapshot_root/.gitnexus" "$snapshot_root/.papercusp" \
     "$snapshot_root/target" "$snapshot_root/.turbo" "$snapshot_root/.next" \
     "$snapshot_root/dist" "$snapshot_root/build" "$snapshot_root/coverage" \
     "$snapshot_root/.cache" "$snapshot_root/.pnpm-store"
