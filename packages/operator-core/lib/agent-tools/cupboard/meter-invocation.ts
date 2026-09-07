@@ -20,9 +20,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const data = (payload: Record<string, unknown>) => ({ data: payload });
 
 /** A unit that has not been reserved within five minutes is a stale quote. */
 const DEFAULT_EXPIRY_MS = 5 * 60 * 1000;
@@ -124,9 +122,9 @@ export default defineTool({
     if (input.op === 'usage') {
       const read = await readChannelUsage(input.channelId);
       if (read.ok !== true) {
-        return text({ ok: false, error: read.code, detail: read.detail, status: read.status, refusedBy: read.refusedBy });
+        return data({ ok: false, error: read.code, detail: read.detail, status: read.status, refusedBy: read.refusedBy });
       }
-      return text({ ok: true, ...read.usage });
+      return data({ ok: true, ...read.usage });
     }
 
     const { signWithHiveKey } = await import('../../identity/hive-keypair');
@@ -153,7 +151,7 @@ export default defineTool({
         signVoucher: sign,
       });
       if (outcome.ok !== true) {
-        return text({
+        return data({
           ok: false,
           error: outcome.code,
           detail: outcome.detail,
@@ -161,7 +159,7 @@ export default defineTool({
           refusedBy: outcome.refusedBy,
         });
       }
-      return text({
+      return data({
         ok: true,
         reserved: true,
         usageNonce: outcome.voucher.usageNonce,
@@ -180,7 +178,7 @@ export default defineTool({
       signReceipt: sign,
     });
     if (outcome.ok !== true) {
-      return text({
+      return data({
         ok: false,
         error: outcome.code,
         detail: outcome.detail,
@@ -188,7 +186,7 @@ export default defineTool({
         refusedBy: outcome.refusedBy,
       });
     }
-    return text({
+    return data({
       ok: true,
       settled: true,
       amountMicros: String(outcome.amountMicros),
