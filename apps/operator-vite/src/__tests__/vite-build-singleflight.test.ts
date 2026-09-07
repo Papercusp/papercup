@@ -43,6 +43,9 @@ function launch(env: Record<string, string>): ChildProcess {
       // Keep the shared reservation ledger out of the live host ledger. The
       // script's preflight still runs against the real temp filesystem.
       PAPERCUSP_DISK_RESERVATION_DIR: join(tmp, 'disk-reservations'),
+      // Pin the measured production default so the suite is independent of an
+      // operator's ambient override. Heap-contract cases override this value.
+      PAPERCUSP_VITE_BUILD_HEAP_MB: '8192',
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -183,6 +186,76 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
     process.kill(holder.pid!, 'SIGKILL');
     await holderRes.exited;
   }, 15_000);
+});
+
+describe('vite-build-singleflight — Node heap contract (EI-22614955223428270)', () => {
+  const captureNodeOptions = (path: string) => `printf '%s' "$NODE_OPTIONS" > "${path}"`;
+
+  it('sets the measured 8 GiB default when the caller has no heap pin', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const captured = join(tmp, 'node-options');
+    const build = launch({
+      NODE_OPTIONS: '',
+      VITE_BUILD_CMD: captureNodeOptions(captured),
+    });
+    const io = collect(build);
+
+    expect(await io.exited).toBe(0);
+    expect(readFileSync(captured, 'utf8')).toBe('--max-old-space-size=8192');
+    expect(io.stderr()).toContain('set Node old-space ceiling to 8192 MiB');
+  }, 10_000);
+
+  it('raises a smaller heap while preserving unrelated NODE_OPTIONS', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const captured = join(tmp, 'node-options');
+    const build = launch({
+      NODE_OPTIONS: '--trace-warnings --max-old-space-size 4096',
+      VITE_BUILD_CMD: captureNodeOptions(captured),
+    });
+    const io = collect(build);
+
+    expect(await io.exited).toBe(0);
+    expect(readFileSync(captured, 'utf8')).toBe(
+      '--trace-warnings --max-old-space-size 4096 --max-old-space-size=8192',
+    );
+    expect(io.stderr()).toContain('raised Node old-space ceiling from 4096 MiB to 8192 MiB');
+  }, 10_000);
+
+  it('preserves a larger caller heap byte-for-byte', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const captured = join(tmp, 'node-options');
+    const callerOptions = '--trace-warnings --max-old-space-size=12288';
+    const build = launch({
+      NODE_OPTIONS: callerOptions,
+      VITE_BUILD_CMD: captureNodeOptions(captured),
+    });
+
+    expect(await collect(build).exited).toBe(0);
+    expect(readFileSync(captured, 'utf8')).toBe(callerOptions);
+  }, 10_000);
+
+  it('honors a valid configured heap and falls back from malformed input', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const configuredPath = join(tmp, 'configured-node-options');
+    const configured = launch({
+      NODE_OPTIONS: '',
+      PAPERCUSP_VITE_BUILD_HEAP_MB: '10240',
+      VITE_BUILD_CMD: captureNodeOptions(configuredPath),
+    });
+    expect(await collect(configured).exited).toBe(0);
+    expect(readFileSync(configuredPath, 'utf8')).toBe('--max-old-space-size=10240');
+
+    const fallbackPath = join(tmp, 'fallback-node-options');
+    const fallback = launch({
+      NODE_OPTIONS: '',
+      PAPERCUSP_VITE_BUILD_HEAP_MB: 'not-a-number',
+      VITE_BUILD_CMD: captureNodeOptions(fallbackPath),
+    });
+    const fallbackIo = collect(fallback);
+    expect(await fallbackIo.exited).toBe(0);
+    expect(readFileSync(fallbackPath, 'utf8')).toBe('--max-old-space-size=8192');
+    expect(fallbackIo.stderr()).toContain("invalid PAPERCUSP_VITE_BUILD_HEAP_MB='not-a-number'; using 8192");
+  }, 10_000);
 });
 
 describe('vite-build-singleflight — a red build must not destroy the bundle (EI-10539)', () => {

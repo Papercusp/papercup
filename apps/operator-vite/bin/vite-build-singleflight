@@ -8,6 +8,8 @@
 #   2. STAGES the build and swaps it over dist/ only on SUCCESS (EI-10539,
 #      below) — so dist/ is never empty, never half-written, and never
 #      destroyed by a build that fails.
+#   3. Gives the measured full operator graph enough V8 heap to finish
+#      (EI-22614955223428270, below) while preserving a larger caller pin.
 #
 # ── (1) EI-9836: two one-shot builds must not race the same dist/ ────────────
 # vite CLEARS outDir before writing. Two one-shot builds running concurrently
@@ -75,6 +77,7 @@
 # Test seams (src/__tests__/vite-build-singleflight.test.ts):
 #   VITE_BUILD_CMD       stand in for the real vite invocation
 #   VITE_BUILD_OUT_ROOT  put dist/ + dist.next/ + the markers in a tmp dir
+#   PAPERCUSP_VITE_BUILD_HEAP_MB  override the default heap floor
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
@@ -97,6 +100,48 @@ source "$DISK_PREFLIGHT_LIB"
 LOCK="${VITE_BUILD_LOCK:-/tmp/papercup-operator-vite-build.lock}"
 CMD="${VITE_BUILD_CMD:-npx vite build}"
 WAIT_SECS="${VITE_BUILD_WAIT_SECS:-300}"
+
+# EI-22614955223428270: the full operator graph transformed all 13,126 modules
+# and then exhausted Node's inherited ~4 GiB old-space ceiling during output
+# generation. The same private-output build completed with an 8 GiB ceiling.
+# Put that measured default at the ONE maintained build seam instead of making
+# every verifier, release script, and human remember an ad-hoc NODE_OPTIONS.
+#
+# NODE_OPTIONS is additive: non-heap flags survive, a smaller effective heap is
+# raised by a final (therefore winning) flag, and a larger caller pin is kept
+# byte-for-byte. PAPERCUSP_VITE_BUILD_HEAP_MB is an explicit operator override
+# for a differently sized graph/host; malformed input falls back to the known
+# working default rather than handing Vite another predictable OOM.
+VITE_BUILD_HEAP_MB="${PAPERCUSP_VITE_BUILD_HEAP_MB:-8192}"
+if ! [[ "$VITE_BUILD_HEAP_MB" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[vite-build-singleflight] invalid PAPERCUSP_VITE_BUILD_HEAP_MB='$VITE_BUILD_HEAP_MB'; using 8192" >&2
+  VITE_BUILD_HEAP_MB=8192
+fi
+
+NODE_OPTIONS_CURRENT="${NODE_OPTIONS:-}"
+EXISTING_HEAP_MB=""
+read -r -a NODE_OPTION_PARTS <<< "$NODE_OPTIONS_CURRENT"
+for ((i = 0; i < ${#NODE_OPTION_PARTS[@]}; i++)); do
+  case "${NODE_OPTION_PARTS[$i]}" in
+    --max-old-space-size=*)
+      candidate="${NODE_OPTION_PARTS[$i]#*=}"
+      [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && EXISTING_HEAP_MB="$candidate"
+      ;;
+    --max-old-space-size)
+      candidate="${NODE_OPTION_PARTS[$((i + 1))]:-}"
+      [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && EXISTING_HEAP_MB="$candidate"
+      ;;
+  esac
+done
+
+if [ -z "$EXISTING_HEAP_MB" ] || [ "$EXISTING_HEAP_MB" -lt "$VITE_BUILD_HEAP_MB" ]; then
+  export NODE_OPTIONS="${NODE_OPTIONS_CURRENT:+$NODE_OPTIONS_CURRENT }--max-old-space-size=$VITE_BUILD_HEAP_MB"
+  if [ -n "$EXISTING_HEAP_MB" ]; then
+    echo "[vite-build-singleflight] raised Node old-space ceiling from ${EXISTING_HEAP_MB} MiB to ${VITE_BUILD_HEAP_MB} MiB" >&2
+  else
+    echo "[vite-build-singleflight] set Node old-space ceiling to ${VITE_BUILD_HEAP_MB} MiB" >&2
+  fi
+fi
 
 # Where dist/ lives. Overridable so the tests can exercise the real swap
 # mechanics against a throwaway tree instead of the app's live bundle.
