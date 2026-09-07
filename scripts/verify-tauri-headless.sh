@@ -2386,11 +2386,6 @@ write_and_launch_tauri() {
     # using the real config's window array untouched.
     TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"}}"
   fi
-  # EI-22616267024724225: the CLI's independent 180s dev-server wait can
-  # terminate the entire process while the owned operator is still starting,
-  # before our build/bridge/origin checks can observe it. Let this verifier
-  # own readiness: the bounded origin gate below still requires BOTH
-  # /api/health and / to return 200 before any assertion is allowed to run.
   cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
@@ -2413,7 +2408,7 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET \\
   $OPERATOR_SOURCE_ENV_LINE \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
-  ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --no-dev-server-wait --config '$TAURI_CONFIG'
+  ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '$TAURI_CONFIG'
 LAUNCH
   chmod +x "$WORK/launch.sh"
   TAURI_SCOPE_UNIT="${VERIFY_SCOPE_BASE}-tauri-${BOOT_ATTEMPTS}"

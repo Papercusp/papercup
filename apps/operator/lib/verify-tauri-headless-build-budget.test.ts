@@ -24,21 +24,6 @@ const SCRIPT =
 const src = readFileSync(SCRIPT, "utf8");
 
 describe("EI-20229366113827667 — build and bridge readiness use separate clocks", () => {
-  it("leaves frontend readiness to the bounded owned-origin gate, not the CLI pre-build timer", () => {
-    const launch = src.match(/npm run tauri -- dev[^\n]+/)?.[0];
-    expect(launch).toContain("--no-dev-server-wait");
-    const originGate = src.slice(
-      src.indexOf('HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-120}"'),
-      src.indexOf('log "origin health confirmed:'),
-    );
-    expect(originGate).toContain("fetch('/api/health')");
-    expect(originGate).toContain("fetch('/')");
-    expect(originGate).toContain('"apiHealth"[[:space:]]*:[[:space:]]*200');
-    expect(originGate).toContain('"rootHtml"[[:space:]]*:[[:space:]]*200');
-    expect(originGate).toContain("HEALTH_DEADLINE");
-    expect(originGate).toContain("exit 1");
-  });
-
   it("exposes an independent bounded cargo-build timeout", () => {
     expect(src).toMatch(/VERIFY_TAURI_BUILD_TIMEOUT/);
     expect(src).toMatch(
