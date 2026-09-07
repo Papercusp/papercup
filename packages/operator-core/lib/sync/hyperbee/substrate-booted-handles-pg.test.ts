@@ -90,6 +90,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       expect(H.state.row).toEqual({
         handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
         sentAt: 1_000,
+        publisherId: expect.any(String),
         publicationId: expect.any(String),
         lastKnownAnnounceDevices: [],
         // EI-20575137548097507: published alongside the handles so a non-owner
@@ -115,6 +116,65 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       expect(H.updateOperatorState).toHaveBeenCalledTimes(4); // stopped — no further writes
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('keeps same-publisher capabilities available, without renewing them, while a slow refresh collects', async () => {
+    const request: GitServingRequest = {
+      workspaceId: 'ws1', installSlug: 'a', potHomeSlug: 'a',
+      scope: { hive_id: 'stable-hive', repo_key: 'gh:123' },
+    };
+    const state: GitServingState = {
+      status: 'ready',
+      capability: {
+        ...request,
+        v: 1,
+        runtimeId: 'runtime-1',
+        identity: { devicePubkeyBase64: 'device', githubUserId: 42, keychainId: 'key' },
+        context: { ...request.scope, store_generation: `sg2-1-${'a'.repeat(40)}` },
+        issuedAtMs: 1_000,
+        expiresAtMs: 1_000 + GIT_SERVING_LEASE_MS,
+      },
+    };
+    const advertised = [{ request, state }];
+    let collectCalls = 0;
+    let releaseRefresh!: (value: typeof advertised) => void;
+    const slowRefresh = new Promise<typeof advertised>(resolve => { releaseRefresh = resolve; });
+    H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }];
+
+    const h = startBootedHandlesPgPublisher({
+      intervalMs: 10,
+      ownsSubstrate: true,
+      now: () => 1_000,
+      collectGitServing: async () => (++collectCalls === 1 ? advertised : slowRefresh),
+    });
+    try {
+      await vi.waitFor(() => expect(H.state.row).toMatchObject({ gitServing: advertised }));
+      const first = H.state.row as {
+        publisherId: string;
+        publicationId: string;
+        gitServing: typeof advertised;
+      };
+      const firstPublisherId = first.publisherId;
+      const firstPublicationId = first.publicationId;
+      const originalExpiry = first.gitServing[0]!.state.status === 'ready'
+        ? first.gitServing[0]!.state.capability.expiresAtMs
+        : null;
+
+      await vi.waitFor(() => expect(collectCalls).toBe(2));
+      const refreshing = H.state.row as typeof first;
+      expect(refreshing.publisherId).toBe(firstPublisherId);
+      expect(refreshing.publicationId).not.toBe(firstPublicationId);
+      expect(refreshing.gitServing).toEqual(advertised);
+      expect(refreshing.gitServing[0]!.state.status === 'ready'
+        ? refreshing.gitServing[0]!.state.capability.expiresAtMs
+        : null).toBe(originalExpiry);
+
+      releaseRefresh([]);
+      await vi.waitFor(() => expect(H.state.row).toHaveProperty('gitServing', []));
+    } finally {
+      h.stop();
+      releaseRefresh([]);
     }
   });
 
@@ -192,10 +252,11 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     H.state.relocated = [{ workspaceId: 'ws1', harnessSlug: 'relocated' }];
 
     const h = startBootedHandlesPgPublisher({ ownsSubstrate: true, now: () => 5_000 });
-    expect(H.state.row).toEqual({
-      handles: H.state.booted,
-      sentAt: 5_000,
-      publicationId: expect.any(String),
+      expect(H.state.row).toEqual({
+        handles: H.state.booted,
+        sentAt: 5_000,
+        publisherId: expect.any(String),
+        publicationId: expect.any(String),
       lastKnownAnnounceDevices: [],
       healthInputs: {
         replicationLiveness: [],
@@ -507,5 +568,31 @@ describe('P514 owner capability discovery', () => {
     expect(H.state.row).toHaveProperty('gitServing', []);
     old.stop();
     next.stop();
+  });
+
+  it('invalidates a predecessor publisher capability before collecting the replacement', async () => {
+    H.state.row = {
+      ...row(),
+      publisherId: 'old-publisher',
+      publicationId: 'old-publication',
+    };
+    let release!: (value: Array<{ request: GitServingRequest; state: GitServingState }>) => void;
+    const pending = new Promise<Array<{ request: GitServingRequest; state: GitServingState }>>(
+      resolve => { release = resolve; },
+    );
+
+    const next = startBootedHandlesPgPublisher({
+      ownsSubstrate: true,
+      now: () => 2_000,
+      collectGitServing: () => pending,
+    });
+    try {
+      await vi.waitFor(() => expect(H.state.row).toHaveProperty('publisherId'));
+      expect(H.state.row).not.toHaveProperty('gitServing');
+      expect(H.state.row).not.toMatchObject({ publisherId: 'old-publisher' });
+    } finally {
+      next.stop();
+      release([]);
+    }
   });
 });
