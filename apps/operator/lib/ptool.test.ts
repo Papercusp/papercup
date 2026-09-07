@@ -32,6 +32,7 @@ import {
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_DB_MIGRATE_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_DEV_RESTART_TIMEOUT_MS,
   PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
@@ -921,16 +922,20 @@ describe('ptool timeoutForTool — fleet:assignments outlives BYOC live-recheck 
   });
 });
 
-describe('ptool timeoutForTool — db:migrate outlives the MCP request deadline (EI-21276159817895096)', () => {
+describe('ptool timeoutForTool — db:migrate outlives the MCP request deadline (EI-22613070628418671)', () => {
   it('gives the migration call a client deadline beyond the transport cap, not the flat 30s ceiling', () => {
-    expect(timeoutForTool('db:migrate', {})).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('db:migrate', {})).toBe(PTOOL_DB_MIGRATE_TIMEOUT_MS);
     expect(timeoutForTool('db:migrate', {})).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('db:migrate', {})).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    // db:migrate declares 1020s and MCP adds a 5s settlement buffer; keep a
+    // further 5s delivery margin so a legitimate long drain is observable.
+    expect(PTOOL_DB_MIGRATE_TIMEOUT_MS).toBe(1_030_000);
+    expect(PTOOL_DB_MIGRATE_TIMEOUT_MS).toBeGreaterThan(1_025_000);
   });
 
   it('keeps the same migration budget through the deferred tools:invoke transport', () => {
     expect(timeoutForTool('tools:invoke', { name: 'db:migrate' }))
-      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      .toBe(PTOOL_DB_MIGRATE_TIMEOUT_MS);
   });
 });
 
