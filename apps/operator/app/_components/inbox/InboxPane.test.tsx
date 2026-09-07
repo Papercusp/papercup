@@ -598,6 +598,23 @@ describe("<InboxPane>", () => {
       );
     });
 
+    it("keeps the item-open body bordered and the rail labels on the full foreground token", () => {
+      const body = rule(".op-inbox__aside .ask-choice-question");
+      expect(body).toMatch(/max-width:\s*58ch/);
+      expect(body).toMatch(
+        /border-left:\s*2px\s+solid\s+var\(--border-strong\)/,
+      );
+      expect(rule(".op-inbox__detail-fact")).toMatch(
+        /grid-template-columns:\s*minmax\(120px,\s*35%\)\s+minmax\(0,\s*1fr\)/,
+      );
+
+      const railLabels = rule(".op-inbox__detail-rail dt");
+      const railValues = rule(".op-inbox__detail-rail dd");
+      expect(railLabels).toMatch(/color:\s*var\(--fg\b/);
+      expect(railLabels).not.toMatch(/var\(--fg-mute\b/);
+      expect(railValues).toMatch(/color:\s*var\(--fg\b/);
+    });
+
     it("at narrow widths stacks head, rail, body, discussion in one column", () => {
       const narrow = css.slice(css.indexOf("@media (max-width: 900px)"));
       expect(narrow).toMatch(

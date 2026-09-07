@@ -1073,7 +1073,7 @@
 }
 .op-inbox__detail-fact {
   display: grid;
-  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+  grid-template-columns: minmax(120px, 35%) minmax(0, 1fr);
   gap: 8px;
 }
 .op-inbox__detail-fact dt {
@@ -1107,7 +1107,7 @@
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  color: var(--fg-mute, #8a8a91);
+  color: var(--fg, #e5e7eb);
 }
 .op-inbox__detail-rail dd {
   display: flex;
