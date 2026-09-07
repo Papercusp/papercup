@@ -765,6 +765,26 @@ describe('killTask — external kill-intent notice, unconfined pid path (EI-2190
 });
 
 describe('killTask — subtree', () => {
+  it('never signals ancestors or siblings when reaping a nested task', async () => {
+    row({ taskId: 'parent' });
+    row({ taskId: 'child', rootTaskId: 'parent', parentTaskId: 'parent' });
+    row({ taskId: 'sibling', rootTaskId: 'parent', parentTaskId: 'parent' });
+    // Deliberately insert the grandchild out of ancestry order.
+    row({ taskId: 'great-grandchild', rootTaskId: 'parent', parentTaskId: 'grandchild' });
+    row({ taskId: 'grandchild', rootTaskId: 'parent', parentTaskId: 'child' });
+    const units: string[] = [];
+    await killTask('child', {
+      includeSubtree: true,
+      execFileAsync: (async (_f: string, args: string[]) => {
+        units.push(args[args.length - 1]!);
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(units.sort()).toEqual(['pc-child.scope', 'pc-grandchild.scope', 'pc-great-grandchild.scope']);
+    expect(store.closed.map((entry) => entry.taskId)).not.toContain('parent');
+    expect(store.closed.map((entry) => entry.taskId)).not.toContain('sibling');
+  });
+
   it('signals logically-nested tasks that got their own scopes', async () => {
     row({ taskId: 'd1' });
     row({ taskId: 'd2', rootTaskId: 'd1', parentTaskId: 'd1' });
