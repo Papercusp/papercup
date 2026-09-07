@@ -1461,7 +1461,7 @@ const optionsGet = defineTool({
   },
 });
 
-const post = defineTool({
+export const bootstrapSu = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-su',
   auth: 'loopback',
@@ -3670,7 +3670,7 @@ const optionsForSessionRespawned = defineTool({
 export default [
   options,
   optionsForOptions,
-  post,
+  bootstrapSu,
   optionsGet,
   brainGet,
   heartbeat,

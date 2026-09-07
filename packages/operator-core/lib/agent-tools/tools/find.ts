@@ -279,7 +279,24 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
 function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptions = true): string {
   if (depth >= MAX_NESTED_SCHEMA_DEPTH) return '';
   const nested = nestedObjectProperties(node);
+  const properties = Object.entries(nested?.properties ?? {});
   if (!nested) return '';
+  // Keep conditional lifecycle contracts ahead of descriptive/legacy fields in
+  // a bounded nested object. `work_items:complete` places
+  // `rootCauseVerification` after the wide `verification` record and several
+  // legacy aliases; the old schema-order walk elided it behind `…+17`, leaving
+  // a caller with a shape that looked valid until the close was refused. Both
+  // fields are contract-bearing, so reserve their names/shapes before optional
+  // evidence metadata while retaining source order for everything else.
+  const contractPriority = (name: string): number => {
+    if (name === 'rootCauseVerification') return 100;
+    if (name === 'verification') return 90;
+    return 0;
+  };
+  const orderedProperties = properties
+    .map(([name, raw], index) => ({ name, raw, index, priority: contractPriority(name) }))
+    .sort((a, b) => b.priority - a.priority || a.index - b.index)
+    .map(({ name, raw }) => [name, raw] as [string, unknown]);
   const renderEntry = (
     name: string,
     raw: unknown,
@@ -291,10 +308,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   };
-  const properties = Object.entries(nested.properties);
-  let entries = properties.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
+  let entries = orderedProperties.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
   if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
-    entries = properties.map(([name, raw]) => renderEntry(name, raw, false));
+    entries = orderedProperties.map(([name, raw]) => renderEntry(name, raw, false));
   }
   let body = '';
   let dropped = 0;
@@ -307,7 +323,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       // leaving callers to infer the legacy alias was canonical. The shallow
       // fallback preserves the callable field without changing aggregate
       // width or the explicit tail-elision marker.
-      const [name, raw] = properties[index];
+      const [name, raw] = orderedProperties[index];
       // Keep a shallow nested-object path on the fallback. Without this, a
       // wide field such as completion.verification degraded to just
       // `verification?:object`, while the legacy sibling completion.coverage

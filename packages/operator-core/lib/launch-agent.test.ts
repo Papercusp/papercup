@@ -47,6 +47,7 @@ describe('launchAgent', () => {
       kickoff: { kind: 'new-plan' },
       kickoff_prompt: null,
       defer_spawn: false,
+      attached_engine: false,
       context_size: null,
       // WI-2140338: session compaction ceiling in tokens — null unless a goal
       // launch profile (or explicit caller) pins one.
@@ -156,7 +157,8 @@ describe('launchAgent', () => {
         // owner-nominated gateway route.
         account: 'default',
         carry: 'warm',
-        defer_spawn: true,
+        defer_spawn: false,
+        attached_engine: true,
         attach_adv_session_id: null,
       });
     },

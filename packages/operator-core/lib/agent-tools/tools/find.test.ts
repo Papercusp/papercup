@@ -430,6 +430,20 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('keeps the successful bug-close root-cause contract visible in bounded discovery', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('work_items:complete'));
+
+    // A successful bug close is rejected without this conditional nested record.
+    // Keep both the field and its four required evidence keys visible even when
+    // the surrounding completion schema exceeds the nested-field budget.
+    expect(compact).toContain('rootCauseVerification?:object{hypothesis:string');
+    expect(compact).toContain('alternativeHypothesis:string');
+    expect(compact).toContain('distinguishingTest:string');
+    expect(compact).toContain('testResult:string');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+  });
+
   it('bounds a verbose nested-fields segment so nesting stays readable (EI-21490971340666010)', () => {
     const manyFields: Record<string, unknown> = {};
     for (let i = 0; i < 40; i += 1) {

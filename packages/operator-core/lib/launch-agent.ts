@@ -61,6 +61,7 @@ export interface LaunchAgentOpts extends LaunchOpts {
    * Returns `advSessionId` of the recorded row.
    */
   deferSpawn?: boolean;
+  attachedEngine?: boolean;
   /**
    * Initial-context size variant, orthogonal to `agent`. The only value is
    * 'trimmed' (`SuContextSize`): a small core surface up front, grown on demand
@@ -325,6 +326,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     kickoff: opts.kickoff ?? null,
     kickoff_prompt: opts.kickoffPrompt ?? null,
     defer_spawn: opts.deferSpawn ?? false,
+    attached_engine: opts.attachedEngine ?? false,
     // WI-6321 — psu parity. Null-safe: an omitted option keeps the previous
     // behaviour exactly (launch-su treats null as "not supplied").
     fleet: opts.fleet ?? null,
@@ -401,9 +403,8 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
 }
 
 /**
- * PUI's one create/attach door. Creation records one deferred workbench row;
- * the pane runs that row's `psu` argv and bootstrap adopts the SAME row. Attach
- * is a read-only lookup by stable advSessionId and never launches a process.
+ * PUI's one create/attach door. Creation starts an attached structured engine;
+ * attach looks up the stable advSessionId without launching another process.
  */
 export async function openPuiSuSession(input: PuiSuSessionInput): Promise<PuiSuSessionResult> {
   let launched: LaunchAgentResult;
@@ -421,7 +422,8 @@ export async function openPuiSuSession(input: PuiSuSessionInput): Promise<PuiSuS
       // different launch_argv by omission.
       account: opts.account ?? 'default',
       carry,
-      deferSpawn: true,
+      deferSpawn: false,
+      attachedEngine: true,
       attachAdvSessionId: null,
     });
   } else {

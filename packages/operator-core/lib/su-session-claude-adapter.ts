@@ -91,6 +91,8 @@ export interface ClaudeSuSessionDescriptorOptions {
 export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDescriptorOptions {
   controls?: Partial<ClaudeSuSessionControls>;
   register?: boolean;
+  /** Structured transports set this false until their identity handshake completes. */
+  ready?: boolean;
 }
 
 export interface OpenClaudeSuSessionOptions extends CreateClaudeSuSessionAdapterOptions {
@@ -398,7 +400,7 @@ export class ClaudeSuSessionAdapter {
       workspaceId: binding.workspaceId ?? undefined,
     }).catch(() => undefined);
     this.unregister = options.register === false ? null : registerSuSessionHost(this.host);
-    this.host.transition('ready', 'Claude native runtime attached');
+    if (options.ready !== false) this.host.transition('ready', 'Claude native runtime attached');
   }
 
   get runtime(): ClaudeSuRuntimeBinding {
@@ -465,7 +467,7 @@ export class ClaudeSuSessionAdapter {
     const parsed = this.parser.parseLine(line);
     for (const entry of parsed) {
       const turnId = entry.kind === 'prompt'
-        ? (this.currentTurnId = this.nextTurnId(recordId))
+        ? (this.currentTurnId ??= this.nextTurnId(recordId))
         : this.ensureTurn(recordId);
       if (entry.kind === 'prompt') {
         this.host.transition('running', 'Claude owner turn persisted');
@@ -596,6 +598,7 @@ export class ClaudeSuSessionAdapter {
     let verdict: ClaudeNativeCommandVerdict;
     switch (command.type) {
       case 'owner_turn':
+        this.currentTurnId = command.turnId;
         context.transition('running', 'owner turn accepted');
         verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
