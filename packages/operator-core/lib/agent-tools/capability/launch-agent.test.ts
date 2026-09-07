@@ -526,6 +526,17 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     });
   });
 
+  it('reports a plan-bound launch as self-pulling rather than idle', async () => {
+    const res = await launchAgent.handler({ plan: 'plan-a' }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(textOf(res)).toContain('bound to plan "plan-a"');
+    expect(textOf(res)).toContain('pulls its own work; no brief needed');
+    expect(textOf(res)).not.toContain('opens IDLE');
+    expect(spawnedEnv()).not.toHaveProperty('PAPERCUSP_KICKOFF_PROMPT');
+  });
+
   it('reports an unavailable terminal PID without falling back to the launcher PID', async () => {
     spawnConsoleMock.mockResolvedValueOnce({
       status: 'ok',

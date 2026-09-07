@@ -1876,11 +1876,16 @@ export default defineTool({
         );
       }
       const hasLaunchBrief = Boolean(isSuccessor ? successorBrief : args.brief || anyMemberBrief);
+      const hasLaunchPlan = Boolean(!isSuccessor && !isResume && args.plan);
       if (hasLaunchBrief) {
         lines.push(
           isResume
             ? "  ↪ the brief is QUEUED as the resumed session's next turn (psu's managed pty injects it once the agent reaches its prompt). Delivery alone is not proof the turn began; read the verification verdict below."
             : "  ↪ the brief is the agent's first turn — it starts working on boot, it does not park idle.",
+        );
+      } else if (hasLaunchPlan) {
+        lines.push(
+          `  ↪ bound to plan ${JSON.stringify(args.plan)} — the agent pulls its own work; no brief needed.`,
         );
       } else {
         lines.push('  ⚠ no `brief` — the agent opens IDLE. It will not do anything until someone gives it a turn.');
