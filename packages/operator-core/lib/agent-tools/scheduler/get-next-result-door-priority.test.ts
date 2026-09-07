@@ -78,6 +78,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
       planDecisions: decisions(),
       planDecisionsNote: AFFECTS_WARNING,
       retractionWarning: RETRACTION_MARKER,
+      checkpoint: 'plan-local checkpoint prose',
       workItem: bulkyWorkItem(),
       claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
     });
@@ -89,6 +90,9 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
       'planDecisions',
       'planDecisionsNote',
     ]);
+    expect(Object.keys(assembled).indexOf('planDecisionsNote')).toBeLessThan(
+      Object.keys(assembled).indexOf('checkpoint'),
+    );
 
     const doored = doorify(assembled);
     expect(doored.content).toHaveLength(1); // structural JSON replaces the old kept-head + footer pair
@@ -109,6 +113,8 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     expect(kept).toContain(DECISION_MARKER);
     expect(kept).toContain('planDecisionsNote');
     expect(kept).toContain(AFFECTS_WARNING);
+    expect(kept).toContain('plan-local checkpoint prose');
+    expect(kept.indexOf(AFFECTS_WARNING)).toBeLessThan(kept.indexOf('plan-local checkpoint prose'));
   });
 
   it('preserves the governing decision even in the legacy tail placement', () => {
