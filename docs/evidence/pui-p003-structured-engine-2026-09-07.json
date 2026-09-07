@@ -51,9 +51,14 @@
       "AUTO-BAR-R-03-P-003": "l4"
     },
     "evaluatedAt": "2026-09-07T15:00:00Z",
-    "cardsEmitted": false
+    "cardsEmitted": true,
+    "scorecards": {
+      "AUTO-BAR-R-01-P-003": "EI-22616126425242794",
+      "AUTO-BAR-R-02-P-003": "EI-22616127452022188",
+      "AUTO-BAR-R-03-P-003": "EI-22616128914387622"
+    }
   },
-  "pending": "Emit the three complete scorecardDraft objects, then obtain independent grading-integrity audits before closing P-003. Full drafts were retrieved to the work-item checkpoint's scratch-reference.",
+  "pending": "Independent grading-integrity audits are assigned to reviewer work-item WI-10000541. P-003 stays open until those verdicts pass.",
   "plan": "pui-first-party-public-release-2026-09-07",
   "workItem": "WI-10000425",
   "planItem": "P-003",

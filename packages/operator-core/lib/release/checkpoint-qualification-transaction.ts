@@ -12,6 +12,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import {
+  frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
@@ -786,13 +787,14 @@ export function settleQualificationTransaction(
 }
 
 export type RepairQueueReconciliation = {
-  status: 'none' | 'retired' | 'blocked';
+  status: 'none' | 'preserved' | 'retired' | 'blocked';
   reason:
     | 'no-queue'
     | 'queue-malformed'
     | 'queue-origin-mismatch'
     | 'queue-origin-unknown'
     | 'queue-not-safe-unstarted'
+    | 'matching-untested-repair-head'
     | 'exact-safe-unstarted'
     | 'cas-miss';
   predecessorAttemptId: string;
@@ -839,6 +841,30 @@ export function assessTerminalRepairQueueReconciliation(
     return {
       status: 'blocked',
       reason: 'queue-origin-mismatch',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  // WI-10000288: a red terminal attempt may own a queue that has since converged onto a
+  // DIFFERENT, never-judged repairHead. That row is not predecessor residue to retire and it
+  // is not an in-flight repair to block behind: `ready-to-verify` is the queue's explicit
+  // suite-producing state. Preserve the exact queue while installing the successor logical
+  // qualification, which will select the same repairHead through the ordinary frozen-queue /
+  // required-ancestor preflight below. Keep this deliberately narrow: provenance must name the
+  // terminal predecessor, no fixer or dispatch reservation may still own the row, and the head
+  // must be absent from the convergence rounds. Unknown or mismatched provenance stays fail-
+  // closed, as does a repairHead that has already consumed a verification run.
+  if (
+    !originUnknown &&
+    queue.qualificationAttemptId === current.attemptId &&
+    queue.phase === 'ready-to-verify' &&
+    queue.fixerSpawnId === null &&
+    queue.dispatchReservation == null &&
+    frozenRepairHeadAwaitsVerification(queue)
+  ) {
+    return {
+      status: 'preserved',
+      reason: 'matching-untested-repair-head',
       candidate: queue.candidate,
       ...base,
     };

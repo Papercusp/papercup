@@ -353,7 +353,6 @@ export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> =
   'work_items:burn_down': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
   'work_items:claim': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
   'work_items:complete': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
-  'work_items:get': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
   'work_items:list': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
   'work_items:search': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
 };
@@ -366,7 +365,7 @@ export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> =
  * has to fight this budget. Lower it as shapers get audited; raising it means
  * a new shaper shipped unclassified, which is what the gate exists to stop.
  */
-export const SHAPER_BASELINE_HIGH_WATERMARK = 20;
+export const SHAPER_BASELINE_HIGH_WATERMARK = 19;
 
 export interface ShaperClassification {
   /** Declares a shaper but is neither opted in nor exempt — an undecided tool. */

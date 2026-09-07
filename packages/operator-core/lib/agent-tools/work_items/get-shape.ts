@@ -513,6 +513,7 @@ function compactSingleRow(
   return {
     ok: r.ok ?? true,
     id: r.id ?? w?.id ?? null,
+    ...(r.availability !== undefined ? { availability: r.availability } : {}),
     workItem: projectWorkItem(r.workItem, caps, 0, dropped),
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     // `threadLimit` is an explicit bounded diagnostic request, not incidental
@@ -566,6 +567,7 @@ function compactSingleRow(
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
+    ...(r.planItemTextDrift ? { planItemTextDrift: r.planItemTextDrift } : {}),
     ...(r.holder ? { holder: compactHolder(r.holder) } : {}),
   };
 }
@@ -838,6 +840,7 @@ function projectRow(
   return {
     ok: r.ok ?? true,
     id: r.id ?? null,
+    ...(r.availability !== undefined ? { availability: r.availability } : {}),
     workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped),
     ...(r.threadWindow !== undefined
       ? {
@@ -897,6 +900,7 @@ function projectRow(
     ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
+    ...(r.planItemTextDrift ? { planItemTextDrift: r.planItemTextDrift } : {}),
     ...(r.holder ? { holder: r.holder } : {}),
     ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
     ...(r.priorAttempts ? { priorAttempts: projectPriorAttempts(r.priorAttempts, caps, dropped) } : {}),

@@ -19,6 +19,7 @@ type Envelope = {
   ok: boolean;
   results: Array<Record<string, unknown>>;
   counts: { ok: number; failed: number };
+  read?: Record<string, unknown>;
   _shapeNote?: {
     dropped: string[];
     checkpointCharsPerRow: number;
@@ -60,6 +61,33 @@ function envelope(rows: Array<Record<string, unknown>>): Envelope {
 }
 
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it('preserves the top-level read/count qualifiers and plan-item text drift', () => {
+    const read = {
+      schemaVersion: 'work-items-get-read-v1',
+      mode: 'projected',
+      requested: 1,
+      available: 1,
+      absent: 0,
+      unavailable: 0,
+      budgetMs: 30_000,
+      elapsedMs: 7,
+      baseReadMaxMs: 4,
+      enrichmentMaxMs: 0,
+      outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time',
+    };
+    const out = shapeWorkItemsGet(
+      { ...envelope([row({ availability: 'available', planItemTextDrift: { status: 'drifted' } })]), read },
+      'trimmed',
+    ) as Envelope;
+
+    expect(out.counts).toEqual({ ok: 1, failed: 0 });
+    expect(out.read).toEqual(read);
+    expect(out.results[0]).toMatchObject({
+      availability: 'available',
+      planItemTextDrift: { status: 'drifted' },
+    });
+  });
+
   it("shapes checksOnly as a bounded ledger and removes the internal marker and full-read fields", () => {
     const out = shapeWorkItemsGet(
       {
@@ -282,6 +310,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
           checkpoint: "C".repeat(1_000),
           planItemClaimCollision: { planSlug: "p", itemId: "P-007", claimedBy: "su-2" },
           planItemBlocked: { reason: "needs-human", planSlug: "p" },
+          planItemTextDrift: { status: "drifted", planSlug: "p", itemId: "P-007" },
           checkpointFreshness: { verdict: "stale", changed: [{ dep: "file:a.ts" }] },
           checkpointStale: { stale: true },
           checkpointBgJobWarning: "cites a background job",
@@ -298,6 +327,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     // from a different direction.
     expect(r.planItemClaimCollision).toBeDefined();
     expect(r.planItemBlocked).toBeDefined();
+    expect(r.planItemTextDrift).toBeDefined();
     expect(r.checkpointFreshness).toMatchObject({ verdict: "stale" });
     expect(r.checkpointStale).toBeDefined();
     expect(r.checkpointBgJobWarning).toBeDefined();

@@ -18,7 +18,7 @@ import {
   getWorkItemThreadWindow,
   SETTLED_WORK_ITEM_STATES,
 } from "../../work-items";
-import { mergeIds, runBulk, bulkContent } from "../_bulk";
+import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
 import { scanCheckpointRetractions } from "./retraction-advisory";
@@ -35,7 +35,6 @@ import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
 import { activeWorkspaceId } from "../../workspace-registry";
 import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../../agent-facts/cited-facts";
 import { shapeWorkItemsGet } from "./get-shape";
-import { withBoundedTimeout } from "../../bounded-timeout";
 import {
   CARRY_NOTE_MAX_CHECKS,
   sanitizeCarryRowId,
@@ -84,20 +83,70 @@ const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
 export const WORK_ITEMS_GET_BUDGET_MS = 30_000;
 
 const WORK_ITEMS_GET_TIMEOUT = Symbol("work_items:get:timeout");
+const WORK_ITEMS_GET_CANCELLED = Symbol("work_items:get:cancelled");
 
-function workItemsGetTimeoutResult(id: string, budgetMs: number) {
+function workItemsGetUnavailableResult(id: string, budgetMs: number, reason: 'timeout' | 'cancelled') {
   return {
     ok: false as const,
     id,
-    error: "timeout" as const,
+    availability: "unavailable" as const,
+    error: reason,
     retryable: true as const,
     phase: "read" as const,
     budgetMs,
     message:
-      `work_items:get exceeded its ${budgetMs}ms internal read budget and returned a ` +
-      "retryable unavailable result instead of waiting for the MCP request deadline. " +
-      "The item was not reported as not-found; retry now.",
+      reason === 'timeout'
+        ? `work_items:get exceeded its ${budgetMs}ms internal read budget and returned a ` +
+          "retryable unavailable result instead of waiting for the MCP request deadline. " +
+          "The item was not reported as not-found; retry now."
+        : "work_items:get was cancelled before the read became conclusive. The item is unavailable, " +
+          "not absent; retry only if the caller still needs it.",
   };
+}
+
+type WorkItemsGetBudgetResult<T> =
+  | { value: T; reason: null; elapsedMs: number }
+  | { value: typeof WORK_ITEMS_GET_TIMEOUT | typeof WORK_ITEMS_GET_CANCELLED; reason: 'timeout' | 'cancelled'; elapsedMs: number }
+  | { value: typeof WORK_ITEMS_GET_TIMEOUT; reason: 'error'; error: unknown; elapsedMs: number };
+
+/** One cancellation/deadline race; whichever edge wins clears both resources. */
+async function withWorkItemsGetBudget<T>(
+  work: Promise<T>,
+  opts: { timeoutMs: number; signal?: AbortSignal; label: string },
+): Promise<WorkItemsGetBudgetResult<T>> {
+  const startedAt = Date.now();
+  work.catch(() => {});
+  if (opts.signal?.aborted) {
+    return { value: WORK_ITEMS_GET_CANCELLED, reason: 'cancelled', elapsedMs: 0 };
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<typeof WORK_ITEMS_GET_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(WORK_ITEMS_GET_TIMEOUT), Math.max(1, opts.timeoutMs));
+  });
+  const cancelled = opts.signal
+    ? new Promise<typeof WORK_ITEMS_GET_CANCELLED>((resolve) => {
+        onAbort = () => resolve(WORK_ITEMS_GET_CANCELLED);
+        opts.signal!.addEventListener('abort', onAbort, { once: true });
+      })
+    : new Promise<typeof WORK_ITEMS_GET_CANCELLED>(() => {});
+  try {
+    const value = await Promise.race([work, timeout, cancelled]);
+    const elapsedMs = Date.now() - startedAt;
+    if (value === WORK_ITEMS_GET_TIMEOUT) {
+      console.warn(`[work_items:get] ${opts.label} exceeded ${opts.timeoutMs}ms — returning unavailable`);
+      return { value: WORK_ITEMS_GET_TIMEOUT, reason: 'timeout', elapsedMs };
+    }
+    if (value === WORK_ITEMS_GET_CANCELLED) {
+      return { value: WORK_ITEMS_GET_CANCELLED, reason: 'cancelled', elapsedMs };
+    }
+    return { value: value as T, reason: null, elapsedMs };
+  } catch (error) {
+    return { value: WORK_ITEMS_GET_TIMEOUT, reason: 'error', error, elapsedMs: Date.now() - startedAt };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (opts.signal && onAbort) opts.signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /**
@@ -186,6 +235,47 @@ const workItemsGetArgRedirects: Record<string, string> = {
 
 type SourceProjectionContext = { sourceProjection?: unknown };
 
+type WorkItemsGetSourceSelection = { paths: string[] };
+
+const SOURCE_TOP_LEVEL_ROOTS = new Set(['ok', 'counts', 'read', '_shapeNote']);
+const SOURCE_ROW_ROOTS = new Set([
+  'ok', 'id', 'availability', 'workItem', 'holder', 'checkpoint', 'checkpointChecks',
+  'checkpointAgeMs', 'checkpointUpdatedAtMs', 'checkpointContentHash', 'checkpointRetractions',
+  'checkpointReadFailed', 'checkpointFreshness', 'checkpointStale', 'checkpointBgJobWarning',
+  'priorWork', 'priorWorkWarning', 'completion', 'hasCompletionEvidence', 'completionFreshness',
+  'deploymentPosition', 'citedFacts', 'planItemBlocked', 'planItemClaimCollision',
+  'planItemTextDrift', 'threadWindow', 'threadWindowReadFailed', 'threadLimitClamped',
+  'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'error', 'retryable', 'phase',
+  'budgetMs', 'message', '_stub',
+]);
+
+/** A malformed or unknown pick fails open to the complete historical read. */
+function workItemsGetSourceSelection(sourceProjection: unknown): WorkItemsGetSourceSelection | null {
+  if (!sourceProjection || typeof sourceProjection !== 'object' || Array.isArray(sourceProjection)) return null;
+  const picks = (sourceProjection as { pick?: unknown }).pick;
+  if (!Array.isArray(picks) || picks.length === 0 || !picks.every((pick) => typeof pick === 'string')) return null;
+  const paths: string[] = [];
+  for (const rawPick of picks as string[]) {
+    const pick = rawPick.trim();
+    const path = resultRowPath(pick);
+    if (path === '') return null;
+    if (path === null) {
+      const root = pick.split('.')[0] ?? '';
+      if (!SOURCE_TOP_LEVEL_ROOTS.has(root)) return null;
+      continue;
+    }
+    const root = path.split('.')[0] ?? '';
+    if (!SOURCE_ROW_ROOTS.has(root)) return null;
+    paths.push(path);
+  }
+  return { paths };
+}
+
+function sourceSelectionWants(selection: WorkItemsGetSourceSelection | null, ...roots: string[]): boolean {
+  if (!selection) return true;
+  return selection.paths.some((path) => roots.some((root) => path === root || path.startsWith(`${root}.`)));
+}
+
 type CheckpointCheckIdentity = { id?: string; claim: string };
 
 /**
@@ -270,6 +360,7 @@ export function workItemsGetSourceReadOptions(
       includeBody = true;
       continue;
     }
+    if (path === 'workItem') return undefined;
     if (
       path === 'workItem.terminalCompletionEvidence' ||
       path.startsWith('workItem.terminalCompletionEvidence.')
@@ -288,6 +379,10 @@ export function workItemsGetSourceReadOptions(
       return undefined;
     }
     if (path === 'workItem.payload' || path === 'workItem.externalBlockers') return undefined;
+    if (path === 'citedFacts') {
+      includeBody = true;
+      continue;
+    }
     if (
       path === 'completion' ||
       path.startsWith('completion.') ||
@@ -312,6 +407,11 @@ export function workItemsGetSourceReadOptions(
       // complete so the returned selected field remains authoritative.
       return undefined;
     }
+    if (
+      path === 'lifecycle' || path.startsWith('lifecycle.') ||
+      path === 'priorAttempts' || path.startsWith('priorAttempts.') ||
+      path === 'priorAttemptRefResolution' || path.startsWith('priorAttemptRefResolution.')
+    ) return undefined;
     // All remaining known workItem identity/lifecycle columns, and the
     // independent checkpoint/holder/prior-work fields, do not require payload.
   }
@@ -321,6 +421,43 @@ export function workItemsGetSourceReadOptions(
     payloadProjection,
   };
 }
+
+const workItemIdentityResultSchema = z.object({
+  id: z.string().nullable().optional(),
+  kind: z.string().nullable().optional(),
+  family: z.string().nullable().optional(),
+  harness: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  assignee: z.string().nullable().optional(),
+}).passthrough();
+
+const workItemsGetResultRowSchema = z.object({
+  ok: z.boolean(),
+  id: z.string(),
+  availability: z.enum(['available', 'absent', 'unavailable']).optional(),
+  workItem: workItemIdentityResultSchema.optional(),
+  error: z.string().optional(),
+  retryable: z.boolean().optional(),
+  phase: z.string().optional(),
+  budgetMs: z.number().optional(),
+  message: z.string().optional(),
+}).passthrough();
+
+const workItemsGetReadSchema = z.object({
+  schemaVersion: z.literal('work-items-get-read-v1'),
+  mode: z.enum(['projected', 'complete']),
+  requested: z.number().int().nonnegative(),
+  available: z.number().int().nonnegative(),
+  absent: z.number().int().nonnegative(),
+  unavailable: z.number().int().nonnegative(),
+  budgetMs: z.number().int().positive(),
+  elapsedMs: z.number().int().nonnegative(),
+  baseReadMaxMs: z.number().int().nonnegative().nullable(),
+  enrichmentMaxMs: z.number().int().nonnegative().nullable(),
+  outerStageAttribution: z.literal('tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time'),
+});
 
 export default defineTool({
   name: 'work_items:get',
@@ -444,20 +581,57 @@ export default defineTool({
   // act on. It now draws on a LADDER-SHARED budget (see get-shape.ts), so a
   // single-item read carries its body out of the slack the checkpoint case leaves
   // behind, while a 100-id bulk read still spends nothing on it.
-  result: z
-    .object({
-      ok: z.boolean().optional(),
-      results: z.array(z.unknown()).optional(),
-      counts: z.unknown().optional(),
-    })
+  result: bulkEnvelopeSchema(workItemsGetResultRowSchema)
+    .extend({ read: workItemsGetReadSchema })
     .passthrough(),
   shape: {
+    contract: { rows: 'results', fields: ['id'], preserve: ['ok', 'counts', 'read'] },
     standard: (data) => shapeWorkItemsGet(data, 'standard'),
     trimmed: (data) => shapeWorkItemsGet(data, 'trimmed'),
   },
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
     const bulkStartedAt = Date.now();
+    const sourceSelection = workItemsGetSourceSelection((ctx as SourceProjectionContext).sourceProjection);
+    const checksOnly = args.checksOnly === true;
+    const hasThreadLimit = args.threadLimit !== undefined;
+    const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
+    const effectiveThreadLimit = args.threadLimit === undefined ? undefined : Math.min(args.threadLimit, THREAD_WINDOW_MAX);
+    const threadLimitClamped = args.threadLimit !== undefined && args.threadLimit > THREAD_WINDOW_MAX
+      ? { requested: args.threadLimit, applied: THREAD_WINDOW_MAX }
+      : undefined;
+    const needsPriorWork = sourceSelectionWants(sourceSelection, 'priorWork', 'priorWorkWarning');
+    const needsCitedFacts = sourceSelectionWants(sourceSelection, 'citedFacts');
+    const needsCheckpointFreshness = sourceSelectionWants(sourceSelection, 'checkpointFreshness');
+    const needsCheckpointStale = sourceSelectionWants(sourceSelection, 'checkpointStale');
+    const needsCheckpoint = sourceSelectionWants(
+      sourceSelection,
+      'checkpoint', 'checkpointChecks', 'checkpointAgeMs', 'checkpointUpdatedAtMs',
+      'checkpointContentHash', 'checkpointRetractions', 'checkpointReadFailed', 'checkpointBgJobWarning',
+    ) || needsPriorWork || needsCitedFacts || needsCheckpointFreshness || needsCheckpointStale;
+    const needsPlanItemBlocked = sourceSelectionWants(sourceSelection, 'planItemBlocked');
+    const needsClaimCollision = sourceSelectionWants(sourceSelection, 'planItemClaimCollision');
+    const needsPlanItemTextDrift = sourceSelectionWants(sourceSelection, 'planItemTextDrift');
+    const needsHolder = sourceSelectionWants(sourceSelection, 'holder');
+    const needsThreadWindow = sourceSelectionWants(sourceSelection, 'threadWindow', 'threadWindowReadFailed');
+    const needsCompletionFreshness = sourceSelectionWants(sourceSelection, 'completionFreshness');
+    const needsDeploymentPosition = sourceSelectionWants(sourceSelection, 'deploymentPosition');
+    const needsLifecycle = sourceSelectionWants(sourceSelection, 'lifecycle');
+    const needsPriorAttempts = sourceSelectionWants(sourceSelection, 'priorAttempts');
+    const needsPriorAttemptResolution = sourceSelectionWants(sourceSelection, 'priorAttemptRefResolution');
+    const needsWorkItemDetail = sourceSelectionWants(
+      sourceSelection,
+      'workItem.posts', 'workItem.topics', 'workItem.links', 'workItem.detailOmitted',
+    );
+    const readDetail = !checksOnly && args.detail === true && !hasThreadLimit && needsWorkItemDetail;
+    const sourceReadOptions = checksOnly
+      ? { includeBody: false, payloadProjection: 'none' as const }
+      : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
+    const baseOnlyProjection = sourceSelection !== null && !checksOnly && !readDetail &&
+      !needsCheckpoint && !needsPlanItemBlocked && !needsClaimCollision && !needsPlanItemTextDrift &&
+      !needsHolder && !(boundedThread && needsThreadWindow) && !needsCompletionFreshness &&
+      !needsDeploymentPosition && !needsLifecycle && !needsPriorAttempts && !needsPriorAttemptResolution;
+    const stageSamples: Array<{ baseReadMs: number | null; enrichmentMs: number | null }> = [];
     // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
     // the holder lens, never a cache-key dimension — the per-id `cachedRead`
     // below is deliberately non-principal-scoped, so reader-relative holder
@@ -469,8 +643,10 @@ export default defineTool({
     const reader = holderContextReader(ctx as Parameters<typeof holderContextReader>[0]);
     const env = await runBulk(
       ids,
-      async (id) => {
+      async (id, index) => {
         const remainingBudgetMs = Math.max(1, WORK_ITEMS_GET_BUDGET_MS - (Date.now() - bulkStartedAt));
+        const stage = { baseReadMs: null as number | null, enrichmentMs: null as number | null };
+        stageSamples[index] = stage;
         const operation = (async () => {
         // Cache the per-id read (cache-expensive-tool-reads P-005). Tagged with the
         // base TABLE `work_items` (the trigger producer — bumped on EVERY work-item
@@ -485,28 +661,16 @@ export default defineTool({
         // stale until TTL (EI-21582143589662594). Not-found is NOT cached (cacheEmpty
         // default false) — a just-created item must surface immediately, and a miss is
         // cheap to recompute.
-        const checksOnly = args.checksOnly === true;
-        const hasThreadLimit = args.threadLimit !== undefined;
-        const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
         // P-002: clamp rather than reject (see the `threadLimit` schema note).
         // The requested value is kept so the clamp can be DISCLOSED in-band —
         // a silently-shortened window is exactly the bounded-measurement trap
         // this repo treats as a false negative, and the disclosure plus
         // `threadWindow.total` is what makes the clamp safe.
-        const effectiveThreadLimit =
-          args.threadLimit === undefined ? undefined : Math.min(args.threadLimit, THREAD_WINDOW_MAX);
-        const threadLimitClamped =
-          args.threadLimit !== undefined && args.threadLimit > THREAD_WINDOW_MAX
-            ? { requested: args.threadLimit, applied: THREAD_WINDOW_MAX }
-            : undefined;
         // Any explicit threadLimit wins over detail:true so the diagnostic path
         // never pays the unbounded full-render read. Zero is the explicit
         // projection-only form: do not call the low-level window reader, whose
         // COUNT(*) OVER query must clamp LIMIT 0 to one row to retain its total.
-        const readDetail = !checksOnly && args.detail === true && !hasThreadLimit;
-        const sourceReadOptions = checksOnly
-          ? { includeBody: false, payloadProjection: 'none' as const }
-          : workItemsGetSourceReadOptions((ctx as SourceProjectionContext).sourceProjection, readDetail);
+        const baseReadStartedAt = Date.now();
         const workItemRead = await cachedRead<
           Awaited<ReturnType<typeof getWorkItem>> | typeof WORK_ITEMS_GET_TIMEOUT
         >(
@@ -536,10 +700,11 @@ export default defineTool({
                 ? getWorkItem(id, args.harness, sourceReadOptions)
                 : getWorkItem(id, args.harness),
         );
+        stage.baseReadMs = Date.now() - baseReadStartedAt;
         if (workItemRead === WORK_ITEMS_GET_TIMEOUT) return WORK_ITEMS_GET_TIMEOUT;
         const workItem = workItemRead;
         if (!workItem) {
-          return { ok: false as const, id, error: `work_item '${id}' not found` };
+          return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
         }
         // `checksOnly` is the retire-id recovery path. Read the item only far enough
         // to resolve its canonical harness, then read the checkpoint ledger and stop:
@@ -589,7 +754,8 @@ export default defineTool({
         // post and was the source of truncated MCP replies on heavily-commented
         // items. A failure is explicit and fail-soft so the ordinary work-item
         // read remains usable.
-        const threadWindowRead = boundedThread
+        const enrichmentStartedAt = Date.now();
+        const threadWindowRead = boundedThread && needsThreadWindow
           ? getWorkItemThreadWindow(id, effectiveThreadLimit!, args.harness)
               .then((threadWindow) => ({ threadWindow, failed: false as const }))
               .catch(() => ({ threadWindow: null, failed: true as const }))
@@ -632,7 +798,7 @@ export default defineTool({
           priorWorkRaw,
           threadWindowReadResult,
         ] = await Promise.all([
-          getWorkItemCheckpointWithMeta({
+          needsCheckpoint ? getWorkItemCheckpointWithMeta({
             harness: workItem.harness,
             workItemId: workItem.id,
           })
@@ -666,22 +832,22 @@ export default defineTool({
               // field on this leg.
               checkpointContentHash: null,
               readFailed: true as const,
-            })),
-          planItemLaneBlockReason(workItem).catch(() => null),
-          planItemClaimCollision(workItem).catch(() => null),
+            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointContentHash: null, readFailed: false as const }),
+          needsPlanItemBlocked ? planItemLaneBlockReason(workItem).catch(() => null) : Promise.resolve(null),
+          needsClaimCollision ? planItemClaimCollision(workItem).catch(() => null) : Promise.resolve(null),
           // WI-40825: has the linked plan item been REWRITTEN since this
           // work-item was minted from it? Derived by comparing the mint-time
           // text hash against the live plan, so it cannot go stale the way a
           // stored flag would. Third plan-item leg, same fail-soft contract.
-          planItemTextDriftForWorkItem(workItem).catch(() => null),
-          attachHolderContext([{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }], reader).catch(
+          needsPlanItemTextDrift ? planItemTextDriftForWorkItem(workItem).catch(() => null) : Promise.resolve(null),
+          needsHolder ? attachHolderContext([{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }], reader).catch(
             () => [undefined],
-          ),
-          getClaimTimePriorWorkHint({
+          ) : Promise.resolve([undefined]),
+          needsPriorWork ? getClaimTimePriorWorkHint({
             harness: workItem.harness,
             workItemId: workItem.id,
             currentClaimant: workItem.assignee,
-          }).catch(() => null),
+          }).catch(() => null) : Promise.resolve(null),
           threadWindowRead,
         ]);
         const [decorated] = decoratedRows;
@@ -713,7 +879,7 @@ export default defineTool({
         // not just redundant but WRONG in both directions — it calls an untouched
         // 3h-old note stale, and it cannot see a peer's edit at all (it keys on the
         // assignee's own activity). Undefined ⇒ nothing declared ⇒ fall back.
-        const checkpointFreshness = checkpoint
+        const checkpointFreshness = needsCheckpointFreshness && checkpoint
           ? await getWorkItemCheckpointFreshness({ harness: workItem.harness, workItemId: workItem.id }).catch(
               () => undefined,
             )
@@ -722,7 +888,7 @@ export default defineTool({
         let checkpointStale: ReturnType<typeof computeCheckpointStaleness> | undefined;
         // Skip the presence round-trip entirely when a declared verdict already
         // answers the question authoritatively.
-        if (!freshnessDeclared && checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
+        if (needsCheckpointStale && !freshnessDeclared && checkpoint && checkpointUpdatedAtMs != null && workItem.assignee) {
           const assigneePresence = await getPresence(workItem.assignee).catch(() => null);
           const activeAt = assigneePresence?.lastActiveAt ? Date.parse(assigneePresence.lastActiveAt) : null;
           const staleness = computeCheckpointStaleness({
@@ -753,7 +919,7 @@ export default defineTool({
         // no trace left in the checkpoint text (EI-16611). Flag it here too: this is the surface
         // a careful reader actually used to catch the live repro (reading the checkpoint directly
         // via work_items:get, not just at claim time).
-        const checkpointBgJobWarning = checkpoint ? detectBgJobCheckpointClaim(checkpoint).reason : undefined;
+        const checkpointBgJobWarning = needsCheckpoint && checkpoint ? detectBgJobCheckpointClaim(checkpoint).reason : undefined;
         // P-030 / D-060: WHO holds this item and WHAT they are trying to do, on
         // the ordinary read — not only when a claim is REFUSED. A lens onto the
         // shared P-026 projection, gated by `getCell('agent.goal', reader)`;
@@ -787,8 +953,8 @@ export default defineTool({
         // become stale when a peer advances the shared checkout. Compare against
         // the current HEAD on the read path; the helper is fail-soft so a local
         // filesystem/read problem never makes work_items:get fail.
-        const completionFreshness = completionFreshnessForEvidence(workItem.terminalCompletionEvidence);
-        const deploymentPosition = await deploymentPositionForEvidence(workItem.terminalCompletionEvidence);
+        const completionFreshness = needsCompletionFreshness ? completionFreshnessForEvidence(workItem.terminalCompletionEvidence) : null;
+        const deploymentPosition = needsDeploymentPosition ? await deploymentPositionForEvidence(workItem.terminalCompletionEvidence) : null;
         // EI-19397599078921465: the unified lifecycle history — "what actually happened to
         // this item". The filing that produced this believed the history did not exist; it
         // did, spread across audit_log + payload.reopenHistory + payload flags with nothing
@@ -816,8 +982,10 @@ export default defineTool({
         // Cost is ~zero on the hot path: the extract is a PURE regex over two strings the
         // handler already holds, and the DB read happens ONLY when a key-shaped citation
         // is present (~25 of them workspace-wide). Fails open — see resolveCitedFacts.
-        const citedKeys = extractCitedFactKeys([(workItem as { summary?: string | null }).summary, checkpoint]);
-        const citedFacts = citedKeys.keys.length
+        const citedKeys = needsCitedFacts
+          ? extractCitedFactKeys([(workItem as { summary?: string | null }).summary, checkpoint])
+          : { keys: [] as string[], truncated: false };
+        const citedFacts = needsCitedFacts && citedKeys.keys.length
           ? citedFactsWarning(await resolveCitedFacts(citedKeys.keys).catch(() => []), {
               truncated: citedKeys.truncated,
             })
@@ -842,7 +1010,7 @@ export default defineTool({
         // returns null for an item with no plan pointer (nothing to compile) exactly as
         // it does for a collector timeout, so the absence of this field never asserts
         // "nothing was tried" — the same fail-soft contract the claim paths already run.
-        const priorAttempts = args.detail
+        const priorAttempts = args.detail && needsPriorAttempts
           ? await import('../../prior-attempt-context')
               .then((m) =>
                 m.getClaimTimePriorAttemptBrief({
@@ -856,7 +1024,7 @@ export default defineTool({
         // holding refs it read from a brief (often from a CLAIM reply, not from this
         // tool), and making it pay for the full detail render to resolve one omitted ref
         // would put the cost back in front of the thing the ref exists to make cheap.
-        const priorAttemptRefResolution = args.priorAttemptRefs?.length
+        const priorAttemptRefResolution = needsPriorAttemptResolution && args.priorAttemptRefs?.length
           ? await import('../../prior-attempt-context')
               .then((m) =>
                 m.resolvePriorAttemptRefs({
@@ -873,7 +1041,7 @@ export default defineTool({
           typeof completion === 'object' &&
           !Array.isArray(completion) &&
           Object.keys(completion).length > 0;
-        const lifecycle = args.detail
+        const lifecycle = args.detail && needsLifecycle
           ? await getWorkItemLifecycleHistory({
               id: workItem.id,
               workspaceId: activeWorkspaceId(),
@@ -881,9 +1049,11 @@ export default defineTool({
               family: (workItem as { family?: string | null }).family ?? null,
             }).catch(() => null)
           : null;
+        stage.enrichmentMs = Date.now() - enrichmentStartedAt;
         return {
           ok: true as const,
           id,
+          availability: 'available' as const,
           workItem,
           ...(decorated?.holder ? { holder: decorated.holder } : {}),
           checkpoint,
@@ -900,10 +1070,10 @@ export default defineTool({
           // specific failure is missing the SECOND retraction (35 of 159 retraction-
           // bearing checkpoints carry two or more). Omitted entirely when there is
           // none, so an ordinary read stays lean.
-          ...(() => {
+          ...(needsCheckpoint ? (() => {
             const r = scanCheckpointRetractions(checkpoint);
             return r ? { checkpointRetractions: r } : {};
-          })(),
+          })() : {}),
           // WI-6737: present ONLY on a failed read, so `checkpoint: null` stops being ambiguous
           // between "never written" and "could not ask". Absent on the ordinary path.
           ...(checkpointReadFailed ? { checkpointReadFailed: true as const } : {}),
@@ -930,21 +1100,43 @@ export default defineTool({
           ...(priorAttemptRefResolution ? { priorAttemptRefResolution } : {}),
         };
         })();
-        const bounded = await withBoundedTimeout(operation, {
-          fallback: WORK_ITEMS_GET_TIMEOUT,
+        const bounded = await withWorkItemsGetBudget(operation, {
           timeoutMs: remainingBudgetMs,
+          signal: ctx.signal,
           label: `work_items:get:${id}`,
         });
-        if (bounded.degraded && bounded.reason === "error") {
+        if (bounded.reason === "error") {
           throw bounded.error;
         }
-        if (bounded.degraded || bounded.value === WORK_ITEMS_GET_TIMEOUT) {
-          return workItemsGetTimeoutResult(id, remainingBudgetMs);
+        if (bounded.reason === 'cancelled' || bounded.value === WORK_ITEMS_GET_CANCELLED) {
+          return workItemsGetUnavailableResult(id, remainingBudgetMs, 'cancelled');
+        }
+        if (bounded.reason === 'timeout' || bounded.value === WORK_ITEMS_GET_TIMEOUT) {
+          return workItemsGetUnavailableResult(id, remainingBudgetMs, 'timeout');
         }
         return bounded.value;
       },
-      { keyOf: (id) => ({ id }) },
+      { keyOf: (id) => ({ id }), ...(baseOnlyProjection ? { maxConcurrency: Math.max(1, ids.length) } : {}) },
     );
-    return bulkContent(env);
+    const maxMeasured = (values: Array<number | null>): number | null => {
+      const measured = values.filter((value): value is number => value !== null);
+      return measured.length ? Math.max(...measured) : null;
+    };
+    const availability = env.results.map((result) => (result as { availability?: string }).availability);
+    const read = {
+      schemaVersion: 'work-items-get-read-v1' as const,
+      mode: sourceSelection ? 'projected' as const : 'complete' as const,
+      requested: ids.length,
+      available: availability.filter((value) => value === 'available').length,
+      absent: availability.filter((value) => value === 'absent').length,
+      unavailable: availability.filter((value) => value === 'unavailable').length,
+      budgetMs: WORK_ITEMS_GET_BUDGET_MS,
+      elapsedMs: Date.now() - bulkStartedAt,
+      baseReadMaxMs: maxMeasured(stageSamples.map((sample) => sample?.baseReadMs ?? null)),
+      enrichmentMaxMs: maxMeasured(stageSamples.map((sample) => sample?.enrichmentMs ?? null)),
+      outerStageAttribution: 'tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time' as const,
+    };
+    ctx.metadata?.({ workItemsGet: read });
+    return bulkContent({ ...env, read });
   },
 });

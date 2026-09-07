@@ -12,6 +12,7 @@ import {
 import {
   createFrozenCandidateQueue,
   markFrozenCandidateVerificationRed,
+  markFrozenRepairAdmitted,
 } from './frozen-candidate-repair-queue';
 
 type QueryResult = Record<string, unknown>[];
@@ -137,6 +138,47 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
         statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines')),
       ).toBe(false);
     }
+  });
+
+  it('installs the successor without deleting a matching untested repair head', async () => {
+    const current = terminalQualification();
+    const redCandidate = markFrozenCandidateVerificationRed(safeQueue(), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 150,
+    });
+    const queue = markFrozenRepairAdmitted(redCandidate, {
+      atMs: 175,
+      actor: 'agent-1',
+      source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1',
+      toRepairHead: 'repair-1',
+      paths: ['fixed.ts'],
+      unchanged: [],
+      blobs: { 'fixed.ts': 'blob-1' },
+    });
+    const { statements } = transactionHarness({
+      qualificationTransaction: current,
+      repair_queue: queue,
+    });
+
+    const result = await beginStoredQualification(target, successor, {
+      reconcileTerminalRepairQueueForSuccessor: true,
+    });
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-2',
+        previousAttemptId: 'attempt-1',
+      },
+      repairQueueReconciliation: {
+        status: 'preserved',
+        reason: 'matching-untested-repair-head',
+      },
+    });
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).not.toContain("- 'repair_queue'");
+    expect(update.text).not.toContain("metadata->'repair_queue' =");
   });
 
   it('fails closed on an exact-CAS miss without installing the successor', async () => {

@@ -13,6 +13,7 @@ import {
 import {
   createFrozenCandidateQueue,
   markFrozenCandidateVerificationRed,
+  markFrozenRepairAdmitted,
 } from './frozen-candidate-repair-queue';
 
 const begin = () => beginQualificationTransaction(null, {
@@ -276,6 +277,63 @@ describe('logical checkpoint qualification transaction', () => {
           nowMs: 300,
         }),
       ),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+  });
+
+  it('preserves a predecessor-linked repair head that is ready for its first verification', () => {
+    const terminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+    }).transaction;
+    const redCandidate = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1',
+      base: null,
+      nowMs: 200,
+    }), {
+      failingTests: ['broken.test.ts'],
+      nowMs: 300,
+    });
+    const readyToVerify = markFrozenRepairAdmitted(redCandidate, {
+      atMs: 350,
+      actor: 'agent-1',
+      source: { ref: 'staging', sha: 'repair-1' },
+      fromRepairHead: 'candidate-1',
+      toRepairHead: 'repair-1',
+      paths: ['fixed.ts'],
+      unchanged: [],
+      blobs: { 'fixed.ts': 'blob-1' },
+    });
+    const successor = {
+      attemptId: 'attempt-2',
+      requiredAncestorSha: 'repair-1',
+      declaredPaths: [],
+      candidate: 'candidate-2',
+      nowMs: 500,
+    };
+
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, readyToVerify),
+    ).toMatchObject({
+      status: 'preserved',
+      reason: 'matching-untested-repair-head',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, {
+        ...readyToVerify,
+        qualificationAttemptId: null,
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, {
+        ...readyToVerify,
+        convergenceRounds: [
+          ...(readyToVerify.convergenceRounds ?? []),
+          { round: 2, head: 'repair-1', failingCount: 1, atMs: 360 },
+        ],
+      }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
   });
 
