@@ -22,6 +22,7 @@ import {
   type ScorecardInstrumentSnapshot,
 } from '../../scorecards';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { resolveAcceptanceGraderEligibility } from './grader-eligibility';
 
 export const scorecardRatingEntrySchema = z
@@ -409,11 +410,11 @@ export default defineTool({
     // is why the pre-flight could not answer the one question that costs a whole
     // grading pass to get wrong. Pass it through.
     const identity = resolveAgentIdentity(ctx);
-    return {
+    return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => ({
       data: await evaluateScorecard(args, {
         id: identity.ownerId,
         workspaceId: identity.workspaceId,
       }),
-    };
+    }));
   },
 });

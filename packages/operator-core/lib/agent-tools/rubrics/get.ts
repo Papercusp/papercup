@@ -27,6 +27,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { getRubric, readRubricPlanRevision } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 
 /**
@@ -104,48 +105,83 @@ export default defineTool({
       message: 'pass `rubricRef`/`ref`/`slug`/`id` (one) or `rubricRefs` (many)',
     }),
   async handler(args, ctx) {
-    resolveAgentIdentity(ctx);
-    // Keep the canonical field authoritative when a caller supplies both it and
-    // the generic/caller-natural/legacy compatibility aliases (the same rule
-    // used by other aliased reads). `ref` wins over `slug`, and `slug` wins over
-    // legacy `id`, when neither canonical key is set.
-    const ids = mergeIds(args.rubricRef ?? args.ref ?? args.slug ?? args.id, args.rubricRefs);
-    const env = await runBulk(
-      ids,
-      async (rubricRef) => {
-        const lookupRef = normalizeRubricLookupRef(rubricRef);
-        const rubric =
-          args.revision === undefined ? await getRubric(lookupRef) : await getRubric(lookupRef, args.revision);
-        if (rubric) {
-          if (rubric.kind === 'acceptance') {
-            const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
-            return { ok: true as const, rubricRef, rubric, vetting };
+    const identity = resolveAgentIdentity(ctx);
+    // EI-22577140653575153: handlers also run through in-process/nested
+    // projected dispatch paths that do not necessarily traverse the MCP
+    // transport's workspace wrapper. The rubric store resolves its partition
+    // through activeWorkspaceId(), so bind the caller identity here rather than
+    // silently falling through to the process-global workspace.
+    return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
+      // Keep the canonical field authoritative when a caller supplies both it and
+      // the generic/caller-natural/legacy compatibility aliases (the same rule
+      // used by other aliased reads). `ref` wins over `slug`, and `slug` wins over
+      // legacy `id`, when neither canonical key is set.
+      const ids = mergeIds(args.rubricRef ?? args.ref ?? args.slug ?? args.id, args.rubricRefs);
+      const env = await runBulk(
+        ids,
+        async (rubricRef) => {
+          const lookupRef = normalizeRubricLookupRef(rubricRef);
+          const rubric =
+            args.revision === undefined ? await getRubric(lookupRef) : await getRubric(lookupRef, args.revision);
+          if (rubric) {
+            if (rubric.kind === 'acceptance') {
+              const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
+              return { ok: true as const, rubricRef, rubric, vetting };
+            }
+            return { ok: true as const, rubricRef, rubric };
           }
-          return { ok: true as const, rubricRef, rubric };
-        }
 
-        // An explicit revision is an immutable-read contract. Do not reuse the
-        // current-read projection-miss diagnostic here: a current plan-row
-        // revision can exist while the requested historical snapshot is absent
-        // or malformed, and neither case may look like a successful fallback.
-        if (args.revision !== undefined) {
-          const revisionRead = await readRubricPlanRevision(lookupRef);
-          if (!revisionRead.ok) {
-            return {
-              ok: false as const,
-              rubricRef,
-              error: `rubric revision ${args.revision} could not be resolved; the revision read failed`,
-            };
-          }
-          if (revisionRead.revision !== args.revision) {
+          // An explicit revision is an immutable-read contract. Do not reuse the
+          // current-read projection-miss diagnostic here: a current plan-row
+          // revision can exist while the requested historical snapshot is absent
+          // or malformed, and neither case may look like a successful fallback.
+          if (args.revision !== undefined) {
+            const revisionRead = await readRubricPlanRevision(lookupRef);
+            if (!revisionRead.ok) {
+              return {
+                ok: false as const,
+                rubricRef,
+                error: `rubric revision ${args.revision} could not be resolved; the revision read failed`,
+              };
+            }
+            if (revisionRead.revision !== args.revision) {
+              return {
+                ok: false as const,
+                rubricRef,
+                error:
+                  revisionRead.revision == null
+                    ? `rubric revision ${args.revision} not found`
+                    : `rubric revision ${args.revision} not found; current revision is ${revisionRead.revision}`,
+              };
+            }
+
+            const vintage = readServerVintage();
+            const vintageHint = vintage
+              ? ` This server is running build ${vintage.buildId ?? 'an unknown build'}, started ${formatVintageAge(vintage.bootedAgoMs)} ago.`
+              : '';
+            const freshCodeEndpoint = vintage?.freshCodeEndpoint?.trim();
+            const freshCodeHint = freshCodeEndpoint
+              ? ` For the current source tree, retry this call against ${freshCodeEndpoint}.`
+              : '';
             return {
               ok: false as const,
               rubricRef,
               error:
-                revisionRead.revision == null
-                  ? `rubric revision ${args.revision} not found`
-                  : `rubric revision ${args.revision} not found; current revision is ${revisionRead.revision}`,
+                `rubric revision ${args.revision} exists, but its immutable snapshot could not be projected.` +
+                vintageHint +
+                freshCodeHint,
             };
+          }
+
+          // EI-22439598382266201: getRubric intentionally hides acceptance rubric
+          // rows from the default scan path. When its projection misses a ref but
+          // the revision spine can still see a versioned backing plan row, report
+          // the measured stale-reader shape instead of a false ordinary absence.
+          // A failed/unversioned revision read stays terse: it cannot establish
+          // that a backing row exists, so never claim build skew from it.
+          const revisionRead = await readRubricPlanRevision(lookupRef);
+          if (!revisionRead.ok || revisionRead.revision == null) {
+            return { ok: false as const, rubricRef, error: 'rubric not found' };
           }
 
           const vintage = readServerVintage();
@@ -160,42 +196,14 @@ export default defineTool({
             ok: false as const,
             rubricRef,
             error:
-              `rubric revision ${args.revision} exists, but its immutable snapshot could not be projected.` +
+              `rubric not found; a backing rubric plan row exists at revision ${revisionRead.revision}, but this server could not project it.` +
               vintageHint +
               freshCodeHint,
           };
-        }
-
-        // EI-22439598382266201: getRubric intentionally hides acceptance rubric
-        // rows from the default scan path. When its projection misses a ref but
-        // the revision spine can still see a versioned backing plan row, report
-        // the measured stale-reader shape instead of a false ordinary absence.
-        // A failed/unversioned revision read stays terse: it cannot establish
-        // that a backing row exists, so never claim build skew from it.
-        const revisionRead = await readRubricPlanRevision(lookupRef);
-        if (!revisionRead.ok || revisionRead.revision == null) {
-          return { ok: false as const, rubricRef, error: 'rubric not found' };
-        }
-
-        const vintage = readServerVintage();
-        const vintageHint = vintage
-          ? ` This server is running build ${vintage.buildId ?? 'an unknown build'}, started ${formatVintageAge(vintage.bootedAgoMs)} ago.`
-          : '';
-        const freshCodeEndpoint = vintage?.freshCodeEndpoint?.trim();
-        const freshCodeHint = freshCodeEndpoint
-          ? ` For the current source tree, retry this call against ${freshCodeEndpoint}.`
-          : '';
-        return {
-          ok: false as const,
-          rubricRef,
-          error:
-            `rubric not found; a backing rubric plan row exists at revision ${revisionRead.revision}, but this server could not project it.` +
-            vintageHint +
-            freshCodeHint,
-        };
-      },
-      { keyOf: (rubricRef) => ({ rubricRef }) },
-    );
-    return bulkContent(env);
+        },
+        { keyOf: (rubricRef) => ({ rubricRef }) },
+      );
+      return bulkContent(env);
+    });
   },
 });

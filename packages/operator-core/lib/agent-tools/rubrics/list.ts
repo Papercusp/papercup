@@ -15,6 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { listRubrics } from '../../rubrics';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 
 export default defineTool({
   name: 'rubrics:list',
@@ -64,37 +65,39 @@ export default defineTool({
       }
     }),
   async handler(args, ctx) {
-    resolveAgentIdentity(ctx);
-    const kind = args.kind ?? (args.subjectPlan ? 'acceptance' : undefined);
-    const rubrics = await listRubrics({
-      status: args.status,
-      characteristic: args.characteristic,
-      limit: args.limit,
-      subjectPlan: args.subjectPlan,
-      ...(kind ? { kind } : {}),
+    const identity = resolveAgentIdentity(ctx);
+    return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
+      const kind = args.kind ?? (args.subjectPlan ? 'acceptance' : undefined);
+      const rubrics = await listRubrics({
+        status: args.status,
+        characteristic: args.characteristic,
+        limit: args.limit,
+        subjectPlan: args.subjectPlan,
+        ...(kind ? { kind } : {}),
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: true,
+              count: rubrics.length,
+              rubrics: rubrics.map((r) => ({
+                rubricId: r.rubricId,
+                kind: r.kind,
+                ...(r.subjectPlan ? { subjectPlan: r.subjectPlan } : {}),
+                characteristic: r.characteristic,
+                title: r.title,
+                status: r.status,
+                criteriaCount: r.criteria.length,
+                ratingScale: r.ratingScale,
+                methodRef: r.methodRef,
+                updatedAt: r.updatedAt,
+              })),
+            }),
+          },
+        ],
+      };
     });
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            count: rubrics.length,
-            rubrics: rubrics.map((r) => ({
-              rubricId: r.rubricId,
-              kind: r.kind,
-              ...(r.subjectPlan ? { subjectPlan: r.subjectPlan } : {}),
-              characteristic: r.characteristic,
-              title: r.title,
-              status: r.status,
-              criteriaCount: r.criteria.length,
-              ratingScale: r.ratingScale,
-              methodRef: r.methodRef,
-              updatedAt: r.updatedAt,
-            })),
-          }),
-        },
-      ],
-    };
   },
 });
