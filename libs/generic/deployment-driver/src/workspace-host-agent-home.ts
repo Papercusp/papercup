@@ -687,8 +687,34 @@ export class WorkspaceHostAgentHomeConsumer {
     const installedFiles: string[] = [];
     try {
       const paths = workspaceHostAgentHomePaths(this.agentHome);
-      for (const label of Object.keys(paths) as WorkspaceHostAgentHomeFile[]) {
-        const existing = await this.filesystem.readFileIfPresent(paths[label]);
+      const nativeFiles = await Promise.all(
+        (Object.keys(paths) as WorkspaceHostAgentHomeFile[]).map(
+          async (label) => ({
+            label,
+            existing: await this.filesystem.readFileIfPresent(paths[label]),
+          }),
+        ),
+      );
+      // A native CLI may have refreshed its credentials since this generation was installed.
+      // Rebinding the immutable seed must not discard those bytes. Check every credential
+      // before any write, and require a newer generation instead of accepting changed material.
+      if (current?.generation === generation) {
+        for (const { label, existing } of nativeFiles) {
+          const expected = bundle.files[label];
+          if (
+            existing !== null &&
+            expected !== null &&
+            !compareBytes(existing, expected)
+          ) {
+            throw new WorkspaceHostAgentHomeStateError(
+              `agent-home credential '${label}' changed after generation ${generation} was installed; ` +
+                "a newer verified credential generation is required",
+              { family, generation },
+            );
+          }
+        }
+      }
+      for (const { label, existing } of nativeFiles) {
         const bytes = bundle.files[label];
         if (bytes === null) {
           if (existing !== null) {

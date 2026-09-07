@@ -421,6 +421,58 @@ describe("workspace-host sealed agent-home bundle", () => {
     ).rejects.toThrow(/absent, stale/);
   });
 
+  it("refuses a same-generation rebind before overwriting changed native credentials", async () => {
+    const family = "agent-encrypted-reference";
+    const seed = encodeWorkspaceHostAgentHomeBundle(files);
+    const assertPreserved = async (
+      rebind: (filesystem: MemoryAgentHomeFilesystem) => Promise<unknown>,
+    ) => {
+      const filesystem = new MemoryAgentHomeFilesystem();
+      await consumer(filesystem).install(family, 1, seed);
+      await consumer(filesystem).verify(family, 1, seed);
+
+      const paths = workspaceHostAgentHomePaths(HOME);
+      const statePath = workspaceHostAgentHomeStatePath(ROOT);
+      const activeState = filesystem.files.get(statePath);
+      const refreshedCodex = rotated.codex;
+      filesystem.files.set(paths.codex, refreshedCodex);
+      // An earlier missing file must not be restored before a later mismatch refuses the bind.
+      filesystem.files.delete(paths.claude);
+      const writesBefore = [...filesystem.writes];
+
+      await expect(rebind(filesystem)).rejects.toThrow(
+        /newer verified credential generation is required/,
+      );
+      expect(filesystem.files.get(paths.codex)).toEqual(refreshedCodex);
+      expect(filesystem.files.has(paths.claude)).toBe(false);
+      expect(filesystem.files.get(paths.omp)).toEqual(files.omp);
+      expect(filesystem.files.get(statePath)).toEqual(activeState);
+      expect(filesystem.writes).toEqual(writesBefore);
+
+      const next = encodeWorkspaceHostAgentHomeBundle({
+        ...files,
+        codex: refreshedCodex,
+      });
+      await consumer(filesystem).install(family, 2, next);
+      await expect(
+        consumer(filesystem).verify(family, 2, next),
+      ).resolves.toMatchObject({ generation: 2, present: true, home: HOME });
+      expect(filesystem.files.get(paths.codex)).toEqual(refreshedCodex);
+      expect(filesystem.files.get(paths.claude)).toEqual(files.claude);
+    };
+
+    await assertPreserved((filesystem) =>
+      consumer(filesystem).install(family, 1, seed),
+    );
+    // Permanent negative control: ignoring the active generation recreates blind seed install.
+    await expect(
+      assertPreserved((filesystem) => {
+        filesystem.files.delete(workspaceHostAgentHomeStatePath(ROOT));
+        return consumer(filesystem).install(family, 1, seed);
+      }),
+    ).rejects.toThrow(/promise resolved/);
+  });
+
   it("rotates monotonically and makes an old revoke harmless to the active generation", async () => {
     const filesystem = new MemoryAgentHomeFilesystem();
     const first = consumer(filesystem);
