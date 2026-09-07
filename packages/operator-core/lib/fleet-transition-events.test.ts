@@ -36,6 +36,7 @@ describe('fleetTransitionKey', () => {
   it('builds the fleet-scoped key shape the catalog advertises', () => {
     expect(fleetTransitionKey('push-not-poll', 'member-dead')).toBe('fleet:member-dead:push-not-poll');
     expect(fleetTransitionKey('push-not-poll', 'item-completed')).toBe('fleet:item-completed:push-not-poll');
+    expect(fleetTransitionKey('push-not-poll', 'repeated-recovery')).toBe('fleet:repeated-recovery:push-not-poll');
   });
 
   it('puts the SLUG LAST so the catalog prefix stays precise — a slug-first template would truncate to `fleet:` and match every fleet key', () => {
@@ -155,6 +156,35 @@ describe('detectFleetTransitions', () => {
     ]);
     expect(edges.map((e) => `${e.fleetSlug}/${e.agentId}`)).toEqual(['a-fleet/su-x', 'a-fleet/su-y', 'b-fleet/su-z']);
   });
+
+  it('fires repeated-recovery only on the measured 1 → 2 edge', () => {
+    const one = indexObservations([member({ consecutiveRecoveryOnlyCycles: 1 })]);
+    expect(detectFleetTransitions(one, [member({ consecutiveRecoveryOnlyCycles: 2 })])).toEqual([
+      {
+        kind: 'repeated-recovery',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        from: '1',
+        to: '2',
+        consecutiveRecoveryOnlyCycles: 2,
+        action: 'diagnose',
+        takeoverAuthorized: false,
+      },
+    ]);
+    expect(detectFleetTransitions(new Map(), [member({ consecutiveRecoveryOnlyCycles: 2 })])).toEqual([]);
+    expect(
+      detectFleetTransitions(
+        indexObservations([member({ consecutiveRecoveryOnlyCycles: null })]),
+        [member({ consecutiveRecoveryOnlyCycles: 2 })],
+      ),
+    ).toEqual([]);
+    expect(
+      detectFleetTransitions(
+        indexObservations([member({ consecutiveRecoveryOnlyCycles: 2 })]),
+        [member({ consecutiveRecoveryOnlyCycles: 3 })],
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe('isActionableFleetObservation', () => {
@@ -252,10 +282,11 @@ describe('emitFleetTransitionEdge', () => {
   it('still emits a context-critical wake while the current writer remains critical', async () => {
     const emit = vi.fn().mockResolvedValue(undefined);
     const currentContextPressure = vi.fn(async () => 'critical' as const);
+    const currentContextEpoch = vi.fn(async () => null);
 
     emitFleetTransitionEdge(
       { kind: 'context-critical', fleetSlug: 'f', agentId: 'su-a', to: 'critical', from: 'high' },
-      { emit, currentContextPressure },
+      { emit, currentContextPressure, currentContextEpoch },
     );
     await settle();
 
@@ -278,6 +309,42 @@ describe('emitFleetTransitionEdge', () => {
     await settle();
 
     expect(currentMemberObservation).toHaveBeenCalledWith('f', 'su-a');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('emits repeated-recovery as diagnostic-only and suppresses it if the member is now progressing', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const edge: FleetTransitionEdge = {
+      kind: 'repeated-recovery',
+      fleetSlug: 'f',
+      agentId: 'su-a',
+      from: '1',
+      to: '2',
+      consecutiveRecoveryOnlyCycles: 2,
+      action: 'diagnose',
+      takeoverAuthorized: false,
+    };
+    emitFleetTransitionEdge(edge, { emit });
+    await settle();
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'fleet:repeated-recovery:f',
+        payload: expect.objectContaining({ action: 'diagnose', takeoverAuthorized: false }),
+      }),
+    );
+
+    emit.mockClear();
+    emitFleetTransitionEdge(edge, {
+      emit,
+      currentMemberObservation: async () => ({
+        sessionState: 'live',
+        wakeable: true,
+        claimCount: 1,
+        isRegisteredLeader: false,
+        hasProgressingClaim: true,
+      }),
+    });
+    await settle();
     expect(emit).not.toHaveBeenCalled();
   });
 });

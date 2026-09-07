@@ -71,6 +71,7 @@ export type FleetTransitionKind =
   | 'member-dead'
   | 'context-critical'
   | 'member-stalled'
+  | 'repeated-recovery'
   | 'admission-blocked'
   | 'claim-released'
   | 'item-completed';
@@ -116,6 +117,13 @@ export interface FleetMemberObservation {
   claimCount?: number;
   /** Whether this member currently holds a claim whose progress is stalled. */
   stalled?: boolean | null;
+  /** Measured consecutive checkpoint-bounded recovery-only cycles. Null means
+   * dual-ledger coverage was incomplete or intervention is suppressed. */
+  consecutiveRecoveryOnlyCycles?: number | null;
+  /** Durable fleet registry role, used to suppress intervention on the leader. */
+  isRegisteredLeader?: boolean;
+  /** A current claim has canonical activity='progressing'. */
+  hasProgressingClaim?: boolean;
 }
 
 /**
@@ -131,9 +139,7 @@ export function isActionableFleetObservation(
   return !(observation.sessionState === 'recorded' && observation.wakeable === false && observation.claimCount === 0);
 }
 
-/** One detected crossing, ready to emit. */
-export interface FleetTransitionEdge {
-  kind: Extract<FleetTransitionKind, 'member-dead' | 'context-critical' | 'member-stalled'>;
+interface FleetTransitionEdgeBase {
   fleetSlug: string;
   agentId: string;
   /** The state the member crossed INTO (for the summary line). */
@@ -141,6 +147,18 @@ export interface FleetTransitionEdge {
   /** The state it crossed FROM, for the summary line. */
   from: string | null;
 }
+
+/** One detected crossing, ready to emit. */
+export type FleetTransitionEdge =
+  | (FleetTransitionEdgeBase & {
+      kind: Extract<FleetTransitionKind, 'member-dead' | 'context-critical' | 'member-stalled'>;
+    })
+  | (FleetTransitionEdgeBase & {
+      kind: 'repeated-recovery';
+      consecutiveRecoveryOnlyCycles: number;
+      action: 'diagnose';
+      takeoverAuthorized: false;
+    });
 
 /**
  * How long a member must be CONTINUOUSLY observed non-dead before `member-dead`
@@ -343,6 +361,22 @@ export function detectFleetTransitions(
         from: before.stalled ? 'stalled' : 'clear',
       });
     }
+
+    // D-007: only the measured 1→2 edge is actionable. Unknown/first sighting
+    // is not evidence, and a persistent 2→3 streak must not wake the leader
+    // again. Suppressed leader/progressing members arrive as null.
+    if (before.consecutiveRecoveryOnlyCycles === 1 && o.consecutiveRecoveryOnlyCycles === 2) {
+      edges.push({
+        kind: 'repeated-recovery',
+        fleetSlug: o.fleetSlug,
+        agentId: o.agentId,
+        from: '1',
+        to: '2',
+        consecutiveRecoveryOnlyCycles: 2,
+        action: 'diagnose',
+        takeoverAuthorized: false,
+      });
+    }
   }
   // Bound the latch. Entries are dropped by AGE, never by absence from this
   // sweep: `isActionableFleetObservation` legitimately filters a member out for a
@@ -437,7 +471,12 @@ export interface FleetTransitionEventsDeps {
   currentMemberObservation?: (
     fleetSlug: string,
     agentId: string,
-  ) => Promise<Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'> | null>;
+  ) => Promise<
+    Pick<
+      FleetMemberObservation,
+      'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim'
+    > | null
+  >;
   /** Resolve an agent's current fleet. Default = the canonical append-only
    *  membership fact; injected as a stub in tests. */
   fleetOfAgent?: (workspaceId: string, ownerId: string) => Promise<string | null>;
@@ -508,14 +547,25 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
       ? `fleet ${edge.fleetSlug}: member ${edge.agentId} is DEAD (${edge.from ?? 'unknown'} → ${edge.to})`
       : edge.kind === 'context-critical'
         ? `fleet ${edge.fleetSlug}: member ${edge.agentId} context pressure is CRITICAL (${edge.from ?? 'unknown'} → ${edge.to})`
-        : `fleet ${edge.fleetSlug}: member ${edge.agentId} claim is STALLED (${edge.from ?? 'unknown'} → ${edge.to})`;
+        : edge.kind === 'repeated-recovery'
+          ? `fleet ${edge.fleetSlug}: member ${edge.agentId} completed ${edge.consecutiveRecoveryOnlyCycles} consecutive recovery-only cycles — diagnose the blocker; takeover is NOT authorized`
+          : `fleet ${edge.fleetSlug}: member ${edge.agentId} claim is STALLED (${edge.from ?? 'unknown'} → ${edge.to})`;
   void Promise.resolve()
     .then(async () => {
       // A queued edge can outlive a graceful stand-down. Revalidate the member
       // control state before delivery so recorded/non-wakeable claimless residue
       // cannot wake a leader after it has become non-actionable.
-      if ((edge.kind === 'member-dead' || edge.kind === 'context-critical') && deps.currentMemberObservation) {
-        let currentMember: Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'> | null | undefined;
+      if (
+        (edge.kind === 'member-dead' || edge.kind === 'context-critical' || edge.kind === 'repeated-recovery') &&
+        deps.currentMemberObservation
+      ) {
+        let currentMember:
+          | Pick<
+              FleetMemberObservation,
+              'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim'
+            >
+          | null
+          | undefined;
         try {
           currentMember = await deps.currentMemberObservation(edge.fleetSlug, edge.agentId);
         } catch (e: unknown) {
@@ -534,6 +584,13 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           edge.kind === 'context-critical' &&
           currentMember !== undefined &&
           !isActionableFleetObservation(currentMember)
+        ) {
+          return;
+        }
+        if (
+          edge.kind === 'repeated-recovery' &&
+          currentMember !== undefined &&
+          (currentMember.isRegisteredLeader === true || currentMember.hasProgressingClaim === true)
         ) {
           return;
         }
@@ -575,6 +632,13 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           transition: edge.kind,
           from: edge.from,
           to: edge.to,
+          ...(edge.kind === 'repeated-recovery'
+            ? {
+                consecutiveRecoveryOnlyCycles: edge.consecutiveRecoveryOnlyCycles,
+                action: edge.action,
+                takeoverAuthorized: edge.takeoverAuthorized,
+              }
+            : {}),
           ...(contextEpoch === null ? {} : { contextEpoch }),
         },
         source: 'fleet',

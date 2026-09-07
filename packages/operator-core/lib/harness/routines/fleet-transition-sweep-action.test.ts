@@ -15,6 +15,7 @@ const productionMocks = vi.hoisted(() => ({
   reconcileWakeability: vi.fn(),
   fetchContextPressure: vi.fn(),
   readFleetAdmissionBlocks: vi.fn(),
+  readFleetRepeatedRecoveryStates: vi.fn(),
 }));
 
 vi.mock('../../fleet/assignments', async (importOriginal) => ({
@@ -32,6 +33,10 @@ vi.mock('../../agent-tools/coordination/context-pressure', async (importOriginal
 vi.mock('../../agent-tools/coordination/fleet-scope-admission-blocks', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-tools/coordination/fleet-scope-admission-blocks')>()),
   readFleetAdmissionBlocks: productionMocks.readFleetAdmissionBlocks,
+}));
+vi.mock('../../fleet-repeated-recovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet-repeated-recovery')>()),
+  readFleetRepeatedRecoveryStates: productionMocks.readFleetRepeatedRecoveryStates,
 }));
 import {
   __resetFleetTransitionSnapshotForTests,
@@ -101,6 +106,8 @@ beforeEach(() => {
   productionMocks.reconcileWakeability.mockReset();
   productionMocks.fetchContextPressure.mockReset();
   productionMocks.readFleetAdmissionBlocks.mockReset();
+  productionMocks.readFleetRepeatedRecoveryStates.mockReset();
+  productionMocks.readFleetRepeatedRecoveryStates.mockResolvedValue(new Map());
 });
 
 describe('runFleetTransitionSweep', () => {
@@ -136,6 +143,15 @@ describe('runFleetTransitionSweep', () => {
       [member({ contextPressure: 'critical' })],
     ]);
     expect(rounds).toEqual([[], [], ['fleet:context-critical:push-not-poll']]);
+  });
+
+  it('fires repeated-recovery once on 1 → 2 and not again on 2 → 3', async () => {
+    const rounds = await sweepRounds([
+      [member({ consecutiveRecoveryOnlyCycles: 1 })],
+      [member({ consecutiveRecoveryOnlyCycles: 2 })],
+      [member({ consecutiveRecoveryOnlyCycles: 3 })],
+    ]);
+    expect(rounds).toEqual([[], ['fleet:repeated-recovery:push-not-poll'], []]);
   });
 
   it('returns the number of edges it fired', async () => {

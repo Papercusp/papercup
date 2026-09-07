@@ -39,6 +39,7 @@ import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { readFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
+import { readFleetRepeatedRecoveryStates } from '../../fleet-repeated-recovery';
 import {
   detectFleetAdmissionTransitions,
   detectFleetTransitions,
@@ -115,8 +116,16 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
   // sweep with UNKNOWN fields, never a thrown sweep. An unknown never fires (the
   // detector only fires on a crossing INTO a known-bad state), so a degraded read
   // is silent rather than a false alarm.
-  const withLiveness = await reconcileWakeability(fleeted).catch(() => fleeted);
-  const pressure = await fetchContextPressure(fleeted.map((a) => a.agentId)).catch(() => new Map<string, string>());
+  const recoveryMembers = fleeted.map((agent) => ({
+    ownerId: agent.agentId,
+    isRegisteredLeader: agent.fleetRole === 'leader',
+    hasProgressingClaim: agent.claims.some((claim) => claim.activity === 'progressing'),
+  }));
+  const [withLiveness, pressure, repeatedRecovery] = await Promise.all([
+    reconcileWakeability(fleeted).catch(() => fleeted),
+    fetchContextPressure(fleeted.map((a) => a.agentId)).catch(() => new Map<string, string>()),
+    readFleetRepeatedRecoveryStates(recoveryMembers).catch(() => new Map()),
+  ]);
 
   return withLiveness
     .filter((a): a is typeof a & { fleetSlug: string } => Boolean(a.fleetSlug))
@@ -128,6 +137,12 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
       wakeable: a.wakeable ?? null,
       claimCount: a.claims.length,
       stalled: a.stalled === true,
+      consecutiveRecoveryOnlyCycles:
+        repeatedRecovery.get(a.agentId)?.status === 'measured'
+          ? repeatedRecovery.get(a.agentId)?.consecutiveRecoveryOnlyCycles ?? null
+          : null,
+      isRegisteredLeader: a.fleetRole === 'leader',
+      hasProgressingClaim: a.claims.some((claim) => claim.activity === 'progressing'),
     }));
 }
 
@@ -135,7 +150,12 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
 async function gatherCurrentFleetMemberObservation(
   fleetSlug: string,
   agentId: string,
-): Promise<Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'> | null> {
+): Promise<
+  Pick<
+    FleetMemberObservation,
+    'sessionState' | 'wakeable' | 'claimCount' | 'isRegisteredLeader' | 'hasProgressingClaim'
+  > | null
+> {
   const agents = groupByAgent(await listFleetAssignments({ fleet: fleetSlug, agent: agentId }));
   const member = agents.find((agent) => agent.fleetSlug === fleetSlug);
   if (!member) return null;
@@ -144,6 +164,8 @@ async function gatherCurrentFleetMemberObservation(
     sessionState: reconciled?.sessionState ?? null,
     wakeable: reconciled?.wakeable ?? null,
     claimCount: reconciled?.claims.length ?? 0,
+    isRegisteredLeader: reconciled?.fleetRole === 'leader',
+    hasProgressingClaim: reconciled?.claims.some((claim) => claim.activity === 'progressing') ?? false,
   };
 }
 
@@ -240,7 +262,8 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   let emitDeps = deps;
   const memberDeadEdges = edges.filter((edge) => edge.kind === 'member-dead');
   const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
-  if ((memberDeadEdges.length > 0 || contextEdges.length > 0) && !deps.gather) {
+  const repeatedRecoveryEdges = edges.filter((edge) => edge.kind === 'repeated-recovery');
+  if ((memberDeadEdges.length > 0 || contextEdges.length > 0 || repeatedRecoveryEdges.length > 0) && !deps.gather) {
     // The production sweep gathers a cached observation first, then supplies a
     // single shared current-state read to all detached edge emits. Keeping the
     // read lazy makes the revalidation happen after the sweep has yielded, which
