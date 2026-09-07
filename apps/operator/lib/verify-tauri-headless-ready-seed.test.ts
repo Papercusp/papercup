@@ -113,7 +113,18 @@ describe('EI-20191599988350937 — opt-in ready-app seed for isolated verificati
     expect(readySeedBlock).not.toContain('$VERIFY_TAURI_AGENT_TOOLS_BIN');
   });
 
+  it('provisions the isolated operator principal before marking the app ready', () => {
+    const provisionAt = readySeedBlock.indexOf("new URL('/api/agent-mcp/provision', url)");
+    const wizardAt = readySeedBlock.indexOf("body: JSON.stringify({ finished_at: stamp })");
+    expect(provisionAt).toBeGreaterThan(-1);
+    expect(wizardAt).toBeGreaterThan(provisionAt);
+    expect(readySeedBlock).toContain("entry?.name === 'operator'");
+    expect(readySeedBlock).toContain('!provision.ok || !operatorPrincipal');
+  });
+
   it('retains PATCH/GET status and body evidence instead of replacing a failure with an empty result', () => {
+    expect(readySeedBlock).toContain('provisionStatus: provision.status');
+    expect(readySeedBlock).toContain('provisionBody: clip(provisionBody)');
     expect(readySeedBlock).toContain('patchStatus: patch.status');
     expect(readySeedBlock).toContain('getStatus: read.status');
     expect(readySeedBlock).toContain('patchBody: clip(patchBody)');

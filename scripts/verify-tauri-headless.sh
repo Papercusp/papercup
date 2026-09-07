@@ -3134,6 +3134,25 @@ const timeoutMs = 30_000;
 const clip = (value) => String(value ?? '').slice(0, 2_000);
 
 try {
+  // The isolated host deliberately disables background workers, which also
+  // skips host-bootstrap's system-principal provisioner.  A post-onboarding
+  // Papercup surface without system:operator is deceptively healthy but the
+  // converse brain correctly mounts zero tools.  Reuse the canonical
+  // loopback provision route so the isolated ready seed includes its agent
+  // capability plane without duplicating principal SQL here.
+  const provisionUrl = new URL('/api/agent-mcp/provision', url);
+  const provision = await fetch(provisionUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const provisionBody = await provision.text();
+  let provisioned = null;
+  try { provisioned = JSON.parse(provisionBody); } catch {}
+  const operatorPrincipal = Array.isArray(provisioned?.provisioned)
+    && provisioned.provisioned.some((entry) => entry?.name === 'operator');
+
   const stamp = new Date().toISOString();
   const patch = await fetch(url, {
     method: 'PATCH',
@@ -3153,13 +3172,18 @@ try {
     ? after.finished_at
     : null;
   process.stdout.write(JSON.stringify({
+    provisionStatus: provision.status,
+    provisionBody: clip(provisionBody),
+    operatorPrincipal,
     patchStatus: patch.status,
     getStatus: read.status,
     patchBody: clip(patchBody),
     getBody: clip(getBody),
     finishedAt,
   }));
-  if (!patch.ok || !read.ok || !finishedAt) process.exitCode = 1;
+  if (!provision.ok || !operatorPrincipal || !patch.ok || !read.ok || !finishedAt) {
+    process.exitCode = 1;
+  }
 } catch (error) {
   process.stdout.write(JSON.stringify({
     error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
