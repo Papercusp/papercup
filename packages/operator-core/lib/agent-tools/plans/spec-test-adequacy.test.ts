@@ -6,6 +6,7 @@ import {
   ADEQUACY_CRITERIA,
   classifySpecEvidenceLineage,
   evaluateSpecTestAdequacy,
+  latestLogicalEvidence,
   requiredProofFloor,
 } from './spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
@@ -96,6 +97,39 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 }
 
 describe('spec-test-adequacy per-clause evaluator', () => {
+  it('grades the newest version of one logical evidence ref while retaining immutable history', () => {
+    const evidenceRef = 'test/reconnect.integration.ts#recorded';
+    const older = evidence({
+      id: 41,
+      evidenceRef,
+      observedAt: '2026-08-20T00:00:00.000Z',
+      coverageEvidenceRef: null,
+      testRunId: null,
+      details: { adequacy: { executed: false, skipped: true, coverageRungs: { l3: false } } },
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'not-supplied',
+        unknownReasons: ['source-current-fingerprint-not-supplied'],
+      },
+    });
+    const newer = evidence({
+      id: 42,
+      evidenceRef,
+      observedAt: '2026-08-20T00:01:00.000Z',
+    });
+
+    expect(latestLogicalEvidence([older, newer])).toEqual([newer]);
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [older, newer],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.verdict).toBe('pass');
+    expect(result.evidenceRefs).toEqual([evidenceRef]);
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
+  });
+
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),

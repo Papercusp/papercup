@@ -42,6 +42,7 @@ export interface AdequacyRatingEntry {
 }
 
 export interface SpecEvidenceForAdequacy {
+  id?: number;
   workItemId: string;
   planSlug: string;
   specId: string;
@@ -59,10 +60,43 @@ export interface SpecEvidenceForAdequacy {
   coverageEvidenceRef: number | null;
   testRunId: number | null;
   details: Record<string, unknown>;
+  observedAt?: string;
+  createdAt?: string;
   currentness: EvidenceCurrentness;
   /** True when evidenceRef resolves to a provisional scorecard working note. */
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
+}
+
+/**
+ * Bindings are immutable history, but adequacy grades the active VERSION of a
+ * logical evidence reference. A corrected re-bind must not remain poisoned by
+ * an older incomplete row with the same work item/spec/kind/ref.
+ */
+export function latestLogicalEvidence(rows: readonly SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
+  const selected = new Map<string, { row: SpecEvidenceForAdequacy; index: number }>();
+  const timestamp = (row: SpecEvidenceForAdequacy): number => {
+    const value = Date.parse(row.observedAt ?? row.createdAt ?? '');
+    return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+  };
+  rows.forEach((row, index) => {
+    const key = [row.workItemId, row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef].join(
+      '\0',
+    );
+    const prior = selected.get(key);
+    if (!prior) {
+      selected.set(key, { row, index });
+      return;
+    }
+    const rowTs = timestamp(row);
+    const priorTs = timestamp(prior.row);
+    const rowId = row.id ?? Number.NEGATIVE_INFINITY;
+    const priorId = prior.row.id ?? Number.NEGATIVE_INFINITY;
+    if (rowTs > priorTs || (rowTs === priorTs && rowId > priorId)) {
+      selected.set(key, { row, index });
+    }
+  });
+  return [...selected.values()].sort((a, b) => a.index - b.index).map(({ row }) => row);
 }
 
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
@@ -555,12 +589,14 @@ export function evaluateSpecTestAdequacy(input: {
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
-  const exactEvidence = input.evidence.filter(
-    (row) =>
-      row.planSlug === clause.planSlug &&
-      row.specId === clause.specId &&
-      row.specRevision === clause.revision &&
-      row.specFingerprint === clause.contentHash,
+  const exactEvidence = latestLogicalEvidence(
+    input.evidence.filter(
+      (row) =>
+        row.planSlug === clause.planSlug &&
+        row.specId === clause.specId &&
+        row.specRevision === clause.revision &&
+        row.specFingerprint === clause.contentHash,
+    ),
   );
   const currentEvidence = exactEvidence.filter(
     (row) =>
