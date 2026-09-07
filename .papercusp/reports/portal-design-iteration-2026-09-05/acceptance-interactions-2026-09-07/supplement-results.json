@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-07T03:55:29.864Z",
+  "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+  "cases": [
+    {
+      "id": "plan-fallback-light",
+      "plane": "browser-fixture",
+      "theme": "light",
+      "fixture": "Production :3081 document with fullscreenEnabled=false injected before mount, simulating an embedded host without native fullscreen. This is browser-fixture evidence, not an unmodified live host claim.",
+      "before": {
+        "x": 90,
+        "y": 32,
+        "width": 1100,
+        "height": 736,
+        "clientWidth": 1100,
+        "scrollWidth": 1100,
+        "contained": true,
+        "documentOverflow": false
+      },
+      "full": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "native": false,
+        "capturePath": "supplement-plan-fallback-light.png",
+        "captureSha256": "5383f63ac67936bbb0d89ed087b7cea714e4a0bb39ea5d79d1009c185145dfe9",
+        "capturedAt": "2026-09-07T03:55:32.713Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "supplement-plan-fallback-restored-light.png",
+        "captureSha256": "5701418193cec978260cdffabb1660cfbe667597a6ee986e3afd689fd3075933",
+        "capturedAt": "2026-09-07T03:55:32.796Z"
+      },
+      "result": "pass"
+    },
+    {
+      "id": "inbox-reading-light",
+      "plane": "live",
+      "theme": "light",
+      "viewport": {
+        "width": 900,
+        "height": 800
+      },
+      "target": "inbox-row-owner-wall:loop-carry-note:su-8b9d39ca-4bd8-44bd-ba29-f25593b1c246",
+      "observed": {
+        "bodyWidth": 416.28125,
+        "clientWidth": 416,
+        "scrollWidth": 416,
+        "paragraphs": [
+          {
+            "fontWeight": "400",
+            "fontSize": "15px",
+            "lineHeight": "25.5px",
+            "width": 416,
+            "scrollWidth": 416
+          }
+        ],
+        "metadataAbove": true,
+        "documentOverflow": false,
+        "excerpt": "WI-10000288 still owns global checkpoint admission with live remediation.\n\nRecheck\nOn work-item:done:WI-10000288 or await 160690 timeout/progress-lease wake, read gate.greenCheckpoint.ownerBrief once; proceed only if no longer held/remediating.",
+        "headClass": "op-inbox__detail-head"
+      },
+      "capturePath": "supplement-inbox-reading-light.png",
+      "captureSha256": "408ef7884af36f06746dac38d6b9878d876d5a21afbd96a6e0296af6d3a708e2",
+      "capturedAt": "2026-09-07T03:55:34.519Z",
+      "result": "pass"
+    },
+    {
+      "id": "plan-fallback-dark",
+      "plane": "browser-fixture",
+      "theme": "dark",
+      "fixture": "Production :3081 document with fullscreenEnabled=false injected before mount, simulating an embedded host without native fullscreen. This is browser-fixture evidence, not an unmodified live host claim.",
+      "before": {
+        "x": 90,
+        "y": 32,
+        "width": 1100,
+        "height": 736,
+        "clientWidth": 1100,
+        "scrollWidth": 1100,
+        "contained": true,
+        "documentOverflow": false
+      },
+      "full": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "native": false,
+        "capturePath": "supplement-plan-fallback-dark.png",
+        "captureSha256": "36da8c64066c7fae9697437b7d92a2820eb00c0db7cfbf2b8385e6ce17034567",
+        "capturedAt": "2026-09-07T03:55:36.397Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "supplement-plan-fallback-restored-dark.png",
+        "captureSha256": "b8713bd7fb7fbaf08f9e3c28a7111617c67f76a6cedcf53b8019fd5fb0aea42b",
+        "capturedAt": "2026-09-07T03:55:36.516Z"
+      },
+      "result": "pass"
+    },
+    {
+      "id": "inbox-reading-dark",
+      "plane": "live",
+      "theme": "dark",
+      "viewport": {
+        "width": 900,
+        "height": 800
+      },
+      "target": "inbox-row-owner-wall:loop-carry-note:su-8b9d39ca-4bd8-44bd-ba29-f25593b1c246",
+      "observed": {
+        "bodyWidth": 416.28125,
+        "clientWidth": 416,
+        "scrollWidth": 416,
+        "paragraphs": [
+          {
+            "fontWeight": "400",
+            "fontSize": "15px",
+            "lineHeight": "25.5px",
+            "width": 416,
+            "scrollWidth": 416
+          }
+        ],
+        "metadataAbove": true,
+        "documentOverflow": false,
+        "excerpt": "WI-10000288 still owns global checkpoint admission with live remediation.\n\nRecheck\nOn work-item:done:WI-10000288 or await 160690 timeout/progress-lease wake, read gate.greenCheckpoint.ownerBrief once; proceed only if no longer held/remediating.",
+        "headClass": "op-inbox__detail-head"
+      },
+      "capturePath": "supplement-inbox-reading-dark.png",
+      "captureSha256": "6383501b3b526527219da9ace9852d136c58f1696664f292a57cc23e49f97f88",
+      "capturedAt": "2026-09-07T03:55:37.912Z",
+      "result": "pass"
+    }
+  ],
+  "initial": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "final": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "preferencesRestored": true,
+  "releaseAfter": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+  "releaseStable": true,
+  "completedAt": "2026-09-07T03:55:39.034Z"
+}

@@ -1,0 +1,1331 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-07T03:47:11.652Z",
+  "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+  "cases": [
+    {
+      "id": "hud-panels-light-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "light",
+      "before": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 111,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Show agent activity",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--activity pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1098,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1134,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        }
+      ],
+      "transitions": [
+        {
+          "action": "session-chat-orders-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Hide agent orders",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-orders__tag pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 111,
+              "y": 48,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Show agent activity",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--activity pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1098,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1134,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            }
+          ],
+          "capturePath": "hud-session-chat-orders-toggle-light-1280x800.png",
+          "captureSha256": "73f44784cab029bb7e6278cef32183394b8830c02c24e32563f81cc31f022951",
+          "capturedAt": "2026-09-07T03:47:14.422Z"
+        },
+        {
+          "action": "session-chat-dossier-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 111,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Hide agent activity",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 814,
+              "y": 48,
+              "width": 319,
+              "height": 36
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1134,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            }
+          ],
+          "capturePath": "hud-session-chat-dossier-toggle-light-1280x800.png",
+          "captureSha256": "393bc811ae39dd030481645e0abf97a790230eecc2e2d33d58647feac71228b8",
+          "capturedAt": "2026-09-07T03:47:15.226Z"
+        },
+        {
+          "action": "session-chat-fleet-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 111,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Show agent activity",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--activity pc-panel-dock",
+              "focused": false,
+              "reachable": false,
+              "x": 1098,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Hide fleet peers",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 890,
+              "y": 48,
+              "width": 279,
+              "height": 36
+            }
+          ],
+          "capturePath": "hud-session-chat-fleet-toggle-light-1280x800.png",
+          "captureSha256": "999aaea68a225d932584ac5dae51f81fe50e9a8c23fa34dde684a399fa485982",
+          "capturedAt": "2026-09-07T03:47:16.092Z"
+        }
+      ],
+      "restored": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 111,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Show agent activity",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--activity pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1098,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": true,
+          "reachable": true,
+          "x": 1134,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        }
+      ],
+      "statesRestored": true,
+      "togglesWorked": true,
+      "fullWindow": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "hud-window-light-1280x800.png",
+        "captureSha256": "c51e1c41da75e2a69f31f2cae98c0de94c9bdf64418757a5c5eb2b34a8332404",
+        "capturedAt": "2026-09-07T03:47:16.886Z"
+      },
+      "fullscreen": {
+        "active": "session-chat-modal",
+        "width": 1280
+      },
+      "sameOwner": true,
+      "escaped": false,
+      "result": "fail"
+    },
+    {
+      "id": "plan-popup-light-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "light",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "plan-window-light-1280x800.png",
+        "captureSha256": "774cfeb625e4b42422423ca922cf226fbf6fe83d9ef85ca3f8f4be1283f4d303",
+        "capturedAt": "2026-09-07T03:47:20.352Z"
+      },
+      "full": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "plan-screen-light-1280x800.png",
+        "captureSha256": "447428f54037c5f013357588d58249f711a35b9a03ba7e3379da8c54a2ba79cf",
+        "capturedAt": "2026-09-07T03:47:20.551Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "hud-panels-light-1440x900",
+      "plane": "live",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "before": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 51,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Hide agent activity",
+          "expanded": "true",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+          "parent": "pc-zone-title",
+          "focused": false,
+          "reachable": true,
+          "x": 1054,
+          "y": 54,
+          "width": 299,
+          "height": 36
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1354,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        }
+      ],
+      "transitions": [
+        {
+          "action": "session-chat-orders-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Hide agent orders",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-orders__tag pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 51,
+              "y": 54,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Hide agent activity",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": false,
+              "reachable": true,
+              "x": 1054,
+              "y": 54,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1354,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            }
+          ],
+          "capturePath": "hud-session-chat-orders-toggle-light-1440x900.png",
+          "captureSha256": "46d537a480c8d6191cd9055697f3825800eb7f9f4ec9997f6d1bd6eb1ad1e24d",
+          "capturedAt": "2026-09-07T03:47:22.361Z"
+        },
+        {
+          "action": "session-chat-dossier-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 191,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Show agent activity",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--activity pc-panel-dock",
+              "focused": true,
+              "reachable": true,
+              "x": 1178,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1214,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            }
+          ],
+          "capturePath": "hud-session-chat-dossier-toggle-light-1440x900.png",
+          "captureSha256": "e42efea37b41e285378139ac6c9ffe73f7acf77a35cd04bba3f7f4ccf242b1ee",
+          "capturedAt": "2026-09-07T03:47:23.284Z"
+        },
+        {
+          "action": "session-chat-fleet-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 51,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Hide agent activity",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": false,
+              "reachable": false,
+              "x": 1054,
+              "y": 54,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Hide fleet peers",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 1110,
+              "y": 54,
+              "width": 279,
+              "height": 36
+            }
+          ],
+          "capturePath": "hud-session-chat-fleet-toggle-light-1440x900.png",
+          "captureSha256": "ff3ed11d6a721c979639edf65a19bd6c400b71be1fd72339597800373c29d54d",
+          "capturedAt": "2026-09-07T03:47:24.254Z"
+        }
+      ],
+      "restored": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 51,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Hide agent activity",
+          "expanded": "true",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+          "parent": "pc-zone-title",
+          "focused": false,
+          "reachable": true,
+          "x": 1054,
+          "y": 54,
+          "width": 299,
+          "height": 36
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": true,
+          "reachable": true,
+          "x": 1354,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        }
+      ],
+      "statesRestored": true,
+      "togglesWorked": true,
+      "fullWindow": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "hud-window-light-1440x900.png",
+        "captureSha256": "ea8274c61539fdcff25b111912d058c8de3dd4ff20793086344a967aa2273242",
+        "capturedAt": "2026-09-07T03:47:25.151Z"
+      },
+      "fullscreen": {
+        "active": "session-chat-modal",
+        "width": 1440
+      },
+      "sameOwner": true,
+      "escaped": false,
+      "result": "fail"
+    },
+    {
+      "id": "plan-popup-light-1440x900",
+      "plane": "live",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "plan-window-light-1440x900.png",
+        "captureSha256": "6719838de6ca578a4b87b67746e58a6c2d7b7956e9b0c9e1d4d9037ea8ba3407",
+        "capturedAt": "2026-09-07T03:47:27.679Z"
+      },
+      "full": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "plan-screen-light-1440x900.png",
+        "captureSha256": "e01963953eb1215dfba1a0a82759d07d84360b540796513b1cf1a8a142f44952",
+        "capturedAt": "2026-09-07T03:47:27.817Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "rail-compact-light-1280",
+      "plane": "live",
+      "result": "unknown",
+      "error": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.rail-app-slot > .rail-item').first() to be visible\u001b[22m\n"
+    },
+    {
+      "id": "rail-compact-light-390",
+      "plane": "live",
+      "result": "unknown",
+      "error": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.rail-app-slot > .rail-item').first() to be visible\u001b[22m\n"
+    },
+    {
+      "id": "hud-panels-dark-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "dark",
+      "before": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 111,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Show agent activity",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--activity pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1098,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1134,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        }
+      ],
+      "transitions": [
+        {
+          "action": "session-chat-orders-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Hide agent orders",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-orders__tag pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 111,
+              "y": 48,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Show agent activity",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--activity pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1098,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1134,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            }
+          ],
+          "capturePath": "hud-session-chat-orders-toggle-dark-1280x800.png",
+          "captureSha256": "ae729c512edeee0eb1b548d910e811d544045a8f77307e0d22287ea4f940ba4b",
+          "capturedAt": "2026-09-07T03:48:01.735Z"
+        },
+        {
+          "action": "session-chat-dossier-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 111,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Hide agent activity",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 814,
+              "y": 48,
+              "width": 319,
+              "height": 36
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1134,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            }
+          ],
+          "capturePath": "hud-session-chat-dossier-toggle-dark-1280x800.png",
+          "captureSha256": "fa1cc42a169974bf3132600abe92f5ba2cfa3be5fe500832db1a0b8303a9d708",
+          "capturedAt": "2026-09-07T03:48:02.568Z"
+        },
+        {
+          "action": "session-chat-fleet-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 111,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Show agent activity",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--activity pc-panel-dock",
+              "focused": false,
+              "reachable": false,
+              "x": 1098,
+              "y": 48,
+              "width": 35,
+              "height": 704
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Hide fleet peers",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 890,
+              "y": 48,
+              "width": 279,
+              "height": 36
+            }
+          ],
+          "capturePath": "hud-session-chat-fleet-toggle-dark-1280x800.png",
+          "captureSha256": "da35e661567c339bc7ef84347ecdbcbdcd931b93850d32f1cd46ea593ecd8876",
+          "capturedAt": "2026-09-07T03:48:03.495Z"
+        }
+      ],
+      "restored": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 111,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Show agent activity",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--activity pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1098,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": true,
+          "reachable": true,
+          "x": 1134,
+          "y": 48,
+          "width": 35,
+          "height": 704
+        }
+      ],
+      "statesRestored": true,
+      "togglesWorked": true,
+      "fullWindow": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "hud-window-dark-1280x800.png",
+        "captureSha256": "3b0988200d98f38f1855c03f59de935e91f6fc53e038512947e29d650096f536",
+        "capturedAt": "2026-09-07T03:48:04.309Z"
+      },
+      "fullscreen": {
+        "active": "session-chat-modal",
+        "width": 1280
+      },
+      "sameOwner": true,
+      "escaped": false,
+      "result": "fail"
+    },
+    {
+      "id": "plan-popup-dark-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "dark",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "plan-window-dark-1280x800.png",
+        "captureSha256": "e1515116eafb17c671d2b8099d9616cbf6bce3d45e917306f476ee7fdac19579",
+        "capturedAt": "2026-09-07T03:48:07.219Z"
+      },
+      "full": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "plan-screen-dark-1280x800.png",
+        "captureSha256": "f8e6349a2ecb6fe0c929bddac2d6540641730c49fac52416b60782d85a9f0625",
+        "capturedAt": "2026-09-07T03:48:07.389Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "hud-panels-dark-1440x900",
+      "plane": "live",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "before": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 51,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Hide agent activity",
+          "expanded": "true",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+          "parent": "pc-zone-title",
+          "focused": false,
+          "reachable": true,
+          "x": 1054,
+          "y": 54,
+          "width": 299,
+          "height": 36
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 1354,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        }
+      ],
+      "transitions": [
+        {
+          "action": "session-chat-orders-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Hide agent orders",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-orders__tag pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 51,
+              "y": 54,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Hide agent activity",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": false,
+              "reachable": true,
+              "x": 1054,
+              "y": 54,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1354,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            }
+          ],
+          "capturePath": "hud-session-chat-orders-toggle-dark-1440x900.png",
+          "captureSha256": "3bd6e2aa39f6e84f5e78ac613fe6cc44ca1a4450a7369367e600e69ff84cac18",
+          "capturedAt": "2026-09-07T03:48:09.754Z"
+        },
+        {
+          "action": "session-chat-dossier-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 191,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Show agent activity",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--activity pc-panel-dock",
+              "focused": true,
+              "reachable": true,
+              "x": 1178,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Show fleet peers",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--peers pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 1214,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            }
+          ],
+          "capturePath": "hud-session-chat-dossier-toggle-dark-1440x900.png",
+          "captureSha256": "d62536d7bfc0a3eca07c9a423da98d626e0e1bde77d553c48587940ca063cfc7",
+          "capturedAt": "2026-09-07T03:48:10.651Z"
+        },
+        {
+          "action": "session-chat-fleet-toggle",
+          "states": [
+            {
+              "id": "session-chat-orders-toggle",
+              "label": "Show agent orders",
+              "expanded": "false",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+              "parent": "pc-zone pc-zone--orders pc-panel-dock",
+              "focused": false,
+              "reachable": true,
+              "x": 51,
+              "y": 54,
+              "width": 35,
+              "height": 792
+            },
+            {
+              "id": "session-chat-dossier-toggle",
+              "label": "Hide agent activity",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": false,
+              "reachable": false,
+              "x": 1054,
+              "y": 54,
+              "width": 299,
+              "height": 36
+            },
+            {
+              "id": "session-chat-fleet-toggle",
+              "label": "Hide fleet peers",
+              "expanded": "true",
+              "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+              "parent": "pc-zone-title",
+              "focused": true,
+              "reachable": true,
+              "x": 1110,
+              "y": 54,
+              "width": 279,
+              "height": 36
+            }
+          ],
+          "capturePath": "hud-session-chat-fleet-toggle-dark-1440x900.png",
+          "captureSha256": "183088e4c2909d3f6b73ac645cd9c328681814737ceed98e9392dd293051005e",
+          "capturedAt": "2026-09-07T03:48:11.559Z"
+        }
+      ],
+      "restored": [
+        {
+          "id": "session-chat-orders-toggle",
+          "label": "Show agent orders",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--orders pc-panel-dock",
+          "focused": false,
+          "reachable": true,
+          "x": 51,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        },
+        {
+          "id": "session-chat-dossier-toggle",
+          "label": "Hide agent activity",
+          "expanded": "true",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--panel",
+          "parent": "pc-zone-title",
+          "focused": false,
+          "reachable": true,
+          "x": 1054,
+          "y": 54,
+          "width": 299,
+          "height": 36
+        },
+        {
+          "id": "session-chat-fleet-toggle",
+          "label": "Show fleet peers",
+          "expanded": "false",
+          "className": "pc-button pc-panel-toggle pc-panel-toggle--edge",
+          "parent": "pc-zone pc-zone--peers pc-panel-dock",
+          "focused": true,
+          "reachable": true,
+          "x": 1354,
+          "y": 54,
+          "width": 35,
+          "height": 792
+        }
+      ],
+      "statesRestored": true,
+      "togglesWorked": true,
+      "fullWindow": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "hud-window-dark-1440x900.png",
+        "captureSha256": "1ae5aa947c5cac0e57abc0d9e7c4f851a17e01e254f94e133494457373090387",
+        "capturedAt": "2026-09-07T03:48:12.477Z"
+      },
+      "fullscreen": {
+        "active": "session-chat-modal",
+        "width": 1440
+      },
+      "sameOwner": true,
+      "escaped": false,
+      "result": "fail"
+    },
+    {
+      "id": "plan-popup-dark-1440x900",
+      "plane": "live",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "plan-window-dark-1440x900.png",
+        "captureSha256": "b5bf59adbf4ff41848384510e58443234f688729e5fd5bc7c06c4c3e4b943b33",
+        "capturedAt": "2026-09-07T03:48:15.347Z"
+      },
+      "full": {
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "plan-screen-dark-1440x900.png",
+        "captureSha256": "47ae7b8ad0702c9f1af1989e9f16df3e8884f984bb2c7dd098a5c07b10edbca4",
+        "capturedAt": "2026-09-07T03:48:15.532Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "rail-compact-dark-1280",
+      "plane": "live",
+      "result": "unknown",
+      "error": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.rail-app-slot > .rail-item').first() to be visible\u001b[22m\n"
+    },
+    {
+      "id": "rail-compact-dark-390",
+      "plane": "live",
+      "result": "unknown",
+      "error": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.rail-app-slot > .rail-item').first() to be visible\u001b[22m\n"
+    }
+  ],
+  "initial": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "final": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "preferencesRestored": true,
+  "releaseAfter": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+  "releaseStable": true,
+  "completedAt": "2026-09-07T03:48:46.452Z"
+}

@@ -1,0 +1,37 @@
+[
+  {
+    "step": "opened",
+    "url": "http://127.0.0.1:3081/?app=hud&agentConversation=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0&hudsession=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0&scope=all",
+    "fullscreen": null,
+    "modal": true,
+    "focused": "session-chat-conversation"
+  },
+  {
+    "step": "fullscreen",
+    "url": "http://127.0.0.1:3081/?app=hud&agentConversation=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0&hudsession=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0&scope=all&chatMax=screen",
+    "fullscreen": "session-chat-modal",
+    "modal": true,
+    "focused": "session-chat-full-screen"
+  },
+  {
+    "step": "fullscreen-exited",
+    "url": "http://127.0.0.1:3081/?app=hud&agentConversation=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0&hudsession=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0&scope=all",
+    "fullscreen": null,
+    "modal": true,
+    "focused": "session-chat-full-screen"
+  },
+  {
+    "step": "first-Escape",
+    "url": "http://127.0.0.1:3081/?app=hud&scope=all",
+    "fullscreen": null,
+    "modal": false,
+    "focused": null
+  },
+  {
+    "step": "second-Escape",
+    "url": "http://127.0.0.1:3081/?app=hud&scope=all",
+    "fullscreen": null,
+    "modal": false,
+    "focused": null
+  }
+]

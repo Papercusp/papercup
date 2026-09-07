@@ -58,7 +58,14 @@ describe('detectContentOffenders', () => {
       readText: async (rel) => (rel === 'docs/bad.mdx' ? 'this is BROKEN' : 'this is fine'),
     });
     expect(offenders).toEqual([
-      { file: 'docs/bad.mdx', detectorKey: 'fake', error: 'is broken', fixerRole: 'content-fixer' },
+      {
+        file: 'docs/bad.mdx',
+        detectorKey: 'fake',
+        error: 'is broken',
+        fixerRole: 'content-fixer',
+        contentHash: '7ef4b019b3468bd27eb670fd08ca39965538efad9f97b6b9d91d094d592dc16e',
+        detectorResultHash: 'b7a9c0767ae3212039079344aa4e72bf4e41cb0e5b6063579f7d14f20591c407',
+      },
     ]);
   });
 
