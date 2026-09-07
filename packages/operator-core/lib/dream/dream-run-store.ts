@@ -13,12 +13,20 @@ import type { DreamReviewUsage } from './dream-review';
 import type { DreamFragmentKind } from './dream-config';
 import type { DreamFragmentPair } from './fragment-sampler';
 import type { CapabilitySamplingResult } from './capability-sampler';
+import { newCollisionResistantIssueTail } from '../issues-engineer';
 import { CapabilityProposalSchema } from './capability-pass';
 import { capabilityProposalHash, capabilityReviewEvidenceHash, CAPABILITY_REVIEW_VERSION } from './capability-review';
 import {
-  newDreamCapabilityRun, dreamCapabilityRun, dreamCallTotals, sameDreamValue,
-  validateDreamSampling, validateDreamRunCall, DreamCallUsageSchema,
-  type BeginCapabilityRunInput, type DreamCapabilityRun, type DreamRunCall,
+  newDreamCapabilityRun,
+  dreamCapabilityRun,
+  dreamCallTotals,
+  sameDreamValue,
+  validateDreamSampling,
+  validateDreamRunCall,
+  DreamCallUsageSchema,
+  type BeginCapabilityRunInput,
+  type DreamCapabilityRun,
+  type DreamRunCall,
 } from './dream-run-provenance';
 
 export const DREAM_RUN_MODES = ['manual', 'auto'] as const;
@@ -162,7 +170,7 @@ export async function beginDreamRun(
     throw new Error(`dream-run-store: stable run id ${runId} was reused with different provenance`);
   }
   const saved = dreamCapabilityRun(run);
-  if (!sameDreamValue(capability, saved ? { ...saved, sampling: null, calls: [] } : null))
+  if (!sameDreamValue(capability, saved ? { ...saved, sampling: null, calls: [], artifactId: null } : null))
     throw new Error(`dream-run-store: stable run id ${runId} was reused with different capability versions`);
   return { created: inserted.length > 0, run };
 }
@@ -171,8 +179,8 @@ export async function beginDreamRun(
 export async function recordDreamRunSelection(
   sql: Sql,
   input: { workspaceId: string; runId: string } & (
-    { pair: DreamFragmentPair; dreamerModel: string; capability?: never } |
-    { capability: CapabilitySamplingResult; pair?: never; dreamerModel?: never }
+    | { pair: DreamFragmentPair; dreamerModel: string; capability?: never }
+    | { capability: CapabilitySamplingResult; pair?: never; dreamerModel?: never }
   ),
 ): Promise<DreamRun> {
   const workspaceId = required(input.workspaceId, 'workspaceId');
@@ -187,16 +195,28 @@ export async function recordDreamRunSelection(
         return run;
       }
       if (run.status !== 'running') throw new Error('Cannot select a terminal dream run');
-      if (sampling.log.promptVersion !== provenance.dreamPromptVersion) throw new Error('Sampling prompt version changed');
-      const entries = sampling.status === 'selected'
-        ? [sampling.selection.a, sampling.selection.b, ...(sampling.selection.c ? [sampling.selection.c.entry] : [])] : [];
-      if (entries.some((e) => e.packet.scope.workspaceId !== workspaceId || e.packet.scope.potSlug !== run.potSlug ||
-          e.packet.manifestRevision !== provenance.manifestRevision)) throw new Error('Selection crosses run scope or manifest');
+      if (sampling.log.promptVersion !== provenance.dreamPromptVersion)
+        throw new Error('Sampling prompt version changed');
+      const entries =
+        sampling.status === 'selected'
+          ? [sampling.selection.a, sampling.selection.b, ...(sampling.selection.c ? [sampling.selection.c.entry] : [])]
+          : [];
+      if (
+        entries.some(
+          (e) =>
+            e.packet.scope.workspaceId !== workspaceId ||
+            e.packet.scope.potSlug !== run.potSlug ||
+            e.packet.manifestRevision !== provenance.manifestRevision,
+        )
+      )
+        throw new Error('Selection crosses run scope or manifest');
       provenance.sampling = sampling;
       return saveCapabilityRun(tx, run, provenance);
     });
   }
   const dreamerModel = required(input.dreamerModel, 'dreamerModel');
+  if (dreamCapabilityRun((await getDreamRun(sql, { workspaceId, runId })) ?? { outcome: null }))
+    throw new Error('A capability run cannot use legacy fragment selection');
   const fragments = [input.pair.anchor, input.pair.partner];
   const refs = fragments.map((fragment) => required(fragment.ref, 'fragment ref'));
   if (new Set(refs).size !== refs.length) throw new RangeError('dream selection requires distinct fragment refs');
@@ -216,24 +236,39 @@ export async function recordDreamRunSelection(
   return run;
 }
 
-/** Serializes phase admission, review freezing and sink retries on the SAME run row. */
+/** Short state transitions only: never hold this transaction across an external rail. */
 export async function withLockedDreamRun<T>(
-  sql: Sql, input: { workspaceId: string; runId: string },
+  sql: Sql,
+  input: { workspaceId: string; runId: string },
   action: (tx: Sql, run: DreamRun) => Promise<T>,
 ): Promise<T> {
-  const workspaceId = required(input.workspaceId, 'workspaceId'), runId = required(input.runId, 'runId');
-  return await sql.begin(async (tx) => {
+  const workspaceId = required(input.workspaceId, 'workspaceId'),
+    runId = required(input.runId, 'runId');
+  return (await sql.begin(async (tx) => {
     const rows = await tx`SELECT * FROM harness_shared.dream_runs
       WHERE workspace_id = ${workspaceId} AND run_id = ${runId} FOR UPDATE`;
     if (!rows[0]) throw new Error(`dream-run-store: run not found ${workspaceId}/${runId}`);
     return action(tx as unknown as Sql, mapRun(rows[0]));
-  }) as T;
+  })) as T;
 }
 
 function requireCapability(run: DreamRun): DreamCapabilityRun {
   const value = dreamCapabilityRun(run);
   if (!value) throw new Error('Dream run has no capability provenance');
   return value;
+}
+
+/** A permanent capture id survives crashes and triage; no DB connection stays held while capturing. */
+export async function reserveDreamRunArtifact(
+  sql: Sql,
+  input: { workspaceId: string; runId: string },
+): Promise<DreamRun> {
+  return withLockedDreamRun(sql, input, async (tx, run) => {
+    const provenance = requireCapability(run);
+    if (provenance.artifactId || run.status !== 'running' || run.review?.verdict !== 'accept') return run;
+    provenance.artifactId = 'EI-' + newCollisionResistantIssueTail();
+    return saveCapabilityRun(tx, run, provenance);
+  });
 }
 
 async function saveCapabilityRun(sql: Sql, run: DreamRun, provenance: DreamCapabilityRun): Promise<DreamRun> {
@@ -247,33 +282,60 @@ async function saveCapabilityRun(sql: Sql, run: DreamRun, provenance: DreamCapab
 }
 
 /** Only started:true authorizes dispatch. A reserved call on replay has UNKNOWN outcome. */
-export async function beginDreamRunCall(sql: Sql, input: {
-  workspaceId: string; runId: string; call: Pick<DreamRunCall, 'callId' | 'phase' | 'model' | 'reservedUsd'>;
-}): Promise<{ started: boolean; run: DreamRun; call: DreamRunCall }> {
+export async function beginDreamRunCall(
+  sql: Sql,
+  input: {
+    workspaceId: string;
+    runId: string;
+    call: Pick<DreamRunCall, 'callId' | 'phase' | 'model' | 'reservedUsd'>;
+  },
+): Promise<{ started: boolean; run: DreamRun; call: DreamRunCall }> {
   const call = validateDreamRunCall({ ...input.call, status: 'reserved', usage: null, error: null });
   return withLockedDreamRun(sql, input, async (tx, run) => {
     const provenance = requireCapability(run);
+    const expectedModel =
+      call.phase === 'generation'
+        ? provenance.dreamerModel
+        : ['control-a', 'control-b', 'review'].includes(call.phase)
+          ? provenance.reviewerModel
+          : null;
+    if (expectedModel && expectedModel !== call.model)
+      throw new Error('Paid phase model differs from frozen run versions');
     const saved = provenance.calls.find((c) => c.callId === call.callId);
     if (saved) {
-      if (!sameDreamValue({ ...saved, status: 'reserved', usage: null, error: null }, call)) throw new Error('Paid call identity reused with different admission');
+      if (!sameDreamValue({ ...saved, status: 'reserved', usage: null, error: null }, call))
+        throw new Error('Paid call identity reused with different admission');
       return { started: false, run, call: saved };
     }
-    if (run.status !== 'running' || run.review) throw new Error('Cannot dispatch after review or terminal finalization');
+    if (run.status !== 'running' || run.review)
+      throw new Error('Cannot dispatch after review or terminal finalization');
     if (provenance.calls.length >= 64) throw new Error('Dream paid-call ledger limit exceeded');
     provenance.calls.push(call);
     return { started: true, run: await saveCapabilityRun(tx, run, provenance), call };
   });
 }
 
-export async function settleDreamRunCall(sql: Sql, input: {
-  workspaceId: string; runId: string; callId: string; usage: DreamPassUsage | null; error?: string;
-}): Promise<DreamRun> {
+export async function settleDreamRunCall(
+  sql: Sql,
+  input: {
+    workspaceId: string;
+    runId: string;
+    callId: string;
+    usage: DreamPassUsage | null;
+    error?: string;
+  },
+): Promise<DreamRun> {
   return withLockedDreamRun(sql, input, async (tx, run) => {
-    const provenance = requireCapability(run), index = provenance.calls.findIndex((c) => c.callId === input.callId);
+    const provenance = requireCapability(run),
+      index = provenance.calls.findIndex((c) => c.callId === input.callId);
     if (index < 0) throw new Error('Paid call was not admitted');
     const saved = provenance.calls[index]!;
-    const settled = validateDreamRunCall({ ...saved, status: input.usage ? 'settled' : 'unknown',
-      usage: input.usage, error: input.error?.slice(0, 4_000) ?? null });
+    const settled = validateDreamRunCall({
+      ...saved,
+      status: input.usage ? 'settled' : 'unknown',
+      usage: input.usage,
+      error: input.error?.slice(0, 4_000) ?? null,
+    });
     if (saved.status !== 'reserved') {
       if (!sameDreamValue(saved, settled)) throw new Error('Paid call result is already frozen');
       return run;
@@ -284,23 +346,55 @@ export async function settleDreamRunCall(sql: Sql, input: {
 }
 
 /** Persist the reviewed candidate BEFORE any capture/routing side effect. */
-export async function recordDreamRunReview(sql: Sql, input: {
-  workspaceId: string; runId: string; outcome: Record<string, unknown>; review: Record<string, unknown>;
-}): Promise<DreamRun> {
+export async function recordDreamRunReview(
+  sql: Sql,
+  input: {
+    workspaceId: string;
+    runId: string;
+    outcome: Record<string, unknown>;
+    review: Record<string, unknown>;
+  },
+): Promise<DreamRun> {
   return withLockedDreamRun(sql, input, async (tx, run) => {
     const provenance = requireCapability(run);
-    if (Object.hasOwn(input.outcome, 'capabilityRun')) throw new Error('Capability provenance is owned by the run ledger');
+    if (Object.hasOwn(input.outcome, 'capabilityRun'))
+      throw new Error('Capability provenance is owned by the run ledger');
     const outcome = { ...input.outcome, capabilityRun: provenance };
     if (run.review) {
-      if (!sameDreamValue(run.review, input.review) || !sameDreamValue(run.outcome, outcome)) throw new Error('Reviewed dream is already frozen');
+      if (!sameDreamValue(run.review, input.review) || !sameDreamValue(run.outcome, outcome))
+        throw new Error('Reviewed dream is already frozen');
       return run;
     }
     const insight = input.outcome.insight as Record<string, unknown> | undefined;
     const candidate = CapabilityProposalSchema.parse(insight?.capability);
-    if (provenance.sampling?.status !== 'selected' || input.review.schemaVersion !== CAPABILITY_REVIEW_VERSION ||
-        input.review.candidateHash !== capabilityProposalHash(candidate) ||
-        input.review.evidenceHash !== capabilityReviewEvidenceHash(provenance.sampling.selection)) throw new Error('Review does not bind this candidate and selection');
-    if (provenance.calls.some((c) => c.status === 'reserved')) throw new Error('Drain paid calls before freezing review');
+    if (
+      provenance.sampling?.status !== 'selected' ||
+      input.review.schemaVersion !== CAPABILITY_REVIEW_VERSION ||
+      input.review.candidateHash !== capabilityProposalHash(candidate) ||
+      input.review.evidenceHash !== capabilityReviewEvidenceHash(provenance.sampling.selection)
+    )
+      throw new Error('Review does not bind this candidate and selection');
+    if (provenance.calls.some((c) => c.status === 'reserved'))
+      throw new Error('Drain paid calls before freezing review');
+    const reviewUsage = DreamCallUsageSchema.parse(input.review.usage);
+    const calls = provenance.calls.filter((c) => ['control-a', 'control-b', 'review'].includes(c.phase));
+    const totals = dreamCallTotals(calls);
+    if (
+      reviewUsage.model !== provenance.reviewerModel ||
+      (totals.costBasis === 'actual' &&
+        (Math.abs(totals.costUsd - reviewUsage.costUsd) > 1e-9 ||
+          totals.inputTokens !== reviewUsage.inputTokens ||
+          totals.outputTokens !== reviewUsage.outputTokens))
+    )
+      throw new Error('Review usage does not reconcile to governed phase calls');
+    if (
+      input.review.verdict === 'accept' &&
+      (dreamCallTotals(provenance.calls).costBasis !== 'actual' ||
+        !['generation', 'control-a', 'control-b', 'review'].every((phase) =>
+          provenance.calls.some((c) => c.phase === phase),
+        ))
+    )
+      throw new Error('Accepted review requires all governed generation and review calls');
     if (run.status !== 'running') throw new Error('Cannot review a terminal dream run');
     const rows = await tx`UPDATE harness_shared.dream_runs SET
       outcome = ${JSON.stringify(outcome)}::text::jsonb, review = ${JSON.stringify(input.review)}::text::jsonb,
@@ -330,50 +424,65 @@ export async function finalizeDreamRun(sql: Sql, input: FinalizeDreamRunInput): 
     throw new RangeError(`unsupported terminal dream status ${input.status}`);
   }
   return withLockedDreamRun(sql, { workspaceId, runId }, async (tx, existing) => {
-  if (existing.status !== 'running') return existing;
-  const provenance = dreamCapabilityRun(existing);
-  if (input.outcome && Object.hasOwn(input.outcome, 'capabilityRun')) throw new Error('Capability provenance is owned by the run ledger');
-  const frozenOutcome = provenance && existing.review ? existing.outcome : null;
-  if (frozenOutcome && ((input.outcome && !sameDreamValue({ ...input.outcome, capabilityRun: provenance }, frozenOutcome)) ||
-      (input.review && !sameDreamValue(input.review, existing.review)))) throw new Error('Cannot replace a frozen reviewed dream');
-  const usages = [input.dreamUsage, input.reviewUsage].filter(
-    (usage): usage is DreamPassUsage | DreamReviewUsage => usage != null,
-  );
-  for (const usage of usages) {
-    if (!Number.isFinite(usage.costUsd) || usage.costUsd < 0)
-      throw new RangeError('dream usage cost must be non-negative');
-    if (!Number.isInteger(usage.inputTokens) || usage.inputTokens < 0)
-      throw new RangeError('dream input tokens must be non-negative integers');
-    if (!Number.isInteger(usage.outputTokens) || usage.outputTokens < 0)
-      throw new RangeError('dream output tokens must be non-negative integers');
-  }
-  if (provenance && input.status === 'accepted' && (existing.review?.verdict !== 'accept' || !existing.routedRef))
-    throw new Error('Accepted capability run must be reviewed and sunk before finalization');
-  const totals = provenance ? dreamCallTotals(provenance.calls) : {
-    inputTokens: usages.reduce((sum, usage) => sum + usage.inputTokens, 0),
-    outputTokens: usages.reduce((sum, usage) => sum + usage.outputTokens, 0),
-    costUsd: usages.reduce((sum, usage) => sum + usage.costUsd, 0),
-  };
-  if (provenance) {
-    for (const [summary, phases] of [[input.dreamUsage, ['generation']], [input.reviewUsage, ['control-a', 'control-b', 'review']]] as const) {
-      if (!summary) continue;
-      DreamCallUsageSchema.parse(summary);
-      const group = dreamCallTotals(provenance.calls.filter((c) => (phases as readonly string[]).includes(c.phase)));
-      if (group.costBasis !== 'actual' || Math.abs(summary.costUsd - group.costUsd) > 1e-9 || summary.inputTokens !== group.inputTokens || summary.outputTokens !== group.outputTokens)
-        throw new Error('Aggregate usage does not reconcile to governed phase calls');
+    if (existing.status !== 'running') return existing;
+    const provenance = dreamCapabilityRun(existing);
+    if (input.outcome && Object.hasOwn(input.outcome, 'capabilityRun'))
+      throw new Error('Capability provenance is owned by the run ledger');
+    const frozenOutcome = provenance && existing.review ? existing.outcome : null;
+    if (
+      frozenOutcome &&
+      ((input.outcome && !sameDreamValue({ ...input.outcome, capabilityRun: provenance }, frozenOutcome)) ||
+        (input.review && !sameDreamValue(input.review, existing.review)))
+    )
+      throw new Error('Cannot replace a frozen reviewed dream');
+    const usages = [input.dreamUsage, input.reviewUsage].filter(
+      (usage): usage is DreamPassUsage | DreamReviewUsage => usage != null,
+    );
+    for (const usage of usages) {
+      if (!Number.isFinite(usage.costUsd) || usage.costUsd < 0)
+        throw new RangeError('dream usage cost must be non-negative');
+      if (!Number.isInteger(usage.inputTokens) || usage.inputTokens < 0)
+        throw new RangeError('dream input tokens must be non-negative integers');
+      if (!Number.isInteger(usage.outputTokens) || usage.outputTokens < 0)
+        throw new RangeError('dream output tokens must be non-negative integers');
     }
-  }
-  const { inputTokens, outputTokens, costUsd } = totals;
-  const reviewerModel = input.reviewUsage?.model ?? null;
-  const error = input.error?.trim().slice(0, 4_000) || null;
+    if (provenance && input.status === 'accepted' && (existing.review?.verdict !== 'accept' || !existing.routedRef))
+      throw new Error('Accepted capability run must be reviewed and sunk before finalization');
+    const totals = provenance
+      ? dreamCallTotals(provenance.calls)
+      : {
+          inputTokens: usages.reduce((sum, usage) => sum + usage.inputTokens, 0),
+          outputTokens: usages.reduce((sum, usage) => sum + usage.outputTokens, 0),
+          costUsd: usages.reduce((sum, usage) => sum + usage.costUsd, 0),
+        };
+    if (provenance) {
+      for (const [summary, phases] of [
+        [input.dreamUsage, ['generation']],
+        [input.reviewUsage, ['control-a', 'control-b', 'review']],
+      ] as const) {
+        if (!summary) continue;
+        DreamCallUsageSchema.parse(summary);
+        const group = dreamCallTotals(provenance.calls.filter((c) => (phases as readonly string[]).includes(c.phase)));
+        if (
+          group.costBasis !== 'actual' ||
+          Math.abs(summary.costUsd - group.costUsd) > 1e-9 ||
+          summary.inputTokens !== group.inputTokens ||
+          summary.outputTokens !== group.outputTokens
+        )
+          throw new Error('Aggregate usage does not reconcile to governed phase calls');
+      }
+    }
+    const { inputTokens, outputTokens, costUsd } = totals;
+    const reviewerModel = input.reviewUsage?.model ?? null;
+    const error = input.error?.trim().slice(0, 4_000) || null;
 
-  const rows = (await tx`
+    const rows = (await tx`
     UPDATE harness_shared.dream_runs
        SET status = ${input.status},
            reviewer_model = COALESCE(${reviewerModel}, reviewer_model),
            dream_usage = ${JSON.stringify(input.dreamUsage ?? null)}::text::jsonb,
            review_usage = ${JSON.stringify(input.reviewUsage ?? null)}::text::jsonb,
-           outcome = ${JSON.stringify(frozenOutcome ?? (provenance ? { ...input.outcome, capabilityRun: provenance } : input.outcome ?? null))}::text::jsonb,
+           outcome = ${JSON.stringify(frozenOutcome ?? (provenance ? { ...input.outcome, capabilityRun: provenance } : (input.outcome ?? null)))}::text::jsonb,
            review = ${JSON.stringify(input.review ?? existing.review)}::text::jsonb,
            routed_ref = ${existing.routedRef ?? input.routedRef ?? null},
            input_tokens = ${inputTokens},
@@ -384,9 +493,9 @@ export async function finalizeDreamRun(sql: Sql, input: FinalizeDreamRunInput): 
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId} AND status = 'running'
      RETURNING *`) as Row[];
-  const run = rows[0] ? mapRun(rows[0]) : null;
-  if (!run) throw new Error(`dream-run-store: finalize target not found ${workspaceId}/${runId}`);
-  return run;
+    const run = rows[0] ? mapRun(rows[0]) : null;
+    if (!run) throw new Error(`dream-run-store: finalize target not found ${workspaceId}/${runId}`);
+    return run;
   });
 }
 
