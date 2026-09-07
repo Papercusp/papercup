@@ -17,7 +17,9 @@
  * found the SAME shape a third time — the external-source polls (gmail/calendar/pr/vault) starved 4–18min
  * every hour behind green-checkpoint — so they get `routines-triggers` on the same principle. Git-sync
  * remains the ONLY action on `routines-critical`; long/unknown system actions and agent roles still default
- * to `routines`. This extends the existing queue mechanism without weakening its persistence invariant.
+ * to `routines`, except for explicitly-known heavy/background work such as gitnexus reindexing, which gets
+ * a bounded serial lane of its own. This extends the existing queue mechanism without weakening its
+ * persistence invariant.
  */
 import { SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -28,6 +30,7 @@ export const ROUTINES_FLEET_CONTROL_QUEUE = 'routines-fleet-control';
 export const ROUTINES_LOOP_QUEUE = 'routines-loop';
 export const ROUTINES_TRIGGERS_QUEUE = 'routines-triggers';
 export const ROUTINES_RELEASE_QUEUE = 'routines-release';
+export const ROUTINES_HEAVY_QUEUE = 'routines-heavy';
 
 /** Mirrors loop.ts's materialized target_role without importing that stateful module here. */
 export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
@@ -79,6 +82,17 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
 ]);
 
 /**
+ * Long-running CPU/memory-heavy background actions → a bounded serial lane.
+ *
+ * `gitnexus-reindex` shells out to `gitnexus analyze` and has measured multi-hour
+ * fire budgets. Keeping it on the shared queue lets one reindex consume the same
+ * admission window as short housekeeping routines, which is the starvation shape
+ * this classification layer exists to prevent. Keep this exact allow-list narrow:
+ * a new action belongs here only after its runtime and resource profile are known.
+ */
+export const HEAVY_ROUTINE_ACTIONS = new Set<string>(['gitnexus-reindex']);
+
+/**
  * The queue NAME a routine fire should enqueue on, by its target role and (when
  * needed) install slug. The operator-home green-checkpoint is the workspace's
  * release finalizer: if it waits behind four long subject-hive gates, a frozen
@@ -89,7 +103,8 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
  * A loop wake → the latency-isolated `routines-loop` lane; fleet restoration →
  * the serial `routines-fleet-control` lane; a critical quick SYSTEM action →
  * `routines-critical`; a quick external-source poll → `routines-triggers`; the
- * operator-home green-checkpoint → `routines-release`; everything else → `routines`.
+ * operator-home green-checkpoint → `routines-release`; a known heavy/background
+ * action → `routines-heavy`; everything else → `routines`.
  */
 export function queueForRoutine(targetRole: string, installSlug?: string | null): string {
   if (targetRole === LOOP_WAKE_TARGET_ROLE) return ROUTINES_LOOP_QUEUE;
@@ -98,6 +113,7 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
     if (action === 'green-checkpoint' && installSlug === operatorHomeHarnessSlug()) {
       return ROUTINES_RELEASE_QUEUE;
     }
+    if (HEAVY_ROUTINE_ACTIONS.has(action)) return ROUTINES_HEAVY_QUEUE;
     if (FLEET_CONTROL_ACTIONS.has(action)) return ROUTINES_FLEET_CONTROL_QUEUE;
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
     if (TRIGGER_POLL_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
