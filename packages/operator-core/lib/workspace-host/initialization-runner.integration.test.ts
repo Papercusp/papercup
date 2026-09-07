@@ -30,7 +30,10 @@ import type {
   WorkspaceHostInitializationStep,
   WorkspaceHostInitializationSupportedStepKind,
 } from '@papercusp/deployment-driver';
-import { WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+  workspaceHostCredentialReferenceDigest,
+} from '@papercusp/deployment-driver';
 import type { WorkspaceHostCredentialRefs } from '@papercusp/deployment-driver';
 import {
   WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
@@ -116,7 +119,7 @@ function admissionEvidence(
       channel: 'agent',
       family: 'agent-forwarded-reference',
       generation: input.delivery.generation,
-      referenceDigest: 'public-reference-digest',
+      referenceDigest: workspaceHostCredentialReferenceDigest(input.credentialRef.ref),
     },
     observedAt,
     verification: { ...verification, credentialFreeAgents: [] },
@@ -261,7 +264,11 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     expect(operation.request?.credentialAdmissions).toHaveLength(1);
     expect(operation.request?.credentialAdmissions[0]).toMatchObject({
       contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
-      binding: { channel: 'agent', generation: 1, referenceDigest: 'public-reference-digest' },
+      binding: {
+        channel: 'agent',
+        generation: 1,
+        referenceDigest: workspaceHostCredentialReferenceDigest(refs().agentCredentialRef!.ref),
+      },
       verification: { allReady: true },
     });
     expect(result.credentialAdmission).toEqual(operation.request?.credentialAdmissions[0]);
@@ -285,6 +292,37 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
         },
       ),
     ).rejects.toThrow(/exact stored generation is not authenticated/);
+
+    const operations = await db.adminSql`
+      SELECT id FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(operations).toHaveLength(0);
+    expect(adapter.calls).toEqual([]);
+    expect(onPlanned).not.toHaveBeenCalled();
+  });
+
+  it('rejects admission evidence for a different generation before creating an operation row', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = `op_${randomBytes(4).toString('hex')}`;
+    const adapter = recordingAdapter();
+    const onPlanned = vi.fn();
+
+    await expect(
+      runWorkspaceHostInitialization(
+        { ...runInput(ws, hostId, adapter, operationId), onPlanned },
+        {
+          verifyAgentCredentialAdmission: async (input) => {
+            const evidence = admissionEvidence(input);
+            return {
+              ...evidence,
+              binding: { ...evidence.binding, generation: evidence.binding.generation + 1 },
+            };
+          },
+        },
+      ),
+    ).rejects.toThrow(/does not match the requested binding/);
 
     const operations = await db.adminSql`
       SELECT id FROM harness_shared.workspace_host_operations

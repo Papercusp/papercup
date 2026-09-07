@@ -163,13 +163,21 @@ export async function runWorkspaceHostInitialization(
           materialSource: input.credentialMaterialSource,
         })
       : undefined;
+  if (credentialAdmission && agentCredentialRef && agentDelivery) {
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(credentialAdmission, {
+      credentialRef: agentCredentialRef,
+      delivery: agentDelivery,
+    });
+  }
+  for (const evidence of input.additionalCredentialAdmissions ?? []) {
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence);
+  }
   const credentialAdmissions = [
     ...(input.additionalCredentialAdmissions ?? []),
     ...(credentialAdmission ? [credentialAdmission] : []),
   ];
   const admissionBindings = new Set<string>();
   for (const evidence of credentialAdmissions) {
-    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence);
     const key = [
       evidence.binding.family,
       evidence.binding.generation,

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
   WorkspaceHostAgentCredentialAdmissionError,
+  assertWorkspaceHostAgentCredentialAdmissionEvidence,
   verifyWorkspaceHostAgentCredentialAdmission,
 } from './agent-credential-admission';
 import type {
@@ -60,6 +61,17 @@ function bundle(codex: 'healthy' | 'revoked'): Buffer {
     codex: file('codex', codex),
     omp: file('omp', 'healthy'),
   });
+}
+
+async function healthyEvidence() {
+  return verifyWorkspaceHostAgentCredentialAdmission(
+    {
+      credentialRef: { kind: 'agent', ref: AGENT_REF },
+      delivery: DELIVERY,
+      materialSource: source(bundle('healthy'), []),
+    },
+    { runner: new BundleAwareRunner(), probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+  );
 }
 
 function source(material: Buffer, seen: WorkspaceHostCredentialMaterialRequest[]): WorkspaceHostCredentialMaterialSource {
@@ -167,5 +179,86 @@ describe('workspace-host exact-generation agent credential admission', () => {
     expect(JSON.stringify(rejected)).not.toContain('healthy-default');
     expect(JSON.stringify(rejected)).not.toContain('"status":"revoked"');
     await expect(access(runner.homes[0]!)).rejects.toThrow();
+  });
+
+  it('rejects compound receipts that claim readiness without coherent exact agent coverage', async () => {
+    const evidence = await healthyEvidence();
+    const { claude, codex, omp } = evidence.verification.agents;
+    expect(claude).toBeDefined();
+    expect(codex).toBeDefined();
+    expect(omp).toBeDefined();
+
+    const invalidReceipts: unknown[] = [
+      {
+        ...evidence,
+        verification: { ...evidence.verification, agents: { claude, omp } },
+      },
+      {
+        ...evidence,
+        verification: {
+          ...evidence.verification,
+          agents: { claude, codex: { ...codex!, agent: 'claude' }, omp },
+        },
+      },
+      {
+        ...evidence,
+        verification: {
+          ...evidence.verification,
+          agents: { claude, codex: { ...codex!, proofDigest: '' }, omp },
+        },
+      },
+      {
+        ...evidence,
+        verification: { ...evidence.verification, credentialFreeAgents: ['claude'] },
+      },
+      {
+        ...evidence,
+        verification: { ...evidence.verification, credentialFreeAgents: ['omp'] },
+      },
+      {
+        ...evidence,
+        verification: { ...evidence.verification, observedAt: '2026-09-07T06:00:01.000Z' },
+      },
+      {
+        ...evidence,
+        binding: { ...evidence.binding, referenceDigest: 'not-a-public-reference-digest' },
+      },
+    ];
+
+    for (const receipt of invalidReceipts) {
+      expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(receipt)).toThrow(
+        /workspace-host agent credential admission evidence/,
+      );
+    }
+
+    expect(() =>
+      assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, {
+        credentialRef: { kind: 'agent', ref: `${AGENT_REF}-different` },
+        delivery: DELIVERY,
+      }),
+    ).toThrow(/does not match the requested binding/);
+  });
+
+  it('accepts an intentionally credential-free OMP only when it has no contradictory probe evidence', async () => {
+    const seen: WorkspaceHostCredentialMaterialRequest[] = [];
+    const runner = new BundleAwareRunner();
+    const material = encodeWorkspaceHostAgentHomeBundle({
+      claude: Buffer.from('{"agent":"claude","status":"healthy"}', 'utf8'),
+      codex: Buffer.from('{"agent":"codex","status":"healthy"}', 'utf8'),
+      omp: null,
+    });
+    const evidence = await verifyWorkspaceHostAgentCredentialAdmission(
+      {
+        credentialRef: { kind: 'agent', ref: AGENT_REF },
+        delivery: DELIVERY,
+        materialSource: source(material, seen),
+      },
+      { runner, probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+    );
+
+    expect(evidence.verification.credentialFreeAgents).toEqual(['omp']);
+    expect(evidence.verification.agents.omp).toBeUndefined();
+    expect(runner.observed).toEqual({ claude: 'healthy', codex: 'healthy' });
+    expect(() => assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence)).not.toThrow();
   });
 });

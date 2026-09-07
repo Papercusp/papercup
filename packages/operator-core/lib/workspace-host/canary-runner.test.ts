@@ -8,6 +8,7 @@ import {
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
+  workspaceHostCredentialReferenceDigest,
   type WorkspaceHostAgentVerificationReport,
   type WorkspaceHostAgentVerificationEvidence,
   type WorkspaceHostCredentialDeliverySet,
@@ -96,6 +97,12 @@ function admissionEvidence(
   input: WorkspaceHostAgentCredentialAdmissionInput,
 ): WorkspaceHostAgentCredentialAdmissionEvidence {
   const verification = agentReport();
+  const agents = {
+    ...verification.agents,
+    // Admission authenticates a present stored OMP credential; local inference is reserved for
+    // an intentionally credential-free OMP bundle and therefore has no admission agent record.
+    omp: { ...verification.agents.omp, verificationKind: 'authenticated-account' as const },
+  };
   return {
     contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
     sourceKind: 'operator-integration-credentials',
@@ -103,10 +110,10 @@ function admissionEvidence(
       channel: 'agent',
       family: 'agent-forwarded-reference',
       generation: input.delivery.generation,
-      referenceDigest: `agent-ref-${input.delivery.generation}`,
+      referenceDigest: workspaceHostCredentialReferenceDigest(input.credentialRef.ref),
     },
     observedAt: verification.observedAt,
-    verification: { ...verification, credentialFreeAgents: [] },
+    verification: { ...verification, agents, credentialFreeAgents: [] },
   };
 }
 
@@ -470,6 +477,27 @@ describe('runWorkspaceHostCanary', () => {
         verifyAgentCredentialAdmission: verifier,
       }),
     ).rejects.toThrow(/generation 2 credential-revoked/);
+    expect(runInitialization).not.toHaveBeenCalled();
+    expect(verifier).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a future-generation receipt bound to a different generation before initialization', async () => {
+    const runInitialization = vi.fn(fakeInitialization);
+    const verifier = vi.fn(async (request: WorkspaceHostAgentCredentialAdmissionInput) => {
+      const evidence = admissionEvidence(request);
+      return {
+        ...evidence,
+        binding: { ...evidence.binding, generation: evidence.binding.generation + 1 },
+      };
+    });
+
+    await expect(
+      runWorkspaceHostCanary(input(), {
+        runInitialization,
+        runLifecycle: fakeLifecycle,
+        verifyAgentCredentialAdmission: verifier,
+      }),
+    ).rejects.toThrow(/does not match the requested binding/);
     expect(runInitialization).not.toHaveBeenCalled();
     expect(verifier).toHaveBeenCalledTimes(1);
   });

@@ -42,6 +42,7 @@ import {
   type WorkspaceHostCredentialLifecycleRunResult,
 } from './credential-lifecycle-runner';
 import {
+  assertWorkspaceHostAgentCredentialAdmissionEvidence,
   verifyWorkspaceHostAgentCredentialAdmission,
   type WorkspaceHostAgentCredentialAdmissionEvidence,
   type WorkspaceHostAgentCredentialAdmissionInput,
@@ -392,13 +393,14 @@ export async function runWorkspaceHostCanary(
     if (!credentialRef || !delivery) {
       throw new WorkspaceHostCanaryRunError([`${label} credential generation is missing channel(s): agent`]);
     }
-    additionalCredentialAdmissions.push(
-      await dependencies.verifyAgentCredentialAdmission({
-        credentialRef,
-        delivery,
-        materialSource: input.credentialMaterialSource,
-      }),
-    );
+    const admissionInput = {
+      credentialRef,
+      delivery,
+      materialSource: input.credentialMaterialSource,
+    };
+    const evidence = await dependencies.verifyAgentCredentialAdmission(admissionInput);
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, admissionInput);
+    additionalCredentialAdmissions.push(evidence);
   }
   const common = {
     workspaceId: input.workspaceId,

@@ -17,6 +17,7 @@ import {
   WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
   WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
+  WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
   assertWorkspaceHostSecretIsolation,
   parseWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostCredentialReference,
@@ -39,6 +40,8 @@ import type { WorkspaceHostCredentialMaterialSource } from './credential-materia
 
 export const WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION =
   'papercusp-workspace-host-agent-credential-admission-v1';
+
+const WORKSPACE_HOST_PUBLIC_REFERENCE_DIGEST = /^[0-9a-f]{32}$/;
 
 type AgentCredentialRef = NonNullable<WorkspaceHostCredentialRefs['agentCredentialRef']>;
 
@@ -82,22 +85,118 @@ export class WorkspaceHostAgentCredentialAdmissionError extends Error {
   }
 }
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function isWorkspaceHostCanaryAgent(value: unknown): value is WorkspaceHostCanaryAgent {
+  return typeof value === 'string' && WORKSPACE_HOST_CANARY_AGENTS.some((agent) => agent === value);
+}
+
+function isAgentCredentialFamily(value: unknown): value is WorkspaceHostCredentialFamily {
+  return Object.values(WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS).some(
+    (spec) => spec.family === value && spec.channel === 'agent',
+  );
+}
+
+function isReadyAgentVerificationEvidence(
+  expectedAgent: WorkspaceHostCanaryAgent,
+  value: unknown,
+  reportObservedAt: number,
+): value is WorkspaceHostAgentVerificationEvidence {
+  if (!isRecord(value)) return false;
+  const observedAt = isTimestamp(value.observedAt) ? Date.parse(value.observedAt) : Number.NaN;
+  const verificationKindIsValid =
+    value.verificationKind === 'authenticated-account' ||
+    (expectedAgent !== 'omp' && value.verificationKind === 'live-inference');
+  const subjectDisclosureIsValid = value.subjectDisclosure === 'redacted' || value.subjectDisclosure === 'digest';
+  const subjectIsValid =
+    value.subjectDisclosure === 'redacted'
+      ? value.verificationKind === 'authenticated-account' &&
+        typeof value.subject === 'string' &&
+        value.subject.length > 0
+      : value.subject === undefined;
+  return (
+    value.contractVersion === WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION &&
+    value.agent === expectedAgent &&
+    value.ready === true &&
+    verificationKindIsValid &&
+    typeof value.endpoint === 'string' &&
+    value.endpoint.length > 0 &&
+    value.exitStatus === 0 &&
+    Number.isFinite(observedAt) &&
+    observedAt <= reportObservedAt &&
+    subjectDisclosureIsValid &&
+    subjectIsValid &&
+    typeof value.proofDigest === 'string' &&
+    value.proofDigest.length > 0 &&
+    value.failure === undefined
+  );
+}
+
 /** Validate a receipt before a caller persists or reuses it as an admission decision. */
 export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
-  evidence: WorkspaceHostAgentCredentialAdmissionEvidence,
-): void {
+  evidence: unknown,
+  expected?: Pick<WorkspaceHostAgentCredentialAdmissionInput, 'credentialRef' | 'delivery'>,
+): asserts evidence is WorkspaceHostAgentCredentialAdmissionEvidence {
+  if (!isRecord(evidence) || !isRecord(evidence.binding) || !isRecord(evidence.verification)) {
+    throw new Error('workspace-host agent credential admission evidence is incomplete or not ready');
+  }
+  const { binding, verification } = evidence;
   if (
     evidence.contractVersion !== WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION ||
     evidence.sourceKind !== 'operator-integration-credentials' ||
-    evidence.binding.channel !== 'agent' ||
-    !Number.isSafeInteger(evidence.binding.generation) ||
-    evidence.binding.generation < 1 ||
-    !evidence.binding.referenceDigest ||
-    !Number.isFinite(Date.parse(evidence.observedAt)) ||
-    evidence.verification.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION ||
-    evidence.verification.allReady !== true
+    binding.channel !== 'agent' ||
+    !isAgentCredentialFamily(binding.family) ||
+    !Number.isSafeInteger(binding.generation) ||
+    (binding.generation as number) < 1 ||
+    typeof binding.referenceDigest !== 'string' ||
+    !WORKSPACE_HOST_PUBLIC_REFERENCE_DIGEST.test(binding.referenceDigest) ||
+    !isTimestamp(evidence.observedAt) ||
+    verification.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION ||
+    verification.observedAt !== evidence.observedAt ||
+    verification.allReady !== true ||
+    !isRecord(verification.agents) ||
+    !Array.isArray(verification.credentialFreeAgents)
   ) {
     throw new Error('workspace-host agent credential admission evidence is incomplete or not ready');
+  }
+
+  const credentialFreeAgents = verification.credentialFreeAgents;
+  const credentialFreeSet = new Set(credentialFreeAgents);
+  if (
+    credentialFreeSet.size !== credentialFreeAgents.length ||
+    credentialFreeAgents.some((agent) => !isWorkspaceHostCanaryAgent(agent) || agent !== 'omp') ||
+    Object.keys(verification.agents).some((agent) => !isWorkspaceHostCanaryAgent(agent))
+  ) {
+    throw new Error('workspace-host agent credential admission evidence has invalid agent coverage');
+  }
+
+  const reportObservedAt = Date.parse(verification.observedAt as string);
+  for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+    const agentEvidence = verification.agents[agent];
+    if (credentialFreeSet.has(agent)) {
+      if (agentEvidence !== undefined) {
+        throw new Error(
+          `workspace-host agent credential admission evidence overlaps credential-free '${agent}' coverage`,
+        );
+      }
+      continue;
+    }
+    if (!isReadyAgentVerificationEvidence(agent, agentEvidence, reportObservedAt)) {
+      throw new Error(`workspace-host agent credential admission evidence has invalid '${agent}' verification`);
+    }
+  }
+  if (
+    expected &&
+    (binding.generation !== expected.delivery.generation ||
+      binding.referenceDigest !== workspaceHostCredentialReferenceDigest(expected.credentialRef.ref))
+  ) {
+    throw new Error('workspace-host agent credential admission evidence does not match the requested binding');
   }
   assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.agentCredentialAdmission');
 }
@@ -244,7 +343,7 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
       verification,
     };
     if (!verification.allReady) throw new WorkspaceHostAgentCredentialAdmissionError(evidence);
-    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence);
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, input);
     return evidence;
   } finally {
     // This tree contains the only plaintext copy outside the encrypted store. Cleanup failure is
