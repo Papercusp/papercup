@@ -314,10 +314,66 @@ if (assignedIdOwner.size !== args.expectedCandidates) {
 
 const artifactResults = shardResults.filter((result) => result.artifactPresent);
 const terminalResults = shardResults.filter((result) => result.terminal);
+const validatedArtifactResults = artifactResults.filter(
+  (result) =>
+    Object.keys(result.checks).length > 0 && Object.values(result.checks).every(Boolean),
+);
+const missingArtifactShards = shardResults
+  .filter((result) => !result.artifactPresent)
+  .map(({ shard }) => shard);
+const nonTerminalShards = shardResults
+  .filter((result) => !result.terminal)
+  .map(({ shard }) => shard);
+const invalidArtifactShards = artifactResults
+  .filter((result) => !validatedArtifactResults.includes(result))
+  .map(({ shard }) => shard);
+
+if (missingArtifactShards.length > 0) {
+  errors.push({
+    code: 'artifact-shard-coverage-incomplete',
+    expected: args.expectedShards,
+    observed: artifactResults.length,
+    missingShards: missingArtifactShards,
+  });
+}
+if (nonTerminalShards.length > 0) {
+  errors.push({
+    code: 'terminal-shard-coverage-incomplete',
+    expected: args.expectedShards,
+    observed: terminalResults.length,
+    nonTerminalShards,
+  });
+}
+if (validatedArtifactResults.length !== args.expectedShards) {
+  errors.push({
+    code: 'validated-artifact-coverage-incomplete',
+    expected: args.expectedShards,
+    observed: validatedArtifactResults.length,
+    invalidShards: invalidArtifactShards,
+    missingShards: missingArtifactShards,
+  });
+}
+
+const readinessChecks = {
+  assignmentRows: rows.length === args.expectedShards,
+  distinctShards: assignmentByShard.size === args.expectedShards,
+  distinctAssignedCandidates: assignedIdOwner.size === args.expectedCandidates,
+  artifactsPresent: artifactResults.length === args.expectedShards,
+  artifactsValidated: validatedArtifactResults.length === args.expectedShards,
+  shardsTerminal: terminalResults.length === args.expectedShards,
+};
+const readiness = {
+  ready: Object.values(readinessChecks).every(Boolean) && errors.length === 0,
+  checks: readinessChecks,
+  missingArtifactShards,
+  invalidArtifactShards,
+  nonTerminalShards,
+};
 const output = {
   schemaVersion: 'feature-change-p004-validation-aggregate-v1',
   generatedAt: new Date().toISOString(),
-  ok: errors.length === 0,
+  ok: readiness.ready,
+  readiness,
   sources: {
     assignments: args.assignments,
     ledger: args.ledger,
@@ -331,9 +387,7 @@ const output = {
     terminalCount: terminalResults.length,
     artifactShards: [...artifactShards].sort((a, b) => a - b),
     artifactCount: artifactResults.length,
-    validatedArtifactCount: artifactResults.filter((result) =>
-      Object.values(result.checks).every(Boolean),
-    ).length,
+    validatedArtifactCount: validatedArtifactResults.length,
   },
   statusCounts: countBy(rows.map((row) => row.status)),
   recommendationCounts: countBy(
