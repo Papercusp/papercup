@@ -22,6 +22,9 @@ const SCRIPT =
   process.env.PROBE_SCRIPT ??
   resolve(__dirname, "../../../scripts/verify-tauri-headless.sh");
 const src = readFileSync(SCRIPT, "utf8");
+const operatorVitePackage = JSON.parse(
+  readFileSync(resolve(__dirname, "../../operator-vite/package.json"), "utf8"),
+) as { scripts?: Record<string, string> };
 
 describe("EI-20229366113827667 — build and bridge readiness use separate clocks", () => {
   it("exposes an independent bounded cargo-build timeout", () => {
@@ -91,6 +94,26 @@ describe("EI-20229366113827667 — build and bridge readiness use separate clock
     expect(phase).toBe("bridge");
     expect(src).toContain("desktop binary started after ${BUILD_ELAPSED}s");
     expect(src).toContain('ELAPSED="$BUILD_ELAPSED"');
+  });
+});
+
+describe("EI-22614955223428270 — the private development SPA recipe uses the maintained memory contract", () => {
+  it("routes the documented build through pc-heavy and vite-build-singleflight", () => {
+    const recipe = src.match(
+      /# never fire here\.[\s\S]*?# whichever source it came from\./,
+    )?.[0];
+
+    expect(recipe, "the private development-SPA recipe must remain documented").toBeTruthy();
+    expect(recipe).toContain(
+      "bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run build",
+    );
+    expect(recipe).toContain(
+      "VITE_BUILD_CMD='npx vite build --mode development'",
+    );
+    expect(recipe).not.toMatch(/^#\s+npx vite build --mode development/m);
+    expect(operatorVitePackage.scripts?.build).toBe(
+      "bin/vite-build-singleflight",
+    );
   });
 });
 
