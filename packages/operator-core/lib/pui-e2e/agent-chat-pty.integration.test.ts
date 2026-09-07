@@ -716,7 +716,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter();
       await pane.waitFor('PUI tool is still running', { timeoutMs: 60_000 });
       await pane.waitFor('Running — input locked');
-      expect(pane.screen()).toContain('Bash');
+      await pane.waitFor('Bash');
       expect(pane.screen()).not.toContain('Message — Enter send');
       await waitForSavedTurn(prompt);
       pane.interrupt();
