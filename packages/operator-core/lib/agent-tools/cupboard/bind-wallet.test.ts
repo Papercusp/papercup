@@ -12,8 +12,8 @@ vi.mock('../../cupboard/wallet-binding-io', () => io);
 import tool from './bind-wallet';
 
 function body(result: unknown): Record<string, unknown> {
-  const content = (result as { content: Array<{ text: string }> }).content;
-  return JSON.parse(content[0].text) as Record<string, unknown>;
+  const response = result as { data?: unknown; content?: Array<{ text: string }> };
+  return (response.data ?? JSON.parse(response.content![0].text)) as Record<string, unknown>;
 }
 
 describe('cupboard:bind-wallet agent-tool production door', () => {

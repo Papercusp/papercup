@@ -1,5 +1,7 @@
 # Portal revision-5 acceptance evidence
 
+**Continuation:** [preference-race-report.md](../preference-race-report.md) records a subsequently discovered and corrected preference-refresh race, the new running release, successful current interaction/process witnesses, and remaining acceptance limits. The release/provenance and binding statements below describe the preceding correction snapshot. They must not be treated as current source/provenance acceptance for the later release and subsequently changed dependency manifests. Phone's disabled-state witness and the original author's verdict remain open.
+
 Plan: `portal-design-iteration-2026-09-05`. Driver: `WI-2146962`. Independent grader: `su-4c6126e7-56a7-4176-b865-876b8d736b9f`, holding `WI-10000384`. This index supplies evidence for judgment; it is not an acceptance scorecard or author verdict.
 
 The current correction release is `_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9`. `provenance.json` records its immutable directory, source root, committed heads, adopted-source hashes, successful build/handoff logs and HTTP readiness. Its root digest is `baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242`.

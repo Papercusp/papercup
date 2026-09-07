@@ -5,9 +5,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const data = (payload: Record<string, unknown>) => ({ data: payload });
 
 const offerArgs = z
   .object({
@@ -88,8 +86,8 @@ export default defineTool({
         : {}),
     });
     return result.ok
-      ? text({ ...result })
-      : text({
+      ? data({ ...result })
+      : data({
           ok: false,
           error: result.error,
           detail: result.detail,

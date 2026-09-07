@@ -31,9 +31,7 @@ const args = z.discriminatedUnion('op', [
   z.object({ op: z.literal('unbind') }).strict(),
 ]);
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const data = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'cupboard:bind-wallet',
@@ -73,13 +71,13 @@ export default defineTool({
             : await unbindWallet();
 
     if (!result.ok) {
-      return text({
+      return data({
         ok: false,
         error: result.error,
         detail: result.detail,
         status: result.status,
       });
     }
-    return text({ ok: true, ...result.value });
+    return data({ ok: true, ...result.value });
   },
 });
