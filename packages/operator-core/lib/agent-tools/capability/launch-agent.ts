@@ -93,7 +93,7 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
-import { resolveCodexModel } from '../../model-context-budget.mjs';
+import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
@@ -1297,7 +1297,10 @@ export default defineTool({
       // One policy owns both the omitted-model default and the Spark deny. Do
       // this before any terminal/PTY is opened so a bad member cannot partially
       // launch a batch and leave an untracked process behind.
-      return { ...folded, model: resolveCodexModel(folded.model) };
+      const selection = resolveCodexModelSelection(folded.model, {
+        source: folded.modelSource ?? (folded.model ? 'explicit' : 'configured-default'),
+      });
+      return { ...folded, model: selection.model, modelSource: selection.source };
     });
     if (!isResume) {
       const roleFailure = unresolvedAgentRole({
@@ -1398,6 +1401,7 @@ export default defineTool({
               harness: slug,
               account: folded.account ?? null,
               model: folded.model ?? null,
+              modelSource: folded.modelSource ?? null,
               effort: folded.effort ?? null,
               headless: !!folded.headless,
               carry: folded.carry ?? null,
