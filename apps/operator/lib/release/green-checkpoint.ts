@@ -450,9 +450,11 @@ export type CheckpointDiagnostic = "candidate-pinned";
 export interface RepairTickLegRecord {
   /** The NON_TEST_GATE_SCRIPTS registry key (e.g. `lint:tsc`) — NOT an individual script. */
   id: string;
-  /** `errored` = a script could not run/execute (spawn failure, throw) — distinct from a
-   *  clean non-zero `fail`, and it still counts as failing for `failingSignatures`. */
-  status: "pass" | "fail" | "errored";
+  /** `skipped` = this subject hive does not declare any script for the registry id.
+   *  `errored` = a script could not be inspected or run (unreadable package.json, spawn
+   *  failure, throw) — distinct from a clean non-zero `fail`, and both `fail` and `errored`
+   *  count as failing for `failingSignatures`. */
+  status: "pass" | "fail" | "errored" | "skipped";
   durationMs: number;
   /** Bounded evidence tail, present only when the leg did NOT pass. */
   outputTail?: string;
@@ -13211,6 +13213,10 @@ export async function measureRepairTickLegs(
     setupTree(ref: string): Promise<unknown>;
     /** HEAD of that tree after setup, for the attribution check. */
     resolveHead(): Promise<string>;
+    /** Check whether a subject hive declares one root npm script. Absent scripts are a
+     *  legitimate per-hive opt-out and must be skipped; unreadable package metadata fails
+     *  closed. Optional so older/test-only callers preserve their previous behavior. */
+    scriptAvailability?(script: string): NpmScriptCheck;
     /** Run one root npm script; non-zero code = fail, throw = errored. */
     runScript(script: string): Promise<{ code: number; tail: string }>;
     log(line: string): void;
@@ -13240,7 +13246,25 @@ export async function measureRepairTickLegs(
     const startedAt = now();
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
+    let ranScript = false;
     for (const script of scripts) {
+      let availability: NpmScriptCheck | undefined;
+      try {
+        availability = io.scriptAvailability?.(script);
+      } catch (e) {
+        worst = "errored";
+        tails.push(
+          `${script}: package.json inspection failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        continue;
+      }
+      if (availability === "absent") continue;
+      if (availability === "unreadable") {
+        worst = "errored";
+        tails.push(`${script}: package.json unreadable`);
+        continue;
+      }
+      ranScript = true;
       try {
         const r = await io.runScript(script);
         if (r.code !== 0) {
@@ -13254,17 +13278,16 @@ export async function measureRepairTickLegs(
         tails.push(`${script}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    if (!ranScript && worst === "pass") worst = "skipped";
     legs.push({
       id: gateId,
       status: worst,
       durationMs: Math.max(0, now() - startedAt),
-      ...(worst === "pass"
-        ? {}
-        : { outputTail: tails.join(" | ").slice(-500) }),
+      ...(tails.length ? { outputTail: tails.join(" | ").slice(-500) } : {}),
     });
   }
   const failingSignatures = legs
-    .filter((leg) => leg.status !== "pass")
+    .filter((leg) => leg.status === "fail" || leg.status === "errored")
     .map((leg) => leg.id);
   return {
     head: verifiedHead,
@@ -17837,6 +17860,7 @@ export function realCheckpointDeps(
               tail: (r.stderr || r.stdout).slice(-300),
             };
           },
+          scriptAvailability: (script) => checkNpmScript(cfg.checkpointRoot, script),
           log: (line) => console.log(line),
         },
         ref,
