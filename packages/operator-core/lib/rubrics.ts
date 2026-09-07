@@ -2599,7 +2599,20 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     }
     const current = target[field] ?? '';
     const next = mode === 'append' ? (current ? `${current}\n\n${text}` : text) : text;
-    criteria = stored.criteria.map((c) => (c.key === key ? { ...c, [field]: next } : c));
+    criteria = stored.criteria.map((c) => {
+      if (c.key !== key) return c;
+      if (stored.kind === 'acceptance' && field === 'model') {
+        // `bar` and `barHash` are read/projection aliases, not independent
+        // authoring fields. A stored acceptance criterion carries both aliases,
+        // so retaining them while replacing the canonical model makes the
+        // normalizer compare the new model with the stale old bar and reject a
+        // valid model-only amendment. Drop both aliases here; the central
+        // acceptance writer re-derives the hash from the new canonical model.
+        const { bar: _bar, barHash: _barHash, ...canonical } = c;
+        return { ...canonical, model: next };
+      }
+      return { ...c, [field]: next };
+    });
   }
   if (input.criterionClass) {
     const { key, class: cls } = input.criterionClass;

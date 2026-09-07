@@ -666,6 +666,42 @@ describe('applyRubricAmendment (rubrics:amend pure core)', () => {
     expect(out.shrinkReason).toBe('procedure moved to the runbook');
   });
 
+  it('model-only acceptance amendments drop stale BAR read aliases before normalization', () => {
+    const existing = rubric(
+      [
+        crit({
+          key: 'r-1',
+          model: 'The old acceptance promise.',
+          bar: 'The old acceptance promise.',
+          barHash: 'a'.repeat(64),
+          barKey: 'R-1',
+          role: 'outcome',
+          mandatory: true,
+          requiredScope: ['tree'],
+          evidencePlane: 'tree',
+          passRatings: ['healthy'],
+        }),
+      ],
+      { kind: 'acceptance', subjectPlan: 'subject-plan' },
+    );
+    const out = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      criterion: {
+        key: 'r-1',
+        field: 'model',
+        mode: 'replace',
+        text: 'The corrected acceptance promise.',
+      },
+    });
+    const patched = out.criteria[0]!;
+
+    expect(patched.model).toBe('The corrected acceptance promise.');
+    expect(patched).not.toHaveProperty('bar');
+    expect(patched).not.toHaveProperty('barHash');
+    expect(() => normalizeAcceptanceBarCriterion(patched)).not.toThrow();
+    expect(normalizeAcceptanceBarCriterion(patched).barHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('methodRef-only amendment keeps criteria byte-identical', () => {
     const out = applyRubricAmendment(stored(), { rubricId: 'su-agent-behavior', methodRef: 'su-agent-behavior-grading-runbook' });
     expect(out.methodRef).toBe('su-agent-behavior-grading-runbook');
