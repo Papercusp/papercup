@@ -159,6 +159,33 @@ describe('shared agent obligation reader', () => {
     expect(second.agenda.sourceGeneration).toBe(first.agenda.sourceGeneration);
   });
 
+  it.each(['goal', 'plan'] as const)('keeps failed %s scope discovery visibly unknown', async (scope) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const read = await readAgentObligationAgenda({
+        workspaceId: 'ws',
+        ownerId: 'su-goal',
+        now: NOW,
+        deps: deps({
+          goalSubject: vi.fn(async () => {
+            if (scope === 'goal') throw new Error('goal scope unavailable');
+            return null;
+          }),
+          planSlugs: vi.fn(async () => {
+            if (scope === 'plan') throw new Error('plan scope unavailable');
+            return [];
+          }),
+        }),
+      });
+
+      expect(read.degradedSources.length).toBeGreaterThan(0);
+      expect(read.agenda.primary).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'unknown' })]));
+      expect(projectAgentTurnStartObligationBrief(read.agenda).projection.text).toContain('UNKNOWN');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('projects the same agenda with sink-specific caps and an omission receipt', async () => {
     const { agenda } = await readAgentObligationAgenda({
       workspaceId: 'ws',

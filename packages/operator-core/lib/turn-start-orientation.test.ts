@@ -233,6 +233,27 @@ describe('turn-start-orientation — when it speaks', () => {
     ).toBe(false);
   });
 
+  it('keeps obligation recovery reachable after the outer envelope is crowded', () => {
+    const brief = obligationBrief();
+    const state: OrientationState = {
+      ...withWork,
+      loopArmed: false,
+      obligations: brief,
+      toolSurface: { hookCalls: 22, windowMinutes: 5 },
+      openAsks: { count: 4, oldestAgeMs: 90_000, oldestTo: 'su-peer-awaiting-review' },
+      neverDropFacts: [
+        'guard-rail:current-owner-request-remains-open',
+        'dead-end:do-not-repeat-the-withdrawn-plan',
+      ],
+    };
+
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+
+    expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
+    expect(out).toContain('directed msg(s) awaiting YOUR reply');
+    expect(out).toContain(brief.detailRef);
+  });
+
   it('a held-item STATUS change re-emits, not just an id change', () => {
     const a = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'wip' }] }, EPOCH);
     const b = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'blocked' }] }, EPOCH);
