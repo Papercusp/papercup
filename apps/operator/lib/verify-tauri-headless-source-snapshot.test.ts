@@ -97,6 +97,45 @@ describe("EI-22587788892654404 — a repo-local temp root cannot enter its own s
   });
 });
 
+describe("EI-22616267024724225 — frozen verifier hosts exclude the tsx runtime loader", () => {
+  const bundleFunctionIdx = src.indexOf("build_verifier_operator_host() {");
+  const bundleCallIdx = src.indexOf(
+    "build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }",
+  );
+  const launchEnvIdx = src.indexOf('OPERATOR_SOURCE_ENV_LINE="');
+
+  it("builds the maintained host bundle only after the source/dependency snapshot is frozen", () => {
+    expect(bundleFunctionIdx).toBeGreaterThan(operatorSnapshotCallIdx);
+    expect(bundleCallIdx).toBeGreaterThan(bundleFunctionIdx);
+    expect(operatorSnapshotSource).toContain(
+      'papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root"',
+    );
+    expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
+      "apps/operator/bin/bundle-host.sh",
+    );
+    expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
+      'bin/hono-host.ts "$OPERATOR_HOST_BUNDLE"',
+    );
+    expect(src.slice(bundleFunctionIdx, bundleCallIdx)).toContain(
+      '[ -s "$OPERATOR_HOST_BUNDLE" ]',
+    );
+  });
+
+  it("hands the private plain-node entry to the existing dev-operator launcher", () => {
+    expect(launchEnvIdx).toBeGreaterThan(bundleCallIdx);
+    expect(src.slice(launchEnvIdx, launchEnvIdx + 500)).toContain(
+      'PAPERCUSP_DEV_HOST_ENTRY=\\"$OPERATOR_HOST_BUNDLE\\"',
+    );
+    expect(src).toContain('OPERATOR_HOST_BUNDLE=""');
+    expect(
+      src.slice(
+        src.indexOf("cleanup_operator_source_snapshot() {"),
+        operatorSnapshotIdx,
+      ),
+    ).toContain('OPERATOR_HOST_BUNDLE=""');
+  });
+});
+
 describe("EI-22590231221058313 — workspace runtime exports survive the snapshot", () => {
   function requireSnapshot(output: "dist" | "build", blanketExclude = false) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-runtime-export-"));
