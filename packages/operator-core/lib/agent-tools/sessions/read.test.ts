@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
 const resolveSearchFilters = vi.hoisted(() => vi.fn());
+const readArchivedSessionTurns = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -24,6 +25,13 @@ vi.mock('./_shared', async (importOriginal) => ({
 
 vi.mock('../search/filters', () => ({
   resolveSearchFilters: (...args: unknown[]) => resolveSearchFilters(...args),
+}));
+
+// Archive fall-through is exercised by the empty-index test below. Keep this
+// unit suite database-free: the production default store opens PG, while the
+// archive reader's behavior is covered by its own injected-store tests.
+vi.mock('../../session-archive-read', () => ({
+  readArchivedSessionTurns,
 }));
 
 const readModule = await import('./read');
