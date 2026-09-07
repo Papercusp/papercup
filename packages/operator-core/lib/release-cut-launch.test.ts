@@ -519,6 +519,27 @@ describe('buildCutArgv with a platform', () => {
     expect(inner).toContain(`echo "DONE:$?" > ${cutDoneFor('mac')}`);
     expect(inner).not.toContain(CUT_DONE); // sanity: not the bare whole-cut done-file path
   });
+
+  it('reuses verified Linux salvage for a non-Linux leg instead of rebuilding Linux', () => {
+    const argv = buildCutArgv(
+      '/root/papercusp-desktop',
+      '0.0.8',
+      'alpha',
+      { windows: true },
+      '1feac8dd867c6566af834445a58b5a2e43b14649',
+      '/usr/bin:/bin',
+      { ownerName: 'Avi' },
+      'windows',
+      '/current/papercusp-desktop',
+    );
+    const inner = argv[argv.length - 1]!;
+
+    // release-local.sh validates the same-version build-provenance.json before
+    // honoring this flag, so this is a verified salvage path rather than a blind
+    // skip. The requested Windows leg remains enabled independently.
+    expect(inner).toContain("PAPERCUSP_REUSE_LINUX='1'");
+    expect(inner).toContain("WITH_WINDOWS='1'");
+  });
 });
 
 describe('readCutStatus with a platform', () => {

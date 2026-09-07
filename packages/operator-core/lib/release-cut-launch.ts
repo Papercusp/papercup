@@ -149,6 +149,7 @@ export function buildCutEnv(
   legs: CutLegs,
   expectedSourceSha: string,
   runtime: CutRuntimeEnv,
+  platform?: Platform,
 ): Record<string, string> {
   const env: Record<string, string> = {
     PAPERCUSP_PUBLISH_GITHUB: '0',
@@ -175,6 +176,11 @@ export function buildCutEnv(
   const ownerEmail = runtime.ownerEmail?.trim();
   if (ownerEmail) env.PAPERCUSP_RELEASE_OWNER_EMAIL = ownerEmail;
   if (runtime.reuseSeed) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  // A platform leg still runs the shared release-local collector. Non-Linux legs
+  // must consume the already-successful Linux bytes through its existing,
+  // provenance-checked salvage path; otherwise a Windows/macOS/arm64 retry
+  // silently rebuilds Linux before reaching its requested leg.
+  if (platform && platform !== 'linux') env.PAPERCUSP_REUSE_LINUX = '1';
   if (legs.mac) env.WITH_MAC = '1';
   if (legs.windows) env.WITH_WINDOWS = '1';
   if (legs.arm64) env.WITH_ARM64 = '1';
@@ -197,7 +203,7 @@ export function buildCutArgv(
   platform?: Platform,
   orchestratorRoot?: string,
 ): string[] {
-  const env = buildCutEnv(legs, expectedSourceSha, runtime);
+  const env = buildCutEnv(legs, expectedSourceSha, runtime, platform);
   const envPrefix = Object.entries(env)
     .map(([k, v]) => `${k}=${shellSingleQuote(v)}`)
     .join(' ');
