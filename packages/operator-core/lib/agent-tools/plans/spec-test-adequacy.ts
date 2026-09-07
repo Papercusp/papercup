@@ -75,8 +75,13 @@ export interface SpecEvidenceForAdequacy {
  */
 export function latestLogicalEvidence(rows: readonly SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
   const selected = new Map<string, { row: SpecEvidenceForAdequacy; index: number }>();
-  const timestamp = (row: SpecEvidenceForAdequacy): number => {
-    const value = Date.parse(row.observedAt ?? row.createdAt ?? '');
+  // A logical correction is a newer APPEND, not a later claimed observation.
+  // `observedAt` is caller-authored evidence metadata and may be skewed or even
+  // future-dated; letting it order versions makes an old row permanently poison
+  // every later correction. `createdAt` is server-authored, with the immutable DB
+  // id and input order as deterministic fallbacks for legacy/test rows.
+  const appendTimestamp = (row: SpecEvidenceForAdequacy): number => {
+    const value = Date.parse(row.createdAt ?? '');
     return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
   };
   rows.forEach((row, index) => {
@@ -88,11 +93,14 @@ export function latestLogicalEvidence(rows: readonly SpecEvidenceForAdequacy[]):
       selected.set(key, { row, index });
       return;
     }
-    const rowTs = timestamp(row);
-    const priorTs = timestamp(prior.row);
+    const rowTs = appendTimestamp(row);
+    const priorTs = appendTimestamp(prior.row);
     const rowId = row.id ?? Number.NEGATIVE_INFINITY;
     const priorId = prior.row.id ?? Number.NEGATIVE_INFINITY;
-    if (rowTs > priorTs || (rowTs === priorTs && rowId > priorId)) {
+    if (
+      rowTs > priorTs ||
+      (rowTs === priorTs && (rowId > priorId || (rowId === priorId && index > prior.index)))
+    ) {
       selected.set(key, { row, index });
     }
   });

@@ -97,12 +97,13 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 }
 
 describe('spec-test-adequacy per-clause evaluator', () => {
-  it('grades the newest version of one logical evidence ref while retaining immutable history', () => {
+  it('grades the newest server-created version even when an older row has a future observedAt', () => {
     const evidenceRef = 'test/reconnect.integration.ts#recorded';
     const older = evidence({
       id: 41,
       evidenceRef,
-      observedAt: '2026-08-20T00:00:00.000Z',
+      observedAt: '2099-08-20T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
       coverageEvidenceRef: null,
       testRunId: null,
       details: { adequacy: { executed: false, skipped: true, coverageRungs: { l3: false } } },
@@ -116,7 +117,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const newer = evidence({
       id: 42,
       evidenceRef,
-      observedAt: '2026-08-20T00:01:00.000Z',
+      observedAt: '2020-08-20T00:01:00.000Z',
+      createdAt: '2026-08-20T00:01:00.000Z',
     });
 
     expect(latestLogicalEvidence([older, newer])).toEqual([newer]);
