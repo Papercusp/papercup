@@ -39,6 +39,7 @@ import runTool, {
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
   normalizeTestFilePaths,
+  parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
   selectTestFileRoot,
@@ -409,6 +410,23 @@ describe('testing:run (integration)', () => {
       byFile: { [NODE_TEST_TARGET]: { passed: 2, failed: 0, skipped: 0, collectionFailed: false } },
     });
     expect(parseRouterTestResult('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed', [NODE_TEST_TARGET])).toBeNull();
+  });
+
+  it('requires a finished zero-exit progress line before treating a terminal marker as complete', () => {
+    const output = [
+      'TEST_FILE_PROGRESS state=finished elapsedMs=14825 capturedBytes=42 completedFiles=["target"] pendingFiles=[] timeoutMs=50000 exitStatus=0 signal=none',
+      'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=84e1f9b504',
+    ].join('\n');
+
+    expect(parseRouterTerminalCompletion(output)).toEqual({
+      requested: 1,
+      executed: 1,
+      matched: 1,
+      status: 'passed',
+      runElapsedMs: 14825,
+    });
+    expect(parseRouterTerminalCompletion(output.replace('exitStatus=0', 'exitStatus=1'))).toBeNull();
+    expect(parseRouterTerminalCompletion('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed')).toBeNull();
   });
 
   it('parses a strict typed NOT-MEASURED router marker without turning ordinary route errors into one', () => {

@@ -871,6 +871,58 @@ async function readFailureDetails(path: string, root: string): Promise<ReturnTyp
   }
 }
 
+/**
+ * A foreground budget can expire after the router has already finished the
+ * tests and emitted its terminal marker, while the child process is still
+ * closing or flushing its report. Prefer that completed evidence over a false
+ * timeout, but recover only when the marker and the structured report agree.
+ */
+async function recoverCompletedRunAfterBudget(opts: {
+  output: string;
+  dir: string;
+  root: string;
+  runId: string;
+  files: string[];
+  timeoutMs: number;
+  maxFailures?: number;
+}): Promise<TestFilesCoreResult | null> {
+  const terminal = parseRouterTerminalCompletion(opts.output);
+  if (!terminal) return null;
+  if (terminal.requested !== opts.files.length) return null;
+
+  const reportTexts = await readRunReportTexts(opts.dir);
+  let run: DistilledTestRun | null = null;
+  if (reportTexts.length > 0) {
+    const failureDetails = await readFailureDetails(join(opts.dir, TEST_FAILURE_DETAILS_FILENAME), opts.root);
+    run = mergeDistilledRuns(
+      reportTexts.map((text) => distillVitestRun(text, opts.root, { maxFailures: opts.maxFailures, failureDetails })),
+      { maxFailures: opts.maxFailures },
+    );
+  } else {
+    run = parseRouterTestResult(opts.output, opts.files, {
+      ...(opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures }),
+    });
+  }
+
+  // The marker's executed count is the router's file count. If no report (or
+  // parser summary) can corroborate that count, retain the conservative timeout.
+  if (!run || run.files !== terminal.executed || run.passed + run.failed <= 0) return null;
+  const reportFailed = run.failed > 0;
+  if ((terminal.status === 'passed' && reportFailed) || (terminal.status === 'failed' && !reportFailed)) return null;
+
+  return boundTestRunPayload(
+    {
+      ok: terminal.status === 'passed',
+      runId: opts.runId,
+      root: opts.root,
+      budgetExceeded: true,
+      budgetMs: opts.timeoutMs,
+      ...(terminal.runElapsedMs === undefined ? {} : { runElapsedMs: terminal.runElapsedMs }),
+    },
+    run,
+  ) as TestFilesCoreResult;
+}
+
 interface RouterOutcome extends TestProcessOutcome {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -1155,6 +1207,67 @@ export function parseRouterTestResult(
     failuresTruncated: failureNames.length > maxFailures,
     durationMs,
     byFile,
+  };
+}
+
+/**
+ * Parse the router's terminal progress + verdict pair. This is intentionally
+ * separate from parseRouterTestResult: Vitest writes its structured report to
+ * the private report file, so its stdout has no `tests`/`pass` summary for that
+ * parser to consume. The pair is still enough to prove that the router reached
+ * a terminal, zero-exit state after this tool's foreground budget elapsed.
+ */
+export interface RouterTerminalCompletion {
+  requested: number;
+  executed: number;
+  matched: number;
+  status: 'passed' | 'failed';
+  runElapsedMs?: number;
+}
+
+export function parseRouterTerminalCompletion(output: string): RouterTerminalCompletion | null {
+  const markerRe =
+    /^TEST_FILE_RESULT\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+status=(passed|failed)\b[^\r\n]*$/gm;
+  let marker: RegExpExecArray | null = null;
+  for (const match of output.matchAll(markerRe)) marker = match;
+  if (!marker) return null;
+
+  const requested = Number(marker[1]);
+  const executed = Number(marker[2]);
+  const matched = Number(marker[3]);
+  if (
+    ![requested, executed, matched].every(Number.isSafeInteger) ||
+    requested < 1 ||
+    executed < 1 ||
+    matched !== requested ||
+    executed !== matched
+  ) {
+    return null;
+  }
+
+  let finishedLine: string | null = null;
+  for (const match of output.matchAll(/^TEST_FILE_PROGRESS[^\r\n]*$/gm)) {
+    const line = match[0];
+    if (
+      /\bstate=finished\b/.test(line) &&
+      /\bexitStatus=0\b/.test(line) &&
+      /\bsignal=none\b/.test(line)
+    ) {
+      finishedLine = line;
+    }
+  }
+  if (!finishedLine) return null;
+
+  const elapsedMatch = finishedLine.match(/\belapsedMs=(\d+)\b/);
+  const runElapsedMs = elapsedMatch ? Number(elapsedMatch[1]) : undefined;
+  if (runElapsedMs !== undefined && (!Number.isSafeInteger(runElapsedMs) || runElapsedMs < 0)) return null;
+
+  return {
+    requested,
+    executed,
+    matched,
+    status: marker[4] as RouterTerminalCompletion['status'],
+    ...(runElapsedMs === undefined ? {} : { runElapsedMs }),
   };
 }
 
@@ -1455,6 +1568,17 @@ export async function runTestFilesCore(opts: {
       };
     }
     if (outcome.timedOut) {
+      const completed = await recoverCompletedRunAfterBudget({
+        output: outcome.output,
+        dir,
+        root,
+        runId,
+        files: pathResolution.files,
+        timeoutMs,
+        ...(opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures }),
+      });
+      if (completed) return completed;
+
       // The foreground process group has already been terminated by
       // runTestProcess. Start a NEW, independently pollable store run for the
       // same router request rather than asking the caller to reconstruct it via
