@@ -56,6 +56,9 @@ class DreamMetricsFold {
   private readonly qualified = new Set<string>();
   private readonly packets = new Map<string, { costUsd: number; durationMs: number }>();
   private readonly units = new Set<string>();
+  private readonly mechanisms = new Set<string>();
+  private readonly routedRefs = new Set<string>();
+  private readonly linkedBatteries = new Set<string>();
   private readonly domainPairs = new Set<string>();
   private readonly snapshots = new Set<string>();
   private readonly populations = new Map<string, { eligible: Set<string>; selected: Set<string> }>();
@@ -66,6 +69,10 @@ class DreamMetricsFold {
   private readonly arities: Record<string, number> = {};
   private readonly recipes: Record<string, number> = {};
   private readonly versions: Record<string, number> = {};
+  private readonly configurations: Record<string, number> = {};
+  private readonly thirdRoles: Record<string, number> = {};
+  private readonly indexHealth: Record<string, number> = {};
+  private readonly curve: Array<{ runId: string; at: string; knownCallUsd: number; qualifiedFamilies: number; costIncomplete: boolean }> = [];
   private readonly strategies: Record<string, number> = {};
   private readonly exclusions: Record<string, number> = {};
   private readonly routes: Record<string, number> = {};
@@ -112,6 +119,9 @@ class DreamMetricsFold {
     if (run.review) this.reviewed++;
 
     if (provenance) {
+      increment(this.configurations, JSON.stringify([
+        provenance.manifestRevision, provenance.dreamPromptVersion, provenance.reviewPromptVersion,
+      ]));
       let accounted = 0;
       for (const call of provenance.calls) {
         const buckets = [this.phases[call.phase]!, this.models[call.model] ??= cost()];
@@ -173,9 +183,12 @@ class DreamMetricsFold {
       const entries = [selected.a, selected.b, ...(selected.c ? [selected.c.entry] : [])];
       increment(this.arities, String(entries.length));
       increment(this.recipes, selected.recipe);
+      increment(this.thirdRoles, selected.c?.declaration.role ?? 'none');
       this.domainPairs.add(JSON.stringify([selected.a.packet.unit.homeDomain, selected.b.packet.unit.homeDomain].sort()));
       for (const { packet } of entries) {
         this.units.add(`${packet.scope.repositoryId}:${packet.unit.id}`);
+        if (packet.unit.granularity === 'mechanism') this.mechanisms.add(`${packet.scope.repositoryId}:${packet.unit.id}`);
+        increment(this.indexHealth, packet.extraction.indexHealth);
         const key = `${packet.scope.repositoryId}:${packet.unit.id}:${packet.unitHash}:${packet.extraction.artifactHash}`;
         const value = { costUsd: packet.extraction.costUsd, durationMs: packet.extraction.durationMs };
         const prior = this.packets.get(key);
@@ -222,15 +235,22 @@ class DreamMetricsFold {
     }
     if (run.routedRef) {
       this.routed++;
-      increment(this.routes, row.routed?.rail ?? 'unknown');
-      increment(this.grades, row.routed?.humanGrade == null ? 'unknown' : String(row.routed.humanGrade));
-      increment(this.outcomes, row.routed?.outcome ?? 'unknown');
+      if (!this.routedRefs.has(run.routedRef)) {
+        this.routedRefs.add(run.routedRef);
+        increment(this.routes, row.routed?.rail ?? 'unknown');
+        increment(this.grades, row.routed?.humanGrade == null ? 'unknown' : String(row.routed.humanGrade));
+        increment(this.outcomes, row.routed?.outcome ?? 'unknown');
+      }
     }
     const linkedBatteries = new Set(dreamRunAssessments(run).flatMap(a => a.experimentBatteryIds));
+    for (const id of linkedBatteries) this.linkedBatteries.add(id);
     for (const e of row.experiments) {
       if (!linkedBatteries.has(e.batteryId)) throw new Error('Experiment is not linked by a Dream assessment');
       this.experiments.set(e.batteryId, e);
     }
+    this.curve.push({ runId: run.runId, at: run.startedAt, knownCallUsd: this.knownUsd,
+      qualifiedFamilies: this.qualified.size, costIncomplete: this.missingUsage > 0 || this.legacy > 0 || this.errors.length > 0 });
+    if (this.curve.length > 256) this.curve.shift();
   }
 
   finish() {
@@ -246,10 +266,11 @@ class DreamMetricsFold {
     return {
       schemaVersion: 'dream-metrics-v1' as const, scope: this.scope,
       population: { complete: true, attempts: this.attempts, legacy: this.legacy, versions: this.versions },
+      configurationVersions: this.configurations,
       funnel: {
         statuses: this.statuses, terminal: this.attempts - this.statuses.running!, eligibleAttempts: this.eligible,
         proposalAttempts: this.proposals, reviewedAttempts: this.reviewed, assessedAttempts: this.assessed,
-        routedAttempts: this.routed, qualifiedFamilies: this.qualified.size,
+        routedAttempts: this.routed, uniqueRoutedArtifacts: this.routedRefs.size, qualifiedFamilies: this.qualified.size,
         proposalsPerEligibleAttempt: ratio(this.proposals, this.eligible),
         qualifiedFamiliesPerEligibleAttempt: ratio(this.qualified.size, this.eligible),
         noPairRate: ratio(this.statuses['no-pair']!, this.attempts),
@@ -259,11 +280,13 @@ class DreamMetricsFold {
         scope: 'recorded-assessments' as const, identifiedFamilies: this.families.size,
         unidentifiedProposalAttempts: this.familyUnknown, qualificationUnknown: this.qualificationUnknown,
         repeatedFamilyRate: ratio(identified - this.families.size, identified),
-        largestFamilyShare: ratio(Math.max(0, ...familyCounts), identified),
+        largestFamilyShare: ratio(familyCounts.reduce((n, v) => Math.max(n, v), 0), identified),
       },
+      discoveryCurve: { points: this.curve, omittedEarlierPoints: Math.max(0, this.attempts - this.curve.length) },
       quality: this.quality, reviewerDisagreement: ratio(this.disagreement, this.compared),
       coverage: {
-        selectedUnits: this.units.size, domainPairs: this.domainPairs.size, sourceSnapshots: this.snapshots.size,
+        selectedUnits: this.units.size, selectedMechanismUnits: this.mechanisms.size,
+        domainPairs: this.domainPairs.size, sourceSnapshots: this.snapshots.size,
         sourcePopulationCoverage: ratio(
           [...this.populations.values()].reduce((n, p) => n + p.selected.size, 0),
           [...this.populations.values()].reduce((n, p) => n + p.eligible.size, 0),
@@ -271,6 +294,7 @@ class DreamMetricsFold {
         snapshotsWithUnknownPopulation: this.snapshots.size - this.populations.size,
         selectedPacketUses: this.packetUses, incompletePacketUses: this.incompletePackets,
         exclusions: this.exclusions, arities: this.arities, recipes: this.recipes, strategies: this.strategies,
+        thirdRoles: this.thirdRoles, indexHealth: this.indexHealth,
       },
       cost: {
         knownCallUsd: this.knownUsd, unresolvedBoundUsd: this.boundUsd, unknownUsageCount: this.missingUsage,
@@ -289,6 +313,7 @@ class DreamMetricsFold {
       downstream: { routes: this.routes, grades: this.grades, outcomes: this.outcomes },
       experiments: {
         linked: experiments.length, executed: executed.length, winning: winners.length,
+        declaredLinks: this.linkedBatteries.size, missingResults: this.linkedBatteries.size - experiments.length,
         recordedCostUsd: experiments.reduce((n, e) => n + e.totalCostUsd, 0),
         engineeringTimeMs: null, // The existing experiment ledger does not record engineer time.
         decisions: experiments.reduce<Record<string, number>>((acc, e) => { increment(acc, e.decision); return acc; }, {}),
@@ -308,7 +333,8 @@ export function computeDreamMetrics(rows: readonly DreamMetricRow[], scope: Drea
     if (!previous || row.run.updatedAt > previous.run.updatedAt) latest.set(row.run.runId, row);
   }
   const fold = new DreamMetricsFold(scope);
-  for (const row of latest.values()) fold.add(row);
+  for (const row of [...latest.values()].sort((a, b) =>
+    a.run.startedAt.localeCompare(b.run.startedAt) || a.run.runId.localeCompare(b.run.runId))) fold.add(row);
   return fold.finish();
 }
 

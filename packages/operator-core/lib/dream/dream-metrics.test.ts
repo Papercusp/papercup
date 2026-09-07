@@ -160,9 +160,26 @@ describe('Dream metrics reconcile evidence rather than wording, retries or missi
     const duplicate = structuredClone(r); duplicate.run.runId = 'same-family';
     const report = computeDreamMetrics([r, duplicate], scope);
     expect(report.experiments).toMatchObject({ linked: 2, executed: 1, winning: 1, recordedCostUsd: 0.1 });
-    expect(report.downstream.grades).toEqual({ '4': 2 });
-    expect(report.downstream.outcomes).toEqual({ pending: 2 });
+    expect(report.funnel.routedAttempts).toBe(2);
+    expect(report.funnel.uniqueRoutedArtifacts).toBe(1);
+    expect(report.downstream.grades).toEqual({ '4': 1 });
+    expect(report.downstream.outcomes).toEqual({ pending: 1 });
     expect(report.experiments.engineeringTimeMs).toBeNull();
+  });
+
+  it('reports unresolved experiment links and a bounded curve without hiding the total population', () => {
+    const r = row('missing-result');
+    assess(r, 'f', { experimentBatteryIds: ['not-run-yet'] });
+    const rows = Array.from({ length: 270 }, (_, i) => {
+      const copy = structuredClone(r); copy.run.runId = String(i).padStart(3, '0'); return copy;
+    });
+    const report = computeDreamMetrics(rows, scope);
+    expect(report.experiments).toMatchObject({ declaredLinks: 1, linked: 0, missingResults: 1, executed: 0, winning: 0 });
+    expect(report.population.attempts).toBe(270);
+    expect(report.discoveryCurve.points).toHaveLength(256);
+    expect(report.discoveryCurve.omittedEarlierPoints).toBe(14);
+    expect(report.discoveryCurve.points.at(-1)?.qualifiedFamilies).toBe(1);
+    expect(report.discoveryCurve.points.at(-1)?.knownCallUsd).toBeCloseTo(18.9);
   });
 
   it('selects a later terminal snapshot, respects the half-open window, and rejects cross-pot rows', () => {
