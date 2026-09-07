@@ -1334,7 +1334,8 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
 
     const out = renderCarryBriefColdExtras(brief);
     expect(out).toContain('path scope: checkpoint paths are repository-relative to the sidestage harness repository root');
-    expect(out).toContain("(resolve with harness:get before shelling out)");
+    expect(out).toContain("(resolve with harness:list { detail: 'full' } and match this slug before shelling out)");
+    expect(out).not.toContain('resolve with harness:get');
     expect(out).toContain('apps/web/src/auction.css');
   });
 

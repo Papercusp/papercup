@@ -1765,7 +1765,7 @@ export function renderCarryBriefColdExtras(
       // path. The slug is authoritative; the resolver supplies the actual path.
       const pathScope = h.checkpoint
         ? `\n    path scope: checkpoint paths are repository-relative to the ${h.harness ? `${h.harness} harness` : 'current'} repository root` +
-          (h.harness ? ` (resolve with harness:get before shelling out)` : '')
+          (h.harness ? ` (resolve with harness:list { detail: 'full' } and match this slug before shelling out)` : '')
         : '';
       let ckpt: string;
       if (!h.checkpoint) {
