@@ -15,4 +15,15 @@ The gross/list-cost and savings columns are rounded to cents even in this export
 
 This advances the prior “no provider report extracted” state. It does not claim that the persisted deferred-spend obligations have been finalized. The current `WorkspaceHostSpendSettlement` type accepts only `status: "deferred"`; the teardown runner records that obligation, while `lateObservedSpend` is an appendable provider-evidence input to the canary ledger. A fabricated `status: "settled"` or replaying a destroy operation is not a valid reconciliation path. Keep the original teardown/orphan evidence intact.
 
-Still required: obtain adequate gross precision or explicitly record the provider's rounding bound, define the existing ledger's supported post-teardown reconciliation path under WI-2144021, and attach the per-run provider evidence through that path. Do not silently replace provisional zero spend with net-after-credit zero or mark the billing wall resolved from this report alone.
+## Exact provider amounts recovered
+
+Subsequent authenticated report reloads exposed the source query and its typed response. The `BillingData` operation queries `cloud_billing_data.public.costs.v2`; the request aliases `usage_cost AS usageCostMicros` and the savings/subtotal columns likewise. Both the chart and table query independently returned the same run-scoped amounts. The selected query metadata and raw integer strings are preserved in `provider-micros.json`, without authentication or tracking data.
+
+| Run | Gross usage, USD | Other savings, USD | Net subtotal, USD |
+| --- | ---: | ---: | ---: |
+| r4 | 0.008651 | -0.008651 | 0.000000 |
+| r5 | 0.001001 | -0.001001 | 0.000000 |
+
+Amounts divide the provider's micros by 1,000,000. The original CSV remains unchanged: its rounded r5 gross zero concealed a real sub-cent charge. The gross-precision gap is now resolved. Neither this query nor the CSV asserts that future delayed adjustments cannot occur.
+
+Still required: define the existing ledger's supported post-teardown reconciliation path under WI-2144021 and attach the per-run provider evidence through that path. Do not silently replace provisional zero spend with net-after-credit zero or mark the persisted billing wall resolved from this observation alone.
