@@ -195,6 +195,7 @@ export function buildCutArgv(
   pathEnv: string,
   runtime: CutRuntimeEnv,
   platform?: Platform,
+  orchestratorRoot?: string,
 ): string[] {
   const env = buildCutEnv(legs, expectedSourceSha, runtime);
   const envPrefix = Object.entries(env)
@@ -211,7 +212,18 @@ export function buildCutArgv(
   const resumeReset = runtime.reuseSeed
     ? 'git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json && '
     : '';
-  const inner = `rm -f ${done}; printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; ` + `${resumeReset}${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
+  // The selected root owns the exact target bytes and artifact paths, while the
+  // current tooling root owns retry orchestration. Invoking the selected root's
+  // frozen cutter would make every release repair in the current cutter inert.
+  // `bash -c` sets $0 to the frozen target entrypoint; the sourced script sees
+  // its current path through BASH_SOURCE[0] and deliberately keeps both roots.
+  const targetEntrypoint = path.join(root, 'bin', 'release-local.sh');
+  const orchestratorEntrypoint = path.join(orchestratorRoot ?? root, 'bin', 'release-local.sh');
+  const cutterInvocation =
+    `bash -c 'source "$1" "$2" "$3"' ` +
+    `${shellSingleQuote(targetEntrypoint)} ${shellSingleQuote(orchestratorEntrypoint)} ` +
+    `${shellSingleQuote(version)} ${shellSingleQuote(channel)}`;
+  const inner = `rm -f ${done}; printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; ` + `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
   return [
     '--user',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
@@ -235,6 +247,9 @@ export interface LaunchCutOpts {
   legs?: CutLegs;
   /** papercusp-desktop root (default desktopRoot()). */
   root?: string;
+  /** Current papercusp-desktop tooling root. The selected `root` still owns all
+   * target bytes and artifact paths; only orchestration is sourced from here. */
+  orchestratorRoot?: string;
   /** Fire ONE platform leg on its own unit/log/done (WI-4233 fleet-split support) instead
    *  of the legacy whole-cut unit. Omitted ⇒ unchanged whole-cut behavior. */
   platform?: Platform;
@@ -264,6 +279,7 @@ export interface LaunchCutResult {
  */
 export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spawn): Promise<LaunchCutResult> {
   const root = opts.root ?? desktopRoot();
+  const orchestratorRoot = opts.orchestratorRoot ?? desktopRoot();
   const legs = opts.legs ?? {};
   const argv = buildCutArgv(
     root,
@@ -274,6 +290,7 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
     process.env.PATH ?? '',
     opts.runtime,
     opts.platform,
+    orchestratorRoot,
   );
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {

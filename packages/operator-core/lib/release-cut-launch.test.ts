@@ -108,6 +108,8 @@ describe('buildCutArgv', () => {
     sourceSha,
     '/usr/bin:/bin',
     { ownerName: "Avi O'Neil" },
+    undefined,
+    '/current/papercusp-desktop',
   );
   const inner = argv[argv.length - 1];
 
@@ -126,7 +128,9 @@ describe('buildCutArgv', () => {
     expect(inner).toContain("PAPERCUSP_SKIP_DEP_GENERATION='1'");
     expect(inner).toContain("PAPERCUSP_SKIP_MOBILE='1'");
     expect(inner).toContain("WITH_MAC='1'");
-    expect(inner).toContain("bin/release-local.sh '0.0.8' 'alpha'");
+    expect(inner).toContain(`bash -c 'source "$1" "$2" "$3"'`);
+    expect(inner).toContain("'/root/papercusp-desktop/bin/release-local.sh'");
+    expect(inner).toContain("'/current/papercusp-desktop/bin/release-local.sh' '0.0.8' 'alpha'");
     expect(inner).toContain(`> ${CUT_LOG} 2>&1`);
     expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
   });
@@ -492,6 +496,7 @@ describe('buildCutArgv with a platform', () => {
       '/usr/bin:/bin',
       { ownerName: 'Avi' },
       'mac',
+      '/current/papercusp-desktop',
     );
     const inner = argv[argv.length - 1]!;
     const unit = cutUnitFor('mac');
