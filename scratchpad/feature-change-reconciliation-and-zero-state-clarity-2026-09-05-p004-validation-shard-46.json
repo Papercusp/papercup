@@ -1,6 +1,6 @@
 {
   "schemaVersion": "feature-change-p004-validation-shard-v1",
-  "validationTimestamp": "2026-09-07T10:41:18Z",
+  "validationTimestamp": "2026-09-07T13:54:09Z",
   "readOnlyValidation": true,
   "workItem": "WI-2146839",
   "parentWorkItem": "WI-2146348",
@@ -83,7 +83,8 @@
     "entryCount": 4,
     "currentRowsRead": 8,
     "openRows": 8,
-    "localRows": 8,
+    "localRows": 7,
+    "remoteRows": 1,
     "unassignedRows": 8,
     "rowsWithCompletion": 0,
     "recommendationCounts": {"apply": 0, "preserve": 4},
@@ -91,7 +92,7 @@
     "outboundReferencesFoundAcrossCandidatesAndCanonicals": 3,
     "uniqueOutboundReferencePairs": 2,
     "noLiveFeatureChangeMutation": true,
-    "result": "All four candidates remain preserve-only in this read-only shard. The shared-root outcomes are potential later centralized operations; revision-requested review on two candidates, distinct producer identities, and read-only D-009 mean no consolidation, closure, claim, reference, plan, or product-file mutation is authorized here."
+    "result": "All four candidates remain preserve-only in this read-only shard. All eight rows are open, unassigned, unheld, nonterminal, and completion-null; seven are local-origin and proposed canonical EI-22057804176244287 is remote-origin. The shared-root outcomes are potential later centralized operations; revision-requested review on two candidates, distinct producer identities, remote-origin policy, and read-only D-009 mean no consolidation, closure, claim, reference, plan, or product-file mutation is authorized here."
   },
   "validation": {
     "workingTree": {
@@ -107,8 +108,8 @@
       "Inspect current producer code and focused recurrence tests for checkpoint, coord:send, plans:list/plans:search, and sessions:search.",
       "Do not mutate feature/change rows, links, claims, plan files, or product files."
     ],
-    "currentRows": "All eight rows are open, local-origin, unassigned, unheld, nonterminal, and completion-null. The four candidate rows are EI-22057107388066791, EI-22061447860698893, EI-22067917415601267, and EI-22079026210906283; proposed canonicals are EI-22057804176244287, EI-22040416365929974, EI-21525538779965063, and EI-21158589445256007.",
-    "completionLineage": "No candidate or proposed canonical has completion evidence, terminalCompletionRef, terminalCompletionEvidence, terminal owner, or closedAt evidence. No candidate carries a source plan or duplicate plan-item stamp.",
+    "currentRows": "All eight rows are open, unassigned, unheld, nonterminal, and completion-null. Seven are local-origin and proposed canonical EI-22057804176244287 is remote-origin. The four candidate rows are EI-22057107388066791, EI-22061447860698893, EI-22067917415601267, and EI-22079026210906283; proposed canonicals are EI-22057804176244287, EI-22040416365929974, EI-21525538779965063, and EI-21158589445256007.",
+    "completionLineage": "No candidate or proposed canonical has completion evidence, terminalCompletionRef, terminalCompletionEvidence, terminal owner, or closedAt evidence. Current direct reads show completion=null and hasCompletionEvidence=false for all eight rows. No candidate carries a source plan or duplicate plan-item stamp.",
     "codeAndTests": {
       "sourceFiles": [
         "packages/operator-core/lib/agent-tools/work_items/checkpoint.ts",
@@ -140,7 +141,34 @@
       "allAssignedIdsPresentExactlyOnce": true,
       "duplicateAssignedIds": false,
       "frozenLedgerShaVerified": true,
-      "noLiveFeatureChangeMutation": true
+      "noLiveFeatureChangeMutation": true,
+      "currentStateCompletionSettlement": true
+    },
+    "settlement": {
+      "settledAt": "2026-09-07T13:54:09Z",
+      "currentHead": "7a5690e18338752fac888efc0bc65349ecba0cd3",
+      "currentStateCounts": {"open": 8},
+      "currentOriginCounts": {"local": 7, "remote": 1},
+      "currentAssigneeCounts": {"unassigned": 8},
+      "completion": {
+        "rowsRead": 8,
+        "rowsWithCompletion": 0,
+        "rowsWithTerminalCompletion": 0,
+        "allCompletionNull": true,
+        "allHasCompletionEvidenceFalse": true
+      },
+      "rows": [
+        {"id": "EI-22057107388066791", "role": "candidate", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-22061447860698893", "role": "candidate", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-22067917415601267", "role": "candidate", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-22079026210906283", "role": "candidate", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-22057804176244287", "role": "proposed-canonical", "state": "open", "origin": "remote", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-22040416365929974", "role": "proposed-canonical", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-21525538779965063", "role": "proposed-canonical", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false},
+        {"id": "EI-21158589445256007", "role": "proposed-canonical", "state": "open", "origin": "local", "assignee": null, "completion": null, "hasCompletionEvidence": false}
+      ],
+      "remoteOriginPolicy": "EI-22057804176244287 is remote-origin; preserve or route to its authoring peer. No local mutation is authorized.",
+      "readOnlyMutationBoundary": "No live feature/change/reference/plan row was mutated; all four shared-root proposals remain deferred to the centralized apply lane."
     }
   },
   "entries": [

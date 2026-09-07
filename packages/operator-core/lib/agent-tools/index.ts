@@ -122,6 +122,13 @@ import './datatypes/install';
 // P-011 — workspace observability over the datatype registry (counts by tier + review-status):
 import './datatypes/summary';
 
+// identities-v1 P-016 / D-004 — versioned capability-class contracts,
+// live projected-tool conformance, and provider-binding discovery.
+import './classes/define';
+import './classes/list';
+import './classes/get';
+import './classes/validate';
+
 // reflexive-platform-extensibility-datatypes-2026-06-24 P-004 — tools:scaffold:
 // PURE codegen of a reviewable defineTool skeleton (writes/runs/mints nothing).
 import './tools/scaffold';

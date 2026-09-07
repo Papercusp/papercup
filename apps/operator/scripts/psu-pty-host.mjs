@@ -2419,9 +2419,15 @@ const QUOTA_BLOCK_BUFFER_CHARS = 8_192;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, agent = '', now = Date.now } = {}) {
+export function makeQuotaBlockDetector({
+  capBytes = QUOTA_BLOCK_BUFFER_CHARS,
+  agent = '',
+  now = Date.now,
+  deferUntilSubmit = false,
+} = {}) {
   let buffer = '';
   let blocked = false;
+  let awaitingSubmit = deferUntilSubmit;
   /** @type {number | null} */
   let blockedSinceMs = null;
   let lastMatch = { matched: false, pattern: null, excerpt: null };
@@ -2430,6 +2436,9 @@ export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, ag
      *  or null when the level didn't change, so a caller can log transitions
      *  without re-deriving state on every chunk. */
     observe(chunk) {
+      // A resumed Codex TUI replays old provider errors before its first new
+      // request. Those bytes are history, not a current account measurement.
+      if (awaitingSubmit) return null;
       buffer = `${buffer}${String(chunk ?? '')}`;
       if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
       const hit = quotaLimitBannerMatch(buffer, agent);
@@ -2438,6 +2447,11 @@ export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, ag
       blocked = hit.matched;
       blockedSinceMs = blocked ? now() : null;
       return blocked ? 'detected' : 'cleared';
+    },
+    /** Arm once per child at the standalone submit keystroke. Pasted history
+     * and terminal probes cannot arm it; later submits cannot clear a wall. */
+    observeInput(input) {
+      if (awaitingSubmit && /^[\r\n]+$/.test(String(input))) awaitingSubmit = false;
     },
     isBlocked: () => blocked,
     snapshot: () => ({ quotaBlocked: blocked, quotaBlockedSinceMs: blockedSinceMs }),
@@ -2450,6 +2464,7 @@ export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, ag
     reset() {
       buffer = '';
       blocked = false;
+      awaitingSubmit = deferUntilSubmit;
       blockedSinceMs = null;
       lastMatch = { matched: false, pattern: null, excerpt: null };
     },
@@ -4712,7 +4727,13 @@ export function hostThroughPty(o) {
   // WI-2140984: scoped to THIS child's agent — the banner patterns are
   // per-product, and matching claude's copy against a codex pty read healthy
   // members as permanently walled.
-  const quotaBlockDetector = makeQuotaBlockDetector({ agent: env.PAPERCUSP_AGENT });
+  const quotaBlockDetector = makeQuotaBlockDetector({
+    agent: env.PAPERCUSP_AGENT,
+    // EI-22609012864215464: an exact resume can repaint a quota error from
+    // its old account after routing has recovered. Do not block the first new
+    // submission on that replay; subsequent provider errors still block wakes.
+    deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' && args.includes('resume'),
+  });
   // Output-quiet alone is not a startup-ready signal: before a backend-owned
   // marker, terminal probes can read as "quiet at prompt" even though a slow
   // TUI has not installed its editor yet (live Codex/OMP ports WI-4943/WI-4947).
@@ -5265,6 +5286,7 @@ export function hostThroughPty(o) {
             const chunks = ptyWriteChunks(step.data);
             for (let i = 0; i < chunks.length; i++) {
               try {
+                quotaBlockDetector.observeInput(chunks[i]);
                 child.write(chunks[i]);
               } catch {
                 /* the child may have exited under us */
@@ -6398,6 +6420,7 @@ export function hostThroughPty(o) {
         try {
           for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env)) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+            if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
             sink.write(step.data);
           }
           machineTurnSubmitted = machineTurn;
@@ -6410,6 +6433,7 @@ export function hostThroughPty(o) {
             for (const input of ownerInput) {
               ownerComposerGate.observe(input);
               try {
+                quotaBlockDetector.observeInput(input);
                 child.write(input);
               } catch {
                 /* child exit is handled by the normal host cleanup path */
@@ -6768,6 +6792,7 @@ export function hostThroughPty(o) {
       ownerComposerGate.observe(input);
     }
     try {
+      quotaBlockDetector.observeInput(input);
       child.write(input);
     } catch {
       /* ignore */

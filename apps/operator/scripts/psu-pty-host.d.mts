@@ -830,15 +830,19 @@ export function quotaLimitBannerVisible(text: any, agent?: string): boolean;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes, agent, now }?: {
+export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, }?: {
     capBytes?: number | undefined;
     agent?: string | undefined;
     now?: (() => number) | undefined;
+    deferUntilSubmit?: boolean | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions
      *  without re-deriving state on every chunk. */
     observe(chunk: any): "detected" | "cleared" | null;
+    /** Arm once per child at the standalone submit keystroke. Pasted history
+     * and terminal probes cannot arm it; later submits cannot clear a wall. */
+    observeInput(input: any): void;
     isBlocked: () => boolean;
     snapshot: () => {
         quotaBlocked: boolean;
