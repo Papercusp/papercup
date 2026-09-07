@@ -145,3 +145,44 @@ describe('pot_git:secrets_exemptions — self-confinement (the price of the scop
     expect(b).toMatchObject({ ok: true, workspaceId: 'ws-mine', added: 'pkg/lib/redactor.test.ts' });
   });
 });
+
+/**
+ * WI-10000605. The guidance now tells the caller to ADJUDICATE a refusal with a
+ * concrete script before adding a row — because this tool REQUIRES the caller to
+ * have "confirmed the flagged finding is a false positive" and, until that script
+ * existed, shipped no instrument to confirm it. A guard that demands a judgement it
+ * gives you no way to make degrades into a rubber stamp SILENTLY: a skipped
+ * adjudication is indistinguishable from a passed one.
+ *
+ * That makes the cited path a second copy of a truth the filesystem owns, so it is
+ * pinned here rather than hand-maintained: rename or delete the script and this
+ * fails, instead of the tool quietly advertising a command that no longer runs.
+ */
+describe('pot_git:secrets_exemptions — the cited adjudicator actually exists (WI-10000605)', () => {
+  it('chaining names a scripts/*.mts adjudicator, and that file is really on disk', async () => {
+    const { existsSync } = await import('node:fs');
+    const { resolve, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+
+    const meta = (await import('./secrets_exemptions')).default as unknown as {
+      guidance?: { chaining?: string };
+    };
+    const chaining = meta.guidance?.chaining ?? '';
+
+    const cited = [...chaining.matchAll(/scripts\/[\w./-]+\.mts/g)].map((m) => m[0]);
+    // POSITIVE CONTROL. Without this, deleting the adjudicator reference from
+    // `chaining` leaves `cited` empty and the existsSync loop below passes
+    // VACUOUSLY — the same reading a genuinely-healthy guard produces. The whole
+    // point of this test is that it must fail when the pointer goes away.
+    expect(cited.length).toBeGreaterThan(0);
+    expect(cited).toContain('scripts/adjudicate-publish-refusal.mts');
+
+    // .../packages/operator-core/lib/agent-tools/pot_git -> repo root is 5 up.
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+    // Anchor the depth arithmetic, so a wrong level reports ITSELF rather than
+    // surfacing as "the adjudicator is missing".
+    expect(existsSync(resolve(repoRoot, 'package.json'))).toBe(true);
+
+    for (const p of cited) expect(existsSync(resolve(repoRoot, p))).toBe(true);
+  });
+});

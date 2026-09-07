@@ -67,6 +67,11 @@ describe('Dreams in Analyze', () => {
     render(<DreamPanel />);
     expect(h.queries).toHaveBeenCalledWith(expect.objectContaining({ args: { potSlug: 'pot-a', view: 'run', runId: 'historical-run' } }));
   });
+  it('names the historical pot even when it no longer appears in the live catalog', () => {
+    h.initial.dreamPot = 'pot-a'; h.data['harnessProjects.lite'] = [];
+    render(<DreamPanel />);
+    expect(screen.getByRole('combobox', { name: 'Dream pot' }).textContent).toBe('pot-a');
+  });
   it('does not report zero percent when no attempts were reviewed', () => {
     render(<DreamFunnel metrics={frozen.emptyMetrics as DreamMetrics} />);
     expect(screen.getByText('Review pass rate (reviewed attempts): 0 / 0 · not available.')).toBeTruthy();

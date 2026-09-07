@@ -45,6 +45,7 @@ function DreamPanelBody({ active }: { active: boolean }) {
       <LearningPageHeader icon={Moon} title="Dreams" question="Which code combinations were tried, and what survived review?" />
       <div className="pc-dreams__toolbar">
         <Select ariaLabel="Dream pot" placeholder="Choose a pot" value={pot || ''}
+          triggerChildren={<span>{pot || 'Choose a pot'}</span>}
           options={pots.map(p => ({ value: p.slug, label: p.slug }))}
           onChange={value => { void setPot(value); void setRun(null); void setCursor(null); }} />
         {pot ? <a href={learningLink({ lview: 'pipeline', lpot: pot })}>Start / Pause controls</a> : null}
