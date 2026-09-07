@@ -17,6 +17,8 @@ import {
   metadataClause, metadataClauseWrite, metadataHarness, metadataInputSchema, metadataPlanSlug,
 } from './coordination-metadata-fixtures';
 import { specClauseContentHash } from './spec-clauses-store';
+import { composePickup } from '../work_items/pickup';
+import type { InnerCall } from '../_compound-dispatch';
 
 // Real evaluator/tool/validators; only store IO is replaced. Unexpected store
 // access fails instead of falling through to the shared workspace database.
@@ -156,5 +158,73 @@ describe('P-001 safety fixtures — remain enforced throughout implementation', 
     expect(feature.specSetHash).toBe(bugfix.specSetHash);
     expect(feature.scorecardDraft.subject.ref).not.toBe(bugfix.scorecardDraft.subject.ref);
     expect(bugfix.wouldBlock).toContain('plan-class-specialization');
+  });
+});
+
+/**
+ * The real composition with injected dispatch responses, not a second handoff
+ * implementation. These counters measure dispatched stages only. No network,
+ * reviewer session, admission policy, or elapsed pickup latency is exercised.
+ * P-003 must retain these inputs when replacing the pre-change false-success
+ * expectation. A successful claim is not evidence that a reviewer took a turn.
+ */
+describe('P-001 pickup stage baseline', () => {
+  const item = { id: 'WI-METADATA-FIXTURE', assignee: 'fixture-reviewer' };
+
+  function dispatcher(claimOk: boolean, declareOk: boolean) {
+    const calls: string[] = [];
+    const call: InnerCall = async (name) => {
+      calls.push(name);
+      switch (name) {
+        case 'work_items:get':
+          return { ok: true, results: [{ ok: true, workItem: item }] };
+        case 'work_items:claim':
+          return {
+            ok: true,
+            results: [claimOk
+              ? { ok: true, workItem: item }
+              : { ok: false, error: 'fleet_scope_violation' }],
+          };
+        case 'coord:declare-intent':
+          return declareOk
+            ? { ok: true, presence: { intent: 'Review exact fixture' } }
+            : { ok: false, error: 'claim_conflict' };
+        default:
+          throw new Error(`unexpected fixture dispatch: ${name}`);
+      }
+    };
+    return { call, calls };
+  }
+
+  const args = {
+    id: item.id,
+    intent: 'Review exact fixture',
+    plan: metadataPlanSlug,
+    items: ['P-001'],
+  };
+
+  it('uses three dispatched stages for a successful get/claim/declaration', async () => {
+    const { call, calls } = dispatcher(true, true);
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: true, claimed: true, intentDeclared: true,
+    });
+    expect(calls).toEqual(['work_items:get', 'work_items:claim', 'coord:declare-intent']);
+  });
+
+  it('stops after a denied claim without retrying, declaring, or creating another item', async () => {
+    const { call, calls } = dispatcher(false, true);
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: false, claimed: false, step: 'claim', error: 'fleet_scope_violation',
+    });
+    expect(calls).toEqual(['work_items:get', 'work_items:claim']);
+  });
+
+  it('currently misreports a failed declaration as success after claiming', async () => {
+    const { call, calls } = dispatcher(true, false);
+    expect(await composePickup(args, call)).toMatchObject({
+      ok: true, claimed: true, intentDeclared: true,
+      presence: { ok: false, error: 'claim_conflict' },
+    });
+    expect(calls).toEqual(['work_items:get', 'work_items:claim', 'coord:declare-intent']);
   });
 });
