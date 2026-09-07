@@ -24,6 +24,7 @@ import {
   type SpecClauseSql,
   type SpecClauseWrite,
 } from './agent-tools/plans/spec-clauses-store';
+import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { ensureExistingWorkItemSpecRevisionEdgesInTransaction } from './agent-tools/plans/spec-evidence-store';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import {
@@ -88,6 +89,8 @@ export interface AcceptanceBarSeedBuildInput {
   actorId: string;
   declaredAt: string;
   cohort: AcceptanceBarCohort;
+  /** The exact plan class selected by spec-quality evaluation. Never infer it from prose. */
+  classRef?: PlanClassRubricRef;
   /** Server-owned late-authoring provenance; independent of enforcement cohort. */
   backfilled?: boolean;
   /** Explicit R-N → existing criterion identity adoption, only before a BAR contract exists. */
@@ -497,10 +500,12 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   });
   const barSetHash = computeAcceptanceBarSetHash(criteria);
   const parsedPlan = parsePlan(input.planContent);
+  const classRef = input.classRef ?? existing?.classRef;
   const templateCandidate = {
     ...(existing ?? {}),
     kind: 'acceptance' as const,
     subjectPlan: input.planSlug,
+    ...(classRef ? { classRef } : {}),
     characteristic: existing?.characteristic ?? 'plan-acceptance',
     criteria,
     ratingScale: existing?.ratingScale ?? [...DEFAULT_RATING_SCALE],
@@ -611,6 +616,8 @@ export interface TransactionalAcceptanceBarSeedInput {
   planVersion: number;
   adoptionEpoch: number;
   cohort: AcceptanceBarCohort;
+  /** Carry the evaluated plan class into a newly generated acceptance rubric. */
+  classRef?: PlanClassRubricRef;
   /** Only the canonical migration adapter sets this from its classified action. */
   backfilled?: boolean;
   legacyCriterionMap?: Record<string, string>;
@@ -729,6 +736,7 @@ export async function seedAcceptanceBarsInTransaction(
     actorId: input.actorId,
     declaredAt: seedInstant,
     cohort: input.cohort,
+    classRef: input.classRef,
     backfilled: input.backfilled,
     legacyCriterionMap: input.legacyCriterionMap,
     adoptionEpoch: input.adoptionEpoch,
@@ -792,6 +800,7 @@ export async function seedAcceptanceBarsInTransaction(
           ? existingTemplate.data.barContract.seededAt
           : input.now.toISOString(),
       cohort: input.cohort,
+      classRef: input.classRef,
       adoptionEpoch: input.adoptionEpoch,
       subjectPlanRevision: input.planVersion,
       planStatus: input.planStatus,
