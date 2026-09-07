@@ -108,6 +108,8 @@ beforeEach(() => {
     tripwires: null,
     metadata: {},
     launch_settings: null,
+    output_schema: null,
+    outputs: null,
   };
   finalRow = null;
   blockedByRows = [];
@@ -795,6 +797,59 @@ describe('goals:update — closing a goal', () => {
   it('requires an id', () => {
     expect(tool.args.safeParse({}).success).toBe(false);
     expect(tool.args.safeParse({ id: '' }).success).toBe(false);
+  });
+});
+
+describe('goals:update — terminal output-schema gate (P-021)', () => {
+  const declaredOutputs = {
+    type: 'object',
+    required: ['report'],
+    properties: { report: { type: 'string' } },
+  };
+
+  it('refuses achieved when a declared required output is still null', async () => {
+    existingRow = {
+      ...existingRow,
+      output_schema: declaredOutputs,
+      outputs: null,
+    };
+
+    const result = (await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'achieved' }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+
+    expect(result.data).toBeNull();
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReasons?.join(' ')).toMatch(/report|unfilled/i);
+    expect(calls.some((call) => /UPDATE harness_shared\.goals/.test(call.sql))).toBe(false);
+  });
+
+  it('keeps killed lenient when the same declared output is absent', async () => {
+    existingRow = {
+      ...existingRow,
+      output_schema: declaredOutputs,
+      outputs: null,
+    };
+
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'killed' }) as never, CTX() as never);
+
+    expect(calls.some((call) => /UPDATE harness_shared\.goals/.test(call.sql))).toBe(true);
+  });
+
+  it('accepts complete outputs on an achieved update and writes them with the status', async () => {
+    existingRow = {
+      ...existingRow,
+      output_schema: declaredOutputs,
+      outputs: null,
+    };
+
+    await tool.handler(
+      tool.args.parse({ id: 'g1', status: 'achieved', outputs: { report: 'shipped' } }) as never,
+      CTX() as never,
+    );
+
+    expect(setParam('outputs')).toBe(JSON.stringify({ report: 'shipped' }));
   });
 });
 

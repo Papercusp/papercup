@@ -19,6 +19,7 @@ import { defineTool } from '@papercusp/tooldef';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
+import { evaluateGoalWindDownOutputs } from '@papercusp/operator-core/lib/goals/goal-io-validation';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import { GENERICALLY_MEASURABLE_METRICS } from '@papercusp/operator-core/lib/goals/tripwire-refresh';
 import { HARNESS_SLUG_RE, isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
@@ -74,6 +75,13 @@ function sortedRefs(refs: readonly string[]): string[] {
 const goalUpdateArgs = z.object({
   id: z.string().min(1),
   status: z.enum(GOAL_STATUSES).optional(),
+  outputs: z
+    .record(z.string(), z.unknown())
+    .nullable()
+    .optional()
+    .describe(
+      "the goal's reported terminal outputs. With status:'achieved', every declared-required output must be filled; status:'killed' accepts partial or absent outputs. Pass this together with a terminal status so the status and product claim are validated and written atomically.",
+    ),
   title: z.string().min(1).max(500).optional(),
   body: z.string().max(20000).optional(),
   killCriterion: z.string().max(2000).optional(),
@@ -298,16 +306,61 @@ const goalUpdateTool = defineTool({
         tripwires: unknown;
         metadata: Record<string, unknown> | null;
         launch_settings: unknown;
+        output_schema: Record<string, unknown> | null;
+        outputs: Record<string, unknown> | null;
       }>
     >`
       SELECT workspace_id, install_slug, title, body, status, parent_id, budget_cents, budget_window_sec,
-             kill_criterion, tripwires, metadata, launch_settings
+             kill_criterion, tripwires, metadata, launch_settings, output_schema, outputs
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
     if (!existing.length) {
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
     const prev = existing[0]!;
+
+    // ── The terminal-output gate (P-021) ─────────────────────────────────────
+    //
+    // loop:end and session:end already consult the shared evaluator before
+    // applying a disposition. `goals:update` is another terminal write path,
+    // and letting it set achieved directly would otherwise bypass that gate:
+    // the status would say "done" while the declared product remained null.
+    // Validate the candidate row before authority checks or any subordinate
+    // writes. Passing outputs here is deliberately paired with a terminal
+    // status so a product cannot be amended on an active goal without an
+    // explicit lifecycle transition.
+    const terminalStatus = args.status === 'achieved' || args.status === 'killed' ? args.status : null;
+    if (args.outputs !== undefined && terminalStatus === null) {
+      return {
+        data: null,
+        degraded: true,
+        degradedReasons: [
+          `goal ${args.id} outputs refused: pass outputs together with status:'achieved' or status:'killed' so the terminal product claim is validated atomically`,
+        ],
+      };
+    }
+    let terminalOutputs: Record<string, unknown> | null = prev.outputs ?? null;
+    if (terminalStatus !== null) {
+      const outputVerdict = evaluateGoalWindDownOutputs({
+        outputSchema: prev.output_schema,
+        outputs: args.outputs === undefined ? prev.outputs : args.outputs,
+        disposition: terminalStatus,
+      });
+      if (!outputVerdict.ok) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: [`goal ${args.id} not ${terminalStatus}: ${outputVerdict.hint}`],
+          goalOutputValidation: {
+            code: outputVerdict.code,
+            missing: outputVerdict.missing,
+            errors: outputVerdict.errors,
+          },
+        };
+      }
+      terminalOutputs = outputVerdict.outputs;
+    }
+
     // The row read above gives the canonical workspace; fence the attributable
     // caller before any subordinate edge/settings write or the goal UPDATE.
     // Missing legacy identity stays the pre-existing unattributable system path,
@@ -555,6 +608,9 @@ const goalUpdateTool = defineTool({
       Object.keys(packageOverride).length > 0
         ? withGoalPackageInstanceOverride(pauseMetadata, packageOverride)
         : pauseMetadata;
+    const nextOutputs = terminalStatus === null ? prev.outputs : terminalOutputs;
+    const serializedOutputs =
+      nextOutputs === null || nextOutputs === undefined ? null : JSON.stringify(nextOutputs);
 
     await tx`
       UPDATE harness_shared.goals
@@ -567,6 +623,7 @@ const goalUpdateTool = defineTool({
              install_slug   = ${next.installSlug},
              kill_criterion = ${next.killCriterion},
              tripwires      = ${next.tripwires}::jsonb,
+             outputs        = ${serializedOutputs}::jsonb,
              metadata       = ${Object.keys(nextMetadata).length ? JSON.stringify(nextMetadata) : null}::jsonb,
              updated_at     = now()
        WHERE id = ${args.id}
@@ -650,10 +707,12 @@ const goalUpdateTool = defineTool({
         tripwires: unknown;
         metadata: Record<string, unknown> | null;
         launch_settings: unknown;
+        output_schema: Record<string, unknown> | null;
+        outputs: Record<string, unknown> | null;
       }>
     >`
       SELECT id, workspace_id, title, body, status, parent_id, budget_cents, budget_window_sec,
-             kill_criterion, tripwires, metadata, launch_settings
+             kill_criterion, tripwires, metadata, launch_settings, output_schema, outputs
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
 
@@ -681,6 +740,7 @@ const goalUpdateTool = defineTool({
       );
       addGoalFieldChange(changes, 'killCriterion', prev.kill_criterion, row.kill_criterion);
       addGoalFieldChange(changes, 'tripwires', jsonField(prev.tripwires), jsonField(row.tripwires));
+      addGoalFieldChange(changes, 'outputs', jsonField(prev.outputs), jsonField(row.outputs));
       addGoalFieldChange(changes, 'metadata', jsonField(prev.metadata), jsonField(row.metadata));
       addGoalFieldChange(
         changes,
