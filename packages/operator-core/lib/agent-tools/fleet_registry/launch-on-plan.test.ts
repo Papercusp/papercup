@@ -511,12 +511,10 @@ describe('cloudModelBackendHint (native cloud model-family/backend guard)', () =
 });
 
 describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-inheritance-2026-07-03)', () => {
-  it('an explicit `agent` arg wins over an inferred/inherited backend', () => {
+  it('an explicit `agent` arg wins, but no-picker Codex still requires model authority', () => {
     expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({ agent: 'claude', model: undefined });
-    expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toEqual({
-      agent: 'codex',
-      model: 'gpt-5.6-sol:xhigh',
-      modelSource: 'configured-default',
+    expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toMatchObject({
+      error: expect.stringMatching(/Codex model is required/),
     });
   });
 

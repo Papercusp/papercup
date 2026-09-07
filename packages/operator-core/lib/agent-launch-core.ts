@@ -552,11 +552,14 @@ export function buildAgentLaunchCommand(opts: {
   // Free-form-safe: a spec like `opus[1m]:high` carries `[]` outside the identity set,
   // so quote (matching memberLaunchCommand) rather than reject it via safe().
   const composedModelSpec = composeModelSpec(opts.model ?? undefined, opts.effort ?? undefined);
-  // A fresh managed Codex launch must never rely on the CLI/cache default. The
-  // same resolver also rejects retired Spark spellings before a terminal opens.
+  // A fresh managed Codex launch must never rely on the CLI/cache default. This
+  // composer is always --no-picker, so naming the backend alone is not authority
+  // to synthesize the platform default; callers must supply a model or explicitly
+  // pass modelSource='configured-default'. The resolver also rejects Spark before
+  // a terminal opens.
   const codexSelection = opts.agent?.trim() === 'codex' && (opts.mode === 'fresh' || Boolean(composedModelSpec))
     ? resolveCodexModelSelection(composedModelSpec, {
-        source: opts.modelSource ?? (composedModelSpec ? 'explicit' : 'configured-default'),
+        source: opts.modelSource ?? 'explicit',
       })
     : null;
   const modelSpec = codexSelection?.model ?? composedModelSpec;
@@ -885,9 +888,12 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // `-c model_reasoning_effort`; omp verbatim), so composing it here is the ONE
   // form every backend honors.
   const composedModelSpec = composeModelSpec(opts.model, opts.effort);
+  // Fleet member commands are scripted --no-picker launches. A backend name is
+  // not model authority: only a supplied model or an explicit configured-default
+  // source may resolve absence.
   const codexSelection = opts.agent === 'codex'
     ? resolveCodexModelSelection(composedModelSpec, {
-        source: opts.modelSource ?? (composedModelSpec ? 'explicit' : 'configured-default'),
+        source: opts.modelSource ?? 'explicit',
       })
     : null;
   const modelSpec = codexSelection?.model ?? composedModelSpec;

@@ -608,10 +608,10 @@ export function resolveFleetAgent(opts: {
     try {
       modelSource = argModel ? 'explicit' : model ? 'inherited' : undefined;
       const selection = resolveCodexModelSelection(model, {
-        // Naming Codex explicitly is the caller's deliberate authorization to
-        // use the managed default. Merely inheriting a Codex backend with no
-        // recorded model is unresolved input and must fail closed.
-        source: modelSource ?? (opts.argAgent === 'codex' ? 'configured-default' : 'explicit'),
+        // fleet:launch-on-plan is a scripted --no-picker path. Naming Codex is
+        // backend selection, not model authority; a model must be explicit or
+        // inherited from the recorded caller before any member is materialized.
+        source: modelSource ?? 'explicit',
       });
       model = selection.model;
       modelSource = selection.source;

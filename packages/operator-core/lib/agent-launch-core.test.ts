@@ -261,6 +261,22 @@ describe('buildAgentLaunchCommand', () => {
     expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', headless: true })).toContain('--headless');
   });
 
+  it('fails closed when a scripted Codex launch has no model authority', () => {
+    expect(() => buildAgentLaunchCommand({ mode: 'fresh', agent: 'codex' })).toThrow(
+      /Codex model is required/,
+    );
+    expect(() => buildAgentLaunchCommand({ mode: 'fresh', agent: 'codex', headless: true })).toThrow(
+      /Codex model is required/,
+    );
+    expect(
+      buildAgentLaunchCommand({
+        mode: 'fresh',
+        agent: 'codex',
+        modelSource: 'configured-default',
+      }),
+    ).toContain('--model=gpt-5.6-sol:xhigh --model-source=configured-default');
+  });
+
   it('binds a plan to its harness', () => {
     expect(buildAgentLaunchCommand({ mode: 'fresh', plan: 'my-plan', harness: 'papercusp' })).toContain(
       '--harness=papercusp --plan=my-plan',
@@ -450,6 +466,15 @@ describe('memberLaunchCommand', () => {
     // `[1m]` is outside quoteLaunchValue's bare-token set, so the composed spec is quoted.
     expect(cmd).toContain("--model='opus[1m]:high'");
     expect(cmd).not.toContain('--effort');
+  });
+
+  it('fails closed when a no-picker Codex member has no model authority', () => {
+    const base = { fleetSlug: 'ops', agent: 'codex' as const, harness: 'h', plan: 'p' };
+    expect(() => memberLaunchCommand(base)).toThrow(/Codex model is required/);
+    expect(() => memberLaunchCommand({ ...base, headless: true })).toThrow(/Codex model is required/);
+    expect(memberLaunchCommand({ ...base, modelSource: 'configured-default' })).toContain(
+      '--model=gpt-5.6-sol:xhigh --model-source=configured-default',
+    );
   });
 
   // P-005: the flag psu now parses + records onto launch_argv, which the compaction

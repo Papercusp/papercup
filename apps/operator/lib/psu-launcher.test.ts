@@ -756,7 +756,14 @@ describe("routeFreshKickoff (EI-20339142329504181 OMP startup barrier)", () => {
     const provenanceDir = mkdtempSync(join(tmpdir(), "omp-kickoff-prov-"));
     try {
       for (const backend of ["claude", "codex", "omp"]) {
-        const args = parseArgs(["--no-picker", `--agent=${backend}`, "--plan=p"]);
+        const args = parseArgs([
+          "--no-picker",
+          `--agent=${backend}`,
+          "--plan=p",
+          ...(backend === "codex"
+            ? ["--model=gpt-5.6-sol:xhigh", "--model-source=explicit"]
+            : []),
+        ]);
         const result = routeFreshKickoff(
           backend,
           {
@@ -953,7 +960,7 @@ describe("Codex retired-model deny wiring (WI-2140343 — the Spark fall-through
 });
 
 describe("Codex missing-model posture", () => {
-  it("uses the configured default for a visible desktop choice but fails closed headless", () => {
+  it("uses the configured default for a visible picker but fails closed headless or no-picker", () => {
     const interactive = parseArgs([]);
     const body = freshSuBootstrapBody(
       { agent: "codex", workspace: "papercusp-workspace", harness: null, plan: null },
@@ -972,6 +979,7 @@ describe("Codex missing-model posture", () => {
     );
     expect(() => modelArgsFor("codex", null)).toThrow(/Codex model is required/);
     expect(() => parseArgs(["--headless", "--agent=codex"])).toThrow(/Codex model is required/);
+    expect(() => parseArgs(["--no-picker", "--agent=codex"])).toThrow(/Codex model is required/);
     const authorizedHeadless = parseArgs([
       "--headless",
       "--agent=codex",
@@ -987,6 +995,17 @@ describe("Codex missing-model posture", () => {
         authorizedHeadless,
       ),
     ).toMatchObject({ headless: true, model_source: "configured-default" });
+    expect(
+      parseArgs([
+        "--no-picker",
+        "--agent=codex",
+        "--model-source=configured-default",
+      ]),
+    ).toMatchObject({
+      picker: false,
+      model: "gpt-5.6-sol:xhigh",
+      modelSource: "configured-default",
+    });
   });
 });
 
@@ -1013,7 +1032,12 @@ describe("scriptedOmpSetupEnv (headless OMP kickoff reaches the composer)", () =
     expect(
       scriptedOmpSetupEnv(
         "codex",
-        parseArgs(["--no-picker", "--agent=codex"]),
+        parseArgs([
+          "--no-picker",
+          "--agent=codex",
+          "--model=gpt-5.6-sol:xhigh",
+          "--model-source=explicit",
+        ]),
         {},
       ),
     ).toEqual({});
@@ -1037,7 +1061,13 @@ describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
     );
     try {
       for (const backend of ["claude", "codex", "omp"]) {
-        const args = parseArgs(["--no-picker", `--agent=${backend}`]);
+        const args = parseArgs([
+          "--no-picker",
+          `--agent=${backend}`,
+          ...(backend === "codex"
+            ? ["--model=gpt-5.6-sol:xhigh", "--model-source=explicit"]
+            : []),
+        ]);
         const result = finalizeFreshSuArgs(
           backend,
           ["--flag=value"],
