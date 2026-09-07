@@ -78,7 +78,10 @@ import {
   type AcceptanceBarApproval,
   type AcceptanceBarAmendmentSql,
 } from './acceptance-bar-amendment';
-import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
+import {
+  guardAcceptanceBarTemplateDataWrite,
+  nextAcceptanceBarMeaningRevision,
+} from './agent-tools/plans/rubric-loss-guard';
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 // `decision-body` (pure), NOT `add-decision` (the tool module): the tool reads
 // `VALID_PLAN_SLUG` from `./source` at module scope, so importing it from a lib
@@ -3741,6 +3744,28 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       await assertRubricCompositionLinksResolve(amended);
       const templateData = builtTemplateData.data;
       compatibilityAudit.current = builtTemplateData.compatibility;
+      // Record the acceptance-BAR MEANING EPOCH alongside the revision bump.
+      // THIS is the writer that advances the revision for a method-only edit:
+      // `amendRubric` routes only model/driftMarkers/requirement/evidence-plane
+      // edits to the cross-plan amender, and that amender RETURNS EARLY with
+      // methodOnly when no BAR meaning changed — so every meaning-preserving
+      // edit (a method rewrite, a title fix, a criterion-class change) lands
+      // here and bumps `version` with the BAR contract untouched. Without an
+      // epoch, that bump alone reads downstream as "re-grade and re-vet".
+      if (stored.kind === 'acceptance' && stored.barContract) {
+        const priorRevision = Number(meta?.version ?? 0);
+        const contract = (templateData as { barContract?: Record<string, unknown> }).barContract;
+        if (contract && Number.isFinite(priorRevision) && priorRevision > 0) {
+          const meaningRevision = nextAcceptanceBarMeaningRevision({
+            priorCriteria: stored.criteria,
+            nextCriteria: amended.criteria,
+            priorMeaningRevision: stored.barContract.meaningRevision ?? null,
+            priorRevision,
+            nextRevision: priorRevision + 1,
+          });
+          if (meaningRevision !== undefined) contract.meaningRevision = meaningRevision;
+        }
+      }
       if (amended.kind === 'acceptance') {
         assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot });
       }

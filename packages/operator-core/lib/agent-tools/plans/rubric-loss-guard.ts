@@ -491,3 +491,62 @@ export function guardAcceptanceBarTemplateDataWrite(
     changes,
   };
 }
+
+/**
+ * Resolve the acceptance-BAR MEANING EPOCH a write should record — the rubric
+ * revision at which BAR meaning last changed.
+ *
+ * The rubric revision counter advances on EVERY amendment, including ones that
+ * touch only METHOD (how a BAR is probed) and leave every BAR's meaning, and so
+ * its `barHash`, byte-identical. Grading and vetting currentness must follow the
+ * BAR contract the parties actually judged rather than that counter, or a typo
+ * fix silently voids a peer's completed independent grading pass — putting the
+ * whole cost of the amendment on the one party who already did the work.
+ *
+ * This reuses the SAME `ACCEPTANCE_BAR_MEANING_FIELDS` comparison
+ * `guardAcceptanceBarTemplateDataWrite` uses to decide whether an amendment
+ * needs approval, so "meaning changed" cannot come to mean two different things
+ * in the two places that ask it.
+ *
+ * Returns `undefined` only when there is nothing to record. Absence is
+ * preserved deliberately rather than defaulted to 1: a reader must fall back to
+ * strict revision equality, because inventing an epoch here would bless a card
+ * graded before an UNTRACKED meaning change as current — the failure this field
+ * exists to prevent, in the dangerous direction.
+ */
+export function nextAcceptanceBarMeaningRevision(args: {
+  priorCriteria: readonly unknown[];
+  nextCriteria: readonly unknown[];
+  priorMeaningRevision: number | null | undefined;
+  priorRevision: number;
+  nextRevision: number;
+}): number | undefined {
+  const asRecord = (criterion: unknown) => criterion as Record<string, unknown>;
+  const priorByKey = new Map(args.priorCriteria.map((c) => [barKeyOf(asRecord(c)), asRecord(c)]));
+  const nextByKey = new Map(args.nextCriteria.map((c) => [barKeyOf(asRecord(c)), asRecord(c)]));
+  let meaningChanged = false;
+  for (const [key, prior] of priorByKey) {
+    const candidate = nextByKey.get(key);
+    if (!candidate) {
+      meaningChanged = true;
+      break;
+    }
+    if (ACCEPTANCE_BAR_MEANING_FIELDS.some((field) => !equalValue(prior[field], candidate[field]))) {
+      meaningChanged = true;
+      break;
+    }
+  }
+  if (!meaningChanged) {
+    for (const key of nextByKey.keys()) {
+      if (!priorByKey.has(key)) {
+        meaningChanged = true;
+        break;
+      }
+    }
+  }
+  if (meaningChanged) return args.nextRevision;
+  // Meaning is unchanged, so the epoch stands. When none was ever recorded, the
+  // latest revision that COULD have carried an untracked meaning change is the
+  // prior one — adopt that as the floor rather than reaching further back.
+  return args.priorMeaningRevision ?? args.priorRevision;
+}
