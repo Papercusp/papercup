@@ -80,6 +80,7 @@ import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers
 
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
+  | 'dream-quality'
   // P-010 blind-source collectors (watchdog-robustness):
   | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation'
   // WI-918476: index objects that exist in the LIVE database but that no migration
@@ -4200,6 +4201,11 @@ export async function defaultPapercuspCollectors(
 ): Promise<WatchdogCollector[]> {
   return [
     {
+      name: 'papercusp-dream-quality',
+      source: 'dream-quality',
+      collect: () => import('../../dream/dream-quality').then(m => m.collectDreamQualitySignals(getOrgPg().sql, workspaceId)),
+    },
+    {
       name: 'papercusp-red-test',
       collect: () => collectRedTestSignals(getOrgPg().sql, opts),
     },
@@ -4462,6 +4468,7 @@ export function isEphemeralBenchmarkHarnessSlug(slug: string | null | undefined)
  *  instance. Global code-health sources (red-test, repeated-tool-error, migration-drift,
  *  service-down, insight-staleness, …) are NEVER filtered — they are not per-harness. */
 const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
+  'dream-quality',
   'stalled-feature', 'unresolved-escalation', 'escalation-spike', 'orphaned-spawn',
   'failed-spawn', 'stuck-plan', 'smoke-fail', 'fire-circuit-open', 'ship-link-stuck',
   'governor-starvation',

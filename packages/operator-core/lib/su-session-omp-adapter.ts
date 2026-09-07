@@ -84,6 +84,7 @@ export interface OmpSuSessionDescriptorOptions {
 }
 
 export interface CreateOmpSuSessionAdapterOptions extends OmpSuSessionDescriptorOptions {
+  host?: SuSessionHost<'omp'>;
   controls?: Partial<OmpSuSessionControls>;
   ready?: boolean;
   runtimeReady?: () => boolean;
@@ -361,12 +362,14 @@ export class OmpSuSessionAdapter {
   ) {
     this.runtimeValue = runtime;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
-    this.host = new SuSessionHost({
+    const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
-      executeCommand: (command, context) => this.execute(command, context),
+      executeCommand: (command: SuSessionCommand<'omp'>, context: SuSessionCommandContext<'omp'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
-      persistDescriptor: async (descriptor) => { await persistSuSessionDescriptor(binding.advSessionId, descriptor); },
-    });
+      persistDescriptor: async (descriptor: SuSessionDescriptor<'omp'>) => { await persistSuSessionDescriptor(binding.advSessionId, descriptor); },
+    };
+    this.host = options.host ?? new SuSessionHost(hostOptions);
+    if (options.host) this.host.attachRuntime(hostOptions);
     void bindSuSessionToAdvSession({
       advSessionId: binding.advSessionId,
       agentChatId: options.agentChatId,

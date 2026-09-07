@@ -89,6 +89,7 @@ export interface ClaudeSuSessionDescriptorOptions {
 }
 
 export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDescriptorOptions {
+  host?: SuSessionHost<'claude'>;
   controls?: Partial<ClaudeSuSessionControls>;
   register?: boolean;
   /** Structured transports set this false until their identity handshake completes. */
@@ -390,14 +391,16 @@ export class ClaudeSuSessionAdapter {
     this.runtimeValue = runtime;
     this.transportCorrelatesTurns = options.ownerTurnCorrelation === 'transport';
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
-    this.host = new SuSessionHost({
+    const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
-      executeCommand: (command, context) => this.execute(command, context),
+      executeCommand: (command: SuSessionCommand<'claude'>, context: SuSessionCommandContext<'claude'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
-      persistDescriptor: async (descriptor) => {
+      persistDescriptor: async (descriptor: SuSessionDescriptor<'claude'>) => {
         await persistSuSessionDescriptor(binding.advSessionId, descriptor);
       },
-    });
+    };
+    this.host = options.host ?? new SuSessionHost(hostOptions);
+    if (options.host) this.host.attachRuntime(hostOptions);
     void bindSuSessionToAdvSession({
       advSessionId: binding.advSessionId,
       agentChatId: options.agentChatId,

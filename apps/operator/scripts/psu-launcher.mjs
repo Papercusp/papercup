@@ -4625,6 +4625,8 @@ export function resumeAccountPlan(args) {
  * the psu agent-session marker, and the re-pinned account env. Pure — exported
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
+ * @param {*} session
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null}} [options]
  */
 export function buildResumeEnv(
   session,
@@ -5515,7 +5517,9 @@ function applyCodexContextWindow(codexHome, model = null) {
   }
 }
 
-function applyCodexGatewayRoute(
+/** @param {string} codexHome
+ * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean}} [options] */
+export function applyCodexGatewayRoute(
   codexHome,
   {
     mode = "default",
@@ -10486,6 +10490,7 @@ export function normalizeResumeLocalLivenessEvidence(value) {
  * Build the positive witness for an exact Codex resume only when both local
  * liveness oracles positively say there is no competing writer. Every other
  * result remains unknown and therefore returns null (fail closed).
+ * @param {{agent?: string, fork?: boolean, forceResume?: string, liveHost?: unknown, writerHolder?: {held?: boolean, reason?: string} | null}} [input]
  */
 export function normalizeCodexResumeLocalLivenessEvidence({
   agent,
@@ -10528,6 +10533,7 @@ export function normalizeCodexResumeLocalLivenessEvidence({
  * means "take over a host I can SEE is alive"; a witness means "I looked and
  * there is nothing alive". Letting a force manufacture an absence claim would
  * make the server's audit trail lie about what was actually observed.
+ * @param {{agent?: string, fork?: boolean, forceResume?: string, liveHost?: unknown, processHolder?: {held?: boolean, reason?: string} | null}} [input]
  */
 export function normalizeArgvProbeResumeLocalLivenessEvidence({
   agent,

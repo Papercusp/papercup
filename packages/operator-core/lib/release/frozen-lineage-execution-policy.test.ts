@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  assessFrozenLineageLaunchCas,
+  type FrozenRepairQueuePreflight,
+} from './checkpoint-required-ancestor';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 import {
   compareFrozenLineageIdentity,
@@ -33,6 +37,22 @@ const identity = (overrides: Partial<FrozenLineageIdentity> = {}): FrozenLineage
   candidate: CANDIDATE,
   repairHead: REPAIR_HEAD,
   queueRevision: REVISION,
+  ...overrides,
+});
+
+const launchPreflight = (
+  overrides: Partial<FrozenRepairQueuePreflight> = {},
+): FrozenRepairQueuePreflight => ({
+  proceed: true,
+  reason: 'clear',
+  candidate: REPAIR_HEAD,
+  candidateSource: 'frozen-repair-queue',
+  repairQueue: null,
+  frozenLineageIdentity: identity(),
+  queueDecision: 'verify-repair',
+  nextAttempt: null,
+  fixerSpawnId: null,
+  fixerAlive: false,
   ...overrides,
 });
 
@@ -196,6 +216,88 @@ describe('frozen lineage execution policy', () => {
     expect(rendered).toContain(`queueRevision=${REVISION}`);
     expect(rendered).toContain("source 'current-head'");
     expect(rendered).toContain("release:repair-queue { op:'admit', paths:[...] }");
+  });
+});
+
+describe('frozen lineage launch CAS', () => {
+  it('allows only an exact second-read identity at the selected repairHead', () => {
+    expect(assessFrozenLineageLaunchCas(identity(), launchPreflight(), REPAIR_HEAD)).toMatchObject({
+      allowed: true,
+      reason: 'repair-head-match',
+      expectedIdentity: identity(),
+      liveIdentity: identity(),
+      checkoutHead: REPAIR_HEAD,
+      mismatchedIdentityFields: [],
+    });
+  });
+
+  it.each([
+    ['candidate', identity({ candidate: 'd'.repeat(40) })],
+    ['repairHead', identity({ repairHead: 's'.repeat(40) })],
+    ['queueRevision', identity({ queueRevision: REVISION + 1 })],
+  ] as const)('refuses a second-read %s mismatch before launch', (field, liveIdentity) => {
+    const verdict = assessFrozenLineageLaunchCas(
+      identity(),
+      launchPreflight({ frozenLineageIdentity: liveIdentity }),
+      REPAIR_HEAD,
+    );
+
+    expect(verdict).toMatchObject({
+      allowed: false,
+      reason: 'queue-identity-mismatch',
+      expectedIdentity: identity(),
+      liveIdentity,
+      mismatchedIdentityFields: [field],
+    });
+    expect(verdict.detail).toContain(`candidate=${liveIdentity.candidate}`);
+    expect(verdict.detail).toContain(`repairHead=${liveIdentity.repairHead}`);
+    expect(verdict.detail).toContain(`queueRevision=${liveIdentity.queueRevision}`);
+  });
+
+  it('treats queue appearance, disappearance, and unreadability as failed CAS outcomes', () => {
+    expect(assessFrozenLineageLaunchCas(null, launchPreflight(), REPAIR_HEAD)).toMatchObject({
+      allowed: false,
+      reason: 'queue-appeared',
+      mismatchedIdentityFields: ['candidate', 'repairHead', 'queueRevision'],
+    });
+    expect(
+      assessFrozenLineageLaunchCas(
+        identity(),
+        launchPreflight({ frozenLineageIdentity: null, candidate: null, queueDecision: 'run-normal-gate' }),
+        REPAIR_HEAD,
+      ),
+    ).toMatchObject({
+      allowed: false,
+      reason: 'queue-disappeared',
+      mismatchedIdentityFields: ['candidate', 'repairHead', 'queueRevision'],
+    });
+    expect(
+      assessFrozenLineageLaunchCas(
+        identity(),
+        launchPreflight({
+          proceed: false,
+          reason: 'queue-unreadable',
+          frozenLineageIdentity: null,
+          queueDecision: null,
+          detail: 'parse failed',
+        }),
+        REPAIR_HEAD,
+      ),
+    ).toMatchObject({ allowed: false, reason: 'queue-unreadable' });
+  });
+
+  it('refuses an exact identity when the checkout or queue disposition is not runnable', () => {
+    expect(assessFrozenLineageLaunchCas(identity(), launchPreflight(), CANDIDATE)).toMatchObject({
+      allowed: false,
+      reason: 'checkout-head-mismatch',
+    });
+    expect(
+      assessFrozenLineageLaunchCas(
+        identity(),
+        launchPreflight({ proceed: false, reason: 'repair-in-progress', queueDecision: 'wait-for-fixer' }),
+        REPAIR_HEAD,
+      ),
+    ).toMatchObject({ allowed: false, reason: 'queue-not-runnable' });
   });
 });
 

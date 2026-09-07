@@ -86,6 +86,7 @@ export interface CodexSuSessionDescriptorOptions {
 }
 
 export interface CreateCodexSuSessionAdapterOptions extends CodexSuSessionDescriptorOptions {
+  host?: SuSessionHost<'codex'>;
   controls?: Partial<CodexSuSessionControls>;
   ready?: boolean;
   runtimeReady?: () => boolean;
@@ -414,14 +415,16 @@ export class CodexSuSessionAdapter {
   ) {
     this.runtimeValue = runtime;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
-    this.host = new SuSessionHost({
+    const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
-      executeCommand: (command, context) => this.execute(command, context),
+      executeCommand: (command: SuSessionCommand<'codex'>, context: SuSessionCommandContext<'codex'>) => this.execute(command, context),
       runtimeReady: options.runtimeReady,
-      persistDescriptor: async (descriptor) => {
+      persistDescriptor: async (descriptor: SuSessionDescriptor<'codex'>) => {
         await persistSuSessionDescriptor(binding.advSessionId, descriptor);
       },
-    });
+    };
+    this.host = options.host ?? new SuSessionHost(hostOptions);
+    if (options.host) this.host.attachRuntime(hostOptions);
     // The deferred PUI create writes the adv row before the native pane boots.
     // Bind the chat id once the native adapter exists; the unique index makes
     // a duplicate adapter converge without creating a second identity.

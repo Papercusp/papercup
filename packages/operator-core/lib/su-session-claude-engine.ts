@@ -18,9 +18,13 @@ import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '
 import { probeScopeSupport } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
+import type { SuSessionHost } from './su-session-host';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>;
 export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
+  host?: SuSessionHost<'claude'>;
+  resume?: boolean;
+  beforeReady?: (pid: number | null) => Promise<void>;
   startupTimeoutMs?: number;
   deliveryTimeoutMs?: number;
   /** Inject the protocol peer in tests, not the host or its event translation. */
@@ -136,7 +140,7 @@ export function startClaudeSuEngine(
     cwd: boot.cwd,
     env,
     ...(authSettings[0] === '--settings' ? { settings: JSON.parse(authSettings[1]) } : {}),
-    sessionId: nativeId,
+    ...(options.resume ? { resume: nativeId } : { sessionId: nativeId }),
     includePartialMessages: true,
     settingSources: ['user', 'project', 'local'],
     permissionMode: 'bypassPermissions',
@@ -276,6 +280,8 @@ export function startClaudeSuEngine(
       throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
     }
     if (closed) throw new Error('Claude connection closed during startup');
+    await options.beforeReady?.(processId);
+    if (closed) throw new Error('Claude connection closed while finalizing resume');
     ready = true;
     adapter.host.transition('ready', 'Claude structured stream, SU tools and command executor attached');
   })();

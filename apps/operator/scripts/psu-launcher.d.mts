@@ -1276,12 +1276,68 @@ export function resumeAccountPlan(args: any): {
  * the psu agent-session marker, and the re-pinned account env. Pure — exported
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
+ * @param {*} session
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null}} [options]
  */
 export function buildResumeEnv(session: any, { fork, brain, accountEnv }?: {
-    fork?: boolean | undefined;
-    brain?: boolean | undefined;
-    accountEnv?: null | undefined;
-}): any;
+    fork?: boolean;
+    brain?: boolean;
+    accountEnv?: {
+        env?: Record<string, string>;
+    } | null;
+}): {
+    ENABLE_TOOL_SEARCH?: string | undefined;
+    PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_CONTEXT_TIER: string;
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
+    DISABLE_AUTO_COMPACT: string;
+    DISABLE_COMPACT: string;
+    PAPERCUSP_AGENT_SESSION: string;
+    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
+    PAPERCUSP_HARNESS_SLUG?: any;
+    PAPERCUSP_WORKSPACE?: any;
+    PAPERCUSP_AGENT: any;
+    PAPERCUSP_SID: any;
+} | {
+    ENABLE_TOOL_SEARCH?: string | undefined;
+    PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_CONTEXT_TIER: string;
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
+    DISABLE_AUTO_COMPACT: string;
+    DISABLE_COMPACT: string;
+    PAPERCUSP_AGENT_SESSION: string;
+    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
+    PAPERCUSP_HARNESS_SLUG?: any;
+    PAPERCUSP_WORKSPACE?: any;
+    PAPERCUSP_AGENT: any;
+    PAPERCUSP_SID: any;
+} | {
+    ENABLE_TOOL_SEARCH?: string | undefined;
+    PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_CONTEXT_TIER: string;
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN?: undefined;
+    DISABLE_AUTO_COMPACT?: undefined;
+    DISABLE_COMPACT?: undefined;
+    PAPERCUSP_AGENT_SESSION: string;
+    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
+    PAPERCUSP_HARNESS_SLUG?: any;
+    PAPERCUSP_WORKSPACE?: any;
+    PAPERCUSP_AGENT: any;
+    PAPERCUSP_SID: any;
+} | {
+    ENABLE_TOOL_SEARCH?: string | undefined;
+    PAPERCUSP_TOOLS?: string | undefined;
+    PAPERCUSP_CONTEXT_TIER: string;
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: string;
+    DISABLE_AUTO_COMPACT?: undefined;
+    DISABLE_COMPACT?: undefined;
+    PAPERCUSP_AGENT_SESSION: string;
+    PAPERCUSP_ADV_SESSION_ID?: string | undefined;
+    PAPERCUSP_HARNESS_SLUG?: any;
+    PAPERCUSP_WORKSPACE?: any;
+    PAPERCUSP_AGENT: any;
+    PAPERCUSP_SID: any;
+};
 /** Restore the per-session OMP store a tracked launch created. Fresh OMP
  * launches pin BOTH variables because PI_CODING_AGENT_DIR overrides
  * PI_CONFIG_DIR; resumes must do the same or `omp -r <native-id>` searches the
@@ -1604,6 +1660,15 @@ export function codexResumeRouteNotice(boundProvider: string | null, accountRout
  * @returns {string}
  */
 export function codexContextWindowConfigPatch(configText: string, model: string | null): string;
+/** @param {string} codexHome
+ * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean}} [options] */
+export function applyCodexGatewayRoute(codexHome: string, { mode, id, ownerId, priority, keepProviderTableWhenUnrouted, }?: {
+    mode?: string;
+    id?: string | null;
+    ownerId?: string | null;
+    priority?: string | null;
+    keepProviderTableWhenUnrouted?: boolean;
+}): void;
 /**
  * Resolve which fields the flags PRE-SELECT vs which still need an
  * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
@@ -2926,10 +2991,17 @@ export function normalizeResumeLocalLivenessEvidence(value: any): any;
  * Build the positive witness for an exact Codex resume only when both local
  * liveness oracles positively say there is no competing writer. Every other
  * result remains unknown and therefore returns null (fail closed).
+ * @param {{agent?: string, fork?: boolean, forceResume?: string, liveHost?: unknown, writerHolder?: {held?: boolean, reason?: string} | null}} [input]
  */
 export function normalizeCodexResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, writerHolder, }?: {
-    fork?: boolean | undefined;
-    forceResume?: string | undefined;
+    agent?: string;
+    fork?: boolean;
+    forceResume?: string;
+    liveHost?: unknown;
+    writerHolder?: {
+        held?: boolean;
+        reason?: string;
+    } | null;
 }): any;
 /**
  * Build the positive witness for an exact CLAUDE or OMP resume only when BOTH
@@ -2950,10 +3022,17 @@ export function normalizeCodexResumeLocalLivenessEvidence({ agent, fork, forceRe
  * means "take over a host I can SEE is alive"; a witness means "I looked and
  * there is nothing alive". Letting a force manufacture an absence claim would
  * make the server's audit trail lie about what was actually observed.
+ * @param {{agent?: string, fork?: boolean, forceResume?: string, liveHost?: unknown, processHolder?: {held?: boolean, reason?: string} | null}} [input]
  */
 export function normalizeArgvProbeResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, processHolder, }?: {
-    fork?: boolean | undefined;
-    forceResume?: string | undefined;
+    agent?: string;
+    fork?: boolean;
+    forceResume?: string;
+    liveHost?: unknown;
+    processHolder?: {
+        held?: boolean;
+        reason?: string;
+    } | null;
 }): any;
 /** The id this session's resume will put on the command line, or null when the
  *  backend does not probe argv (codex has its own flock oracle) or the row
