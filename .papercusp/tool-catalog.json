@@ -21052,7 +21052,8 @@
         "curator",
         "kettle",
         "worker",
-        "cup"
+        "cup",
+        "judge"
       ],
       "guidance": {
         "when": "Inspecting the behavioral contract a plan/item owns, resolving a VAL alias, or auditing exact historical revisions.",

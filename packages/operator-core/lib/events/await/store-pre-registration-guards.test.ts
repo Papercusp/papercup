@@ -26,6 +26,7 @@ beforeEach(() => {
   h.tx.array.mockImplementation((values: unknown[]) => values);
   h.tx.mockImplementation(async (strings: TemplateStringsArray) => {
     const query = strings.join('?');
+    if (query.includes('SELECT *') && query.includes('causal_generation')) return [];
     if (query.includes('causal_generation')) {
       return [{ causal_generation: 7, fired_at: null, fired_reason: null, cancelled_at: null, superseded_at: null }];
     }
