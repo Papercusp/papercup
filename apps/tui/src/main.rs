@@ -4889,12 +4889,14 @@ struct SuSessionEventSender {
 }
 
 impl SuSessionEventSender {
-    fn send(&self, event: Event) -> Result<(), tokio::sync::mpsc::error::SendError<Event>> {
-        self.tx.send(Event::SuSessionAsync {
-            harness: self.harness.clone(),
-            load_token: self.load_token,
-            event: Box::new(event),
-        })
+    fn send(&self, event: Event) -> Result<(), Box<tokio::sync::mpsc::error::SendError<Event>>> {
+        self.tx
+            .send(Event::SuSessionAsync {
+                harness: self.harness.clone(),
+                load_token: self.load_token,
+                event: Box::new(event),
+            })
+            .map_err(Box::new)
     }
 }
 
