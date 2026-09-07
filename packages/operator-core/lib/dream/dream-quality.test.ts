@@ -18,7 +18,7 @@ describe('Dream quality calibration and watchdog evidence', () => {
   afterAll(async () => { if (fixture) await rm(fixture.root, { recursive: true, force: true }); });
   function run(id: string, family = id): DreamRun {
     const value = structuredClone(fixture.run);
-    Object.assign(value, { runId: id, cycleId: `cycle-${id}`, startedAt: '2026-09-07T12:00:00.000Z', updatedAt: '2026-09-07T13:00:00.000Z', completedAt: '2026-09-07T13:00:00.000Z' });
+    Object.assign(value, { runId: id, cycleId: `cycle-${id}`, status: 'accepted', startedAt: '2026-09-07T12:00:00.000Z', updatedAt: '2026-09-07T13:00:00.000Z', completedAt: '2026-09-07T13:00:00.000Z' });
     const assessment: DreamRunAssessment = {
       schemaVersion: 'dream-run-assessment-v1', id: `assessment-${id}`, assessor: 'human:fixture-review',
       recordedAt: '2026-09-07T13:00:00.000Z', candidateHash: String(value.review!.candidateHash), evidenceHash: String(value.review!.evidenceHash),
@@ -106,6 +106,7 @@ describe('Dream quality calibration and watchdog evidence', () => {
     expect(report.coverage).toEqual({ complete: true, inspected: 2, valid: 1 });
     expect(codes(report)).toEqual(['invalid-provenance']);
     expect(report.reviewPassRate?.denominator).toBe(1);
+    expect(reportDreamQuality([corrupt], scope).latestEvidenceAt).toBe(corrupt.updatedAt);
     expect(() => reportDreamQuality([{ ...good, workspaceId: 'foreign' }], scope)).toThrow('workspace');
   });
 

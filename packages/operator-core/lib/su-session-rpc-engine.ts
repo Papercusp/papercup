@@ -34,6 +34,8 @@ export interface SuRpcEngineOptions {
   modes?: readonly string[];
   runtimeGeneration?: number;
   nativeSession?: NativeHandle;
+  host?: SuSessionHost;
+  beforeReady?: (pid: number | null) => Promise<void>;
   register?: boolean;
   startupTimeoutMs?: number;
   deliveryTimeoutMs?: number;
@@ -116,7 +118,7 @@ export function startSuRpcEngine(
   let turnCompletion: Promise<void> | undefined;
   let nativeStart: Promise<RpcFrame> | undefined;
   let inputTail = Promise.resolve();
-  const streams = new Set<string>();
+  const streams = new Map<string, string>();
   const tools = new Map<string, string>();
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
   const controls = {
@@ -178,8 +180,8 @@ export function startSuRpcEngine(
   };
   const shared = { ...options, controls, ready: false, runtimeReady: () => ready && !closed };
   const adapter = backend === 'codex'
-    ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, shared)
-    : createOmpSuSessionAdapter(binding, { nativeSession: { ...native as OmpNativeSessionHandle, ompThreadId: nativeId() }, transcriptPath: null }, shared);
+    ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, { ...shared, host: options.host as SuSessionHost<'codex'> | undefined })
+    : createOmpSuSessionAdapter(binding, { nativeSession: { ...native as OmpNativeSessionHandle, ompThreadId: nativeId() }, transcriptPath: null }, { ...shared, host: options.host as SuSessionHost<'omp'> | undefined });
   const host = adapter.host as SuSessionHost<Backend>;
   const cards = new SuNativeCards(binding.workspaceId!, `pui-native:${binding.advSessionId}:${options.runtimeGeneration ?? 0}`, (event) => {
     if (closed) return;
@@ -205,11 +207,14 @@ export function startSuRpcEngine(
   function transcript(key: string, channel: 'text' | 'reasoning', delta: string, completed = false): void {
     if (!ownerTurnId) return;
     if (!streams.has(key)) {
-      streams.add(key);
+      streams.set(key, '');
       emit({ type: 'transcript', phase: 'started', turnId: ownerTurnId, role: 'assistant', channel });
     }
-    if (delta) emit({ type: 'transcript', phase: 'delta', turnId: ownerTurnId, role: 'assistant', channel, content: delta });
-    if (completed) emit({ type: 'transcript', phase: 'completed', turnId: ownerTurnId, role: 'assistant', channel });
+    if (delta) {
+      streams.set(key, streams.get(key)! + delta);
+      emit({ type: 'transcript', phase: 'delta', turnId: ownerTurnId, role: 'assistant', channel, content: delta });
+    }
+    if (completed) emit({ type: 'transcript', phase: 'completed', turnId: ownerTurnId, role: 'assistant', channel, content: streams.get(key) });
   }
   function finish(status: string, error?: string): void {
     if (error) emit({ type: 'error', scope: 'turn', code: `${backend}_turn_failed`, message: error, recoverable: true });
@@ -349,6 +354,8 @@ export function startSuRpcEngine(
     await refreshResumeEvidence();
     await persistSuSessionDescriptor(binding.advSessionId, host.descriptor());
     if (closed) throw new Error('Structured connection closed during startup');
+    await options.beforeReady?.(peer.pid());
+    if (closed) throw new Error(`${backend} closed while finalizing resume`);
     ready = true;
     host.transition('ready', `${backend} structured stream, SU tools and command executor attached`);
   })();

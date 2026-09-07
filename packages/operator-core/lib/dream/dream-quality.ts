@@ -31,7 +31,7 @@ export interface DreamQualityFault {
 }
 
 /** Round-robin over rejection reasons; hash order is repeatable, independent of input order. */
-export function sampleRejectedDreams(runs: readonly DreamRun[], limit = DREAM_QUALITY_POLICY.rejectedSampleSize) {
+export function sampleRejectedDreams(runs: readonly DreamRun[], limit: number = DREAM_QUALITY_POLICY.rejectedSampleSize) {
   if (!Number.isInteger(limit) || limit < 0 || limit > 100) throw new RangeError('Invalid rejection sample limit');
   const groups = new Map<string, DreamRun[]>();
   for (const run of runs) {
@@ -84,11 +84,13 @@ export function reportDreamQuality(
     if (!previous || run.updatedAt >= previous.updatedAt) unique.set(run.runId, run);
   }
   const valid: DreamRun[] = [];
+  const observed: DreamRun[] = [];
   let inspected = 0;
   for (const run of unique.values()) {
     const started = Date.parse(run.startedAt);
-    if (!Number.isFinite(started)) { fault('invalid-provenance', 'major', 'Invalid start timestamp', run.runId); continue; }
+    if (!Number.isFinite(started)) { observed.push(run); fault('invalid-provenance', 'major', 'Invalid start timestamp', run.runId); continue; }
     if (started < since || started >= until || run.status === 'running') continue;
+    observed.push(run);
     inspected++;
     try {
       const provenance = dreamCapabilityRun(run);
@@ -156,11 +158,12 @@ export function reportDreamQuality(
   }
   return {
     policy: DREAM_QUALITY_POLICY, scope, coverage: { complete: options.complete ?? true, inspected, valid: valid.length },
-    faults: [...faults.values()].map(f => ({ ...f, runCount: f.runIds.length, runIds: f.runIds.slice(0, 12) })), calibration,
+    faults: [...faults.values()].map(f => ({ ...f, identifiedRunCount: f.runIds.length, runIds: f.runIds.slice(0, 12) })), calibration,
     reviewPassRate: metrics?.funnel.reviewPassRate ?? null,
     rejectedReview: sampleRejectedDreams(valid),
     // The evidence time is stable across ticks; a later clock tick is not new evidence.
-    latestEvidenceAt: valid.reduce<string | null>((latest, r) => latest === null || r.updatedAt > latest ? r.updatedAt : latest, null),
+    latestEvidenceAt: observed.filter(r => Number.isFinite(Date.parse(r.updatedAt)))
+      .reduce<string | null>((latest, r) => latest === null || r.updatedAt > latest ? r.updatedAt : latest, null),
   };
 }
 
@@ -189,7 +192,7 @@ export async function collectDreamQualitySignals(
       title: `Dream quality: ${f.code}`,
       body: `${JSON.stringify({ window: report.scope, coverage: report.coverage, fault: f, reviewPassRate: report.reviewPassRate, rejectedReview: report.rejectedReview })}. Acceptance rate is diagnostic; review the cited evidence.`,
       severity: f.severity, kind: f.code === 'family-concentration' ? 'change' as const : 'bug' as const,
-      scope: `harness:${report.scope.potSlug}`, latestAt: report.latestEvidenceAt ?? until,
+      scope: `harness:${report.scope.potSlug}`, latestAt: report.latestEvidenceAt ?? undefined,
       paths: ['packages/operator-core/lib/dream/dream-quality.ts'],
     }))),
     note: JSON.stringify({ window: { since, until }, fetched: runs.length, complete, rejectedSample: rejectionSamples.slice(0, 12), omittedSamples: Math.max(0, rejectionSamples.length - 12) }),

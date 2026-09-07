@@ -1,7 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
-import { evaluateAcceptanceBarContract, evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import {
+  evaluateAcceptanceBarContract,
+  evaluateAcceptanceBarLifecycle,
+  readAndEvaluateAcceptanceBarLifecycle,
+} from './acceptance-bar-lifecycle-evaluator';
 import { deriveNonCodeItemProofs } from './plan-requirement-realization';
+
+vi.mock('./acceptance-bar-contract-snapshot', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./acceptance-bar-contract-snapshot')>()),
+  readAcceptanceBarContractSnapshot: vi.fn(),
+}));
 
 function bar(overrides: Partial<AcceptanceBarTrace> = {}): AcceptanceBarTrace {
   return {
@@ -141,6 +151,85 @@ function snapshot(overrides: Partial<AcceptanceBarContractSnapshot> = {}): Accep
     ...overrides,
   };
 }
+
+describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability', () => {
+  beforeEach(() => vi.mocked(readAcceptanceBarContractSnapshot).mockReset());
+
+  const phases = ['pre-start', 'pre-vetting', 'pre-grading', 'ship'] as const;
+  const failures = [
+    { code: 'bar_snapshot_plan_missing', planPresent: false },
+    { code: 'bar_snapshot_source_unavailable', planPresent: false },
+    { code: 'bar_snapshot_source_unavailable', planPresent: true },
+    { code: 'bar_snapshot_plan_ambiguous', planPresent: true },
+    { code: 'bar_snapshot_source_truncated', planPresent: true },
+  ] as const;
+
+  for (const phase of phases) {
+    it.each(failures)(`${phase} refuses $code (plan present: $planPresent) without a caller assertion`, async ({
+      code,
+      planPresent,
+    }) => {
+      const value = snapshot({
+        applicable: false,
+        plan: planPresent ? { ...snapshot().plan!, adoptionEpoch: null } : null,
+        completeness: {
+          complete: false,
+          truncated: code === 'bar_snapshot_source_truncated',
+          problems: [{ code, source: 'plan', severity: 'error', detail: 'subject plan cannot be resolved reliably' }],
+        },
+      });
+      vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(value);
+
+      const result = await readAndEvaluateAcceptanceBarLifecycle('plan-a', phase);
+      expect(result).toMatchObject({ applicable: true, satisfied: false });
+      expect(result.contractCodes).toContain(code);
+      expect(value.applicable).toBe(false);
+      expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledWith('plan-a', {}, { current: undefined });
+    });
+
+    it(`${phase} preserves the positively known legacy bypass`, async () => {
+      vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(snapshot({
+        applicable: false,
+        plan: { ...snapshot().plan!, adoptionEpoch: null },
+        completeness: {
+          complete: false,
+          truncated: false,
+          problems: [{
+            code: 'bar_snapshot_source_unavailable',
+            source: 'rubric',
+            severity: 'error',
+            detail: 'a legacy plan does not require BAR rubric reads',
+          }],
+        },
+      }));
+      expect(await readAndEvaluateAcceptanceBarLifecycle('plan-a', phase))
+        .toMatchObject({ applicable: false, satisfied: true, codes: [] });
+    });
+  }
+
+  it('preserves an explicit adoption assertion when the second read fails', async () => {
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(snapshot({
+      applicable: false,
+      plan: null,
+      completeness: {
+        complete: false,
+        truncated: false,
+        problems: [{
+          code: 'bar_snapshot_source_unavailable', source: 'plan', severity: 'error', detail: 'read failed',
+        }],
+      },
+    }));
+    const result = await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start', { expectedApplicable: true });
+    expect(result.satisfied).toBe(false);
+    expect(result.contractCodes).toContain('bar_snapshot_source_unavailable');
+  });
+
+  it('allows a ready adopted plan through the normal evaluator', async () => {
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(snapshot());
+    expect(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start'))
+      .toMatchObject({ applicable: true, satisfied: true, codes: [] });
+  });
+});
 
 describe('operational realization from the canonical BAR snapshot', () => {
   function proven(): AcceptanceBarContractSnapshot {

@@ -129,6 +129,9 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     const text = events.filter((event) => event.type === 'transcript' && event.phase === 'delta');
     expect(text).toHaveLength(1);
     expect(text[0]).toMatchObject({ turnId: 'owner-owner_turn', role: 'assistant', content: 'Hello' });
+    expect(events.filter((event) => event.type === 'transcript' && event.phase === 'completed')).toEqual([
+      expect.objectContaining({ turnId: 'owner-owner_turn', role: 'assistant', content: 'Hello' }),
+    ]);
     expect(events.filter((event) => event.type === 'tool')).toEqual([
       expect.objectContaining({ phase: 'started', turnId: 'owner-owner_turn', callId: 'call' }),
       expect.objectContaining({ phase: 'completed', turnId: 'owner-owner_turn', callId: 'call', isError: false }),

@@ -581,6 +581,7 @@ pub enum PickerAxis {
     /// the Sessions destination (`psu --role=su --tui=pui`,
     /// pui-psu-exact-launch-and-task-latency-2026-09-01 D-001/D-003).
     Conversation,
+    Backend,
     Model,
     Effort,
     Account,
@@ -608,6 +609,7 @@ impl SessionPicker {
     pub fn title(&self) -> &'static str {
         match self.axis {
             PickerAxis::Conversation => " Conversation — Enter select · Esc close ",
+            PickerAxis::Backend => " Backend — Enter select · Esc close ",
             PickerAxis::Model => " Model — Enter select · Esc close ",
             PickerAxis::Effort => " Effort — Enter select · Esc close ",
             PickerAxis::Account => " Account route — Enter select · Esc close ",

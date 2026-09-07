@@ -3308,8 +3308,11 @@ export function formatSessionPortInspection(result: any): any[];
  *  endpoint). EI-9756 regression guard: injectable `fetchImpl`/`operatorUrl`/
  *  `token` (mirrors reportSessionResumed) so this — previously untested — is
  *  unit-testable without a live operator; a real caller always hits the real
- *  operator via the defaults. */
-export function tryRematerializeFromArchive(sessionId: any, sourceKind?: null, { fetchImpl, operatorUrl, token, timeoutMs, statusTimeoutMs, statusAttempts, statusDelayMs, sleep, }?: {
+ *  operator via the defaults.
+ * @param {string | null | undefined} sessionId
+ * @param {'claude' | 'codex' | 'omp' | null} [sourceKind]
+ */
+export function tryRematerializeFromArchive(sessionId: string | null | undefined, sourceKind?: "claude" | "codex" | "omp" | null, { fetchImpl, operatorUrl, token, timeoutMs, statusTimeoutMs, statusAttempts, statusDelayMs, sleep, }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;

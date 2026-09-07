@@ -4063,7 +4063,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             // optional dock cannot render: one key always lands in the composer.
             "o:Agent Chat · ?:help".to_string()
         } else {
-            "l/m/e/a/u:select · i:compose · ?:help".to_string()
+            "l/m/e/a/u:select · b:backend · i:compose · ?:help".to_string()
         }
     });
     let w = (right.chars().count() as u16 + 1).min(area.width);
