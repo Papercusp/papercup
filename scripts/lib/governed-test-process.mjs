@@ -366,7 +366,7 @@ export const GOVERNED_ADMISSION_RETRY_MARKER = 'GOVERNED_ADMISSION_RETRY';
  */
 export function isRetryableAdmissionFailure(error, maxDepth = 4) {
   for (let node = error, depth = 0; node && typeof node === 'object' && depth <= maxDepth; depth++) {
-    if (admissionFailurePgCode(node)) return true;
+    if (retryableAdmissionCode(node)) return true;
     node = node.cause;
   }
   return false;
@@ -448,7 +448,7 @@ export async function runGovernedTestProcess(options, run) {
       // and an invisible mitigation is how a degradation becomes permanent.
       log(
         `${GOVERNED_ADMISSION_RETRY_MARKER} attempt=${attempt + 1}/${maxAttempts} ` +
-          `pgCode=${admissionFailurePgCode(error) ?? 'unknown'} delayMs=${delayMs} ` +
+          `pgCode=${admissionFailureCode(error) ?? 'unknown'} delayMs=${delayMs} ` +
           `owner=${options.owner ?? 'unknown'}`,
       );
       await sleep(delayMs);
@@ -457,14 +457,20 @@ export async function runGovernedTestProcess(options, run) {
 }
 
 /** The contention code that made a rejection retryable, for the retry marker. */
-function admissionFailurePgCode(error, maxDepth = 4) {
+function retryableAdmissionCode(node) {
+  if (typeof node.pgCode === 'string' && RETRYABLE_ADMISSION_PG_CODES.has(node.pgCode)) return node.pgCode;
+  if (typeof node.code === 'string' && RETRYABLE_ADMISSION_CONNECTION_CODES.has(node.code)) return node.code;
+  if (typeof node.message === 'string') {
+    const match = /\b(CONNECTION_ENDED|CONNECTION_DESTROYED)\b/.exec(node.message);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function admissionFailureCode(error, maxDepth = 4) {
   for (let node = error, depth = 0; node && typeof node === 'object' && depth <= maxDepth; depth++) {
-    if (typeof node.pgCode === 'string' && RETRYABLE_ADMISSION_PG_CODES.has(node.pgCode)) return node.pgCode;
-    if (typeof node.code === 'string' && RETRYABLE_ADMISSION_CONNECTION_CODES.has(node.code)) return node.code;
-    if (typeof node.message === 'string') {
-      const match = /\b(CONNECTION_ENDED|CONNECTION_DESTROYED)\b/.exec(node.message);
-      if (match) return match[1];
-    }
+    const code = retryableAdmissionCode(node);
+    if (code) return code;
     node = node.cause;
   }
   return null;
