@@ -22,7 +22,9 @@ import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/ps
 import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
   composeLaunchModelSpec,
+  flagValueFromArgv,
   MIN_COMPACTION_LIMIT_TOKENS,
+  modelSpecFromArgv,
   MODEL_EFFORT_LEVELS,
   normalizeModelSpec,
 } from './agent-config-constants';
@@ -211,6 +213,10 @@ export interface ResumeTarget {
   ownerId: string | null;
   agent: string | null;
   cwd: string | null;
+  /** The model spec recorded in the source session's launch argv, when present. */
+  model: string | null;
+  /** The Codex model-source provenance recorded in launch argv, when present. */
+  modelSource: CodexModelSource | null;
   /** ⚠ Only an end time when {@link endedBy} is `'self'`. Otherwise a sweeper stamped it on
    *  NOTICING the process was gone, so it cannot answer "when did this session end". */
   endedAt: string | null;
@@ -230,6 +236,18 @@ export type ResolveResumeError =
   | { ok: false; error: 'no_native_session_id'; detail: string };
 
 export type ResolveResumeResult = ({ ok: true } & ResumeTarget) | ResolveResumeError;
+
+/** Read the model settings that a resume must carry from the durable launch argv. */
+function resumeModelMetadata(launchArgv: unknown): Pick<ResumeTarget, 'model' | 'modelSource'> {
+  const source = flagValueFromArgv(launchArgv, 'model-source');
+  return {
+    model: modelSpecFromArgv(launchArgv),
+    modelSource:
+      source === 'explicit' || source === 'inherited' || source === 'configured-default'
+        ? source
+        : null,
+  };
+}
 
 /**
  * Pick the native transcript id a resume command must receive.
@@ -347,7 +365,7 @@ export async function resolveResumeTarget(ref: {
     )
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
            window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
-           ended_by, started_at::text AS binding_started_at
+           ended_by, launch_argv, started_at::text AS binding_started_at
       FROM harness_shared.adv_sessions
      WHERE ${
        sessionId
@@ -375,6 +393,7 @@ export async function resolveResumeTarget(ref: {
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
   const nativeSessionId = resolvedNativeSessionId(sessionId, row.sessionId);
+  const modelMetadata = resumeModelMetadata(row.launchArgv);
   // The psu launcher already supports tracked Codex rows with no native UUID:
   // `psu --resume=<adv row id>` resolves the row, restores its isolated
   // CODEX_HOME, and runs `codex resume --last`. Other backends need a native
@@ -399,6 +418,7 @@ export async function resolveResumeTarget(ref: {
     ownerId: row.coordOwnerId,
     agent: row.agent,
     cwd: row.cwd,
+    ...modelMetadata,
     endedAt: row.endedAt,
     endedBy: row.endedBy,
     live: host != null,
@@ -532,7 +552,7 @@ export function buildAgentLaunchCommand(opts: {
   const composedModelSpec = composeModelSpec(opts.model ?? undefined, opts.effort ?? undefined);
   // A fresh managed Codex launch must never rely on the CLI/cache default. The
   // same resolver also rejects retired Spark spellings before a terminal opens.
-  const codexSelection = opts.mode === 'fresh' && opts.agent?.trim() === 'codex'
+  const codexSelection = opts.agent?.trim() === 'codex' && (opts.mode === 'fresh' || Boolean(composedModelSpec))
     ? resolveCodexModelSelection(composedModelSpec, {
         source: opts.modelSource ?? (composedModelSpec ? 'explicit' : 'configured-default'),
       })
