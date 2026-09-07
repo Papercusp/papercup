@@ -93,8 +93,14 @@ vi.mock('../routes/agent-mcp/bootstrap-su', () => ({
   // bootstrap-role; this fully-mocked module must export it or the handler throws
   // at the call. The tests don't assert argv content (it flows downstream), so a
   // faithful minimal stub suffices.
-  reconstructPsuLaunchArgv: (o: { agent?: string; role?: string | null }) =>
-    ['psu', '--no-picker', `--agent=${o?.agent ?? ''}`, ...(o?.role ? [`--role=${o.role}`] : [])],
+  reconstructPsuLaunchArgv: (o: { agent?: string; role?: string | null; stack?: string[] | null }) =>
+    [
+      'psu',
+      '--no-picker',
+      `--agent=${o?.agent ?? ''}`,
+      ...(o?.role ? [`--role=${o.role}`] : []),
+      ...(o?.stack ?? []).map((ref) => `--stack=${ref}`),
+    ],
   // WI-1893: the durable membership stamp replaced the in-memory setPendingFleet
   // placement (which lived in ONE cluster worker and was lost cross-worker).
   stampFleetMembershipAtBoot: (opts: unknown) => stampFleetMembershipMock(opts),
@@ -174,7 +180,7 @@ beforeEach(() => {
     agentsPath: '/tmp/role-codex-homes/session-7/AGENTS.md',
     configPath: '/tmp/role-codex-homes/session-7/config.toml',
   });
-  buildRoleLaunchSpecMock.mockResolvedValue({
+  buildRoleLaunchSpecMock.mockImplementation(async (input: { stack?: string[] | null }) => ({
     role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
     cwd: LC_DIR, promptText: 'WORKER PROMPT', promptFile: '/h/prompts/worker.md',
     mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x',
@@ -184,7 +190,12 @@ beforeEach(() => {
     claudeConfigDir: join(LC_DIR, 'session-claude', 'role-abc'),
     sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
     contextSize: 'trimmed',
-  });
+    stack: input.stack ?? [],
+    specificationArtifact: {},
+    specificationRevision: 'a'.repeat(64),
+    stateRevision: 'b'.repeat(64),
+    compositionSource: 'compatibility',
+  }));
 });
 
 describe('bootstrap-role', () => {
@@ -204,11 +215,36 @@ describe('bootstrap-role', () => {
     // claude exact-resume (P-003 inv d): the forced native session id is exported
     // (the launcher turns it into `--session-id`) AND recorded on the adv row.
     expect(json.envelopeEnv.PAPERCUSP_NATIVE_SESSION_ID).toBe('nsid-abc');
+    expect(json.specificationRevision).toBe('a'.repeat(64));
+    expect(json.stateRevision).toBe('b'.repeat(64));
+    expect(json.envelopeEnv.PAPERCUSP_SPECIFICATION_REVISION).toBe(json.specificationRevision);
+    expect(json.envelopeEnv.PAPERCUSP_STATE_REVISION).toBe(json.stateRevision);
     expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', harnessSlug: 'papercup', featureId: 'F-001' }),
     );
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'worker', feature: 'F-001', agent: 'claude', coordOwnerId: 'role-abc', sessionId: 'nsid-abc' }),
+    );
+  });
+
+  it('threads explicit stack bindings through role compilation and launch argv', async () => {
+    await callPost({
+      role: 'worker',
+      agent: 'claude',
+      harness_slug: 'papercup',
+      feature: 'F-001',
+      stack: ['domain:papercusp-engineer', 'practice:careful-review'],
+    });
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(
+      expect.objectContaining({ stack: ['domain:papercusp-engineer', 'practice:careful-review'] }),
+    );
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchArgv: expect.arrayContaining([
+          '--stack=domain:papercusp-engineer',
+          '--stack=practice:careful-review',
+        ]),
+      }),
     );
   });
 
