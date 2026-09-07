@@ -36,6 +36,8 @@ type UnsafeCall = { query: string; params: unknown[] };
 const calls: UnsafeCall[] = [];
 let seededGh: Record<string, unknown> | null = null;
 let seededRepairQueue: Record<string, unknown> | null = null;
+let seededGateHealthByWorkspace: Map<string, Record<string, unknown>> | null = null;
+let updatedGateHealthByWorkspace: Map<string, Record<string, unknown>> | null = null;
 /**
  * WI-42118: the `green_checkpoint` pipeline_events page the CROSS-STREAK cause digest reads.
  * Default EMPTY, which the reader turns into a `null` digest — so every pre-existing test in
@@ -61,7 +63,11 @@ const fakeSql = {
   unsafe: (query: string, params: unknown[] = []): Promise<FakeSqlResult> => {
     calls.push({ query, params });
     if (/SELECT\s+metadata->'gate_health'/i.test(query)) {
-      return Promise.resolve([{ gh: seededGh, rq: seededRepairQueue }]);
+      const workspace = query.includes('workspace_id') ? String(params.at(-1) ?? '') : null;
+      const scopedGh = workspace && seededGateHealthByWorkspace
+        ? seededGateHealthByWorkspace.get(workspace) ?? null
+        : seededGh;
+      return Promise.resolve([{ gh: scopedGh, rq: seededRepairQueue }]);
     }
     // Escalation clear (green path) reads `.count`. A real DB would only have a
     // row to clear when the seeded gate_health actually believed an escalation
@@ -84,6 +90,16 @@ const fakeSql = {
     if (/consecutiveNoVerdict/.test(query) && /RETURNING/i.test(query)) {
       const prev = typeof seededGh?.consecutiveNoVerdict === 'number' ? (seededGh.consecutiveNoVerdict as number) : 0;
       return Promise.resolve([{ streak: prev + 1, alerted: seededGh?.noVerdictAlerted === true }]);
+    }
+    if (/UPDATE\s+harness_shared\.routines/i.test(query) && /\{gate_health\}/.test(query)) {
+      const raw = typeof params[1] === 'string' ? params[1] : '';
+      if (raw.startsWith('{')) {
+        const payload = JSON.parse(raw) as { gate_health?: Record<string, unknown> };
+        const workspace = String(params.at(-1) ?? '');
+        if (payload.gate_health && updatedGateHealthByWorkspace) {
+          updatedGateHealthByWorkspace.set(workspace, payload.gate_health);
+        }
+      }
     }
     // the routines gate_health write and any escalation upsert are not read for
     // their result.
@@ -158,8 +174,10 @@ const ctx = { installSlug: 'test-slug', workspaceId: 'test-ws' } as unknown as S
 function lastGateHealthWrite(): Record<string, unknown> | null {
   for (let i = calls.length - 1; i >= 0; i--) {
     const c = calls[i];
-    if (/UPDATE\s+harness_shared\.routines/i.test(c.query) && typeof c.params[1] === 'string') {
-      const parsed = JSON.parse(c.params[1] as string) as { gate_health?: Record<string, unknown> };
+    if (/UPDATE\s+harness_shared\.routines/i.test(c.query)) {
+      const encoded = c.params.find((param) => typeof param === 'string' && param.trimStart().startsWith('{'));
+      if (encoded == null) continue;
+      const parsed = JSON.parse(encoded as string) as { gate_health?: Record<string, unknown> };
       if (parsed?.gate_health) return parsed.gate_health;
     }
   }
@@ -170,12 +188,47 @@ beforeEach(() => {
   calls.length = 0;
   seededGh = null;
   seededRepairQueue = null;
+  seededGateHealthByWorkspace = null;
+  updatedGateHealthByWorkspace = null;
   seededEvents = [];
   notifyAttention.mockClear();
   notifyAttentionOnce.mockClear();
   broadcastSevereEvent.mockClear();
   broadcastSevereEventResolved.mockClear();
   emitAwaitedEvent.mockClear();
+});
+
+describe('WI-2143684: trackGateStall scopes routine rows by workspace', () => {
+  it('leaves a same-install row in another workspace byte-identical', async () => {
+    const workspaceA = { consecutiveReds: 0, lastGreenAt: Date.now(), stallAlerted: false };
+    const workspaceB = {
+      consecutiveReds: 7,
+      firstRedAt: 123,
+      lastGreenAt: 456,
+      failingTests: ['other-workspace.test.ts'],
+      observedCandidate: 'other-candidate',
+      stallAlerted: true,
+    };
+    const workspaceBBefore = JSON.parse(JSON.stringify(workspaceB)) as Record<string, unknown>;
+    seededGateHealthByWorkspace = new Map([
+      ['workspace-a', workspaceA],
+      ['workspace-b', workspaceB],
+    ]);
+    updatedGateHealthByWorkspace = new Map();
+
+    await trackGateStall(
+      { workspaceId: 'workspace-a', installSlug: 'shared-install' } as unknown as SystemActionCtx,
+      'not-green',
+    );
+
+    expect(updatedGateHealthByWorkspace.get('workspace-a')).toMatchObject({ consecutiveReds: 1 });
+    expect(updatedGateHealthByWorkspace.has('workspace-b')).toBe(false);
+    expect(seededGateHealthByWorkspace.get('workspace-b')).toEqual(workspaceBBefore);
+    const routineQueries = calls.filter((call) => /harness_shared\.routines/i.test(call.query));
+    expect(routineQueries.length).toBeGreaterThanOrEqual(2);
+    expect(routineQueries.every((call) => call.query.includes('workspace_id'))).toBe(true);
+    expect(routineQueries.every((call) => call.params.at(-1) === 'workspace-a')).toBe(true);
+  });
 });
 
 /**

@@ -3095,8 +3095,9 @@ export async function trackGateStall(
             metadata->'last_fixer' AS lf,
             metadata->'repair_queue' AS rq
        FROM harness_shared.routines
-      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-    [ctx.installSlug],
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+        AND workspace_id = $2`,
+    [ctx.installSlug, ctx.workspaceId],
   )) as Array<{
     gh: {
       consecutiveReds?: number;
@@ -3361,7 +3362,8 @@ export async function trackGateStall(
                     $6::jsonb,
                     true),
                     updated_at = now()
-              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+                AND workspace_id = $7`,
             [
               ctx.installSlug,
               inconclusivePayload,
@@ -3374,6 +3376,7 @@ export async function trackGateStall(
               measuredIds,
               JSON.stringify(tickLegs.failingSignatures.slice(0, 20)),
               JSON.stringify(candidateSnapshot),
+              ctx.workspaceId,
             ],
           );
         } else {
@@ -3391,8 +3394,9 @@ export async function trackGateStall(
                     true
                     ),
                     updated_at = now()
-              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-            [ctx.installSlug, inconclusivePayload, JSON.stringify(candidateSnapshot)],
+              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+                AND workspace_id = $4`,
+            [ctx.installSlug, inconclusivePayload, JSON.stringify(candidateSnapshot), ctx.workspaceId],
           );
         }
       } catch (e) {
@@ -3492,8 +3496,9 @@ export async function trackGateStall(
                     true
                   ),
                   updated_at = now()
-            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-          [ctx.installSlug, JSON.stringify(stallAlertedAtFixerAgeMs), JSON.stringify(stallFixerSuccessionKey)],
+            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+              AND workspace_id = $4`,
+          [ctx.installSlug, JSON.stringify(stallAlertedAtFixerAgeMs), JSON.stringify(stallFixerSuccessionKey), ctx.workspaceId],
         );
       } catch (e) {
         console.warn(
@@ -3540,9 +3545,10 @@ export async function trackGateStall(
                   ),
                   updated_at = now()
             WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+              AND workspace_id = $2
         RETURNING (metadata #>> '{gate_health,consecutiveNoVerdict}')::int AS streak,
                   COALESCE((metadata #>> '{gate_health,noVerdictAlerted}')::boolean, false) AS alerted`,
-          [ctx.installSlug],
+          [ctx.installSlug, ctx.workspaceId],
         )) as Array<{ streak: number | null; alerted: boolean | null }>;
         const streak = bumped[0]?.streak ?? 0;
         const alreadyAlerted = bumped[0]?.alerted === true;
@@ -3558,8 +3564,9 @@ export async function trackGateStall(
             .unsafe(
               `UPDATE harness_shared.routines
                   SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,noVerdictAlerted}', 'true'::jsonb, true)
-                WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-              [ctx.installSlug],
+                WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+                  AND workspace_id = $2`,
+              [ctx.installSlug, ctx.workspaceId],
             )
             .catch(() => undefined);
           const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
@@ -4273,8 +4280,9 @@ export async function trackGateStall(
           END),
           true
         ), updated_at = now()
-      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-    [ctx.installSlug, JSON.stringify({ gate_health: next })],
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+        AND workspace_id = $3`,
+    [ctx.installSlug, JSON.stringify({ gate_health: next }), ctx.workspaceId],
   );
 }
 
