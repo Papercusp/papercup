@@ -5,11 +5,12 @@ import { getFlag } from '@papercusp/flags/server';
 import { getOwnerSteering, idleActivityEnabled, setOwnerSteering } from '../owner-steering';
 import { governorCheck } from '../learning-governor/store';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
+import { POT_DREAM_MANUAL_ROUTINE_NAME, POT_DREAM_AUTO_ROUTINE_NAME } from '../pot/provision-learning-loop';
 import { DEFAULT_DREAM_CYCLE_CONFIG } from './dream-config';
 import { dreamLoopId, DREAM_ROLLING_WINDOW_MS, sumDreamSpendSince } from './dream-governor';
 import type { DreamRunMode } from './dream-run-store';
 
-const ROUTINE_NAMES = { manual: 'dream-cycle-manual', auto: 'dream-cycle-auto' } as const;
+const ROUTINE_NAMES = { manual: POT_DREAM_MANUAL_ROUTINE_NAME, auto: POT_DREAM_AUTO_ROUTINE_NAME } as const;
 
 export interface DreamCycleSummary {
   cycleId: string;

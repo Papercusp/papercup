@@ -59,11 +59,13 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       if (previous.backend !== input.agent || previous.harnessSlug !== input.harness_slug) throw new Error('The conversation is already bound to a different engine or project');
       const host = getRegisteredSuSessionHost({ workspaceId, harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
       const snapshot = host?.snapshot();
-      if (!snapshot?.executorAttached || !snapshot.streamReady || snapshot.terminal || snapshot.descriptor.lifecycle === 'starting') {
+      const initializing = state.engines.has(key) && snapshot?.descriptor.lifecycle === 'starting';
+      if (!snapshot || snapshot.terminal || (!initializing && (!snapshot.executorAttached || !snapshot.streamReady))) {
         throw new Error('This conversation already has a saved session. Reconnect that session before sending another turn.');
       }
       const row = await getAdvSession(previous.advSessionId);
       return { status: 'ok', attached: true, duplicate: true, transport: 'structured',
+        ready: !initializing,
         advSessionId: previous.advSessionId, ownerId: previous.ownerId, workspaceId,
         harnessSlug: previous.harnessSlug, agent: previous.backend,
         nativeSession: row ? nativeSessionHandleForAdvSession(row) : null };
@@ -106,16 +108,32 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
       });
       state.engines.set(key, engine);
-      await engine.ready;
-      await setAdvSessionPid(result.sessionId, engine.pid(), 'pui-structured-claude');
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());
       const active = engine;
-      void engine.done.then(() => {
-        if (state.engines.get(key) === active) state.engines.delete(key);
-      }).catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error));
+      // Launch publishes the durable identity; the existing host stream owns
+      // bounded readiness and failure. Waiting here couples native startup to
+      // the HTTP route's shorter watchdog and discards a valid launch as 408.
+      void (async () => {
+        try {
+          await active.ready;
+          await setAdvSessionPid(result.sessionId!, active.pid(), 'pui-structured-claude');
+          await persistSuSessionDescriptor(result.sessionId!, active.adapter.host.descriptor());
+          // done is initialized when the SDK actually starts. Reading it
+          // before ready can observe the engine's pre-start placeholder.
+          await active.done;
+        } catch (error) {
+          if (!active.adapter.host.snapshot().terminal) {
+            active.adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
+          }
+          await active.close();
+          await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true });
+        } finally {
+          if (state.engines.get(key) === active) state.engines.delete(key);
+        }
+      })().catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error));
       return { status: 'ok', transport: 'structured', agent: 'claude', advSessionId: binding.advSessionId,
         ownerId: binding.ownerId, workspaceId: binding.workspaceId, harnessSlug: binding.harnessSlug,
-        planSlug: binding.planSlug, nativeSession, ready: true };
+        planSlug: binding.planSlug, nativeSession, ready: false };
     } catch (error) {
       await engine?.close();
       state.engines.delete(key);

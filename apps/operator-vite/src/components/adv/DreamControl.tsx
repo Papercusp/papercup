@@ -34,7 +34,7 @@ function DreamControlBody({ potSlug }: { potSlug: string }) {
       ) : (
         <>
           <div className="pc-dream-control__row">
-            <span>Manual dreaming: {snapshot.manual.active ? last?.running ? 'running' : 'scheduled' : 'paused'}</span>
+            <span>Manual dreaming: {snapshot.manual.active ? last?.mode === 'manual' && last.running ? 'running' : 'scheduled' : 'paused'}</span>
             <Button
               variant={snapshot.manual.active ? 'neutral' : 'primary'}
               disabled={busy || !snapshot.manual.available || (!snapshot.manual.active && Boolean(snapshot.blocker))}
@@ -56,7 +56,7 @@ function DreamControlBody({ potSlug }: { potSlug: string }) {
           {last ? (
             <div role="status" data-testid="dream-last-cycle">
               <strong>{last.running ? 'Current cycle' : 'Last cycle'}</strong>
-              <p>{last.attempts} attempts · {last.accepted} accepted proposals · ${last.costUsd.toFixed(2)} accounted</p>
+              <p>{last.attempts} attempts · {last.accepted} accepted {last.accepted === 1 ? 'proposal' : 'proposals'} · ${last.costUsd.toFixed(2)} accounted</p>
               <p>{last.reason}</p>
               {last.reason.includes('no-pair') || last.reason.includes('packet') ? <p>Check that this pot’s repository has current capability sources and tests.</p> : null}
               {last.reason.includes('review') || last.reason.includes('error') ? <p>Check the source and reviewer configuration, then pause and start a new cycle. Previous outcomes and charges are preserved.</p> : null}

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
-  ended: vi.fn(), pid: vi.fn(), persist: vi.fn(),
+  ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
@@ -26,24 +26,28 @@ beforeEach(() => {
   mocks.bind.mockResolvedValue({ status: 'bound' });
   mocks.bootstrap.mockImplementation(async () => Response.json(boot));
   mocks.engine.mockReturnValue({ ready: Promise.resolve(), done: new Promise(() => {}), close, pid: () => 4321,
-    adapter: { host: { descriptor: () => ({ lifecycle: 'ready' }) } } });
+    adapter: { reconcileRuntimeExit: mocks.reconcile, host: {
+      descriptor: () => ({ lifecycle: 'starting' }), snapshot: () => ({ terminal: false }),
+    } } });
 });
 
 describe('attached launch authority', () => {
-  it('waits for the engine, preserves the bootstrap principal, and binds before spawn', async () => {
+  it('returns the durable identity before engine readiness and supervises initialization on the host', async () => {
     let ready!: () => void;
     mocks.engine.mockReturnValue({ ...mocks.engine(), ready: new Promise<void>((resolve) => { ready = resolve; }) });
     mocks.engine.mockClear();
     const pending = launchAttachedSuSession(request(), input);
     await vi.waitFor(() => expect(mocks.engine).toHaveBeenCalledOnce());
+    // An unresolved native readiness promise must not hold the HTTP request.
+    expect(await (await pending).json()).toMatchObject({ status: 'ok', transport: 'structured', ready: false, advSessionId: 18, ownerId: 'su-engine' });
     expect(mocks.pid).not.toHaveBeenCalled();
+    expect(mocks.persist).toHaveBeenCalledWith(18, { lifecycle: 'starting' });
     const forwarded = mocks.bootstrap.mock.calls[0][0] as Request;
     expect(forwarded.headers.get('authorization')).toBe('Bearer fixture-principal');
     expect(await forwarded.json()).toMatchObject({ ...input, workspace: 'workspace', headless: true, bootstrap_idempotency_key: 'pui:workspace:chat' });
     expect(mocks.bind.mock.invocationCallOrder[0]).toBeLessThan(mocks.engine.mock.invocationCallOrder[0]);
     ready();
-    expect(await (await pending).json()).toMatchObject({ status: 'ok', transport: 'structured', ready: true, advSessionId: 18, ownerId: 'su-engine' });
-    expect(mocks.pid).toHaveBeenCalledWith(18, 4321, 'pui-structured-claude');
+    await vi.waitFor(() => expect(mocks.pid).toHaveBeenCalledWith(18, 4321, 'pui-structured-claude'));
   });
 
   it('coalesces simultaneous retries before any engine is started', async () => {
@@ -63,7 +67,7 @@ describe('attached launch authority', () => {
 
   it('does not conceal a lost executor by creating another session', async () => {
     mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18 });
-    mocks.host.mockReturnValue({ snapshot: () => ({ executorAttached: false, streamReady: true, terminal: false }) });
+    mocks.host.mockReturnValue({ snapshot: () => ({ executorAttached: false, streamReady: true, terminal: false, descriptor: { lifecycle: 'ready' } }) });
     const response = await launchAttachedSuSession(request(), input);
     expect(response.status).toBe(503);
     expect((await response.json()).error).toContain('Reconnect');
@@ -72,13 +76,32 @@ describe('attached launch authority', () => {
   });
 
   it('closes the allocated runtime and row on readiness failure', async () => {
-    mocks.engine.mockImplementation(() => ({ ready: Promise.reject(new Error('startup failure')), close }));
+    const runtime = mocks.engine();
+    mocks.engine.mockImplementation(() => ({ ...runtime, ready: Promise.reject(new Error('startup failure')) }));
     const response = await launchAttachedSuSession(request(), input);
-    expect(response.status).toBe(503);
-    expect((await response.json()).error).toBe('startup failure');
-    expect(close).toHaveBeenCalledOnce();
-    expect(mocks.ended).toHaveBeenCalledWith(18, null, 'cleanup');
+    expect(response.status).toBe(200);
+    expect((await response.json()).ready).toBe(false);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(mocks.reconcile).toHaveBeenCalledWith({ expected: false, reason: 'Error: startup failure' });
+    expect(mocks.ended).toHaveBeenCalledWith(18, null, 'cleanup', { throwOnError: true });
     expect(mocks.pid).not.toHaveBeenCalled();
+  });
+
+  it('reuses a still-initializing host on a later retry without another bootstrap', async () => {
+    let ready!: () => void;
+    const runtime = mocks.engine();
+    mocks.engine.mockReturnValue({ ...runtime, ready: new Promise<void>((resolve) => { ready = resolve; }) });
+    mocks.engine.mockClear();
+    await launchAttachedSuSession(request(), input);
+    mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18 });
+    mocks.host.mockReturnValue({ snapshot: () => ({ terminal: false, executorAttached: false, streamReady: false, descriptor: { lifecycle: 'starting' } }) });
+    const retry = await launchAttachedSuSession(request(), input);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ duplicate: true, ready: false, advSessionId: 18 });
+    expect(mocks.bootstrap).toHaveBeenCalledOnce();
+    expect(mocks.engine).toHaveBeenCalledOnce();
+    ready();
+    await vi.waitFor(() => expect(mocks.pid).toHaveBeenCalled());
   });
 
   it('does not downgrade an unsupported engine to a hidden native client', async () => {

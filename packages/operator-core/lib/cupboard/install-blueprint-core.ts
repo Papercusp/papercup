@@ -44,6 +44,13 @@ import {
   type BlueprintReleaseDiff,
   type BlueprintLifecycleOperation,
 } from './blueprint-release';
+import {
+  resolveCapabilityGrants,
+  type CapabilityGrantSet,
+  type CapabilityGrantResolutionVerdict,
+  type CapabilityGrantResolverDeps,
+  type ResolveCapabilityGrantOptions,
+} from './capability-grant-resolver';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -57,6 +64,12 @@ export interface InstallBlueprintCoreInput {
   /** Immutable identity pinned on the Cupboard row. A listed release that does
    *  not match the cloned complete closure is refused before any bytes land. */
   expectedRelease?: { version?: string | null; contentHash?: string | null };
+  capabilityContext?: {
+    workspaceId: string;
+    potSlug: string;
+    mode: ResolveCapabilityGrantOptions['mode'];
+    selections?: Readonly<Record<string, string>>;
+  };
 }
 
 export interface InstallBlueprintCoreResult {
@@ -78,6 +91,7 @@ export interface InstallBlueprintCoreResult {
   release: { version: string; contentHash: string; packageContentHash: string };
   diff: BlueprintReleaseDiff;
   activationPreflight: BlueprintActivationPreflight;
+  capabilityGrants: CapabilityGrantResolutionVerdict | null;
 }
 
 export interface InstallBlueprintCoreDeps {
@@ -103,6 +117,7 @@ export interface InstallBlueprintCoreDeps {
    * always hard-fail (the catalog is in-process, authoritative).
    */
   resolveHostSets: () => Promise<DependencyHostSets & { cupboardReachable: boolean }>;
+  capabilityGrantDeps?: CapabilityGrantResolverDeps;
 }
 
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
@@ -113,7 +128,12 @@ const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/
 const SAFE_BLUEPRINT_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 
 export class InstallBlueprintError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly data?: unknown,
+  ) {
     super(message);
     this.name = 'InstallBlueprintError';
   }
@@ -200,6 +220,7 @@ export async function installBlueprintFromCupboardCore(
       plugins: [],
       blueprints: [],
     };
+    let declaredCapabilityGrants: CapabilityGrantSet = {};
     if (!abstract) {
       // P-002: register a PROXY CoordOp per harness-provided op this blueprint
       // declares (`ops:` manifest), BEFORE the resolve+validate snapshots the op
@@ -229,6 +250,12 @@ export async function installBlueprintFromCupboardCore(
         packs: d?.packs ?? [],
         plugins: d?.plugins ?? [],
         blueprints: d?.blueprints ?? [],
+      };
+      const grants = res.blueprint!.grants;
+      declaredCapabilityGrants = {
+        requires: grants?.requires ?? [],
+        optional: grants?.optional ?? [],
+        suggestedProviders: grants?.suggestedProviders ?? {},
       };
     }
 
@@ -289,6 +316,46 @@ export async function installBlueprintFromCupboardCore(
       throw new InstallBlueprintError(`blueprint "${id}" package pins invalid: ${depCheck.messages.join('; ')}`, 422);
     }
 
+    let capabilityGrantResolution: CapabilityGrantResolutionVerdict | null = null;
+    const grantCount =
+      (declaredCapabilityGrants.requires?.length ?? 0) +
+      (declaredCapabilityGrants.optional?.length ?? 0);
+    if (grantCount > 0) {
+      if (!input.capabilityContext?.workspaceId || !input.capabilityContext.potSlug) {
+        throw new InstallBlueprintError(
+          'blueprint "' + id + '" declares capability-class grants; workspaceId and potSlug are required for install-time resolution',
+          409,
+          'capability_grants_need_pot',
+        );
+      }
+      if (!deps.capabilityGrantDeps) {
+        throw new InstallBlueprintError(
+          'capability grant resolver is not configured for this install path',
+          500,
+          'capability_grant_resolver_unavailable',
+        );
+      }
+      capabilityGrantResolution = await resolveCapabilityGrants(
+        declaredCapabilityGrants,
+        deps.capabilityGrantDeps,
+        {
+          mode: input.capabilityContext.mode,
+          selections: input.capabilityContext.selections,
+        },
+      );
+      if (!capabilityGrantResolution.ok) {
+        const absent = capabilityGrantResolution.missingRequired;
+        const choices = capabilityGrantResolution.requiresChoice;
+        const code = absent.length > 0
+          ? 'required_capability_provider_absent'
+          : 'capability_provider_choice_required';
+        const detail = absent.length > 0
+          ? 'required capability class provider absent: ' + absent.join(', ')
+          : 'provider choice required for capability class: ' + choices.join(', ');
+        throw new InstallBlueprintError(detail, 409, code, capabilityGrantResolution);
+      }
+    }
+
     const version = typeof raw.version === 'string'
       ? raw.version
       : depCheck.pins?.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id)?.revision ?? 'unversioned';
@@ -329,6 +396,7 @@ export async function installBlueprintFromCupboardCore(
       },
       diff: lifecycle.diff,
       activationPreflight: lifecycle.activationPreflight,
+      capabilityGrants: capabilityGrantResolution,
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

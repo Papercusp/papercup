@@ -1,25 +1,25 @@
 {
   "schemaVersion": 1,
-  "startedAt": "2026-09-07T05:00:53.217Z",
+  "startedAt": "2026-09-07T17:37:56.010Z",
   "release": {
     "schemaVersion": 2,
-    "buildId": "_h24SwYOHfExTCskF1rTh",
-    "release": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+    "buildId": "YxRyV_UAAFRVEiCtonjA4",
+    "release": "YxRyV_UAAFRVEiCtonjA4-20260907173044320-3334230-098fe40a",
     "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-    "publishedAt": "2026-09-07T04:13:50.070Z",
-    "sourceRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242"
+    "publishedAt": "2026-09-07T17:30:44.320Z",
+    "sourceRootDigest": "8d35ca25cc6f770961f35e70a0356271e56321a3d5d5f476d58c436fc2876788"
   },
   "process": [
     {
       "theme": "light",
       "plane": "live",
-      "openedAt": "2026-09-07T05:00:54.290Z",
+      "openedAt": "2026-09-07T17:38:00.158Z",
       "initialText": "Loading Process manager…",
-      "settledAt": "2026-09-07T05:00:55.975Z",
+      "settledAt": "2026-09-07T17:38:02.063Z",
       "observed": {
         "headings": [
-          "MEMORY\n16.4 GB\nCPU\n…",
-          "ENROLLED\n119\nSCANNED\n692\nSTRANDED\n0\nUNACCOUNTED\n3"
+          "MEMORY\n24.1 GB\nCPU\n…",
+          "ENROLLED\n171\nSCANNED\n1033\nSTRANDED\n0\nUNACCOUNTED\n5"
         ],
         "status": "Ledger + kernel scan agree\nOpen full Task Manager →",
         "degraded": null,
@@ -31,22 +31,22 @@
           "width": 1440,
           "height": 900
         },
-        "theme": "dark"
+        "theme": "light"
       },
       "capturePath": "process-settled-light.png",
-      "captureSha256": "4cd46686a072b6b323a3ba850c1ed1dbed405d48b2451a9eef92ca15ba826175",
+      "captureSha256": "3656f4e6a28db6d7f879b77d08435d86af4a975dc3519efe11976f04fb8838e1",
       "result": "settled"
     },
     {
       "theme": "dark",
       "plane": "live",
-      "openedAt": "2026-09-07T05:00:56.452Z",
+      "openedAt": "2026-09-07T17:38:02.879Z",
       "initialText": "Scanning…",
-      "settledAt": "2026-09-07T05:00:57.315Z",
+      "settledAt": "2026-09-07T17:38:03.114Z",
       "observed": {
         "headings": [
-          "MEMORY\n16.4 GB\nCPU\n…",
-          "ENROLLED\n119\nSCANNED\n688\nSTRANDED\n0\nUNACCOUNTED\n3"
+          "MEMORY\n24.1 GB\nCPU\n…",
+          "ENROLLED\n171\nSCANNED\n1033\nSTRANDED\n0\nUNACCOUNTED\n5"
         ],
         "status": "Ledger + kernel scan agree\nOpen full Task Manager →",
         "degraded": null,
@@ -61,27 +61,35 @@
         "theme": "dark"
       },
       "capturePath": "process-settled-dark.png",
-      "captureSha256": "80b2ecdb5656d32f9307178fcfe06eb3c7086f7fdd88236ceb1fd890afa88131",
+      "captureSha256": "f1dc740657631cffba18edc123e6c4c3285667730b961a30271a9a3955d49a3f",
       "result": "settled"
     }
   ],
   "reads": [
     {
-      "at": "2026-09-07T05:00:55.574Z",
+      "at": "2026-09-07T17:38:01.009Z",
+      "path": "/api/operator-sync/sse",
+      "status": 200,
+      "method": "GET",
+      "inventory": null,
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T17:38:01.720Z",
       "path": "/api/operator-sync/rest-query",
       "status": 200,
       "method": "GET",
       "inventory": {
-        "ledgerTotal": 119,
-        "rows": 119,
-        "scanned": 692,
+        "ledgerTotal": 171,
+        "rows": 171,
+        "scanned": 1033,
         "degraded": false,
         "degradedReason": null,
         "scan": {
           "ownedRootExists": true,
           "ownedTruncated": false,
           "foreignTruncated": false,
-          "processes": 692,
+          "processes": 1033,
           "userManagerRoot": "/user.slice/user-1000.slice/user@1000.service"
         },
         "timestamp": null
@@ -89,7 +97,7 @@
       "inventoryRequest": false
     },
     {
-      "at": "2026-09-07T05:00:55.932Z",
+      "at": "2026-09-07T17:38:02.354Z",
       "path": "/api/operator-sync/sse",
       "status": 200,
       "method": "GET",
@@ -97,37 +105,21 @@
       "inventoryRequest": false
     },
     {
-      "at": "2026-09-07T05:00:56.113Z",
-      "path": "/api/operator-sync/sse",
-      "status": 200,
-      "method": "GET",
-      "inventory": null,
-      "inventoryRequest": false
-    },
-    {
-      "at": "2026-09-07T05:00:56.936Z",
-      "path": "/api/operator-sync/sse",
-      "status": 200,
-      "method": "GET",
-      "inventory": null,
-      "inventoryRequest": false
-    },
-    {
-      "at": "2026-09-07T05:00:56.959Z",
+      "at": "2026-09-07T17:38:03.049Z",
       "path": "/api/operator-sync/rest-query",
       "status": 200,
       "method": "GET",
       "inventory": {
-        "ledgerTotal": 119,
-        "rows": 119,
-        "scanned": 688,
+        "ledgerTotal": 171,
+        "rows": 171,
+        "scanned": 1033,
         "degraded": false,
         "degradedReason": null,
         "scan": {
           "ownedRootExists": true,
           "ownedTruncated": false,
           "foreignTruncated": false,
-          "processes": 688,
+          "processes": 1033,
           "userManagerRoot": "/user.slice/user-1000.slice/user@1000.service"
         },
         "timestamp": null
@@ -135,7 +127,7 @@
       "inventoryRequest": false
     },
     {
-      "at": "2026-09-07T05:00:57.448Z",
+      "at": "2026-09-07T17:38:03.215Z",
       "path": "/api/operator-sync/sse",
       "status": 200,
       "method": "GET",
@@ -143,7 +135,15 @@
       "inventoryRequest": false
     },
     {
-      "at": "2026-09-07T05:00:57.764Z",
+      "at": "2026-09-07T17:38:03.287Z",
+      "path": "/api/operator-sync/sse",
+      "status": 200,
+      "method": "GET",
+      "inventory": null,
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T17:38:04.108Z",
       "path": "/api/operator-sync/sse",
       "status": 200,
       "method": "GET",
@@ -152,10 +152,14 @@
     }
   ],
   "phone": {
-    "result": "unexercised",
-    "reason": "The live idle and scheduled views have no disabled control. Source disables mute while a call connects, hangup while ending, incoming/screening actions while writes are pending, and Create invite while saving. Acceptance forbids calling, sending, launching and other decision actions. No such action or injected phone state was used.",
-    "source": "phone-app/packages/ui/src/index.tsx",
-    "sourceSha256": "1af135da8facdfbf439f3505ebf0daabc5b71b33827dc4f22f1a698713703513"
+    "result": "proved-by-source-decision",
+    "method": "acceptance-matrix-2026-09-07.json stateCases[1]: read source decision and visible unavailable explanation; no desktop launch or call.",
+    "decision": "portalVoiceCapture(state) -> { can:false, reason } on 5 distinct unavailable branches (serviceUnavailable/error, micUnavailable, reconnecting, disconnected, not-yet-live).",
+    "visibleExplanation": "portalVoiceStatus(state) rendered in <span role=\"status\" aria-live=\"polite\">; the same reason also reaches the viewer as the control title and as its aria-label (\"Hold to talk — <reason>\"), while disabled={!capture.can} is driven by that same verdict.",
+    "source": "portal/packages/ui/src/voice-session.tsx",
+    "sourceSha256": "c935f250f3535a8224a3129bad803998a72ea75b684c466461955335cfbf83b8",
+    "fullProof": "r2-phone-disabled-source-proof.json",
+    "supersedes": "the prior unexercised/unreachable claim, and additional-states.json .phone (disabled:[] with phone-disabled.png showing the ENABLED Book-a-call form)"
   },
   "initial": {
     "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
@@ -164,6 +168,8 @@
       "voiceMuted": false,
       "homeApp": "home",
       "pinnedApps": [
+        "home",
+        "mail",
         "calendar",
         "phone",
         "desktops",
@@ -186,6 +192,8 @@
       "voiceMuted": false,
       "homeApp": "home",
       "pinnedApps": [
+        "home",
+        "mail",
         "calendar",
         "phone",
         "desktops",
@@ -203,5 +211,5 @@
   },
   "preferencesRestored": true,
   "releaseStable": true,
-  "completedAt": "2026-09-07T05:00:57.933Z"
+  "completedAt": "2026-09-07T17:38:04.313Z"
 }

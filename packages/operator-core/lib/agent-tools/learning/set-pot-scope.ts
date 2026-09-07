@@ -164,6 +164,7 @@ export default defineTool({
       try {
         const { notifySyncInvalidate } = await import('../../sync-sse');
         notifySyncInvalidate('automation.catalog');
+        notifySyncInvalidate('learning.dream');
       } catch {
         /* SSE hub unavailable — the pane still refreshes on its next poll */
       }

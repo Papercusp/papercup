@@ -194,6 +194,71 @@ describe('installBlueprintFromCupboardCore', () => {
     expect(existsSync(join(installedDir, 'my-base', 'blueprint.yaml'))).toBe(true);
   });
 
+  it('refuses an absent required capability provider before identity bytes land', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    await expect(installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'interactive',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [],
+        },
+      }),
+    )).rejects.toMatchObject({
+      status: 409,
+      code: 'required_capability_provider_absent',
+      data: {
+        missingRequired: ['crm.email@1.0.0'],
+      },
+    });
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+  });
+
+  it('installs with a visible optional capability gap', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { optional: [crm.email@1.0.0] }',
+    );
+    const result = await installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1',
+          potSlug: 'sales-ops',
+          mode: 'interactive',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [],
+        },
+      }),
+    );
+
+    expect(result.capabilityGrants).toMatchObject({
+      ok: true,
+      missingRequired: [],
+      missingOptional: ['crm.email@1.0.0'],
+      requirements: [{ state: 'absent', optional: true }],
+    });
+    expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
+  });
+
   it('rejects an invalid github_url', async () => {
     await expect(
       installBlueprintFromCupboardCore({ githubUrl: 'http://evil.example/x' }, makeDeps()),
