@@ -472,12 +472,20 @@ export default defineTool({
         let autoApproved = false;
         let activationAudit: ActivationAuditEditNotice | null = null;
         try {
+          const revision = planRevisionCapture(
+            ctx as PlanRevisionCtx,
+            slug,
+            'plans:start → auto-approve draft',
+            { workspaceId: startWorkspaceId, harnessSlug },
+          );
           const flipResult = await withPlanLock<boolean>(
             ctx as never,
             {
               slug,
               intent: 'plans:start → auto-approve draft',
               ...(harnessSlug ? { harnessSlug } : {}),
+              workspaceId: startWorkspaceId,
+              afterWrite: revision.afterWrite,
             },
             async (current) => {
               if (current === null) return { newBody: null, value: false };

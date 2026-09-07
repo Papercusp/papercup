@@ -104,7 +104,15 @@ async function runStart(): Promise<{ data: Record<string, unknown>; isError: boo
   // Bulk-pattern tools return a structured `{ data: { ok, results, counts } }`
   // envelope (../_bulk bulkContent) — the per-slug result is data.results[0], and
   // a failure shows as counts.failed > 0 (no legacy `content[0].text` / isError).
-  const res = (await startTool.handler({ harness: HARNESS, slug: SLUG } as never, makeCtx())) as {
+  // This fixture isolates the draft→ready write and revision spine; explicitly
+  // override the unrelated live-peer checkpoint consult so fleet liveness cannot
+  // turn the deterministic auto-flip assertion into a consult_available refusal.
+  const res = (await startTool.handler({
+    harness: HARNESS,
+    slug: SLUG,
+    consulted: false,
+    consult_reason: 'auto-flip integration fixture isolates revisioned approval write',
+  } as never, makeCtx())) as {
     data: { results: Record<string, unknown>[]; counts?: { failed?: number } };
   };
   return { data: res.data.results[0], isError: (res.data.counts?.failed ?? 0) > 0 };
@@ -118,6 +126,15 @@ async function frontmatterStatus(): Promise<string | null> {
   const content = rows[0]?.content ?? '';
   const m = /^status:[ \t]*([A-Za-z][\w-]*)/m.exec(content.split('\n---')[0] ?? '');
   return m?.[1] ?? null;
+}
+
+async function revisionRows(): Promise<Array<{ seq: number; content_hash: string; content_snapshot: string; rationale: string | null }>> {
+  return admin<Array<{ seq: number; content_hash: string; content_snapshot: string; rationale: string | null }>>`
+    SELECT seq, content_hash, content_snapshot, rationale
+      FROM harness_shared.plan_revisions
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+     ORDER BY seq
+  `;
 }
 
 beforeAll(async () => {
@@ -145,6 +162,16 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
 
     // The real withPlanLock flip landed: the frontmatter now reads ready.
     expect(await frontmatterStatus()).toBe('ready');
+
+    // The approval write is a canonical plan-body mutation, so it must leave a
+    // revision spine row for activation audits/BAR pinning to resolve.
+    await expect(revisionRows()).resolves.toEqual([
+      expect.objectContaining({
+        seq: 1,
+        rationale: 'plans:start → auto-approve draft',
+        content_snapshot: expect.stringContaining('status: ready'),
+      }),
+    ]);
   });
 
   it('re-starting the now-ready plan does NOT flip again (autoApproved:false)', async () => {
@@ -160,6 +187,9 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     // Idempotent re-start: op_status was already started → not a transition.
     expect(second.data.transitioned).toBe(false);
     expect(await frontmatterStatus()).toBe('ready');
+    // The idempotent re-start performs no body write and must not append a
+    // duplicate revision.
+    expect(await revisionRows()).toHaveLength(1);
   });
 
   it('starting a plan that is ALREADY ready does not auto-approve', async () => {
