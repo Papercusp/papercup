@@ -228,7 +228,27 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES: Readonly<
   ],
 };
 
-const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
+export const DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS = 60_000;
+
+/**
+ * Longest legal default probe sequence when every stronger probe falls through.
+ *
+ * Agent probes run sequentially by design, including the 180s Codex and OMP inference
+ * fallbacks. Transport adapters use this derived budget to keep their own outer deadline
+ * from expiring before the inner contract has had time to finish.
+ */
+export const DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS =
+  WORKSPACE_HOST_CANARY_AGENTS.reduce(
+    (total, agent) =>
+      total +
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[agent].reduce(
+        (agentTotal, spec) =>
+          agentTotal +
+          (spec.timeoutMs ?? DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS),
+        0,
+      ),
+    0,
+  );
 /**
  * Bounded stderr tail kept while classifying. Large enough that a recognized phrase split across
  * two chunk boundaries still matches, small enough that nothing accumulates.
@@ -565,7 +585,8 @@ export async function probeWorkspaceHostAgentVerification(
     outcome = await runner.run({
       command: spec.command,
       args: spec.args,
-      timeoutMs: spec.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+      timeoutMs:
+        spec.timeoutMs ?? DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS,
       ...(input.env ? { env: input.env } : {}),
       ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
     });

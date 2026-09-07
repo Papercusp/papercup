@@ -65,6 +65,7 @@ import {
 export { isExternalTriggerEnvelope, valueCarriesExternalIngest };
 import {
   DROP_SNAPSHOT_ROW,
+  formatSnapshotFoldStall,
   isSnapshotOp,
   produceFilteredSnapshotIntoLog,
   type SnapshotFoldProgressCallback,
@@ -412,7 +413,7 @@ export async function mintFilteredSeedContentCore(inp: {
         }
         console.error(
           `[seed:corestore] filtered source scan stalled for owner=${inp.ownerKeyHex.slice(0, 12)}…: ` +
-            `cursor=${stall.processed}/${stall.total} unchanged for ${stall.stalledForMs}ms; ` +
+            `${formatSnapshotFoldStall(stall)}; ` +
             `the scan remains live and is not being aborted`,
         );
       };

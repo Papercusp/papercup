@@ -1,0 +1,343 @@
+{
+  "capturedAt": "2026-09-07T02:41:31.009Z",
+  "source": "GET /api/apps",
+  "apps": [
+    {
+      "slug": "home",
+      "kind": "home",
+      "title": "Home",
+      "mount": "module",
+      "order": 0,
+      "enabled": true
+    },
+    {
+      "slug": "mail",
+      "kind": "mail",
+      "title": "Mail",
+      "mount": "module",
+      "order": 1,
+      "enabled": true
+    },
+    {
+      "slug": "calendar",
+      "kind": "calendar",
+      "title": "Calendar",
+      "mount": "module",
+      "order": 2,
+      "enabled": true
+    },
+    {
+      "slug": "phone",
+      "kind": "phone",
+      "title": "Phone",
+      "mount": "module",
+      "order": 3,
+      "enabled": true
+    },
+    {
+      "slug": "desktops",
+      "kind": "desktops",
+      "title": "Desktops",
+      "mount": "embedded-pane",
+      "href": "/cloud-workspaces?step=operate&tab=desktops",
+      "order": 4,
+      "enabled": true
+    },
+    {
+      "slug": "plans",
+      "kind": "plans",
+      "title": "Plans",
+      "mount": "embedded-pane",
+      "href": "/plans",
+      "order": 5,
+      "enabled": true
+    },
+    {
+      "slug": "inbox",
+      "kind": "inbox",
+      "title": "Inbox",
+      "mount": "embedded-pane",
+      "href": "/inbox",
+      "order": 6,
+      "enabled": true
+    },
+    {
+      "slug": "workspaces",
+      "kind": "workspaces",
+      "title": "Workspaces",
+      "mount": "module",
+      "order": 7,
+      "enabled": true
+    },
+    {
+      "slug": "overview",
+      "kind": "overview",
+      "title": "Overview",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=overview",
+      "order": 8,
+      "enabled": true
+    },
+    {
+      "slug": "hud",
+      "kind": "hud",
+      "title": "HUD",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=hud",
+      "order": 9,
+      "enabled": true
+    },
+    {
+      "slug": "work",
+      "kind": "work",
+      "title": "Work",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=harnesses",
+      "order": 10,
+      "enabled": true
+    },
+    {
+      "slug": "learning",
+      "kind": "learning",
+      "title": "Learning",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=learning",
+      "order": 11,
+      "enabled": true
+    },
+    {
+      "slug": "workflows",
+      "kind": "workflows",
+      "title": "Workflow Editor",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=workflows",
+      "order": 12,
+      "enabled": true
+    },
+    {
+      "slug": "brainstorm",
+      "kind": "brainstorm",
+      "title": "Brainstorm",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=brainstorm",
+      "order": 13,
+      "enabled": true
+    },
+    {
+      "slug": "cloud",
+      "kind": "cloud",
+      "title": "Cloud",
+      "mount": "embedded-pane",
+      "href": "/cloud-workspaces",
+      "order": 14,
+      "enabled": true
+    },
+    {
+      "slug": "cupboard",
+      "kind": "cupboard",
+      "title": "Cupboard",
+      "mount": "embedded-pane",
+      "href": "/cupboard",
+      "order": 15,
+      "enabled": true
+    },
+    {
+      "slug": "dev",
+      "kind": "dev",
+      "title": "DEV",
+      "mount": "embedded-pane",
+      "href": "/dev",
+      "order": 16,
+      "enabled": true
+    },
+    {
+      "slug": "support",
+      "kind": "support",
+      "title": "Support",
+      "mount": "embedded-pane",
+      "href": "/support",
+      "order": 17,
+      "enabled": true
+    },
+    {
+      "slug": "settings",
+      "kind": "settings",
+      "title": "Settings",
+      "mount": "embedded-pane",
+      "href": "/settings",
+      "order": 18,
+      "enabled": true
+    },
+    {
+      "slug": "health",
+      "kind": "health",
+      "title": "Health",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=health",
+      "order": 19,
+      "enabled": true
+    },
+    {
+      "slug": "prs",
+      "kind": "prs",
+      "title": "PRs",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=prs",
+      "order": 20,
+      "enabled": true
+    },
+    {
+      "slug": "insights",
+      "kind": "insights",
+      "title": "Insights",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=insights",
+      "order": 21,
+      "enabled": true
+    },
+    {
+      "slug": "conversations",
+      "kind": "conversations",
+      "title": "Conversations",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=conversations",
+      "order": 22,
+      "enabled": true
+    },
+    {
+      "slug": "adv-settings",
+      "kind": "adv-settings",
+      "title": "ADV Settings",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=settings",
+      "order": 23,
+      "enabled": true
+    },
+    {
+      "slug": "docs",
+      "kind": "docs",
+      "title": "Docs",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=docs",
+      "order": 24,
+      "enabled": true
+    },
+    {
+      "slug": "history",
+      "kind": "history",
+      "title": "History",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=history",
+      "order": 25,
+      "enabled": true
+    },
+    {
+      "slug": "git",
+      "kind": "git",
+      "title": "Git",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=git",
+      "order": 26,
+      "enabled": true
+    },
+    {
+      "slug": "stats",
+      "kind": "stats",
+      "title": "Stats",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=stats",
+      "order": 27,
+      "enabled": true
+    },
+    {
+      "slug": "testing",
+      "kind": "testing",
+      "title": "Tests",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=testing",
+      "order": 28,
+      "enabled": true
+    },
+    {
+      "slug": "create",
+      "kind": "create",
+      "title": "Create",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=plans",
+      "order": 29,
+      "enabled": true
+    },
+    {
+      "slug": "scheduled",
+      "kind": "scheduled",
+      "title": "Scheduled",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=calendar",
+      "order": 30,
+      "enabled": true
+    },
+    {
+      "slug": "frames",
+      "kind": "frames",
+      "title": "Frames",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=frames",
+      "order": 31,
+      "enabled": true
+    },
+    {
+      "slug": "evals",
+      "kind": "evals",
+      "title": "Evaluation",
+      "mount": "embedded-pane",
+      "href": "/adv?tab=evals",
+      "order": 32,
+      "enabled": true
+    },
+    {
+      "slug": "coord",
+      "kind": "coord",
+      "title": "Coordination",
+      "mount": "embedded-pane",
+      "href": "/coord",
+      "order": 33,
+      "enabled": true
+    }
+  ],
+  "expected": [
+    "adv-settings",
+    "brainstorm",
+    "calendar",
+    "cloud",
+    "conversations",
+    "coord",
+    "create",
+    "cupboard",
+    "desktops",
+    "dev",
+    "docs",
+    "evals",
+    "frames",
+    "git",
+    "health",
+    "history",
+    "home",
+    "hud",
+    "inbox",
+    "insights",
+    "learning",
+    "mail",
+    "overview",
+    "phone",
+    "plans",
+    "prs",
+    "scheduled",
+    "settings",
+    "stats",
+    "support",
+    "testing",
+    "work",
+    "workflows",
+    "workspaces"
+  ]
+}

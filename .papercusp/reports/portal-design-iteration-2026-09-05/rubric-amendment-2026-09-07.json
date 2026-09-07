@@ -1,0 +1,86 @@
+{
+  "rubricRef": "acceptance-portal-design-iteration-2026-09-05",
+  "criteria": [
+    {
+      "key": "r-1",
+      "title": "Every scoped Portal surface and adopted finding has complete acceptance coverage",
+      "model": "Requirements R-1: every scoped rail destination, native surface, side pane/overlay, embedded operator seam and responsive/accessibility case represented by P-001 through P-010 has a resolving live capture or equivalent observation at each applicable light/dark target viewport, and every adopted finding maps to its implementing item. Coverage is an exact expected-set comparison; visual/state quality is judged under R-2 and source/release freshness under R-3.",
+      "barKey": "R-1",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "embedded-operator",
+        "native-surfaces",
+        "rail-topbar",
+        "responsive-accessibility",
+        "side-panes"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Read .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-verification-contract-2026-09-07.md and .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-matrix-2026-09-07.json. Compare DEFAULT_PORTAL_APPS and the live account registry; enumerate the matrix Cartesian product and additional cases, then reconcile every expected slot to exactly one actual disposition and every adopted finding to P-002 through P-010 or WI-10000338. Inspect the captures for correct target/content. This explicit manual instrument covers inventory and traceability; it does not grade visual quality (R-2) or freshness (R-3). The four revision-4 shared test files do not test this census and are not bound as proof.",
+      "driftMarkers": "An expected surface/theme/viewport/state slot or adopted-finding trace is missing, duplicated, mislabeled, unreadable, or excluded without an explicit supported-viewports reason; a visible pinned-rail sample or file count is presented as the complete population.",
+      "replication": "REPLICATION DRILL: independently construct the exact surface/theme/viewport keys from .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-matrix-2026-09-07.json; reconcile additions/missing live registry entries before counting. Read each observation and image; reject duplicate keys, missing files, wrong surface/theme/viewport and unexplained copied captures. Every expected slot needs one disposition; a partial census is unknown. Run the complete procedure in .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-verification-contract-2026-09-07.md and retain the actual manifest.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-2",
+      "title": "Adopted content is legible, contained, truthful and state-safe in its actual host",
+      "model": "At target viewports, adopted content remains inside its host surface without clipping or overflow, and enabled/disabled/loading/empty/transient/status treatments describe the real actionable state in both themes while preserving the restored shell state.",
+      "barKey": "R-2",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "containment",
+        "theme-state-restore",
+        "truthful-state"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Requirements R-2; Decisions D-001 and D-003 through D-008. Use the exact matrix and state cases in .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-matrix-2026-09-07.json and the replication procedure in .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-verification-contract-2026-09-07.md. Measure the actual host width with docks collapsed and expanded; inspect screenshots for legibility and containment, pointer/keyboard reach, truthful enabled/disabled/loading/empty/transient/status presentation and restored state. This criterion alone judges visual/state/restore behavior. Existing Portal rail production-cascade and targeted UI fixtures prove only their named clauses; fixtures are not live evidence and cannot establish the whole matrix. The revision-4 CSS/import/color-literal tests do not prove these outcomes.",
+      "driftMarkers": "Any adopted surface clips/overflows, exposes encoded or misleading state text, loses focus/keyboard reach, or leaves the shell in a different theme/app/pane/dialog state after acceptance.",
+      "replication": "REPLICATION DRILL: execute every applicable matrix slot at 1440x900 and 1280x800 in Light and Dark, plus the compact rail, host-box, HUD, popup and Inbox cases declared in .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-matrix-2026-09-07.json. Record viewport and surface widths, overflow/focus/state observations and baseline/final state. Missing, unexercised or wrong-target cases remain unknown; do not send/call/launch/resolve as part of acceptance. If running supporting tests, require matched files equal requested files before interpreting results. See .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-verification-contract-2026-09-07.md.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-3",
+      "title": "Every adopted change has verified source, build and live-release provenance",
+      "model": "Every adopted change is tied to current committed Portal source, passing Portal typecheck and affected unit tests, a successful guarded standalone build and supported handoff, an inspected release identity, and current before/after or equivalent evidence under the plan report directory.",
+      "barKey": "R-3",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "build",
+        "deployed-evidence",
+        "handoff",
+        "source",
+        "tests"
+      ],
+      "evidencePlane": "deployed",
+      "passRatings": [
+        "healthy"
+      ],
+      "method": "Requirements R-3 and P-011. Follow .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-verification-contract-2026-09-07.md to resolve committed Portal and affected linked source, recorded passing affected tests/typecheck, guarded build metadata, supported handoff, the running immutable entry, release identity and HTTP readiness. Reuse already-verified build/handoff evidence only after exact source/release and affected-file fingerprint comparison; do not rebuild WI-10000338 simply to repeat its completed close. Portal source-integrity/build-standalone tests prove fixture-level drift/guard behavior only; they cannot certify the actual service or screenshot provenance. The revision-4 published-site and AdvShell tests do not test Portal provenance and are removed from the binding. This manual instrument compares the real artifacts.",
+      "driftMarkers": "The release sourceRootDigest does not match committed Portal source, the service serves a different release, any required test/typecheck/build/handoff step is red, or a report/image evidence path is missing/unreadable.",
+      "replication": "REPLICATION DRILL: record committed Portal HEAD and affected linked-file hashes; read the live release sourceRootDigest and source manifest, current symlink/standalone entry, supported handoff result and :3801/:3081 HTTP statuses. Compare actual affected source files, including linked dependencies excluded from rootDigest. Resolve every cited report/capture and its recorded release. Verify prior test runs requested/matched the same files. Any mismatched, stale, missing or unmeasured identity is unknown/broken. Build/handoff reuse requires exact evidence identity; the full procedure is .papercusp/reports/portal-design-iteration-2026-09-05/acceptance-verification-contract-2026-09-07.md.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    }
+  ],
+  "dryRun": true,
+  "expectedRubricRevision": 4,
+  "expectedSubjectPlanRevision": 47,
+  "idempotencyKey": "portal-v5-critique-199637-20260907",
+  "reason": "Apply independent critique WI-2146962#199637: separate coverage, visual/state quality and provenance; replace the arbitrary image count with an exact matrix; remove wrong-subject checks and make manual proof partitions explicit."
+}

@@ -2,6 +2,7 @@ import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:ch
 import { createHash } from 'node:crypto';
 
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS,
   WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
   WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
   WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
@@ -51,7 +52,10 @@ export function formatGcpIapDiagnosticTail(stderr: unknown): string {
  */
 export const GCP_IAP_INITIALIZATION_PROTOCOL_VERSION = WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const GCP_IAP_INITIALIZATION_TRANSPORT_HEADROOM_MS = 60_000;
+export const DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS =
+  DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS +
+  GCP_IAP_INITIALIZATION_TRANSPORT_HEADROOM_MS;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const GCP_NAME = /^[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -291,7 +295,10 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
 
   constructor(options: NodeGcpIapWorkspaceHostInitializationRunnerOptions = {}) {
     this.spawn = options.spawn ?? nodeSpawn;
-    this.timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'Initialization timeout');
+    this.timeoutMs = positiveInteger(
+      options.timeoutMs ?? DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS,
+      'Initialization timeout',
+    );
     this.maxResponseBytes = positiveInteger(
       options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
       'Initialization response limit',
@@ -302,9 +309,13 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
     command: GcpIapWorkspaceHostInitializationCommand,
   ): Promise<GcpIapWorkspaceHostInitializationProcessResult> {
     return await new Promise((resolve, reject) => {
+      // ssh launches gcloud as its ProxyCommand. Own one POSIX process group so every
+      // failure bound covers both processes rather than orphaning the proxy after ssh dies.
+      const ownsProcessGroup = process.platform !== 'win32';
       const child = this.spawn(command.command, command.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
+        detached: ownsProcessGroup,
       }) as ChildProcessWithoutNullStreams;
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
@@ -312,11 +323,23 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
       let stderrBytes = 0;
       let settled = false;
 
+      const killTransport = (): void => {
+        if (ownsProcessGroup && child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+            return;
+          } catch {
+            // The group may already have exited; retain the child-handle fallback.
+          }
+        }
+        child.kill('SIGKILL');
+      };
+
       const fail = (message: string): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        child.kill('SIGKILL');
+        killTransport();
         reject(new Error(message));
       };
       const timer = setTimeout(
