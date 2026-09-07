@@ -72,6 +72,7 @@ export function startClaudeSuEngine(
   let heartbeat: ManagedHandle | undefined;
   let sdk: ClaudeEngineQuery;
   let inputTail = Promise.resolve();
+  let activeInputUuid: string | undefined;
   let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
@@ -92,11 +93,16 @@ export function startClaudeSuEngine(
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();
           adapter.correlateOwnerTurn(turnId);
-          timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
-          input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
-            origin: { kind: 'human' }, message: { role: 'user', content } } satisfies SDKUserMessage);
-          await finished.promise;
-          finishActiveTurn = undefined;
+          activeInputUuid = uuid;
+          try {
+            timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
+            input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null,
+              origin: { kind: 'human' }, message: { role: 'user', content } } satisfies SDKUserMessage);
+            await finished.promise;
+          } finally {
+            activeInputUuid = undefined;
+            finishActiveTurn = undefined;
+          }
         }).catch((error: unknown) => receipt.resolve(unavailable(String(error))));
         try {
           return await receipt.promise;
@@ -131,6 +137,7 @@ export function startClaudeSuEngine(
     env,
     ...(authSettings[0] === '--settings' ? { settings: JSON.parse(authSettings[1]) } : {}),
     sessionId: nativeId,
+    includePartialMessages: true,
     settingSources: ['user', 'project', 'local'],
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
@@ -218,6 +225,20 @@ export function startClaudeSuEngine(
             throw new Error('Claude startup identity or project does not match');
           }
           if (event.type === 'user' && event.uuid) pending.get(event.uuid)?.resolve({ ok: true });
+          // Native input replay can arrive only after a long response. The
+          // root model response starting also proves this serialized input
+          // reached Claude; it does not mean the turn has finished.
+          if (event.type === 'stream_event') {
+            if (event.session_id === nativeId && event.parent_tool_use_id === null
+              && event.event.type === 'message_start' && event.event.message.role === 'assistant'
+              && event.event.message.id && activeInputUuid) {
+              pending.get(activeInputUuid)?.resolve({ ok: true });
+            }
+            // The transcript adapter consumes canonical message records. Its
+            // timeline parser would otherwise concatenate partial text and
+            // then emit that text again with the complete assistant record.
+            continue;
+          }
           adapter.ingestNativeLine(JSON.stringify(event));
           if (event.type === 'result') finishActiveTurn?.();
         }
