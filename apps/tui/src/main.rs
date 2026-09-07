@@ -4679,6 +4679,34 @@ fn surface_agent_chat_approval_hydration_failure(
     )));
 }
 
+/// Startup and pot switches must land in a writable conversation. Legacy and
+/// unclassified chats stay in the history picker, but are not the chat front
+/// door. A canonical live binding takes precedence over an old policy stamp;
+/// a known ended/failed runtime is history even if its chat is not archived.
+fn default_operator_chat<'a>(
+    summaries: &'a [agent_chats::AgentChatSummary],
+    inventory: &[crate::su_session::SuSessionInventoryEntry],
+) -> Option<&'a agent_chats::AgentChatSummary> {
+    summaries
+        .iter()
+        .filter(|chat| {
+            if chat.role != "operator" || chat.feature_id.is_some() || chat.archived_at.is_some() {
+                return false;
+            }
+            if let Some(session) = inventory
+                .iter()
+                .find(|entry| entry.agent_chat_id == chat.id)
+            {
+                return !session.terminal
+                    && session.reconciliation
+                        == crate::su_session::SuSessionReconciliation::Attached;
+            }
+            crate::su_session::PuiRuntimeClass::parse(chat.su_runtime_class.as_deref())
+                == crate::su_session::PuiRuntimeClass::SuSession
+        })
+        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+}
+
 async fn agent_chat_load(
     harness: String,
     selected_chat_id: Option<String>,
@@ -4711,11 +4739,6 @@ async fn agent_chat_load(
     // A 404 means this is a legacy chat; any successful snapshot is retained
     // even when terminal so the picker can inspect it after a restart.
     let inventory = probe_su_session_inventory(&client, &harness, &summaries).await;
-    let _ = tx.send(Event::SuSessionInventory {
-        harness: harness.clone(),
-        selected_chat_id: selected_chat_id.clone(),
-        entries: inventory,
-    });
     let selected = if let Some(id) = selected_chat_id.as_deref() {
         match summaries.iter().find(|chat| chat.id == id).cloned() {
             Some(chat) => Some(chat),
@@ -4727,14 +4750,13 @@ async fn agent_chat_load(
             }
         }
     } else {
-        summaries
-            .iter()
-            .filter(|chat| {
-                chat.role == "operator" && chat.feature_id.is_none() && chat.archived_at.is_none()
-            })
-            .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
-            .cloned()
+        default_operator_chat(&summaries, &inventory).cloned()
     };
+    let _ = tx.send(Event::SuSessionInventory {
+        harness: harness.clone(),
+        selected_chat_id: selected_chat_id.clone(),
+        entries: inventory,
+    });
     let Some(summary) = selected else {
         let _ = tx.send(Event::AgentChatLoaded {
             harness,
@@ -6429,6 +6451,144 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn startup_chat(
+        id: &str,
+        runtime: Option<&str>,
+        updated: &str,
+    ) -> agent_chats::AgentChatSummary {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "role": "operator",
+            "su_runtime_class": runtime,
+            "updated_at": updated,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn default_operator_chat_skips_newer_read_only_history() {
+        let mut archived = startup_chat("archived", Some("su-session"), "2026-09-07T05:00:00Z");
+        archived.archived_at = Some("2026-09-07T05:00:00Z".into());
+        let mut task = startup_chat("task", Some("su-session"), "2026-09-07T06:00:00Z");
+        task.feature_id = Some("WI-123".into());
+        let mut other_role = startup_chat("other-role", Some("su-session"), "2026-09-07T07:00:00Z");
+        other_role.role = "doc-steward".into();
+        let chats = vec![
+            startup_chat("older-su", Some("su-session"), "2026-09-07T00:00:00Z"),
+            startup_chat("writable", Some("su-session"), "2026-09-07T01:00:00Z"),
+            startup_chat("legacy", Some("legacy-owned-loop"), "2026-09-07T02:00:00Z"),
+            startup_chat("unclassified", None, "2026-09-07T03:00:00Z"),
+            startup_chat(
+                "unknown-policy",
+                Some("future-runtime"),
+                "2026-09-07T04:00:00Z",
+            ),
+            archived,
+            task,
+            other_role,
+        ];
+        assert_eq!(default_operator_chat(&chats, &[]).unwrap().id, "writable");
+        // Historical selection is the regression control: recency alone lands
+        // on a conversation that the actual dispatch policy cannot send to.
+        let old_default = chats
+            .iter()
+            .filter(|chat| {
+                chat.role == "operator" && chat.feature_id.is_none() && chat.archived_at.is_none()
+            })
+            .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+            .unwrap();
+        assert_eq!(
+            crate::su_session::decide_su_dispatch(crate::su_session::SuDispatchInputs {
+                attached: false,
+                picked_backend: None,
+                loaded_class: Some(crate::su_session::PuiRuntimeClass::parse(
+                    old_default.su_runtime_class.as_deref()
+                )),
+            })
+            .target,
+            crate::su_session::SuDispatchTarget::ReadOnly,
+        );
+    }
+
+    #[test]
+    fn default_operator_chat_uses_live_binding_and_excludes_terminal_runtime() {
+        use crate::su_session::{
+            SuSessionBackend, SuSessionInventoryEntry, SuSessionLifecycleState,
+            SuSessionReconciliation,
+        };
+        let chats = vec![
+            startup_chat(
+                "bound-legacy",
+                Some("legacy-owned-loop"),
+                "2026-09-07T01:00:00Z",
+            ),
+            startup_chat("ended-su", Some("su-session"), "2026-09-07T02:00:00Z"),
+        ];
+        let live = SuSessionInventoryEntry {
+            agent_chat_id: "bound-legacy".into(),
+            adv_session_id: 1,
+            backend: SuSessionBackend::Codex,
+            lifecycle: SuSessionLifecycleState::Ready,
+            runtime_generation: 1,
+            native_session_id: "native-live".into(),
+            terminal: false,
+            reconciliation: SuSessionReconciliation::Attached,
+        };
+        let mut ended = live.clone();
+        ended.agent_chat_id = "ended-su".into();
+        ended.terminal = true;
+        ended.reconciliation = SuSessionReconciliation::EndedArchived;
+        let mut inventory = vec![live, ended];
+        assert_eq!(
+            default_operator_chat(&chats, &inventory).unwrap().id,
+            "bound-legacy"
+        );
+        for reconciliation in [
+            SuSessionReconciliation::FailedOrphaned,
+            SuSessionReconciliation::Pending,
+        ] {
+            inventory[0].reconciliation = reconciliation;
+            assert!(default_operator_chat(&chats, &inventory).is_none());
+        }
+    }
+
+    #[test]
+    fn default_operator_chat_with_only_legacy_history_leaves_a_sendable_front_door() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let summaries = vec![startup_chat(
+            "legacy",
+            Some("legacy-owned-loop"),
+            "2026-08-27T00:00:00Z",
+        )];
+        let selected = default_operator_chat(&summaries, &[]).map(|chat| chat.id.clone());
+        let mut app = App::new();
+        app.update(Event::AgentChatLoaded {
+            harness: app.harness.clone(),
+            chat_id: selected,
+            role: "operator".into(),
+            load_token: app.chat_load_token,
+            summaries,
+            messages: Vec::new(),
+            approvals: Vec::new(),
+        });
+        assert!(app.agent_chat_id.is_none());
+        assert_eq!(
+            app.agent_chat_summaries[0].id, "legacy",
+            "history remains selectable"
+        );
+        app.chat_composing = true;
+        app.chat_input = "hello from the TUI".into();
+        let action = app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "hello from the TUI"),
+            "{action:?}"
+        );
+        assert!(app.chat_input.is_empty());
+    }
 
     #[test]
     fn hive_invite_artifact_matches_the_canonical_shape() {
