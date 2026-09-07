@@ -698,7 +698,8 @@ export interface PreflightDeps {
 
 /**
  * Pure-ish preflight: verify the cut CAN run cleanly before firing the ~35-min build —
- * the signing key, release-local.sh + the three verify scripts (RELEASE-RUNBOOK §2–4)
+ * the signing key, the runtime dependency used by release-local.sh's pre-build
+ * migration lint, release-local.sh + the three verify scripts (RELEASE-RUNBOOK §2–4)
  * that compose under this cut, and that no cut is already in flight. Requested optional
  * legs (mac/windows) add an informational reminder that their build VM must be up. No
  * heavy work, no GitHub, no mutation.
@@ -730,6 +731,33 @@ export function preflightCut(
     detail: exists(keyFile)
       ? keyFile
       : `missing ${keyFile} — updater artifacts can't be minisign-signed (bin/setup-signing-key.sh)`,
+  });
+
+  // release-local.sh invokes scripts/lint-migrations.mjs before it installs or
+  // repairs dependencies. A source-only checkout therefore passes the old
+  // existence checks, launches the detached cut, and fails immediately when
+  // Node resolves @papercusp/operator-core. Refuse that predictable failure
+  // before spending a cut unit. The entrypoint is the exact package export
+  // imported by the migration lint, so this also catches a partially materialized
+  // node_modules tree rather than only checking that the directory exists.
+  const migrationLintEntrypoint = path.join(
+    root,
+    '..',
+    'node_modules',
+    '@papercusp',
+    'operator-core',
+    'lib',
+    'util',
+    'cli-entry.ts',
+  );
+  const migrationLintReady = exists(migrationLintEntrypoint);
+  checks.push({
+    name: 'migration-lint-dependencies',
+    ok: migrationLintReady,
+    detail: migrationLintReady
+      ? migrationLintEntrypoint
+      : 'missing ' + migrationLintEntrypoint +
+        ' — release-local.sh runs migration lint before dependency preparation; materialize node_modules for the release checkout',
   });
 
   for (const script of ['verify-provenance.sh', 'vm-preflight.sh', 'install-and-relaunch-verify.sh']) {

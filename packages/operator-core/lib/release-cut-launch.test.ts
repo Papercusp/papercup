@@ -409,7 +409,8 @@ describe('preflightCut', () => {
     `${root}/bin/vm-preflight.sh`,
     `${root}/bin/install-and-relaunch-verify.sh`,
   ];
-  const allPresent = new Set([key, cutter, ...scripts]);
+  const migrationLintEntrypoint = '/root/node_modules/@papercusp/operator-core/lib/util/cli-entry.ts';
+  const allPresent = new Set([key, cutter, migrationLintEntrypoint, ...scripts]);
 
   it('go:true when key + cutter + scripts present and no cut in flight', () => {
     const r = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p), isUnitActive: () => false });
@@ -424,6 +425,18 @@ describe('preflightCut', () => {
     const noKey = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p) && p !== key, isUnitActive: () => false });
     expect(noKey.go).toBe(false);
     expect(noKey.blockers.join()).toMatch(/signing-key/);
+  });
+  it('a source-only checkout missing the migration-lint runtime is a HARD blocker', () => {
+    const r = preflightCut({}, { root }, {
+      home,
+      exists: (p) => allPresent.has(p) && p !== migrationLintEntrypoint,
+      isUnitActive: () => false,
+    });
+    expect(r.go).toBe(false);
+    expect(r.blockers.join()).toMatch(/migration-lint-dependencies/);
+    expect(r.checks.find((c) => c.name === 'migration-lint-dependencies')!.detail).toContain(
+      'before dependency preparation',
+    );
   });
   it('a missing verify script is WARN-only (cut can still run)', () => {
     const r = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
