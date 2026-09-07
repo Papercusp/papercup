@@ -594,6 +594,34 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ lockId: 'queued-exclusive-1' }));
   });
 
+  it('retries transient contention while releasing a timed-out queued exclusive', async () => {
+    // EI-22627342911348772: a live restart timed out behind a shared git-sync
+    // holder, then its one-shot cleanup lost the hot workspace transaction.
+    // Once the shared holder left, that abandoned row promoted to `held`; the
+    // next restart refused against its own predecessor. The injected release
+    // seam lets this test prove the barrier wrapper itself retries cleanup.
+    const contention = Object.assign(new Error('workspace lock timed out'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
+    const release = vi.fn().mockRejectedValueOnce(contention).mockResolvedValueOnce(undefined);
+    const acquire = vi.fn(async () => ({
+      ok: false as const,
+      reason: 'drain_timeout',
+      holders: [{ owner: 'system:git-sync:1:x', mode: 'shared', status: 'held' }],
+      lock_id: 'queued-exclusive-retry',
+    }));
+
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ acquire, release }), { maxDrainSec: 20 });
+
+    expect(result).toMatchObject({ acquired: false, reason: 'drain_timeout' });
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ lockId: 'queued-exclusive-retry' }),
+    );
+  });
+
   it('does not attempt a release when the failure left NO queue row', async () => {
     // Control for the test above: releasing a lock_id we never got would be a
     // different bug, and would make the guard pass for the wrong reason.

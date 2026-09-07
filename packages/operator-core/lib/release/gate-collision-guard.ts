@@ -53,6 +53,7 @@ import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { StoredInFlightRetriage } from './in-flight-retriage';
 import { RESTART_TARGET_UNITS, type RestartTargetName } from '../agent-tools/dev/restart-target-units';
+import { acquireWithContentionRetry } from '../agent-tools/locks/contention-retry';
 
 let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
 const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) as any)(...args);
@@ -965,8 +966,18 @@ export async function acquireGitSyncRestartBarrier(
     // Best-effort — a failed release must not mask the acquire failure the caller
     // actually needs to see, and the TTL is the backstop.
     if (result.lock_id) {
-      await d
-        .release({ coordinationDomain, owner, lockId: result.lock_id })
+      // EI-22627342911348772: a timed-out drain leaves its queued exclusive in
+      // place deliberately, so this cleanup is a correctness boundary, not a
+      // cosmetic best effort. A one-shot release can lose to transient
+      // workspace advisory-lock contention; the abandoned row then promotes to
+      // `held` after the shared git-sync holder exits and the next restart sees
+      // its predecessor as `git_sync_barrier_held_exclusive`. Give cleanup the
+      // same bounded contention retry used by acquisition. Non-contention
+      // failures still fall through to the TTL backstop and never mask the
+      // original acquire refusal.
+      await acquireWithContentionRetry(() =>
+        d.release({ coordinationDomain, owner, lockId: result.lock_id! }),
+      )
         .catch(() => {});
     }
     return { acquired: false, resource, reason: result.reason, holders: result.holders };
