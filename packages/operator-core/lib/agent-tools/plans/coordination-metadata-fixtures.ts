@@ -65,6 +65,16 @@ export const metadataWorkflowTargets = {
     writer: 'work_items/_create-core.ts:createOneWorkItem',
     population: 'two retries against one already-known exact review identity',
   },
+  reviewRecoveryRequests: {
+    before: 4, maxAfter: 4, unit: 'assignment/wake composite invocations',
+    writer: 'coordination/actionable-work-item-dispatch.ts:assignAndWakeActionableWorkItems',
+    population: 'one existing review: scope refusal, screening pending, interrupted delivery, retained replay; policy/persistence IO injected',
+  },
+  revokedReviewWakes: {
+    before: 1, maxAfter: 0, unit: 'wake IO attempts after admission revocation',
+    writer: 'coordination/actionable-work-item-dispatch.ts:classifyOne',
+    population: 'one already-held review with a fresh gated observation',
+  },
 } as const;
 
 // No fake zero, percentile, or guessed latency target for an unobserved metric.
