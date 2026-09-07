@@ -639,7 +639,53 @@ describe('resolveResumeTarget', () => {
       resumeId: '22661',
       ownerId: OWNER,
       advSessionId: 22661,
+      model: null,
+      modelSource: null,
     });
+  });
+
+  it('recovers the recorded Codex model and source from launch_argv for a resume', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22662,
+      workspace_id: 'ws-codex',
+      coord_owner_id: OWNER,
+      session_id: null,
+      agent: 'codex',
+      cwd: '/repo',
+      launch_argv: [
+        'psu',
+        '--agent=codex',
+        '--model=gpt-5.6-sol:xhigh',
+        '--model-source=inherited',
+      ],
+      started_at: '2026-09-05T23:16:36.945Z',
+      binding_started_at: '2026-09-05 23:16:36.945123+00',
+      ended_at: null,
+      exit_code: null,
+      ended_by: null,
+    }] as unknown[]);
+
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true,
+      model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'inherited',
+    });
+
+    const queries = launchCoreSql.mock.calls.map((call) => String(call[0]?.join(' ')));
+    expect(queries.some((query) => query.includes('launch_argv'))).toBe(true);
+  });
+
+  it('carries an inherited Codex model into the scripted resume command', () => {
+    expect(buildAgentLaunchCommand({
+      mode: 'resume',
+      resumeId: '22662',
+      agent: 'codex',
+      model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'inherited',
+      headless: true,
+    })).toBe(
+      'psu --no-picker --account=default --resume=22662 --headless --model=gpt-5.6-sol:xhigh --model-source=inherited',
+    );
   });
 
   it('CONTROL: an agentId lookup still seeds its candidate from adv_sessions', async () => {

@@ -1476,6 +1476,9 @@ const post = defineTool({
        *  `prompts/su-role-<role>.addendum.md`, so this superuser-tier launch path
        *  exposes no free-text prompt-append surface. Unknown → 400. */
       su_role?: string | null;
+      /** Explicit launch-time identity binding, using repeatable `slot:id` refs.
+       * Omitted lets the selected blueprint role's `roles[].stack` default apply. */
+      stack?: string[] | null;
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
@@ -1658,6 +1661,14 @@ const post = defineTool({
       );
     }
     const roleAddendum = suRoleRaw ? resolveSuRoleAddendum(suRoleRaw) : null;
+    if (
+      body.stack != null &&
+      (!Array.isArray(body.stack) ||
+        body.stack.length > 40 ||
+        body.stack.some((ref) => typeof ref !== 'string' || !ref.trim()))
+    ) {
+      return jsonRes({ status: 'error', error: 'stack must be an array of 1-40 non-empty slot:id refs' }, 400);
+    }
 
     // Trimmed is the only effective launch mode. `full` remains a compatibility
     // alias for historical rows/clients and is normalized before any mutation.
@@ -1793,6 +1804,8 @@ const post = defineTool({
         planNow,
         // EI-996: null for a plain su launch ⇒ byte-identical prompt.
         roleAddendum,
+        roleId: suRoleRaw ?? 'su',
+        stack: body.stack?.map((ref) => ref.trim()) ?? null,
         fleetRole: launchFleetRole,
         modes: launchModes,
       });

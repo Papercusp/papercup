@@ -188,11 +188,57 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    const declaredPlanSlug = args.current_plan_slug?.trim() || null;
+    let declaredPlanScope: Awaited<ReturnType<typeof resolvePlanScope>> | null = null;
+    let declaredPlanRow: Awaited<ReturnType<typeof getPlanRow>> | null = null;
+
+    // EI-22589724741483734: validate a declared plan BEFORE writePresence. A
+    // missing slug otherwise lands in coord_presence.current_plan_slug, and
+    // the next MCP request refuses its own harness scope as stale before the
+    // caller can issue the documented self-clear declaration.
+    if (declaredPlanSlug) {
+      try {
+        declaredPlanScope = await resolvePlanScope(args.harness ? { harnessSlug: args.harness } : {});
+        declaredPlanRow = await getPlanRow(
+          declaredPlanSlug,
+          args.harness ? { harnessSlug: args.harness } : {},
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `current_plan_slug '${declaredPlanSlug}' could not be validated: ${detail}`,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (!declaredPlanRow) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `current_plan_slug '${declaredPlanSlug}' was not found in ${declaredPlanScope!.harnessSlug}; no presence or lane claim was written.`,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
     // An empty lane is meaningful even when this member has no plan scope: it
     // is the replacement-member re-declaration path. Non-empty P-NNN lanes
     // still require an explicit plan so claim reconciliation cannot silently
     // target an unknown scope.
-    if (args.items && args.items.length > 0 && !args.current_plan_slug) {
+    if (args.items && args.items.length > 0 && !declaredPlanSlug) {
       return {
         content: [
           {
@@ -219,7 +265,7 @@ export default defineTool({
       identity,
       {
         intent: args.intent,
-        currentPlanSlug: args.current_plan_slug ?? null,
+        currentPlanSlug: declaredPlanSlug,
         // EI-18776963284535761: pass THROUGH (no `?? []`). `undefined` is the store's
         // "leave untouched" sentinel; `?? []` turned every omission into a CLEAR, and
         // coord:orient re-declares intent WITHOUT this arg on every wake — so the
@@ -263,10 +309,12 @@ export default defineTool({
     // declaration can't release the caller's real claims. An explicit `[]`
     // still releases the whole lane.
     let claims = null;
-    if (args.items && args.current_plan_slug) {
-      const scope = await resolvePlanScope(args.harness ? { harnessSlug: args.harness } : {});
-      const scopeOpts = args.harness ? { harnessSlug: args.harness } : {};
-      const row = await getPlanRow(args.current_plan_slug, scopeOpts);
+    if (args.items && declaredPlanSlug) {
+      // The plan was resolved and validated before writePresence above. Reuse
+      // that exact row/scope so the claim path cannot validate a different
+      // snapshot from the one that authorized the presence write.
+      const scope = declaredPlanScope!;
+      const row = declaredPlanRow!;
       const knownIds = row ? new Set(planItemsForRow(row).map((i) => i.id)) : new Set<string>();
       const known = args.items.filter((i) => knownIds.has(i));
       const unknown = args.items.filter((i) => !knownIds.has(i));
@@ -279,14 +327,14 @@ export default defineTool({
           unknown,
           hint: row
             ? 'none of the declared items parse as items of this plan (plans:items would not list them — legacy/checkbox lines are invisible); nothing was claimed or released. Fix the plan format (plans:lint) or declare real P-NNN ids.'
-            : `plan '${args.current_plan_slug}' not found in ${scope.harnessSlug} — nothing was claimed or released. Check the slug (plans:list) or pass the right harness.`,
+            : `plan '${declaredPlanSlug}' not found in ${scope.harnessSlug} — nothing was claimed or released. Check the slug (plans:list) or pass the right harness.`,
         };
       } else {
         const ownerName = await resolveAdoptedName(scope.workspaceId, identity.ownerId).catch(() => null);
         const reconciled = await reconcileDeclaredClaims({
           workspaceId: scope.workspaceId,
           harnessSlug: scope.harnessSlug,
-          planSlug: args.current_plan_slug,
+          planSlug: declaredPlanSlug,
           items: known,
           owner: identity.ownerId,
           ownerLabel: identity.ownerLabel,
@@ -309,7 +357,7 @@ export default defineTool({
             await convertPlanItem({
               workspaceId: scope.workspaceId,
               harnessSlug: scope.harnessSlug,
-              planSlug: args.current_plan_slug,
+              planSlug: declaredPlanSlug,
               itemId,
               owner: identity.ownerId,
               ownerLabel: identity.ownerLabel,
@@ -318,7 +366,7 @@ export default defineTool({
               intent: args.intent,
             }).catch((e) =>
               console.warn(
-                `[coord:declare-intent] auto-convert ${args.current_plan_slug}#${itemId} failed:`,
+                `[coord:declare-intent] auto-convert ${declaredPlanSlug}#${itemId} failed:`,
                 (e as Error)?.message ?? e,
               ),
             );

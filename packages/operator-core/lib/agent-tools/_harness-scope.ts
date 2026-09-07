@@ -145,6 +145,29 @@ export interface HarnessScopeInheritanceReaders {
   brief(input: HarnessScopeInheritanceInput): Promise<HarnessBindingRead>;
 }
 
+/**
+ * Decide whether an MCP call may recover from a stale plan binding.
+ *
+ * `coord:orient` is the compound recovery surface and may re-declare intent
+ * after it reaches the current fleet/brief binding. The direct
+ * `coord:declare-intent` escape is narrower: it is allowed only when the
+ * caller is explicitly clearing the plan binding, not when it is trying to
+ * claim a plan lane through a stale scope.
+ */
+export function allowStalePlanRecoveryForMcpCall(
+  toolName: string,
+  args: Readonly<Record<string, unknown>> = {},
+): boolean {
+  if (toolName === 'coord:orient') return true;
+  if (toolName !== 'coord:declare-intent') return false;
+
+  const plan = args.current_plan_slug;
+  const planIsClear = plan === undefined || plan === null || (typeof plan === 'string' && plan.trim() === '');
+  const items = args.items;
+  const itemsAreClear = items === undefined || (Array.isArray(items) && items.length === 0);
+  return planIsClear && itemsAreClear;
+}
+
 type ActiveClaimBinding = {
   workspaceId: string;
   harnessSlug: string;

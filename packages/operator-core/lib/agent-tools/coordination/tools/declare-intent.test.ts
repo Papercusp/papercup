@@ -212,16 +212,31 @@ describe('coord:declare-intent lane validation (EI-356)', () => {
     expect(String(claims.hint)).toMatch(/plans:items|plan format/);
   });
 
-  it('a missing plan claims nothing and says so', async () => {
+  it('a missing plan is refused before presence or claims are written (EI-22589724741483734)', async () => {
     getPlanRow.mockResolvedValue(null);
-    const res = parse(
-      await tool.handler({ intent: 'work', current_plan_slug: 'no-such-plan', items: ['P-001'] }, ctx),
-    );
-    expect(res.ok).toBe(true);
+    const raw = (await tool.handler(
+      { intent: 'work', current_plan_slug: 'no-such-plan', items: ['P-001'] },
+      ctx,
+    )) as unknown as { isError?: boolean; content: Array<{ text: string }> };
+    const res = parse(raw);
+    expect(raw.isError).toBe(true);
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toMatch(/current_plan_slug 'no-such-plan'.*not found/);
+    expect(String(res.error)).toMatch(/no presence or lane claim was written/);
+    expect(writePresence).not.toHaveBeenCalled();
     expect(reconcileDeclaredClaims).not.toHaveBeenCalled();
-    const claims = res.claims as Record<string, unknown>;
-    expect(claims.unknown).toEqual(['P-001']);
-    expect(String(claims.hint)).toMatch(/not found/);
+  });
+
+  it('validates a plan even when no plan items are claimed', async () => {
+    getPlanRow.mockResolvedValue(rowWithItems([]));
+    const res = parse(await tool.handler({ intent: 'observe plan', current_plan_slug: 'my-plan' }, ctx));
+    expect(res.ok).toBe(true);
+    expect(writePresence).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ intent: 'observe plan', currentPlanSlug: 'my-plan' }),
+      null,
+    );
+    expect(reconcileDeclaredClaims).not.toHaveBeenCalled();
   });
 
   it('an explicit [] still releases the whole lane (reconcile runs with no items)', async () => {

@@ -627,6 +627,10 @@ export interface BuildSuLaunchSpecInput {
    * spec is byte-identical to a plain su launch.
    */
   roleAddendum?: string | null;
+  /** Persona/role id used to select `roles[].stack` from the pot blueprint. */
+  roleId?: string | null;
+  /** Explicit `slot:id` binding. Null/omitted uses the selected role's default. */
+  stack?: readonly string[] | null;
   /** Test override forwarded to `renderSuPlaybook`. */
   operatorAppRoot?: string;
 }
@@ -648,6 +652,8 @@ export interface LaunchSpec {
   featureId: string | null;
   cwd: string;
   promptText: string;
+  /** Canonical launch-time identity binding that produced the prompt. */
+  stack: string[];
   /** Resolved prompt source path (role `.md`, or the su base playbook). */
   promptFile: string;
   mcpUrl: string;
@@ -677,7 +683,7 @@ export interface LaunchSpec {
 export async function buildLaunchSpec(input: BuildLaunchSpecInput): Promise<LaunchSpec> {
   if (input.kind === 'role') {
     const spec = await buildRoleLaunchSpec(input);
-    return { kind: 'role', ...spec };
+    return { kind: 'role', stack: [], ...spec };
   }
   return buildSuLaunchSpec(input);
 }
@@ -705,6 +711,24 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     // from activeWorkspaceId()).
     cwd = papercuspPathForWorkspace(input.workspaceId);
   }
+
+  // identities-v1 P-008: one launch binding for every client. An explicit
+  // `--stack` wins; otherwise the selected role inherits the pot blueprint's
+  // `roles[].stack`. Parse through the live slot registry before any prompt or
+  // launch artifact is written so malformed/conflicting bindings fail visibly.
+  let stackRefs = input.stack == null ? null : [...input.stack];
+  if (stackRefs == null && harnessSlug) {
+    const blueprintPath = path.join(cwd, '.papercusp', 'blueprint.yaml');
+    if (fsSync.existsSync(blueprintPath)) {
+      const { loadBlueprintFromFile } = await import('@papercusp/orchestrator/blueprint');
+      const loaded = loadBlueprintFromFile(blueprintPath);
+      const roleId = input.roleId?.trim() || 'su';
+      stackRefs = [...(loaded.blueprint.roles.find((role) => role.id === roleId)?.stack ?? [])];
+    }
+  }
+  stackRefs ??= [];
+  const { stackBindingFromRefs } = await import('@papercusp/orchestrator/blueprint');
+  const requestedStack = stackBindingFromRefs(stackRefs);
 
   // 2. Prompt — the engineer/power playbook (base + per-agent tooling
   //    overlay), rendered fresh from the SAME prompts files the installer
@@ -774,15 +798,17 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
         try {
           // Loaded lazily, like the flags above: the blueprint barrel pulls the loader (and its
           // harness-path resolution) which this module otherwise never needs at import time.
-          const { composeSuStackSource, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+          const { composeSuStackSource, normalizeStackBinding, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
           const harnessDir = path.resolve(suBaseSource, '..', '..', '..', '..'); // <root>/blueprints/base/prompts/su.md
           // P-012 / P-021: the launch-time stack binding — the fleet posture the session
           // launches into and the definition identity of each mode it launches with — is
           // part of the FIRST render (an inject-now layer also renders in place on every
           // full render). Derived from the same facts presence + agent_modes carry.
+          const derived = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null });
+          const launchBinding = normalizeStackBinding([...requestedStack.layers, ...derived.layers]);
           suBaseText = composeSuStackSource({
             harnessDir,
-            binding: suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }),
+            binding: launchBinding,
           }).text;
         } catch (e) {
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
@@ -985,6 +1011,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     featureId: null,
     cwd,
     promptText,
+    stack: stackRefs,
     promptFile: rendered.baseSource,
     mcpUrl: mcpUrlStr,
     mcpJsonContents,

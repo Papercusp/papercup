@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HarnessRequiredError } from '@papercusp/agent-mcp';
 import {
+  allowStalePlanRecoveryForMcpCall,
   harnessRequiredResult,
   harnessRequiredDetail,
   harnessScopedCtx,
@@ -203,6 +204,26 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
   it('keeps the explicit all sentinel distinct from one-harness inference', async () => {
     const result = await resolveInheritedHarnessScope({ explicitHarness: 'all' }, emptyReaders());
     expect(result).toEqual({ kind: 'all', source: 'explicit', candidates: [], conflictingBindings: [] });
+  });
+});
+
+describe('stale-plan MCP recovery predicate (EI-22589724741483734)', () => {
+  it.each([
+    ['coord:orient bootstrap', 'coord:orient', {}, true],
+    ['direct omitted self-clear', 'coord:declare-intent', { intent: 'clear stale plan' }, true],
+    ['direct null self-clear', 'coord:declare-intent', { intent: 'clear stale plan', current_plan_slug: null }, true],
+    [
+      'direct blank self-clear with empty lane',
+      'coord:declare-intent',
+      { intent: 'clear stale plan', current_plan_slug: '   ', items: [] },
+      true,
+    ],
+    ['nonblank plan declaration', 'coord:declare-intent', { intent: 'claim', current_plan_slug: 'plan-a' }, false],
+    ['nonempty lane declaration', 'coord:declare-intent', { intent: 'claim', items: ['P-001'] }, false],
+    ['invalid items value', 'coord:declare-intent', { intent: 'clear stale plan', items: null }, false],
+    ['unrelated tool', 'plans:get', {}, false],
+  ])('%s → %s', (_label, toolName, args, expected) => {
+    expect(allowStalePlanRecoveryForMcpCall(toolName, args)).toBe(expected);
   });
 });
 

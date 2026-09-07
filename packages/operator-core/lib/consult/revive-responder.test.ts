@@ -112,6 +112,36 @@ describe('reviveConsultResponder', () => {
     expect(calls.verify[0]).toMatchObject({ ownerId: 'su-dead-expert', timeoutMs: REVIVE_VERIFY_TIMEOUT_MS });
   });
 
+  it('forwards the recorded Codex model and source when reviving a session', async () => {
+    const { deps, calls } = makeFakes({
+      resolveResumeTarget: async () => ({
+        ok: true,
+        sessionId: null,
+        resumeId: '22662',
+        ownerId: 'su-dead-expert',
+        agent: 'codex',
+        cwd: '/recorded/cwd',
+        model: 'gpt-5.6-sol:xhigh',
+        modelSource: 'inherited',
+        endedAt: '2026-08-18T00:00:00Z',
+        endedBy: 'self',
+        live: false,
+        advSessionId: 22662,
+        binding: null,
+      }),
+    });
+
+    await reviveConsultResponder(OPTS, CTX, deps);
+
+    expect(calls.build[0]).toMatchObject({
+      mode: 'resume',
+      resumeId: '22662',
+      agent: 'codex',
+      model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'inherited',
+    });
+  });
+
   it('refuse-if-live (WI-3882): a live-reading target is never resumed in place', async () => {
     const { deps, calls } = makeFakes({
       resolveResumeTarget: async () => ({

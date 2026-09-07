@@ -170,6 +170,9 @@ export async function reviveConsultResponder(
       mode: 'resume',
       sessionId: target.sessionId,
       resumeId: target.resumeId ?? target.sessionId,
+      agent: target.agent,
+      model: target.model,
+      modelSource: target.modelSource,
       headless: true,
     });
     cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;

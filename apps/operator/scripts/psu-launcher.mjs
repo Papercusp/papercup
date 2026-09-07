@@ -677,6 +677,7 @@ export function parseArgs(argv) {
     fork: false,
     agent: null,
     role: null,
+    stack: [],
     feature: null,
     workspace: null,
     harness: null,
@@ -732,6 +733,7 @@ export function parseArgs(argv) {
   // pattern below: the flag token arms a `pending*` latch, the NEXT token
   // (verbatim, even if it happens to start with `--`) is taken as the value.
   let pendingRole = false;
+  let pendingStack = false;
   let pendingAgent = false;
   let pendingWorkspace = false;
   let pendingFeature = false;
@@ -755,6 +757,11 @@ export function parseArgs(argv) {
     if (pendingRole) {
       pendingRole = false;
       out.role = a;
+      continue;
+    }
+    if (pendingStack) {
+      pendingStack = false;
+      out.stack.push(a);
       continue;
     }
     if (pendingAgent) {
@@ -909,6 +916,8 @@ export function parseArgs(argv) {
     else if (a.startsWith("--agent=")) out.agent = a.slice("--agent=".length);
     else if (a === "--role") pendingRole = true;
     else if (a.startsWith("--role=")) out.role = a.slice("--role=".length);
+    else if (a === "--stack") pendingStack = true;
+    else if (a.startsWith("--stack=")) out.stack.push(a.slice("--stack=".length));
     else if (a === "--feature") pendingFeature = true;
     else if (a.startsWith("--feature="))
       out.feature = a.slice("--feature=".length);
@@ -11241,6 +11250,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   if (selections.harness) argv.push(`--harness=${selections.harness}`);
   argv.push(selections.plan ? `--plan=${selections.plan}` : "--no-plan");
   if (args.profile) argv.push(`--profile=${args.profile}`);
+  for (const ref of args.stack || []) argv.push(`--stack=${ref}`);
   if (args.contextSize) argv.push(`--context-size=${args.contextSize}`);
   // P-005: MUST be re-emitted here — this record is what lands on
   // adv_sessions.launch_argv, and the compaction watchdog reads the limit back OFF
@@ -11331,6 +11341,7 @@ export function freshSuBootstrapBody(
     // never prose — this endpoint mints a superuser-tier prompt, so it exposes no
     // free-text append surface. Omitted for a plain su launch ⇒ byte-identical.
     ...(args.suRole ? { su_role: args.suRole } : {}),
+    ...(args.stack?.length ? { stack: [...args.stack] } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
     // context-trimming-tiers P-017: explicit persona tier; omitted ⇒ server auto-select.
     ...(args.personaTier ? { persona_tier: args.personaTier } : {}),
@@ -11392,6 +11403,7 @@ export function roleBootstrapBody({
   fleetRole,
   fleetName,
   fleetScheme,
+  stack,
 } = {}) {
   const codexSelection =
     agent === "codex"
@@ -11415,6 +11427,7 @@ export function roleBootstrapBody({
     ...(fleetRole ? { fleet_role: fleetRole } : {}),
     ...(fleetName ? { fleet_name: fleetName } : {}),
     ...(fleetScheme ? { fleet_scheme: fleetScheme } : {}),
+    ...(stack?.length ? { stack: [...stack] } : {}),
   };
 }
 
@@ -12948,6 +12961,7 @@ async function roleFlow(args, role, rolesMeta) {
         fleetRole: args.fleetRole,
         fleetName: args.fleetName,
         fleetScheme: args.fleetScheme,
+        stack: args.stack,
       }),
     ),
   });
