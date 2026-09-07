@@ -24,6 +24,9 @@ import {
   validateDreamSampling,
   validateDreamRunCall,
   DreamCallUsageSchema,
+  DreamRunAssessmentSchema,
+  dreamRunAssessments,
+  type DreamRunAssessment,
   type BeginCapabilityRunInput,
   type DreamCapabilityRun,
   type DreamRunCall,
@@ -98,8 +101,9 @@ function objectOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-function mapRun(row: Row): DreamRun {
+export function mapDreamRun(row: Row): DreamRun {
   dreamCapabilityRun({ outcome: objectOrNull(row.outcome) });
+  dreamRunAssessments({ outcome: objectOrNull(row.outcome) });
   return {
     workspaceId: String(row.workspace_id),
     runId: String(row.run_id),
@@ -136,7 +140,7 @@ export async function getDreamRun(sql: Sql, input: { workspaceId: string; runId:
     SELECT * FROM harness_shared.dream_runs
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
      LIMIT 1`) as Row[];
-  return rows[0] ? mapRun(rows[0]) : null;
+  return rows[0] ? mapDreamRun(rows[0]) : null;
 }
 
 export async function beginDreamRun(
@@ -164,7 +168,7 @@ export async function beginDreamRun(
       ${JSON.stringify(capability ? { capabilityRun: capability } : null)}::text::jsonb, ${capability?.dreamerModel ?? null})
     ON CONFLICT (workspace_id, run_id) DO NOTHING
     RETURNING *`) as Row[];
-  const run = inserted[0] ? mapRun(inserted[0]) : await getDreamRun(sql, { workspaceId, runId });
+  const run = inserted[0] ? mapDreamRun(inserted[0]) : await getDreamRun(sql, { workspaceId, runId });
   if (!run) throw new Error(`dream-run-store: begin lost row ${workspaceId}/${runId}`);
   if (run.cycleId !== cycleId || run.potSlug !== potSlug || run.mode !== input.mode) {
     throw new Error(`dream-run-store: stable run id ${runId} was reused with different provenance`);
@@ -231,7 +235,7 @@ export async function recordDreamRunSelection(
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId} AND status = 'running'
      RETURNING *`) as Row[];
-  const run = rows[0] ? mapRun(rows[0]) : await getDreamRun(sql, { workspaceId, runId });
+  const run = rows[0] ? mapDreamRun(rows[0]) : await getDreamRun(sql, { workspaceId, runId });
   if (!run) throw new Error(`dream-run-store: selection target not found ${workspaceId}/${runId}`);
   return run;
 }
@@ -248,7 +252,7 @@ export async function withLockedDreamRun<T>(
     const rows = await tx`SELECT * FROM harness_shared.dream_runs
       WHERE workspace_id = ${workspaceId} AND run_id = ${runId} FOR UPDATE`;
     if (!rows[0]) throw new Error(`dream-run-store: run not found ${workspaceId}/${runId}`);
-    return action(tx as unknown as Sql, mapRun(rows[0]));
+    return action(tx as unknown as Sql, mapDreamRun(rows[0]));
   };
   // The governor composes this short transition inside its workspace admission transaction.
   return (typeof sql.begin === 'function' ? await sql.begin(run) : await run(sql)) as T;
@@ -280,7 +284,7 @@ async function saveCapabilityRun(sql: Sql, run: DreamRun, provenance: DreamCapab
     input_tokens = ${totals.inputTokens}, output_tokens = ${totals.outputTokens}, cost_usd = ${totals.costUsd}, updated_at = now()
     WHERE workspace_id = ${run.workspaceId} AND run_id = ${run.runId} AND status = 'running' RETURNING *`;
   if (!rows[0]) throw new Error('Cannot change capability provenance on a terminal run');
-  return mapRun(rows[0]);
+  return mapDreamRun(rows[0]);
 }
 
 /** Only started:true authorizes dispatch. A reserved call on replay has UNKNOWN outcome. */
@@ -359,7 +363,7 @@ export async function recordDreamRunReview(
 ): Promise<DreamRun> {
   return withLockedDreamRun(sql, input, async (tx, run) => {
     const provenance = requireCapability(run);
-    if (Object.hasOwn(input.outcome, 'capabilityRun'))
+    if (Object.hasOwn(input.outcome, 'capabilityRun') || Object.hasOwn(input.outcome, 'assessments'))
       throw new Error('Capability provenance is owned by the run ledger');
     const outcome = { ...input.outcome, capabilityRun: provenance };
     if (run.review) {
@@ -402,7 +406,7 @@ export async function recordDreamRunReview(
       outcome = ${JSON.stringify(outcome)}::text::jsonb, review = ${JSON.stringify(input.review)}::text::jsonb,
       reviewer_model = ${provenance.reviewerModel}, updated_at = now()
       WHERE workspace_id = ${run.workspaceId} AND run_id = ${run.runId} RETURNING *`;
-    return mapRun(rows[0]!);
+    return mapDreamRun(rows[0]!);
   });
 }
 
@@ -428,7 +432,7 @@ export async function finalizeDreamRun(sql: Sql, input: FinalizeDreamRunInput): 
   return withLockedDreamRun(sql, { workspaceId, runId }, async (tx, existing) => {
     if (existing.status !== 'running') return existing;
     const provenance = dreamCapabilityRun(existing);
-    if (input.outcome && Object.hasOwn(input.outcome, 'capabilityRun'))
+    if (input.outcome && (Object.hasOwn(input.outcome, 'capabilityRun') || Object.hasOwn(input.outcome, 'assessments')))
       throw new Error('Capability provenance is owned by the run ledger');
     const frozenOutcome = provenance && existing.review ? existing.outcome : null;
     if (
@@ -495,7 +499,7 @@ export async function finalizeDreamRun(sql: Sql, input: FinalizeDreamRunInput): 
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND run_id = ${runId} AND status = 'running'
      RETURNING *`) as Row[];
-    const run = rows[0] ? mapRun(rows[0]) : null;
+    const run = rows[0] ? mapDreamRun(rows[0]) : null;
     if (!run) throw new Error(`dream-run-store: finalize target not found ${workspaceId}/${runId}`);
     return run;
   });
@@ -514,5 +518,38 @@ export async function listDreamRuns(
        ${input.cycleId ? sql`AND cycle_id = ${input.cycleId}` : sql``}
      ORDER BY started_at DESC, run_id DESC
      LIMIT ${limit}`) as Row[];
-  return rows.map(mapRun);
+  return rows.map(mapDreamRun);
+}
+
+/** Append a separately authored assessment without rewriting terminal provenance or spend. */
+export async function recordDreamRunAssessment(
+  sql: Sql,
+  input: { workspaceId: string; runId: string; assessment: Omit<DreamRunAssessment, 'recordedAt'> },
+): Promise<DreamRun> {
+  return withLockedDreamRun(sql, input, async (tx, run) => {
+    const provenance = requireCapability(run);
+    if (run.status === 'running' || !run.review) throw new Error('Assess a terminal reviewed Dream proposal');
+    const candidate = CapabilityProposalSchema.parse((run.outcome?.insight as Record<string, unknown>)?.capability);
+    const assessments = dreamRunAssessments(run);
+    const previous = assessments.find((a) => a.id === input.assessment.id);
+    const assessment = DreamRunAssessmentSchema.parse({
+      ...input.assessment, recordedAt: previous?.recordedAt ?? new Date().toISOString(),
+    });
+    if (assessment.candidateHash !== capabilityProposalHash(candidate) ||
+        assessment.candidateHash !== run.review.candidateHash ||
+        assessment.evidenceHash !== run.review.evidenceHash)
+      throw new Error('Assessment does not bind the frozen proposal and review evidence');
+    if ([provenance.dreamerModel, provenance.reviewerModel].includes(assessment.assessor))
+      throw new Error('Assessment must name its separate assessor, not reuse a generating model identity');
+    if (previous) {
+      if (!sameDreamValue(previous, assessment)) throw new Error('Assessment identity is immutable');
+      return run;
+    }
+    if (assessments.length >= 16) throw new Error('Dream assessment history is full');
+    const rows = await tx`UPDATE harness_shared.dream_runs
+      SET outcome = ${JSON.stringify({ ...run.outcome, assessments: [...assessments, assessment] })}::text::jsonb,
+          updated_at = now()
+      WHERE workspace_id = ${run.workspaceId} AND run_id = ${run.runId} RETURNING *`;
+    return mapDreamRun(rows[0]!);
+  });
 }

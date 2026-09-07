@@ -140,3 +140,26 @@ export function dreamCallTotals(calls: readonly DreamRunCall[]) {
 export function validateDreamRunCall(value: DreamRunCall): DreamRunCall {
   return CallSchema.parse(value);
 }
+
+/** Post-run judgments are evidence, not inferred from a proposal's wording or a pass rate. */
+const assessmentFinding = z.enum(['supported', 'disproven', 'unknown']);
+export const DreamRunAssessmentSchema = z.object({
+  schemaVersion: z.literal('dream-run-assessment-v1'),
+  id: name,
+  assessor: name,
+  recordedAt: z.string().datetime(),
+  candidateHash: z.string().regex(/^[a-f0-9]{64}$/),
+  evidenceHash: z.string().regex(/^[a-f0-9]{64}$/),
+  familyId: name.nullable(),
+  novelty: assessmentFinding,
+  usefulness: assessmentFinding,
+  maintainability: assessmentFinding,
+  evidenceRefs: z.array(z.string().trim().min(1).max(2_000)).min(1).max(20),
+  experimentBatteryIds: z.array(name).max(20),
+}).strict();
+export type DreamRunAssessment = z.infer<typeof DreamRunAssessmentSchema>;
+
+export function dreamRunAssessments(run: { outcome: Record<string, unknown> | null }): DreamRunAssessment[] {
+  if (!run.outcome || !Object.hasOwn(run.outcome, 'assessments')) return [];
+  return z.array(DreamRunAssessmentSchema).max(16).parse(run.outcome.assessments);
+}
