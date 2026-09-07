@@ -15,6 +15,7 @@ import { readFile } from "node:fs/promises";
 import type { WorkspaceHostProviderConnection } from "@papercusp/deployment-driver";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import {
+  GcpImageFamilyExactPathReadinessError,
   executeConfiguredGcpImageFamilyRelease,
   probeGcpImageFamilyCredential,
   probeGcpImageFamilyExecutables,
@@ -224,6 +225,15 @@ export async function runGcpImageFamilyReleaseCli(
   execution: GcpImageFamilyReleaseExecutionOptions = {},
   deps: Pick<GcpImageFamilyReleaseCliDeps, "execute" | "verifyReadiness"> = {},
 ): Promise<GcpImageFamilyReleaseCliResult> {
+  if (
+    options.repositoryRoot !== undefined &&
+    options.repositoryRoot !== input.readiness.expected.cwd
+  ) {
+    throw new GcpImageFamilyExactPathReadinessError(
+      "wrong-cwd",
+      "the adapter repositoryRoot differs from the producer-captured canonical readiness cwd",
+    );
+  }
   // This is the single enforced boundary: every failure above is read-only, and the injected
   // executor below is the first call that can invoke Packer or a provider mutation.
   const readiness = await (

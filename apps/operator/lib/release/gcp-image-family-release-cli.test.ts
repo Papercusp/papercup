@@ -9,7 +9,10 @@ import {
 } from "./gcp-image-family-release-cli";
 
 const request = { projectId: "active-alcove-504205-q3" } as never;
-const readiness = { contractVersion: "readiness-fixture" } as never;
+const readiness = {
+  contractVersion: "readiness-fixture",
+  expected: { cwd: "/repo" },
+} as never;
 const readinessEvidence = {
   contractVersion: "papercusp-gcp-image-family-exact-path-readiness-v1",
   ok: true,
@@ -226,5 +229,22 @@ describe("gcp image-family release CLI", () => {
       readiness: readinessEvidence,
       result: expect.objectContaining({ dryRun: true }),
     });
+  });
+
+  it("rejects an adapter repositoryRoot that diverges from the producer-captured cwd", async () => {
+    const verifyReadiness = vi.fn(async () => readinessEvidence) as never;
+    const execute = vi.fn(async () => ({
+      contractVersion: "papercusp-gcp-image-family-release-v1",
+    })) as never;
+    await expect(
+      runGcpImageFamilyReleaseCli(
+        { request, connection, readiness },
+        { repositoryRoot: "/different-repository" },
+        {},
+        { execute, verifyReadiness },
+      ),
+    ).rejects.toMatchObject({ code: "wrong-cwd" });
+    expect(verifyReadiness).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 });
