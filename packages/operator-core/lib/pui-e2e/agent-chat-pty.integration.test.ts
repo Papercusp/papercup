@@ -879,7 +879,7 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
     writeFileSync(fixturePath, fileResult + '\n');
     const fileRequest = `Use the Read tool to inspect ${fixturePath}, then reply with its contents. Do not modify any file.`;
     const cancelledResult = `PUI-CANCELLED-${nonce}`;
-    const longRequest = `Use Bash to run exactly: sleep 30; printf '${cancelledResult}\\n'. This is an interruption test; do not use any other tools.`;
+    const longRequest = `Use Bash to run exactly: sleep 30. Keep it in the foreground for this interruption test (${cancelledResult}); do not use any other tools.`;
     const followupReply = `PUI-CONTINUED-${nonce}`;
     const followup = `Reply with exactly ${followupReply} and no other text. Do not resume the interrupted task.`;
     const pane = new PuiPane(bin, operatorPort, home);
@@ -911,10 +911,21 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
 
       pane.write(longRequest);
       pane.enter();
-      await vi.waitFor(() => expect(scriptedEngine.events.some((event) => event.type === 'tool'
-        && event.phase === 'started' && event.name === 'Bash' && JSON.stringify(event.input).includes(cancelledResult))).toBe(true),
+      const longChat = await waitForSavedTurn(longRequest);
+      const longCommand = longChat.transcript.find((turn) => turn.content === longRequest)?.su_command?.command;
+      if (longCommand?.type !== 'owner_turn') throw new Error('Interrupt target lacks an owner-turn receipt');
+      let runningTool: SuSessionToolEvent<'claude'> | undefined;
+      await vi.waitFor(() => {
+        runningTool = scriptedEngine.events.find((event): event is SuSessionToolEvent<'claude'> => event.type === 'tool'
+          && event.phase === 'started' && event.name === 'Bash' && event.turnId === longCommand.turnId
+          && (event.input as { command?: string })?.command === 'sleep 30'
+          && (event.input as { run_in_background?: boolean })?.run_in_background !== true);
+        expect(runningTool).toBeDefined();
+      },
       { timeout: 120_000, interval: 100 });
       await pane.waitFor('Running');
+      expect(scriptedEngine.events.some((event) => event.type === 'tool'
+        && event.phase === 'completed' && event.callId === runningTool?.callId)).toBe(false);
       frames.running = pane.screen();
       pane.interrupt();
       await vi.waitFor(() => expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true),

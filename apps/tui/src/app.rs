@@ -16418,7 +16418,10 @@ mod tests {
             receipt["commandType"] = json!("owner_turn");
             receipt["status"] = json!("completed");
             app.apply_su_session_event(su_event(receipt));
-            assert!(app.chat_streaming, "delivery receipt is not turn completion");
+            assert!(
+                app.chat_streaming,
+                "delivery receipt is not turn completion"
+            );
             for (offset, phase) in ["started", "delta", "completed"].into_iter().enumerate() {
                 let mut reply = su_event_base("transcript", offset as u64 + 3);
                 reply["phase"] = json!(phase);
