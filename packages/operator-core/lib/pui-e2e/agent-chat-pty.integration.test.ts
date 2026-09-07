@@ -356,6 +356,7 @@ let transportFault: TransportFault = 'none';
 let commandPosts: SuSessionCommand[] = [];
 let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
 let initializeWarnings: Array<Record<string, unknown>> = [];
+let optionalMemoryWarnings: string[] = [];
 
 // Drop command frames only for deliberate acknowledgement-loss cases. All other
 // production SSE events still traverse the real HTTP connection to the PTY.
@@ -391,6 +392,22 @@ async function openComposer(pane: PuiPane): Promise<void> {
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
   return waitForPersistedChat(db, (chat) => chat.transcript.some((turn) => turn.role === 'user' && turn.content === content));
+}
+
+async function waitForCorrelatedReply(prompt: string, reply: string): Promise<PersistedChat> {
+  // The chat table stores accepted command receipts. Assistant text belongs to
+  // the native transcript, exposed through the real adapter's SU event stream.
+  const chat = await waitForPersistedChat(db, (candidate) => candidate.transcript.some(
+    (turn) => turn.role === 'user' && turn.content === prompt), 120_000);
+  const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
+  if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
+  await vi.waitFor(() => expect(scriptedEngine.events).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: 'transcript', phase: 'completed', role: 'assistant', channel: 'text',
+      content: reply, turnId: command.turnId, session: command.target,
+    }),
+  ])), { timeout: 120_000, interval: 100 });
+  return chat;
 }
 
 async function stopEngines(): Promise<void> {
@@ -572,6 +589,7 @@ beforeEach(async () => {
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
+  optionalMemoryWarnings = [];
   if (scriptedEngine.real) {
     const warn = console.warn.bind(console);
     vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
@@ -583,6 +601,12 @@ beforeEach(async () => {
         expect(['base', 'enriched', 'timeout']).toContain(detail.outcome);
         initializeWarnings.push(detail);
         console.info('PUI_MCP_INITIALIZE_DIAGNOSTIC', JSON.stringify(detail));
+      } else if (args.length === 1 && args[0] === '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).') {
+        // A fresh isolated DB can take the documented optional-enrichment
+        // fallback. Preserve the exact diagnostic; hard memory/SU errors and
+        // every other warning still fail this test (EI-22628413686876169).
+        optionalMemoryWarnings.push(String(args[0]));
+        console.info('PUI_OPTIONAL_MEMORY_DIAGNOSTIC', args[0]);
       } else warn(...args);
     });
   }
@@ -823,9 +847,8 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       await openComposer(pane);
       pane.write(greeting);
       pane.enter();
+      const firstChat = await waitForCorrelatedReply(greeting, greetingReply);
       await pane.waitForReply(greetingReply);
-      const firstChat = await waitForPersistedChat(db, (chat) => chat.transcript.some(
-        (turn) => turn.role === 'assistant' && turn.content.includes(greetingReply)), 120_000);
       frames.greeting = pane.screen();
       const engine = scriptedEngine.engines[0];
       expect(engine?.pid()).toBeGreaterThan(0);
@@ -859,10 +882,9 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       frames.interrupted = pane.screen();
       pane.write(followup);
       pane.enter();
+      const finalChat = await waitForCorrelatedReply(followup, followupReply);
       await pane.waitForReply(followupReply);
       frames.followup = pane.screen();
-      const finalChat = await waitForPersistedChat(db, (chat) => chat.transcript.some(
-        (turn) => turn.role === 'assistant' && turn.content.includes(followupReply)), 120_000);
       expect(finalChat.id).toBe(firstChat.id);
       expect(engine.adapter.host.descriptor().identity).toEqual(identity);
       expect(scriptedEngine.engines).toHaveLength(1);
@@ -895,7 +917,10 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
         greetingReply, fileResult, followupReply, readStart, readEnd,
-        commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic, initializeWarnings,
+        commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
+        initializeWarnings, optionalMemoryWarnings,
+        assistantReplies: scriptedEngine.events.filter((event) => event.type === 'transcript'
+          && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'),
       }));
     } finally { await pane.stop().catch(() => {}); }
   }, 600_000);
