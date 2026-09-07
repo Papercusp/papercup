@@ -15,7 +15,7 @@ import {
 } from './spec-evidence-store';
 
 const fingerprint = z.string().trim().min(1).max(256);
-const bindingSchema = z
+export const bindingSchema = z
   .object({
     workItemId: z.string().trim().min(1).max(200),
     specId: z.string().trim().min(1).max(200).optional(),
@@ -49,6 +49,19 @@ const bindingSchema = z
   })
   .refine((b) => !b.measurement || b.testFingerprint === undefined, {
     message: 'testFingerprint is server-computed when measurement is supplied',
+  })
+  .superRefine((binding, ctx) => {
+    if (!binding.measurement) return;
+    for (const field of ['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'] as const) {
+      if (binding[field] == null) continue;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [field],
+        message:
+          `repo-files measurement cannot independently refresh ${field}; omit it or pass null ` +
+          '(record non-repository facts in details.observations without making them a freshness dimension)',
+      });
+    }
   });
 
 const argsSchema = z
