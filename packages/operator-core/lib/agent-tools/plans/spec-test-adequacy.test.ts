@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
-import { evaluateSpecTestAdequacy, requiredProofFloor } from './spec-test-adequacy';
+import {
+  classifySpecEvidenceLineage,
+  evaluateSpecTestAdequacy,
+  requiredProofFloor,
+} from './spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
@@ -132,6 +136,50 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.traceability.evidence).toContain('kind=coverage-census');
     expect(result.ratings['execution-integrity'].evidence).toContain('testRunId=43');
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
+  });
+
+  it.each([
+    ['test-run id', { evidenceRef: '/tmp/session-proof.log', coverageEvidenceRef: null, testRunId: 43 }, 'durable'],
+    ['coverage evidence id', { evidenceRef: '/tmp/session-proof.log', coverageEvidenceRef: 42, testRunId: null }, 'durable'],
+    ['work-item ref', { evidenceRef: 'WI-10000512', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    ['engineer-issue ref', { evidenceRef: 'EI-22595744337561241', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    ['feature ref', { evidenceRef: 'F-1234', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    ['artifact ref', { evidenceRef: 'artifact:scorecard-42', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    ['test-run ref', { evidenceRef: 'test-run:42', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    ['durable file probe', { evidenceRef: 'test/reconnect.integration.ts#proof', coverageEvidenceRef: null, testRunId: null }, 'durable'],
+    ['temporary path', { evidenceRef: '/tmp/pui-counterexample.log', coverageEvidenceRef: null, testRunId: null }, 'ephemeral'],
+    ['bash command', { evidenceRef: 'bash -lc "run proof"', coverageEvidenceRef: null, testRunId: null }, 'ephemeral'],
+    ['session-local marker', { evidenceRef: 'session-local:proof', coverageEvidenceRef: null, testRunId: null }, 'ephemeral'],
+    ['unanchored ref', { evidenceRef: 'surface:reconnect', coverageEvidenceRef: null, testRunId: null }, 'unknown'],
+  ] as const)('classifies %s evidence lineage as %s', (_label, over, expected) => {
+    expect(classifySpecEvidenceLineage(over).lineage).toBe(expected);
+  });
+
+  it('fails traceability and the overall verdict for ephemeral-only proof', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ evidenceRef: '/tmp/pui-p001-counterexample-guard.log', coverageEvidenceRef: null, testRunId: null })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.traceability.rating).toBe('fail');
+    expect(result.ratings.traceability.evidence).toContain('Ephemeral-only evidence');
+    expect(result.ratings.traceability.evidence).toContain('lineage=ephemeral');
+    expect(result.wouldBlock).toContain('traceability');
+    expect(result.verdict).toBe('fail');
+  });
+
+  it('marks an otherwise complete but unanchored proof unknown', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ evidenceRef: 'surface:reconnect', coverageEvidenceRef: null, testRunId: null })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.traceability.rating).toBe('unknown');
+    expect(result.ratings.traceability.evidence).toContain('no durable rerun anchor');
+    expect(result.wouldBlock).toContain('traceability');
+    expect(result.verdict).toBe('unknown');
   });
 
   it('emits a submittable get-spec-evidence probe when the required layer is missing', () => {

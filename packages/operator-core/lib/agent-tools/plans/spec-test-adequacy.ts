@@ -56,6 +56,13 @@ export interface SpecEvidenceForAdequacy {
   currentness: EvidenceCurrentness;
 }
 
+export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
+
+export interface SpecEvidenceLineageAssessment {
+  lineage: SpecEvidenceLineage;
+  reason: string;
+}
+
 interface AdequacyDetails {
   fixtureCalibrated?: boolean;
   falsifiable?: boolean;
@@ -109,6 +116,55 @@ const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
 
 const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed']);
 const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeout', 'survived']);
+
+const DURABLE_WORK_ITEM_REF_RE = /\b(?:WI|EI|F)-\d+\b/i;
+const DURABLE_ARTIFACT_REF_RE =
+  /\b(?:artifact|artifact[-_ ]?ref|artifact[-_ ]?id)\s*(?:[:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
+const DURABLE_TEST_RUN_REF_RE =
+  /\b(?:test[-_ ]?run|testing[-_ ]?run)(?:[-_ ]?id)?\s*(?:[-:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
+const DURABLE_COVERAGE_REF_RE =
+  /\bcoverage(?:[-_ ]?(?:evidence|run))(?:[-_ ]?id)?\s*[:/#=]\s*\d+\b/i;
+const DURABLE_FILE_REF_RE =
+  /(?:^|[\s:(])(?:(?:file|path|repo-file):(?:\/\/)?|(?:\.\.\/|\.\/)?)(?:apps|packages|libs|scripts|src|lib|test|tests|bin|docs|rubrics)\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
+const DURABLE_ABSOLUTE_FILE_REF_RE =
+  /^(?!\/?(?:tmp|var\/tmp)(?:\/|$))\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
+
+function ephemeralEvidenceRefReason(evidenceRef: string): string | null {
+  const normalized = evidenceRef.trim().replaceAll('\\', '/');
+  if (/(^|\/)(?:tmp|var\/tmp)(?:\/|$)/i.test(normalized)) return 'temporary filesystem path';
+  if (/(?:^|[\s:/#])bash(?:$|[\s:/#])/i.test(normalized)) return 'bash/session-local command reference';
+  if (/\bsession[-_ ]local\b/i.test(normalized)) return 'session-local reference';
+  if (/\bephemeral\b/i.test(normalized)) return 'ephemeral reference';
+  return null;
+}
+
+/**
+ * A binding row is durable only when its proof can be found again by another
+ * evaluator. The work-item/spec edge itself is deliberately not an anchor:
+ * every binding has one, and it does not identify a rerunnable proof.
+ */
+export function classifySpecEvidenceLineage(
+  evidence: Pick<SpecEvidenceForAdequacy, 'evidenceRef' | 'coverageEvidenceRef' | 'testRunId'>,
+): SpecEvidenceLineageAssessment {
+  const evidenceRef = evidence.evidenceRef.trim();
+  const ephemeralReason = ephemeralEvidenceRefReason(evidenceRef);
+  const hasCoverageId = Number.isSafeInteger(evidence.coverageEvidenceRef) && evidence.coverageEvidenceRef! > 0;
+  const hasTestRunId = Number.isSafeInteger(evidence.testRunId) && evidence.testRunId! > 0;
+  if (hasTestRunId) return { lineage: 'durable', reason: 'durable testRunId' };
+  if (hasCoverageId) return { lineage: 'durable', reason: 'durable coverageEvidenceRef' };
+  if (
+    DURABLE_WORK_ITEM_REF_RE.test(evidenceRef) ||
+    DURABLE_ARTIFACT_REF_RE.test(evidenceRef) ||
+    DURABLE_TEST_RUN_REF_RE.test(evidenceRef) ||
+    DURABLE_COVERAGE_REF_RE.test(evidenceRef) ||
+    DURABLE_FILE_REF_RE.test(evidenceRef) ||
+    DURABLE_ABSOLUTE_FILE_REF_RE.test(evidenceRef)
+  ) {
+    return { lineage: 'durable', reason: 'explicit durable evidence reference' };
+  }
+  if (ephemeralReason) return { lineage: 'ephemeral', reason: ephemeralReason };
+  return { lineage: 'unknown', reason: 'no durable rerun anchor' };
+}
 
 function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const nested = evidence.details.adequacy;
@@ -166,9 +222,12 @@ function clauseProbe(clause: SpecClauseRevision): string {
 
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
+  const lineage = classifySpecEvidenceLineage(row);
   const fields = [
     `kind=${row.evidenceKind}`,
     `ref=${JSON.stringify(row.evidenceRef)}`,
+    `lineage=${lineage.lineage}`,
+    `lineageReason=${JSON.stringify(lineage.reason)}`,
     `currentness=${row.currentness.overall}`,
     `sourceFingerprint=${JSON.stringify(row.fingerprints.sourceFingerprint)}`,
     row.fingerprints.testFingerprint ? `testFingerprint=${JSON.stringify(row.fingerprints.testFingerprint)}` : null,
@@ -469,19 +528,44 @@ export function evaluateSpecTestAdequacy(input: {
   const evidence = currentEvidence.length > 0 ? currentEvidence : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
-  ratings.traceability = evidence.length
+  const lineageAssessments = evidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));
+  const ephemeralEvidence = lineageAssessments
+    .filter(({ assessment }) => assessment.lineage === 'ephemeral')
+    .map(({ row }) => row);
+  const unknownLineageEvidence = lineageAssessments
+    .filter(({ assessment }) => assessment.lineage === 'unknown')
+    .map(({ row }) => row);
+  ratings.traceability = !evidence.length
     ? {
-        rating: 'pass',
-        evidence: evidenceWithBindings(
-          `${evidence.length} immutable binding(s) resolve ${clauseIdentity(clause)}.`,
-          evidence,
-        ),
-      }
-    : {
         rating: 'fail',
         evidence: `No immutable evidence binding resolves ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
         suggestion: 'Bind the work item and proof through plans:bind-spec-evidence.',
-      };
+      }
+    : ephemeralEvidence.length > 0
+      ? {
+          rating: 'fail',
+          evidence: evidenceWithBindings(
+            `Ephemeral-only evidence cannot establish independently rerunnable traceability for ${clauseIdentity(clause)}.`,
+            ephemeralEvidence,
+          ),
+          suggestion: 'Attach a durable testRunId, coverageEvidenceRef, work-item/artifact/test-run reference, or durable file probe.',
+        }
+      : unknownLineageEvidence.length > 0
+        ? {
+            rating: 'unknown',
+            evidence: evidenceWithBindings(
+              `Evidence lineage is not anchored to a durable rerunnable record for ${clauseIdentity(clause)}.`,
+              unknownLineageEvidence,
+            ),
+            suggestion: 'Attach a durable testRunId, coverageEvidenceRef, work-item/artifact/test-run reference, or durable file probe.',
+          }
+        : {
+            rating: 'pass',
+            evidence: evidenceWithBindings(
+              `${evidence.length} immutable binding(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.`,
+              evidence,
+            ),
+          };
 
   const fixtureApplicable =
     clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) ||
