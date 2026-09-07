@@ -35,6 +35,7 @@ import {
   resolveResumeTarget,
   verifyResumeStarted,
 } from '../agent-launch-core';
+import { fetchContextPressure } from '../agent-tools/coordination/context-pressure';
 import { buildConsoleEnvelope } from '../console-launcher';
 import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
@@ -74,6 +75,7 @@ export interface ConsultReviveDeps {
   buildConsoleEnvelope: typeof buildConsoleEnvelope;
   spawnHeadless: typeof spawnHeadless;
   verifyResumeStarted: typeof verifyResumeStarted;
+  fetchContextPressure: typeof fetchContextPressure;
 }
 
 /** Nonzero/signal child termination is concrete evidence that a spawned
@@ -104,6 +106,7 @@ export async function reviveConsultResponder(
     buildConsoleEnvelope,
     spawnHeadless,
     verifyResumeStarted,
+    fetchContextPressure,
     ...deps,
   };
   try {
@@ -126,6 +129,41 @@ export async function reviveConsultResponder(
           `with the running session (WI-3882), so revival was refused. If they are a false-parked zombie, ` +
           `the cascade expiry advances past them.`,
       };
+    }
+
+    // EI-22563829644276962: a native kickoff receipt only proves that the
+    // brief reached the resumed process. A responder at the CRITICAL context
+    // band can accept that receipt and still be unable to take the turn (its
+    // next log line is "Context limit reached"). Refuse before opening a
+    // second process; the consult cascade can fall back, while a caller that
+    // needs this identity must first use a fresh identity-preserving successor
+    // or compact/recover the source.
+    if (target.ownerId) {
+      let pressure: Awaited<ReturnType<typeof d.fetchContextPressure>>;
+      try {
+        pressure = await d.fetchContextPressure([target.ownerId]);
+      } catch (e) {
+        // Unknown pressure is not evidence that the target is safe. Failing
+        // closed here preserves the reviver's contract: no spawn is reported
+        // as a successful consult when the preflight itself could not run.
+        return {
+          spawned: false,
+          verified: null,
+          detail:
+            `context-pressure preflight failed for ${target.ownerId}; revival was refused before spawn ` +
+            `(${(e as Error)?.message ?? String(e)})`,
+        };
+      }
+      if (pressure.get(target.ownerId) === 'critical') {
+        return {
+          spawned: false,
+          verified: null,
+          detail:
+            `cannot revive ${target.ownerId}: current context is CRITICAL (at or above 90% of its ` +
+            `compaction limit), so kickoff delivery would not prove pickup. Revival was refused before ` +
+            `spawn; compact/recover the source or use a fresh identity-preserving successor first.`,
+        };
+      }
     }
 
     let cmd = d.buildAgentLaunchCommand({

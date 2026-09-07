@@ -28,6 +28,7 @@ import {
 import { compileBlueprintWithPackages, provisionBlueprintPackages, blueprintPackageProvisioners } from './compile-packages';
 import { blueprintRegistrySets } from './registry-sets.js';
 import { registerHarnessOpProxies, type HarnessOpManifestEntry } from '../harness-ops/proxy.js';
+import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 
 /**
  * P-002: register a PROXY CoordOp for each harness-provided op a blueprint SOURCE
@@ -92,7 +93,7 @@ export async function projectBlueprintToPg(
       throw new Error('compiled specification belongs to a different workspace or harness');
     }
   }
-  if (specification && specification.configuration.bundles.length) {
+  if (specification && (specification.configuration.bundles.length || resolveSeedPackKey(specification.configuration).packId)) {
     await provisionBlueprintPackages(specification, blueprintPackageProvisioners(sql));
   }
   const contentHash = specification?.specificationRevision ?? input.contentHash ?? blueprintHash(input.blueprint);

@@ -71,6 +71,28 @@ const fakeBackend = (opts: {
 const noConflictJudge = async () => ({ conflicts: [] });
 
 describe('classifyPackInstall', () => {
+  it('P-006 automatic selection applies both conservative shape and domain filters', async () => {
+    const { backend, remembered } = fakeBackend({});
+    const selected: KnowledgePack = { ...pack, items: [
+      pack.items[0]!,
+      { ...pack.items[1]!, appliesTo: ['ui'] },
+      { ...pack.items[2]!, domains: ['research'] },
+    ] };
+    const conservative = await classifyPackInstall({ potSlug: 'h', pack: selected, shapes: [], domains: [] }, { judge: noConflictJudge });
+    expect(conservative.items.map((item) => item.itemId)).toEqual(['a']);
+    await applyPackInstall({ workspaceId: 'w', potSlug: 'h', pack: selected, review: conservative });
+    expect(remembered.map((item) => item.meta.pack_item_id)).toEqual(['a']);
+    const targeted = await classifyPackInstall({ potSlug: 'h', pack: selected, shapes: ['ui'], domains: ['research'] }, { judge: noConflictJudge });
+    expect(targeted.items.map((item) => item.itemId)).toEqual(['a', 'b', 'c']);
+    expect(backend.search).toHaveBeenCalledTimes(4);
+  });
+
+  it('P-006 refuses semantic near-duplicates that do not supply the pinned bytes', async () => {
+    fakeBackend({ neighborsFor: { 'always do a': [{ id: 'near', scope: 'hive:h', text: 'similar but different', score: 0.99 }] } });
+    const review = await classifyPackInstall({ potSlug: 'h', pack, requireExactContent: true }, { judge: noConflictJudge });
+    expect(review.items[0]).toMatchObject({ status: 'conflict', defaultAction: 'skip', summary: expect.stringContaining('pinned content') });
+  });
+
   it('P-006 binds review/application to one memory pool and refuses stale pinned knowledge', async () => {
     const { backend } = fakeBackend({ pool: [{ id: 'old', scope: 'harness:member', text: 'old content',
       metadata: { source: 'pack', pack_id: pack.manifest.id, pack_item_id: 'a', pack_version: '1.0.0' } }] });

@@ -4,6 +4,7 @@ import {
   extractPayloadTier,
   type ProjectedTool,
 } from '@papercusp/tooldef';
+import { prepareNestedProjection } from '../../result-projection';
 
 /**
  * Which schema rule an issue broke. Callers gate on this because the classes are NOT
@@ -148,7 +149,11 @@ export async function validateRecipeScriptAgainstCatalog(
     // `payloadTier` is a framework-reserved control. The real projected-tool
     // dispatcher extracts it before validating the tool's published schema, so
     // recipe preflight must validate the same schema-visible argument shape.
-    const { input: schemaArgs } = extractPayloadTier(call.args);
+    const { input: tierlessArgs } = extractPayloadTier(call.args);
+    // `projection` is a host-owned dispatch control, just like payloadTier. The
+    // direct transport peels it before the target schema; recipe preflight must
+    // validate the same schema-visible argument shape or it rejects valid calls.
+    const { args: schemaArgs } = prepareNestedProjection(tierlessArgs);
     for (const detail of validateValue(schemaArgs, tool.inputSchema as JsonSchema, 'args')) {
       issues.push({ tool: name, path: 'args', message: detail.message, kind: detail.kind });
     }

@@ -19,6 +19,9 @@
  *      dead holders AND dead grantees (D-004 net #3).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({
@@ -49,10 +52,12 @@ const {
   tryAcquire,
   tryInsertWaiter,
   readWaiterStatus,
+  readPendingEditDisposition,
   pokeWorkspace,
 } = await import('../su-lock-store');
 const { inWorkspaceTxn } = await import('../in-workspace-txn');
-const { lockGrantKey, reconcileLockGrantAwaits } = await import('../lock-grant-bridge');
+const { lockGrantKey, reconcileLockGrantAwaits, reconcileLockTicket } = await import('../lock-grant-bridge');
+const { applyPendingEditOnGrant } = await import('../apply-on-grant');
 const awaitStore = await import('../../../events/await/store');
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 
@@ -179,6 +184,85 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
       const wakesC = await awaitStore.listRecentDeliveries('su-waiter-c');
       expect(wakesC.length).toBeGreaterThanOrEqual(1);
       expect(wakesC[0].payload).toMatchObject({ granted: true });
+    },
+    60_000,
+  );
+
+  it.skipIf(!live)(
+    'apply-on-grant stores an edit as a JSON object and applies it after the real grant cascade',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'papercusp-lock-apply-'));
+      const file = 'apply-probe.txt';
+      const abs = join(root, file);
+      const paths = [file];
+      writeFileSync(abs, 'before OLD after\n', 'utf8');
+
+      try {
+        // Use the temporary repository as the coordination domain because the
+        // production apply path resolves its granted domain as the repo root.
+        const holder = await inWorkspaceTxn(root, 'apply-holder', (tx) =>
+          tryAcquire(tx, {
+            coordinationDomain: root,
+            owner: 'apply-holder',
+            ownerLabel: 'holder',
+            paths,
+            intent: 'hold the live apply probe path',
+            ttlSec: 1,
+          }),
+        );
+        expect(holder.ok).toBe(true);
+
+        const inserted = await inWorkspaceTxn(root, 'apply-waiter', (tx) =>
+          tryInsertWaiter(tx, {
+            coordinationDomain: root,
+            owner: 'apply-waiter',
+            ownerLabel: 'waiter',
+            paths,
+            intent: 'apply the live probe edit on grant',
+            ttlSec: 30,
+            maxWaitSec: 120,
+            pendingEdit: { file, old_string: 'OLD', new_string: 'NEW' },
+          }),
+        );
+        expect(inserted.ok).toBe(true);
+        if (!inserted.ok || !('ticket_id' in inserted)) return;
+
+        await sleep(1_200);
+        await inWorkspaceTxn(root, 'apply-waiter', (tx) => pokeWorkspace(tx, root));
+        const ticket = inserted.ticket_id;
+        const granted = await readWaiterStatus(getTxPool(), ticket);
+        expect(granted.status).toBe('granted');
+
+        const stored = await getTxPool<Array<{ kind: string }>>`
+          SELECT jsonb_typeof(pending_edit) AS kind
+            FROM agent_lock_waiters
+           WHERE ticket_id = ${ticket}::uuid
+        `;
+        console.error('DEBUG apply-on-grant stored', { ticket, stored });
+        expect(stored[0]?.kind).toBe('object');
+
+        const outcome = await reconcileLockTicket(ticket, h.ws, {
+          applyOnGrant: (ticketId, workspaceId) =>
+            applyPendingEditOnGrant(ticketId, workspaceId, {
+              // The test verifies the real claim, filesystem apply, outcome,
+              // and lock release; keep unrelated audit/inbox stores hermetic.
+              recordAttribution: async () => {},
+              cancelWakeAwaits: async () => {},
+              notify: async () => {},
+            }),
+        });
+        expect(outcome).toBe('applied');
+        expect(readFileSync(abs, 'utf8')).toBe('before NEW after\n');
+        expect(await readPendingEditDisposition(getTxPool(), ticket)).toBe('applied');
+        const queue = await readQueue(getTxPool(), { coordinationDomain: root, includeCompleted: true });
+        expect(queue.active_locks).toHaveLength(0);
+        expect(queue.completed?.some((row) => row.ticket_id === ticket)).toBe(true);
+      } finally {
+        const sql = getTxPool();
+        await sql`DELETE FROM agent_file_locks WHERE coordination_domain = ${root}`.catch(() => {});
+        await sql`DELETE FROM agent_lock_waiters WHERE coordination_domain = ${root}`.catch(() => {});
+        rmSync(root, { recursive: true, force: true });
+      }
     },
     60_000,
   );

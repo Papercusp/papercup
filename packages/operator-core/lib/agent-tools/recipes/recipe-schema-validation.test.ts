@@ -50,6 +50,18 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['rubrics:get'] });
   });
 
+  it('accepts framework-reserved projection even though it is absent from the published schema', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.work.items({ id: "WI-1", projection: { pick: ["id"] } });',
+      [tool('work:items', {
+        type: 'object',
+        properties: { id: { type: 'string' } },
+        additionalProperties: false,
+      })],
+    );
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['work:items'] });
+  });
+
   // EI-19449316000499177: code:run fails closed on `unknown-key` alone, so the CLASSIFICATION is
   // load-bearing, not decoration — a class mislabelled `unknown-key` becomes a false refusal on
   // the fleet's highest-traffic script tool.

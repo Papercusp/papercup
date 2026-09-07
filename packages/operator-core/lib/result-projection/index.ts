@@ -23,6 +23,13 @@ export {
 export type { ProjectionParseErr, ProjectionParseOk, ProjectionParseResult } from './parse';
 export { PROJECTION_ARG } from './types';
 export type { ProjectionReport, ProjectionSpec, ProjectionStage } from './types';
+export {
+  applyNestedProjection,
+  nestedProjectionContext,
+  nestedProjectionInvalidMessage,
+  prepareNestedProjection,
+} from './nested-dispatch';
+export type { PreparedNestedProjection } from './nested-dispatch';
 
 /**
  * Named result views — schema-stable recovery capsules (P-001 of

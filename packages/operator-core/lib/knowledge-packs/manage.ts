@@ -31,6 +31,7 @@ import { getMemoryBackend, type MemoryBackend, type MemoryEntry } from '../memor
 import { hiveScopeKey } from '../memory/hive-scope';
 import { checkConflicts, type LlmJudge } from '../memory/conflict-check';
 import {
+  filterByDomains,
   filterByShapes,
   memoryTextOf,
   type AppliesTo,
@@ -116,6 +117,8 @@ export async function classifyPackInstall(
     potSlug: string;
     pack: KnowledgePack;
     shapes?: readonly AppliesTo[];
+    /** Explicit selection for automatic provisioning; [] means untagged only. */
+    domains?: readonly string[];
     memoryTarget?: KnowledgePackMemoryTarget;
     /** Compilation must reject a stale seed or an unreadable pool, never report it applied. */
     requireExactContent?: boolean;
@@ -125,7 +128,8 @@ export async function classifyPackInstall(
   const backend = deps.backend ?? getMemoryBackend();
   const judge = deps.judge ?? realJudge();
   const scope = knowledgePackMemoryScope(opts.memoryTarget ?? { kind: 'hive', slug: opts.potSlug });
-  const items = opts.shapes === undefined ? [...opts.pack.items] : filterByShapes(opts.pack.items, opts.shapes);
+  const byShape = opts.shapes === undefined ? [...opts.pack.items] : filterByShapes(opts.pack.items, opts.shapes);
+  const items = opts.domains === undefined ? byShape : filterByDomains(byShape, opts.domains);
 
   // Provenance guard (mirrors planPackUpgrade): an item whose
   // {pack_id, pack_item_id} already has a row is ALREADY PRESENT, regardless
@@ -170,6 +174,11 @@ export async function classifyPackInstall(
           const top = neighbors[0];
           const topScore = typeof top?.score === 'number' ? top.score : null;
           if (top && topScore !== null && topScore >= dupThreshold()) {
+            if (opts.requireExactContent && top.text !== incoming) {
+              return { ...base, status: 'conflict', defaultAction: 'skip',
+                existing: { id: top.id, text: top.text, organic: !packIdOf(top), score: topScore },
+                summary: 'similar knowledge differs from the pinned content; explicit review is required' };
+            }
             return {
               ...base,
               status: 'duplicate',

@@ -21,6 +21,8 @@ import { loadKnowledgePack } from '../knowledge-packs/load-packs';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 import { resolvePotSlugsForHarnesses } from '../memory/hive-scope';
 import type { KnowledgePackMemoryTarget } from '../knowledge-packs/seed';
+import { APPLIES_TO_SHAPES, type AppliesTo } from '../knowledge-packs/pack-format';
+import { declaredDomainsFor } from '../knowledge-packs/manage';
 
 type PackageRequest = { kind: string; ref: string; version?: string };
 export type BlueprintPackageResolver = (request: PackageRequest) => Promise<ResolvedPackageInput | null>;
@@ -96,6 +98,8 @@ export interface CompileBlueprintPackagesOptions {
   harnessSlug: string;
   /** For a not-yet-registered target; existing harnesses resolve through the shared registry. */
   memoryTarget?: KnowledgePackMemoryTarget;
+  /** Pin the selection, so replay never consults changing detection or hive settings. */
+  knowledgeSelection?: { shapes?: readonly AppliesTo[]; domains?: readonly string[] };
   resolvePackage?: BlueprintPackageResolver;
   /** Prompt, addressed-document and versioned policy inputs belong to this same boundary. */
   input?: Omit<CompositionCompilerInput, 'source' | 'blueprint' | 'loaded' | 'sourcePath'>;
@@ -117,7 +121,15 @@ export async function compileBlueprintWithPackages(
     memoryTarget = pots[0] ? { kind: 'hive', slug: pots[0] } : { kind: 'harness', slug: options.harnessSlug };
   }
   const scope = { workspaceId: options.workspaceId, harnessSlug: options.harnessSlug,
-    ...(memoryTarget ? { memoryTarget } : {}) };
+    ...(memoryTarget ? { memoryTarget } : {}),
+    ...(packages.some((pin) => pin.packageKind === 'knowledge-pack') ? {
+      knowledgeSelection: {
+        shapes: [...new Set(options.knowledgeSelection?.shapes ?? [])].sort(),
+        domains: [...new Set(options.knowledgeSelection?.domains ?? (memoryTarget?.kind === 'hive'
+          ? await declaredDomainsFor(options.workspaceId, memoryTarget.slug) : undefined) ?? [])].sort(),
+      },
+    } : {}),
+  };
   return compileAgentSpecification({
     ...options.input,
     source: loaded,
@@ -133,6 +145,7 @@ export interface BlueprintPackageScope {
   workspaceId: string;
   harnessSlug: string;
   memoryTarget?: KnowledgePackMemoryTarget;
+  knowledgeSelection?: { shapes: AppliesTo[]; domains: string[] };
 }
 
 export interface BlueprintPackageProvisioners {
@@ -153,7 +166,8 @@ export async function provisionBlueprintPackages(
     throw new CompositionCompilerError('setting-invalid', 'bundle provisioning needs an explicit workspace and harness');
   }
   const target: BlueprintPackageScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
-    ...(scope.memoryTarget ? { memoryTarget: scope.memoryTarget } : {}) };
+    ...(scope.memoryTarget ? { memoryTarget: scope.memoryTarget } : {}),
+    ...(scope.knowledgeSelection ? { knowledgeSelection: scope.knowledgeSelection } : {}) };
   const bundles = specification.configuration.bundles;
   const packages = validateAgentInputClosure(specification.inputs).filter((entry): entry is ResolvedPackageInput => entry.kind === 'package');
   const byKey = new Map(packages.map((pin) => [pin.packageKind + ':' + pin.ref, pin]));
@@ -164,6 +178,12 @@ export async function provisionBlueprintPackages(
     for (const dependency of byKey.get(key)?.dependencies ?? []) include(dependency.packageKind + ':' + dependency.ref);
   };
   for (const bundle of bundles) include(bundle.kind + ':' + bundle.ref);
+  const seedPack = resolveSeedPackKey(specification.configuration).packId;
+  if (seedPack) {
+    const key = 'knowledge-pack:' + seedPack;
+    if (!byKey.has(key)) throw new CompositionCompilerError('package-missing', 'declared seed pack has no resolved content', key);
+    include(key);
+  }
   const pins = packages.filter((pin) => included.has(pin.packageKind + ':' + pin.ref));
   // Fully validate before any side effect. Rubrics are attached as immutable input
   // values; interpreting their criteria does not require rewriting the rubric store.
@@ -175,6 +195,13 @@ export async function provisionBlueprintPackages(
         (!target.memoryTarget || !['hive', 'harness'].includes(target.memoryTarget.kind) ||
           typeof target.memoryTarget.slug !== 'string' || !target.memoryTarget.slug.trim())) {
       throw new CompositionCompilerError('setting-invalid', 'knowledge provisioning needs its resolved memory target', pin.ref);
+    }
+    if (pin.packageKind === 'knowledge-pack' &&
+        (!target.knowledgeSelection || !Array.isArray(target.knowledgeSelection.shapes) ||
+          !target.knowledgeSelection.shapes.every((shape) => APPLIES_TO_SHAPES.includes(shape)) ||
+          !Array.isArray(target.knowledgeSelection.domains) ||
+          !target.knowledgeSelection.domains.every((domain) => typeof domain === 'string'))) {
+      throw new CompositionCompilerError('setting-invalid', 'knowledge provisioning needs its pinned shape/domain selection', pin.ref);
     }
   }
   for (const pin of pins) {
@@ -207,7 +234,7 @@ export function blueprintPackageProvisioners(sql: Sql): BlueprintPackageProvisio
       const { classifyPackInstall, applyPackInstall } = await import('../knowledge-packs/manage');
       const pack = pin.value as import('../knowledge-packs/pack-format').KnowledgePack;
       const review = await classifyPackInstall({ potSlug: scope.harnessSlug, pack,
-        memoryTarget: scope.memoryTarget, requireExactContent: true });
+        memoryTarget: scope.memoryTarget, ...scope.knowledgeSelection, requireExactContent: true });
       if (review.conflicts > 0) throw new CompositionCompilerError('package-pin-conflict', 'knowledge pack conflicts with scoped memory; explicit review is required', pin.ref);
       const result = await applyPackInstall({
         ...scope, potSlug: scope.harnessSlug, pack, review, memoryTarget: scope.memoryTarget,

@@ -32,6 +32,18 @@ export interface InsightEntry {
   tags: string[];
 }
 
+/**
+ * Keep the initialize-time catalog useful without allowing the number of
+ * published insights to consume an unbounded share of every session prompt.
+ * This is a byte cap because the prompt transport and token budget are both
+ * affected by UTF-8 payload size, not just JavaScript code-unit count.
+ */
+const MAX_INSIGHTS_PRELUDE_BYTES = 32 * 1024;
+
+function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
+
 /** Strip one layer of matching surrounding quotes from a scalar. */
 function unquote(s: string): string {
   return (s.startsWith('"') && s.endsWith('"')) ||
@@ -192,18 +204,52 @@ export async function readInsightsDir(
 export function renderInsightsPrelude(entries: InsightEntry[]): string | null {
   if (entries.length === 0) return null;
 
-  const lines = entries.map((e) => {
+  const entryLines = entries.map((e) => {
     const oneLine = firstSentence(e.description) || e.title;
     return `- ${e.slug} — ${oneLine}`;
   });
 
-  return [
+  const header = [
     '## Agent insights',
     '',
     "Project-specific runbook entries. Drill in with `docs:get { slugs: ['<slug>'] }` if any look relevant.",
     '',
-    ...lines,
-  ].join('\n');
+  ];
+
+  const included: string[] = [];
+  let omitted = 0;
+  for (let i = 0; i < entryLines.length; i++) {
+    const candidate = [...header, ...included, entryLines[i]].join('\n');
+    if (utf8Bytes(candidate) > MAX_INSIGHTS_PRELUDE_BYTES) {
+      omitted = entryLines.length - i;
+      break;
+    }
+    included.push(entryLines[i]);
+  }
+
+  if (omitted === 0) return [...header, ...included].join('\n');
+
+  const buildNotice = (count: number): string => {
+    const noun = count === 1 ? 'insight' : 'insights';
+    return (
+      `- … ${count} additional ${noun} omitted from this compact index; use ` +
+      '`docs:search { query: "<topic>" }` then `docs:get` (or `docs:outline`) ' +
+      'to discover the full catalog.'
+    );
+  };
+
+  // The header + notice are deliberately much smaller than the cap. Keep the
+  // marker even when the entry that crossed the boundary was unusually large;
+  // if a future header change consumes the budget, drop the oldest entries
+  // until the marker still fits rather than returning an over-cap prompt.
+  let notice = buildNotice(entryLines.length - included.length);
+  while (utf8Bytes([...header, ...included, notice].join('\n')) > MAX_INSIGHTS_PRELUDE_BYTES) {
+    if (included.length === 0) break;
+    included.pop();
+    notice = buildNotice(entryLines.length - included.length);
+  }
+
+  return [...header, ...included, notice].join('\n');
 }
 
 function firstSentence(text: string): string {

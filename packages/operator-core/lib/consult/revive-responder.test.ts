@@ -78,6 +78,7 @@ function makeFakes(over: Partial<Record<keyof ConsultReviveDeps, unknown>> = {})
         kickoffProof: { persisted: true, nativeRef: '/native/revive.jsonl', reason: null },
       };
     },
+    fetchContextPressure: async () => new Map(),
     verifyResumeStarted: async (ownerId: string, o: { timeoutMs?: number } = {}) => {
       calls.verify.push({ ownerId, ...o });
       return { started: true, waitedMs: 1200 };
@@ -128,6 +129,30 @@ describe('reviveConsultResponder', () => {
     const r = await reviveConsultResponder(OPTS, CTX, deps);
     expect(r).toMatchObject({ spawned: false, reason: 'live-collision' });
     expect(r.detail).toContain('WI-3882');
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('refuses a context-exhausted responder before kickoff delivery can be mistaken for pickup', async () => {
+    const { deps, calls } = makeFakes({
+      fetchContextPressure: async () => new Map([['su-dead-expert', 'critical']]),
+    });
+    const r = await reviveConsultResponder(OPTS, CTX, deps);
+    expect(r).toMatchObject({ spawned: false, verified: null });
+    expect(r.detail).toContain('current context is CRITICAL');
+    expect(r.detail).toContain('refused before spawn');
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.verify).toHaveLength(0);
+  });
+
+  it('fails closed when context-pressure preflight cannot run', async () => {
+    const { deps, calls } = makeFakes({
+      fetchContextPressure: async () => {
+        throw new Error('presence store unavailable');
+      },
+    });
+    const r = await reviveConsultResponder(OPTS, CTX, deps);
+    expect(r).toMatchObject({ spawned: false, verified: null });
+    expect(r.detail).toContain('presence store unavailable');
     expect(calls.spawn).toHaveLength(0);
   });
 

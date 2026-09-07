@@ -21,6 +21,13 @@ import {
   synthesizeDispatchPrincipal,
   synthesizeTransportPrincipal,
 } from '../../endpoint-route/routes/transport/role-principal-caps';
+import { ToolDispatchError } from '@papercusp/tooldef';
+import {
+  applyNestedProjection,
+  nestedProjectionContext,
+  nestedProjectionInvalidMessage,
+  prepareNestedProjection,
+} from '../../result-projection';
 
 /**
  * Rebind one nested orchestration call exactly as a direct MCP dispatch would.
@@ -123,5 +130,19 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
  * one. Argument validation runs inside `next` (orchestrate.ts's `call` → `realDispatch`),
  * so it is covered by this scope.
  */
-export const bindCurrentCallerDispatch: WrapDispatch = (tool, toolName, args, ctx, next) =>
-  runWithoutAmbientArgPeeling(() => rebindCurrentCallerDispatch(tool, toolName, args, ctx, next));
+export const bindCurrentCallerDispatch: WrapDispatch = (tool, toolName, args, ctx, next) => {
+  const prepared = prepareNestedProjection(args);
+  if (prepared.error) {
+    return Promise.reject(new ToolDispatchError(toolName, 'invalid_input', nestedProjectionInvalidMessage(prepared.error)));
+  }
+
+  const projectedNext = async (callCtx: UnifiedToolContext): Promise<unknown> => {
+    const materializedCtx = nestedProjectionContext(callCtx, prepared.args, prepared.spec);
+    const result = await next(materializedCtx, prepared.args);
+    return applyNestedProjection(result, prepared.spec, { toolName, effect: tool.effect });
+  };
+
+  return runWithoutAmbientArgPeeling(() =>
+    rebindCurrentCallerDispatch(tool, toolName, prepared.args, ctx, projectedNext),
+  );
+};

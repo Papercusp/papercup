@@ -25,7 +25,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
+import { BlueprintSourceDocumentSchema, blueprintPackageInputs, resolveBlueprintSource, type ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
 import {
   resolveAndValidateBlueprint,
   validateBlueprintDependencies,
@@ -34,6 +34,8 @@ import {
 } from '@papercusp/blueprint-distribution';
 import { blueprintRegistrySets } from '../blueprint/registry-sets';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
+import { resolveBlueprintPackageInputs, type BlueprintPackageResolver } from '../blueprint/compile-packages';
+import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -55,7 +57,7 @@ export interface InstallBlueprintCoreResult {
   /** The blueprint's declared dependencies, verbatim (tool-distribution D-002:
    *  tools/packs/plugins; blueprint-role-bundling P-007: spawned-blueprint closure). */
   dependencies: { tools: string[]; packs: string[]; plugins: string[]; blueprints: string[] };
-  /** The import-time dep-validation result (null when no deps are declared). */
+  /** Import-time validation, including complete source and bundled-content pins. */
   depCheck: BlueprintDependencyValidation | null;
 }
 
@@ -72,6 +74,8 @@ export interface InstallBlueprintCoreDeps {
    * blueprint's `extends: base` resolves against the bundled floor).
    */
   resolveExtends: ResolveExtendsPath;
+  /** Existing local bundle stores by default; injectable for an isolated installer. */
+  resolvePackage?: BlueprintPackageResolver;
   /**
    * Host capability sets for the import-time dep-validation. Called only when
    * the blueprint declares dependencies; `cupboardReachable:false` downgrades
@@ -218,12 +222,32 @@ export async function installBlueprintFromCupboardCore(
       };
     }
 
+    // Source fragments use the same layer walk without inventing runnable fields.
+    // Snapshot before copying: the returned existing depCheck pin record retains
+    // every consumed parent, prompt file and bundle even after the clone is removed.
+    let closure: NonNullable<Parameters<typeof validateBlueprintDependencies>[2]>;
+    try {
+      const source = resolveBlueprintSource(raw, { resolve: deps.resolveExtends, sourcePath: join(bpDir, 'blueprint.yaml') });
+      if (!source.validation.ok) throw new Error(source.validation.errors.map((error) => error.message).join('; '));
+      const resolved = BlueprintSourceDocumentSchema.parse(source.merged);
+      const bundles = resolved.bundles ?? [];
+      const requests: Array<{ kind: string; ref: string; version?: string }> = [...bundles];
+      const knowledge = resolveSeedPackKey(resolved).packId;
+      if (knowledge && !requests.some((request) => request.kind === 'knowledge-pack' && request.ref === knowledge)) {
+        requests.push({ kind: 'knowledge-pack', ref: knowledge });
+      }
+      const packages = await resolveBlueprintPackageInputs(requests, deps.resolvePackage);
+      closure = { bundles: requests, inputs: [...packages, ...blueprintPackageInputs(source, packages)] };
+    } catch (error) {
+      throw new InstallBlueprintError(`blueprint "${id}" package resolution failed: ${error instanceof Error ? error.message : String(error)}`, 422);
+    }
+
     // Import-time dep-validation (E2a / D-001): fail upfront with an actionable
     // "needs tool/pack/plugin X", before the blueprint lands in the installed
     // tier. Tools with NO known provider hard-fail (installable-advisory tools
     // are excluded from `missing` by the provider-aware validator); packs/
     // plugins hard-fail only when the Cupboard was actually reachable.
-    let depCheck: BlueprintDependencyValidation | null = null;
+    let depCheck: BlueprintDependencyValidation;
     if (
       dependencies.tools.length > 0 ||
       dependencies.packs.length > 0 ||
@@ -231,7 +255,7 @@ export async function installBlueprintFromCupboardCore(
       dependencies.blueprints.length > 0
     ) {
       const host = await deps.resolveHostSets();
-      depCheck = validateBlueprintDependencies(dependencies, host);
+      depCheck = validateBlueprintDependencies(dependencies, host, closure);
       if (depCheck.missing.tools.length > 0) {
         throw new InstallBlueprintError(
           `blueprint "${id}" tool dependencies unmet: ${depCheck.missing.tools.join(', ')}`,
@@ -248,6 +272,11 @@ export async function installBlueprintFromCupboardCore(
           422,
         );
       }
+    } else {
+      depCheck = validateBlueprintDependencies(dependencies, { availableTools: new Set(), installedPlugins: new Set() }, closure);
+    }
+    if (!depCheck.pins?.length) {
+      throw new InstallBlueprintError(`blueprint "${id}" package pins invalid: ${depCheck.messages.join('; ')}`, 422);
     }
 
     const target = join(deps.installedBlueprintsDir(), id);

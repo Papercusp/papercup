@@ -72,6 +72,69 @@ async function waitForDispatchStart(started: Promise<void>, run: Promise<unknown
 }
 
 describe('P-012 server-side mixed capability scripts', () => {
+  it('peels nested projection controls, materializes picks as JSON, and projects the child value', async () => {
+    let observedArgs: Record<string, unknown> | undefined;
+    let observedCtx: UnifiedToolContext | undefined;
+    const tool = fixtureTool('work_items:get', 'read', (args, ctx) => {
+      observedArgs = args;
+      observedCtx = ctx;
+      return json({ rows: [{ id: 'one', secret: 'drop' }, { id: 'two', secret: 'drop' }], total: 2 });
+    });
+    const wrapDispatch: WrapDispatch = async (innerTool, name, args, ctx, next) =>
+      bindCurrentCallerDispatch(innerTool, name, args, ctx, next);
+
+    const result = await runToolOrchestration(
+      `const rows = await tools.workItems.get({ id: 'item-1', projection: { pick: ['rows[].id'] } }); return rows;`,
+      {
+        ctx: testContext(),
+        deps: {},
+        tools: [tool],
+        allowed: new Set(['work_items:get']),
+        wrapDispatch,
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      summary: { rows: [{ id: 'one' }, { id: 'two' }] },
+      childFailures: [],
+    });
+    expect(observedArgs).toEqual({ id: 'item-1' });
+    expect(observedCtx).toMatchObject({
+      contextTier: 'full',
+      payloadTierOverride: 'full',
+      requestedFormat: 'json',
+      sourceProjection: { pick: ['rows[].id'] },
+      transportCapExempt: true,
+      codeMode: true,
+    });
+  });
+
+  it('rejects malformed nested projection before the target handler runs', async () => {
+    let called = false;
+    const tool = fixtureTool('work_items:get', 'read', () => {
+      called = true;
+      return json({ ok: true });
+    });
+    const wrapDispatch: WrapDispatch = async (innerTool, name, args, ctx, next) =>
+      bindCurrentCallerDispatch(innerTool, name, args, ctx, next);
+
+    const result = await runToolOrchestration(
+      `return await tools.workItems.get({ id: 'item-1', projection: { pick: [] } });`,
+      {
+        ctx: testContext(),
+        deps: {},
+        tools: [tool],
+        allowed: new Set(['work_items:get']),
+        wrapDispatch,
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('projection_invalid');
+    expect(called).toBe(false);
+  });
+
   it('passes background and PTY task handles through one script and returns one P-006 envelope', async () => {
     const backgroundTaskId = 'task-bash-p012';
     const ptyTaskId = 'task-pty-p012';

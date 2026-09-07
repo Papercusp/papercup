@@ -449,6 +449,37 @@ beforeEach(async () => {
 });
 
 describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/operator/PG)', () => {
+  // Investigation evidence only. This intentionally describes the pre-fix
+  // product and is never a passing release journey or a provider substitute.
+  test.runIf(process.env.PUI_CAPTURE_BASELINE === '1')('captures the pre-fix first-message counterexample', async () => {
+    const prompt = `PUI-BASELINE-${Date.now()}`;
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      pane.write('o');
+      await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
+      pane.escape();
+      await pane.waitFor('i type · v speak');
+      pane.write('i');
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('su-session/events -> 404', { timeoutMs: 30_000 });
+      expect(pane.screen()).toContain(prompt);
+      expect(pane.screen()).toContain('Running — input locked');
+      expect(sessionTraffic).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: 'POST', path: '/api/adv/sessions/launch-su', status: 200,
+          deferSpawn: true, headless: false, deferred: true, nativeSessionPresent: false }),
+        expect.objectContaining({ method: 'GET', status: 404 }),
+      ]));
+      expect(scriptedProvider.requests).toHaveLength(0);
+      console.info('PUI_BASELINE_COUNTEREXAMPLE', JSON.stringify({
+        binary: bin, binarySha256, prompt, traffic: sessionTraffic, screen: pane.screen(),
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
   test('restored non-chat -> visible Agent Chat -> real role -> streamed done -> persisted reopen', async () => {
     const prompt = `PUI-E2E-${Date.now()}-success`;
     scriptedProvider.successText = `streamed reply for ${prompt}`;

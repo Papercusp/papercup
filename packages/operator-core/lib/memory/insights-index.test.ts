@@ -136,6 +136,43 @@ describe('renderInsightsPrelude', () => {
   it('returns null for empty list', () => {
     expect(renderInsightsPrelude([])).toBeNull();
   });
+
+  it('bounds a large catalog and leaves a deterministic discovery pointer', () => {
+    const entries: InsightEntry[] = Array.from({ length: 500 }, (_, i) => ({
+      slug: `insight-${String(i).padStart(3, '0')}`,
+      title: `Insight ${i}`,
+      description: 'A deliberately long one-line description '.repeat(8),
+      status: 'active',
+      tags: [],
+    }));
+
+    const out = renderInsightsPrelude(entries);
+
+    expect(out).toBeTruthy();
+    expect(Buffer.byteLength(out!, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(out).toContain('additional insights omitted from this compact index');
+    expect(out).toContain('`docs:search { query: "<topic>" }`');
+    expect(out).toContain('then `docs:get`');
+    expect(out).toContain('`docs:outline`');
+    expect(out).toContain('- insight-000 — A deliberately long one-line description');
+    expect(out).not.toContain('- insight-499 —');
+  });
+
+  it('uses byte length for UTF-8 entries and never splits a line', () => {
+    const entries: InsightEntry[] = Array.from({ length: 500 }, (_, i) => ({
+      slug: `utf8-${String(i).padStart(3, '0')}`,
+      title: `UTF-8 ${i}`,
+      description: 'é'.repeat(500),
+      status: 'active',
+      tags: [],
+    }));
+
+    const out = renderInsightsPrelude(entries)!;
+
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+    expect(out.split('\n').every((line) => !line.endsWith('�'))).toBe(true);
+    expect(out).toContain('additional insights omitted from this compact index');
+  });
 });
 
 describe('integration — read real insights dir', () => {
@@ -193,5 +230,6 @@ describe('integration — read real insights dir', () => {
     const prelude = renderInsightsPrelude(entries);
     expect(prelude).toBeTruthy();
     expect(prelude!.split('\n').length).toBeGreaterThan(5);
+    expect(Buffer.byteLength(prelude!, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 });

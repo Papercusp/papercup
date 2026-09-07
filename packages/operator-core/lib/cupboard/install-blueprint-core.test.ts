@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveBuiltinExtends } from '@papercusp/orchestrator/blueprint';
+import { resolveBuiltinExtends, pinPackageInput, validateAgentInputClosure } from '@papercusp/orchestrator/blueprint';
 import { resolvePromptFile } from '@papercusp/orchestrator';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import {
@@ -87,6 +87,41 @@ describe('installBlueprintFromCupboardCore', () => {
     // blueprint-local prompts ride along; .git does not
     expect(existsSync(join(installedDir, 'neat-bp', 'prompts', 'director.md'))).toBe(true);
     expect(existsSync(join(installedDir, 'neat-bp', '.git'))).toBe(false);
+    const source = res.depCheck?.pins?.find((pin) => pin.ref === 'neat-bp');
+    expect(source?.files.map((file) => file.path)).toEqual(['blueprint.yaml', 'prompts/director.md']);
+    expect(Buffer.from(source!.files[1]!.bytes, 'base64').toString()).toBe('# persona');
+    expect(() => validateAgentInputClosure(res.depCheck!.pins!)).not.toThrow();
+  });
+
+  it('pins inherited source prompts and a transitive bundled graph on the real install path', async () => {
+    const baseDir = join(root, 'local-parent');
+    await writeBlueprint(baseDir, 'id: parent\nversion: 1.0.0');
+    await fs.mkdir(join(baseDir, 'prompts'));
+    await fs.writeFile(join(baseDir, 'prompts/worker.md'), 'inherited prompt');
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\nextends: parent\nbundles: [{ kind: recipe, ref: job, version: 1.0.0 }]');
+    const leaf = pinPackageInput({ packageKind: 'rubric', ref: 'judge', revision: '1', files: [{ path: 'rubric.json', bytes: '{}' }] });
+    const job = pinPackageInput({ packageKind: 'recipe', ref: 'job', revision: '1.0.0', files: [{ path: 'recipe.json', bytes: '{}' }],
+      dependencies: [{ packageKind: leaf.packageKind, ref: leaf.ref, revision: leaf.revision, contentHash: leaf.contentHash }] });
+    const res = await installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps({
+      resolveExtends: (id) => id === 'parent' ? join(baseDir, 'blueprint.yaml') : null,
+      resolvePackage: async ({ ref }) => ref === 'job' ? job : leaf,
+    }));
+    expect(res.depCheck?.pins?.map((pin) => pin.ref).sort()).toEqual(['job', 'judge', 'neat-bp', 'parent']);
+    const parent = res.depCheck!.pins!.find((pin) => pin.ref === 'parent')!;
+    expect(parent.files.map((file) => file.path)).toContain('prompts/worker.md');
+    await fs.rm(baseDir, { recursive: true, force: true });
+    expect(() => validateAgentInputClosure(res.depCheck!.pins!)).not.toThrow();
+  });
+
+  it('rejects absent or conflicting bundle pins before replacing an installed blueprint', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\nbundles: [{ kind: recipe, ref: job, version: 2.0.0 }]');
+    await writeBlueprint(join(installedDir, 'neat-bp'), 'id: preserved');
+    const job = pinPackageInput({ packageKind: 'recipe', ref: 'job', revision: '1.0.0', files: [] });
+    for (const resolvePackage of [async () => null, async () => job]) {
+      await expect(installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps({ resolvePackage })))
+        .rejects.toMatchObject({ status: 422 });
+      expect(await fs.readFile(join(installedDir, 'neat-bp/blueprint.yaml'), 'utf8')).toBe('id: preserved');
+    }
   });
 
   // blueprint-role-bundling P-006 — the marketplace round-trip: an installed
@@ -153,6 +188,7 @@ describe('installBlueprintFromCupboardCore', () => {
     );
     expect(res.ok).toBe(true);
     expect(res.abstract).toBe(true);
+    expect(res.depCheck?.pins?.[0]?.ref).toBe('my-base');
     expect(existsSync(join(installedDir, 'my-base', 'blueprint.yaml'))).toBe(true);
   });
 

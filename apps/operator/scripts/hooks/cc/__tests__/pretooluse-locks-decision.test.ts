@@ -249,6 +249,89 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     );
   });
 
+  it("Codex multi-file apply_patch → caches and releases every touched path", async () => {
+    const toolUseId = "tu-codex-five-paths";
+    const paths = [
+      "sub/codex-five-1.ts",
+      "sub/codex-five-2.ts",
+      "sub/codex-five-3.ts",
+      "sub/codex-five-4.ts",
+      "sub/codex-five-5.ts",
+    ];
+    for (const path of paths) fs.writeFileSync(join(repo, path), "before\n");
+    const patch = [
+      "*** Begin Patch",
+      ...paths.flatMap((path) => [
+        `*** Update File: ${path}`,
+        "@@",
+        "-before",
+        "+after",
+      ]),
+      "*** End Patch",
+    ].join("\n");
+    const identity = {
+      PAPERCUSP_LOCK_SID: "codex-five-paths-owner",
+      PAPERCUSP_SID: "codex-five-paths-owner",
+    };
+    nextInner = {
+      ok: true,
+      lock_id: "codex-five-paths-lock",
+      newly_held: paths,
+    };
+
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patch,
+        tool_use_id: toolUseId,
+        session_id: "codex-session",
+        cwd: repo,
+      },
+      identity,
+    );
+
+    expect(pre.status).toBe(0);
+    expect(pre.stdout).toBe("");
+    expect(requests[0].body.params).toMatchObject({
+      name: "locks:acquire",
+      arguments: {
+        paths,
+        coordination_domain: fs.realpathSync(repo),
+      },
+    });
+    expect(fs.readFileSync(join(cache, `${toolUseId}.lock`), "utf8")).toBe(
+      "codex-five-paths-lock",
+    );
+    expect(JSON.parse(fs.readFileSync(join(cache, `${toolUseId}.paths`), "utf8"))).toEqual(
+      paths,
+    );
+
+    recoveryReleaseInner = { ok: true, released: paths, held_before: paths.length };
+    const post = await runPost({
+      tool_name: "apply_patch",
+      tool_input: patch,
+      tool_use_id: toolUseId,
+      session_id: "codex-session",
+      cwd: repo,
+    }, identity);
+
+    expect(post.status).toBe(0);
+    expect(requests.map((request) => request.body.params.name)).toEqual([
+      "locks:acquire",
+      "locks:release",
+    ]);
+    expect(requests[1].body.params).toMatchObject({
+      name: "locks:release",
+      arguments: {
+        lock_id: "codex-five-paths-lock",
+        paths,
+        coordination_domain: fs.realpathSync(repo),
+      },
+    });
+    for (const suffix of ["lock", "paths", "owner", "domain"])
+      expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(false);
+  });
+
   it("keeps a managed suite app in the repository-domain namespace", async () => {
     const portal = join(
       home,
