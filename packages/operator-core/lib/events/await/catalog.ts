@@ -645,7 +645,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe:
       'Acceptance evidence for this plan materially changed. This is a wake hint only: re-run the canonical plan acceptance gate before acting; the event itself never proves acceptance.',
     emitter:
-      'coordination/plan-events for acceptance-relevant plan mutations, plus scorecard-emitted-events for every freshly filed plan-subject scorecard',
+      'plan events (packages/operator-core/lib/agent-tools/coordination/plan-events.ts) for acceptance-relevant plan mutations, plus scorecard emitted events (packages/operator-core/lib/scorecard-emitted-events.ts) for every freshly filed plan-subject scorecard; both build the key through packages/operator-core/lib/agent-obligations.ts',
     exists: true,
     replacesPoll: 'polling the plan acceptance gate while waiting for grading evidence',
   },
@@ -765,7 +765,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe:
       'The canonical goal plan-placement classifier found an actionable placement state. This is a wake hint only; re-read the shared obligation agenda before launching or repairing anything.',
     emitter:
-      'goal-drain-fleet-watchdog — emitted from the same alert/classifier pass that owns plan-fleet placement evidence',
+      'goal drain fleet watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts) — emitted from the same alert/classifier pass that owns plan-fleet placement evidence, with the key built in packages/operator-core/lib/agent-obligations.ts',
     exists: true,
     replacesPoll: 'polling the goal portfolio / plan-fleet cohort for placement gaps',
   },

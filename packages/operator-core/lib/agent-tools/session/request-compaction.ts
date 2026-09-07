@@ -58,6 +58,7 @@ import {
   postCompactionRecoveryInstruction,
   renderRetractionGuard,
 } from '../../carry-doc';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../coordination/compaction-recovery';
 import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import {
   readLiveNativeBgTasks,
@@ -342,10 +343,13 @@ async function retuneWarmLoopForColdSettle(
  */
 function defaultContinueNote(focus: string, role?: string | null): string {
   const judgeSafe = isJudgeCarryRole(role);
+  const recoveryInstruction = judgeSafe
+    ? postCompactionRecoveryInstruction(role)
+    : MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION;
   return (
     'Continue where you left off — this is your fresh successor process right after a ' +
     'deterministic carry-respawn; your carry document is in the system prompt. ' +
-    postCompactionRecoveryInstruction(role) +
+    recoveryInstruction +
     (judgeSafe
       ? ' Use only the evidence and tools explicitly permitted to the judge role. '
       : ' Anything ' +
