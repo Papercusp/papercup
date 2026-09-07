@@ -26,7 +26,9 @@ import {
   MODEL_EFFORT_LEVELS,
   normalizeModelSpec,
 } from './agent-config-constants';
-import { resolveCodexModel } from './model-context-budget.mjs';
+import { resolveCodexModel, resolveCodexModelSelection } from './model-context-budget.mjs';
+
+export type CodexModelSource = 'explicit' | 'inherited' | 'configured-default';
 
 /** Match `psu` as a command token — start of line, or after whitespace / a
  *  shell separator — followed by whitespace. Shared by every injector. */
@@ -425,6 +427,7 @@ export function buildAgentLaunchCommand(opts: {
   harness?: string | null;
   account?: string | null;
   model?: string | null;
+  modelSource?: CodexModelSource | null;
   /** psu reasoning effort — composed onto the model spec via {@link composeModelSpec}
    *  (psu has no standalone --effort flag), so it REQUIRES a `model` to attach to. */
   effort?: string | null;
@@ -529,10 +532,14 @@ export function buildAgentLaunchCommand(opts: {
   const composedModelSpec = composeModelSpec(opts.model ?? undefined, opts.effort ?? undefined);
   // A fresh managed Codex launch must never rely on the CLI/cache default. The
   // same resolver also rejects retired Spark spellings before a terminal opens.
-  const modelSpec = opts.mode === 'fresh' && opts.agent?.trim() === 'codex'
-    ? resolveCodexModel(composedModelSpec)
-    : composedModelSpec;
+  const codexSelection = opts.mode === 'fresh' && opts.agent?.trim() === 'codex'
+    ? resolveCodexModelSelection(composedModelSpec, {
+        source: opts.modelSource ?? (composedModelSpec ? 'explicit' : 'configured-default'),
+      })
+    : null;
+  const modelSpec = codexSelection?.model ?? composedModelSpec;
   if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
+  if (codexSelection) parts.push(`--model-source=${codexSelection.source}`);
   if (opts.workspace) parts.push(`--workspace=${safe('workspace', opts.workspace)}`);
   if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
   if (opts.compactionLimit) parts.push(`--compaction-limit=${Math.floor(opts.compactionLimit)}`);
@@ -602,6 +609,7 @@ export interface MemberLaunchOpts {
   workspace?: string;
   role?: string;
   model?: string;
+  modelSource?: CodexModelSource;
   /** psu --effort: reasoning effort (low|medium|high|xhigh|max) when not baked into the model spec. */
   effort?: string;
   feature?: string;
@@ -757,6 +765,7 @@ export function foldMemberSpec(
     // fleet's, it never clears it.
     agent: spec.agent ?? base.agent,
     model: pick(spec.model, base.model),
+    modelSource: spec.model !== undefined ? 'explicit' : base.modelSource,
     effort: pick(spec.effort, base.effort),
     account: pick(spec.account, base.account),
     carry: pick(spec.carry, base.carry),
@@ -840,8 +849,14 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // `-c model_reasoning_effort`; omp verbatim), so composing it here is the ONE
   // form every backend honors.
   const composedModelSpec = composeModelSpec(opts.model, opts.effort);
-  const modelSpec = opts.agent === 'codex' ? resolveCodexModel(composedModelSpec) : composedModelSpec;
+  const codexSelection = opts.agent === 'codex'
+    ? resolveCodexModelSelection(composedModelSpec, {
+        source: opts.modelSource ?? (composedModelSpec ? 'explicit' : 'configured-default'),
+      })
+    : null;
+  const modelSpec = codexSelection?.model ?? composedModelSpec;
   if (modelSpec) parts.push(`--model=${quoteLaunchValue(modelSpec)}`);
+  if (codexSelection) parts.push(`--model-source=${codexSelection.source}`);
   // P-005 (landed): psu parses `--compaction-limit` and re-emits it onto
   // adv_sessions.launch_argv; the compaction watchdog's seeding pass reads it back
   // and applies it ahead of the tier/model default, clamped to the fleet-role
@@ -1398,6 +1413,7 @@ export interface FreshLaunchExpectedAttestation {
   harnessSlug: string | null;
   planSlug: string | null;
   model: string | null;
+  modelSource: CodexModelSource | null;
   effort: string | null;
   account: string;
   carry: 'warm' | 'cold';
@@ -1452,12 +1468,17 @@ export function launchAttestationFromLedger(
     return argv.find((item) => item.startsWith(prefix))?.slice(prefix.length) ?? null;
   };
   const model = typeof spec.model === 'string' ? spec.model : argValue('model');
+  const sourceRaw = typeof spec.modelSource === 'string' ? spec.modelSource : argValue('model-source');
+  const modelSource = sourceRaw === 'explicit' || sourceRaw === 'inherited' || sourceRaw === 'configured-default'
+    ? sourceRaw
+    : null;
   return {
     agent: typeof spec.agent === 'string' ? spec.agent : null as never,
     workspaceId: typeof spec.workspaceId === 'string' ? spec.workspaceId : null as never,
     harnessSlug: typeof spec.harnessSlug === 'string' ? spec.harnessSlug : null,
     planSlug: typeof spec.planSlug === 'string' ? spec.planSlug : null,
     model,
+    modelSource,
     effort: modelEffortFromSpec(argValue('model') ?? model),
     account: argValue('account') ?? 'default',
     carry: (argValue('carry') as 'warm' | 'cold' | null) ?? null as never,
@@ -1821,7 +1842,7 @@ export async function probeFreshLaunchSessions({
       const attestationDiffs: FreshLaunchAttestationDiff[] = [];
       if (expected) {
         for (const field of [
-          'agent', 'workspaceId', 'harnessSlug', 'planSlug', 'model', 'effort',
+          'agent', 'workspaceId', 'harnessSlug', 'planSlug', 'model', 'modelSource', 'effort',
           'account', 'carry', 'visibility', 'fleetSlug', 'fleetRole',
         ] as const) {
           const expectedValue =
