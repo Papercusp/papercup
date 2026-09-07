@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "plan": "portal-design-iteration-2026-09-05",
+  "purpose": "Expected acceptance population; this file records no passing observations.",
+  "themes": ["light", "dark"],
+  "viewports": [{"width": 1440, "height": 900}, {"width": 1280, "height": 800}],
+  "registrySource": "portal/packages/contracts/src/index.ts#DEFAULT_PORTAL_APPS",
+  "railApps": ["home", "mail", "calendar", "phone", "desktops", "plans", "inbox", "workspaces", "overview", "hud", "work", "learning", "workflows", "brainstorm", "cloud", "cupboard", "dev", "support", "settings", "health", "prs", "insights", "conversations", "adv-settings", "docs", "history", "git", "stats", "testing", "create", "scheduled", "frames", "evals", "coord"],
+  "sideSurfaces": ["accounts", "papercup-chat", "chat-history", "notifications", "launcher", "agent-roster", "processes"],
+  "populationRule": "Cartesian product of every railApp and sideSurface with every theme and viewport. A slot key is surface/theme/widthxheight. Compare the live app registry with railApps before interpreting any result. Unexpected or missing registry entries require reconciliation, not silent exclusion.",
+  "additionalCases": [
+    {"id": "rail-compact", "planItem": "P-010", "viewports": [{"width": 1280, "height": 768}, {"width": 390, "height": 768}], "themes": ["light", "dark"], "assertions": ["primary and unpin hit targets separate", "keyboard focus visible", "reduced motion respected", "hidden destinations reachable"]},
+    {"id": "host-box", "planItems": ["P-003", "P-004", "P-005", "P-006", "P-007"], "surfaces": ["home", "mail", "calendar", "phone", "workspaces"], "docks": ["collapsed", "both-expanded"], "assertions": ["measure actual surface width", "controls and prose contained at host width"]},
+    {"id": "hud-panels", "planItem": "P-009", "panels": ["orders", "activity", "fleet"], "states": ["expanded", "collapsed", "restored"], "assertions": ["toggle belongs to its panel", "labeled edge strip preserves position", "Escape and maximize preserve parent"]},
+    {"id": "plan-popup", "workItem": "WI-10000338", "states": ["windowed", "native-fullscreen", "window-fullscreen-fallback", "Escape-restored"], "assertions": ["visible icon", "viewport containment", "same plan remains open"]},
+    {"id": "inbox-reading", "workItem": "WI-10000338", "states": ["narrow-light", "narrow-dark"], "assertions": ["regular-weight readable prose", "metadata above body", "no horizontal overflow"]}
+  ],
+  "stateCases": [
+    {"state": "enabled", "surface": "rail-and-navigation", "proof": "real pointer and keyboard activation without an outward action"},
+    {"state": "disabled", "surface": "workspaces-and-phone", "proof": "read source decision and visible unavailable explanation; no desktop launch or call"},
+    {"state": "loading", "surface": "embedded-and-native-loaders", "proof": "rendered loading state or relevant existing component fixture, explicitly identified"},
+    {"state": "empty", "surface": "home-calendar-notifications-sessions", "proof": "live empty state when available; otherwise an identified fixture, never invented live emptiness"},
+    {"state": "transient", "surface": "notifications-and-processes", "proof": "timestamp/status presentation and a complete observed refresh, with unavailable readings distinguished"},
+    {"state": "status", "surface": "workspaces-home-phone", "proof": "compare displayed claim to its source fields and read disabled/reconciling/unavailable explanations"},
+    {"state": "restored", "surface": "all-mutated-acceptance-state", "proof": "compare starting and final theme/app/dock/panel/dialog state; no call, send, decision, or verdict mutation"}
+  ],
+  "observationFields": ["slot", "url", "theme", "viewport", "surfaceWidth", "state", "capturePath", "captureSha256", "capturedAt", "releaseId", "result", "notes"],
+  "resultVocabulary": ["pass", "fail", "unknown", "not-applicable"],
+  "completenessRule": "Every expected slot has exactly one disposition. A missing/unreadable/duplicate-key/wrong-target capture, unexplained not-applicable row, unmatched requested test file, or unmeasured release is unknown or fail. File count alone never establishes coverage. Test fixtures cannot be relabeled as live evidence."
+}

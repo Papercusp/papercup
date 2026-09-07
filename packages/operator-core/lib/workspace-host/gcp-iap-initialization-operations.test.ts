@@ -1,6 +1,13 @@
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS,
+  DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
+  DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
   encodeWorkspaceHostCredentialLifecycleStep,
@@ -11,8 +18,10 @@ import {
   type WorkspaceHostCredentialRefs,
 } from '@papercusp/deployment-driver';
 import {
+  DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS,
   GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
   GcpIapWorkspaceHostInitializationOperations,
+  NodeGcpIapWorkspaceHostInitializationCommandRunner,
   buildGcpIapWorkspaceHostInitializationCommand,
   type GcpIapWorkspaceHostInitializationCommandRunner,
   type GcpIapWorkspaceHostInitializationProfile,
@@ -246,4 +255,77 @@ describe('GCP IAP workspace-host initialization operations', () => {
     });
     await expect(failed.execute(step())).rejects.toThrow('failed with exit code 7');
   });
+
+  it('keeps the outer IAP timeout beyond the complete legal sequential agent-probe path', () => {
+    const legalSequentialProbeBudgetMs = Object.values(
+      DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
+    )
+      .flat()
+      .reduce(
+        (total, probe) =>
+          total + (probe.timeoutMs ?? DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS),
+        0,
+      );
+
+    expect(DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_TIMEOUT_BUDGET_MS).toBe(
+      legalSequentialProbeBudgetMs,
+    );
+    expect(DEFAULT_GCP_IAP_INITIALIZATION_TIMEOUT_MS).toBeGreaterThan(
+      legalSequentialProbeBudgetMs,
+    );
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'kills the local SSH and proxy process group when the outer IAP timeout expires',
+    async () => {
+      let child: ChildProcess | undefined;
+      let descendantPid: number | undefined;
+      let closed: Promise<unknown> | undefined;
+      const spawnProbe: typeof nodeSpawn = ((...args: Parameters<typeof nodeSpawn>) => {
+        child = nodeSpawn(...args);
+        closed = once(child, 'close');
+        child.stdout?.on('data', (chunk: Buffer) => {
+          const match = /DESCENDANT_PID=(\d+)/.exec(chunk.toString());
+          if (match) descendantPid = Number(match[1]);
+        });
+        return child;
+      }) as typeof nodeSpawn;
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'inherit' });",
+        "console.log('DESCENDANT_PID=' + child.pid);",
+        'setTimeout(() => {}, 30000);',
+      ].join('\n');
+
+      try {
+        await expect(
+          new NodeGcpIapWorkspaceHostInitializationCommandRunner({
+            spawn: spawnProbe,
+            timeoutMs: 2_000,
+          }).run({
+            command: process.execPath,
+            args: ['-e', script],
+            stdin: '',
+          }),
+        ).rejects.toThrow(/timed out/);
+        expect(descendantPid).toBeGreaterThan(0);
+        // `close`, unlike `exit`, waits for the descendant's inherited pipes too.
+        expect(
+          await Promise.race([closed!.then(() => true), delay(1_000, false)]),
+        ).toBe(true);
+      } finally {
+        // Also clean up the intentionally red pre-fix reproduction.
+        if (descendantPid) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // Already reaped by the fixed process-group cleanup.
+          }
+        }
+        child?.kill('SIGKILL');
+        await closed;
+      }
+    },
+    15_000,
+  );
 });
