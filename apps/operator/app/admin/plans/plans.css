@@ -1769,7 +1769,7 @@
 }
 
 .pc-plans__detail-kicker {
-  color: color-mix(in srgb, var(--accent-soft), transparent 45%);
+  color: var(--fg-dim);
   font-size: 10px;
   font-weight: 760;
   line-height: 1;
@@ -1875,7 +1875,7 @@
   white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  color: color-mix(in srgb, var(--accent-soft), transparent 48%);
+  color: var(--fg-dim);
 }
 
 /* ── Top-level tab strip (plan-agent-launch P-020) ────────────────── */
@@ -1940,7 +1940,7 @@
   font-size: 10px;
   font-weight: 760;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--accent-strong), transparent 22%);
+  color: var(--fg-dim);
 }
 
 .pc-now-hero__row {
@@ -1954,14 +1954,14 @@
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--accent-soft), transparent 40%);
+  color: var(--fg-dim);
 }
 
 .pc-now-hero__row p {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #e6f4fb;
+  color: var(--fg);
 }
 
 .pc-plans__legacy-banner {
@@ -3996,11 +3996,11 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg-deeper), transparent 15%);
-  color: #eaf4fb;
+  color: var(--fg);
   font-size: 12px;
 }
 
-.pc-jump__input::placeholder { color: color-mix(in srgb, var(--accent-soft), transparent 60%); }
+.pc-jump__input::placeholder { color: var(--fg-dim); opacity: 1; }
 
 .pc-jump__input:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
