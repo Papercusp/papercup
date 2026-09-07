@@ -1764,6 +1764,17 @@ write_boot_only_env_script() {
       # EI-20191599988350937: which app state this rig was seeded to, so a
       # --boot-only caller can branch on it instead of re-deriving it.
       printf 'VERIFY_TAURI_SEED=%q\n' "$ISOLATED_SEED"
+      if [ "${ISOLATED_DB:-0}" = "1" ]; then
+        printf 'export PAPERCUSP_HOME=%q\n' "$ISOLATED_HOME"
+        printf 'export PAPERCUSP_WORKSPACE=%q\n' "$ISOLATED_WORKSPACE"
+        printf 'export PAPERCUSP_WORKSPACE_ID=%q\n' "$ISOLATED_WORKSPACE"
+        printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\n' "$ISOLATED_WORKSPACES_ROOT"
+        printf 'export HARNESS_ADMIN_DATABASE_URL=%q\n' "$ISOLATED_ADMIN_URL"
+        printf 'export HARNESS_DATABASE_URL=%q\n' "$ISOLATED_APP_URL"
+        printf 'export PAPERCUSP_PG_PORT=%q\n' "$ISOLATED_PG_PORT"
+        printf 'export PAPERCUSP_SKIP_PG_DISCOVERY=1\n'
+        printf 'export PAPERCUSP_VERIFY_TAURI_ISOLATED=1\n'
+      fi
       printf 'VERIFY_TAURI_AGENT_TOOLS_BIN_DIR=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR"
       printf 'VERIFY_TAURI_CARGO_BIN=%q\n' "$VERIFY_TAURI_CARGO_BIN"
       printf 'VERIFY_TAURI_CARGO_BIN_DIR=%q\n' "$VERIFY_TAURI_CARGO_BIN_DIR"
@@ -2222,12 +2233,28 @@ write_freshness_check_script
 ISOLATED_DB="${VERIFY_TAURI_ISOLATED_DB:-0}"
 ISOLATED_ENV_LINE=""
 ISOLATED_HOME=""
+ISOLATED_WORKSPACES_ROOT=""
+
+# EI-22625889302387388: both API admission and the desktop workspace picker
+# must resolve the disposable identity, even under hostile inherited pins.
+prepare_isolated_workspace() {
+  ISOLATED_WORKSPACES_ROOT="$WORK/workspaces"
+  mkdir -p "$ISOLATED_WORKSPACES_ROOT/$ISOLATED_WORKSPACE"
+  node --input-type=module - "$ISOLATED_WORKSPACES_ROOT" "$ISOLATED_WORKSPACE" <<'WORKSPACE_REGISTRY_NODE'
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const [root, id] = process.argv.slice(2);
+writeFileSync(join(root, 'registry.json'), JSON.stringify({ current: id, workspaces: [{ id, name: 'Isolated verifier', createdAt: Date.now() }] }), { mode: 0o600 });
+WORKSPACE_REGISTRY_NODE
+}
+
 if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
   ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"
   ISOLATED_PG_LOG="$WORK/isolated-pg.log"
   ISOLATED_HOME="$WORK/papercusp-home"
   ISOLATED_WORKSPACE="verify-tauri-isolated-$DISPLAY_NUM"
+  prepare_isolated_workspace
   # Tauri's relative `dataDirectory` is resolved below XDG_DATA_HOME. Keep all
   # three XDG roots under this run's work dir so WebKit localStorage, cache,
   # cookies, and any GLib config state cannot reuse the owner's desktop profile.
@@ -2338,7 +2365,7 @@ PGBOOT
   fi
 
   log "isolated-db postgres ready on :$ISOLATED_PG_PORT (data=$ISOLATED_PG_DATA_DIR) after ${ISOLATED_PG_ELAPSED}s"
-  ISOLATED_ENV_LINE="PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
+  ISOLATED_ENV_LINE="PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
 fi
 
 # ── launch the isolated dev instance (agent-e2e.mdx §1.3 recipe, packaged) ──
@@ -2725,6 +2752,11 @@ if [ "$ISOLATED_DB" = "1" ]; then
     exit 1
   }
   SIDECAR_ENVIRON="$(tr '\0' '\n' < "/proc/$SIDECAR_PID/environ" 2>/dev/null)"
+  if ! grep -Fxq "PAPERCUSP_WORKSPACE_ID=$ISOLATED_WORKSPACE" <<<"$SIDECAR_ENVIRON" ||
+     ! grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON"; then
+    echo "FATAL: isolated sidecar lost its canonical workspace pin or private workspace registry; refusing to verify another workspace." >&2
+    exit 1
+  fi
   SIDECAR_ADMIN_URL="$(sed -n 's/^HARNESS_ADMIN_DATABASE_URL=//p' <<<"$SIDECAR_ENVIRON")"
   if [ "$SIDECAR_ADMIN_URL" != "$ISOLATED_ADMIN_URL" ]; then
     echo "FATAL: EI-10387 isolation check failed — the running sidecar's own HARNESS_ADMIN_DATABASE_URL" >&2
@@ -3577,6 +3609,8 @@ verify_assertion_input_integrity || exit $?
 if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_HOME="$ISOLATED_HOME"
   export PAPERCUSP_WORKSPACE="$ISOLATED_WORKSPACE"
+  export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"
+  export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"
   export HARNESS_ADMIN_DATABASE_URL="$ISOLATED_ADMIN_URL"
   export HARNESS_DATABASE_URL="$ISOLATED_APP_URL"
   export PAPERCUSP_PG_PORT="$ISOLATED_PG_PORT"
