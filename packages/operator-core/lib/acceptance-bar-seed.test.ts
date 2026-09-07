@@ -4,7 +4,8 @@ import {
   parseBarMappings,
   parseRequirementBars,
 } from './acceptance-bar-seed';
-import { computeAcceptanceBarSetHash } from './rubrics';
+import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
+import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 
 function plan(opts: { requirements?: string; map?: string } = {}): string {
   return `---
@@ -226,5 +227,44 @@ describe('acceptance BAR seed builder', () => {
     const a = { key: 'a', barKey: 'R-1', barHash: 'a'.repeat(64) };
     const b = { key: 'b', barKey: 'R-2', barHash: 'b'.repeat(64) };
     expect(computeAcceptanceBarSetHash([a, b])).toBe(computeAcceptanceBarSetHash([b, a]));
+  });
+
+  it.each(['draft', 'ready', 'active'])('preserves approved BARs pinned to the current %s subject revision', (planStatus) => {
+    const seeded = buildAcceptanceBarSeed({ ...input, planContent: plan(), planStatus });
+    if (!seeded.ok) throw new Error(seeded.message);
+    const criteria = seeded.criteria.map((criterion) => normalizeAcceptanceBarCriterion({
+      ...criterion,
+      intent: { request: 'Preserve the complete original request.', constraints: ['Keep the original proof plane.'] },
+      model: `The approved ${criterion.barKey} outcome is delivered.`,
+      driftMarkers: `The approved ${criterion.barKey} outcome is missing.`,
+      requiredTestLayers: ['integration'],
+      method: 'Exercise the complete writer and reader with an isolated fixture.',
+    }));
+    const approved = { ...seeded.templateData, criteria, barSetHash: computeAcceptanceBarSetHash(criteria) };
+    expect(approved.barSetHash).not.toBe(seeded.barSetHash);
+
+    const current = buildAcceptanceBarSeed({
+      ...input, planContent: plan(), planStatus, existingTemplateData: approved,
+    });
+    if (!current.ok) throw new Error(current.message);
+    expect(current.criteria).toEqual(criteria);
+    expect(current.barSetHash).toBe(approved.barSetHash);
+    expect(current.projections.every((clause) => clause.requiredTestLayers?.includes('integration'))).toBe(true);
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      slug: input.rubricSlug, storedTemplateData: approved, nextTemplateData: current.templateData,
+      subjectPlan: { status: planStatus, revision: input.subjectPlanRevision, adoptionEpoch: 1, cohort: 'post-epoch' },
+      actorId: input.actorId,
+    })).not.toThrow();
+
+    const unapprovedRevision = buildAcceptanceBarSeed({
+      ...input, planContent: plan(), planStatus, existingTemplateData: approved,
+      subjectPlanRevision: input.subjectPlanRevision + 1,
+    });
+    if (!unapprovedRevision.ok) throw new Error(unapprovedRevision.message);
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      slug: input.rubricSlug, storedTemplateData: approved, nextTemplateData: unapprovedRevision.templateData,
+      subjectPlan: { status: planStatus, revision: input.subjectPlanRevision + 1, adoptionEpoch: 1, cohort: 'post-epoch' },
+      actorId: input.actorId,
+    })).toThrow('BAR meaning cannot change outside rubrics:amend');
   });
 });
