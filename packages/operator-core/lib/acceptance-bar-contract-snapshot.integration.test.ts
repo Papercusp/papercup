@@ -1,0 +1,318 @@
+/**
+ * P-006 real-Postgres proof for the acceptance snapshot's existing reuse seam.
+ *
+ * The unit suite proves the pure projection. This test proves that the migrated
+ * stores compose the same contract end to end: one immutable evidence binding is
+ * reused, tied to the current requirement/spec identity, freshness-classified from
+ * a server measurement, and paired with an independent grading card. Mutating the
+ * measured source file is the control: the same binding remains auditable but stops
+ * counting as current proof.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import type postgres from 'postgres';
+import type { OrgTestDb } from '../test/_org-test-db';
+import type { SpecClauseSql } from './agent-tools/plans/spec-clauses-store';
+
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  repoRoot: '',
+}));
+
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    withWorkspace: async <T>(workspaceId: string, fn: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>
+      h.sql.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
+        return fn(tx as unknown as postgres.Sql);
+      }) as Promise<T>,
+  };
+});
+
+vi.mock('./harness-registry', async (orig) => {
+  const actual = await orig<typeof import('./harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: async () => ({ projects: [{ slug: 'papercusp', path: h.repoRoot }] }),
+    resolveHarnessContentPath: (
+      registry: { projects: Array<{ slug: string; path: string }> },
+      slug: string,
+    ) => registry.projects.find((project) => project.slug === slug)?.path,
+  };
+});
+
+const { createOrgTestDb } = await import('../test/_org-test-db');
+const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
+const { bindSpecEvidence, measureRepoFilesEvidenceAtRoot } = await import(
+  './agent-tools/plans/spec-evidence-store'
+);
+const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
+const { readAcceptanceBarContractSnapshot } = await import('./acceptance-bar-contract-snapshot');
+const { createIssue } = await import('./issues-engineer');
+const { PAPERCUSP_WORKSPACE_ID } = await import('./harness/papercusp-workspace');
+const { runWithWorkspace } = await import('./workspace-als');
+
+const WORKSPACE = PAPERCUSP_WORKSPACE_ID;
+const HARNESS = 'papercusp';
+const PLAN = 'acceptance-snapshot-reuse-integration';
+const RUBRIC = `acceptance-${PLAN}`;
+const ITEM = 'P-001';
+const WORK_ITEM = 'WI-acceptance-snapshot-reuse';
+const SPEC = 'AUTO-BAR-R-1-P-001';
+const EVIDENCE_REF = 'counterexample:acceptance-snapshot-reuse';
+const SOURCE_PATH = 'src/acceptance-snapshot.ts';
+const TEST_PATH = 'test/acceptance-snapshot.integration.test.ts';
+const OBSERVED_AT = '2026-09-07T12:00:00.000Z';
+
+const requirement = {
+  intent: {
+    request: 'Reuse an exact acceptance proof without weakening its current requirement.',
+    constraints: ['Keep evidence identity, freshness, and independent grading separately visible.'],
+    sourceRefs: ['P-006'],
+  },
+  acceptance: {
+    condition:
+      'The acceptance snapshot links reused evidence to the current requirement and an independent grading record.',
+    falsifier:
+      'A changed source fingerprint still counts as current, or the snapshot loses the evidence or grading identity.',
+    requiredScope: ['tree'],
+    evidencePlane: 'tree' as const,
+    requiredTestLayers: ['integration'],
+  },
+  verification: {
+    method: 'Read the migrated stores before and after changing the server-measured source fingerprint.',
+    check: { kind: 'instrument' as const, instrumentKey: 'none' },
+    replication: 'Run this integration test against the migrated throwaway Postgres fixture.',
+  },
+};
+
+const planContent = `---
+title: Acceptance snapshot reuse integration
+slug: ${PLAN}
+status: active
+---
+
+## Requirements
+
+**R-1 — Reuse current proof.**
+\`\`\`requirement
+${JSON.stringify(requirement)}
+\`\`\`
+
+## Design
+
+### Bar-to-work map for this plan
+
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | ${ITEM} | tree |
+
+## Work
+
+- **${ITEM}** \`done\` prove the existing acceptance snapshot reuse seam
+`;
+
+const measurement = {
+  schemaVersion: 1 as const,
+  kind: 'repo-files' as const,
+  sourcePaths: [SOURCE_PATH],
+  testPaths: [TEST_PATH],
+};
+
+let db: OrgTestDb;
+
+beforeAll(async () => {
+  h.repoRoot = await mkdtemp(path.join(tmpdir(), 'acceptance-snapshot-reuse-'));
+  await Promise.all([
+    mkdir(path.join(h.repoRoot, 'src'), { recursive: true }),
+    mkdir(path.join(h.repoRoot, 'test'), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(path.join(h.repoRoot, SOURCE_PATH), 'export const acceptanceSnapshot = true;\n'),
+    writeFile(path.join(h.repoRoot, TEST_PATH), 'expect(acceptanceSnapshot).toBe(true);\n'),
+  ]);
+  db = await createOrgTestDb();
+  h.sql = db.adminSql;
+}, 120_000);
+
+afterAll(async () => {
+  await Promise.all([
+    db?.cleanup(),
+    h.repoRoot ? rm(h.repoRoot, { recursive: true, force: true }) : Promise.resolve(),
+  ]);
+}, 30_000);
+
+describe('acceptance BAR contract snapshot — real Postgres reuse preflight', () => {
+  it('reuses one exact current proof and invalidates only its freshness when the measured source changes', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, owner,
+         acceptance_bar_epoch, acceptance_bar_cohort)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, ${planContent}, ${hashPlanContent(planContent)}, 1,
+              'Acceptance snapshot reuse integration', 'active', 'su-author', 1, 'post-epoch')`;
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_items
+        (workspace_id, harness_slug, plan_slug, item_id, seq, status, item_text)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, ${ITEM}, 1, 'done', 'Prove snapshot reuse')`;
+
+    const seeded = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      planContent,
+      planTitle: 'Acceptance snapshot reuse integration',
+      planStatus: 'active',
+      planVersion: 1,
+      adoptionEpoch: 1,
+      cohort: 'post-epoch',
+      actorId: 'su-author',
+      now: new Date(OBSERVED_AT),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(seeded).toMatchObject({ ok: true, rubricSlug: RUBRIC, rubricRevision: 1 });
+    if (!seeded.ok) throw new Error(seeded.message);
+
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, source_plan_slug, taken_by)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${WORK_ITEM}, 'Implement acceptance snapshot reuse',
+              'done', 'feature', ${PLAN}, 'su-impl')`;
+    const [testRun] = await db.adminSql<{ id: number }[]>`
+      INSERT INTO harness_shared.test_runs
+        (workspace_id, harness_slug, file_path, framework, status, finished_at)
+      VALUES (${WORKSPACE}, ${HARNESS}, ${TEST_PATH}, 'vitest', 'pass', ${OBSERVED_AT})
+      RETURNING id`;
+
+    const fingerprints = await measureRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    const bindingInput = {
+      harnessSlug: HARNESS,
+      planSlug: PLAN,
+      workItemId: WORK_ITEM,
+      specId: SPEC,
+      evidenceKind: 'counterexample' as const,
+      evidenceRef: EVIDENCE_REF,
+      sourceFingerprint: fingerprints.sourceFingerprint,
+      testFingerprint: fingerprints.testFingerprint,
+      testRunId: Number(testRun!.id),
+      details: {
+        evidencePlane: 'tree',
+        currentMeasurement: measurement,
+        adequacy: {
+          fixtureCalibrated: true,
+          falsifiable: true,
+          testLayer: 'integration',
+          pathReachable: true,
+          oracleIndependent: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'pass',
+          targeted: true,
+        },
+      },
+      observedAt: OBSERVED_AT,
+      actorId: 'su-impl',
+    };
+    const created = await bindSpecEvidence(bindingInput);
+    const reused = await bindSpecEvidence(bindingInput);
+    expect(created).toMatchObject({ status: 'created', planSlug: PLAN, specId: SPEC, specRevision: 1 });
+    expect(reused).toMatchObject({ status: 'unchanged', id: (created as { id: number }).id });
+
+    const grading = await runWithWorkspace(WORKSPACE, () => createIssue({
+      title: 'Independent acceptance snapshot grading',
+      kind: 'change',
+      state: 'done',
+      createdBy: 'su-independent-grader',
+      payload: {
+        observation: {
+          rubricRef: RUBRIC,
+          rubricRevision: seeded.rubricRevision,
+          sourceHive: HARNESS,
+          ratings: {
+            'r-1': { rating: 'healthy', evidence: 'The exact evidence identity and freshness decision are visible.' },
+          },
+        },
+      },
+    }));
+
+    const current = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    expect(current.bars).toHaveLength(1);
+    expect(current.bars[0]).toMatchObject({
+      barKey: 'R-1',
+      criterionKey: 'r-1',
+      requirement,
+      mappings: [{ planItemId: ITEM, specId: SPEC, specRevision: 1 }],
+      workContracts: [{ workItemId: WORK_ITEM, specId: SPEC, specRevision: 1, current: true }],
+      proof: {
+        state: 'current',
+        currentEvidence: 1,
+        staleEvidence: 0,
+        adequacy: {
+          state: 'pass',
+          checks: [{ specId: SPEC, revision: 1, verdict: 'pass', wouldBlock: [], evidenceRefs: [EVIDENCE_REF] }],
+        },
+      },
+      grading: {
+        state: 'pass',
+        scorecardId: grading.id,
+        gradedBy: 'su-independent-grader',
+        rating: 'healthy',
+      },
+    });
+    expect(current.bars[0]!.proof.history).toEqual([
+      expect.objectContaining({
+        id: (created as { id: number }).id,
+        evidenceKind: 'counterexample',
+        evidenceRef: EVIDENCE_REF,
+        matchesCurrentSpec: true,
+        currentness: expect.objectContaining({
+          overall: 'current',
+          provenance: 'server-measured',
+          comparisonSupplied: true,
+          dimensions: expect.objectContaining({ source: 'current', test: 'current', spec: 'current' }),
+        }),
+      }),
+    ]);
+    expect(current.bars[0]!.proof.history![0]!.details.adequacy).toMatchObject({
+      targeted: true,
+      outcome: 'pass',
+      testLayer: 'integration',
+    });
+    expect(current.bars[0]!.proof.history![0]!.details.adequacy).not.toHaveProperty('coverageRungs');
+    expect(current.bars[0]!.grading.history).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scorecardId: grading.id,
+        role: 'independent',
+        authoritative: true,
+        currentRevision: true,
+      }),
+    ]));
+
+    await writeFile(path.join(h.repoRoot, SOURCE_PATH), 'export const acceptanceSnapshot = false;\n');
+    const stale = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
+    expect(stale.bars[0]).toMatchObject({
+      proof: { state: 'stale', currentEvidence: 0, staleEvidence: 1 },
+      grading: { state: 'pass', scorecardId: grading.id },
+    });
+    expect(stale.bars[0]!.proof.history).toEqual([
+      expect.objectContaining({
+        id: (created as { id: number }).id,
+        evidenceRef: EVIDENCE_REF,
+        matchesCurrentSpec: true,
+        currentness: expect.objectContaining({
+          overall: 'stale',
+          provenance: 'server-measured',
+          comparisonSupplied: true,
+          dimensions: expect.objectContaining({ source: 'stale', test: 'current', spec: 'current' }),
+          staleReasons: ['source-stale'],
+        }),
+      }),
+    ]);
+  });
+});
