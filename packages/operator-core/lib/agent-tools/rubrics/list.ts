@@ -35,7 +35,10 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // Acceptance judges need the summary browse step to discover a rubric ref before
+  // calling rubrics:get/evaluate. This is read-only and mirrors rubrics:get's judge
+  // allowlist without widening judge into the general coordination role set.
+  agentRoles: [...COORD_ROLES, 'judge'],
   args: z
     .object({
       status: z.enum(['proposed', 'active', 'retired']).optional().describe('filter by lifecycle status; omit for all'),
