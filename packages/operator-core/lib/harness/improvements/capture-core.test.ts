@@ -535,6 +535,110 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     ]);
   });
 
+  it('reconciles a migration-865 promotion collision onto the existing improvement canonical', async () => {
+    const loser = existing({
+      id: 'EI-PROBATION-LOSER',
+      title: 'coord:send rejected a valid body',
+      kind: 'change',
+      severity: 'nit',
+      payload: { lane: 'observation', watchdogKey: key, toolFailureProbation: probation('su-a') },
+    });
+    const canonical = existing({
+      id: 'EI-IMPROVEMENT-CANONICAL',
+      title: 'coord:send rejected a valid body',
+      kind: 'change',
+      severity: 'minor',
+      payload: {
+        watchdogKey: key,
+        repeatCount: 3,
+        toolFailureProbation: {
+          ...probation('su-existing'),
+          state: 'promoted',
+          reporters: ['su-existing'],
+          promotedBy: 'su-existing',
+        },
+      },
+    });
+    const stateCalls: Array<{
+      id: string;
+      state: string;
+      by: string | undefined;
+      opts: { skipCompletionGate?: boolean } | undefined;
+    }> = [];
+    const tags: string[] = [];
+    const untags: string[] = [];
+    const collisionMerges: Array<{ id: string; opts: { unset?: readonly string[] } | undefined }> = [];
+    const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async () => [loser, canonical],
+      updateIssuePatch: async (id, patch) => existing({ ...(id === loser.id ? loser : canonical), ...patch }),
+      mergeIssuePayload: async (id, patch, opts) => {
+        collisionMerges.push({ id, opts });
+        if (id === loser.id && opts?.unset?.includes('lane')) {
+          throw {
+            code: '23505',
+            constraint_name: 'work_items_watchdog_identity_uq',
+            message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+          };
+        }
+        const target = id === canonical.id ? canonical : loser;
+        target.payload = { ...(target.payload as Record<string, unknown>), ...patch };
+        return target;
+      },
+      setIssueState: async (id, state, by, _completionRef, opts) => {
+        stateCalls.push({ id, state, by, opts });
+        if (id !== loser.id) return null;
+        loser.state = state;
+        loser.terminalOwner = by ?? null;
+        return loser;
+      },
+      tagIssue: async (id) => { tags.push(id); },
+      untagIssue: async (id) => { untags.push(id); },
+    };
+
+    const res = await captureImprovement(
+      {
+        title: 'coord:send rejected a valid body',
+        kind: 'change',
+        watchdogKey: key,
+        createdBy: 'su-b',
+        payloadExtra: { toolFailureProbation: probation('su-b') },
+      },
+      d,
+    );
+
+    expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: canonical.id } });
+    expect(d.created).toHaveLength(0);
+    expect((canonical.payload as Record<string, unknown>).toolFailureProbation).toMatchObject({
+      state: 'promoted',
+      reporters: ['su-existing', 'su-a', 'su-b'],
+      promotionReconciledFrom: loser.id,
+    });
+    expect(loser.state).toBe('resolved');
+    expect(collisionMerges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: loser.id, opts: { unset: ['lane'] } }),
+      expect.objectContaining({ id: canonical.id }),
+      expect.objectContaining({ id: loser.id, opts: undefined }),
+    ]));
+    expect(stateCalls).toEqual([
+      expect.objectContaining({
+        id: loser.id,
+        state: 'resolved',
+        by: 'improvement-promotion-reconciler',
+        opts: { skipCompletionGate: true },
+      }),
+    ]);
+    expect(tags).toContain(canonical.id);
+    expect(untags).toContain(loser.id);
+    expect(d.occurrences).toEqual([
+      expect.objectContaining({
+        canonicalId: canonical.id,
+        reporter: 'su-b',
+        reportKind: 'promoted',
+      }),
+    ]);
+  });
+
   it('lets the invocation-ledger watchdog promote an exact-key probation row without minting a duplicate', async () => {
     const prior = existing({
       id: 'EI-PROBATION',

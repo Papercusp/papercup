@@ -35,6 +35,7 @@ import {
   mergeIssuePayload,
   tagIssue,
   untagIssue,
+  setIssueState,
   type EngineerIssue,
   type IssueSeverity,
   type IssueSource,
@@ -597,6 +598,14 @@ export interface CaptureDeps {
   setWorkItemStateWithAliasInfo?: CaptureLifecycleStateWriter;
   /** Release the submitter claim when the review lifecycle cannot complete. */
   releaseIssue?: (id: string, opts?: { expectedAssignee?: string }) => Promise<EngineerIssue | null>;
+  /** Resolve a probation observation after migration-865 promotion reconciliation. */
+  setIssueState?: (
+    id: string,
+    state: 'open' | 'resolved' | 'closed',
+    by?: string,
+    completionRef?: string,
+    opts?: { skipCompletionGate?: boolean },
+  ) => Promise<EngineerIssue | null>;
 }
 
 export interface CaptureLifecycleStateResult {
@@ -632,6 +641,7 @@ const defaultDeps: CaptureDeps = {
   createIssue,
   getIssue,
   releaseIssue,
+  setIssueState,
   loadRubric: getRubric,
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
   recordIssueOccurrence,
@@ -944,11 +954,115 @@ function promotedProbationReadiness(
   );
 }
 
+const PROMOTION_RECONCILIATION_OWNER = 'improvement-promotion-reconciler';
+
+/**
+ * Reconcile a probation observation when migration 865 already has an open
+ * improvement row for the same watchdog identity. The lane flip cannot win the
+ * unique index in that case, so preserve the evidence on the improvement row and
+ * terminalize the now-redundant observation through the trusted dedup state path.
+ */
+async function reconcileToolFailurePromotionCollision(
+  prior: EngineerIssue,
+  input: CaptureImprovementInput,
+  deps: CaptureDeps,
+  candidates?: readonly EngineerIssue[],
+): Promise<EngineerIssue | null> {
+  const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
+  const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
+  const keys = [priorPayload.watchdogKey, incomingProbation.watchdogKey, input.watchdogKey].filter(
+    (key): key is string => typeof key === 'string' && key.length > 0,
+  );
+  const uniqueKeys = [...new Set(keys)];
+  if (uniqueKeys.length === 0) return null;
+
+  const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
+  const possibleCandidates =
+    candidates ??
+    (await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)(uniqueKeys).catch(
+      () => [] as EngineerIssue[],
+    ));
+  const canonical = possibleCandidates.find((candidate) => {
+    if (candidate.id === prior.id || !isWatchdogNonTerminal(candidate)) return false;
+    const payload = (candidate.payload as Record<string, unknown> | null) ?? {};
+    return (
+      issueWatchdogLane(candidate) !== 'observation' &&
+      typeof payload.watchdogKey === 'string' &&
+      uniqueKeys.includes(payload.watchdogKey) &&
+      effectiveOrigin(candidate.signalOrigin) === origin &&
+      issueScopeMatchesCapture(candidate, input.scope)
+    );
+  });
+  if (!canonical) return null;
+
+  const canonicalPayload = (canonical.payload as Record<string, unknown> | null) ?? {};
+  const canonicalProbation = toolFailureProbationOf(canonicalPayload) ?? {};
+  const reporters = [
+    ...new Set([
+      ...(Array.isArray(canonicalProbation.reporters) ? canonicalProbation.reporters : []),
+      ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
+      ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+      ...(input.createdBy ? [input.createdBy] : []),
+    ].filter(Boolean)),
+  ];
+  const kind = incomingProbation.intendedKind ?? priorProbation.intendedKind ?? storageKindOf(input.kind);
+  const reconciledAt = new Date().toISOString();
+  const canonicalKey =
+    (typeof canonicalPayload.watchdogKey === 'string' && canonicalPayload.watchdogKey) ||
+    input.watchdogKey ||
+    (typeof priorPayload.watchdogKey === 'string' ? priorPayload.watchdogKey : undefined);
+  const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(canonical.id, {
+    ...(canonicalKey ? { watchdogKey: canonicalKey } : {}),
+    ...(input.paths?.length ? { paths: input.paths } : {}),
+    toolFailureProbation: {
+      ...canonicalProbation,
+      ...priorProbation,
+      ...incomingProbation,
+      state: 'promoted',
+      reporters,
+      intendedKind: kind,
+      promotedAt: canonicalProbation.promotedAt ?? priorProbation.promotedAt ?? reconciledAt,
+      promotedBy:
+        canonicalProbation.promotedBy ?? priorProbation.promotedBy ?? input.createdBy ?? PROMOTION_RECONCILIATION_OWNER,
+      promotionReconciledFrom: prior.id,
+      promotionReconciledAt: reconciledAt,
+    },
+    ...(canonicalPayload.implementationReadiness
+      ? {}
+      : { implementationReadiness: promotedProbationReadiness(input, incomingProbation) }),
+    promotionReconciledFrom: prior.id,
+    promotionReconciledAt: reconciledAt,
+  }).catch(() => null);
+  if (!merged) return null;
+
+  const markedLoser = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, {
+    decidedReason: `duplicate of ${canonical.id} — migration-865 promotion reconciliation`,
+    promotionReconciledInto: canonical.id,
+    promotionReconciledAt: reconciledAt,
+  }).catch(() => null);
+  if (!markedLoser) return null;
+
+  const terminalized = await (deps.setIssueState ?? setIssueState)(
+    prior.id,
+    'resolved',
+    PROMOTION_RECONCILIATION_OWNER,
+    undefined,
+    { skipCompletionGate: true },
+  ).catch(() => null);
+  if (!terminalized) return null;
+
+  await (deps.tagIssue ?? tagIssue)(canonical.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
+  await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});
+  return merged;
+}
+
 /** Promote one exact-key probation row in place, preserving its history/id. */
 async function promoteToolFailureProbation(
   prior: EngineerIssue,
   input: CaptureImprovementInput,
   deps: CaptureDeps,
+  promotionCandidates?: readonly EngineerIssue[],
 ): Promise<EngineerIssue | null> {
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
@@ -974,6 +1088,7 @@ async function promoteToolFailureProbation(
   const updated = updatedRaw && 'id' in updatedRaw ? updatedRaw : null;
   if (!updated) return null;
   const promotedAt = new Date().toISOString();
+  let promotionMergeError: unknown;
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(
     prior.id,
     {
@@ -998,7 +1113,14 @@ async function promoteToolFailureProbation(
       ideaLifecycle: initializeIdeaLifecycle(),
     },
     { unset: ['lane'] },
-  ).catch(() => null);
+  ).catch((error) => {
+    promotionMergeError = error;
+    return null;
+  });
+  if (!merged && isWatchdogIdentityConflict(promotionMergeError)) {
+    const reconciled = await reconcileToolFailurePromotionCollision(prior, input, deps, promotionCandidates);
+    if (reconciled) return reconciled;
+  }
   if (!merged) return null;
   await (deps.tagIssue ?? tagIssue)(prior.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
   await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});
@@ -1401,7 +1523,7 @@ export async function captureImprovement(
       );
     });
     if (probation) {
-      const promoted = await promoteToolFailureProbation(probation, input, deps);
+      const promoted = await promoteToolFailureProbation(probation, input, deps, exactKeyIssues);
       if (promoted) {
         await appendCaptureOccurrence(
           deps,
@@ -1696,7 +1818,7 @@ export async function captureImprovement(
       );
     });
     if (exactTitleProbation) {
-      const promoted = await promoteToolFailureProbation(exactTitleProbation, input, deps);
+      const promoted = await promoteToolFailureProbation(exactTitleProbation, input, deps, candidates);
       if (promoted) {
         await appendCaptureOccurrence(
           deps,
@@ -2081,7 +2203,7 @@ export async function captureImprovement(
         priorReporters.length > 0 &&
         independentReporter
       ) {
-        const promoted = await promoteToolFailureProbation(prior, input, deps);
+        const promoted = await promoteToolFailureProbation(prior, input, deps, priorHits);
         if (promoted) {
           await appendCaptureOccurrence(
             deps,
