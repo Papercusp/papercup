@@ -4,6 +4,7 @@
  * indexed turns and can create duplicate turn-index conflicts.
  */
 
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +29,15 @@ const sessionIngestSourcePath = resolve(
   dirname(fileURLToPath(import.meta.url)),
   './session-ingest.ts',
 );
+
+const canonicalToolNamesMigrationBase = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../libs/papercusp/libs/db/sql/1130-canonicalize-session-part-tool-names.sql',
+);
+
+const canonicalToolNamesMigrationPath = existsSync(canonicalToolNamesMigrationBase)
+  ? canonicalToolNamesMigrationBase
+  : `${canonicalToolNamesMigrationBase}.DRAFT`;
 
 describe('WI-4297 historical counter backfill migration', () => {
   it('uses an independent resumable cursor and never resets the indexed cursor', async () => {
@@ -98,5 +108,24 @@ describe('P-001 historical faithful-part backfill', () => {
     expect(source).toMatch(/parts_backfill_offset\s+IS NULL|parts_backfill_offset\s*>\s*0/);
     expect(source).toContain('partRowsFrom(result.parts');
     expect(source).toContain('stats.partsBackfillFiles = await backfillHistoricalParts(sql)');
+  });
+});
+
+describe('EI-224 catalog-backed session-part tool-name repair', () => {
+  it('keeps a bounded explicit-map migration beside the live writer fix', async () => {
+    const migration = await readFile(canonicalToolNamesMigrationPath, 'utf8');
+    const source = await readFile(sessionIngestSourcePath, 'utf8');
+
+    expect(source).toContain('canonicalSessionPartToolName');
+    expect(source).toContain('aliases.get(p.toolName)');
+    expect(migration).toContain('CREATE TEMP TABLE session_part_tool_name_backfill_map');
+    expect(migration).toContain('mcp__papercusp-su__coord_presence');
+    expect(migration).toContain('mcp__papercusp_su.coord_presence');
+    expect(migration).toContain("WHERE p.workspace_id = 'default'");
+    expect(migration).toContain('LIMIT 50000');
+    // A generic separator rewrite would mutate native/unknown names and can
+    // guess through collisions. The migration must remain an exact map.
+    expect(migration).not.toContain('normalizeMcpName');
+    expect(migration).not.toMatch(/regexp_replace/i);
   });
 });

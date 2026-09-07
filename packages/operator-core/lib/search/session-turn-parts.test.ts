@@ -29,6 +29,7 @@ import {
   cleanPartText,
   redactPartSecrets,
   partRowsFrom,
+  canonicalSessionPartToolName,
   PART_TEXT_CAP_PROSE,
   PART_TEXT_CAP_TOOL,
   type ParsedPart,
@@ -276,5 +277,69 @@ describe('partRowsFrom — numbering', () => {
       sourceKind: 'claude', sessionId: 's', owner: null, partCount: 0,
     });
     expect(rows.map((r) => r.tool_name)).toEqual([null, 'Bash']);
+  });
+});
+
+describe('session tool-name canonicalization — live catalog aliases', () => {
+  const catalog = (...names: string[]) =>
+    names.map((name) => ({ expose: { mcp: { name } } }));
+
+  it('maps the Claude and Codex Papercusp wrapper spellings to group:verb', () => {
+    const names = catalog('coord:presence', 'blender:ideation-feedback');
+
+    expect(canonicalSessionPartToolName('mcp__papercusp-su__coord_presence', names))
+      .toBe('coord:presence');
+    expect(canonicalSessionPartToolName('mcp__papercusp_su.coord_presence', names))
+      .toBe('coord:presence');
+    expect(canonicalSessionPartToolName('mcp__papercusp-su__blender_ideation-feedback', names))
+      .toBe('blender:ideation-feedback');
+    expect(canonicalSessionPartToolName('mcp__papercusp_su.blender_ideation_feedback', names))
+      .toBe('blender:ideation-feedback');
+  });
+
+  it('canonicalizes at the persisted row seam while preserving native and unknown names', () => {
+    const rows = partRowsFrom([
+      {
+        ts: null,
+        speaker: 'assistant',
+        partKind: 'tool_use',
+        toolName: 'mcp__papercusp_su.coord_presence',
+        text: '{}',
+      },
+      {
+        ts: null,
+        speaker: 'assistant',
+        partKind: 'tool_use',
+        toolName: 'Read',
+        text: '{}',
+      },
+      {
+        ts: null,
+        speaker: 'assistant',
+        partKind: 'tool_use',
+        toolName: 'mcp__papercusp_su.not_in_catalog',
+        text: '{}',
+      },
+    ], {
+      sourceKind: 'codex',
+      sessionId: 's',
+      owner: null,
+      partCount: 0,
+    }, catalog('coord:presence'));
+
+    expect(rows.map((row) => row.tool_name)).toEqual([
+      'coord:presence',
+      'Read',
+      'mcp__papercusp_su.not_in_catalog',
+    ]);
+  });
+
+  it('leaves a separator-collision untouched instead of guessing', () => {
+    const ambiguous = catalog('foo:bar_baz', 'foo_bar:baz');
+    const alias = 'mcp__papercusp_su.foo_bar_baz';
+
+    expect(canonicalSessionPartToolName(alias, ambiguous)).toBe(alias);
+    expect(canonicalSessionPartToolName(alias, catalog('foo:bar_baz')))
+      .toBe('foo:bar_baz');
   });
 });

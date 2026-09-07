@@ -49,6 +49,7 @@ import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { listAllProjectedTools } from '@papercusp/tooldef';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
@@ -1498,12 +1499,99 @@ interface PartRow {
   text: string;
 }
 
+/** The small projected-tool shape needed to resolve transcript tool names.
+ * Keep this structural so pure tests can inject a catalog without importing
+ * the agent-tools barrel (which has process-wide boot side effects). */
+export interface SessionPartToolCatalogEntry {
+  expose?: { mcp?: { name?: unknown } | null };
+}
+
+/**
+ * Add one client spelling to the catalog-backed alias map. A separator
+ * spelling can be ambiguous when two canonical names differ only by a
+ * separator (for example `foo:bar_baz` and `foo_bar:baz`). In that case the
+ * safe result is to leave the raw transcript name untouched rather than
+ * silently attributing it to the wrong tool.
+ */
+function addSessionPartToolAlias(
+  aliases: Map<string, string>,
+  ambiguous: Set<string>,
+  alias: string,
+  canonical: string,
+): void {
+  if (ambiguous.has(alias)) return;
+  const prior = aliases.get(alias);
+  if (prior === undefined) {
+    aliases.set(alias, canonical);
+  } else if (prior !== canonical) {
+    aliases.delete(alias);
+    ambiguous.add(alias);
+  }
+}
+
+/**
+ * Resolve the two client-mangled Papercusp MCP spellings persisted by Codex
+ * and Claude to the live projected catalog's canonical `group:verb` name.
+ *
+ * This is intentionally NOT `normalizeMcpName`: that helper is tolerant for
+ * dispatch and can turn an unknown or separator-ambiguous transcript value
+ * into a guessed tool. Session history is an evidence store, so only exact
+ * aliases derived from currently projected tools are safe to rewrite. Native
+ * names (`Bash`, `Read`), unknown wrappers, and ambiguous aliases remain
+ * byte-for-byte unchanged.
+ *
+ * The optional catalog is a pure-test seam. Production callers omit it and
+ * read the current process-global projected catalog at the write boundary so
+ * newly installed tools do not require a second static allowlist.
+ */
+export function canonicalSessionPartToolName(
+  name: string,
+  catalog: readonly SessionPartToolCatalogEntry[] = listAllProjectedTools(),
+): string {
+  if (!name) return name;
+
+  return sessionPartToolAliases(catalog).get(name) ?? name;
+}
+
+/** Build the aliases once per ingest chunk rather than once per part. */
+function sessionPartToolAliases(
+  catalog: readonly SessionPartToolCatalogEntry[],
+): ReadonlyMap<string, string> {
+  const aliases = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const entry of catalog) {
+    const canonical = entry.expose?.mcp?.name;
+    // Plugin projections use their own namespaced forms; the two aliases this
+    // repair covers are the core `group:verb` MCP projections only.
+    if (typeof canonical !== 'string' || !canonical.includes(':')) continue;
+
+    // Claude's mcp wrapper removes `:` but preserves `-`; Codex's function
+    // name sanitizer removes both separators before parseCodexParts joins the
+    // namespace and function with a dot.
+    addSessionPartToolAlias(
+      aliases,
+      ambiguous,
+      `mcp__papercusp-su__${canonical.replace(/:/g, '_')}`,
+      canonical,
+    );
+    addSessionPartToolAlias(
+      aliases,
+      ambiguous,
+      `mcp__papercusp_su.${canonical.replace(/[:-]/g, '_')}`,
+      canonical,
+    );
+  }
+  return aliases;
+}
+
 /** Build the session_turn_parts rows for one tick's parts, numbering them from
  *  the file's persisted part cursor. Pure — exported for tests. */
 export function partRowsFrom(
   parts: ParsedPart[],
   base: { sourceKind: string; sessionId: string; owner: string | null; partCount: number },
+  catalog?: readonly SessionPartToolCatalogEntry[],
 ): PartRow[] {
+  const aliases = sessionPartToolAliases(catalog ?? listAllProjectedTools());
   return parts.map((p, i) => ({
     workspace_id: 'default',
     source_kind: base.sourceKind,
@@ -1513,7 +1601,7 @@ export function partRowsFrom(
     owner: base.owner,
     speaker: p.speaker,
     part_kind: p.partKind,
-    tool_name: p.toolName ?? null,
+    tool_name: p.toolName == null ? null : aliases.get(p.toolName) ?? p.toolName,
     text: p.text,
   }));
 }
