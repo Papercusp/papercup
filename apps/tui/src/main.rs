@@ -4786,6 +4786,7 @@ async fn agent_chat_load(
             load_token,
             summaries,
             messages: Vec::new(),
+            owner_turn_ids: Vec::new(),
             approvals: Vec::new(),
         });
         return;
@@ -4814,6 +4815,18 @@ async fn agent_chat_load(
                 role: chat.role,
                 load_token,
                 summaries,
+                owner_turn_ids: chat
+                    .transcript
+                    .iter()
+                    .filter_map(|turn| {
+                        turn.su_command
+                            .as_ref()?
+                            .get("command")?
+                            .get("turnId")?
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .collect(),
                 messages: chat
                     .transcript
                     .into_iter()
@@ -6779,6 +6792,7 @@ mod tests {
             load_token: app.chat_load_token,
             summaries,
             messages: Vec::new(),
+            owner_turn_ids: Vec::new(),
             approvals: Vec::new(),
         });
         assert!(app.agent_chat_id.is_none());
