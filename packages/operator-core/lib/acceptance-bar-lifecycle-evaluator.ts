@@ -354,12 +354,14 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
   options: { expectedApplicable?: boolean; current?: EvidenceCurrentInput[] } = {},
 ): Promise<AcceptanceBarLifecycleVerdict> {
   const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, { current: options.current });
-  // Callers that already know the subject carries the adoption marker (rubric
-  // grading/vetting and the ship gate) set expectedApplicable=true, preserving
-  // fail-closed behavior when a source read is unavailable. Generic start doors
-  // do not carry that marker in their lightweight PlanRow; an absent snapshot
-  // plan there is treated as legacy/unknown rather than blocking every start.
-  if ((!snapshot.plan || snapshot.plan.adoptionEpoch == null) && options.expectedApplicable !== true) {
+  // Only a positively identified legacy plan may bypass the contract. A missing,
+  // unavailable, ambiguous, or truncated subject read cannot establish legacy
+  // status, even when a generic start door has no adoption-marker assertion.
+  const knownLegacy =
+    snapshot.plan != null &&
+    snapshot.plan.adoptionEpoch == null &&
+    !snapshot.completeness.problems.some((problem) => problem.source === 'plan' && problem.severity === 'error');
+  if (knownLegacy && options.expectedApplicable !== true) {
     return {
       phase,
       applicable: false,
@@ -372,13 +374,12 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
       message: null,
     };
   }
-  // A caller that already proved the adoption marker (for example the rubric
-  // writer or terminal ship gate) must not let a failed plan-row read become a
-  // false non-applicable result. Force the evaluator into the strict branch so
-  // the source-unavailable/plan-missing codes remain visible and blocking.
+  // Unknown applicability is not non-applicability. Preserve the reader's
+  // blocking source diagnostics through the strict evaluator, including when a
+  // caller explicitly expects an adopted plan but the second read disagrees.
   return {
     ...evaluateAcceptanceBarLifecycle(
-      options.expectedApplicable === true && !snapshot.applicable ? { ...snapshot, applicable: true } : snapshot,
+      snapshot.applicable ? snapshot : { ...snapshot, applicable: true },
       phase,
     ),
     nonCodeItemProofs: deriveNonCodeItemProofs(snapshot),
