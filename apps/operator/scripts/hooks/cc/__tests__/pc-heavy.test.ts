@@ -4130,6 +4130,59 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
     }
   });
 
+  it('EI-22550861901989735: caller INT aborts a queued focused test before slot acquisition', async () => {
+    plantLock(liveOwner());
+    const gateEnv = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_FOCUSED_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_TIMEOUT_SEC: '30',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
+    };
+    const ran = join(dir, 'queued-focused-int-ran');
+    // The holder is itself classified as focused, so it occupies the same
+    // independent lane as the target rather than the ordinary pool.
+    const holder = spawn('bash', [PC_HEAVY, 'bash', '-c', 'sleep 30', 'scripts/test-files.mjs'], {
+      env: baseEnv(gateEnv),
+      cwd: dir,
+      detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const focused = spawn(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', `echo ran > ${JSON.stringify(ran)}`, 'scripts/test-files.mjs'],
+      {
+        env: baseEnv(gateEnv),
+        cwd: dir,
+        detached: true,
+      },
+    );
+    const focusedErr = createTextCollector(focused.stderr);
+    const focusedExited = new Promise<number>((res) => focused.on('exit', (c) => res(c ?? -1)));
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the focused holder taking the lane');
+      await untilStderr(
+        focused,
+        focusedErr,
+        (t) => t.includes('queued for a focused test lane slot'),
+        'the focused caller entering the queue',
+      );
+
+      process.kill(-(focused.pid as number), 'SIGINT');
+      killGroup(holder);
+
+      expect(await focusedExited).toBe(130);
+      expect(existsSync(ran)).toBe(false);
+      const err = focusedErr.text();
+      expect(err).toContain('QUEUE_ABORTED status=retryable reason=caller-signal signal=INT exit=130');
+      expect(err).toContain('PC_HEAVY_RESULT status=retryable reason=queue-signal signal=INT exit=130');
+      expect(err).not.toContain('slot acquired — starting real work');
+    } finally {
+      killGroup(holder);
+      try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
+    }
+  }, 10_000);
+
   it('EI-21599206021092018: scoped test:affected --changed-paths uses the independent lane', async () => {
     plantLock(liveOwner());
     const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };

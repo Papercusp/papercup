@@ -707,10 +707,10 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
 
     expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('PINNED');
     expect(readFileSync(join(dest, '.papercusp-isolated-snapshot'), 'utf8')).toBe('generation=gen-abc123\n');
-    // Same-device materialization hardlinks out of the immutable generation, so
-    // the identity of this tree IS that generation id — not a re-walk of content
-    // that was just hardlinked from it.
-    expect(statSync(join(dest, 'marker.txt')).ino).toBe(statSync(join(src, 'marker.txt')).ino);
+    // Pinned materialization defaults to an independent copy even on the same
+    // device. Hardlinks are an explicit opt-in for callers that have separately
+    // proved their source tree is immutable and never patched.
+    expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(statSync(join(src, 'marker.txt')).ino);
   });
 
   it('replaces a read-only provenance marker carried by an older immutable generation', () => {

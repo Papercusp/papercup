@@ -3022,6 +3022,10 @@ if [ -z "$_held" ]; then
   # the caller can retry after the reported holder/event clears.
   trap '_pc_heavy_queue_abort TERM 75' TERM
   trap '_pc_heavy_queue_abort HUP 75' HUP
+  # INT is Ctrl-C. It must use the same queue-only abort path with the shell's
+  # conventional interrupt status, otherwise Bash can deliver SIGINT to the
+  # polling sleep while the wrapper keeps waiting and later starts the child.
+  trap '_pc_heavy_queue_abort INT 130' INT
   # EI-19343041616234869 — the ONLY output pc-heavy printed before this fell
   # out entirely if a caller hit the fallback wait with the release gate NOT
   # active (the "release gate is JUDGING..." line above is gated on that, so
@@ -3079,7 +3083,7 @@ if [ -z "$_held" ]; then
     [ "$_now" -ge "$_fallback_deadline" ] && break
     sleep 0.5
   done
-  trap - TERM HUP
+  trap - TERM HUP INT
 fi
 
 # EI-19315037905600226 — a machine-readable landmark for "the wait is over, the

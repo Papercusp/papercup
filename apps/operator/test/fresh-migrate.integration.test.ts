@@ -199,6 +199,46 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     expect(n).toBe(0);
   });
 
+  it('does not reissue per-harness publication membership DDL on a reused cluster', async () => {
+    await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_gym_durable`);
+    await sql.unsafe(`
+      DO $pg$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_publication p
+          JOIN pg_publication_namespace pn ON pn.pnpubid = p.oid
+          JOIN pg_namespace n ON n.oid = pn.pnnspid
+          WHERE p.pubname = 'zero_harness' AND n.nspname = 'harness_gym_durable'
+        ) THEN
+          ALTER PUBLICATION zero_harness ADD TABLES IN SCHEMA harness_gym_durable;
+        END IF;
+      END $pg$;
+    `);
+
+    const calls: string[] = [];
+    const observingClient = {
+      begin: (callback: (tx: unknown) => Promise<unknown>) =>
+        sql.begin(async (tx) =>
+          callback({
+            unsafe: (query: string, ...values: unknown[]) => {
+              calls.push(query);
+              return (tx as unknown as { unsafe: (sql: string, ...args: unknown[]) => unknown }).unsafe(
+                query,
+                ...values,
+              );
+            },
+          }),
+        ),
+    };
+
+    await ensureZeroHarnessPublication(observingClient);
+
+    expect(calls.some((query) => query.includes('pg_publication_namespace'))).toBe(true);
+    expect(
+      calls.some((query) => query.includes('ALTER PUBLICATION zero_harness ADD TABLES IN SCHEMA harness_gym_durable')),
+    ).toBe(false);
+  });
+
   it('grants the runtime app role access (harness_app can read its tables — migration 109)', async () => {
     // --no-privileges stripped every grant from the baseline; 109 restores them. Connect AS
     // harness_app (not the migration superuser) to prove a fresh boot doesn't lock the app out.

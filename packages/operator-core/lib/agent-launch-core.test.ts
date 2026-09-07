@@ -12,6 +12,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 import {
   AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS,
+  AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS,
   buildAgentLaunchCommand,
   claimAgentLaunch,
   composeModelSpec,
@@ -114,6 +115,54 @@ describe('claimAgentLaunch crash recovery', () => {
 
     expect(replay.won).toBe(false);
     expect(replay.priorSummary).toEqual(summary);
+  });
+
+  it('reclaims an old explicit agentStarted:null receipt so a stalled launch can be replaced', async () => {
+    const now = 1_800_000_000_000;
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ idempotency_key: 'stalled-launch' }]);
+
+    const retry = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'stalled-launch',
+      launchedBy: 'su-retry',
+      now,
+    });
+
+    expect(retry.won).toBe(true);
+    const query = String(launchCoreSql.mock.calls[1]?.[0]?.join(' '));
+    expect(query).toContain("existing.summary -> 'agentStarted' = 'null'::jsonb");
+    expect(launchCoreSql.mock.calls[1]?.slice(1)).toContain(
+      now - AGENT_LAUNCH_UNCONFIRMED_CLAIM_LEASE_MS,
+    );
+  });
+
+  it('keeps a recent agentStarted:null receipt fail-closed', async () => {
+    const now = 1_800_000_000_000;
+    const summary = { opened: 1, agentStarted: null, mode: 'fresh' };
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        summary,
+        launched_at: now - 1_000,
+        launched_by: 'su-first',
+      }]);
+
+    const retry = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'still-starting',
+      launchedBy: 'su-retry',
+      now,
+    });
+
+    expect(retry).toEqual({
+      won: false,
+      priorSummary: summary,
+      priorLaunchedAt: now - 1_000,
+      priorLaunchedBy: 'su-first',
+    });
   });
 });
 

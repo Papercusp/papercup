@@ -85,6 +85,13 @@ export async function projectBlueprintToPg(
   if (specification && blueprintHash(BlueprintSchema.parse(specification.configuration)) !== blueprintHash(input.blueprint)) {
     throw new Error('compiled specification does not describe the blueprint being projected');
   }
+  const scopeInput = specification?.inputs.find((entry) => entry.kind === 'setting' && entry.ref === 'bundle-scope');
+  if (scopeInput?.kind === 'setting') {
+    const scope = scopeInput.value as { workspaceId?: string; harnessSlug?: string };
+    if (scope?.workspaceId !== input.workspaceId || scope?.harnessSlug !== input.harnessSlug) {
+      throw new Error('compiled specification belongs to a different workspace or harness');
+    }
+  }
   if (specification && specification.configuration.bundles.length) {
     await provisionBlueprintPackages(specification, blueprintPackageProvisioners(sql));
   }

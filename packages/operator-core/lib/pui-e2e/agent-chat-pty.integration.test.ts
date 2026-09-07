@@ -372,6 +372,16 @@ beforeAll(async () => {
   const { app } = await import('../../../../apps/operator/bin/host-app');
   operatorServer = createAdaptorServer({ fetch: app.fetch });
   operatorPort = await listen(operatorServer);
+  // Fail at the actual rendezvous boundary instead of spending every PTY
+  // timeout on a fixture operator that the installed client cannot identify.
+  const identityResponse = await fetch(`http://127.0.0.1:${operatorPort}/api/tui/identity`);
+  const identity = await identityResponse.json();
+  expect(identityResponse.status, JSON.stringify(identity)).toBe(200);
+  expect(identity).toMatchObject({
+    schemaVersion: 1,
+    workspaceId: WORKSPACE,
+    agentChat: { scope: `workspace:${WORKSPACE}` },
+  });
 }, 900_000);
 
 afterAll(async () => {
@@ -412,12 +422,9 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('Agent Chat');
       await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
 
-      // Exercise the visible agent/session picker, not a hidden API shortcut.
-      pane.escape(); // leave the composer so `s` owns the picker binding
-      await pane.waitFor('i type · v speak');
-      pane.write('s');
-      await pane.waitFor('New operator session');
-      pane.enter();
+      // The first composer submission owns session creation. `s` is global
+      // Sessions navigation; it no longer opens an agent-chat session picker.
+      pane.escape();
       await pane.waitFor('i type · v speak');
 
       pane.write('i');
