@@ -364,6 +364,22 @@ export async function dispatchPendingGradingAudits(
   return { requestedTargetIds, receipts };
 }
 
+/**
+ * Periodic repair entry point for the pending-audit queue. A completion refusal
+ * is the normal trigger for the first dispatch, but the launched judge can learn
+ * about a quota/auth failure after that short startup probe has ended. Re-running
+ * the same bounded, idempotency-keyed dispatcher lets it inspect the old task's
+ * now-terminal log and take the existing safe retirement/fallback path. Keep this
+ * as a named wrapper so a routine can own the clock without duplicating dispatch
+ * rules or creating a second launch surface.
+ */
+export async function reconcilePendingGradingAudits(
+  input: Omit<DispatchPendingGradingAuditsInput, 'targetIds'>,
+  deps: DispatchPendingGradingAuditsDeps = {},
+): Promise<PendingGradingAuditDispatchResult> {
+  return dispatchPendingGradingAudits(input, deps);
+}
+
 /** P-013 write-side gate. Fail-soft to OFF (no stamp — pre-P-013 behavior) when flag
  *  infra is unavailable: early boot and unit tests must never lose a scorecard over
  *  an audit annotation. */

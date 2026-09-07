@@ -6,6 +6,7 @@ import {
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   GRADING_AUDIT_DISPATCH_LIMIT,
   GRADING_INTEGRITY_RUBRIC_REF,
+  reconcilePendingGradingAudits,
   type DispatchPendingGradingAuditsDeps,
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
@@ -306,5 +307,62 @@ describe('dispatchPendingGradingAudits', () => {
         }),
       }),
     ]);
+  });
+
+  it('reconciles a quota failure that appears after the startup probe on a later sweep', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-delayed-quota')]);
+    d.launch
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-delayed', logPath: '/tmp/delayed.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: true,
+          launch: { tasks: [{ taskId: 'task-delayed', logPath: '/tmp/delayed.log' }] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        launchResult({
+          deduped: false,
+          launch: { tasks: [{ taskId: 'task-recovery', logPath: '/tmp/recovery.log' }] },
+        }),
+      );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    let delayedLog = 'healthy startup probe';
+    const readLogTail = vi.fn((path: string) => (path.includes('delayed') ? delayedLog : 'healthy fallback boot'));
+
+    const initial = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-delayed-quota'], ctx, harness: 'papercusp' },
+      { ...d, killTask, readLogTail, sleep: async () => undefined, terminalLogMaxRechecks: 0 },
+    );
+    delayedLog = "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)";
+
+    const recovered = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      { ...d, killTask, readLogTail, sleep: async () => undefined, terminalLogMaxRechecks: 0 },
+    );
+
+    expect(initial.receipts).toEqual([expect.objectContaining({ issueId: 'EI-delayed-quota', state: 'launched' })]);
+    expect(killTask).toHaveBeenCalledWith('task-delayed', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(recovered.receipts).toEqual([
+      expect.objectContaining({
+        issueId: 'EI-delayed-quota',
+        state: 'launched',
+        terminalRecovery: expect.objectContaining({
+          retiredTaskIds: ['task-delayed'],
+          codes: ['model_quota_exhausted'],
+        }),
+      }),
+    ]);
+    expect(d.launch.mock.calls[2]?.[0]).toEqual(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^grading-audit:EI-delayed-quota:recovery:[a-f0-9]{16}$/),
+        agent: 'codex',
+      }),
+    );
   });
 });
