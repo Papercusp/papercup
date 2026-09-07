@@ -171,6 +171,25 @@ async function getIssueTerminal(id: string) {
   return rows[0] ?? null;
 }
 
+async function getIssueLifecycle(id: string) {
+  const rows = await db.sql<
+    {
+      state: string;
+      title: string;
+      origin: string;
+      fed_ts: number | null;
+      terminal_owner: string | null;
+      terminal_completion_ref: string | null;
+      authority: string | null;
+      payload: Record<string, unknown> | null;
+    }[]
+  >`
+    SELECT state, title, origin, fed_ts, terminal_owner, terminal_completion_ref, authority, payload
+      FROM harness_shared.engineer_issues
+     WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+  return rows[0] ?? null;
+}
+
 async function getIssueBaseRows(id: string) {
   return db.sql<{ feature_id: string; harness_slug: string; status: string; origin: string }[]>`
     SELECT feature_id, harness_slug, status, origin
@@ -309,6 +328,109 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect((await getIssue('EI-9'))?.title).toBe('v300');
   });
 
+  it('does not let a later remote open snapshot erase a local terminal result without explicit reopen proof', async () => {
+    const p = proj();
+    const completionEvidence = {
+      summary: 'local completion survived',
+      verifiedHow: 'integration test',
+      testsRun: 'vitest',
+      testResult: 'PASS',
+    };
+    const assumptions = { declared: 'none', resolvedAt: new Date(100_000).toISOString() };
+
+    await p.writeToPg(
+      issueRow({
+        issue_id: 'EI-terminal-regression',
+        title: 'locally completed item',
+        state: 'done',
+        terminal_owner: 'agent-local',
+        terminal_completion_ref: 'local completion ref',
+        authority: 'committed',
+        payload: { _completionEvidence: completionEvidence, _assumptions: assumptions },
+      }),
+      { ts: 100, fedHlc: '100:00000:local', origin: 'local', authorPubkey: 'local-device' },
+    );
+    const before = await getIssueLifecycle('EI-terminal-regression');
+
+    // This peer never observed the completion. Its later clock makes the op a
+    // legitimate LWW winner, but its bare open state is not an intentional reopen.
+    await p.writeToPg(
+      issueRow({
+        issue_id: 'EI-terminal-regression',
+        title: 'later stale peer edit',
+        state: 'open',
+        terminal_owner: null,
+        terminal_completion_ref: null,
+        authority: null,
+        payload: { peerEdit: true },
+      }),
+      { ts: 200, fedHlc: '200:00000:peer', origin: 'remote', authorPubkey: 'peer-device' },
+    );
+
+    expect(await getIssueLifecycle('EI-terminal-regression')).toEqual(before);
+  });
+
+  it('accepts a later remote reopen only when its newest history entry archives the exact terminal result', async () => {
+    const p = proj();
+    const completionEvidence = {
+      summary: 'completion intentionally retracted',
+      verifiedHow: 'integration test',
+      testsRun: 'vitest',
+      testResult: 'PASS',
+    };
+    const assumptions = { declared: 'none', resolvedAt: new Date(100_000).toISOString() };
+    await p.writeToPg(
+      issueRow({
+        issue_id: 'EI-explicit-reopen',
+        title: 'locally completed item',
+        state: 'done',
+        terminal_owner: 'agent-local',
+        terminal_completion_ref: 'local completion ref',
+        authority: 'committed',
+        payload: { _completionEvidence: completionEvidence, _assumptions: assumptions },
+      }),
+      { ts: 100, fedHlc: '100:00000:local', origin: 'local', authorPubkey: 'local-device' },
+    );
+
+    const reopenEntry = {
+      at: new Date(200_000).toISOString(),
+      by: 'agent-peer',
+      force: true,
+      prevState: 'done',
+      terminalOwner: 'agent-local',
+      terminalCompletionRef: 'local completion ref',
+      completionAuthority: 'committed',
+      terminalCompletionEvidence: completionEvidence,
+      assumptions,
+    };
+    await p.writeToPg(
+      issueRow({
+        issue_id: 'EI-explicit-reopen',
+        title: 'explicitly reopened by peer',
+        state: 'open',
+        terminal_owner: null,
+        terminal_completion_ref: null,
+        authority: 'invalid',
+        payload: { reopenHistory: [reopenEntry] },
+      }),
+      { ts: 200, fedHlc: '200:00000:peer', origin: 'remote', authorPubkey: 'peer-device' },
+    );
+
+    const after = await getIssueLifecycle('EI-explicit-reopen');
+    expect(after).toMatchObject({
+      state: 'open',
+      title: 'explicitly reopened by peer',
+      origin: 'remote',
+      fed_ts: 200,
+      terminal_owner: null,
+      terminal_completion_ref: null,
+      authority: 'invalid',
+    });
+    expect(after?.payload?._completionEvidence).toBeUndefined();
+    expect(after?.payload?._assumptions).toBeUndefined();
+    expect(after?.payload?.reopenHistory).toEqual([reopenEntry]);
+  });
+
   it('coalesces a stale reopen onto the exact non-terminal watchdog winner and stays idempotent', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -348,7 +470,26 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
         issue_id: 'EI-watchdog-loser',
         state: 'open',
         title: 'stale replay must not reopen or overwrite either row',
-        payload,
+        // Carry a structurally valid explicit reopen record so this fixture gets
+        // past the terminal-regression guard and still exercises the independent
+        // migration-865 unique-index recovery path below. Bare open replays are
+        // covered by EI-terminal-regression above and never reach this 23505.
+        payload: {
+          ...payload,
+          reopenHistory: [
+            {
+              at: new Date(300_000).toISOString(),
+              by: 'peer',
+              force: true,
+              prevState: 'resolved',
+              terminalOwner: null,
+              terminalCompletionRef: null,
+              completionAuthority: null,
+              terminalCompletionEvidence: null,
+              assumptions: null,
+            },
+          ],
+        },
       });
       const replayProvenance = {
         ts: 300,

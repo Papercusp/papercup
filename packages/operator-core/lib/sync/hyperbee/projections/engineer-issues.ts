@@ -27,6 +27,7 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { composeEngineerIssueKey, parseEngineerIssueKey } from '../feature-issue-op-keys';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../../work-item-dispatch-states';
 
 /** Wire-shape of an engineer_issues row in Hyperbee — the federated subset plus the
  *  capture-stamped `harness_slug` (the demux key). Defensive on every field. */
@@ -209,6 +210,7 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
 // could ever land on a peer that already held the row. A missing `created_ts` (every
 // pre-688 op) now fails OPEN rather than being judged against an invented value.
 const COLLISION_CREATED_AT_TOLERANCE_MS = 5_000;
+const FEDERATED_TERMINAL_STATES = [...ANY_FAMILY_TERMINAL_STATES];
 
 async function isDistinctEntityCollision(
   sql: postgres.Sql,
@@ -631,6 +633,44 @@ async function writeToPg(
                           work_items.status, work_items.taken_by, work_items.payload::text,
                           work_items.terminal_owner, work_items.terminal_completion_ref,
                           work_items.terminal_reason, work_items.authority)))
+      -- EI-22581437944679741: a later remote OPEN snapshot is not proof that a
+      -- terminal row was deliberately reopened. The local lifecycle writer records
+      -- an explicit reopen by appending the exact displaced completion to the newest
+      -- payload.reopenHistory entry. Require that proof atomically here; a peer that
+      -- never observed the close otherwise erases the terminal result merely because
+      -- its unrelated edit has a later federation clock.
+      AND (
+        EXCLUDED.origin IS DISTINCT FROM 'remote'
+        OR NOT (
+          work_items.status = ANY(${FEDERATED_TERMINAL_STATES}::text[])
+          AND NOT (EXCLUDED.status = ANY(${FEDERATED_TERMINAL_STATES}::text[]))
+        )
+        OR (
+          jsonb_typeof(EXCLUDED.payload -> 'reopenHistory' -> -1) = 'object'
+          AND NULLIF(btrim(EXCLUDED.payload -> 'reopenHistory' -> -1 ->> 'at'), '') IS NOT NULL
+          AND NULLIF(btrim(EXCLUDED.payload -> 'reopenHistory' -> -1 ->> 'by'), '') IS NOT NULL
+          AND jsonb_typeof(EXCLUDED.payload -> 'reopenHistory' -> -1 -> 'force') = 'boolean'
+          AND EXCLUDED.payload -> 'reopenHistory' -> -1 ->> 'prevState' = work_items.status
+          AND (EXCLUDED.payload -> 'reopenHistory' -> -1 ->> 'terminalOwner')
+                IS NOT DISTINCT FROM work_items.terminal_owner
+          AND (EXCLUDED.payload -> 'reopenHistory' -> -1 ->> 'terminalCompletionRef')
+                IS NOT DISTINCT FROM work_items.terminal_completion_ref
+          AND (EXCLUDED.payload -> 'reopenHistory' -> -1 ->> 'completionAuthority')
+                IS NOT DISTINCT FROM work_items.authority
+          AND NULLIF(
+                EXCLUDED.payload -> 'reopenHistory' -> -1 -> 'terminalCompletionEvidence',
+                'null'::jsonb
+              ) IS NOT DISTINCT FROM (work_items.payload -> '_completionEvidence')
+          AND NULLIF(
+                EXCLUDED.payload -> 'reopenHistory' -> -1 -> 'assumptions',
+                'null'::jsonb
+              ) IS NOT DISTINCT FROM (work_items.payload -> '_assumptions')
+          -- A prior reopen retained on a re-closed row is not authority to reopen
+          -- it again. The lifecycle writer always appends a fresh newest entry.
+          AND (EXCLUDED.payload -> 'reopenHistory' -> -1) IS DISTINCT FROM
+              (work_items.payload -> 'reopenHistory' -> -1)
+        )
+      )
     `;
   } catch (error) {
     // The physical-row ON CONFLICT above cannot arbitrate migration 865's
