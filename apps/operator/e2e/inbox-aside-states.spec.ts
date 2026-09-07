@@ -70,11 +70,11 @@ function resolver(state: { mode: Mode }) {
   };
 }
 
-async function openSplit(page: Page): Promise<void> {
+async function openSplit(page: Page, theme: "light" | "dark" = "dark"): Promise<void> {
   // `portalEmbed=1` bounds the surface to the frame (html[data-portal-embed]);
   // without it the document scrolls and every height reading is vacuous.
   const response = await page.goto(
-    baseURL + "/inbox?portalEmbed=1&portalTheme=dark",
+    baseURL + "/inbox?portalEmbed=1&portalTheme=" + theme,
     { waitUntil: "domcontentloaded", timeout: 120_000 },
   );
   expect([200, 304]).toContain(response?.status() ?? 0);
@@ -174,7 +174,11 @@ function measureSelected(page: Page) {
     const rows = Array.from(document.querySelectorAll(".op-inbox__rowbtn")).map(rect);
     const selected = q(".op-inbox__row.is-selected");
     const selectedTitle = selected.querySelector(".op-inbox__title");
+    const bodyStyle = getComputedStyle(q(".op-inbox__detail-copy p"));
     return {
+      bodyFontSize: parseFloat(bodyStyle.fontSize),
+      bodyFontWeight: bodyStyle.fontWeight,
+      bodyLineHeight: parseFloat(bodyStyle.lineHeight),
       h2Tag: h2.tagName,
       h2Text: h2.textContent,
       h2Top: rect(h2).top,
@@ -262,6 +266,10 @@ for (const vp of VIEWPORTS) {
       expect(sel.opcis).toBe("aside-01");
       expect(sel.h2Tag).toBe("H2");
       expect(sel.h2Text).toBe("Inbox aside-row 1");
+      // Body copy must remain readable inside the host's bold question card.
+      expect(sel.bodyFontWeight).toBe("400");
+      expect(sel.bodyFontSize).toBeGreaterThanOrEqual(14);
+      expect(sel.bodyLineHeight / sel.bodyFontSize).toBeGreaterThanOrEqual(1.6);
       expect(sel.headingsInDetail).toBe(1);
       expect(sel.h2Top).toBeGreaterThanOrEqual(0);
       expect(sel.h2Top).toBeLessThan(vp.height / 2);
@@ -438,3 +446,34 @@ test.describe("stack — the op-chat sidebar's inbox face", () => {
     await expect(page.getByTestId("inbox-aside")).toHaveCount(0);
   });
 });
+
+for (const theme of ["light", "dark"] as const) {
+  test(`narrow Portal reading pane keeps normal text beside metadata in ${theme}`, async ({ page }) => {
+    test.setTimeout(180_000);
+    // A 1280px Portal leaves 1104px for the mounted Inbox after its docks/rail.
+    await page.setViewportSize({ width: 1104, height: 800 });
+    await stubInboxFlags(page);
+    const sync = await stubSyncQueries(page, resolver({ mode: "quiet" }));
+    await openSplit(page, theme);
+    await sync.waitForServed(["plans.attention"]);
+    await page.getByTestId("inbox-row-aside-01").click();
+    await expect(page.getByTestId("inbox-detail-body-copy")).toBeVisible();
+    const reading = await page.evaluate(() => {
+      const body = document.querySelector(".op-inbox__detail-copy")!;
+      const rail = document.querySelector(".op-inbox__detail-rail")!;
+      const bodyRect = body.getBoundingClientRect();
+      const style = getComputedStyle(body);
+      return {
+        width: bodyRect.width,
+        top: bodyRect.top,
+        metadataBottom: rail.getBoundingClientRect().bottom,
+        fontWeight: style.fontWeight,
+        fontSize: parseFloat(style.fontSize),
+      };
+    });
+    expect(reading.width).toBeGreaterThan(300);
+    expect(reading.top).toBeGreaterThanOrEqual(reading.metadataBottom);
+    expect(reading.fontWeight).toBe("400");
+    expect(reading.fontSize).toBeGreaterThanOrEqual(14);
+  });
+}
