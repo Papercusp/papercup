@@ -6,6 +6,7 @@
  * a preservation baseline, not a saving attributable to this plan.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import {
   renderCarryBriefText, type CarryBrief,
 } from '../../carry-brief';
@@ -15,10 +16,14 @@ import {
 } from '../../carry-note';
 import readTool from '../sessions/read';
 import handoffTool from '../coordination/tools/handoff';
+import { openHandoff } from '../coordination/handoffs';
+import { applyResultProjection } from '../../result-projection/apply';
+import { parseProjection } from '../../result-projection/parse';
 import { metadataHarness } from './coordination-metadata-fixtures';
 
 const io = vi.hoisted(() => ({
   database: vi.fn(() => { throw new Error('unexpected live database access in metadata fixture'); }),
+  putEvent: vi.fn(async (_surface: string, _id: string, _record: unknown) => {}),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
@@ -30,6 +35,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../../memory/backend-selection', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../memory/backend-selection')>(),
   initMemoryBackendSelection: async () => {},
+}));
+vi.mock('../coordination/log', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../coordination/log')>(),
+  coordLog: { putEvent: io.putEvent },
+}));
+vi.mock('../coordination/identity', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../coordination/identity')>(),
+  resolveAgentIdentity: () => ({
+    ownerId: 'metadata-fixture-owner', ownerLabel: null,
+    source: 'omp-hook-session', workspaceId: 'metadata-fixture-workspace', userId: null,
+  }),
 }));
 
 afterEach(() => {
@@ -181,5 +197,63 @@ describe('P-001 input-contract preservation baseline', () => {
     // Only the schema is exercised; no handoff, flush gate, or wake is invoked.
     expect(handoffTool.args.safeParse({}).success).toBe(true);
     expect(handoffTool.args.safeParse({ accept_msg_id: 'fixture-existing-handoff' }).success).toBe(true);
+  });
+
+  it('pins the schema/handler mismatch without writing or waking a recipient', async () => {
+    const context: UnifiedToolContext = {
+      harnessSlug: metadataHarness, workspaceId,
+      log: () => {}, signal: new AbortController().signal,
+      progress: () => {}, emit: () => {},
+    };
+    const acceptedInput = handoffTool.args.parse({});
+    const result = await handoffTool.handler(acceptedInput, context);
+    expect(result.isError).toBe(true);
+    const text = result.content.find((part) => part.type === 'text');
+    expect(text?.type).toBe('text');
+    if (!text || text.type !== 'text') throw new Error('missing handler result');
+    expect(JSON.parse(text.text)).toMatchObject({ ok: false, error: 'missing_fields' });
+    expect(io.putEvent).not.toHaveBeenCalled();
+  });
+
+  it('preserves long handoff text at the actual writer seam, not an inbox display limit', async () => {
+    // These are sample lengths, NOT a new maximum or a claim about dispatch
+    // admission. The input schema and writer both preserve these exact values.
+    const input = {
+      to: ['fixture-reviewer'],
+      summary: 's'.repeat(4097), body: 'b'.repeat(16001),
+    };
+    expect(handoffTool.args.safeParse(input).success).toBe(true);
+    const record = await openHandoff({
+      ownerId, ownerLabel: null, workspaceId, userId: null, source: 'omp-hook-session',
+    }, input);
+    expect(record.summary).toBe(input.summary);
+    expect(record.body).toBe(input.body);
+    expect(io.putEvent).toHaveBeenCalledExactlyOnceWith('handoffs', record.msg_id, record);
+    expect(record).not.toHaveProperty('next_action');
+    expect(record).not.toHaveProperty('files_modified');
+  });
+});
+
+describe('P-001 projection root preservation', () => {
+  const item = { id: operationId, workItem: { state: 'open', privateDetail: 'not selected' } };
+
+  it.each([
+    { body: [item], pick: ['[].id', '[].workItem.state'], expected: [{ id: operationId, workItem: { state: 'open' } }] },
+    {
+      body: { ok: true, results: [item] },
+      pick: ['results[].id', 'results[].workItem.state'],
+      expected: { results: [{ id: operationId, workItem: { state: 'open' } }] },
+    },
+  ])('projects the emitted root rather than guessing an object root for every tool', ({ body, pick, expected }) => {
+    const parsed = parseProjection({ pick });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const projected = applyResultProjection({
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    }, parsed.spec);
+    const text = projected.content.find((part) =>
+      part.type === 'text' && typeof part.text === 'string' && !part.text.includes('[projection:'));
+    expect(text).toBeDefined();
+    expect(JSON.parse(String(text?.text))).toEqual(expected);
+    expect(projected._meta?.resultProjection).toMatchObject({ applied: true });
   });
 });
