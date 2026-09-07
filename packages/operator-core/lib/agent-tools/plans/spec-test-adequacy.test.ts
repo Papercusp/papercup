@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getBuildInfo } from '../../build-info';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import {
@@ -75,6 +76,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
       // WI-2146375: every dimension here reads 'current', which is only reachable when a
       // comparison input WAS supplied — `unknown` is what you get when nobody asked.
       comparisonSupplied: true,
+      provenance: 'server-measured',
       overall: 'current',
       dimensions: {
         spec: 'current',
@@ -152,10 +154,19 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       clause: clause(),
       evidence: [bound],
       current,
+      harness: 'papercusp',
       classRef: 'plan-class-feature-ship',
     });
     const recipe = result.scorecardDraft.rerunRecipe;
     expect(evaluatorArgsSchema.safeParse(recipe.args).success).toBe(true);
+    expect(recipe.args.harness).toBe('papercusp');
+    expect(recipe.args.current).toEqual([
+      {
+        evidenceKind: bound.evidenceKind,
+        evidenceRef: bound.evidenceRef,
+        ...bound.fingerprints,
+      },
+    ]);
     const args = JSON.stringify(recipe.args);
 
     for (const criterion of ADEQUACY_CRITERIA) {
@@ -208,6 +219,69 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.traceability.evidence).toContain('no durable rerun anchor');
     expect(result.wouldBlock).toContain('traceability');
     expect(result.verdict).toBe('unknown');
+  });
+
+  it('does not pass execution-integrity from author-attested booleans without a ledger reference', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          evidenceRef: 'packages/operator-core/lib/reconnect.integration.test.ts#targeted-counterexamples',
+          coverageEvidenceRef: null,
+          testRunId: null,
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(result.ratings['execution-integrity'].evidence).toContain(
+      'no testRunId or coverageEvidenceRef in the execution ledger',
+    );
+    expect(result.ratings['execution-integrity'].evidence).toContain('executed=true');
+    expect(result.verdict).toBe('unknown');
+  });
+
+  it('does not let a ledger-backed sibling hide an unbacked executable binding', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({ evidenceRef: 'test/reconnect.integration.ts#recorded', coverageEvidenceRef: 42, testRunId: null }),
+        evidence({
+          evidenceRef: 'test/reconnect.integration.ts#attested-only',
+          coverageEvidenceRef: null,
+          testRunId: null,
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(result.ratings['execution-integrity'].evidence).toContain('attested-only');
+    expect(result.verdict).toBe('unknown');
+  });
+
+  it('surfaces a provisional scorecard proof base in every criterion evidence string', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          provisionalProofBase: true,
+          provisionalScorecard: {
+            issueId: 'EI-123',
+            stampedAt: '2026-08-20T17:09:00.000Z',
+            violatableKeys: ['criterion-a'],
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.verdict).toBe('pass');
+    for (const criterion of ADEQUACY_CRITERIA) {
+      expect(result.ratings[criterion].evidence).toContain('provisionalProofBase=true');
+      expect(result.ratings[criterion].evidence).toContain('EI-123');
+    }
   });
 
   it('emits a submittable get-spec-evidence probe when the required layer is missing', () => {
@@ -398,6 +472,50 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(unknown.verdict).toBe('fail');
   });
 
+  it('does not rate caller-attested fingerprint equality as fresh', () => {
+    const attested = evidence({
+      currentness: classifySpecEvidenceCurrentness(
+        {
+          spec_is_current: true,
+          source_fingerprint: 'git:abc',
+          test_fingerprint: 'sha256:test',
+          fixture_fingerprint: 'sha256:fixture',
+          rubric_fingerprint: 'sha256:rubric',
+          environment_fingerprint: 'node:24',
+          coverage_evidence_ref: 42,
+          coverage_evidence_present: true,
+          test_run_id: 43,
+          test_run_present: true,
+        },
+        {
+          evidenceKind: 'coverage-census',
+          evidenceRef: 'surface:reconnect',
+          sourceFingerprint: 'git:abc',
+          testFingerprint: 'sha256:test',
+          fixtureFingerprint: 'sha256:fixture',
+          rubricFingerprint: 'sha256:rubric',
+          environmentFingerprint: 'node:24',
+        },
+      ),
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [attested],
+      current: [
+        {
+          evidenceKind: attested.evidenceKind,
+          evidenceRef: attested.evidenceRef,
+          ...attested.fingerprints,
+        },
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.freshness).toMatchObject({ rating: 'unknown' });
+    expect(result.ratings.freshness.evidence).toContain('attested-current');
+    expect(result.verdict).toBe('unknown');
+  });
+
   it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {
     const staleHistorical = evidence({
       evidenceRef: 'surface:historical-stale',
@@ -533,6 +651,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       const original = evaluateSpecTestAdequacy({
         clause: clause(),
         evidence: reload(current),
+        harness: 'papercusp',
         current,
         classRef: 'plan-class-feature-ship',
       });
@@ -542,9 +661,11 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
           : asStructuredObservation({ rerunRecipe: original.scorecardDraft.rerunRecipe })?.rerunRecipe;
       expect(recipe).toBeDefined();
       const args = evaluatorArgsSchema.parse(recipe!.args);
+      expect(args.harness).toBe('papercusp');
       const rerun = evaluateSpecTestAdequacy({
         clause: clause(),
         evidence: reload(args.current),
+        harness: args.harness,
         current: args.current,
         classRef: args.classRef,
       });
@@ -558,7 +679,11 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
         classRef: args.classRef,
       });
       expect(withoutFingerprints.evidenceRefs).toContain(legacy.evidenceRef);
-      expect(withoutFingerprints.verdict).not.toBe(original.verdict);
+      // Both paths are non-green now: the caller-supplied recipe is explicitly
+      // attested-current, while omission is unknown because no comparison was
+      // requested. The important distinction is the selected evidence cohort and
+      // the reason recorded on freshness, not a fabricated pass on either path.
+      expect(withoutFingerprints.verdict).toBe('unknown');
       expect(withoutFingerprints.ratings.freshness.evidence).toContain('current[] was omitted');
       expect(withoutFingerprints.ratings.freshness.evidence).toContain('not evidence that stored bindings are stale');
       expect(withoutFingerprints.ratings.freshness.evidence).toContain('rerunRecipe.current.fingerprints');
@@ -591,12 +716,17 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
       evidence: [evidence()],
+      harness: 'papercusp',
       classRef,
     });
     const recipe = result.scorecardDraft?.rerunRecipe;
     if (!recipe) throw new Error('expected a scorecardDraft with a rerunRecipe');
     return recipe;
   }
+
+  it('stamps each generated recipe with the loaded evaluator build identity', () => {
+    expect(recipeFor().evaluatorBuild).toEqual(getBuildInfo());
+  });
 
   it("records args that PARSE against the evaluator's own schema, classRef included", () => {
     const recipe = recipeFor();

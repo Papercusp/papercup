@@ -1,6 +1,12 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
+import { getBuildInfo } from '../../build-info';
 import type { SpecBehaviorClass, SpecClauseRevision } from './spec-clauses-store';
-import type { EvidenceCurrentInput, EvidenceCurrentness, SpecEvidenceKind } from './spec-evidence-store';
+import type {
+  EvidenceCurrentInput,
+  EvidenceCurrentness,
+  ProvisionalScorecardProof,
+  SpecEvidenceKind,
+} from './spec-evidence-store';
 import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
@@ -54,6 +60,9 @@ export interface SpecEvidenceForAdequacy {
   testRunId: number | null;
   details: Record<string, unknown>;
   currentness: EvidenceCurrentness;
+  /** True when evidenceRef resolves to a provisional scorecard working note. */
+  provisionalProofBase?: boolean;
+  provisionalScorecard?: ProvisionalScorecardProof;
 }
 
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
@@ -75,6 +84,7 @@ interface AdequacyDetails {
   outcome?: string;
   targeted?: boolean;
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
+  provisionalProofBase?: boolean;
 }
 
 interface L4Waiver {
@@ -197,6 +207,9 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
           ) as AdequacyDetails['coverageRungs'],
         }
       : {}),
+    ...(evidence.provisionalProofBase === true || raw.provisionalProofBase === true
+      ? { provisionalProofBase: true }
+      : {}),
   };
 }
 
@@ -228,7 +241,10 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
     `ref=${JSON.stringify(row.evidenceRef)}`,
     `lineage=${lineage.lineage}`,
     `lineageReason=${JSON.stringify(lineage.reason)}`,
+    details.provisionalProofBase ? 'provisionalProofBase=true' : null,
+    row.provisionalScorecard ? `provisionalScorecard=${JSON.stringify(row.provisionalScorecard)}` : null,
     `currentness=${row.currentness.overall}`,
+    `currentnessProvenance=${row.currentness.provenance ?? 'legacy-implicit'}`,
     `sourceFingerprint=${JSON.stringify(row.fingerprints.sourceFingerprint)}`,
     row.fingerprints.testFingerprint ? `testFingerprint=${JSON.stringify(row.fingerprints.testFingerprint)}` : null,
     row.fingerprints.fixtureFingerprint
@@ -442,8 +458,10 @@ function rerunRecipeFor(
   clause: SpecClauseRevision,
   evidence: SpecEvidenceForAdequacy[],
   current: EvidenceCurrentInput[] | undefined,
+  harness: string | undefined,
   classRef: PlanClassRubricRef,
 ): SpecTestAdequacyRerunRecipe {
+  const evaluatorBuild = getBuildInfo();
   const selectedEvidence = [...new Map(
     evidence.map((row) => [`${row.evidenceKind}\0${row.evidenceRef}`, {
       evidenceKind: row.evidenceKind,
@@ -470,6 +488,10 @@ function rerunRecipeFor(
   return {
     schemaVersion: 1,
     evaluator: 'plans:evaluate-spec-test-adequacy',
+    evaluatorBuild: {
+      sha: evaluatorBuild.sha,
+      version: evaluatorBuild.version,
+    },
     classRef,
     // Submittable as-is. `selection` below spells planSlug/specId/specRevision/
     // specFingerprint, none of which the evaluator accepts — it takes slug/specIds and
@@ -477,6 +499,7 @@ function rerunRecipeFor(
     // its own evaluator with `invalid_args`, leaving a re-runner to guess classRef and
     // silently move plan-class-risk-floor.
     args: {
+      ...(harness !== undefined ? { harness } : {}),
       slug: clause.planSlug,
       classRef,
       specIds: [clause.specId],
@@ -525,6 +548,8 @@ export function evaluateSpecTestAdequacy(input: {
   clause: SpecClauseRevision;
   evidence: SpecEvidenceForAdequacy[];
   classRef: PlanClassRubricRef;
+  /** Resolved harness scope to persist for operator-scope reruns. */
+  harness?: string;
   /** The caller-attested current fingerprints used by listSpecEvidence. */
   current?: EvidenceCurrentInput[];
   now?: Date;
@@ -537,7 +562,11 @@ export function evaluateSpecTestAdequacy(input: {
       row.specRevision === clause.revision &&
       row.specFingerprint === clause.contentHash,
   );
-  const currentEvidence = exactEvidence.filter((row) => row.currentness.overall === 'current');
+  const currentEvidence = exactEvidence.filter(
+    (row) =>
+      row.currentness.overall === 'current' ||
+      (row.currentness.overall === 'unknown' && row.currentness.provenance === 'attested-current'),
+  );
   // Immutable historical bindings remain available to the evidence store, but once an exact
   // current cohort exists they can neither satisfy nor veto the verdict for that cohort. When
   // there is no current cohort, retain the full exact set so stale/unknown diagnostics survive.
@@ -702,6 +731,10 @@ export function evaluateSpecTestAdequacy(input: {
   const executable = evidence.filter((row) =>
     ['test', 'coverage-census', 'mutation', 'counterexample', 'check', 'operational'].includes(row.evidenceKind),
   );
+  const hasExecutionLedgerReference = (row: SpecEvidenceForAdequacy): boolean =>
+    (Number.isSafeInteger(row.testRunId) && row.testRunId! > 0) ||
+    (Number.isSafeInteger(row.coverageEvidenceRef) && row.coverageEvidenceRef! > 0);
+  const unbackedExecution = executable.filter((row) => !hasExecutionLedgerReference(row));
   const explicitBadExecution = executable.some((row) => {
     const d = detailsOf(row);
     return (
@@ -713,7 +746,13 @@ export function evaluateSpecTestAdequacy(input: {
   });
   const successfulExecution = executable.some((row) => {
     const d = detailsOf(row);
-    return d.collected === true && d.skipped === false && d.executed === true && SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '');
+    return (
+      hasExecutionLedgerReference(row) &&
+      d.collected === true &&
+      d.skipped === false &&
+      d.executed === true &&
+      SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+    );
   });
   ratings['execution-integrity'] = explicitBadExecution
     ? {
@@ -731,31 +770,41 @@ export function evaluateSpecTestAdequacy(input: {
           }),
         ),
       }
-    : successfulExecution
+    : unbackedExecution.length > 0
       ? {
-          rating: 'pass',
+          rating: 'unknown',
           evidence: evidenceWithBindings(
-            `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
-            executable.filter((row) => {
-              const d = detailsOf(row);
-              return (
-                d.collected === true &&
-                d.skipped === false &&
-                d.executed === true &&
-                SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-              );
-            }),
+            `Executable binding(s) attest execution details but have no testRunId or coverageEvidenceRef in the execution ledger for ${clauseIdentity(clause)}; author-attested booleans cannot establish execution-integrity.`,
+            unbackedExecution,
           ),
+          suggestion:
+            'Bind a recorded testRunId or coverageEvidenceRef; details.adequacy booleans alone are insufficient.',
         }
-      : {
-          rating: executable.length ? 'unknown' : 'fail',
-          evidence: executable.length
-            ? evidenceWithBindings(
-                `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
-                executable,
-              )
-            : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
-        };
+      : successfulExecution
+        ? {
+            rating: 'pass',
+            evidence: evidenceWithBindings(
+              `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
+              executable.filter((row) => {
+                const d = detailsOf(row);
+                return (
+                  d.collected === true &&
+                  d.skipped === false &&
+                  d.executed === true &&
+                  SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
+                );
+              }),
+            ),
+          }
+        : {
+            rating: executable.length ? 'unknown' : 'fail',
+            evidence: executable.length
+              ? evidenceWithBindings(
+                  `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
+                  executable,
+                )
+              : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
+          };
 
   const freshnessStates = evidence.map((row) => row.currentness.overall);
   ratings.freshness = freshnessStates.includes('stale')
@@ -774,7 +823,12 @@ export function evaluateSpecTestAdequacy(input: {
               const unknownEvidence = evidence.filter((row) => row.currentness.overall === 'unknown');
               const refs = unknownEvidence.map((row) => row.evidenceRef).join(', ');
               const callerOmittedCurrent = unknownEvidence.some((row) => !row.currentness.comparisonSupplied);
-              return callerOmittedCurrent
+              const callerAttestedCurrent = unknownEvidence.some(
+                (row) => row.currentness.provenance === 'attested-current',
+              );
+              return callerAttestedCurrent
+                ? `Current fingerprints were caller-supplied and are labeled attested-current; matching stored values cannot establish independently measured freshness, so freshness is unknown for this replay input. Missing comparison for: ${refs}.`
+                : callerOmittedCurrent
                 ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
                 : `Current fingerprints are missing for: ${refs}.`;
             })(),
@@ -794,7 +848,7 @@ export function evaluateSpecTestAdequacy(input: {
   const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
   ratings['plan-class-risk-floor'] = risk.rating;
 
-  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, classRef);
+  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef);
   appendRatingRerunProbes(ratings, rerunRecipe);
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
