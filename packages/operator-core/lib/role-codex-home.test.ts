@@ -465,6 +465,48 @@ describe('writeSuCodexHome', () => {
     );
   });
 
+  it('rejects Spark at role and SU CODEX_HOME boundaries while preserving an allowed-model control', async () => {
+    const { writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
+
+    expect(() =>
+      writeRoleCodexHome({
+        sessionKey: 'spark-role-denied',
+        mcpUrl: 'http://x/api/mcp?role=worker',
+        promptText: 'P',
+        model: 'openai-codex/gpt-5.3-codex-spark:high',
+      }),
+    ).toThrow(/denied/i);
+    expect(() =>
+      writeSuCodexHome({
+        sessionKey: 'spark-su-denied',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'P',
+        sid: 'su-spark-denied',
+        model: 'gpt-5.3-codex-spark',
+      }),
+    ).toThrow(/denied/i);
+
+    const role = writeRoleCodexHome({
+      sessionKey: 'spark-role-control',
+      mcpUrl: 'http://x/api/mcp?role=worker',
+      promptText: 'P',
+      model: 'gpt-5.5:high',
+    });
+    const su = writeSuCodexHome({
+      sessionKey: 'spark-su-control',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-spark-control',
+      model: 'gpt-5.5:high',
+    });
+    expect(readFileSync(role.configPath, 'utf8')).toContain(
+      'model = "gpt-5.5"\nmodel_reasoning_effort = "high"\n',
+    );
+    expect(readFileSync(su.configPath, 'utf8')).toContain(
+      'model = "gpt-5.5"\nmodel_reasoning_effort = "high"\n',
+    );
+  });
+
   it('bakes the exact context roots into fresh and repaired SU homes', async () => {
     installStaleExtendedWindowRecord('gpt-5.6-terra');
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();

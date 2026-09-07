@@ -483,6 +483,9 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       });
       expect(withoutFingerprints.evidenceRefs).toContain(legacy.evidenceRef);
       expect(withoutFingerprints.verdict).not.toBe(original.verdict);
+      expect(withoutFingerprints.ratings.freshness.evidence).toContain('current[] was omitted');
+      expect(withoutFingerprints.ratings.freshness.evidence).toContain('not evidence that stored bindings are stale');
+      expect(withoutFingerprints.ratings.freshness.evidence).toContain('rerunRecipe.current.fingerprints');
     },
   );
 

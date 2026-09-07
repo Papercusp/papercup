@@ -4947,6 +4947,34 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       completion: { summary: 'fixed it', verifiedHow: 'already-passing', testResult: '26/26 green' },
     };
 
+    it('does not downgrade a valid duplicate close whose nested verification says already-passing', async () => {
+      enforcement(true);
+      const duplicateTarget = 'EI-22594958409566705';
+      const duplicateItem = { ...item, id: 'WI-1', kind: 'change', family: 'issue', state: 'open' };
+      getWorkItem.mockResolvedValue(duplicateItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...duplicateItem, state: 'resolved' }));
+      resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: `papercup#${duplicateTarget}` });
+
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: {
+          summary: 'duplicate of the canonical work-item',
+          duplicateOf: duplicateTarget,
+          verification: {
+            verifiedHow: 'already-passing',
+            testsRun: 'npm run test:file -- packages/operator-core/lib/agent-tools/work_items/complete.test.ts',
+            testResult: 'PASS: focused integration test',
+          },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.completionAuthority).toBe('committed');
+      expect(stateOpts().completionAuthority).toBe('committed');
+      expect(r.terminalCriteriaWarning).toBeUndefined();
+    });
+
     /** Answer only for the enforcement flag, so other flag reads keep their own defaults. */
     const enforcement = (value: boolean) =>
       getFlag.mockImplementation(async (key: unknown) =>

@@ -351,7 +351,7 @@
     {
       "id": "EI-21578204583966626",
       "frozenOutcome": "candidate-shared-root-consolidation",
-      "frozenSourceSha256": "d244f6ab1112c43ec2a499a337478252dbb403e093c071cbfcdb8ac3e5cf050f7",
+      "frozenSourceSha256": "d244f6ab1112c43ec2a499a337478252dbb403e093c071cbfcdb8ac3e5cf050f",
       "currentState": "open",
       "currentOrigin": "local",
       "currentAssignee": null,

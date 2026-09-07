@@ -28,6 +28,11 @@ export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
 export const GRADING_AUDIT_DISPATCH_LIMIT = 50;
 /** Maximum scorecard history scanned when selecting an oldest-first backlog batch. */
 export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
+/**
+ * Automatic grading auditors must use the inference gateway so a quota-walled
+ * system/default credential cannot strand the audit queue before kickoff.
+ */
+export const GRADING_AUDIT_ACCOUNT = 'auto' as const;
 
 export type GradingAuditLaunchContext = Parameters<typeof launchAgentTool.handler>[1];
 type GradingAuditLaunchHandler = typeof launchAgentTool.handler;
@@ -162,9 +167,9 @@ export async function dispatchPendingGradingAudits(
           brief: gradingAuditBrief(card),
           ...(harness && harness !== '*' ? { harness } : {}),
           headless: true,
-          account: 'default',
+          account: GRADING_AUDIT_ACCOUNT,
           count: 1,
-          members: [{ role: 'judge', account: 'default' }],
+          members: [{ role: 'judge', account: GRADING_AUDIT_ACCOUNT }],
           label: `grading-audit:${issueId}`,
           idempotencyKey,
         } as never,

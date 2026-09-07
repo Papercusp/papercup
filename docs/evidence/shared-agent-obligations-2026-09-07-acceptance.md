@@ -19,6 +19,8 @@ The additional event-await store and unanswered-directed PostgreSQL tests passed
 
 The newly bound launch-agent / launch-on-plan checks passed 290 tests and the OMP injection checks passed 60 tests, with zero skips, at `e9f641f0a5`. Log: `/tmp/wi2147072-check-binding-tests-0927.log`.
 
+At the subsequent source check, every bound implementation file remained byte-identical to its tested revision. `leader-brief-shape.test.ts` had one TypeScript-only cast correction (`as unknown as`); its current focused router run `88060f43-eacc-4d67-879a-008c4bc3fd37` passed 26 tests, with zero failures, skips or collection errors. Seven affected bindings were refreshed as IDs **1390–1396**, with the current test-file SHA-256 snapshots and that supplemental execution recorded on each binding. The remaining historical execution observations retain their original timestamps. A new explicit-current adequacy evaluation passed all **19** clauses, with zero fail/unknown results. Current comparison payload: `/tmp/wi2147072-adequacy-current-1001.json`; bounded verdict record: `/tmp/wi2147072-adequacy-current-summary.json`.
+
 The separate provider, evaluator, leader brief, and brief-shape run passed 307 tests at `98d9146953` with no skips. Its 234 leader-brief tests supplement the checks above. The provider, evaluator, and leader-brief implementation files have no diff between that revision and `ddb59a866e`.
 
 The PostgreSQL goals checks execute the actual goal detail resolver, including the holder's exact turn-start obligation projection and canonical portfolio. The owner-report integration checks verify the newest complete exact-goal evidence across reporting channels and reject incomplete, wrong-subject, wrong-owner, wrong-workspace, and non-human rows.
@@ -51,7 +53,7 @@ The fifth rig successfully ran the real desktop at PID 3924823, display :91, por
 
 The exact parity sample was degraded at generation `9fdb18df0f498e361ca3`, observed 09:13:46.539Z, with a turn-start receipt of one delivered entry, seven omitted, 255 characters and 64 estimated tokens. The screenshot is a separate later refresh at generation `6f9c85c1cfaf49675789`, observed 09:15:11.225Z. Complete payload, DOM observations and journey checks are in [the GUI record](shared-agent-obligations-2026-09-07-gui-journey.json); [the screenshot](shared-agent-obligations-2026-09-07-goal-mode-state.png) was visually inspected. This exercises the live degraded/unknown path. Known/no-demand cases remain covered by component and PostgreSQL integration tests; no live opportunity was induced.
 
-Still required: complete rubric vetting repairs and independent implementation grading; the accountable acceptance verdict; feature-containing deployment proof; final audit and ship transition.
+Still required: independent grading-integrity audit of the revision-6 meta attestation and independent implementation grading (WI-10000514); the accountable acceptance verdict; feature-containing deployment proof; final audit and ship transition.
 
 ## Proof binding index
 

@@ -670,10 +670,14 @@ export function evaluateSpecTestAdequacy(input: {
       ? {
           rating: 'unknown',
           evidence: evidenceWithBindings(
-            `Current fingerprints are missing for: ${evidence
-              .filter((row) => row.currentness.overall === 'unknown')
-              .map((row) => row.evidenceRef)
-              .join(', ')}.`,
+            (() => {
+              const unknownEvidence = evidence.filter((row) => row.currentness.overall === 'unknown');
+              const refs = unknownEvidence.map((row) => row.evidenceRef).join(', ');
+              const callerOmittedCurrent = unknownEvidence.some((row) => !row.currentness.comparisonSupplied);
+              return callerOmittedCurrent
+                ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`
+                : `Current fingerprints are missing for: ${refs}.`;
+            })(),
             evidence.filter((row) => row.currentness.overall === 'unknown'),
           ),
         }

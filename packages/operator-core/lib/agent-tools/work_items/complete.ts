@@ -3363,11 +3363,18 @@ async function completeOne(
   try {
     terminalCriteria = evaluateCloseTerminalCriteria({
       itemKind: existing.kind,
-      // `status` and `terminalReason` are BOTH the requested terminal state on purpose: it is
-      // the only disposition this close carries, and work-items.ts derives the persisted
-      // `terminal_reason` column from exactly this value.
+      // Ordinary closes use the requested terminal state as their disposition. A valid
+      // non-self duplicate is different: it is an administrative "superseded by survivor"
+      // disposition, not a claim that this item was remediated. Feed the evaluator its
+      // non-remediating reason so `verifiedHow: 'already-passing'` can describe the existing
+      // survivor without downgrading an otherwise evidenced duplicate close. The persisted
+      // `terminal_reason` column still comes from the requested state in work-items.ts.
       status: String(effectiveState ?? ''),
-      terminalReason: effectiveState ? String(effectiveState) : null,
+      terminalReason: duplicateCloseCoverageException
+        ? 'duplicate'
+        : effectiveState
+          ? String(effectiveState)
+          : null,
       filesChanged: completionEvidenceForGate?.filesChanged,
       filesDeleted: completionEvidenceForGate?.filesDeleted,
       treeStamp,
