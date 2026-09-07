@@ -231,7 +231,12 @@ class PuiPane {
         expect(this.screen().split(needle).length - 1).toBeGreaterThanOrEqual(2);
       }, { timeout: 120_000, interval: 100 });
     } catch (cause) {
-      throw new Error(`Correlated reply was not rendered:\n${this.screen()}\nProduction traffic: ${JSON.stringify(sessionTraffic)}`, { cause });
+      const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
+        lifecycle: engine.adapter.host.descriptor().lifecycle,
+        diagnostics: engine.adapter.host.recent.map(({ event }) => event)
+          .filter((event) => event.type === 'error' || event.type === 'lifecycle'),
+      }));
+      throw new Error(`Correlated reply was not rendered:\n${this.screen()}\nProduction traffic: ${JSON.stringify(sessionTraffic)}\nEngine state: ${JSON.stringify(engineState)}`, { cause });
     }
     await this.waitFor('Message — Enter send', { timeoutMs: 120_000 });
   }
@@ -504,7 +509,8 @@ beforeAll(async () => {
             deferred: result?.deferred === true,
             advSessionId: result?.advSessionId,
             nativeSessionPresent: Boolean(result?.nativeSession),
-            ...(result?.error ? { errorCode: result.code, error: String(result.error).slice(0, 500) } : {}),
+            ...(result?.error ? { errorCode: result.code,
+              error: (typeof result.error === 'string' ? result.error : JSON.stringify(result.error)).slice(0, 500) } : {}),
           } : {}),
         };
         const existing = sessionTraffic.find((entry) =>
