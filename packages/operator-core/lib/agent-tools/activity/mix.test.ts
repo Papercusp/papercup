@@ -73,6 +73,12 @@ describe('activity:mix pure attribution', () => {
     expect(activityMode({ ts: 2, tool: 'capability:edit', args: { file_path: 'src/a.ts' } })).toBe('implement');
   });
 
+  it('classifies rubric reads as investigation instead of an unscoped other bucket', () => {
+    for (const tool of ['rubrics:get', 'rubrics:list', 'rubrics:search', 'rubrics:trend']) {
+      expect(activityMode({ ts: 1, tool, args: {} })).toBe('investigate');
+    }
+  });
+
   it('splits a burst that mentions multiple portfolio responsibilities', () => {
     const result = summarizeActivityMix([
       row(0, 'dev:pg_query', { sql: 'inspect qemu Windows incident and Linux dpkg packaging' }),

@@ -199,7 +199,8 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     tool.startsWith('docs:') ||
     tool.startsWith('memory:') ||
     tool.startsWith('facts:') ||
-    tool.startsWith('session:')
+    tool.startsWith('session:') ||
+    tool.startsWith('rubrics:')
   ) return 'investigate';
   if (tool.startsWith('loop:') || tool.startsWith('mode:') || tool.startsWith('journal:')) return 'self-admin';
   return `other: ${tool}`;

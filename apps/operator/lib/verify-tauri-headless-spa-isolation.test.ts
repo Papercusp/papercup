@@ -28,6 +28,10 @@ import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+const DESKTOP_MAIN = resolve(__dirname, '../../../papercusp-desktop/src-tauri/src/main.rs');
+const ENV_SWITCH = resolve(__dirname, '../../../papercusp-desktop/src-tauri/src/env_switch.rs');
+const desktopMain = readFileSync(DESKTOP_MAIN, 'utf8');
+const envSwitch = readFileSync(ENV_SWITCH, 'utf8');
 
 describe('EI-10364 — verify-tauri-headless isolates the SPA module server', () => {
   it('is the right script (guards a vacuous suite)', () => {
@@ -76,5 +80,23 @@ describe('EI-10364 — verify-tauri-headless isolates the SPA module server', ()
     // must disappear entirely rather than point at a bogus/empty dir.
     expect(src).toMatch(/SPA_DIST=""/);
     expect(src).toMatch(/\[ -n "\$SPA_DIST" \] && SPA_ENV_LINE=/);
+  });
+});
+
+describe('EI-22626134896342971 — explicit dev target is selected before endpoint IPC starts', () => {
+  it('primes the custom /api port before constructing the dev IPC supervisor', () => {
+    const devIpcSection = desktopMain.indexOf('// DEV endpoint-IPC:');
+    const primeTarget = desktopMain.indexOf('env_switch::prime_explicit_api_target();', devIpcSection);
+    const constructClient = desktopMain.indexOf('IpcClientHandle::new', devIpcSection);
+
+    expect(devIpcSection).toBeGreaterThan(-1);
+    expect(primeTarget).toBeGreaterThan(devIpcSection);
+    expect(constructClient).toBeGreaterThan(primeTarget);
+  });
+
+  it('maps and stores the validated override before the supervisor can read it', () => {
+    expect(envSwitch).toMatch(/pub\(crate\) fn prime_explicit_api_target\(\)/);
+    expect(envSwitch).toMatch(/startup_api_port\(Some\(target_port\), current\)/);
+    expect(envSwitch).toMatch(/SELECTED_API_PORT\.store\(api_port, Ordering::Relaxed\)/);
   });
 });

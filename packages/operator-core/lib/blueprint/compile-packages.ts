@@ -4,6 +4,7 @@
  * Nothing here installs another identity, changes a session stack or grants tools.
  */
 import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   compileAgentSpecification,
   CompositionCompilerError,
@@ -13,6 +14,7 @@ import {
   type LoadedBlueprint,
   type CompiledAgentSpecification,
   type CompositionCompilerInput,
+  type ResolvedCapabilityProviderInput,
   type ResolvedPackageInput,
 } from '@papercusp/orchestrator/blueprint';
 import { resolveLocalRecipe } from '../cupboard/recipe-store';
@@ -23,9 +25,32 @@ import { resolvePotSlugsForHarnesses } from '../memory/hive-scope';
 import type { KnowledgePackMemoryTarget } from '../knowledge-packs/seed';
 import { APPLIES_TO_SHAPES, type AppliesTo } from '../knowledge-packs/pack-format';
 import { declaredDomainsFor } from '../knowledge-packs/manage';
+import {
+  getPotCapabilityProviderBinding,
+  parseCapabilityClassRef,
+  type ProviderBindingRow,
+} from '../capability-class-registry-store';
 
 type PackageRequest = { kind: string; ref: string; version?: string };
 export type BlueprintPackageResolver = (request: PackageRequest) => Promise<ResolvedPackageInput | null>;
+export type CapabilityProviderResolver = (
+  classRef: string,
+  potSlug: string,
+) => Promise<ProviderBindingRow | null>;
+
+export function capabilityProviderInput(
+  binding: ProviderBindingRow,
+): ResolvedCapabilityProviderInput {
+  return {
+    kind: 'capability-provider',
+    ref: binding.classRef,
+    providerPackage: binding.providerPackage,
+    providerVersion: binding.providerVersion,
+    conformanceRunId: binding.conformanceRunId,
+    registryRevision: binding.registryRevision,
+    verbBindings: binding.verbBindings,
+  };
+}
 
 /** Use the existing resolution precedence and snapshot the directory actually selected. */
 export const resolveLocalBlueprintPackage: BlueprintPackageResolver = async (request) => {
@@ -101,6 +126,9 @@ export interface CompileBlueprintPackagesOptions {
   /** Pin the selection, so replay never consults changing detection or hive settings. */
   knowledgeSelection?: { shapes?: readonly AppliesTo[]; domains?: readonly string[] };
   resolvePackage?: BlueprintPackageResolver;
+  /** Exact target pot; inferred from the harness registry when omitted. */
+  potSlug?: string;
+  resolveCapabilityProvider?: CapabilityProviderResolver;
   /** Prompt, addressed-document and versioned policy inputs belong to this same boundary. */
   input?: Omit<CompositionCompilerInput, 'source' | 'blueprint' | 'loaded' | 'sourcePath'>;
 }
@@ -115,6 +143,44 @@ export async function compileBlueprintWithPackages(
     requests.push({ kind: 'knowledge-pack', ref: knowledge });
   }
   const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
+  const requiredClasses = new Set(loaded.blueprint.grants?.requires ?? []);
+  const optionalClasses = (loaded.blueprint.grants?.optional ?? [])
+    .filter((ref) => !requiredClasses.has(ref));
+  const classRefs = [...requiredClasses, ...optionalClasses];
+  let resolvedPotSlug = options.potSlug;
+  if (!resolvedPotSlug && classRefs.length > 0) {
+    const pots = await resolvePotSlugsForHarnesses(options.workspaceId, [options.harnessSlug]);
+    resolvedPotSlug = pots[0] ?? options.harnessSlug;
+  }
+  const resolveCapabilityProvider: CapabilityProviderResolver =
+    options.resolveCapabilityProvider ??
+    (async (classRef, potSlug) => {
+      const parsed = parseCapabilityClassRef(classRef);
+      if (!parsed) return null;
+      return getPotCapabilityProviderBinding(getOrgPg().sql, {
+        workspaceId: options.workspaceId,
+        potSlug,
+        classId: parsed.id,
+        classVersion: parsed.version,
+      });
+    });
+  const capabilityProviders: ResolvedCapabilityProviderInput[] = [];
+  if (resolvedPotSlug) {
+    for (const classRef of classRefs) {
+      const binding = await resolveCapabilityProvider(classRef, resolvedPotSlug);
+      if (!binding) {
+        if (requiredClasses.has(classRef)) {
+          throw new CompositionCompilerError(
+            'input-invalid',
+            'required capability class has no active pot provider binding',
+            classRef,
+          );
+        }
+        continue;
+      }
+      capabilityProviders.push(capabilityProviderInput(binding));
+    }
+  }
   let memoryTarget = options.memoryTarget;
   if (!memoryTarget && packages.some((pin) => pin.packageKind === 'knowledge-pack')) {
     const pots = await resolvePotSlugsForHarnesses(options.workspaceId, [options.harnessSlug]);
@@ -133,7 +199,11 @@ export async function compileBlueprintWithPackages(
   return compileAgentSpecification({
     ...options.input,
     source: loaded,
-    inputClosure: [...packages, ...(options.input?.inputClosure ?? [])],
+    inputClosure: [
+      ...packages,
+      ...capabilityProviders,
+      ...(options.input?.inputClosure ?? []),
+    ],
     settings: [
       ...(options.input?.settings ?? []),
       { ref: 'bundle-scope', revision: '1', value: scope },

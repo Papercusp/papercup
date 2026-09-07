@@ -66,13 +66,14 @@ export function bareModelId(model: any): string;
  * is INDISTINGUISHABLE from one that is absent, and deliberately so — both mean
  * "nothing extra to offer here".
  *
- * @param {{ home?: string }} [opts]
+ * @param {{ home?: string, codexHome?: string }} [opts]
  * @returns {Array<{ id: string, label: string | null, description: string | null,
  *   efforts: string[], defaultEffort: string | null, contextWindow: number | null,
  *   maxContextWindow: number | null }>}
  */
-export function listCodexInstalledModels({ home }?: {
+export function listCodexInstalledModels({ home, codexHome }?: {
     home?: string;
+    codexHome?: string;
 }): Array<{
     id: string;
     label: string | null;
@@ -99,11 +100,12 @@ export function listCodexInstalledModels({ home }?: {
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
- * @param {{ home?: string }} [opts]
+ * @param {{ home?: string, codexHome?: string }} [opts]
  * @returns {{ model: string, window: number, autoCompactLimit: number, source: string } | null}
  */
-export function codexContextWindowConfig(model: string | null | undefined, { home }?: {
+export function codexContextWindowConfig(model: string | null | undefined, { home, codexHome }?: {
     home?: string;
+    codexHome?: string;
 }): {
     model: string;
     window: number;
@@ -120,17 +122,13 @@ export function codexContextWindowConfig(model: string | null | undefined, { hom
  * The per-session home ALSO bakes the same keys (P-004) because a bare
  * `psu --resume` names no model and therefore emits no `-c` at all.
  */
-export function codexContextConfigArgs(model: any, { home }?: {
-    home?: string | undefined;
-}): string[];
+export function codexContextConfigArgs(model: any, { home, codexHome }?: {}): string[];
 /**
  * The same policy as a config.toml fragment, for the per-session CODEX_HOME
  * (P-004). `''` when the model has no extended window, so a caller can
  * concatenate unconditionally.
  */
-export function codexContextConfigToml(model: any, { home }?: {
-    home?: string | undefined;
-}): string;
+export function codexContextConfigToml(model: any, { home, codexHome }?: {}): string;
 /** Read the exact target-only launch context that the backend CLI will append.
  * A shared bounded reader keeps preview and bootstrap on the same bytes. */
 export function readLaunchContextText(path: any): string;
@@ -138,10 +136,11 @@ export function readLaunchContextText(path: any): string;
  * bytes into AGENTS.md using this exact framing. Preview uses it too. */
 export function formatCodexLaunchContextSection(text: any): string;
 export function appendCodexLaunchContextPrompt(promptText: any, launchContextText: any): string;
-export function installedModelContextWindow({ agent, model, home }: {
+export function installedModelContextWindow({ agent, model, home, codexHome }: {
     agent: any;
     model: any;
-    home?: string | undefined;
+    home: any;
+    codexHome: any;
 }): {
     window: number | null;
     source: string;
@@ -169,15 +168,17 @@ export function installedModelContextWindow({ agent, model, home }: {
  *   agent?: string | null,
  *   model?: string | null,
  *   home?: string,
+ *   codexHome?: string,
  *   declaredWindow?: number | null,
  *   liveWindow?: number | null,
  * }} [opts]
  * @returns {{ window: number, source: string }}
  */
-export function resolveModelContextWindow({ agent, model, home, declaredWindow, liveWindow }?: {
+export function resolveModelContextWindow({ agent, model, home, codexHome, declaredWindow, liveWindow }?: {
     agent?: string | null;
     model?: string | null;
     home?: string;
+    codexHome?: string;
     declaredWindow?: number | null;
     liveWindow?: number | null;
 }): {
@@ -200,6 +201,7 @@ export function estimatePromptTokens(text: any): number;
  *   agent?: string | null,
  *   model?: string | null,
  *   home?: string,
+ *   codexHome?: string,
  *   contextSize?: string | null,
  *   promptText?: string | null,
  *   additionalPromptText?: string | null,
@@ -224,10 +226,11 @@ export function estimatePromptTokens(text: any): number;
  *   estimator: string,
  * }}
  */
-export function buildContextBudget({ agent, model, home, contextSize, promptText, additionalPromptText, estimatedPromptTokens, declaredWindow, liveWindow, }?: {
+export function buildContextBudget({ agent, model, home, codexHome, contextSize, promptText, additionalPromptText, estimatedPromptTokens, declaredWindow, liveWindow, }?: {
     agent?: string | null;
     model?: string | null;
     home?: string;
+    codexHome?: string;
     contextSize?: string | null;
     promptText?: string | null;
     additionalPromptText?: string | null;

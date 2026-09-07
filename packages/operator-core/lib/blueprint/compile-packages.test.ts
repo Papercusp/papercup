@@ -84,6 +84,61 @@ describe('P-006 operator package adapter', () => {
     expect(knowledge).not.toHaveBeenCalled();
   });
 
+  it('pins exact pot capability providers and makes rebinding change the specification revision', async () => {
+    const loaded = resolveBlueprint({
+      id: 'capability-fixture',
+      slots: [{ slot: 'domain' }],
+      grants: {
+        requires: ['crm.email@1.0.0'],
+        optional: ['calendar.read@1.0.0'],
+      },
+      workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } },
+    });
+    const binding = (providerVersion: string) => ({
+      classRef: 'crm.email@1.0.0',
+      providerPackage: 'acme-crm',
+      providerVersion,
+      verbBindings: { send: 'acme:send-email' },
+      conformanceRunId: 'run-' + providerVersion,
+      conformanceStatus: 'passed' as const,
+      behavioralStatus: 'not-required',
+      behavioralRunRef: null,
+      registryRevision: 'registry-r1',
+      status: 'active',
+      updatedAt: '2026-09-07T00:00:00.000Z',
+    });
+    const compile = (providerVersion: string) => compileBlueprintWithPackages(loaded, {
+      workspaceId: 'workspace-a',
+      harnessSlug: 'harness-a',
+      resolveCapabilityProvider: async (classRef, potSlug) => {
+        expect(potSlug).toBe('parent-pot');
+        return classRef === 'crm.email@1.0.0' ? binding(providerVersion) : null;
+      },
+    });
+
+    const first = await compile('2.0.0');
+    expect(first.inputs).toContainEqual({
+      kind: 'capability-provider',
+      ref: 'crm.email@1.0.0',
+      providerPackage: 'acme-crm',
+      providerVersion: '2.0.0',
+      conformanceRunId: 'run-2.0.0',
+      registryRevision: 'registry-r1',
+      verbBindings: { send: 'acme:send-email' },
+    });
+    expect(first.inputs.some(
+      (entry) => entry.kind === 'capability-provider' && entry.ref === 'calendar.read@1.0.0',
+    )).toBe(false);
+    expect((await compile('2.1.0')).specificationRevision).not.toBe(first.specificationRevision);
+
+    await expect(compileBlueprintWithPackages(loaded, {
+      workspaceId: 'workspace-a',
+      harnessSlug: 'harness-a',
+      resolveCapabilityProvider: async () => null,
+    })).rejects.toThrow(/required capability class has no active pot provider binding/);
+  });
+
   it('pins and provisions the existing seed-pack declaration with explicit replayable selection', async () => {
     const loaded = resolveBlueprint({ id: 'seed-fixture', knowledge: { pack: 'facts' },
       workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } });
