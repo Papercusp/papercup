@@ -57,6 +57,7 @@ import {
   makeTurnCoalescer,
   injectTurn,
   decodeDeliveryId,
+  decodeQuotaRecovery,
   makeDeliveryDedup,
   DELIVERY_DEDUP_TTL_MS,
   makeInjectMutex,
@@ -531,6 +532,45 @@ describe('makeDeliveryDedup (EI-19311270129974785)', () => {
     // this TTL must exceed any realistic total retry-storm duration so a legitimate late
     // retry is always still deduped, while staying bounded so the map doesn't grow forever.
     expect(DELIVERY_DEDUP_TTL_MS).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+});
+
+describe('quota recovery envelope identity (measured-agent-productivity P-004)', () => {
+  const valid = {
+    operationId: '4102',
+    ownerId: 'su-quota-owner',
+    startedAtMs: 1_788_790_000_000,
+  };
+
+  it('admits only a descriptor whose durable operation and owner match the envelope', () => {
+    const decoded = decodeControl(encodeControl({
+      mode: 'recycle',
+      data: 'resume exact wake',
+      ownerId: valid.ownerId,
+      deliveryId: valid.operationId,
+      quotaRecovery: valid,
+    }));
+    expect(decoded).toMatchObject({ mode: 'recycle', quotaRecovery: valid });
+    expect(decodeQuotaRecovery({
+      ownerId: valid.ownerId,
+      deliveryId: valid.operationId,
+      quotaRecovery: valid,
+    })).toEqual({ quotaRecovery: valid });
+  });
+
+  it.each([
+    ['mutated operation', { ...valid, operationId: '4103' }],
+    ['mutated owner', { ...valid, ownerId: 'su-other-owner' }],
+    ['missing timestamp', { ...valid, startedAtMs: 0 }],
+  ])('%s cannot acquire quota-recovery authority', (_label, quotaRecovery) => {
+    const decoded = decodeControl(encodeControl({
+      mode: 'recycle',
+      data: 'resume exact wake',
+      ownerId: valid.ownerId,
+      deliveryId: valid.operationId,
+      quotaRecovery,
+    }));
+    expect(decoded).not.toHaveProperty('quotaRecovery');
   });
 });
 

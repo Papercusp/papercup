@@ -21,9 +21,11 @@
  * each test asserts its socket+meta are removed on child exit.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { execPath } from 'node:process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   hostThroughPty,
   socketPathFor,
@@ -36,6 +38,7 @@ import {
 import {
   findLiveHost,
   injectIntoHost,
+  injectIntoHostWithConfirmation,
   PSU_PTY_DIR,
 } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
@@ -145,6 +148,118 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   }
   expect(exitCode).toBe(0);
   expect(existsSync(sock)).toBe(false);
+}, 25000);
+
+it('eligible quota recovery recycles once under the same owner and settles the exact delivery id', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
+  const codexHome = join(root, 'codex');
+  const transcript = join(codexHome, 'sessions', '2026', '09', '07', 'recovered.jsonl');
+  mkdirSync(join(codexHome, 'sessions'), { recursive: true });
+  const ownerId = uniqueOwner('QUOTA-RECOVERY');
+  const sock = socketPathFor(ownerId);
+  const eventPath = eventLogPathForOwner(ownerId);
+  const { io, captured } = fakeIo();
+  const operationId = String(9_000_000 + Math.floor(performance.now()));
+  const marker = '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧';
+  const childCode = [
+    "const fs=require('node:fs'),path=require('node:path');",
+    "const recycled=process.argv[1]==='RECYCLED';",
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');let b='';",
+    "process.stdout.write(recycled?'RECYCLED-READY\\n':'READY\\n');",
+    "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);b+=d;if(!b.includes('\\r'))return;",
+    "const prompt=b;b='';if(!recycled){process.stdout.write(\"You've hit your usage limit.\\n\");return;}",
+    "fs.mkdirSync(path.dirname(process.env.TEST_TRANSCRIPT),{recursive:true});",
+    "fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({prompt,marker:process.env.TEST_MARKER})+'\\n');",
+    "process.stdout.write('RECOVERED-TURN\\n');});",
+    'setTimeout(()=>process.exit(0),20000);',
+  ].join('');
+  let exitCode: number | null = null;
+  let recycleMints = 0;
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', childCode, 'ORIGINAL'],
+    cwd: '/tmp',
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId,
+      PAPERCUSP_AGENT: 'codex',
+      PAPERCUSP_LAUNCHED_BY: 'su-integration-leader',
+      CODEX_HOME: codexHome,
+      TEST_TRANSCRIPT: transcript,
+      TEST_MARKER: marker,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+      PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '30',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+      PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '10',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '30',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+    }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    nativePersistenceTimeoutMs: 1_000,
+    mintRecycleArgs: (a: string[]) => {
+      recycleMints += 1;
+      return { args: a.slice(0, -1).concat('RECYCLED'), nativeId: null };
+    },
+    onExit: (code: number) => { exitCode = code; },
+  });
+
+  try {
+    expect(await waitForOutput(captured, 'READY', 5_000)).toBe(true);
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'trigger-wall', ownerId })).toBe(true);
+    expect(await waitForOutput(captured, "You've hit your usage limit", 5_000)).toBe(true);
+    const wallDeadline = Date.now() + 3_000;
+    while (findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked !== true && Date.now() < wallDeadline) {
+      await sleep(20);
+    }
+    expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked).toBe(true);
+
+    const startedAtMs = Date.now();
+    const accepted = await injectIntoHostWithConfirmation(sock, {
+      mode: 'recycle',
+      data: `${marker}\nresume exact delivery`,
+      ownerId,
+      deliveryId: operationId,
+      quotaRecovery: { operationId, ownerId, startedAtMs },
+    });
+    expect(accepted).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+
+    const readyDeadline = Date.now() + 8_000;
+    let events: Array<Record<string, unknown>> = [];
+    while (Date.now() < readyDeadline) {
+      events = existsSync(eventPath)
+        ? readFileSync(eventPath, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+        : [];
+      if (events.some((event) => event.kind === 'quota-recovery-ready')) break;
+      await sleep(25);
+    }
+    expect(captured()).toContain('RECOVERED-TURN');
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'quota-recovery-ready',
+      operationId,
+      recoveryOwnerId: ownerId,
+      startedAtMs,
+      reason: 'turn-start-verified',
+    }));
+    expect(recycleMints).toBe(1);
+
+    const duplicate = await injectIntoHostWithConfirmation(sock, {
+      mode: 'turn',
+      data: `${marker}\nresume exact delivery`,
+      ownerId,
+      deliveryId: operationId,
+    });
+    expect(duplicate).toMatchObject({ ok: true, confirmation: 'acked', reason: 'duplicate-delivery-id' });
+    expect(recycleMints).toBe(1);
+    expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.ownerId).toBe(ownerId);
+  } finally {
+    if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\x04' }).catch(() => false);
+    await done.catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(exitCode).toBe(0);
 }, 25000);
 
 /** EI-7662 (residual, post-hermeticEnv): poll `capturedFn()` until it contains

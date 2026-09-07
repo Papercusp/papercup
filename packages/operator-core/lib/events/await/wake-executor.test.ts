@@ -19,6 +19,9 @@ import {
   rehydrateLoopWakeText,
   applyInjectionDoor,
   defaultSpawnDetached,
+  decideQuotaWakeRecovery,
+  quotaRecoveryPickupConfirmed,
+  quotaRecoveryReceiptForDelivery,
   type ExecuteWakeDeps,
 } from './wake-executor';
 import { CRASH_RESUME_ADVISORY_MARKER } from './crash-resume-advisory';
@@ -50,6 +53,133 @@ beforeAll(() => {
   utimesSync(newRollout, new Date('2026-06-07'), new Date('2026-06-07'));
   prevCodexHomesEnv = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = CODEX_HOMES_DIR;
+});
+
+describe('bounded quota recovery contract (measured-agent-productivity P-004)', () => {
+  const host = {
+    sock: '/tmp/quota.sock',
+    ownerId: 'su-quota',
+    bridgeTty: false,
+    quotaBlocked: true,
+    launchedBy: 'su-leader',
+    caps: ['quota-recovery'],
+  };
+
+  it('admits only the same-owner, headless, agent-launched auto route on a capable blocked host', () => {
+    expect(decideQuotaWakeRecovery({
+      host,
+      subscriberId: 'su-quota',
+      deliveryId: '901',
+      accountMode: 'auto',
+    })).toEqual({ eligible: true, reason: 'eligible', operationId: '901' });
+
+    const mutations = [
+      [{ ...host, ownerId: 'su-other' }, 'wrong-owner'],
+      [{ ...host, quotaBlocked: false }, 'not-quota-blocked'],
+      [{ ...host, bridgeTty: true }, 'not-headless'],
+      [{ ...host, launchedBy: null }, 'not-agent-launched'],
+      [{ ...host, caps: [] }, 'host-capability-missing'],
+    ] as const;
+    for (const [mutatedHost, reason] of mutations) {
+      expect(decideQuotaWakeRecovery({
+        host: mutatedHost,
+        subscriberId: 'su-quota',
+        deliveryId: '901',
+        accountMode: 'auto',
+      })).toMatchObject({ eligible: false, reason, operationId: '901' });
+    }
+    expect(decideQuotaWakeRecovery({
+      host,
+      subscriberId: 'su-quota',
+      deliveryId: '901',
+      accountMode: 'pin',
+    })).toMatchObject({ eligible: false, reason: 'route-not-auto' });
+  });
+
+  it('binds a terminal receipt and pickup to the exact operation, owner, and post-start tool timestamp', () => {
+    const events = [
+      { kind: 'quota-recovery-ready', operationId: '901', recoveryOwnerId: 'su-other', startedAtMs: 1000 },
+      { kind: 'quota-recovery-ready', operationId: '900', recoveryOwnerId: 'su-quota', startedAtMs: 1000 },
+      {
+        kind: 'quota-recovery-ready',
+        operationId: '901',
+        recoveryOwnerId: 'su-quota',
+        startedAtMs: 2000,
+        reason: 'turn-start-verified',
+      },
+    ];
+    const receipt = quotaRecoveryReceiptForDelivery(events, 'su-quota', '901');
+    expect(receipt).toEqual({
+      status: 'ready',
+      operationId: '901',
+      ownerId: 'su-quota',
+      startedAtMs: 2000,
+      reason: 'turn-start-verified',
+    });
+    expect(quotaRecoveryPickupConfirmed(receipt!, new Date(2001).toISOString())).toBe(true);
+    expect(quotaRecoveryPickupConfirmed(receipt!, new Date(2000).toISOString())).toBe(false);
+    expect(quotaRecoveryPickupConfirmed(receipt!, new Date(1999).toISOString())).toBe(false);
+    expect(quotaRecoveryReceiptForDelivery(events, 'su-quota', 'mutated')).toBeNull();
+  });
+
+  it('keeps the durable delivery parked until the recovered same owner makes a productive tool call', async () => {
+    const ownerId = 'su-quota-live';
+    const delivery = work({
+      id: 901,
+      subscriberId: ownerId,
+      wakeHandle: advHandle({ advSessionId: 901, agent: 'codex', pid: 1234 }),
+    });
+    const confirming = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'duplicate-delivery-id',
+    }));
+    const latest = vi.fn(async () => new Map<string, string>());
+    const common = deps({
+      getSession: vi.fn(async () => session({
+        id: 901,
+        agent: 'codex',
+        coordOwnerId: ownerId,
+        launchArgv: ['psu', '--no-picker', '--agent=codex', '--account=auto'],
+      })) as never,
+      findPsuHost: vi.fn(() => ({
+        sock: '/tmp/quota-live.sock',
+        ownerId,
+        bridgeTty: false,
+        quotaBlocked: true,
+        launchedBy: 'su-leader',
+        caps: ['quota-recovery'],
+      })) as never,
+      injectPsuHostWithConfirmation: confirming as never,
+      readPsuHostEventTail: vi.fn(() => [{
+        kind: 'quota-recovery-ready',
+        operationId: '901',
+        recoveryOwnerId: ownerId,
+        startedAtMs: 2_000,
+        reason: 'turn-start-verified',
+      }]) as never,
+      lastProductiveToolCallAtByOwner: latest,
+    });
+
+    expect(await executeWake(delivery, common)).toMatchObject({
+      kind: 'park',
+      reason: expect.stringContaining('pickup is unconfirmed'),
+    });
+    const sent = confirming.mock.calls[0]?.[1];
+    expect(sent).toMatchObject({
+      mode: 'recycle',
+      deliveryId: '901',
+      ownerId,
+      quotaRecovery: { operationId: '901', ownerId },
+    });
+
+    latest.mockResolvedValueOnce(new Map([[ownerId, new Date(2_001).toISOString()]]));
+    expect(await executeWake(delivery, common)).toEqual({
+      kind: 'delivered',
+      channel: 'psu-socket-recycle',
+    });
+    expect(latest).toHaveBeenLastCalledWith([ownerId]);
+  });
 });
 
 afterAll(() => {

@@ -86,6 +86,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
 import { getWorkItem, isClaimHoldParked, isSettledWorkItemState } from '../../work-items';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
+import { lastProductiveToolCallAtByOwner } from '../../fleet/assignments';
 // EI-21901188813309549: the SAME shared liveness oracle fleet-transition-events.ts's
 // emit-time revalidation reads (there via the gatherCurrentFleetMemberObservation ⇒
 // reconcileWakeability path). Imported directly here rather than importing that
@@ -106,9 +107,14 @@ import { prepareCellWakeFold } from './cell-wake-fold';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   findLiveHost,
+  hostIsAgentLaunched,
+  hostSupports,
   injectIntoHost,
   injectIntoHostWithConfirmation,
+  readHostEventTail,
   type InjectConfirmation,
+  type PsuPtyHost,
+  type PtyHostEvent,
 } from './psu-pty-discovery';
 import {
   decideColdWake,
@@ -2161,6 +2167,11 @@ export interface ExecuteWakeDeps {
    *  real one — but ONLY when no `injectPsuHost` stub was supplied, since a stub has no
    *  confirmation channel and must keep today's behavior. */
   injectPsuHostWithConfirmation?: typeof injectIntoHostWithConfirmation;
+  /** measured-agent-productivity P-004: owner-scoped lifecycle receipts for a
+   * quota recovery, and the existing productive-tool writer used to prove the
+   * recovered successor actually picked the wake up. */
+  readPsuHostEventTail?: typeof readHostEventTail;
+  lastProductiveToolCallAtByOwner?: typeof lastProductiveToolCallAtByOwner;
   /** queen-brief-cache-assembly B-01/P-012: fire a FRESH hive launch instead of
    *  resuming a hive-operator session. Injected for tests; default fires the
    *  hive blueprint with the wake text as kickoff. */
@@ -2282,9 +2293,94 @@ export interface ExecuteWakeDeps {
  */
 type PsuInjectHostView = {
   sock: string;
+  ownerId?: string | null;
   bridgeTty?: boolean | null;
   lastInputAt?: number | null;
+  quotaBlocked?: boolean | null;
+  caps?: string[] | null;
+  launchedBy?: string | null;
 };
+
+export interface QuotaWakeRecoveryDecision {
+  eligible: boolean;
+  reason:
+    | 'eligible'
+    | 'wrong-owner'
+    | 'not-quota-blocked'
+    | 'not-headless'
+    | 'not-agent-launched'
+    | 'route-not-auto'
+    | 'host-capability-missing';
+  operationId: string;
+}
+
+/** Pure, fail-closed eligibility gate for the one automatic lifecycle action in
+ * this path. A recycle is useful only when gateway auto-routing can choose a
+ * different credential, and safe only for a headless agent-owned host carrying
+ * the new operation/dedup contract. */
+export function decideQuotaWakeRecovery(input: {
+  host: PsuInjectHostView;
+  subscriberId: string;
+  deliveryId: string;
+  accountMode?: string | null;
+}): QuotaWakeRecoveryDecision {
+  const base = { operationId: input.deliveryId } as const;
+  if (input.host.ownerId !== input.subscriberId) return { ...base, eligible: false, reason: 'wrong-owner' };
+  if (input.host.quotaBlocked !== true) return { ...base, eligible: false, reason: 'not-quota-blocked' };
+  if (input.host.bridgeTty !== false) return { ...base, eligible: false, reason: 'not-headless' };
+  if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
+    return { ...base, eligible: false, reason: 'not-agent-launched' };
+  }
+  if (input.accountMode !== 'auto') return { ...base, eligible: false, reason: 'route-not-auto' };
+  if (!hostSupports(input.host as PsuPtyHost, 'quota-recovery')) {
+    return { ...base, eligible: false, reason: 'host-capability-missing' };
+  }
+  return { ...base, eligible: true, reason: 'eligible' };
+}
+
+export interface QuotaRecoveryReceipt {
+  status: 'ready' | 'dropped';
+  operationId: string;
+  ownerId: string;
+  startedAtMs: number;
+  reason: string | null;
+}
+
+/** Resolve the terminal receipt for exactly one durable delivery operation from
+ * the existing per-owner host ledger. Exact operation+owner matching is the
+ * mutation guard; a neighboring recovery can never confirm this one. */
+export function quotaRecoveryReceiptForDelivery(
+  events: readonly PtyHostEvent[],
+  ownerId: string,
+  operationId: string,
+): QuotaRecoveryReceipt | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i] as Record<string, unknown>;
+    if (event.kind !== 'quota-recovery-ready' && event.kind !== 'quota-recovery-dropped') continue;
+    if (event.operationId !== operationId || event.recoveryOwnerId !== ownerId) continue;
+    const startedAtMs = event.startedAtMs;
+    if (typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs) || startedAtMs <= 0) continue;
+    return {
+      status: event.kind === 'quota-recovery-ready' ? 'ready' : 'dropped',
+      operationId,
+      ownerId,
+      startedAtMs,
+      reason: typeof event.reason === 'string' ? event.reason : null,
+    };
+  }
+  return null;
+}
+
+/** A native turn marker proves submission; this stricter predicate proves the
+ * SAME owner subsequently invoked a productive tool after recovery began. */
+export function quotaRecoveryPickupConfirmed(
+  receipt: QuotaRecoveryReceipt,
+  latestProductiveToolCallAt: string | null | undefined,
+): boolean {
+  if (receipt.status !== 'ready') return false;
+  const toolAtMs = latestProductiveToolCallAt ? Date.parse(latestProductiveToolCallAt) : NaN;
+  return Number.isFinite(toolAtMs) && toolAtMs > receipt.startedAtMs;
+}
 
 /**
  * Inject a wake into a live psu-pty host, forking WARM (default) vs COLD
@@ -2311,6 +2407,7 @@ async function injectPsuHostWake(
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
+  accountRoute: WakeAccountRoute | null = null,
 ): Promise<WakeOutcome | null> {
   const sock = host.sock;
   // WI-5510: read the loop-fire marker ONCE up front — both the warm and cold
@@ -2322,17 +2419,33 @@ async function injectPsuHostWake(
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
   const injectWarm = async (useConfirmation = true): Promise<WakeOutcome | null> => {
+    const quotaRecovery = decideQuotaWakeRecovery({
+      host,
+      subscriberId: d.subscriberId,
+      deliveryId: String(d.id),
+      accountMode: accountRoute?.mode,
+    });
+    const recoveryStartedAtMs = Date.now();
     // EI-19311270129974785: thread this delivery's own durable id so a retry the
     // CLIENT believes is fresh (its ack-wait timed out, or the host's ack write
     // back failed) is recognized by the host as the SAME delivery it already
     // committed to, instead of injecting a second real duplicate turn.
     const injectMsg = {
-      mode: 'turn',
+      mode: quotaRecovery.eligible && useConfirmation ? 'recycle' : 'turn',
       data: warmText,
       fireNumber,
       routineId,
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
+      ...(quotaRecovery.eligible && useConfirmation
+        ? {
+            quotaRecovery: {
+              operationId: String(d.id),
+              ownerId: d.subscriberId,
+              startedAtMs: recoveryStartedAtMs,
+            },
+          }
+        : {}),
     } as const;
     // The real transport can report the host's early `accepted` ACK. That ACK
     // only means the detached gate pipeline was queued; it is not proof that a
@@ -2350,7 +2463,35 @@ async function injectPsuHostWake(
           reason: `psu-host ${result.reason}: delivery accepted before turn-start proof; retry remains durable`,
         };
       }
-      return { kind: 'delivered', channel: 'psu-socket-inject' };
+      if (result.reason === 'duplicate-delivery-id') {
+        const events = (deps.readPsuHostEventTail ?? readHostEventTail)(d.subscriberId);
+        const receipt = quotaRecoveryReceiptForDelivery(events, d.subscriberId, String(d.id));
+        if (receipt?.status === 'dropped') {
+          return {
+            kind: 'park',
+            reason: `quota recovery operation ${d.id} dropped (${receipt.reason ?? 'unknown'}); retry remains durable`,
+          };
+        }
+        if (receipt?.status === 'ready') {
+          const latest = await (deps.lastProductiveToolCallAtByOwner ?? lastProductiveToolCallAtByOwner)([
+            d.subscriberId,
+          ]);
+          const latestAt = latest.get(d.subscriberId) ?? null;
+          if (!quotaRecoveryPickupConfirmed(receipt, latestAt)) {
+            return {
+              kind: 'park',
+              reason:
+                `quota recovery operation ${d.id} restarted owner ${d.subscriberId}, but pickup is unconfirmed; ` +
+                'waiting for a productive same-owner tool invocation',
+            };
+          }
+          return { kind: 'delivered', channel: 'psu-socket-recycle' };
+        }
+      }
+      return {
+        kind: 'delivered',
+        channel: quotaRecovery.eligible ? 'psu-socket-recycle' : 'psu-socket-inject',
+      };
     }
     const ok = await injectPsuHost(sock, injectMsg);
     return ok ? { kind: 'delivered', channel: 'psu-socket-inject' } : null;
@@ -2687,6 +2828,7 @@ async function injectPsuHostWakeWithReverify(
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
+  accountRoute: WakeAccountRoute | null = null,
 ): Promise<WakeOutcome | null> {
   let host = findPsuHost(d.subscriberId);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
@@ -2697,6 +2839,7 @@ async function injectPsuHostWakeWithReverify(
       injectPsuHost,
       deps,
       capturedCarryNoteMeta,
+      accountRoute,
     );
     if (outcome) return outcome;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
@@ -3091,6 +3234,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         injectPsuHost,
         deliveryDeps,
         capturedCarryNoteMeta,
+        null,
       );
       if (outcome) return outcome;
       // No injectable socket: presence fresh → park (a one-time inbox nudge
@@ -3159,6 +3303,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // authoritative "alive + injectable" signal — self-validating (host pid alive
     // + socket present) — so inject the wake turn in place; on any miss fall
     // through to the normal channels.
+    const liveAccountRoute = wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
     const outcome = await injectPsuHostWakeWithReverify(
       sessionDelivery,
       text,
@@ -3166,6 +3311,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       injectPsuHost,
       deliveryDeps,
       capturedCarryNoteMeta,
+      liveAccountRoute,
     );
     if (outcome) return outcome;
 
