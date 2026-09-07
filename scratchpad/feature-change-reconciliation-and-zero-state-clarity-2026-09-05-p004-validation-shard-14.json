@@ -1,6 +1,6 @@
 {
   "schemaVersion": "feature-change-p004-validation-shard-v1",
-  "validationTimestamp": "2026-09-07T13:50:11Z",
+  "validationTimestamp": "2026-09-07T13:58:33.199Z",
   "readOnlyValidation": true,
   "workItem": "WI-2146807",
   "parentWorkItem": "WI-2146348",
@@ -80,8 +80,8 @@
   "assignedIdListSerialization": "JSON.stringify(assignedIds)",
   "assignedIdListSha256": "8a323d7daee6b0add20b53ef6a9b0a95f35588e4b29efa67e0e92be62792f478",
   "validation": {
-    "currentHead": "8e1a29ce25e57bd68ae5d9140652e8c419f2c70c",
-    "focusedTestsHead": "3fcedffa782151487614b85686dd8823b12618ee2",
+    "currentHead": "00dbdb6d33af236064f5c088066382e3f081995d",
+    "focusedTestsHead": "00dbdb6d33af236064f5c088066382e3f081995d",
     "planStatus": "ready",
     "planItemStatus": "todo",
     "planItemBlockedBy": [
@@ -129,11 +129,11 @@
     "tests": [
       {
         "command": "npm run test:file -- packages/operator-core/lib/agent-tools/coordination/tools/presence-contract.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-legacy-arg-redirect.test.ts packages/operator-core/lib/agent-tools/coordination/message-fields.test.ts packages/operator-core/lib/agent-tools/facts/assert-schema.test.ts packages/operator-core/lib/agent-tools/facts/assert-truncation-refusal.test.ts packages/operator-core/lib/agent-tools/plans/get-lifecycle-scope.test.ts packages/operator-core/lib/agent-tools/plans/slug-scope.test.ts",
-        "head": "3fcedffa782151487614b85686dd8823b12618ee2",
-        "result": "PASS: 7 files, 158 tests, no skips; TEST_FILE_PROVENANCE stamped at HEAD 3fcedffa78; uncommittedPaths=0.",
+        "head": "00dbdb6d33af236064f5c088066382e3f081995d",
+        "result": "PASS: 7 files, 158 tests, no skips; TEST_FILE_PROVENANCE stamped at HEAD 00dbdb6d33; uncommittedPaths=0.",
         "skippedTests": 0,
         "uncommittedPaths": 0,
-        "note": "The shared staging HEAD advanced after this focused run; currentHead records the artifact-time HEAD."
+        "note": "Fresh exact-file validation run completed against current staging HEAD; artifact-only edits remain outside the named test scope."
       }
     ],
     "artifactChecks": {
