@@ -157,6 +157,56 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     expect(body.rerankExecution).toMatchObject({ device: 'cpu', dtype: 'q8' });
   });
 
+  it('GET /healthz reports the EMBED execution target, so latency triage has a device to look at', async () => {
+    // The detector half of the embed-latency investigation. Reranking has had
+    // this since D-006; the embedders had nothing, so fourteen work-items filed
+    // between 2026-08-27 and 2026-09-06 all searched the request path (queue
+    // depth, scheduler contention, the query-embed cache) for a cause that lived
+    // in the execution target. A 14-probe discriminant refuted all three — the
+    // three worst latencies dispatched at queue depth 0, a saturated sample came
+    // back in 1543ms — and settling it required reading /proc/<pid>/maps of the
+    // live sidecar. This block is what makes the next such question a GET.
+    await boot();
+    const body = (await (await fetch(`${baseUrl}/healthz`)).json()) as {
+      embedExecution: { device: string; dtype: string | null; why: string };
+      embedExecutionHealth: {
+        requested: { device: string | null; dtype: string | null };
+        gpuBundled: boolean | null;
+        backends: { name: string; bundled: boolean }[] | null;
+        probe: string;
+        probeError: string | null;
+        sessionOptions: { intraOpNumThreads: number; interOpNumThreads: number };
+      };
+    };
+
+    expect(body.embedExecution).toBeDefined();
+    expect(body.embedExecution.device).toBe('cpu');
+    // `why` carries the basis for the device. A bare pair with no provenance is
+    // what let the CPU fact stay invisible while /healthz looked complete.
+    expect(body.embedExecution.why).toBeTruthy();
+
+    const health = body.embedExecutionHealth;
+    expect(health).toBeDefined();
+    // The finding itself, and the thing the pin in @papercusp/memory protects:
+    // no embedder passes a device or dtype to pipeline(), so the CPU default
+    // applies by omission rather than by decision.
+    expect(health.requested).toEqual({ device: null, dtype: null });
+    // An unresolved probe must serialize as null, not false — over the wire is
+    // exactly where a fabricated `false` would be read as a measurement.
+    expect(['pending', 'ok', 'failed']).toContain(health.probe);
+    if (health.probe === 'ok') {
+      expect(typeof health.gpuBundled).toBe('boolean');
+      expect(Array.isArray(health.backends)).toBe(true);
+    } else {
+      expect(health.gpuBundled).toBeNull();
+      expect(health.backends).toBeNull();
+    }
+    // The CPU thread caps govern forward-pass latency directly, so they belong
+    // in the same report as the device that makes them load-bearing.
+    expect(health.sessionOptions.intraOpNumThreads).toBeGreaterThanOrEqual(1);
+    expect(health.sessionOptions.interOpNumThreads).toBeGreaterThanOrEqual(1);
+  });
+
   // WI-37696. Both worker modules fall back to INLINE main-thread work when their
   // thread is unavailable, and each has a `disabled` latch that is permanent once
   // tripped. Because the fallback returns identical values, tripping it produces no

@@ -14,6 +14,9 @@
  *   GET  /healthz →  { ok, pid, uptimeMs, capabilities: string[],
  *                      models: { '<model>:<kind>': state },
  *                      rerankExecution: { device, dtype, why },
+ *                      embedExecution: { device, dtype, why },
+ *                      embedExecutionHealth: { requested, active, gpuBundled,
+ *                                              backends, probe, sessionOptions },
  *                      workers: { embedder: state, reranker: state } }
  *
  * `capabilities` lists every route THIS BUILD serves ("POST /rerank", ...),
@@ -70,6 +73,9 @@ import {
   LOCAL_EMBEDDER_MODEL,
   SIDECAR_MAX_TEXT_CHARS,
   normalizeEmbeddingText,
+  embedExecutionHealth,
+  embedExecutionTarget,
+  ensureEmbedBackendsProbed,
   getWorkerState as getEmbedderWorkerState,
   shutdownLocalEmbedder,
   type GemmaEmbedKind,
@@ -666,6 +672,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
 
+  // Resolve which ONNX execution providers this build actually bundles, once,
+  // in the background. /healthz reads the cached answer synchronously and
+  // reports `gpuBundled: null` until this lands, so the endpoint is honest
+  // about not yet knowing rather than guessing. Fire-and-forget by design:
+  // ensureEmbedBackendsProbed() records its own failures as probe:'failed' and
+  // never rejects, so a broken probe degrades the report instead of the sidecar.
+  void ensureEmbedBackendsProbed();
+
   // One embedder per model:kind, built lazily and memoized. A failed build is
   // NOT memoized — the next request retries (a transient (dl/disk) fault must
   // not brick the slot for the process lifetime).
@@ -1243,6 +1257,28 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // `demoted: false` before the first load is honest-but-unproven — the
         // GPU session is only verified by constructing one.
         rerankExecutionHealth: rerankExecutionHealth(),
+        // The same two fields for the EMBEDDERS, which had none until 2026-09-06.
+        //
+        // That asymmetry was expensive: between 2026-08-27 and 2026-09-06,
+        // fourteen work-items were filed against embed latency (query embeds
+        // blowing WORK_ITEM_EMBED_TIMEOUT_MS=4000, taking semantic recall and
+        // work-item dedup down fleet-wide). Every one of them investigated the
+        // request path — the scheduler below, its queue, the client-side query
+        // cache — because the request path was the only thing this endpoint
+        // could describe. A 14-probe discriminant refuted all three: latency
+        // does not track queue depth (the three worst samples all dispatched at
+        // depth 0; a saturated sample returned in 1543ms). The cause was the
+        // execution target — no embedder requests a device, so forward passes
+        // run on CPU at ~1.5-2.5s median with a tail past 8.5s — and proving it
+        // meant reading /proc/<pid>/maps of this very process. These two fields
+        // are so the fifteenth filing does not have to.
+        //
+        // `gpuBundled: null` means the async backend probe has not resolved, so
+        // the question is UNKNOWN. It is deliberately not `false`: a detector
+        // that answers from a measurement it never took is the failure this
+        // replaces. Read `embedExecutionHealth.probe` before quoting the rest.
+        embedExecution: embedExecutionTarget(),
+        embedExecutionHealth: embedExecutionHealth(),
         // WI-37696: the two worker-thread crash-breakers THIS process owns.
         //
         // Both the embedder (@papercusp/memory) and the cross-encoder

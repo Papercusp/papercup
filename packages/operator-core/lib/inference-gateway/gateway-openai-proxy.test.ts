@@ -397,11 +397,81 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     });
     const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'cdx-2' } });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { models?: Array<{ slug: string }> }).models?.some((m) => m.slug === 'gpt-5.5')).toBe(
-      true,
+    const body = (await res.json()) as {
+      models?: Array<{ slug: string; supported_reasoning_levels?: Array<{ effort: string }> }>;
+    };
+    expect(body.models?.some((m) => m.slug === 'gpt-6-astra')).toBe(true);
+    expect(body.models?.find((m) => m.slug === 'gpt-5.6-sol')?.supported_reasoning_levels).toContainEqual(
+      expect.objectContaining({ effort: 'max' }),
     );
     expect(openaiUpstream!.last.method).toBeUndefined();
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
+  });
+
+  it('overlays the selected CLI account native model cache while retaining fallback reasoning levels', async () => {
+    let nativeOnlySlug = 'gpt-future';
+    const readNativeCache = vi.fn((home: string) => ({
+      models: [
+        {
+          slug: 'gpt-6-astra',
+          display_name: 'Native Astra',
+          description: 'Account-native metadata.',
+          supported_reasoning_levels: [{ effort: 'low', description: 'Native low' }],
+          native_marker: home,
+        },
+        {
+          slug: nativeOnlySlug,
+          display_name: 'Future model',
+          description: 'Appeared after this gateway build.',
+          supported_reasoning_levels: [{ effort: 'max', description: 'Native max' }],
+        },
+        { display_name: 'invalid row without slug' },
+      ],
+    }));
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'should not reach upstream' }));
+      },
+      [codexAcct('cdx-1')],
+      {
+        codexCliAccounts: () => [{ accountId: 'chatgpt-a', home: '/native/chatgpt-a' }],
+        codexCliPool: createFailoverPool([{ accountId: 'chatgpt-a', token: async () => '' }]),
+        codexModelsCacheRead: readNativeCache,
+      },
+    );
+
+    const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'chatgpt-a' } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      models: Array<{
+        slug: string;
+        display_name?: string;
+        native_marker?: string;
+        supported_reasoning_levels?: Array<{ effort: string; description?: string }>;
+      }>;
+    };
+    const astra = body.models.find((model) => model.slug === 'gpt-6-astra');
+    expect(astra).toMatchObject({ display_name: 'Native Astra', native_marker: '/native/chatgpt-a' });
+    expect(astra?.supported_reasoning_levels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ effort: 'low', description: 'Native low' }),
+        expect.objectContaining({ effort: 'max' }),
+        expect.objectContaining({ effort: 'ultra' }),
+      ]),
+    );
+    expect(body.models.some((model) => model.slug === 'gpt-future')).toBe(true);
+    expect(body.models.some((model) => !model.slug)).toBe(false);
+    expect(readNativeCache).toHaveBeenCalledWith('/native/chatgpt-a');
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+
+    nativeOnlySlug = 'gpt-next';
+    const refreshed = (await (
+      await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'chatgpt-a' } })
+    ).json()) as { models: Array<{ slug: string }> };
+    expect(refreshed.models.some((model) => model.slug === 'gpt-next')).toBe(true);
+    expect(refreshed.models.some((model) => model.slug === 'gpt-future')).toBe(false);
+    expect(readNativeCache).toHaveBeenCalledTimes(2);
   });
 
   it('serves Codex /v1/models discovery without waiting behind a saturated admission queue', async () => {
@@ -2339,7 +2409,9 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
       { accountId: 'chatgpt-a', home: homeA },
       { accountId: 'chatgpt-b', home: homeB },
     ];
-    const codexCliPool = createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' })));
+    const codexCliPool = createFailoverPool(
+      cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' })),
+    );
     gw = createInferenceGateway({
       accountId: 'claude-acct',
       token: async () => 'claude-tok',
@@ -2365,7 +2437,10 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
     await bootOAuthPair(fetchImpl, { requestAbsorbMs: 120_000 });
 
     const before = Date.now();
-    const res = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true }, { [OWNER_HEADER]: 'su-all-walled' });
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'hi', stream: true },
+      { [OWNER_HEADER]: 'su-all-walled' },
+    );
     const elapsedMs = Date.now() - before;
     expect(res.status).toBe(429);
     expect(elapsedMs).toBeLessThan(10_000);
@@ -2386,7 +2461,7 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
     expect(mine!.soonestResetAt).toBeGreaterThan(before + 1.9 * 86_400_000);
   });
 
-  it('absorbs toward the POOL horizon: a sibling whose park expires in ~150ms is re-picked, not the failed account\'s 2h reset', async () => {
+  it("absorbs toward the POOL horizon: a sibling whose park expires in ~150ms is re-picked, not the failed account's 2h reset", async () => {
     let aCalls = 0;
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const account = accountOf(init);
@@ -2410,7 +2485,7 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
     expect(elapsedMs).toBeLessThan(1_500);
   });
 
-  it('a HARD pin to a walled account fails fast on that account\'s own horizon even though a sibling could serve', async () => {
+  it("a HARD pin to a walled account fails fast on that account's own horizon even though a sibling could serve", async () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       seen.push(accountOf(init));
@@ -2446,13 +2521,9 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
     expect(codexPool.parkState!('cdx-1')).toBeDefined();
     // (3) A fresh SHED or exhausted reading remains a wall even when its recovery time is unknown.
     //     An absent reset is not evidence that the account is serviceable.
-    gw!.setAccountRateHints([
-      { accountId: 'cdx-1', burnAction: 'shed', readingAt: parkedAt + 2_000 },
-    ]);
+    gw!.setAccountRateHints([{ accountId: 'cdx-1', burnAction: 'shed', readingAt: parkedAt + 2_000 }]);
     expect(codexPool.parkState!('cdx-1')).toBeDefined();
-    gw!.setAccountRateHints([
-      { accountId: 'cdx-1', utilization7d: 1, readingAt: parkedAt + 3_000 },
-    ]);
+    gw!.setAccountRateHints([{ accountId: 'cdx-1', utilization7d: 1, readingAt: parkedAt + 3_000 }]);
     expect(codexPool.parkState!('cdx-1')).toBeDefined();
     // (4) A fresh reading reporting capacity — the system that knows which accounts are available
     //     says this one is — clears the park, and routing sees it again.

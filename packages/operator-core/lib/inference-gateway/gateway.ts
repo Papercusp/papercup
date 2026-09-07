@@ -20,6 +20,8 @@
  */
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
@@ -919,6 +921,9 @@ export interface GatewayDeps {
   codexCliPool?: AccountPool;
   /** Test seam: the codex-CLI completion runner (default runCodexCliCompletion). */
   codexCliRun?: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
+  /** Read a configured CLI account's native models cache. The default reads
+   *  `<CODEX_HOME>/models_cache.json`; injected in tests to keep fixtures local. */
+  codexModelsCacheRead?: (home: string) => unknown;
   /** codex-gateway-oauth-proxy-2026-07-04 (WI-2198): when true, a codex-cli account serves a
    *  STREAMING /v1/responses by OAuth-reverse-proxying to the ChatGPT backend (codex-oauth-proxy.ts)
    *  instead of the one-shot exec bridge. Flag-resolved at the launch layer; default false. */
@@ -2087,6 +2092,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexCliAccounts = () => deps.codexCliAccounts?.() ?? [];
   const codexCliPool = deps.codexCliPool;
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
+  const codexModelsCacheRead =
+    deps.codexModelsCacheRead ?? ((home: string) => readFileSync(join(home, 'models_cache.json'), 'utf8'));
   const accountPoolSize = (accountPool?: AccountPool): number => {
     const size = accountPool?.size?.();
     if (typeof size === 'number' && Number.isFinite(size)) return Math.max(0, Math.floor(size));
@@ -3034,11 +3041,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   };
   /** Render a pool horizon for the response header / log line. */
   const describePoolRecovery = (poolRecoveryAt: number, at: number): string =>
-    poolRecoveryAt === Infinity
-      ? 'unknown'
-      : poolRecoveryAt > at
-        ? new Date(poolRecoveryAt).toISOString()
-        : 'now';
+    poolRecoveryAt === Infinity ? 'unknown' : poolRecoveryAt > at ? new Date(poolRecoveryAt).toISOString() : 'now';
   /** The stall-waker's capacity gate for a terminal codex 429: the POOL horizon when one is known (a
    *  sibling's park expiring sooner than the failed account's own reset is when capacity actually
    *  returns), else the failed account's reset, floored at 30s as before. */
@@ -4241,13 +4244,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
-  function codexModelsResponse() {
-    const supportedReasoningLevels = [
-      { effort: 'low', description: 'Fast responses with lighter reasoning' },
-      { effort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
-      { effort: 'high', description: 'Greater reasoning depth for complex problems' },
-      { effort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
-    ];
+  function codexModelsResponse(cliHome?: string) {
+    const reasoningDescriptions = {
+      low: 'Fast responses with lighter reasoning',
+      medium: 'Balances speed and reasoning depth for everyday tasks',
+      high: 'Greater reasoning depth for complex problems',
+      xhigh: 'Extra high reasoning depth for complex problems',
+      max: 'Maximum reasoning depth for the hardest problems',
+      ultra: 'Maximum reasoning with automatic task delegation',
+    } as const;
+    type ReasoningEffort = keyof typeof reasoningDescriptions;
+    type ReasoningLevel = { effort: string; description: string; [key: string]: unknown };
+    type CodexModel = { slug: string; supported_reasoning_levels?: ReasoningLevel[]; [key: string]: unknown };
+    const reasoningLevels = (...efforts: ReasoningEffort[]): ReasoningLevel[] =>
+      efforts.map((effort) => ({ effort, description: reasoningDescriptions[effort] }));
+    const standardReasoningLevels = reasoningLevels('low', 'medium', 'high', 'xhigh');
+    const maxReasoningLevels = reasoningLevels('low', 'medium', 'high', 'xhigh', 'max');
+    const ultraReasoningLevels = reasoningLevels('low', 'medium', 'high', 'xhigh', 'max', 'ultra');
     /**
      * `contextWindow` / `maxContextWindow` are per-model on purpose (plan
      * codex-1m-context-window-2026-08-17 P-005). They used to be a flat 272,000
@@ -4266,6 +4279,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       priority: number,
       contextWindow = 272_000,
       maxContextWindow = contextWindow,
+      supportedReasoningLevels = standardReasoningLevels,
     ) => ({
       slug,
       display_name: displayName,
@@ -4300,6 +4314,110 @@ export function createInferenceGateway(deps: GatewayDeps) {
       supports_search_tool: true,
       use_responses_lite: false,
     });
+    const fallbackModels: CodexModel[] = [
+      model(
+        'gpt-6-astra',
+        'GPT-6-Astra',
+        'Our most capable model for complex, demanding work.',
+        16,
+        272_000,
+        872_000,
+        ultraReasoningLevels,
+      ),
+      model(
+        'gpt-5.6-sol',
+        'GPT-5.6-Sol',
+        'Reliable agentic workhorse for everyday tasks.',
+        15,
+        272_000,
+        872_000,
+        ultraReasoningLevels,
+      ),
+      model(
+        'gpt-5.6-terra',
+        'GPT-5.6-Terra',
+        'Balanced agentic coding model for everyday work.',
+        14,
+        272_000,
+        872_000,
+        ultraReasoningLevels,
+      ),
+      model(
+        'gpt-5.6-luna',
+        'GPT-5.6-Luna',
+        'Fast and affordable agentic coding model.',
+        13,
+        272_000,
+        872_000,
+        maxReasoningLevels,
+      ),
+      model('gpt-5.5', 'GPT-5.5', 'Frontier model for complex coding, research, and real-world work.', 12),
+      model('gpt-5.4', 'GPT-5.4', 'Strong model for everyday coding.', 11, 272_000, 1_000_000),
+      model('gpt-5.4-mini', 'GPT-5.4-Mini', 'Small, fast, and cost-efficient model for simpler coding tasks.', 10),
+    ];
+    const validReasoningLevels = (value: unknown): ReasoningLevel[] =>
+      Array.isArray(value)
+        ? value.flatMap((level) => {
+            if (!level || Array.isArray(level) || typeof level !== 'object') return [];
+            const effort = (level as Record<string, unknown>).effort;
+            if (typeof effort !== 'string' || effort.trim() === '') return [];
+            const description = (level as Record<string, unknown>).description;
+            return [
+              {
+                ...(level as Record<string, unknown>),
+                effort,
+                description: typeof description === 'string' ? description : '',
+              } as ReasoningLevel,
+            ];
+          })
+        : [];
+    const nativeModels = (() => {
+      if (!cliHome) return [] as CodexModel[];
+      try {
+        const raw = codexModelsCacheRead(cliHome);
+        const parsed = typeof raw === 'string' || Buffer.isBuffer(raw) ? JSON.parse(String(raw)) : raw;
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return [];
+        const rows = (parsed as Record<string, unknown>).models;
+        if (!Array.isArray(rows)) return [];
+        return rows.flatMap((row) => {
+          if (!row || Array.isArray(row) || typeof row !== 'object') return [];
+          const slug = (row as Record<string, unknown>).slug;
+          if (typeof slug !== 'string' || slug.trim() === '') return [];
+          const normalized = { ...(row as Record<string, unknown>), slug } as CodexModel;
+          const levels = validReasoningLevels(normalized.supported_reasoning_levels);
+          if (levels.length > 0) normalized.supported_reasoning_levels = levels;
+          else delete normalized.supported_reasoning_levels;
+          return [normalized];
+        });
+      } catch {
+        return [] as CodexModel[];
+      }
+    })();
+    const nativeBySlug = new Map(nativeModels.map((entry) => [entry.slug, entry]));
+    const mergeReasoningLevels = (native: unknown, fallback: unknown): ReasoningLevel[] => {
+      const merged: ReasoningLevel[] = [];
+      const seen = new Set<string>();
+      for (const level of [...validReasoningLevels(native), ...validReasoningLevels(fallback)]) {
+        if (seen.has(level.effort)) continue;
+        seen.add(level.effort);
+        merged.push(level);
+      }
+      return merged;
+    };
+    const models = fallbackModels.map((fallback) => {
+      const native = nativeBySlug.get(fallback.slug);
+      if (!native) return fallback;
+      nativeBySlug.delete(fallback.slug);
+      return {
+        ...fallback,
+        ...native,
+        supported_reasoning_levels: mergeReasoningLevels(
+          native.supported_reasoning_levels,
+          fallback.supported_reasoning_levels,
+        ),
+      };
+    });
+    models.push(...nativeBySlug.values());
     return {
       // Mirror of the ChatGPT backend's Codex model catalog so the Codex CLI
       // `/model` picker offers the full current lineup when routed THROUGH the
@@ -4309,23 +4427,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // gateway-routed Codex agent to just these models (owner-reported
       // 2026-07-10: only gpt-5 / gpt-5.5 were offered through the gateway while
       // the same account showed the full lineup natively). Keep in sync with the
-      // upstream catalog; ordering is by descending `priority`. Follow-up: source
-      // this live from upstream so it can't go stale again.
-      models: [
-        model('gpt-5.6-sol', 'gpt-5.6-sol', 'Latest frontier agentic coding model.', 15, 272_000, 872_000),
-        model(
-          'gpt-5.6-terra',
-          'gpt-5.6-terra',
-          'Balanced agentic coding model for everyday work.',
-          14,
-          272_000,
-          872_000,
-        ),
-        model('gpt-5.6-luna', 'gpt-5.6-luna', 'Fast and affordable agentic coding model.', 13, 272_000, 872_000),
-        model('gpt-5.5', 'gpt-5.5', 'Frontier model for complex coding, research, and real-world work.', 12),
-        model('gpt-5.4', 'gpt-5.4', 'Strong model for everyday coding.', 11, 272_000, 1_000_000),
-        model('gpt-5.4-mini', 'gpt-5.4-mini', 'Small, fast, and cost-efficient model for simpler coding tasks.', 10),
-      ],
+      // upstream catalog. The selected configured CLI account's native cache
+      // overlays this fallback on every request, preserving new metadata/models
+      // without letting an older cache remove fallback reasoning levels.
+      models,
     };
   }
 
@@ -7143,7 +7248,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   throw INTERCEPT_OAUTH_THROTTLE;
                 }
                 if (routing.ownerId) {
-                  recordStall(routing.ownerId, metadata.accountId, codexStallSoonestAt(poolRecoveryAt, parsed.resetAt, now));
+                  recordStall(
+                    routing.ownerId,
+                    metadata.accountId,
+                    codexStallSoonestAt(poolRecoveryAt, parsed.resetAt, now),
+                  );
                 }
                 const shaped = shapeTerminalThrottle({
                   attempts: attemptsSeen,
@@ -7661,7 +7770,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       codexRequests++;
       const routedAccount = cli ? cli.accountId : active.accountId;
       const pinYieldedFrom = cli ? cliInitialPinYieldedFrom : bearerInitialPinYieldedFrom;
-      sendJson(res, 200, codexModelsResponse(), {
+      sendJson(res, 200, codexModelsResponse(cli?.home), {
         [ROUTED_ACCOUNT_HEADER]: routedAccount,
         ...(pinYieldedFrom ? { [PIN_YIELDED_HEADER]: `${pinYieldedFrom}->${routedAccount}` } : {}),
       });
