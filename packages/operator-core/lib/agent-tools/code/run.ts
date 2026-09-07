@@ -192,7 +192,7 @@ export default defineTool({
       .min(1)
       .max(20_000)
       .describe(
-        'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+        'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
           'to run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +

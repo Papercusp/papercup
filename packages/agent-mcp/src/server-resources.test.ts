@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -121,6 +121,7 @@ describe('readResource scratch references', () => {
 
   it('keeps legacy scratch files readable after authentication', async () => {
     resolveBearerMock.mockResolvedValue(principal());
+    mkdirSync(dirname(scratchPath('legacy.txt')), { recursive: true });
     writeFileSync(scratchPath('legacy.txt'), 'legacy payload', { encoding: 'utf8' });
 
     const result = await readResource({ uri: scratchUri('legacy.txt'), bearer: 'valid-bearer' });

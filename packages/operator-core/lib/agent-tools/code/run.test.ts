@@ -128,6 +128,15 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
   });
 
+  it('documents that scripts are plain JavaScript rather than TypeScript', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('Plain JavaScript body only');
+    expect(scriptDescription).toContain('TypeScript annotations such as `: any` are not supported');
+  });
+
   it('documents colon-only namespace conversion and preserves underscores within segments', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const description = tool?.description ?? '';

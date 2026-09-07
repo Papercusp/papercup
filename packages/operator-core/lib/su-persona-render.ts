@@ -198,12 +198,13 @@ export async function applySuPromptOverlays(opts: {
       ? `If that session ends, use coord:send with to: ["@fleet-leader:${fleetSlug}"] to reach the current ` +
         'fleet leader; this selector survives session retirement and leadership rotation.'
       : 'If that session ends, use coord:send with to: ["human"] to reach the owner; this owner surface survives session retirement.';
+    const liveReportingGuidance = fleetSlug
+      ? `They are your original LAUNCHER/SUPERVISOR for attribution. For live fleet coordination, report milestones, blockers, and anomalies with coord:send to ["@fleet-leader:${fleetSlug}"]; this selector resolves the current fleet leader across session retirement and leadership rotation. Treat the launcher ID above as attribution only, not as the live fleet recipient; answer the current fleet leader's messages before your own next step, and treat that leader's directives as steering.`
+      : `They are your LAUNCHER/SUPERVISOR: report milestones, blockers, and anomalies to them (coord:send) while live, answer their messages before your own next step, and treat their directives as steering.`;
     promptText =
       `${promptText.replace(/\n+$/, '')}\n\n---\n## Provenance — who launched this session\n\n` +
       `You were launched by **${opts.launchedBy}**, the agent that chose this mission and its launch ` +
-      `brief. They are your LAUNCHER/SUPERVISOR: report milestones, blockers, and anomalies to ` +
-      `them (coord:send), answer their messages before your own next step, and treat their ` +
-      `directives as steering. If asked who launched you or whose work this is, the answer is ` +
+      `brief. ${liveReportingGuidance} If asked who launched you or whose work this is, the answer is ` +
       `${opts.launchedBy}. ${endedLauncherFallback}\n`;
   }
 

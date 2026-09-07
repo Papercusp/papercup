@@ -70,6 +70,13 @@ describe('applySuPromptOverlays — the one canonical overlay order', () => {
     });
 
     expect(promptText).toContain(
+      'For live fleet coordination, report milestones, blockers, and anomalies with coord:send to ["@fleet-leader:drain-crew"]',
+    );
+    expect(promptText).toContain('Treat the launcher ID above as attribution only, not as the live fleet recipient');
+    expect(promptText).not.toContain(
+      'report milestones, blockers, and anomalies to them (coord:send) while live',
+    );
+    expect(promptText).toContain(
       'If that session ends, use coord:send with to: ["@fleet-leader:drain-crew"] to reach the current fleet leader',
     );
     expect(promptText).toContain('this selector survives session retirement and leadership rotation');

@@ -1955,7 +1955,11 @@ describe('buildLaunchProvenanceFactBody — fleet-safe reporting fallback', () =
     });
 
     expect(body).toContain('You were launched by su-ended-launcher on plan drain-plan with brief fleet-brief.md.');
-    expect(body).toContain('original launcher/supervisor');
+    expect(body).toContain(
+      'For live fleet coordination, report milestones + anomalies with coord:send to ["@fleet-leader:nonp2p-bug-drain-headless-0812"]',
+    );
+    expect(body).toContain('launcher ID above as attribution only, not as the live fleet recipient');
+    expect(body).not.toContain('report milestones + anomalies to them while live');
     expect(body).toContain('to: ["@fleet-leader:nonp2p-bug-drain-headless-0812"]');
     expect(body).toContain('survives session retirement and leadership rotation');
   });

@@ -1,0 +1,365 @@
+{
+  "irVersion": "0.1",
+  "surface": "visual-desktops-layout-concepts",
+  "ecosystem": "react-tailwind",
+  "a11y": {
+    "landmark": "main",
+    "headingLevel": 1
+  },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "ref": "desktop-concepts",
+    "children": [
+      {
+        "kind": "header",
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "key": "desktops.heading",
+              "default": "Desktops"
+            }
+          },
+          {
+            "kind": "text",
+            "copy": {
+              "key": "desktops.intro",
+              "default": "See your desktops. Step in when you need to."
+            }
+          }
+        ]
+      },
+      {
+        "kind": "grid",
+        "ref": "desktop-gallery",
+        "binding": {
+          "slot": "desktops",
+          "repeats": true,
+          "shape": "DesktopSessionRecord"
+        },
+        "item": {
+          "kind": "card",
+          "children": [
+            {
+              "kind": "image",
+              "ref": "desktop-preview",
+              "a11y": {
+                "ariaLabel": {
+                  "key": "desktops.preview",
+                  "default": "Preview of the desktop"
+                }
+              }
+            },
+            {
+              "kind": "heading",
+              "binding": {
+                "slot": "name",
+                "shape": "string"
+              }
+            },
+            {
+              "kind": "text",
+              "binding": {
+                "slot": "controlOwner",
+                "shape": "agent|human|none"
+              }
+            },
+            {
+              "kind": "stack",
+              "direction": "horizontal",
+              "children": [
+                {
+                  "kind": "component",
+                  "ref": "watch",
+                  "label": {
+                    "key": "desktops.watch",
+                    "default": "Watch"
+                  },
+                  "interactions": [
+                    "watch"
+                  ],
+                  "a11y": {
+                    "role": "button",
+                    "ariaLabel": {
+                      "key": "desktops.watch",
+                      "default": "Watch"
+                    }
+                  }
+                },
+                {
+                  "kind": "component",
+                  "ref": "take-control",
+                  "label": {
+                    "key": "desktops.take-control",
+                    "default": "Take control"
+                  },
+                  "interactions": [
+                    "take-control"
+                  ],
+                  "a11y": {
+                    "role": "button",
+                    "ariaLabel": {
+                      "key": "desktops.take-control",
+                      "default": "Take control"
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "emptyState": {
+          "kind": "empty-state",
+          "copy": {
+            "key": "desktops.empty",
+            "default": "No desktop is available yet. Connect a workspace to get started."
+          }
+        }
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "watch",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Watch"
+      }
+    },
+    {
+      "id": "take-control",
+      "registry": "action.primary",
+      "props": {
+        "label": "Take control"
+      }
+    },
+    {
+      "id": "status",
+      "registry": "feedback.banner",
+      "props": {
+        "tone": "info"
+      }
+    },
+    {
+      "id": "retry",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Reconnect"
+      }
+    },
+    {
+      "id": "release",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Release control"
+      }
+    }
+  ],
+  "states": {
+    "watching": {
+      "kind": "stack",
+      "children": [
+        {
+          "kind": "component",
+          "ref": "status",
+          "copy": {
+            "key": "desktops.watchState",
+            "default": "You’re watching. An agent is active on this desktop."
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "take-control",
+          "label": {
+            "key": "desktops.take-control",
+            "default": "Take control"
+          },
+          "interactions": [
+            "take-control"
+          ],
+          "a11y": {
+            "role": "button",
+            "ariaLabel": {
+              "key": "desktops.take-control",
+              "default": "Take control"
+            }
+          }
+        }
+      ]
+    },
+    "controlling": {
+      "kind": "stack",
+      "children": [
+        {
+          "kind": "component",
+          "ref": "status",
+          "copy": {
+            "key": "desktops.controlState",
+            "default": "You have control of the mouse and keyboard."
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "release",
+          "label": {
+            "key": "desktops.release",
+            "default": "Release control"
+          },
+          "interactions": [
+            "release"
+          ],
+          "a11y": {
+            "role": "button",
+            "ariaLabel": {
+              "key": "desktops.release",
+              "default": "Release control"
+            }
+          }
+        }
+      ]
+    },
+    "loading": {
+      "kind": "stack",
+      "a11y": {
+        "ariaLive": "polite"
+      },
+      "children": [
+        {
+          "kind": "spinner"
+        },
+        {
+          "kind": "text",
+          "copy": {
+            "key": "desktops.connecting",
+            "default": "Connecting to your desktop…"
+          }
+        }
+      ]
+    },
+    "error": {
+      "kind": "stack",
+      "children": [
+        {
+          "kind": "component",
+          "ref": "status",
+          "copy": {
+            "key": "desktops.error",
+            "default": "Connection lost. Your workspace may still be running."
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "retry",
+          "label": {
+            "key": "desktops.retry",
+            "default": "Reconnect"
+          },
+          "interactions": [
+            "retry"
+          ],
+          "a11y": {
+            "role": "button",
+            "ariaLabel": {
+              "key": "desktops.retry",
+              "default": "Reconnect"
+            }
+          }
+        }
+      ]
+    },
+    "takeoverConfirmation": {
+      "kind": "modal",
+      "title": {
+        "key": "desktops.confirm",
+        "default": "Take control of this desktop?"
+      },
+      "copy": {
+        "key": "desktops.confirmBody",
+        "default": "An agent is active here. Using the mouse and keyboard can interrupt its work."
+      },
+      "children": [
+        {
+          "kind": "component",
+          "ref": "take-control",
+          "label": {
+            "key": "desktops.take-control",
+            "default": "Take control"
+          },
+          "interactions": [
+            "take-control"
+          ],
+          "a11y": {
+            "role": "button",
+            "ariaLabel": {
+              "key": "desktops.take-control",
+              "default": "Take control"
+            }
+          }
+        }
+      ]
+    },
+    "workspace": {
+      "kind": "stack",
+      "direction": "horizontal",
+      "children": [
+        {
+          "kind": "image",
+          "ref": "large-desktop-preview",
+          "a11y": {
+            "ariaLabel": {
+              "key": "desktops.largePreview",
+              "default": "Selected desktop preview"
+            }
+          }
+        },
+        {
+          "kind": "list",
+          "ref": "workspace-desktops",
+          "binding": {
+            "slot": "desktops",
+            "repeats": true,
+            "shape": "DesktopSessionRecord"
+          }
+        }
+      ]
+    },
+    "dock": {
+      "kind": "drawer",
+      "title": {
+        "key": "desktops.dock",
+        "default": "Desktop"
+      },
+      "children": [
+        {
+          "kind": "image",
+          "ref": "docked-preview",
+          "a11y": {
+            "ariaLabel": {
+              "key": "desktops.dockPreview",
+              "default": "Docked desktop preview"
+            }
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "watch",
+          "label": {
+            "key": "desktops.watch",
+            "default": "Open desktop"
+          },
+          "interactions": [
+            "watch"
+          ],
+          "a11y": {
+            "role": "button",
+            "ariaLabel": {
+              "key": "desktops.watch",
+              "default": "Open desktop"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

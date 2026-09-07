@@ -1161,9 +1161,11 @@ export function buildLaunchProvenanceFactBody(opts: {
     (opts.planSlug ? ` on plan ${opts.planSlug}` : '') +
     (opts.launchContextPath ? ` with brief ${basename(opts.launchContextPath)}` : '');
 
-  const role = opts.fleetSlug ? 'original launcher/supervisor' : 'launcher/supervisor';
+  const liveReportingGuidance = opts.fleetSlug
+    ? `They are your original launcher/supervisor for attribution. For live fleet coordination, report milestones + anomalies with coord:send to ["@fleet-leader:${opts.fleetSlug}"]; this selector resolves the current fleet leader across session retirement and leadership rotation. Treat the launcher ID above as attribution only, not as the live fleet recipient.`
+    : 'They are your launcher/supervisor; report milestones + anomalies to them while live.';
   return (
-    `${provenance}. They are your ${role}; report milestones + anomalies to them while live. ` +
+    `${provenance}. ${liveReportingGuidance} ` +
     launchProvenanceFallbackSentence(opts.fleetSlug)
   );
 }
