@@ -2147,6 +2147,26 @@ describe('quotaLimitBannerVisible (WI-1386682 (1) — usage-wall text detector)'
 });
 
 describe('makeQuotaBlockDetector (WI-1386682 (1)/(2) — quota-wall ring-buffer detector)', () => {
+  it('ignores resumed history until submit, then preserves a current wall across later input', () => {
+    const d = makeQuotaBlockDetector({ agent: 'codex', deferUntilSubmit: true });
+    const wall = "You've hit your usage limit.";
+    expect(d.observe(wall)).toBeNull();
+    d.observeInput('\x1b[200~old transcript\n\x1b[201~');
+    d.observeInput('\x1b[1;1R');
+    expect(d.observe(wall)).toBeNull();
+    expect(d.isBlocked()).toBe(false);
+    d.observeInput('\r');
+    expect(d.observe('Ready for the new request')).toBeNull();
+    expect(d.observe("You've hit your ")).toBeNull();
+    expect(d.observe('usage limit.')).toBe('detected');
+    d.observeInput('\r');
+    expect(d.isBlocked()).toBe(true);
+    d.reset();
+    expect(d.observe(wall)).toBeNull();
+    d.observeInput('\n');
+    expect(d.observe(wall)).toBe('detected');
+  });
+
   it('publishes the current quota episode and clears it on recovery or recycle', () => {
     let now = 1000;
     const d = makeQuotaBlockDetector({ agent: 'codex', capBytes: 128, now: () => now });
