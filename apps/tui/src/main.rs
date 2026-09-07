@@ -1863,8 +1863,7 @@ async fn run<B: Backend>(
                         backend,
                         carry,
                         launch,
-                        pending,
-                        existing_chat,
+                        (pending, existing_chat),
                         tx.clone(),
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
@@ -4867,8 +4866,7 @@ async fn open_su_session_task(
     backend: crate::su_session::SuSessionBackend,
     carry: String,
     launch: crate::su_session::SuSessionLaunchOptions,
-    initial_turn: Option<crate::app::PendingSuTurn>,
-    existing_chat: Option<String>,
+    (initial_turn, existing_chat): (Option<crate::app::PendingSuTurn>, Option<String>),
     tx: UnboundedSender<Event>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -5024,9 +5022,10 @@ async fn stream_su_session_events(
     };
 
     let mut terminal_seen = false;
+    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         let next = if initial_turn.is_some() {
-            match tokio::time::timeout(Duration::from_secs(30), stream.recv()).await {
+            match tokio::time::timeout_at(startup_deadline, stream.recv()).await {
                 Ok(next) => next,
                 Err(_) => {
                     let _ = tx.send(Event::SuSessionStreamError {
