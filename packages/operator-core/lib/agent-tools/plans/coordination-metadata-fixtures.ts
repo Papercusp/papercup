@@ -5,6 +5,7 @@
  */
 import type { PlanSchemaRef } from './plan-input-validation';
 import { specClauseContentHash, type SpecClauseRevision, type SpecClauseWrite } from './spec-clauses-store';
+import type { SuspectedToolFailure } from '../../harness/improvements/tool-error-classifier';
 
 export const metadataPlanSlug = 'metadata-regression-fixture';
 export const metadataHarness = 'metadata-test-harness';
@@ -75,7 +76,41 @@ export const metadataWorkflowTargets = {
     writer: 'coordination/actionable-work-item-dispatch.ts:classifyOne',
     population: 'one already-held review with a fresh gated observation',
   },
+  retryIncidentFields: {
+    before: 14, maxAfter: 0, unit: 'caller-supplied toolFailure fields',
+    writer: 'improvements/capture.ts:args/handler',
+    measuredBy: 'sum the seven structured fields supplied on each of two explicit capture requests',
+    population: 'two repeats of metadataToolFailure; excludes failing-tool arguments and optional first-report prose',
+  },
+  retryIncidentNarratives: {
+    before: 0, maxAfter: 0, unit: 'caller-authored title/body fields',
+    writer: 'improvements/capture.ts:deriveToolFailureCaptureText',
+    population: 'the same two shorthand requests; generated prose is not caller-authored',
+  },
+  repeatedFrictionIdentities: {
+    before: 1, maxAfter: 1, unit: 'distinct persisted observation ids',
+    writer: 'harness/improvements/capture-core.ts:coalesceCapture',
+    population: 'two same-reporter retries against one known probation observation; persistence IO injected',
+  },
 } as const;
+
+/**
+ * R-7 frozen retry input. The zero-field comparison target above requires the
+ * invocation-ledger path to replace per-retry manual capture in P-006/P-007;
+ * these baseline tests do NOT claim that automatic delivery already happened.
+ * Correlation fingerprint, watchdog key and lifecycle class key have DIFFERENT
+ * scopes: changing schema/field/runtime changes class identity, not necessarily
+ * the message-shaped watchdog key. Tests pin those distinctions explicitly.
+ */
+export const metadataToolFailure = {
+  toolName: 'coord:send',
+  errorCode: 'invalid_args',
+  status: 'error',
+  message: 'invalid_args: body must be an array',
+  schemaRevision: 'metadata-schema-v1',
+  fieldPath: 'body',
+  runtimeVersion: 'metadata-runtime-v1',
+} as const satisfies SuspectedToolFailure;
 
 // No fake zero, percentile, or guessed latency target for an unobserved metric.
 // P-001/P-007 must obtain a matching trace before claiming those comparisons.
