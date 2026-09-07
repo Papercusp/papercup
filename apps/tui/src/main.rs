@@ -1854,25 +1854,31 @@ async fn run<B: Backend>(
                     launch,
                     initial_turn,
                 } => {
+                    let pending = initial_turn
+                        .and_then(|text| app.su_pending_turn.clone().filter(|p| p.content == text));
+                    let existing_chat = pending.as_ref().and(app.agent_chat_id.clone());
                     tokio::spawn(open_su_session_task(
                         harness,
                         role,
                         backend,
                         carry,
                         launch,
-                        initial_turn,
+                        pending,
+                        existing_chat,
                         tx.clone(),
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                Action::SendSuSessionTurn(text) => {
+                Action::SendSuSessionTurn(_) => {
                     if let Some(state) = app.su_session.as_ref() {
-                        if let Some(chat_id) = app.agent_chat_id.clone() {
+                        if let (Some(chat_id), Some(pending)) =
+                            (app.agent_chat_id.clone(), app.su_pending_turn.clone())
+                        {
                             tokio::spawn(send_su_session_turn_task(
                                 app.harness.clone(),
                                 chat_id,
                                 state.binding.clone(),
-                                text,
+                                pending,
                                 tx.clone(),
                             ));
                         } else {
@@ -4861,7 +4867,8 @@ async fn open_su_session_task(
     backend: crate::su_session::SuSessionBackend,
     carry: String,
     launch: crate::su_session::SuSessionLaunchOptions,
-    initial_turn: Option<String>,
+    initial_turn: Option<crate::app::PendingSuTurn>,
+    existing_chat: Option<String>,
     tx: UnboundedSender<Event>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -4871,26 +4878,30 @@ async fn open_su_session_task(
             return;
         }
     };
-    let chat = match client
-        .create_agent_chat(
-            &harness,
-            &crate::agent_chats::NewAgentChat {
-                role,
-                feature_id: launch.feature_id.clone(),
-                title: Some(format!("{} SU session", backend.label())),
-            },
-        )
-        .await
-    {
-        Ok(chat) => chat,
-        Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!(
-                "create SU agent chat: {error}"
-            )));
-            return;
+    let chat_id = if let Some(chat_id) = existing_chat {
+        chat_id
+    } else {
+        match client
+            .create_agent_chat(
+                &harness,
+                &crate::agent_chats::NewAgentChat {
+                    role,
+                    feature_id: launch.feature_id.clone(),
+                    title: Some(format!("{} SU session", backend.label())),
+                },
+            )
+            .await
+        {
+            Ok(chat) => chat.id,
+            Err(error) => {
+                let _ = tx.send(Event::SuSessionError(format!(
+                    "create SU agent chat: {error}"
+                )));
+                return;
+            }
         }
     };
-    let _ = tx.send(Event::AgentChatBound(chat.id.clone()));
+    let _ = tx.send(Event::AgentChatBound(chat_id.clone()));
     let request = crate::su_session::SuSessionOpenRequest::Create(
         crate::su_session::SuSessionCreateRequest {
             agent: backend,
@@ -4906,7 +4917,7 @@ async fn open_su_session_task(
             kickoff_prompt: launch.kickoff_prompt,
             carry,
             attached_engine: true,
-            agent_chat_id: chat.id.clone(),
+            agent_chat_id: chat_id.clone(),
         },
     );
     let binding = match client.open_su_session(&request).await {
@@ -4917,7 +4928,7 @@ async fn open_su_session_task(
         }
     };
     let _ = tx.send(Event::SuSessionOpened(binding.clone()));
-    stream_su_session_events(client, harness, chat.id, binding, initial_turn, tx).await;
+    stream_su_session_events(client, harness, chat_id, binding, initial_turn, tx).await;
 }
 
 async fn attach_su_session_task(
@@ -4959,17 +4970,30 @@ async fn stream_su_session_events(
     harness: String,
     chat_id: String,
     binding: crate::su_session::SuSessionBinding,
-    mut initial_turn: Option<String>,
+    mut initial_turn: Option<crate::app::PendingSuTurn>,
     tx: UnboundedSender<Event>,
 ) {
-    // The deferred workbench pane may not have booted the host yet. Retry a
-    // bounded number of times, then surface the failure explicitly; callers can
-    // reattach later and the stable advSessionId prevents duplicate launches.
+    // Readiness is an executor/stream property, not the mere existence of a
+    // descriptor. Bound retries also cover a reconnect during host startup.
     let mut stream = None;
     let mut last_error = None;
+    let mut ready = false;
     for _ in 0..15 {
         match client.su_session_snapshot(&harness, &chat_id).await {
             Ok(snapshot) => {
+                ready = snapshot.executor_attached
+                    && snapshot.stream_ready
+                    && matches!(
+                        snapshot.descriptor.lifecycle,
+                        crate::su_session::SuSessionLifecycleState::Ready
+                            | crate::su_session::SuSessionLifecycleState::Running
+                    )
+                    && su_turn_target_matches(
+                        &binding,
+                        &snapshot.descriptor.identity,
+                        &harness,
+                        &chat_id,
+                    );
                 let _ = tx.send(Event::SuSessionSnapshot(snapshot));
             }
             Err(error) => last_error = Some(error.to_string()),
@@ -5000,7 +5024,24 @@ async fn stream_su_session_events(
     };
 
     let mut terminal_seen = false;
-    while let Some(next) = stream.recv().await {
+    loop {
+        let next = if initial_turn.is_some() {
+            match tokio::time::timeout(Duration::from_secs(30), stream.recv()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    let _ = tx.send(Event::SuSessionStreamError {
+                        chat_id: chat_id.clone(),
+                        message:
+                            "Session did not become ready. Draft retained; reconnect to retry."
+                                .into(),
+                    });
+                    return;
+                }
+            }
+        } else {
+            stream.recv().await
+        };
+        let Some(next) = next else { break };
         let event = match next {
             Ok(event) => event,
             Err(error) => {
@@ -5024,33 +5065,17 @@ async fn stream_su_session_events(
             terminal_seen = true;
         }
         let is_session = matches!(event, crate::su_session::SuSessionEvent::Session { .. });
-        if is_session {
-            if let Some(text) = initial_turn.take() {
-                let identity = event.envelope().session.clone();
-                let command_id = format!(
-                    "pui-{}-{}",
-                    identity.adv_session_id,
-                    identity.sequence_token()
-                );
-                let command = serde_json::json!({
-                    "schema": crate::su_session::SU_SESSION_SCHEMA,
-                    "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
-                    "type": "owner_turn",
-                    "commandId": command_id,
-                    "issuedAt": chrono_like_now(),
-                    "target": identity,
-                    "turnId": format!("pui-turn-{}", command_id),
-                    "content": text,
-                });
-                if let Err(error) = client
-                    .send_su_session_command(&harness, &chat_id, command)
-                    .await
-                {
-                    let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
-                }
+        let identity_matches =
+            su_turn_target_matches(&binding, &event.envelope().session, &harness, &chat_id);
+        let _ = tx.send(Event::SuSessionEvent(event));
+        if is_session && initial_turn.is_some() {
+            let pending = initial_turn.take().expect("checked pending first turn");
+            if !ready || !identity_matches {
+                let _ = tx.send(Event::SuTurnFailed { command_id: pending.command_id, message: "Session executor/stream is not ready for this project. Draft retained; reconnect to retry.".into(), uncertain: false });
+            } else {
+                send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx).await;
             }
         }
-        let _ = tx.send(Event::SuSessionEvent(event));
     }
     if !terminal_seen {
         let _ = tx.send(Event::SuSessionStreamError {
@@ -5064,52 +5089,151 @@ async fn send_su_session_turn_task(
     harness: String,
     chat_id: String,
     binding: crate::su_session::SuSessionBinding,
-    text: String,
+    pending: crate::app::PendingSuTurn,
     tx: UnboundedSender<Event>,
 ) {
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
+            let _ = tx.send(Event::SuTurnFailed {
+                command_id: pending.command_id,
+                message: format!("Cannot connect: {error}"),
+                uncertain: pending.command.is_some(),
+            });
             return;
         }
     };
-    let snapshot = match client.su_session_snapshot(&harness, &chat_id).await {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!(
-                "owner turn snapshot: {error}"
-            )));
+    send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx).await;
+}
+
+fn su_turn_target_matches(
+    binding: &crate::su_session::SuSessionBinding,
+    identity: &crate::su_session::SuSessionIdentity,
+    harness: &str,
+    chat_id: &str,
+) -> bool {
+    identity.adv_session_id == binding.adv_session_id
+        && identity.backend == binding.backend
+        && identity.agent_chat_id == chat_id
+        && identity.harness_slug.as_deref() == Some(harness)
+        && binding.owner_id.as_deref() == Some(identity.owner_id.as_str())
+        && binding.workspace_id.as_deref() == Some(identity.workspace_id.as_str())
+}
+
+async fn send_su_turn_with_client(
+    client: &OperatorClient,
+    harness: &str,
+    chat_id: &str,
+    binding: &crate::su_session::SuSessionBinding,
+    pending: crate::app::PendingSuTurn,
+    tx: &UnboundedSender<Event>,
+) {
+    let fail = |message: String, uncertain| {
+        let _ = tx.send(Event::SuTurnFailed {
+            command_id: pending.command_id.clone(),
+            message,
+            uncertain,
+        });
+    };
+    let command = if let Some(command) = pending.command.clone() {
+        command // Retry the exact committed payload, including its original timestamp.
+    } else {
+        let snapshot = match client.su_session_snapshot(harness, chat_id).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                fail(format!("Cannot read session readiness: {error}"), false);
+                return;
+            }
+        };
+        if !snapshot.executor_attached || !snapshot.stream_ready || snapshot.terminal {
+            fail(
+                "Session is not ready. Draft retained; reconnect to retry.".into(),
+                false,
+            );
             return;
         }
+        let identity = snapshot.descriptor.identity;
+        if !su_turn_target_matches(binding, &identity, harness, chat_id) {
+            fail(
+                "Session identity changed. Draft retained; reattach before sending.".into(),
+                false,
+            );
+            return;
+        }
+        serde_json::json!({
+            "schema": crate::su_session::SU_SESSION_SCHEMA,
+            "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
+            "type": "owner_turn",
+            "commandId": pending.command_id,
+            "issuedAt": chrono_like_now(),
+            "target": identity,
+            "turnId": format!("pui-turn-{}", pending.command_id),
+            "content": pending.content,
+        })
     };
-    let identity = snapshot.descriptor.identity;
-    if identity.adv_session_id != binding.adv_session_id || identity.backend != binding.backend {
-        let _ = tx.send(Event::SuSessionError(
-            "owner turn refused: session identity changed; reattach required".into(),
-        ));
-        return;
-    }
-    let command_id = format!(
-        "pui-{}-{}",
-        identity.adv_session_id,
-        identity.sequence_token()
-    );
-    let command = serde_json::json!({
-        "schema": crate::su_session::SU_SESSION_SCHEMA,
-        "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
-        "type": "owner_turn",
-        "commandId": command_id,
-        "issuedAt": chrono_like_now(),
-        "target": identity,
-        "turnId": format!("pui-turn-{command_id}"),
-        "content": text,
+    let identity: crate::su_session::SuSessionIdentity =
+        match serde_json::from_value(command["target"].clone()) {
+            Ok(identity) if su_turn_target_matches(binding, &identity, harness, chat_id) => {
+                identity
+            }
+            _ => {
+                fail(
+                    "Retained turn belongs to a different session; reconnect that session first."
+                        .into(),
+                    false,
+                );
+                return;
+            }
+        };
+    let _ = tx.send(Event::SuTurnPrepared {
+        command_id: pending.command_id.clone(),
+        command: command.clone(),
     });
-    if let Err(error) = client
-        .send_su_session_command(&harness, &chat_id, command)
-        .await
+    match tokio::time::timeout(
+        Duration::from_secs(30),
+        client.send_su_session_command(harness, chat_id, command),
+    )
+    .await
     {
-        let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
+        Ok(Ok(response)) => {
+            let ack = &response["accepted"];
+            if response["ok"] == true
+                && ack["status"] == "accepted"
+                && ack["commandId"] == pending.command_id
+                && ack["session"] == serde_json::to_value(&identity).unwrap_or_default()
+            {
+                let _ = tx.send(Event::SuTurnAcknowledged {
+                    command_id: pending.command_id,
+                    session: identity,
+                });
+            } else {
+                fail("No matching acceptance acknowledgement. Draft retained; Enter checks the same turn.".into(), true);
+            }
+        }
+        Ok(Err(error)) => {
+            let status = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::http::HttpStatusError>());
+            let body = status
+                .and_then(|status| serde_json::from_str::<serde_json::Value>(&status.body).ok());
+            let terminal = body.as_ref().map(|body| &body["terminal"]);
+            let refused = terminal.is_some_and(|t| {
+                t["status"] == "refused"
+                    && t["commandId"] == pending.command_id
+                    && t["session"] == serde_json::to_value(&identity).unwrap_or_default()
+                    && t["refusal"]["code"] != "command_delivery_unknown"
+            });
+            let rejected_before_dispatch =
+                status.is_some_and(|s| matches!(s.status, 400 | 401 | 403 | 404 | 422));
+            fail(
+                format!("Turn was not confirmed: {error}"),
+                !(refused || rejected_before_dispatch),
+            );
+        }
+        Err(_) => fail(
+            "Acceptance timed out. Draft retained; Enter checks the same turn.".into(),
+            true,
+        ),
     }
 }
 
@@ -5172,19 +5296,6 @@ fn command_nonce() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
-}
-
-/// A tiny deterministic suffix for owner-turn ids; the durable command id is
-/// unique within an adv session even when two PUI processes issue a turn in the
-/// same second.
-trait SuSessionIdentitySequenceToken {
-    fn sequence_token(&self) -> String;
-}
-
-impl SuSessionIdentitySequenceToken for crate::su_session::SuSessionIdentity {
-    fn sequence_token(&self) -> String {
-        format!("{}-{}", self.agent_chat_id, command_nonce())
-    }
 }
 
 /// Run one operator chat turn (tui-operator-surface P1). Persists the user turn,
@@ -6587,7 +6698,10 @@ mod tests {
             matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "hello from the TUI"),
             "{action:?}"
         );
-        assert!(app.chat_input.is_empty());
+        assert_eq!(
+            app.chat_input, "hello from the TUI",
+            "keep the draft until host acceptance"
+        );
     }
 
     #[test]
