@@ -65,6 +65,12 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
  * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
 const stringTolerantBool = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? false : v), z.boolean());
 
+// plans:start runs the approval, promotion, generated-block, admission, and
+// claim-spec legs synchronously. Keep the transport/dispatch budget above the
+// flat MCP deadline so a legitimate long saga returns its structured outcome
+// instead of an ambiguous timeout (EI-22583060887975914).
+export const PLANS_START_TIMEOUT_SEC = 120;
+
 const argsSchema = z
   .object({
     slug: z.string().min(1).optional().describe('Plan slug to start (filename without .md).'),
@@ -114,6 +120,7 @@ export default defineTool({
   // instead of a false timeout that hides what landed and invites a duplicate
   // retry. Inert except in the dispatch abort-race branch.
   idempotent: true,
+  timeoutSec: PLANS_START_TIMEOUT_SEC,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
@@ -629,7 +636,7 @@ export default defineTool({
               claimSpecBinding = await setClaimSpec({
                 cupId: ownerId,
                 workspaceId: startWorkspaceId,
-                spec: buildExactPlanClaimSpec(`plans-start-${slug}`, slug),
+                spec: buildExactPlanClaimSpec(`plans-start-${slug}`, slug, admission.claimKinds ?? undefined),
                 updatedBy: ownerId,
                 potSlug: harnessSlug,
               });
