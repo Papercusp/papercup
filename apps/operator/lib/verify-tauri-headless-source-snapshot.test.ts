@@ -7,7 +7,9 @@
  * protects the bundle served by the rig, but it cannot protect this wrapper's
  * own source. Pin the startup snapshot/re-exec contract on the real script.
  */
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -66,5 +68,64 @@ describe('EI-22587788892654404 — a repo-local temp root cannot enter its own s
   it('excludes and defensively removes local Papercusp state before the isolated sidecar boots', () => {
     expect(operatorSnapshotSource).toContain("--exclude='.papercusp'");
     expect(operatorSnapshotSource).toContain('"$snapshot_root/.papercusp"');
+  });
+});
+
+describe('EI-22588292228855829 — dependency snapshot stays on the donor filesystem', () => {
+  const chooserStart = src.indexOf('select_verifier_work_root() {');
+  const chooserEnd = src.indexOf('WORK_ROOT="$(select_verifier_work_root)"', chooserStart);
+
+  function chooseRoot(crossDevice: boolean, fallbackCrossDevice = false) {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-work-root-'));
+    const donor = resolve(fixture, 'donor');
+    const preferred = resolve(fixture, 'preferred');
+    mkdirSync(donor);
+    mkdirSync(preferred);
+    try {
+      expect(chooserStart).toBeGreaterThan(-1);
+      expect(chooserEnd).toBeGreaterThan(chooserStart);
+      // Exercise the actual shell chooser with deterministic mount identities.
+      // No snapshot/build process is launched, and no real mount is required.
+      const result = spawnSync('bash', ['-c', [
+        'stat() {',
+        '  if [ "$4" = "$REPO_DIR" ]; then printf "1\\n";',
+        '  elif [ "$4" = "$TMPDIR" ]; then printf "%s\\n" "$TEST_PREFERRED_DEVICE";',
+        '  else printf "%s\\n" "$TEST_FALLBACK_DEVICE"; fi',
+        '}',
+        src.slice(chooserStart, chooserEnd),
+        'select_verifier_work_root',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          REPO_DIR: donor,
+          TMPDIR: preferred,
+          TEST_PREFERRED_DEVICE: crossDevice ? '2' : '1',
+          TEST_FALLBACK_DEVICE: fallbackCrossDevice ? '2' : '1',
+        },
+      });
+      return { ...result, donor, preferred };
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
+  it('retains a requested temporary root on the donor filesystem', () => {
+    const result = chooseRoot(false);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(result.preferred);
+  });
+
+  it('uses excluded repository-local scratch when /tmp is on another filesystem', () => {
+    const result = chooseRoot(true);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(resolve(result.donor, '.papercusp/tmp'));
+  });
+
+  it('refuses a fallback that is also mounted on a different filesystem', () => {
+    const result = chooseRoot(true, true);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('no verifier work root on the dependency donor filesystem');
   });
 });
