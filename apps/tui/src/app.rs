@@ -8298,16 +8298,40 @@ impl App {
             Event::SuTurnAcknowledged {
                 command_id,
                 session,
+                replay_snapshot,
             } => {
                 let matches = self
                     .su_pending_turn
                     .as_ref()
+                    .filter(|pending| pending.command_id == command_id)
                     .and_then(|p| p.command.as_ref())
                     .is_some_and(|command| {
                         command["target"] == serde_json::to_value(&session).unwrap_or_default()
                     });
                 if matches {
                     self.acknowledge_su_turn(&command_id);
+                    if let Some(snapshot) = replay_snapshot {
+                        // A newer stream event wins a race with this HTTP read.
+                        if self
+                            .su_session
+                            .as_ref()
+                            .is_some_and(|state| state.last_sequence <= snapshot.last_sequence)
+                        {
+                            self.apply_su_session_snapshot(*snapshot);
+                        }
+                        self.chat_streaming = self.su_session.as_ref().is_some_and(|state| {
+                            matches!(
+                                state.lifecycle,
+                                crate::su_session::SuSessionLifecycleState::Running
+                                    | crate::su_session::SuSessionLifecycleState::Compacting
+                                    | crate::su_session::SuSessionLifecycleState::Resuming
+                            )
+                        });
+                        if !self.chat_streaming {
+                            self.su_active_command_id = None;
+                            self.finish_chat_turn();
+                        }
+                    }
                 }
                 Action::Render
             }
@@ -16208,11 +16232,13 @@ mod tests {
         app.update(Event::SuTurnAcknowledged {
             command_id: "foreign".into(),
             session: identity.clone(),
+            replay_snapshot: None,
         });
         assert_eq!(app.chat_input, text);
         app.update(Event::SuTurnAcknowledged {
             command_id: pending.command_id.clone(),
             session: identity,
+            replay_snapshot: None,
         });
         assert!(app.chat_input.is_empty());
         assert!(app.su_pending_turn.is_none());
@@ -16266,6 +16292,50 @@ mod tests {
         app.chat_input = "next draft".into();
         app.acknowledge_su_turn(&id);
         assert_eq!(app.chat_input, "next draft");
+    }
+
+    #[test]
+    fn su_replayed_receipt_restores_the_actual_running_or_idle_state() {
+        for running in [false, true] {
+            let mut app = composing("one saved turn");
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            app.set_su_session_binding(su_binding());
+            app.agent_chat_id = Some("chat-1".into());
+            let mut snapshot = su_archived_snapshot(1, 20, None);
+            snapshot.terminal = false;
+            snapshot.descriptor.lifecycle = if running {
+                crate::su_session::SuSessionLifecycleState::Running
+            } else {
+                crate::su_session::SuSessionLifecycleState::Ready
+            };
+            let identity = snapshot.descriptor.identity.clone();
+            let id = app.su_pending_turn.as_ref().unwrap().command_id.clone();
+            app.update(Event::SuTurnPrepared {
+                command_id: id.clone(),
+                command: json!({"target": identity}),
+            });
+            app.update(Event::SuTurnFailed {
+                command_id: id.clone(),
+                message: "lost receipt".into(),
+                uncertain: true,
+            });
+            app.chat_streaming = true; // Owner retries the exact pending command.
+            app.update(Event::SuTurnAcknowledged {
+                command_id: id,
+                session: identity,
+                replay_snapshot: Some(Box::new(snapshot)),
+            });
+            assert!(app.chat_input.is_empty());
+            assert!(app.su_pending_turn.is_none());
+            assert_eq!(app.chat_streaming, running);
+            assert_eq!(
+                app.chat_messages
+                    .iter()
+                    .filter(|m| m.role == "user")
+                    .count(),
+                1
+            );
+        }
     }
 
     #[test]

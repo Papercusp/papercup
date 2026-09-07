@@ -110,6 +110,18 @@ describe('recordedLiveOwnerIds — the live_adv leg is freshness-bounded (WI-424
     expect(live.has(ENDED)).toBe(false);
   });
 
+  it('does not let an older fresh session outvote a newer ended session', async () => {
+    // A resumed owner can have an older session row whose end hook never ran,
+    // followed by a newer row that ended cleanly. The live enrichment must
+    // agree with endedRecordedOwnerIds on the newest row; otherwise the oracle
+    // receives both sets and prefers the stale `recorded` rescue.
+    const restarted = 'su-recorded-restarted-ended';
+    await seedAdv({ coordOwnerId: restarted, startedAgoSec: 60 });
+    await seedAdv({ coordOwnerId: restarted, startedAgoSec: 5, ended: true });
+    const live = await recordedLiveOwnerIds([restarted]);
+    expect(live.has(restarted)).toBe(false);
+  });
+
   it('separates the cohorts in ONE batch — the shape every caller actually uses', async () => {
     // A batch read is the real call site (the oracle hydrates many owners at
     // once). Asserting the three cases individually would not catch a predicate

@@ -2993,6 +2993,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             format!("> {}", app.chat_input),
             Theme::notify(),
         )
+    } else if app.su_pending_turn.is_some() {
+        (
+            " Message not accepted — draft retained · Enter retries ",
+            format!("> {}", app.chat_input.replace('\n', "⏎")),
+            Theme::notify(),
+        )
     } else if app.chat_streaming {
         (
             " Running — input locked ",

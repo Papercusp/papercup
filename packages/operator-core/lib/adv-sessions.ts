@@ -2527,11 +2527,21 @@ export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set
         SELECT unnest(${ids}::text[])
       ),
       live_adv AS (
-        SELECT coord_owner_id AS owner_id
-          FROM harness_shared.adv_sessions
-         WHERE coord_owner_id = ANY(${ids}::text[])
-           AND ended_at IS NULL
-           AND started_at > now() - ${`${RECORDED_ADV_SESSION_FRESH_SEC} seconds`}::interval
+        -- Match endedRecordedOwnerIds: only the NEWEST recorded session may
+        -- vouch for this owner. Looking at every fresh un-ended row lets an
+        -- older session survive a newer ended session, so the two enrichment
+        -- sets overlap and the liveness oracle can report the ended holder as
+        -- recorded/held-live.
+        SELECT latest.coord_owner_id AS owner_id
+          FROM (
+            SELECT DISTINCT ON (coord_owner_id)
+                   coord_owner_id, ended_at, started_at
+              FROM harness_shared.adv_sessions
+             WHERE coord_owner_id = ANY(${ids}::text[])
+             ORDER BY coord_owner_id, started_at DESC
+          ) AS latest
+         WHERE latest.ended_at IS NULL
+           AND latest.started_at > now() - ${`${RECORDED_ADV_SESSION_FRESH_SEC} seconds`}::interval
       ),
       live_spawn AS (
         SELECT alias.owner_id

@@ -444,6 +444,9 @@ pub enum Event {
     SuTurnAcknowledged {
         command_id: String,
         session: crate::su_session::SuSessionIdentity,
+        /// Replaying a saved receipt emits no new command events. Reconcile
+        /// the current host state so an already finished turn cannot stay busy.
+        replay_snapshot: Option<Box<crate::su_session::SuSessionSnapshot>>,
     },
     SuTurnFailed {
         command_id: String,

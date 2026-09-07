@@ -108,12 +108,14 @@ describe('COORD_ROLES', () => {
       const { default: searchFulltext } = await import('../search/fulltext.js');
       const { default: scorecardsEvaluate } = await import('../scorecards/evaluate.js');
       const { default: pgQuery } = await import('../dev/pg_query.js');
+      const { default: degenerateCheck } = await import('../gates/degenerate-check.js');
 
       for (const [name, tool] of [
         ['work_items:get', workItemsGet],
         ['search:fulltext', searchFulltext],
         ['scorecards:evaluate', scorecardsEvaluate],
         ['dev:pg_query', pgQuery],
+        ['gates:degenerate-check', degenerateCheck],
       ] as const) {
         expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
       }

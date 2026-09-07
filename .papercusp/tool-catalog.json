@@ -12722,7 +12722,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "judge"
       ],
       "guidance": {
         "when": "Auditing whether the memory recall gates (or any registered gate) are actually discriminating on live traffic — especially before trusting a green health panel, since a floor that admits nothing reports the tool as ok. Also the direct check for the cannot-discriminate class.",

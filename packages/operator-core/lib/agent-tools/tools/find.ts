@@ -308,60 +308,93 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   };
-  let entries = orderedProperties.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
-  if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
-    entries = orderedProperties.map(([name, raw]) => renderEntry(name, raw, false));
-  }
-  let body = '';
-  let dropped = 0;
-  for (const [index, entry] of entries.entries()) {
-    const candidate = body ? `${body},${entry}` : entry;
-    if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
-      // Keep the child name/type discoverable even when its recursive shape is
-      // larger than the remaining segment budget. Dropping the whole entry
-      // made large contracts (notably completion.verification) disappear,
-      // leaving callers to infer the legacy alias was canonical. The shallow
-      // fallback preserves the callable field without changing aggregate
-      // width or the explicit tail-elision marker.
-      const [name, raw] = orderedProperties[index];
-      // Keep a shallow nested-object path on the fallback. Without this, a
-      // wide field such as completion.verification degraded to just
-      // `verification?:object`, while the legacy sibling completion.coverage
-      // remained visible and callers learned the wrong nesting from discovery.
-      const fallback = renderEntry(name, raw, false, false);
-      const nestedHint =
-        raw && typeof raw === 'object' && !Array.isArray(raw)
-          ? nestedObjectFieldHint(raw as JsonSchemaNode, depth)
-          : '';
-      const hintedFallback = nestedHint ? `${fallback}${nestedHint}` : fallback;
-      // If the preserved nested path plus direct fields is too large for the
-      // remaining parent segment, retain the direct fields on their own. This
-      // keeps required values discoverable even when an earlier sibling has
-      // already consumed most of the 320-character budget.
-      const directHint =
-        raw && typeof raw === 'object' && !Array.isArray(raw)
-          ? nestedObjectFieldHint(raw as JsonSchemaNode, depth, false)
-          : '';
-      const fallbackCandidates = [
-        hintedFallback,
-        directHint ? `${fallback}${directHint}` : fallback,
-        fallback,
-      ];
-      const selectedFallback = fallbackCandidates.find((candidate) => {
-        const candidateWithBody = `${body},${candidate}`;
-        return candidate.length < entry.length && candidateWithBody.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS;
-      });
-      if (selectedFallback) {
-        body = `${body},${selectedFallback}`;
+  const renderOrderedProperties = (propertiesToRender: Array<[string, unknown]>): {
+    body: string;
+    omitted: Set<string>;
+    oversized: boolean;
+  } => {
+    let entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
+    if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+      entries = propertiesToRender.map(([name, raw]) => renderEntry(name, raw, false));
+    }
+    const oversized = entries.some((entry) => entry.length > NESTED_FIELDS_SEGMENT_MAX_CHARS);
+    let body = '';
+    let dropped = 0;
+    const omitted = new Set<string>();
+    for (const [index, entry] of entries.entries()) {
+      const candidate = body ? `${body},${entry}` : entry;
+      if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+        // Keep the child name/type discoverable even when its recursive shape is
+        // larger than the remaining segment budget. Dropping the whole entry
+        // made large contracts (notably completion.verification) disappear,
+        // leaving callers to infer the legacy alias was canonical. The shallow
+        // fallback preserves the callable field without changing aggregate
+        // width or the explicit tail-elision marker.
+        const [name, raw] = propertiesToRender[index];
+        // Keep a shallow nested-object path on the fallback. Without this, a
+        // wide field such as completion.verification degraded to just
+        // `verification?:object`, while the legacy sibling completion.coverage
+        // remained visible and callers learned the wrong nesting from discovery.
+        const fallback = renderEntry(name, raw, false, false);
+        const nestedHint =
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? nestedObjectFieldHint(raw as JsonSchemaNode, depth)
+            : '';
+        const hintedFallback = nestedHint ? `${fallback}${nestedHint}` : fallback;
+        // If the preserved nested path plus direct fields is too large for the
+        // remaining parent segment, retain the direct fields on their own. This
+        // keeps required values discoverable even when an earlier sibling has
+        // already consumed most of the 320-character budget.
+        const directHint =
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? nestedObjectFieldHint(raw as JsonSchemaNode, depth, false)
+            : '';
+        const fallbackCandidates = [
+          hintedFallback,
+          directHint ? `${fallback}${directHint}` : fallback,
+          fallback,
+        ];
+        const selectedFallback = fallbackCandidates.find((candidate) => {
+          const candidateWithBody = `${body},${candidate}`;
+          return candidate.length < entry.length && candidateWithBody.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS;
+        });
+        if (selectedFallback) {
+          body = `${body},${selectedFallback}`;
+          continue;
+        }
+        dropped += 1;
+        omitted.add(name);
         continue;
       }
-      dropped += 1;
-      continue;
+      body = candidate;
     }
-    body = candidate;
+    if (dropped > 0) body = `${body},…+${dropped}`;
+    return { body: body.length > 0 ? `{${body}}` : '', omitted, oversized };
+  };
+
+  let propertiesForRender = orderedProperties;
+  // Preserve the established contract-priority/source order unless it would
+  // hide a required field. If one is omitted, move only the omitted required
+  // fields to the front and render again; this keeps existing high-value
+  // nested paths (such as completion.verification.coverage) stable while
+  // making a late required field such as progress_lease.remedy visible.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const rendered = renderOrderedProperties(propertiesForRender);
+    const omittedRequired = propertiesForRender.filter(
+      ([name]) => nested.required.has(name) && rendered.omitted.has(name),
+    );
+    // An oversized entry has its own established shallow fallback at the
+    // enclosing object level (for example completion.verification.coverage or
+    // rerunRecipe.current.supplied). Reordering around it would make that
+    // fallback appear to fit and would regress the nested path projection.
+    if (omittedRequired.length === 0 || attempt === 1 || rendered.oversized) return rendered.body;
+    const omittedRequiredNames = new Set(omittedRequired.map(([name]) => name));
+    propertiesForRender = [
+      ...omittedRequired,
+      ...propertiesForRender.filter(([name]) => !omittedRequiredNames.has(name)),
+    ];
   }
-  if (dropped > 0) body = `${body},…+${dropped}`;
-  return body.length > 0 ? `{${body}}` : '';
+  return '';
 }
 
 /**

@@ -34,7 +34,10 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // Acceptance judges run this read-only distribution audit as part of the
+  // grading-integrity rubric; keep the admission local instead of widening
+  // SU_ROLES and exposing judge to unrelated coordination tools.
+  agentRoles: [...SU_ROLES, 'judge'],
   args: z.object({
     sinceHours: z
       .number()
