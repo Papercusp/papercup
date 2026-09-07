@@ -3301,6 +3301,30 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe(false);
   });
 
+  it("reserves only an exact scorecard audit read, including deferred tools:invoke", () => {
+    const args = { rubricRef: "grading-integrity", subjectRef: "EI-22581128473264750", limit: 1 };
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(JSON.stringify({ method: "tools/call", params: { name: "scorecards:list", arguments: args } })),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: { name: "tools:invoke", arguments: { name: "scorecards_list", args } },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(JSON.stringify({ method: "tools/call", params: { name: "scorecards:list", arguments: {} } })),
+      ),
+    ).toBe(false);
+  });
+
   it("recognizes a JSON-RPC batch when any member is a reserved control-plane call", () => {
     expect(
       isReservedControlPlaneCall(
@@ -3369,6 +3393,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     "work_items:checkpoint",
     "work_items:claimable",
     "work_items:get",
+    "scorecards:list",
     "work_items:search",
     "work_items:release",
     "work_items:complete",
@@ -3415,7 +3440,13 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
               name: "tools:invoke",
               arguments: { name: "tools:find", args: {} },
             }
-          : { name: controlPlaneTool, arguments: {} },
+          : {
+              name: controlPlaneTool,
+              arguments:
+                controlPlaneTool === "scorecards:list"
+                  ? { rubricRef: "grading-integrity", subjectRef: "EI-22581128473264750", limit: 1 }
+                  : {},
+            },
       });
       const heldControlPlane = request(port(proxy), controlPlaneBody);
       await new Promise((r) => setTimeout(r, 40));

@@ -150,7 +150,8 @@ export function resetMcpAdmissionForTests(): void {
  * single byte page from an authorized scratch spill, so result-door recovery can proceed while
  * pressure is critical without opening the broad file-read surface. `work_items:get` is admitted
  * only for one item with the default shallow read; bulk, detail, and thread reads remain shed
- * under critical pressure.
+ * under critical pressure. `scorecards:list` is admitted only for an exact rubric+subject audit
+ * read; broad history remains shed.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -163,6 +164,8 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
 );
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
+const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
 const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
 const CRITICAL_CAPABILITY_READ_MAX_BYTES = 4_096;
 
@@ -209,10 +212,42 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   return true;
 }
 
+/**
+ * A grading-integrity audit needs one scorecard's complete evidence while the
+ * operator is under pressure. Require both selective predicates and reject a
+ * deliberately wide page so this recovery exemption cannot become a history
+ * export lane. The default page remains acceptable because the exact
+ * rubric+subject pair is the audit's bounded identity; callers that override it
+ * are capped at a small page.
+ */
+export function isBoundedScorecardsListArgs(args: unknown): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const rubricRef = typeof record.rubricRef === 'string' && record.rubricRef.trim().length > 0;
+  const subjectRef = typeof record.subjectRef === 'string' && record.subjectRef.trim().length > 0;
+  if (!rubricRef || !subjectRef) return false;
+  if (
+    record.limit !== undefined &&
+    (!Number.isInteger(record.limit) ||
+      (record.limit as number) < 1 ||
+      (record.limit as number) > CRITICAL_SCORECARDS_LIST_MAX_ROWS)
+  ) {
+    return false;
+  }
+  for (const field of ['sourceHive', 'harness', 'since']) {
+    if (record[field] !== undefined && typeof record[field] !== 'string') return false;
+  }
+  for (const field of ['includeSynthesized', 'includeSuperseded', 'includeRetracted']) {
+    if (record[field] !== undefined && typeof record[field] !== 'boolean') return false;
+  }
+  return true;
+}
+
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
+  if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
 }

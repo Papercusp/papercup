@@ -204,6 +204,12 @@ describe('R4 at the wiring layer — the routine cannot reach a grading surface'
     expect(src).toContain('evaluatePlanAcceptanceGate');
   });
 
+  it('also runs the bounded grading-integrity pending-audit reconciliation clock', () => {
+    const src = read(ACTION_FILE);
+    expect(src).toContain("import('../../grading-integrity')");
+    expect(src).toContain('reconcilePendingGradingAudits');
+  });
+
   // WI-1699998. This sweep is the caller whose re-dispatch re-routed an ALREADY
   // DECIDED grading, so it is also the caller that must recognise the new skip.
   // If 'settled' is missing from the success allowlist, a correct skip returns

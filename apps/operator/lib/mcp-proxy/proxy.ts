@@ -50,6 +50,7 @@ import {
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
 import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
+import { isBoundedScorecardsListArgs } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
   isCheapRepeatingBeat,
@@ -749,6 +750,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:list",
   "work_items:get",
   "work_items:claimable",
+  // Exact rubric+subject audit reads are side-effect-free and safe to replay.
+  "scorecards:list",
   "plans:get",
   "plans:list",
   "plans:items",
@@ -1487,6 +1490,12 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     "work_items:set_state",
   ].map(normalizeMcpName),
 );
+const SCORECARDS_LIST_TOOL_NAME = normalizeMcpName("scorecards:list");
+
+function isReservedControlPlaneTool(name: string, args?: unknown): boolean {
+  if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
+  return RESERVED_CONTROL_PLANE_TOOLS.has(name);
+}
 
 // Continuation writes are a narrower, higher-priority slice of the reserved plane. Keep this
 // separate from RESERVED_CONTROL_PLANE_TOOLS: the ordinary reserved pool is allowed to queue
@@ -1846,7 +1855,7 @@ export function isReservedControlPlaneCall(
       if (call.method !== "tools/call" || typeof call.params?.name !== "string")
         return false;
       const calledTool = normalizeMcpName(call.params.name);
-      if (RESERVED_CONTROL_PLANE_TOOLS.has(calledTool)) return true;
+      if (isReservedControlPlaneTool(calledTool, call.params.arguments)) return true;
       if (calledTool !== TOOLS_INVOKE_NAME) return false;
       const invokeArgs = call.params.arguments;
       if (
@@ -1858,7 +1867,10 @@ export function isReservedControlPlaneCall(
       const target = (invokeArgs as { name?: unknown }).name;
       return (
         typeof target === "string" &&
-        RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(target))
+        isReservedControlPlaneTool(
+          normalizeMcpName(target),
+          (invokeArgs as { args?: unknown }).args,
+        )
       );
     });
   } catch {

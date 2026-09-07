@@ -20,6 +20,11 @@
  * therefore pull-triggered: a dead GRADER heals on the next ship attempt, but a dead
  * CREATOR means no attempt is ever made again. This routine is the clock that the
  * grader leg otherwise does not have.
+ *
+ * The same bounded clock also reconciles pending grading-integrity auditors. A
+ * quota/auth terminal can arrive after the launch transaction's startup probe;
+ * re-running the idempotent dispatcher here lets that delayed failure reach its
+ * safe retirement/fallback path instead of leaving the target scorecard pending.
  */
 import { registerSystemAction } from './system-actions';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -29,12 +34,13 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
  *  never be what decides an outcome. */
 export const ACCEPTANCE_GRADING_SWEEP_INTERVAL_SEC = 600;
 
-registerSystemAction('acceptance-grading-sweep', async () => {
+registerSystemAction('acceptance-grading-sweep', async (ctx) => {
   const [
     { getOrgPg },
     { RUBRIC_TEMPLATE_NAME },
     { evaluatePlanAcceptanceGate },
     { ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceGraderLabelPrefix, resolveAcceptanceGrader },
+    { reconcilePendingGradingAudits },
     { listTasks },
     { upsertConditionWorkItem },
     {
@@ -48,6 +54,7 @@ registerSystemAction('acceptance-grading-sweep', async () => {
     import('../../agent-tools/plans/rubric-template'),
     import('../../plan-acceptance-gate'),
     import('../../acceptance-grader'),
+    import('../../grading-integrity'),
     import('../../task-manager/store'),
     import('../../coord/condition-upsert'),
     import('../../acceptance-grading-sweep-run'),
@@ -55,6 +62,34 @@ registerSystemAction('acceptance-grading-sweep', async () => {
   ]);
 
   const { sql } = getOrgPg();
+
+  try {
+    const result = await reconcilePendingGradingAudits({
+      ctx: {
+        workspaceId: ctx.workspaceId,
+        principal: {
+          kind: 'system',
+          slug: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+          workspaceId: ctx.workspaceId,
+        },
+        ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+        ownerLabel: 'acceptance grading sweep',
+        userId: null,
+      } as never,
+      harness: ctx.installSlug,
+    });
+    const launched = result.receipts.filter((receipt) => receipt.state === 'launched').length;
+    if (launched > 0) {
+      console.log(`[acceptance-grading-sweep] reconciled ${launched} pending grading-integrity auditor(s)`);
+    }
+  } catch (error) {
+    // A grading-integrity repair must not suppress the independent acceptance
+    // grading sweep. The next cadence retries the bounded queue read.
+    console.warn(
+      '[acceptance-grading-sweep] pending grading-integrity reconciliation failed:',
+      error instanceof Error ? error.message : error,
+    );
+  }
 
   await runAcceptanceGradingSweep({
     now: () => Date.now(),

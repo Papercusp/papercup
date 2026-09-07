@@ -2214,6 +2214,7 @@ pub struct App {
     /// Exact draft and command retained until the host acknowledges this turn.
     pub su_pending_turn: Option<PendingSuTurn>,
     pub su_active_command_id: Option<String>,
+    su_rendered_owner_turns: BTreeSet<String>,
     pub conversation_id: Option<String>,
     /// The agent-chat id backing this pane's SU-session transcript. Distinct
     /// from `conversation_id`, the legacy operator-converse lane used by voice.
@@ -2572,6 +2573,7 @@ impl App {
             chat_streaming: false,
             su_pending_turn: None,
             su_active_command_id: None,
+            su_rendered_owner_turns: BTreeSet::new(),
             conversation_id: None,
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
@@ -2686,13 +2688,21 @@ impl App {
             return;
         }
         let text = pending.content.clone();
+        let turn_id = pending
+            .command
+            .as_ref()
+            .and_then(|command| command["turnId"].as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("pui-turn-{command_id}"));
         self.su_pending_turn = None;
         self.su_active_command_id = Some(command_id.to_string());
         if self.chat_input == text {
             self.chat_input.clear();
         }
         self.chat_history_push(&text);
-        self.chat_messages.push(ChatMessage::user(&text));
+        if self.su_rendered_owner_turns.insert(turn_id) {
+            self.chat_messages.push(ChatMessage::user(&text));
+        }
         // The stream can beat the HTTP acknowledgement. Do not create a second
         // assistant bubble or restart a response that already completed.
         self.session_note = Some("Message accepted".into());
@@ -2752,6 +2762,7 @@ impl App {
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
         self.su_session = None;
+        self.su_rendered_owner_turns.clear();
         // The previous conversation's dispatch policy must not outlive its
         // binding: leaving it set would let the NEXT conversation's first turn be
         // routed by the LAST one's recorded home (P-011).
@@ -3015,6 +3026,7 @@ impl App {
             }
             crate::su_session::SuSessionEvent::Transcript {
                 phase,
+                turn_id,
                 role,
                 channel,
                 content,
@@ -3028,7 +3040,21 @@ impl App {
                 }
                 if let Some(text) = content.filter(|text| !text.is_empty()) {
                     if role == "owner" && phase == "completed" {
-                        self.chat_messages.push(ChatMessage::user(&text));
+                        if self.su_rendered_owner_turns.insert(turn_id) {
+                            self.chat_messages.push(ChatMessage::user(&text));
+                        }
+                    } else if role == "assistant" && phase == "completed" {
+                        // Completion carries the final value, repeating the
+                        // streamed deltas. It must not be appended a second time.
+                        if let Some(message) =
+                            self.chat_messages.iter_mut().rev().find(|m| m.streaming)
+                        {
+                            if channel == "reasoning" {
+                                message.reasoning = text;
+                            } else {
+                                message.content = text;
+                            }
+                        }
                     } else if role == "assistant" && channel == "reasoning" {
                         self.push_chat_reasoning(&text);
                     } else if role == "assistant" {

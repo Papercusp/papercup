@@ -327,7 +327,7 @@ function withoutCommandReceipts(response: Response): Response {
         const frame = pending.slice(0, end);
         pending = pending.slice(end + 2);
         const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
-        if (data && JSON.parse(data).type === 'command') continue;
+        if (data && JSON.parse(data).type === 'command_result') continue;
         controller.enqueue(encoder.encode(frame + '\n\n'));
       }
     },
@@ -350,6 +350,10 @@ async function waitForSavedTurn(content: string): Promise<PersistedChat> {
 
 async function stopEngines(): Promise<void> {
   for (const engine of scriptedEngine.engines.splice(0)) {
+    // The protocol peer has no native CLI lifecycle hook. Remove only its
+    // bootstrap presence in this isolated DB before the real close/reaper runs.
+    const owner = engine.adapter.host.descriptor().identity.ownerId;
+    await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
     await engine.close();
     engine.adapter.dispose();
   }
@@ -675,8 +679,7 @@ describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', ()
     const proxyPort = await listen(proxy);
     const pane = new PuiPane(bin, proxyPort, home);
     try {
-      await pane.waitFor('operator identity is internally inconsistent', { timeoutMs: 12_000 });
-      await pane.waitFor('workspace');
+      await pane.waitFor('operator identity-mismatch', { timeoutMs: 12_000 });
     } finally {
       await pane.stop();
       await close(proxy);
