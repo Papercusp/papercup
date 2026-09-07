@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildCrashCheckpointResult,
   buildTerminalFailureCheckpointResult,
+  checkpointVerdictFromResult,
   createFatalProcessHandler,
   emitTerminalCheckpointResult,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -19,6 +20,55 @@ import {
 } from '@papercusp/operator-core/lib/release/gate-abort-status';
 
 describe('EI-21462448110688084: process-level fatal errors await terminal finalization', () => {
+  it('adapts producer results to the durable verdict vocabulary without mutating the marker result', () => {
+    const result = {
+      ...buildTerminalFailureCheckpointResult({
+        candidate: '6e94004367c8',
+        error: new Error('repair tick fixture'),
+        runId: 'run-repair-tick',
+      }),
+      repairTickLegs: {
+        head: '6e94004367c8560d25d689bf2d3fbe0afb6860f2',
+        atMs: 123,
+        ok: false,
+        failingSignatures: ['lint:failed'],
+        legs: [
+          { id: 'lint:passed', status: 'pass' as const, durationMs: 1 },
+          { id: 'lint:optional', status: 'skipped' as const, durationMs: 0 },
+          {
+            id: 'lint:failed',
+            status: 'fail' as const,
+            durationMs: 2,
+            outputTail: 'failed fixture',
+          },
+        ],
+      },
+    };
+
+    const verdict = checkpointVerdictFromResult(result);
+
+    expect(verdict.repairTickLegs).toEqual({
+      head: '6e94004367c8560d25d689bf2d3fbe0afb6860f2',
+      atMs: 123,
+      ok: false,
+      failingSignatures: ['lint:failed'],
+      legs: [
+        { id: 'lint:passed', status: 'pass', durationMs: 1 },
+        {
+          id: 'lint:failed',
+          status: 'fail',
+          durationMs: 2,
+          outputTail: 'failed fixture',
+        },
+      ],
+    });
+    expect(result.repairTickLegs.legs.map((leg) => leg.status)).toEqual([
+      'pass',
+      'skipped',
+      'fail',
+    ]);
+  });
+
   it('records a terminal disposition before its marker and wake are observable', async () => {
     const order: string[] = [];
     const markers: string[] = [];

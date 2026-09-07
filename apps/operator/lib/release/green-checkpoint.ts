@@ -98,6 +98,7 @@ import {
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
+import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
 // returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
@@ -1472,6 +1473,44 @@ export interface CheckpointResult {
    *  exception may not identify it), so this is a coarse "the process crashed" signal,
    *  not a substitute for a leg-scoped verdict. */
   crashed?: boolean;
+}
+
+/**
+ * Translate the apps-layer result into the operator-core storage contract.
+ *
+ * Repair-tick discovery includes `skipped` entries so the producer can explain which optional
+ * scripts a subject hive does not declare. The durable verdict contract intentionally contains
+ * only legs that actually ran (`pass` / `fail` / `errored`), and its read-side parser enforces the
+ * same distinction. Keep that one vocabulary difference explicit at the package boundary rather
+ * than hiding future structural drift behind a cast.
+ */
+export function checkpointVerdictFromResult(
+  result: CheckpointResult,
+): CheckpointVerdict {
+  const { repairTickLegs, ...verdict } = result;
+  if (!repairTickLegs) return verdict;
+
+  const measuredLegs: NonNullable<CheckpointVerdict["repairTickLegs"]>["legs"] = [];
+  for (const leg of repairTickLegs.legs) {
+    if (leg.status === "skipped") continue;
+    measuredLegs.push({
+      id: leg.id,
+      status: leg.status,
+      durationMs: leg.durationMs,
+      ...(leg.outputTail ? { outputTail: leg.outputTail } : {}),
+    });
+  }
+
+  return {
+    ...verdict,
+    repairTickLegs: {
+      head: repairTickLegs.head,
+      atMs: repairTickLegs.atMs,
+      ok: repairTickLegs.ok,
+      failingSignatures: [...repairTickLegs.failingSignatures],
+      legs: measuredLegs,
+    },
+  };
 }
 
 /** Provenance for a cancellation delivered through this process's managed signal handler. */
@@ -16829,7 +16868,10 @@ export function realCheckpointDeps(
         if (!target) return false; // not the record-target-designated run — nothing to record.
         const { recordCheckpointVerdict } =
           await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-        return await recordCheckpointVerdict(target, r);
+        return await recordCheckpointVerdict(
+          target,
+          checkpointVerdictFromResult(r),
+        );
       } catch (e) {
         console.error(
           `${orchestratorStdoutTag()} superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`,
@@ -16848,7 +16890,10 @@ export function realCheckpointDeps(
         if (!target) return false;
         const { recordPendingCheckpointVerdict } =
           await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-        return await recordPendingCheckpointVerdict(target, r);
+        return await recordPendingCheckpointVerdict(
+          target,
+          checkpointVerdictFromResult(r),
+        );
       } catch (e) {
         console.error(
           `${orchestratorStdoutTag()} pending verdict self-record failed (the promotion decision continues): ${e instanceof Error ? e.message : e}`,
@@ -18778,7 +18823,10 @@ if (require.main === module) {
       if (!target) return false; // not launched with a record target — the caller records.
       const { recordCheckpointVerdict } =
         await import("@papercusp/operator-core/lib/harness/routines/release-actions");
-      return await recordCheckpointVerdict(target, r);
+      return await recordCheckpointVerdict(
+        target,
+        checkpointVerdictFromResult(r),
+      );
     } catch (e) {
       console.error(
         `${orchestratorStdoutTag()} verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`,
