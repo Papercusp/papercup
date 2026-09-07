@@ -11,7 +11,7 @@
  * which vitest's human reporter never prints.
  */
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -128,14 +128,95 @@ describe('assertionOutcomesFromReport — the NAMES, which exist nowhere else', 
 });
 
 describe('withInjectedJsonReport — a private report, without stealing stdout from a human', () => {
+  const withReporterFiles = (
+    names: string[],
+    run: (repoRoot: string, reporterPath: (name: string) => string) => void,
+  ) => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'injected-reporters-'));
+    const reporterDir = join(repoRoot, 'libs/test-config/src');
+    mkdirSync(reporterDir, { recursive: true });
+    const reporterPath = (name: string) => join(reporterDir, `${name}-reporter.ts`);
+    try {
+      for (const name of names) writeFileSync(reporterPath(name), 'export default class Reporter {}');
+      run(repoRoot, reporterPath);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  };
+
   it('adds a json reporter ALONGSIDE the default one', () => {
     // Verified against vitest 4.1.8 before this was written: `--reporter=default --reporter=json
     // --outputFile=<p>` keeps the human `Tests` row on stdout AND writes the report. Dropping
     // `--reporter=default` would replace stdout with JSON and break every human caller — which is
     // why this asserts its presence rather than just the outputFile.
-    const { args, injectedReportPath } = withInjectedJsonReport(['--silent'], '/tmp/r.json');
-    expect(args).toEqual(['--silent', '--reporter=default', '--reporter=json', '--outputFile=/tmp/r.json']);
-    expect(injectedReportPath).toBe('/tmp/r.json');
+    withReporterFiles([], (repoRoot) => {
+      const { args, injectedReportPath } = withInjectedJsonReport(['--silent'], '/tmp/r.json', { repoRoot, env: {} });
+      expect(args).toEqual(['--silent', '--reporter=default', '--reporter=json', '--outputFile=/tmp/r.json']);
+      expect(injectedReportPath).toBe('/tmp/r.json');
+    });
+  });
+
+  it('preserves the admin ledger reporter when injecting private JSON', () => {
+    withReporterFiles(['admin-test-runs'], (repoRoot, reporterPath) => {
+      const input = ['--silent'];
+      const { args, injectedReportPath } = withInjectedJsonReport(input, '/tmp/r.json', { repoRoot, env: {} });
+      expect(args).toEqual([
+        '--silent',
+        '--reporter=default',
+        '--reporter=json',
+        `--reporter=${reporterPath('admin-test-runs')}`,
+        '--outputFile=/tmp/r.json',
+      ]);
+      expect(input).toEqual(['--silent']);
+      expect(injectedReportPath).toBe('/tmp/r.json');
+    });
+  });
+
+  it('retains the armed source-map reporter alongside the ledger reporter', () => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
+      const { args } = withInjectedJsonReport([], '/tmp/r.json', {
+        repoRoot,
+        env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: ' @papercusp/operator-core ' },
+      });
+      expect(args).toEqual([
+        '--reporter=default',
+        '--reporter=json',
+        `--reporter=${reporterPath('admin-test-runs')}`,
+        `--reporter=${reporterPath('executed-source-map')}`,
+        '--outputFile=/tmp/r.json',
+      ]);
+    });
+  });
+
+  it('honors ledger opt-out without disarming an independently armed source map', () => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
+      const { args } = withInjectedJsonReport([], '/tmp/r.json', {
+        repoRoot,
+        env: { PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1', PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
+      });
+      expect(args).not.toContain(`--reporter=${reporterPath('admin-test-runs')}`);
+      expect(args).toContain(`--reporter=${reporterPath('executed-source-map')}`);
+    });
+  });
+
+  it.each([undefined, '', '  '])('does not arm source mapping without a workspace (%s)', (workspace) => {
+    withReporterFiles(['executed-source-map'], (repoRoot, reporterPath) => {
+      const { args } = withInjectedJsonReport([], '/tmp/r.json', {
+        repoRoot,
+        env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: workspace },
+      });
+      expect(args).not.toContain(`--reporter=${reporterPath('executed-source-map')}`);
+    });
+  });
+
+  it('tolerates missing reporter files even when source mapping was requested', () => {
+    withReporterFiles([], (repoRoot) => {
+      const { args } = withInjectedJsonReport([], '/tmp/r.json', {
+        repoRoot,
+        env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
+      });
+      expect(args).toEqual(['--reporter=default', '--reporter=json', '--outputFile=/tmp/r.json']);
+    });
   });
 
   it('leaves a caller that chose its own reporter completely alone', () => {
@@ -147,12 +228,17 @@ describe('withInjectedJsonReport — a private report, without stealing stdout f
       ['--outputFile=/x.json'],
       ['--outputFile', '/x.json'],
     ];
-    for (const chosen of chosenSets) {
-      expect(callerChoseReporting(chosen)).toBe(true);
-      const { args, injectedReportPath } = withInjectedJsonReport(chosen, '/tmp/r.json');
-      expect(args).toEqual(chosen);
-      expect(injectedReportPath).toBeNull();
-    }
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot) => {
+      for (const chosen of chosenSets) {
+        expect(callerChoseReporting(chosen)).toBe(true);
+        const { args, injectedReportPath } = withInjectedJsonReport(chosen, '/tmp/r.json', {
+          repoRoot,
+          env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
+        });
+        expect(args).toEqual(chosen);
+        expect(injectedReportPath).toBeNull();
+      }
+    });
   });
 
   it('is a no-op when no report path could be created — diagnostics never fail a real run', () => {
