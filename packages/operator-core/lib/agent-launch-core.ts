@@ -1003,9 +1003,31 @@ export function composeMemberLaunchContext(opts: {
 }): string {
   const baseline = renderMemberBaseline(opts);
   const brief = opts.customBriefText?.trim();
-  if (!brief) return `${baseline}\n`;
-  return `${baseline}\n\n---\n\n# Fleet-specific brief (from your leader — wins on specifics)\n\n${brief}\n`;
+  const composed = brief
+    ? `${baseline}\n\n---\n\n# Fleet-specific brief (from your leader — wins on specifics)\n\n${brief}\n`
+    : `${baseline}\n`;
+  // This is deliberately appended AFTER the leader brief.  A custom kickoff may
+  // steer the member's work, but it cannot turn a generic launch into proof of
+  // evaluator independence.  Without this final section, a fleet leader could
+  // label a member a "non-lineage independent reviewer" and spend a complete
+  // grading pass before scorecards:emit finally rejected the member's lineage.
+  return `${composed}\n---\n\n${IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD}\n`;
 }
+
+/**
+ * Identity safety rail for every composed fleet-member context.
+ *
+ * `independent:true`, fleet membership, and a leader-written brief are launch
+ * placement/configuration choices; none is evidence that the member is outside
+ * the rubric author's spawn/rebind lineage.  Keep this after any custom brief
+ * so the leader cannot accidentally override the routing rule with prose.
+ */
+export const IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD = [
+  '# Immutable launch-lineage guard',
+  '',
+  'A launch mode, fleet membership, `independent:true`, or a leader-written brief does NOT make this session lineage-independent of its launcher. Never describe yourself as a "non-lineage independent reviewer/grader" solely because you were launched into a fleet.',
+  'Before grading an acceptance rubric, run `scorecards:evaluate` as the read-only eligibility preflight. If it reports `grader_in_implementer_lineage` (or another disqualification), do not spend the grading pass or attempt `scorecards:emit`; route the grading request to an existing unrelated live session with `coord:dispatch` or explicit `assign_to`.',
+].join('\n');
 
 /** The window a completed launch result stays authoritative. Old rows are
  *  pruned on each call — the ledger answers "did THIS call already land", not
