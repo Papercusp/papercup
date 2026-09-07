@@ -231,7 +231,6 @@ export async function registerAwait(input: {
     includeNotePrefix?: string;
   };
 }): Promise<AwaitRow> {
-  const { sql } = getOrgPg();
   const ws = eventsWs();
   // Safe-by-default (await-timeout-fallback-defaults-2026-07-03): a caller that sets a
   // deadline but names no behavior WAKEs at it (auto-woken to re-orient) rather than
@@ -387,7 +386,7 @@ export async function registerAwait(input: {
       `;
       const row = await insertAwait(tx);
       return { ...row, supersededPendingCount: superseded.length };
-    });
+    }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   // A generation-pinned registration must keep the declaration lock through
   // its insert even when the caller does not request supersession. Otherwise
@@ -398,18 +397,20 @@ export async function registerAwait(input: {
       await assertGenerationPin(tx);
       await retireExactPending(tx);
       return insertAwait(tx);
-    });
+    }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   if (exactOneShot) {
     return boundedOrgTxn(async (tx) => {
       await retireExactPending(tx);
       return insertAwait(tx);
-    });
+    }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
   // supplied. Besides preserving manual-watch semantics, this lets older
-  // hand-rolled test fixtures keep exercising the unbound path honestly.
-  return insertAwait(sql);
+  // hand-rolled test fixtures keep exercising the unbound path honestly. It is
+  // still bounded: this is the final pre-registration write, so it must not
+  // escape the interactive transaction budget merely because it is legacy.
+  return boundedOrgTxn((tx) => insertAwait(tx), AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
 }
 
 /** Fail before SQL rather than persisting an unaddressable lifecycle owner. */
