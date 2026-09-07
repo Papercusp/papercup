@@ -305,6 +305,25 @@ describe("workspace-host agent verification probes", () => {
     expect(outcome.stdout).not.toContain("PATH=");
   });
 
+  it("starts a controller-side probe in its explicit isolated cwd", async () => {
+    const outcome = await new NodeWorkspaceHostAgentProbeRunner().run({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write(process.cwd())"],
+      timeoutMs: 5_000,
+      cwd: tmpdir(),
+      env: { HOME: tmpdir(), PATH: "/usr/bin:/bin" },
+    });
+    expect(outcome).toMatchObject({ exitCode: 0, stdout: tmpdir() });
+    expect(() =>
+      buildWorkspaceHostAgentProbeProcess({
+        command: "codex",
+        args: [],
+        timeoutMs: 1_000,
+        cwd: "relative/controller-home",
+      }),
+    ).toThrow(/cwd must be an absolute canonical path/);
+  });
+
   it.each(["timeout", "output-limit"] as const)(
     "closes descendant output pipes when a probe reaches its %s",
     async (failure) => {
