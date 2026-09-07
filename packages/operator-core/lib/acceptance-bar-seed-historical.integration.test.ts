@@ -179,6 +179,35 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
          AND c.spec_id = 'AUTO-BAR-R-1-P-001'`;
     expect(managed).toBeDefined();
 
+    const narrowedManaged = await db.adminSql.begin((tx) => setSpecClause({
+      planSlug,
+      specId: 'AUTO-BAR-R-1-P-001',
+      expectedRevision: 1,
+      planItemId: 'P-001',
+      behavior: 'The canonical store contains the submitted outcome exactly once.',
+      behaviorClass: 'happy-path',
+      requiredEvidence: ['tree'],
+      requiredTestLayers: ['integration'],
+      mutationRequired: true,
+      lifecycleStatus: 'accepted',
+      falsifier: { observation: 'The submitted outcome is missing or duplicated.' },
+      acceptanceRef: `${managed.source_rubric_slug}@${managed.source_rubric_revision}:${managed.source_bar_key}`,
+      sourceBar: {
+        barKey: managed.source_bar_key,
+        barHash: managed.source_bar_hash,
+        barSetHash: managed.source_bar_set_hash,
+        rubricSlug: managed.source_rubric_slug,
+        rubricRevision: Number(managed.source_rubric_revision),
+        evidencePlane: managed.evidence_plane,
+      },
+      actorId: 'su-spec-reviewer',
+    }, {
+      executor: tx as unknown as SpecClauseSql,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+    }));
+    expect(narrowedManaged).toMatchObject({ status: 'revised', revision: 2 });
+
     const custom = await db.adminSql.begin((tx) => setSpecClause({
       planSlug,
       specId: 'PUI-TASK-ADD',
@@ -208,19 +237,29 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
     }));
     expect(custom).toMatchObject({ status: 'created', revision: 1 });
 
+    const revisedContent = `${planContent}\n## Decision log\n\nExecution moved to a successor; BAR meaning is unchanged.\n`;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${revisedContent}, content_hash = ${hashPlanContent(revisedContent)}, version = 2
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND plan_slug = ${planSlug}`;
     const reaudit = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
-      ...seedInput(planSlug, planContent, 'su-reauditor'),
+      ...seedInput(planSlug, revisedContent, 'su-reauditor'),
+      planVersion: 2,
       executor: tx as unknown as SpecClauseSql,
     }));
     expect(reaudit, JSON.stringify(reaudit)).toMatchObject({
       ok: true,
       rubricSlug: `acceptance-${planSlug}`,
-      rubricChanged: false,
+      rubricRevision: 2,
+      rubricChanged: true,
     });
 
     await expect(db.adminSql`
       SELECT c.current_revision::int AS current_revision, r.lifecycle_status,
-             r.source_bar_key, r.required_test_layers
+             r.source_bar_key, r.source_rubric_revision::int AS source_rubric_revision,
+             r.required_test_layers, r.behavior
         FROM harness_shared.plan_spec_clauses c
         JOIN harness_shared.plan_spec_clause_revisions r
           ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -229,12 +268,22 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
        WHERE c.workspace_id = ${WORKSPACE}
          AND c.harness_slug = ${HARNESS}
          AND c.plan_slug = ${planSlug}
-         AND c.spec_id = 'PUI-TASK-ADD'
+         AND c.spec_id = ANY(${['AUTO-BAR-R-1-P-001', 'PUI-TASK-ADD']}::text[])
+       ORDER BY c.spec_id
     `).resolves.toEqual([{
-      current_revision: 1,
+      current_revision: 3,
       lifecycle_status: 'accepted',
       source_bar_key: 'R-1',
+      source_rubric_revision: 2,
       required_test_layers: ['integration'],
+      behavior: 'The canonical store contains the submitted outcome exactly once.',
+    }, {
+      current_revision: 2,
+      lifecycle_status: 'accepted',
+      source_bar_key: 'R-1',
+      source_rubric_revision: 2,
+      required_test_layers: ['integration'],
+      behavior: 'The task editor adds one owner-authored task to the canonical store.',
     }]);
   });
 

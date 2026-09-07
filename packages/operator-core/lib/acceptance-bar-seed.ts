@@ -34,6 +34,7 @@ import {
   type ProposeRubricCriterion,
 } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
+import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
 
 export const ACCEPTANCE_BAR_CONTRACT_EPOCH = 1;
 export const MAX_REQUIREMENT_BARS = 200;
@@ -920,16 +921,15 @@ export async function seedAcceptanceBarsInTransaction(
   }
   for (const projection of built.projections) {
     const prior = identityBySpec.get(projection.specId);
+    // Existing projections may have been reviewed into narrower atomic clauses.
+    // synchronizeAcceptanceBarRevision below advances their provenance while
+    // preserving that authored behavior when the BAR hash is unchanged. Replaying
+    // the broad seed here would silently undo the review and fail spec quality.
+    if (prior) continue;
     const result = await setSpecClause(
       {
         ...projection,
-        expectedRevision: prior ? Number(prior.current_revision) : 0,
-        // Activation re-audits refresh the projection, not its review lifecycle.
-        // Preserving the state makes unchanged writes no-ops, retaining exact
-        // evidence pins and acceptance provenance. New clauses still start draft;
-        // changed contract fields still append a revision through setSpecClause.
-        lifecycleStatus: prior?.lifecycle_status ?? projection.lifecycleStatus,
-        exemption: prior?.exemption ?? projection.exemption,
+        expectedRevision: 0,
       },
       { executor: sql, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug },
     );
@@ -941,8 +941,35 @@ export async function seedAcceptanceBarsInTransaction(
     }
   }
 
+  await sql`
+    UPDATE harness_shared.harness_plans
+       SET acceptance_bar_set_hash = ${built.barSetHash},
+           acceptance_bar_rubric_slug = ${rubricSlug},
+           acceptance_bar_rubric_revision = ${rubricRevision},
+           acceptance_bar_seeded_at = ${input.now},
+           acceptance_bar_seeded_by = ${input.actorId}
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND plan_slug = ${input.planSlug}`;
+
+  // A BAR-neutral plan edit can advance the rubric revision without changing
+  // any requirement hash. Refresh every sourceBar-pinned clause—not only the
+  // deterministic AUTO-BAR rows—inside this transaction so accepted additive
+  // contracts keep their authored behavior/lifecycle while their provenance
+  // moves to the current rubric revision. The complete subject pin is written
+  // first because synchronizeAcceptanceBarRevision enforces its all-or-none DB
+  // constraint while updating the revision/hash subset.
+  await synchronizeAcceptanceBarRevision(sql, {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    rubricSlug,
+    rubricRevision,
+    templateData: built.templateData,
+    actorId: input.actorId,
+  });
+
   // Activation can run after promotion, including after every mapped plan item
-  // is already terminal. Reconcile the BAR's current clause revisions onto all
+  // is already terminal. Reconcile every now-current clause revision onto all
   // existing execution records from the canonical provenance legs, in this same
   // transaction, without minting or replacing a work-item.
   await ensureExistingWorkItemSpecRevisionEdgesInTransaction(
@@ -955,17 +982,6 @@ export async function seedAcceptanceBarsInTransaction(
     },
     sql,
   );
-
-  await sql`
-    UPDATE harness_shared.harness_plans
-       SET acceptance_bar_set_hash = ${built.barSetHash},
-           acceptance_bar_rubric_slug = ${rubricSlug},
-           acceptance_bar_rubric_revision = ${rubricRevision},
-           acceptance_bar_seeded_at = ${input.now},
-           acceptance_bar_seeded_by = ${input.actorId}
-     WHERE workspace_id = ${input.workspaceId}
-       AND harness_slug = ${input.harnessSlug}
-       AND plan_slug = ${input.planSlug}`;
 
   return {
     ok: true,
