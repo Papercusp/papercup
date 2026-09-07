@@ -43,7 +43,7 @@ import {
 } from "node:fs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { homedir, hostname } from "node:os";
-import { join, dirname, delimiter, basename } from "node:path";
+import { join, dirname, delimiter, basename, relative } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import {
   hostThroughPty,
@@ -4225,6 +4225,13 @@ export function linkOmpAgentDb(srcAgent, dstAgent) {
  * Returns the home-relative dir, or null on any failure (caller falls back to OMP's native default
  * — no regression). Exported for tests.
  */
+// Match the canonical OMP transcript root. Keep PI_CONFIG_DIR home-relative
+// even when an isolated operator/test supplies an absolute store root.
+function ompSessionConfigRelativeDir(sessionId, home) {
+  const root = process.env.PAPERCUSP_SU_OMP_HOMES_DIR || join(home, ".papercusp", "su-omp-homes");
+  return relative(home, join(root, `session-${sessionId}`));
+}
+
 export function writeOmpSessionConfigDir(
   sessionId,
   opts = {},
@@ -4253,7 +4260,7 @@ export function writeOmpSessionConfigDir(
     const srcAgent = join(home, ".omp", "agent");
     const srcCfg = join(srcAgent, "config.yml");
     if (!existsSync(srcCfg)) return null;
-    const rel = join(".papercusp", "su-omp-homes", `session-${sessionId}`);
+    const rel = ompSessionConfigRelativeDir(sessionId, home);
     const dstAgent = join(home, rel, "agent");
     mkdirSync(dstAgent, { recursive: true });
     // config.yml — copy verbatim, optionally flipping discoveryMode off. That flip accompanies
@@ -4664,7 +4671,7 @@ export function buildResumeEnv(
  * keep dropping xai-oauth / other logins even after a fresh-launch fix. */
 export function ompTrackedResumeEnv(session, { home = homedir() } = {}) {
   if (session?.agent !== "omp" || session?.id == null) return {};
-  const rel = join(".papercusp", "su-omp-homes", `session-${session.id}`);
+  const rel = ompSessionConfigRelativeDir(session.id, home);
   const root = join(home, rel);
   if (!existsSync(root)) return {};
   const agentDir = join(root, "agent");
@@ -12147,7 +12154,10 @@ async function chooseResumeTarget(session, args) {
  *  endpoint). EI-9756 regression guard: injectable `fetchImpl`/`operatorUrl`/
  *  `token` (mirrors reportSessionResumed) so this — previously untested — is
  *  unit-testable without a live operator; a real caller always hits the real
- *  operator via the defaults. */
+ *  operator via the defaults.
+ * @param {string | null | undefined} sessionId
+ * @param {'claude' | 'codex' | 'omp' | null} [sourceKind]
+ */
 export async function tryRematerializeFromArchive(
   sessionId,
   sourceKind = null,

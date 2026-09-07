@@ -4311,18 +4311,24 @@ impl App {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         use crate::su_session::SuSessionBackend;
         let bound = self.agent_chat_id.is_some() || self.su_session.is_some();
-        let options = [SuSessionBackend::Claude, SuSessionBackend::Codex, SuSessionBackend::Omp]
-            .into_iter()
-            .map(|backend| PickerOption {
-                id: backend.label().to_ascii_lowercase(),
-                label: backend.label().to_string(),
-                hint: Some(if bound {
-                    "This conversation keeps its saved backend. Open a new conversation to change it.".into()
-                } else {
-                    "Use this backend for the new SU session.".into()
-                }),
-                disabled: bound,
-            }).collect();
+        let options = [
+            SuSessionBackend::Claude,
+            SuSessionBackend::Codex,
+            SuSessionBackend::Omp,
+        ]
+        .into_iter()
+        .map(|backend| PickerOption {
+            id: backend.label().to_ascii_lowercase(),
+            label: backend.label().to_string(),
+            hint: Some(if bound {
+                "This conversation keeps its saved backend. Open a new conversation to change it."
+                    .into()
+            } else {
+                "Use this backend for the new SU session.".into()
+            }),
+            disabled: bound,
+        })
+        .collect();
         self.session_picker = Some(SessionPicker::new(PickerAxis::Backend, options));
     }
 
@@ -4563,7 +4569,10 @@ impl App {
         let effort = self.chat_effort.as_deref().unwrap_or("model/default");
         let account = self.chat_account.as_deref().unwrap_or("default");
         let mode = self.chat_mode.as_deref().unwrap_or("manual");
-        let selected_backend = self.su_backend.unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND).label();
+        let selected_backend = self
+            .su_backend
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
+            .label();
         let backend = self
             .backend_identity_status()
             .unwrap_or_else(|| "backend loading".to_string());
@@ -12259,24 +12268,44 @@ mod tests {
             let mut a = App::new();
             a.agent_chat_summaries = vec![chat_summary_for("saved-chat")];
             a.su_session_inventory = vec![inventory_row_for("saved-chat", reconciliation)];
-            assert!(matches!(select_session_option(&mut a, "chat:saved-chat"),
-                Action::AttachSuSession { adv_session_id: 42, .. }));
+            assert!(matches!(
+                select_session_option(&mut a, "chat:saved-chat"),
+                Action::AttachSuSession {
+                    adv_session_id: 42,
+                    ..
+                }
+            ));
         }
     }
 
     #[test]
     fn backend_picker_selects_each_engine_and_keeps_saved_sessions_immutable() {
         use crate::su_session::SuSessionBackend;
-        for (index, backend) in [SuSessionBackend::Claude, SuSessionBackend::Codex, SuSessionBackend::Omp].into_iter().enumerate() {
+        for (index, backend) in [
+            SuSessionBackend::Claude,
+            SuSessionBackend::Codex,
+            SuSessionBackend::Omp,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut a = App::new();
             a.open_backend_picker();
             a.session_picker.as_mut().unwrap().sel = index;
             assert_eq!(a.commit_session_picker(), Action::Render);
             assert_eq!(a.su_backend, Some(backend));
-            assert!(a.agent_chat_selection_label().contains(&format!("backend {}", backend.label())));
+            assert!(a
+                .agent_chat_selection_label()
+                .contains(&format!("backend {}", backend.label())));
             a.agent_chat_id = Some("saved-chat".into());
             a.open_backend_picker();
-            assert!(a.session_picker.as_ref().unwrap().options.iter().all(|option| option.disabled));
+            assert!(a
+                .session_picker
+                .as_ref()
+                .unwrap()
+                .options
+                .iter()
+                .all(|option| option.disabled));
             a.commit_session_picker();
             assert_eq!(a.su_backend, Some(backend));
         }

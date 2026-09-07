@@ -4,7 +4,7 @@
  * override).
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -90,6 +90,15 @@ describe('findCodexLiveThreadId', () => {
 });
 
 describe('findOmpSessionPath', () => {
+  it('uses the isolated operator root for tracked handles and transcript lookup', () => {
+    vi.stubEnv('PAPERCUSP_SU_OMP_HOMES_DIR', '/tmp/isolated-omp');
+    try {
+      expect(ompAgentHomeForSessionKey(42, '/home/test')).toBe('/tmp/isolated-omp/session-42/agent');
+      expect(ompSessionsRootForSessionKey(42, '/home/test')).toBe('/tmp/isolated-omp/session-42/agent/sessions');
+      expect(ompAgentHomeForSessionKey(undefined, '/home/test')).toBe('/home/test/.omp/agent');
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('routes tracked sessions to their isolated OMP home and untracked sessions to the shared home', () => {
     expect(ompAgentHomeForSessionKey(42, '/home/test')).toBe(
       '/home/test/.papercusp/su-omp-homes/session-42/agent',

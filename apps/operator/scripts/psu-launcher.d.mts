@@ -1187,40 +1187,6 @@ export function applyOmpMcpUrlParams(mcpJsonText: any, params: any): any;
  * Exported for tests.
  */
 export function linkOmpAgentDb(srcAgent: any, dstAgent: any): void;
-/**
- * su-context-size-variants + weak-model-tool-tier: materialize a per-session OMP config dir
- * and return the value to export as PI_CONFIG_DIR.
- *
- * ⚠ RETURNS A HOME-RELATIVE PATH (e.g. `.papercusp/su-omp-homes/session-<id>`), NOT absolute.
- * OMP resolves PI_CONFIG_DIR as `path.join(os.homedir(), process.env.PI_CONFIG_DIR || '.omp')`,
- * so an ABSOLUTE value gets doubled onto home (`/home/u/home/u/…`) → a non-existent dir. (Root-
- * caused 2026-07-01 from the OMP bundle; the prior absolute-returning writeOmpFullConfigDir
- * silently broke full-mode — the relocated dir was never read.)
- *
- * Because PI_CONFIG_DIR fully RELOCATES OMP's config+data root (no overlay fallback; with no
- * XDG_*_HOME the data root collapses onto configRoot), the per-session dir must carry a FAITHFUL
- * copy of the model registry (config.yml + models.yml/json/db + auth) AND the mcp.json — else the
- * session loses model resolution AND the papercusp-su MCP server. We copy the small config+registry
- * files (not the multi-MB session/history dbs, which a fresh session recreates).
- *
- * OAuth credentials (xai-oauth, anthropic, openai-codex, …) live in `agent.db`
- * (`auth_credentials`), NOT the legacy `auth.json`. A byte-copy of that SQLite
- * store would race concurrent sessions and bloat every su-omp-home; instead we
- * **symlink** `agent.db` to the global `~/.omp/agent/agent.db` — same essential
- * as fleet `writeSpawnOmpHome` / `OMP_SEEDED_AGENT_ESSENTIALS`. Without the
- * link, psu→omp sessions boot with an empty credential store and Grok/xAI
- * (and any other post-login provider) silently vanish from `/model`.
- *
- *   opts.discoveryOff   → flip OMP tool-discovery OFF. NOT a whole-catalog switch (that mode is
- *                         retired): it accompanies the trimmed SEED, because with discovery ON
- *                         even tools:find/tools:invoke sit behind activation and a 0-match query
- *                         strands the entire surface.
- *   opts.toolsAllowlist → advertise ONLY these MCP tools (weak-model trim; listing-only, the rest
- *                         stay callable via tools:find).
- *
- * Returns the home-relative dir, or null on any failure (caller falls back to OMP's native default
- * — no regression). Exported for tests.
- */
 export function writeOmpSessionConfigDir(sessionId: any, opts?: {}, home?: string): string | null;
 export function ompDefaultModelAdvisory(home?: string): string | null;
 /**

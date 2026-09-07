@@ -10,6 +10,11 @@
  * real plan row.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  projectAcceptanceBarContractSnapshot,
+  readAcceptanceBarContractSnapshot,
+  type AcceptanceBarContractSnapshotInput,
+} from '../../../acceptance-bar-contract-snapshot';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
 const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn() }));
@@ -92,6 +97,13 @@ vi.mock('../source', async (orig) => {
     })),
   };
 });
+
+// Keep the real lifecycle evaluator and start gate, but supply their canonical
+// subject through the reader seam. An absent DB row is not a legacy-plan fixture.
+vi.mock('../../../acceptance-bar-contract-snapshot', async (orig) => ({
+  ...(await orig<typeof import('../../../acceptance-bar-contract-snapshot')>()),
+  readAcceptanceBarContractSnapshot: vi.fn(),
+}));
 
 // WI-38289: `pot/started` is deliberately NOT mocked here.
 //
@@ -199,7 +211,35 @@ const run = async (args: Record<string, unknown>) =>
     isError?: boolean;
   };
 
+function legacyBarInput(): AcceptanceBarContractSnapshotInput {
+  const empty = () => ({ rows: [], limit: 1, truncated: false });
+  return {
+    planRows: {
+      rows: [{
+        workspaceId: 'ws-of-harness', harnessSlug: 'papercup', planSlug: 'mock',
+        status: 'ready', revision: 1, contentHash: 'fixture',
+        adoptionEpoch: null, cohort: null, barSetHash: null,
+        rubricSlug: null, rubricRevision: null, seededAt: null, seededBy: null,
+      }],
+      limit: 2,
+      truncated: false,
+    },
+    rubrics: empty(), planItems: empty(), clauses: empty(),
+    workContracts: empty(), evidence: empty(), scorecards: empty(),
+    vettingScorecards: empty(),
+    lineage: {
+      identities: [], workItemRowsRead: 0, auditRowsRead: 0,
+      rowLimit: 1, truncated: false,
+    },
+    partyByIdentity: new Map(),
+    graderSelectionVia: new Map(),
+  };
+}
+
 beforeEach(() => {
+  vi.mocked(readAcceptanceBarContractSnapshot).mockReset();
+  vi.mocked(readAcceptanceBarContractSnapshot)
+    .mockResolvedValue(projectAcceptanceBarContractSnapshot(legacyBarInput()));
   activationMocks.gate.mockReset();
   activationMocks.gate.mockResolvedValue({ satisfied: true, auditSeq: 1 });
   admissionMocks.preflight.mockReset();
@@ -259,6 +299,39 @@ const expectNoOpStatusWrite = (): void => {
   const writes = H.state.txCalls.filter((c) => c.strings.join('§').includes('UPDATE harness_shared.harness_plans'));
   expect(writes).toEqual([]);
 };
+
+describe('plans:start canonical BAR subject readiness', () => {
+  it.each([
+    { failure: 'missing', code: 'bar_snapshot_plan_missing' },
+    { failure: 'unavailable', code: 'bar_snapshot_source_unavailable' },
+    { failure: 'partial-unavailable', code: 'bar_snapshot_source_unavailable' },
+    { failure: 'ambiguous', code: 'bar_snapshot_plan_ambiguous' },
+    { failure: 'truncated', code: 'bar_snapshot_source_truncated' },
+  ])('refuses a $failure subject without approval or promotion', async ({ failure, code }) => {
+    const input = legacyBarInput();
+    if (failure === 'missing' || failure === 'unavailable') input.planRows.rows = [];
+    if (failure === 'unavailable' || failure === 'partial-unavailable') {
+      input.readFailures = { plan: 'canonical subject read failed' };
+    }
+    if (failure === 'ambiguous') input.planRows.rows.push({ ...input.planRows.rows[0]! });
+    if (failure === 'truncated') input.planRows.truncated = true;
+    vi.mocked(readAcceptanceBarContractSnapshot)
+      .mockResolvedValue(projectAcceptanceBarContractSnapshot(input));
+
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'plan_inputs_not_ready',
+      code: 'acceptance_bar_contract_not_ready',
+      source: 'acceptance-bar-contract',
+      missing: expect.arrayContaining([code]),
+    });
+    expect(readAcceptanceBarContractSnapshot).toHaveBeenCalled();
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expectNoOpStatusWrite();
+  });
+});
 
 describe('plans:start commit-time readiness', () => {
   const body = '---\ntitle: mock\nslug: mock\nstatus: draft\n---\n\n## Now\n**State:** draft\n**Next:** start\n';

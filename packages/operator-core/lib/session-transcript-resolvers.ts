@@ -51,7 +51,7 @@ export function ompAgentHomeForSessionKey(
 ): string {
   return sessionKey == null
     ? join(home, '.omp', 'agent')
-    : join(home, '.papercusp', 'su-omp-homes', `session-${sessionKey}`, 'agent');
+    : join(ompSessionHomesRoot(home), `session-${sessionKey}`, 'agent');
 }
 
 /**
@@ -67,7 +67,7 @@ export function ompAgentHomeForSessionKey(
  * a 25 KB transcript on disk and `backfill: []` on the wire.
  */
 export function ompSessionHomesRoot(home: string = homedir()): string {
-  return join(home, '.papercusp', 'su-omp-homes');
+  return process.env.PAPERCUSP_SU_OMP_HOMES_DIR || join(home, '.papercusp', 'su-omp-homes');
 }
 
 interface CachedPath {
