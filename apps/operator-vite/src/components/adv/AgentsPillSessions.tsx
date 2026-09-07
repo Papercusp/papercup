@@ -14,7 +14,7 @@
  *   * InactiveSessionsSection — the "View inactive sessions" expander at the
  *     popover bottom: every ended adv_session, ended_at DESC, paged from
  *     GET /api/adv/sessions/ended with IntersectionObserver infinite scroll
- *     (the ChatConversation.tsx sentinel + reentry-lock pattern).
+ *     (the shared PapercupChat sentinel + reentry-lock pattern).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';

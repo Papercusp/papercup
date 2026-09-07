@@ -2,12 +2,8 @@
  * Chat message/tool-call types — the shape the operator conversation store and the
  * chat cards agree on.
  *
- * These lived in ChatConversation.tsx until that component was retired
- * (design-simplification-2026-07-09 P-010, backfilling P-003): ChatConversation was
- * the shared transcript view of OracleDock + OperatorChat, both of which moved to
- * `_retired/legacy-web-chats/`. The types outlived the view — OperatorConversationProvider
- * still stores turns in this shape — so they get a home of their own rather than
- * keeping a dead component alive as a type module.
+ * These were extracted from the legacy operator transcript renderer so the
+ * provider can keep its message shape without keeping that renderer alive.
  */
 
 export interface ChatToolCall {
@@ -40,9 +36,9 @@ export interface ChatMessage {
   /**
    * WHICH agent spoke, when the surface knows (WI-4731 — the owner sees the
    * Papercup mark on every assistant message even when the message is the
-   * Mug's or the Kettle's). Drives the per-message avatar: ChatConversation
-   * maps the known cast ids to their canonical marks (mug → Coffee,
-   * kettle → Thermometer — the LeftSidebar tab iconography) and falls back
+   * Mug's or the Kettle's). Drives the per-message avatar: the host maps known
+   * cast ids to their canonical marks (mug → Coffee, kettle → Thermometer — the
+   * LeftSidebar tab iconography) and falls back
    * to the pane's own icon when absent/unknown. Optional so existing
    * papercup-only feeds are untouched.
    */

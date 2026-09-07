@@ -10,7 +10,7 @@
  *   - a fresh seed WINS over an older persisted draft;
  *   - sending clears both the composer and the stored draft.
  *
- * ChatConversation is stubbed to a bare controlled input + send button — the
+ * PapercupChat is stubbed to a bare controlled input + send button — the
  * transcript machinery has its own suites; this pins only the draft logic.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,22 +19,6 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test-ws:${k}`,
-}));
-vi.mock('../chat/ChatConversation', () => ({
-  ChatConversation: ({ inputValue, onInputChange, onSubmit }: {
-    inputValue: string;
-    onInputChange: (v: string) => void;
-    onSubmit: () => void;
-  }) => (
-    <div>
-      <input
-        data-testid="composer"
-        value={inputValue}
-        onChange={(e) => onInputChange(e.target.value)}
-      />
-      <button type="button" data-testid="send" onClick={() => onSubmit()} />
-    </div>
-  ),
 }));
 vi.mock('../chat/PendingCardsBar', () => ({ PendingCardsBar: () => null }));
 vi.mock('@/lib/chat-cards', () => ({ renderCard: () => null }));

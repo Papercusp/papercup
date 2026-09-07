@@ -313,7 +313,7 @@ describe('sessionTimelineToChatMessages', () => {
   });
 
   // WI-5997 (chat-ref-pills-2026-07-26 P-007 residual): a P-NNN ref pill's
-  // click resolves off ChatMessage.planSlug (ChatConversation reads it
+  // click resolves off ChatMessage.planSlug (PapercupChat reads it
   // per-message) — this mapper never set it, so a real P-ref pill rendered
   // and hydrated but silently no-op'd on click.
   describe('planSlug (WI-5997)', () => {

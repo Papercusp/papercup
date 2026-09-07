@@ -39,7 +39,7 @@
  * the RESOLUTION half (ref -> which live item) still runs through this same
  * `resolveInboxDrillIn`, unchanged; only the since-removed translation onto
  * the Working tab's nuqs param + dock panel type is gone. The current
- * work-item-ref activation path is the D-002 seam: `ChatConversation.tsx`
+ * work-item-ref activation path is the D-002 seam: `PapercupChat`
  * (P-004) exposes a plain `onWorkRefActivate` passthrough hook with no
  * destination logic of its own, and `WorkItemPopupModal` (P-008) wires the
  * popup into that hook.

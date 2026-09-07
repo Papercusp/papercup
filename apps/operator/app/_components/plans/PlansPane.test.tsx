@@ -19,7 +19,7 @@ import type { PlanListRow } from "@/app/admin/plans/plans-api";
 
 // jsdom has no layout, so the real @tanstack/react-virtual renders zero rows
 // (WI-5339 virtualization) — mock it to render every item (same seam as
-// ChatConversation.test).
+// the shared PapercupChat tests).
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: (opts: { count: number }) => ({
     getVirtualItems: () =>

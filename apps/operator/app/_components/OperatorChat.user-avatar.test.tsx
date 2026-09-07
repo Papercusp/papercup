@@ -51,7 +51,7 @@ vi.mock('@papercusp/sync', async (importOriginal) => ({
 
 import { OperatorChat } from './OperatorChat';
 import { __resetCurrentUserCacheForTests } from './use-current-user';
-import type { ChatMessage } from './chat/ChatConversation';
+import type { ChatMessage } from './chat/chat-types';
 
 /** Stand-in for the pane's brand mark (the Papercup cup in the real sidebar). */
 const PaneIcon = (p: Record<string, unknown>) => <svg data-testid="pane-icon" {...p} />;

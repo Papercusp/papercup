@@ -24,7 +24,7 @@ import { parseWorkRefs, type WorkRefMatch } from './parse-work-refs';
  *  `data.hProperties` are the mdast-to-hast contract (react-markdown's
  *  internal remark-rehype step reads these) that turns this node into a
  *  `workrefpill` hast element carrying `refId`/`refKind` — which
- *  MESSAGE_MARKDOWN_COMPONENTS (ChatConversation.tsx) intercepts via its own
+ *  markdown component map in PapercupChat.tsx intercepts via its own
  *  `workrefpill` component override and renders as a real
  *  HydratedWorkRefPill/WorkRefPill. Deliberately plain camelCase keys (not
  *  `data-ref-id`-style attribute names): this node is NEVER rendered as a

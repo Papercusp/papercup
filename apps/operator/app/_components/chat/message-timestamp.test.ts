@@ -1,7 +1,7 @@
 /**
  * session-chat-popup-timestamps-and-modes-2026-08-09 P-001 — the pure half of
  * the per-message stamp. The component half (the shared-clock subscription that
- * keeps the row memo intact) is covered by ChatConversation.test.tsx.
+ * keeps the row memo intact) is covered by PapercupChat's shared-view tests.
  *
  * Every case here builds its instants from a LOCAL-time constructor
  * (`new Date(y, m, d, hh, mm)`) rather than an ISO literal. The formatter reads

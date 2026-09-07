@@ -3,7 +3,7 @@
 /**
  * WorkItemPopupModal (chat-ref-pills-2026-07-26 P-008) — a clicked WI-/EI-/F-
  * ref pill in chat opens AS A POPUP instead of navigating the Working tab.
- * This is the D-002 seam: ChatConversation (P-004) exposes a plain
+ * This is the D-002 seam: PapercupChat (P-004) exposes a plain
  * `onWorkRefActivate` passthrough with no destination logic of its own;
  * OperatorChat wires THIS component into that hook (D-001, owner re-spec
  * 2026-07-26 — supersedes the retired `resolveWorkingTabDrillIn` destination,

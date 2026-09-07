@@ -41,11 +41,11 @@ import { ownerVisiblePromptText } from '@papercusp/operator-core/lib/agent-tools
 
 /**
  * Map a flat live-thinking timeline into chat messages, oldest-first — the
- * order `OperatorChat`/`ChatConversation` expect.
+ * order `OperatorChat`/`PapercupChat` expect.
  *
  * `planSlug` (WI-5997, chat-ref-pills-2026-07-26 P-007 residual): a P-NNN ref
  * pill's destination (D-001's PlanPopupModal) resolves off `ChatMessage.planSlug`
- * — ChatConversation reads it per-message (`m.planSlug`) — but this mapper
+ * — PapercupChat reads it per-message (`turn.planSlug`) — but this mapper
  * never set it, so a real P- ref pill in a live session's chat rendered and
  * hydrated correctly yet silently no-op'd on click (confirmed only via direct
  * `wppop` URL injection, never a real transcript click, during WI-5933's
