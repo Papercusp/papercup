@@ -44,7 +44,7 @@ import {
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { join, dirname, delimiter, basename } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import {
   hostThroughPty,
   fleetOscFromEnv,
@@ -14044,21 +14044,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   });
 }
 
-// Symlink-robust CLI-entry check (WI-1443): node realpaths the entry module's
-// import.meta.url while argv[1] keeps the invoked path — through a symlinked
-// checkout (papercup -> papercusp, as the on-PATH shim does) the naive === is
-// false and main() silently never runs.
-const isMain = (() => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-})();
-if (isMain) {
+// The shared helper owns both symlink robustness and bundled-sidecar safety.
+if (isCliEntry(import.meta.url)) {
   main().catch((e) => {
     // @inquirer throws ExitPromptError on Ctrl+C — treat as a clean cancel.
     if (
