@@ -120,6 +120,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
   });
 
   it('keeps same-publisher capabilities available, without renewing them, while a slow refresh collects', async () => {
+    vi.useFakeTimers();
     const request: GitServingRequest = {
       workspaceId: 'ws1', installSlug: 'a', potHomeSlug: 'a',
       scope: { hive_id: 'stable-hive', repo_key: 'gh:123' },
@@ -141,6 +142,9 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     let releaseRefresh!: (value: typeof advertised) => void;
     const slowRefresh = new Promise<typeof advertised>(resolve => { releaseRefresh = resolve; });
     H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }];
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    };
 
     const h = startBootedHandlesPgPublisher({
       intervalMs: 10,
@@ -149,7 +153,8 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       collectGitServing: async () => (++collectCalls === 1 ? advertised : slowRefresh),
     });
     try {
-      await vi.waitFor(() => expect(H.state.row).toMatchObject({ gitServing: advertised }));
+      await flushMicrotasks();
+      expect(H.state.row).toMatchObject({ gitServing: advertised });
       const first = H.state.row as {
         publisherId: string;
         publicationId: string;
@@ -161,7 +166,9 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         ? first.gitServing[0]!.state.capability.expiresAtMs
         : null;
 
-      await vi.waitFor(() => expect(collectCalls).toBe(2));
+      vi.advanceTimersByTime(10);
+      await flushMicrotasks();
+      expect(collectCalls).toBe(2);
       const refreshing = H.state.row as typeof first;
       expect(refreshing.publisherId).toBe(firstPublisherId);
       expect(refreshing.publicationId).not.toBe(firstPublicationId);
@@ -171,10 +178,12 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         : null).toBe(originalExpiry);
 
       releaseRefresh([]);
-      await vi.waitFor(() => expect(H.state.row).toHaveProperty('gitServing', []));
+      await flushMicrotasks();
+      expect(H.state.row).toHaveProperty('gitServing', []);
     } finally {
       h.stop();
       releaseRefresh([]);
+      vi.useRealTimers();
     }
   });
 
