@@ -86,6 +86,11 @@ describe('plans:get — `decisionIds` aliases `decisions` (EI-21158047068641416)
     parseOk(getTool.args, { slug: 'a-plan-2026-09-05', decisionId: 'D-039' });
   });
 
+  it('accepts an explicit empty decision selector (EI-21685978645240186)', () => {
+    parseOk(getTool.args, { slug: 'a-plan-2026-09-05', decisions: [] });
+    parseOk(getTool.args, { slug: 'a-plan-2026-09-05', decisionIds: [] });
+  });
+
   it('documents the precedence on the alias itself', () => {
     expect(getTool.args.shape.decisionIds.description).toMatch(/`decisions` wins/i);
   });

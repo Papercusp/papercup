@@ -30,6 +30,13 @@
     "EI-21669277932729145",
     "EI-21670908902598828"
   ],
+  "assignedIds": [
+    "EI-21599258539596497",
+    "EI-21599687862274962",
+    "EI-21658948474382585",
+    "EI-21669277932729145",
+    "EI-21670908902598828"
+  ],
   "assignedIdCoverage": {
     "count": 5,
     "uniqueCount": 5,
@@ -84,6 +91,8 @@
   "entries": [
     {
       "id": "EI-21599258539596497",
+      "currentState": "open",
+      "currentOrigin": "local",
       "frozenOutcome": "candidate-shared-root-consolidation",
       "frozenSourceSha256": "287416eb3b788aedb19c3c913abb8de9ab405fe168cebbcec31da4047ce78426",
       "frozenReviewStatus": "fleet-reviewed",
@@ -138,6 +147,8 @@
     },
     {
       "id": "EI-21599687862274962",
+      "currentState": "open",
+      "currentOrigin": "local",
       "frozenOutcome": "candidate-shared-root-consolidation",
       "frozenSourceSha256": "5b304033bf88de4168e108fbd084c7b004e9da9fe2f8054c09e2e731abb0bec8",
       "frozenReviewStatus": "fleet-reviewed",
@@ -192,6 +203,8 @@
     },
     {
       "id": "EI-21658948474382585",
+      "currentState": "open",
+      "currentOrigin": "local",
       "frozenOutcome": "candidate-shared-root-consolidation",
       "frozenSourceSha256": "caa49ce4e50982c634613b193a53462d83ad283446b6ec8d4517cd433e3c28d6",
       "frozenReviewStatus": "fleet-reviewed",
@@ -246,6 +259,8 @@
     },
     {
       "id": "EI-21669277932729145",
+      "currentState": "open",
+      "currentOrigin": "local",
       "frozenOutcome": "candidate-shared-root-consolidation",
       "frozenSourceSha256": "760bcdd181e1a74b1ccf5a659688a1943d3b5146a820534553d37132d6a5e14c",
       "frozenReviewStatus": "fleet-reviewed",
@@ -302,6 +317,8 @@
     },
     {
       "id": "EI-21670908902598828",
+      "currentState": "open",
+      "currentOrigin": "local",
       "frozenOutcome": "candidate-shared-root-consolidation",
       "frozenSourceSha256": "5d87a5a6970895658a8ec657fa6c05656cf6dcb898f3a1448a3d4eece87996d1",
       "frozenReviewStatus": "fleet-reviewed",

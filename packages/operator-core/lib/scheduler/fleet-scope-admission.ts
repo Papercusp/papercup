@@ -2012,9 +2012,13 @@ export function fleetScopedMiss(
   // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
   // idle-park await from the member's OWN claim-spec view — the missing "how do I
   // scope this await" answer that led members to register an UNSCOPED await and
-  // get woken on every system-wide release. `undefined` ⇒ the spec narrows only on
-  // fields the claimable payload does not carry, so the advice below must NOT
-  // recommend an unscoped await (the other half of the fix).
+  // get woken on every system-wide release. This is a SOUND CANDIDATE filter, not
+  // a complete admission predicate: the claimable event does not carry every
+  // global floor (rig availability, plan reservations, owner-action gates, holds,
+  // dependencies), and its lifecycle snapshot can race a later state change.
+  // `undefined` ⇒ the spec narrows only on fields the claimable payload does not
+  // carry, so the advice below must NOT recommend an unscoped await (the other
+  // half of the fix).
   const specDerivedPayloadFilter = claimSpecFilterToClaimablePayloadFilter(scope.record.spec.view.filter);
   // EI-18674160393981819: the claimable payload always carries `harness` (see
   // claim-spec-payload-filter.ts's PAYLOAD_FILTERABLE_FIELDS doc comment — it is payload-only,
@@ -2206,7 +2210,9 @@ export function fleetScopedMiss(
     windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss && !staleBlockedLane,
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
-    // fields (id/kind/title/plan/tags/goal). Copy it verbatim into the idle-park await below.
+    // fields (id/kind/title/plan/tags/goal). It is a candidate hint, not proof that
+    // the authoritative claim path will admit the row; copy it verbatim into the
+    // idle-park await below and always re-run scheduler:get_next after waking.
     ...(claimablePayloadFilter ? { payloadFilter: claimablePayloadFilter } : {}),
     ...(paused ? { paused: true as const } : {}),
     // EI-15777: surface how many of the caller's OWN pre-pause `work-item:claimable`
@@ -2377,7 +2383,7 @@ export function fleetScopedMiss(
               ? 'You may still park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn — do not pass targetKind with wake:true; its wake is a HINT and the watch remains armed.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
           : claimablePayloadFilter
-            ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To be woken ONLY on work your spec could admit (EI-15185), park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — it is derived from your own claim spec\'s view, so it fires only on in-scope items instead of every system-wide release; do not pass targetKind with wake:true. The wake is a HINT: scheduler:get_next stays the authoritative claim, and a re-miss does not require re-registering the watch.'
+            ? 'Checkpoint any atomic progress, release remaining lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To wake on payload candidates matching your claim spec (and the caller harness when present), rather than every system-wide release (EI-15185), park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn. This is a CANDIDATE HINT, not a full admission predicate: claim floors, rig availability, and lifecycle races may still reject a matching wake, so scheduler:get_next stays the authoritative claim; do not pass targetKind with wake:true, and a re-miss does not require re-registering the watch.'
             : 'Checkpoint any atomic progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
   };
 }

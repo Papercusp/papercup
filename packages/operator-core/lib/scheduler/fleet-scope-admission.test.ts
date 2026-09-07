@@ -2272,6 +2272,14 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
+    it('labels payloadFilter as a candidate hint, not an exact admission guarantee', () => {
+      const miss = fleetScopedMiss(kindOnlyScope, [], { harness: 'papercusp' });
+      expect(miss.advice).toContain('CANDIDATE HINT, not a full admission predicate');
+      expect(miss.advice).toContain('claim floors, rig availability, and lifecycle races');
+      expect(miss.advice).not.toContain('woken ONLY on work your spec could admit');
+      expect(miss.advice).not.toContain('fires only on in-scope items');
+    });
+
     it('falls back to a harness-only filter when the spec narrows on nothing payload-filterable', () => {
       const noFilterScope = {
         ...kindOnlyScope,

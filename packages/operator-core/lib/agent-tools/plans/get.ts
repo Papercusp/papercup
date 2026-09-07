@@ -180,7 +180,6 @@ const argsSchema = z
       ),
     decisions: z
       .array(z.string().min(1))
-      .min(1)
       .max(100)
       .optional()
       .describe(
@@ -195,7 +194,6 @@ const argsSchema = z
     // `decisions`; `decisions` wins when both are supplied.
     decisionIds: z
       .array(z.string().min(1))
-      .min(1)
       .max(100)
       .optional()
       .describe('Compatibility alias for `decisions` (plural naming, matching `itemIds`); `decisions` wins when both are supplied.'),
