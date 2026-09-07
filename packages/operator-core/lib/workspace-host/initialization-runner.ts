@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ReplaySafeWorkspaceHostInitializationExecutor,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+  assertWorkspaceHostSecretIsolation,
   executeWorkspaceHostInitialization,
   planWorkspaceHostInitialization,
 } from '@papercusp/deployment-driver';
@@ -44,6 +45,12 @@ import type {
   WorkspaceHostInitializationSource,
   WorkspaceHostInitializationStepReceipt,
 } from '@papercusp/deployment-driver';
+import {
+  verifyWorkspaceHostAgentCredentialAdmission,
+  type WorkspaceHostAgentCredentialAdmissionEvidence,
+  type WorkspaceHostAgentCredentialAdmissionInput,
+} from './agent-credential-admission';
+import type { WorkspaceHostCredentialMaterialSource } from './credential-material-source';
 import { createWorkspaceHostInitializationReplayStore } from './initialization-replay-store';
 import {
   appendWorkspaceHostEvent,
@@ -61,6 +68,8 @@ export interface WorkspaceHostInitializationRunInput {
   source: WorkspaceHostInitializationSource;
   credentialRefs: WorkspaceHostCredentialRefs;
   credentialDelivery: WorkspaceHostCredentialDeliverySet;
+  /** Exact controller-side source shared with the host delivery adapter. */
+  credentialMaterialSource: WorkspaceHostCredentialMaterialSource;
   /**
    * The executing provider's declared transport features — pass the provider's real profile
    * (`profile.transportProfile.features`) rather than a transcribed boolean. A provider declaring
@@ -75,7 +84,8 @@ export interface WorkspaceHostInitializationRunInput {
   leaseOwner?: string;
   leaseTtlMs?: number;
   /**
-   * Called once the request has been VALIDATED (planning succeeded) and before any row exists.
+   * Called once the request has been VALIDATED and its exact agent generation has passed
+   * authentication admission, still before any operation row exists.
    *
    * This exposes the one boundary a caller cannot otherwise observe: a throw from this function
    * either means the request was rejected by the contract, or means execution against a real host
@@ -92,7 +102,18 @@ export interface WorkspaceHostInitializationRunResult {
   operationId: string;
   plan: WorkspaceHostInitializationPlan;
   receipts: readonly WorkspaceHostInitializationStepReceipt[];
+  credentialAdmission?: WorkspaceHostAgentCredentialAdmissionEvidence;
 }
+
+export interface WorkspaceHostInitializationRunnerDependencies {
+  verifyAgentCredentialAdmission: (
+    input: WorkspaceHostAgentCredentialAdmissionInput,
+  ) => Promise<WorkspaceHostAgentCredentialAdmissionEvidence>;
+}
+
+const DEFAULT_DEPENDENCIES: WorkspaceHostInitializationRunnerDependencies = {
+  verifyAgentCredentialAdmission: verifyWorkspaceHostAgentCredentialAdmission,
+};
 
 /**
  * Run a workspace-host initialization end to end, durably and resumably.
@@ -103,7 +124,9 @@ export interface WorkspaceHostInitializationRunResult {
  */
 export async function runWorkspaceHostInitialization(
   input: WorkspaceHostInitializationRunInput,
+  overrides: Partial<WorkspaceHostInitializationRunnerDependencies> = {},
 ): Promise<WorkspaceHostInitializationRunResult> {
+  const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
   const operationId = input.operationId ?? randomUUID();
   const requestedAt = input.requestedAt ?? new Date().toISOString();
 
@@ -123,9 +146,24 @@ export async function runWorkspaceHostInitialization(
   // (1) Validate by planning, before any row exists. See module header.
   const plan = planWorkspaceHostInitialization(request);
   const totalSteps = plan.steps.length;
+  const agentCredentialRef = input.credentialRefs.agentCredentialRef;
+  const agentDelivery = input.credentialDelivery.agent;
+  const credentialAdmission =
+    agentCredentialRef && agentDelivery
+      ? await dependencies.verifyAgentCredentialAdmission({
+          credentialRef: agentCredentialRef,
+          delivery: agentDelivery,
+          materialSource: input.credentialMaterialSource,
+        })
+      : undefined;
   input.onPlanned?.(plan);
 
-  // (2) Only the plan is persisted — it is the secret-isolated artifact. See module header.
+  // (2) Persist the secret-isolated plan plus the CLOSED admission receipt. The receipt contains
+  // only a public reference digest, generation and probe reason codes — never material bytes or a
+  // digest of them. Keeping it on the operation request binds the successful probe to the exact
+  // request an audit later reads, instead of leaving it as an ephemeral controller assertion.
+  const persistedRequest = credentialAdmission ? { ...plan, credentialAdmission } : plan;
+  assertWorkspaceHostSecretIsolation(persistedRequest, 'workspaceHost.initialization.admittedPlan');
   await beginWorkspaceHostOperation({
     workspaceId: input.workspaceId,
     operationId,
@@ -134,7 +172,7 @@ export async function runWorkspaceHostInitialization(
     status: 'running',
     percent: 0,
     message: `Initializing workspace host (${totalSteps} steps)`,
-    request: plan,
+    request: persistedRequest,
   });
 
   let completedSteps = 0;
@@ -220,7 +258,12 @@ export async function runWorkspaceHostInitialization(
       details: { stepIds: plan.steps.map((step) => step.id) },
     });
 
-    return { operationId, plan, receipts };
+    return {
+      operationId,
+      plan,
+      receipts,
+      ...(credentialAdmission ? { credentialAdmission } : {}),
+    };
   } catch (error) {
     // The thrown message may quote host output, so it is passed ONLY through `error`, which the
     // observability store redacts — never interpolated into the human-facing message field.

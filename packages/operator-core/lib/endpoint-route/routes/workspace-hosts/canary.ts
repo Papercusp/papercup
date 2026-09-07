@@ -150,6 +150,7 @@ export function createWorkspaceHostCanaryRoute(
       let desired: WorkspaceHostDesiredSpec;
       let operations;
       let deliveryCapabilities;
+      const credentialMaterialSource = createOperatorWorkspaceHostCredentialMaterialSource();
       try {
         ({ desired, operations, deliveryCapabilities } = await dependencies.resolveOperationsForHost({
           workspaceId,
@@ -158,7 +159,7 @@ export function createWorkspaceHostCanaryRoute(
           // D-216. The canary binds git and agent, both of which require delivered material, so
           // without this the run refuses at its first binding step naming the missing store keys —
           // which is the intended pre-flight signal, not a failure discovered on a running VM.
-          credentialMaterialSource: createOperatorWorkspaceHostCredentialMaterialSource(),
+          credentialMaterialSource,
         }));
       } catch (error) {
         if (error instanceof WorkspaceHostDesiredSpecUnavailableError) {
@@ -205,6 +206,7 @@ export function createWorkspaceHostCanaryRoute(
           credentials: body.credentials as never,
           operations,
           deliveryCapabilities,
+          credentialMaterialSource,
           ...(body.destroyFinalization ? { destroyFinalization: body.destroyFinalization as never } : {}),
           onPhaseStart: () => {
             phaseStarted = true;

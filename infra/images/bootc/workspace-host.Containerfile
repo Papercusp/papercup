@@ -393,6 +393,10 @@ RUN bootc container lint
 # as the bundle bootstrap before committing it to the image.  POSIX ACLs cannot
 # survive a container commit, so papercusp-host-prepare.service reapplies the
 # papercusp-agent read/execute ACL recursively on every boot.
+#
+# Executable files retain read/execute for all classes because embedded-postgres
+# checks all 0555 bits before starting. The release and its parent directories
+# remain inaccessible to identities without the runtime ACL.
 FROM workspace-host-os AS workspace-host-release
 ARG PAPERCUSP_SERVICE_GROUP=papercusp
 ARG PAPERCUSP_RELEASE_VERSION
@@ -414,6 +418,7 @@ RUN set -eux; \
     chmod -R o-rwx "$RELEASE_DIR"; \
     find "$RELEASE_DIR" -type d -exec chmod g+rx {} +; \
     find "$RELEASE_DIR" -type f -exec chmod g+r {} +; \
+    find "$RELEASE_DIR" -type f -perm /111 -exec chmod a+rx {} +; \
     ln -s "releases/${PAPERCUSP_RELEASE_VERSION}" /opt/papercusp/current; \
     [ "$(readlink -f /opt/papercusp/current)" = "$RELEASE_DIR" ]; \
     bootc container lint

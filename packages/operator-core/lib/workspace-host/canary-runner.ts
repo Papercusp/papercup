@@ -46,6 +46,7 @@ import {
   type WorkspaceHostInitializationRunInput,
   type WorkspaceHostInitializationRunResult,
 } from './initialization-runner';
+import type { WorkspaceHostCredentialMaterialSource } from './credential-material-source';
 
 export const WORKSPACE_HOST_CANARY_PHASES = ['initialize', 'rotate', 'revoke', 'reconnect', 'restore-rebind'] as const;
 export type WorkspaceHostCanaryPhase = (typeof WORKSPACE_HOST_CANARY_PHASES)[number];
@@ -84,6 +85,8 @@ export interface WorkspaceHostCanaryRunInput {
    * declaring `fileTransfer: false` is refused in preflight rather than after a VM is provisioned.
    */
   readonly deliveryCapabilities: WorkspaceHostDeliveryCapabilities;
+  /** Exact encrypted-store source reused by the initialization admission guard and host delivery. */
+  readonly credentialMaterialSource: WorkspaceHostCredentialMaterialSource;
   /**
    * Omit on the first pass. After the existing destroy controller returns provider reads and a
    * clean census, repeat the same run with this field; every host phase replays durably and the
@@ -380,13 +383,17 @@ export async function runWorkspaceHostCanary(
     now: dependencies.now,
   };
 
-  input.onPhaseStart?.('initialize', operationIds.initialize);
   const initialization = await dependencies.runInitialization({
     ...common,
     operationId: operationIds.initialize,
     source: input.source,
     credentialRefs: input.credentials.initial.credentialRefs,
     credentialDelivery: input.credentials.initial.delivery,
+    credentialMaterialSource: input.credentialMaterialSource,
+    // The initialization runner invokes this only after the exact stored agent generation passed
+    // admission and before it creates the operation row. A revoked generation therefore remains a
+    // canary preflight rejection rather than masquerading as a durable remote-phase failure.
+    onPlanned: () => input.onPhaseStart?.('initialize', operationIds.initialize),
   } satisfies WorkspaceHostInitializationRunInput);
   const initializationObservation = extractWorkspaceHostCanaryInitializationObservation(initialization);
 

@@ -18,6 +18,7 @@ import {
   type WorkspaceHostInitializationHostOperations,
 } from '@papercusp/deployment-driver';
 import type { WorkspaceHostCredentialLifecycleRunInput } from './credential-lifecycle-runner';
+import type { WorkspaceHostCredentialMaterialSource } from './credential-material-source';
 import type { WorkspaceHostInitializationRunInput } from './initialization-runner';
 import {
   WorkspaceHostCanaryRunError,
@@ -91,6 +92,12 @@ const operations: WorkspaceHostInitializationHostOperations = {
   execute: vi.fn(),
 };
 
+const credentialMaterialSource: WorkspaceHostCredentialMaterialSource = {
+  resolve: vi.fn(async () => {
+    throw new Error('the fake initialization runner must not resolve credential material');
+  }),
+};
+
 function input(overrides: Partial<WorkspaceHostCanaryRunInput> = {}): WorkspaceHostCanaryRunInput {
   return {
     runId: 'run-1',
@@ -111,6 +118,7 @@ function input(overrides: Partial<WorkspaceHostCanaryRunInput> = {}): WorkspaceH
       restored: { credentialRefs: refs(3), delivery: delivery(3) },
     },
     operations,
+    credentialMaterialSource,
     ...overrides,
   };
 }
@@ -131,6 +139,7 @@ async function fakeInitialization(run: WorkspaceHostInitializationRunInput) {
     ...(run.publicMetadata ? { publicMetadata: run.publicMetadata } : {}),
   });
   const report = agentReport();
+  run.onPlanned?.(plan);
   return {
     operationId,
     plan,
@@ -308,6 +317,9 @@ describe('runWorkspaceHostCanary', () => {
     });
     expect(result.adaptedDestroyEvidence).toEqual(destroyFinalization().destroyEvidence);
     expect(runInitialization).toHaveBeenCalledTimes(1);
+    expect(runInitialization).toHaveBeenCalledWith(
+      expect.objectContaining({ credentialMaterialSource, onPlanned: expect.any(Function) }),
+    );
     expect(runLifecycle).toHaveBeenCalledTimes(4);
   });
 

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -28,6 +30,10 @@ const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
 const SHA_C = "c".repeat(64);
 const SHA_D = "d".repeat(64);
+const BOOTC_CONTAINERFILE = readFileSync(
+  new URL("../../../../infra/images/bootc/workspace-host.Containerfile", import.meta.url),
+  "utf8",
+);
 
 function input(): WorkspaceHostBuildManifestInput {
   return {
@@ -260,6 +266,18 @@ describe("workspace-host build manifest", () => {
         baseImage: { ...bootc.baseImage, reference: "centos-bootc:stream9" },
       }),
     ).toThrow("registry-qualified OCI image reference");
+  });
+
+  it("restores all read/execute bits for executable files in the immutable bootc release", () => {
+    const stripWorldBitsAt = BOOTC_CONTAINERFILE.indexOf(
+      'chmod -R o-rwx "$RELEASE_DIR";',
+    );
+    const restoreExecutableBitsAt = BOOTC_CONTAINERFILE.indexOf(
+      'find "$RELEASE_DIR" -type f -perm /111 -exec chmod a+rx {} +;',
+    );
+
+    expect(stripWorldBitsAt).toBeGreaterThanOrEqual(0);
+    expect(restoreExecutableBitsAt).toBeGreaterThan(stripWorldBitsAt);
   });
 
   it("refuses a material path that is secret-shaped", () => {

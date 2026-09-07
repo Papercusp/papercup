@@ -32,6 +32,7 @@
  */
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { isAbsolute, normalize } from "node:path";
 
 import { assertWorkspaceHostSecretIsolation } from "./workspace-host-test-harness";
 
@@ -263,6 +264,14 @@ export interface WorkspaceHostAgentProbeInvocation {
   readonly timeoutMs: number;
   /** When supplied, this is the COMPLETE child environment, not an overlay on the parent. */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Explicit working directory for controller-side isolated probes.
+   *
+   * HOME alone does not change a process's cwd. Without this field a probe over a temporary
+   * credential home can still discover repo-local config from the controller's inherited cwd,
+   * which means it is no longer proving only the material the caller supplied.
+   */
+  readonly cwd?: string;
   /** Execute the probe as this real non-root account, not merely with identity-shaped env vars. */
   readonly runAsUser?: string;
 }
@@ -311,11 +320,22 @@ const WORKSPACE_HOST_PROBE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function buildWorkspaceHostAgentProbeProcess(
   invocation: WorkspaceHostAgentProbeInvocation,
 ): WorkspaceHostAgentProbeProcess {
+  if (
+    invocation.cwd !== undefined &&
+    (!isAbsolute(invocation.cwd) ||
+      normalize(invocation.cwd) !== invocation.cwd ||
+      containsControlCharacter(invocation.cwd))
+  ) {
+    throw new Error(
+      "agent authentication probe cwd must be an absolute canonical path free of control characters",
+    );
+  }
   if (!invocation.runAsUser) {
     return {
       command: invocation.command,
       args: invocation.args,
       ...(invocation.env ? { env: invocation.env } : {}),
+      ...(invocation.cwd ? { cwd: invocation.cwd } : {}),
     };
   }
   if (
@@ -349,7 +369,7 @@ export function buildWorkspaceHostAgentProbeProcess(
     command: WORKSPACE_HOST_PROBE_RUNUSER,
     // SSH enters its own 0700 home. Switching identity does not change cwd;
     // agents must start inside the home their credential binding actually owns.
-    cwd: agentHome,
+    cwd: invocation.cwd ?? agentHome,
     args: [
       "--user",
       invocation.runAsUser,
@@ -564,6 +584,7 @@ export interface ProbeWorkspaceHostAgentInput {
   readonly runner: WorkspaceHostAgentProbeRunner;
   readonly now: () => Date;
   readonly env?: Readonly<Record<string, string>>;
+  readonly cwd?: string;
   readonly runAsUser?: string;
 }
 
@@ -588,6 +609,7 @@ export async function probeWorkspaceHostAgentVerification(
       timeoutMs:
         spec.timeoutMs ?? DEFAULT_WORKSPACE_HOST_AGENT_PROBE_TIMEOUT_MS,
       ...(input.env ? { env: input.env } : {}),
+      ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
     });
   } catch {
@@ -722,6 +744,8 @@ export interface ProbeWorkspaceHostAgentsInput {
   readonly now?: () => Date;
   /** Exact environment shared by all three sequential probes. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Explicit cwd shared by all three probes; controller-side callers use the isolated home. */
+  readonly cwd?: string;
   /** Real Unix account shared by all three sequential probes. */
   readonly runAsUser?: string;
   /**
@@ -772,6 +796,7 @@ export async function probeWorkspaceHostAgents(
         runner: input.runner,
         now,
         ...(input.env ? { env: input.env } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.runAsUser ? { runAsUser: input.runAsUser } : {}),
       });
       if (agents[agent]?.ready) break;

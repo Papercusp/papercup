@@ -22,13 +22,25 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type {
+  WorkspaceHostAgentVerificationEvidence,
+  WorkspaceHostAgentVerificationReport,
   WorkspaceHostCredentialDeliverySet,
   WorkspaceHostInitializationHostOperationResult,
   WorkspaceHostInitializationHostOperations,
   WorkspaceHostInitializationStep,
   WorkspaceHostInitializationSupportedStepKind,
 } from '@papercusp/deployment-driver';
+import { WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION } from '@papercusp/deployment-driver';
 import type { WorkspaceHostCredentialRefs } from '@papercusp/deployment-driver';
+import {
+  WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+  type WorkspaceHostAgentCredentialAdmissionEvidence,
+  type WorkspaceHostAgentCredentialAdmissionInput,
+} from './agent-credential-admission';
+import type {
+  WorkspaceHostInitializationRunInput,
+  WorkspaceHostInitializationRunnerDependencies,
+} from './initialization-runner';
 
 const h = vi.hoisted(() => ({ appSql: null as any }));
 
@@ -41,7 +53,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
     }),
 }));
 
-const { runWorkspaceHostInitialization } = await import('./initialization-runner');
+const { runWorkspaceHostInitialization: runWorkspaceHostInitializationProduction } = await import(
+  './initialization-runner'
+);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 let n = 0;
@@ -68,6 +82,59 @@ function delivery(): WorkspaceHostCredentialDeliverySet {
       expiresAt: '2026-08-25T18:00:00.000Z',
     },
   };
+}
+
+function admissionEvidence(
+  input: WorkspaceHostAgentCredentialAdmissionInput,
+): WorkspaceHostAgentCredentialAdmissionEvidence {
+  const observedAt = '2026-08-25T15:00:01.000Z';
+  const agentEvidence = (agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentVerificationEvidence => ({
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+    agent,
+    ready: true,
+    verificationKind: 'authenticated-account',
+    endpoint: `https://probe.invalid/${agent}`,
+    exitStatus: 0,
+    observedAt,
+    proofDigest: `proof-${agent}`,
+    subjectDisclosure: 'digest',
+  });
+  const verification: WorkspaceHostAgentVerificationReport = {
+    contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+    observedAt,
+    allReady: true,
+    agents: {
+      claude: agentEvidence('claude'),
+      codex: agentEvidence('codex'),
+      omp: agentEvidence('omp'),
+    },
+  };
+  return {
+    contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+    sourceKind: 'operator-integration-credentials',
+    binding: {
+      channel: 'agent',
+      family: 'agent-forwarded-reference',
+      generation: input.delivery.generation,
+      referenceDigest: 'public-reference-digest',
+    },
+    observedAt,
+    verification,
+  };
+}
+
+const DEFAULT_TEST_DEPENDENCIES: WorkspaceHostInitializationRunnerDependencies = {
+  verifyAgentCredentialAdmission: async (input) => admissionEvidence(input),
+};
+
+function runWorkspaceHostInitialization(
+  input: WorkspaceHostInitializationRunInput,
+  overrides: Partial<WorkspaceHostInitializationRunnerDependencies> = {},
+) {
+  return runWorkspaceHostInitializationProduction(input, {
+    ...DEFAULT_TEST_DEPENDENCIES,
+    ...overrides,
+  });
 }
 
 /**
@@ -138,6 +205,11 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     source: { kind: 'empty' as const },
     credentialRefs: refs(),
     credentialDelivery: delivery(),
+    credentialMaterialSource: {
+      resolve: async () => {
+        throw new Error('the injected admission verifier must not resolve real credential material');
+      },
+    },
     deliveryCapabilities: { fileTransfer: true },
     operations,
   });
@@ -186,6 +258,39 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
       'bind-agent',
       'verify',
     ]);
+    expect(operation.request?.credentialAdmission).toMatchObject({
+      contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+      binding: { channel: 'agent', generation: 1, referenceDigest: 'public-reference-digest' },
+      verification: { allReady: true },
+    });
+    expect(result.credentialAdmission).toEqual(operation.request?.credentialAdmission);
+  });
+
+  it('rejects failed exact-generation admission before creating an operation row', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = `op_${randomBytes(4).toString('hex')}`;
+    const adapter = recordingAdapter();
+    const onPlanned = vi.fn();
+
+    await expect(
+      runWorkspaceHostInitialization(
+        { ...runInput(ws, hostId, adapter, operationId), onPlanned },
+        {
+          verifyAgentCredentialAdmission: async () => {
+            throw new Error('exact stored generation is not authenticated');
+          },
+        },
+      ),
+    ).rejects.toThrow(/exact stored generation is not authenticated/);
+
+    const operations = await db.adminSql`
+      SELECT id FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(operations).toHaveLength(0);
+    expect(adapter.calls).toEqual([]);
+    expect(onPlanned).not.toHaveBeenCalled();
   });
 
   it('executes every step exactly once against the host', async () => {

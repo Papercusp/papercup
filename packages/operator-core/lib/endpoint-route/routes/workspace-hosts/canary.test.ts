@@ -262,7 +262,7 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('POST /workspace-hosts/:hostId/canary', () => {
   it('invokes the controller and returns ordered, credential-free phase summaries', async () => {
-    const { dependencies, runCanary } = harness();
+    const { dependencies, runCanary, resolveOperationsForHost } = harness();
     const response = await post(dependencies, requestBody());
 
     expect(response.status).toBe(200);
@@ -288,9 +288,12 @@ describe('POST /workspace-hosts/:hostId/canary', () => {
         workspaceId: 'workspace-1',
         hostId: 'host-1',
         operations,
+        credentialMaterialSource: expect.objectContaining({ resolve: expect.any(Function) }),
         onPhaseStart: expect.any(Function),
       }),
     );
+    const resolverSource = resolveOperationsForHost.mock.calls[0]?.[0].credentialMaterialSource;
+    expect(runCanary.mock.calls[0]?.[0].credentialMaterialSource).toBe(resolverSource);
   });
 
   it('rejects malformed generation shapes before controller or host resolution', async () => {

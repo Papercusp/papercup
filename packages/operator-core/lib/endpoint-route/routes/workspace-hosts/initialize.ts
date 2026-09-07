@@ -108,6 +108,7 @@ export default defineTool({
 
     let operations;
     let deliveryCapabilities;
+    const credentialMaterialSource = createOperatorWorkspaceHostCredentialMaterialSource();
     try {
       ({ operations, deliveryCapabilities } = await resolveWorkspaceHostInitializationOperationsForHost({
         workspaceId,
@@ -117,7 +118,7 @@ export default defineTool({
         // public binding metadata that the planner asserts secret isolation over. The bytes are
         // resolved from the operator's encrypted store, under a key derived from the reference the
         // caller DID send.
-        credentialMaterialSource: createOperatorWorkspaceHostCredentialMaterialSource(),
+        credentialMaterialSource,
       }));
     } catch (error) {
       if (error instanceof WorkspaceHostDesiredSpecUnavailableError) {
@@ -144,6 +145,7 @@ export default defineTool({
         source: body.source as never,
         credentialRefs: body.credentialRefs as never,
         credentialDelivery: body.credentialDelivery as never,
+        credentialMaterialSource,
         ...(body.operationId ? { operationId: body.operationId } : {}),
         ...(body.publicMetadata ? { publicMetadata: body.publicMetadata as Record<string, unknown> } : {}),
         onPlanned: () => {

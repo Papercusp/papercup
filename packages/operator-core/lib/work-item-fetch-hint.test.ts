@@ -17,6 +17,12 @@ describe('workItemFetchHint', () => {
     );
   });
 
+  it('omits the canonical harness for workspace-unique EI issue ids', () => {
+    expect(workItemFetchHint('EI-22547630371995201', 'portal')).toBe(
+      "work_items:get { id: 'EI-22547630371995201' }",
+    );
+  });
+
   it('omits the harness key for operator/global-scoped (null) and unknown (undefined) items', () => {
     expect(workItemFetchHint('EI-1', null)).toBe("work_items:get { id: 'EI-1' }");
     expect(workItemFetchHint('EI-1')).toBe("work_items:get { id: 'EI-1' }");
