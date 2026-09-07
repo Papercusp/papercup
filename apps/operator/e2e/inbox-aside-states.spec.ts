@@ -14,8 +14,9 @@
  * item's detail; (3) a live run — "Papercup is resolving…"; (4) a persisted
  * review-phase run — "Review the run" with Continue N retryable.
  */
+import { join } from "node:path";
 import { test, expect, assertMounted, type Page } from "./_egress";
-import { stubSyncQueries } from "./_sync-stub";
+import { stubSyncQueries, type SyncQueryStub } from "./_sync-stub";
 import {
   INBOX_TOTAL,
   mkBulkRow,
@@ -70,7 +71,11 @@ function resolver(state: { mode: Mode }) {
   };
 }
 
-async function openSplit(page: Page, theme: "light" | "dark" = "dark"): Promise<void> {
+async function openSplit(
+  page: Page,
+  sync: SyncQueryStub,
+  theme: "light" | "dark" = "dark",
+): Promise<void> {
   // `portalEmbed=1` bounds the surface to the frame (html[data-portal-embed]);
   // without it the document scrolls and every height reading is vacuous.
   const response = await page.goto(
@@ -87,6 +92,13 @@ async function openSplit(page: Page, theme: "light" | "dark" = "dark"): Promise<
     mounted,
     "split /inbox: `.op-inbox--split .op-inbox__list` never attached.",
   );
+  // Mount readiness and data readiness are different edges. Under the browser's
+  // standing-SSE connection budget the list shell can attach while the sync GET
+  // is still queued; asserting a row before the stub serves that request makes
+  // an eventual healthy render look like a missing-row regression. Keep the
+  // ordinary locator timeout strict, but only start it after the transport's
+  // own reachability guard proves the fixture response was delivered.
+  await sync.waitForServed(["plans.attention"]);
   await expect(page.getByTestId("inbox-row-aside-00")).toBeVisible();
 }
 
@@ -234,8 +246,7 @@ for (const vp of VIEWPORTS) {
       await stubInboxFlags(page);
       const state = { mode: "quiet" as Mode };
       const sync = await stubSyncQueries(page, resolver(state));
-      await openSplit(page);
-      await sync.waitForServed(["plans.attention"]);
+      await openSplit(page, sync);
 
       const idle = await measureIdle(page);
       expect(idle.viewport).toEqual({ w: vp.width, h: vp.height });
@@ -302,6 +313,19 @@ for (const vp of VIEWPORTS) {
       expect(sel.rowsWhole).toBeGreaterThanOrEqual(vp.rows);
       expect(sel.selectedRowInList).toBe(true);
       expect(sel.selectedTitleLines).toBe(1);
+
+      // P-005 acceptance capture is deliberately opt-in: ordinary E2E runs do
+      // not leave artifacts, while a reviewer can reproduce the exact asserted
+      // current-build frames from the same hermetic fixture and viewport.
+      const captureDir = process.env.INBOX_P005_CAPTURE_DIR;
+      if (captureDir && (vp.width === 1280 || vp.width === 1600)) {
+        await page.screenshot({
+          path: join(
+            captureDir,
+            `inbox-p005-${vp.width}x${vp.height}-selected.png`,
+          ),
+        });
+      }
     });
 
     test("a live run lands the aside on the running state — same run in the rail card, badges on the rows", async ({
@@ -313,8 +337,8 @@ for (const vp of VIEWPORTS) {
       const sync = await stubSyncQueries(page, resolver(state));
 
       // State 3 — running.
-      await openSplit(page);
-      await sync.waitForServed(["plans.attention", "plans.attentionBulkRun"]);
+      await openSplit(page, sync);
+      await sync.waitForServed(["plans.attentionBulkRun"]);
       await expect(page.getByTestId("inbox-briefing-running")).toBeVisible();
       const running = await measureIdle(page);
       expect(running.briefingState).toBe("running");
@@ -353,8 +377,8 @@ for (const vp of VIEWPORTS) {
       await stubInboxFlags(page);
       const state = { mode: "review" as Mode };
       const sync = await stubSyncQueries(page, resolver(state));
-      await openSplit(page);
-      await sync.waitForServed(["plans.attention", "plans.attentionBulkRun"]);
+      await openSplit(page, sync);
+      await sync.waitForServed(["plans.attentionBulkRun"]);
       await expect(page.getByTestId("inbox-briefing-review")).toBeVisible();
       const review = await measureIdle(page);
       expect(review.briefingState).toBe("last-run");
@@ -454,8 +478,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.setViewportSize({ width: 1104, height: 800 });
     await stubInboxFlags(page);
     const sync = await stubSyncQueries(page, resolver({ mode: "quiet" }));
-    await openSplit(page, theme);
-    await sync.waitForServed(["plans.attention"]);
+    await openSplit(page, sync, theme);
     await page.getByTestId("inbox-row-aside-01").click();
     await expect(page.getByTestId("inbox-detail-body-copy")).toBeVisible();
     const reading = await page.evaluate(() => {
