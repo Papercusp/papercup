@@ -106,6 +106,14 @@ export function validateDreamSampling(value: CapabilitySamplingResult): void {
     log.draws.some((d) => !Number.isFinite(d.probability) || d.probability <= 0 || d.probability > 1)
   )
     throw new Error('Invalid persisted sampling provenance');
+  if (log.eligibleUnitIds !== undefined && (!Array.isArray(log.eligibleUnitIds) ||
+      log.eligibleUnitIds.length > 200 || new Set(log.eligibleUnitIds).size !== log.eligibleUnitIds.length ||
+      log.eligibleUnitIds.some(id => typeof id !== 'string' || !id.trim())))
+    throw new Error('Invalid persisted sampling population');
+  if (value.status === 'selected' && log.eligibleUnitIds !== undefined &&
+      [value.selection.a, value.selection.b, ...(value.selection.c ? [value.selection.c.entry] : [])]
+        .some(e => !log.eligibleUnitIds!.includes(e.packet.unit.id)))
+    throw new Error('Selected unit is outside recorded sampling population');
   if (value.status === 'selected') validateCapabilityDreamSelection(value.selection);
   else if (!['insufficient-units', 'no-eligible-pair', 'no-third-candidate'].includes(value.reason))
     throw new Error('Invalid no-pair reason');

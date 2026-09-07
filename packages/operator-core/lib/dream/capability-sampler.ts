@@ -212,6 +212,8 @@ export interface CapabilitySelection {
 export interface CapabilitySamplingLog {
   version: typeof CAPABILITY_SAMPLING_VERSION;
   snapshotFingerprint: string;
+  /** Recorded population, rather than a denominator inferred from sequential draw sizes. */
+  eligibleUnitIds?: string[];
   seed: string;
   promptVersion: string;
   mode: 'structured' | 'random-control';
@@ -395,6 +397,7 @@ export function sampleCapabilityCombination(
   const log: CapabilitySamplingLog = {
     version: CAPABILITY_SAMPLING_VERSION,
     snapshotFingerprint: snapshot.fingerprint,
+    eligibleUnitIds: entries.map(e => e.packet.unit.id),
     seed: options.seed,
     promptVersion: options.promptVersion,
     mode,

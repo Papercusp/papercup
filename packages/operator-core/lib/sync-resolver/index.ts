@@ -4826,14 +4826,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'learning.dream': {
-    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope'],
-    argsSchema: z.object({ potSlug: z.string().trim().min(1).max(120) }),
+    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs'],
+    argsSchema: z.object({
+      potSlug: z.string().trim().min(1).max(120),
+      view: z.enum(['controls', 'metrics']).optional(),
+      since: z.string().datetime().optional(), until: z.string().datetime().optional(),
+    }),
     resolve: async (raw: unknown) => {
-      const args = raw as { potSlug: string };
+      const args = raw as { potSlug: string; view?: 'controls' | 'metrics'; since?: string; until?: string };
       const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
       ]);
       const workspaceId = activeWorkspaceId();
+      if (args.view === 'metrics') {
+        const { readDreamMetrics } = await import('../dream/dream-metrics');
+        const until = args.until ?? new Date().toISOString();
+        const since = args.since ?? new Date(Date.parse(until) - 7 * 86_400_000).toISOString();
+        return routeWithWorkspace(async (tx) => [await readDreamMetrics(tx as unknown as import('postgres').Sql,
+          { workspaceId, potSlug: args.potSlug, since, until })]);
+      }
       return routeWithWorkspace(async (tx) => [await readDreamControlSnapshot(tx as unknown as import('postgres').Sql, { workspaceId, potSlug: args.potSlug })]);
     },
   },
