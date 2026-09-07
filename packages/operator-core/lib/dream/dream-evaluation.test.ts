@@ -1,7 +1,9 @@
 import { runInNewContext } from 'node:vm';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DREAM_BENCHMARK_CASES } from '../../test/dream-benchmark-cases';
 import { DREAM_BENCHMARK_LABELS } from '../../test/dream-benchmark-labels';
+import independentReview from '../../test/dream-benchmark-review.fixture.json';
 import { capabilityHash } from './capability-contracts';
 import {
   DREAM_EVALUATION_ARMS, DREAM_EVALUATION_COSTS, DREAM_UTILITY_CONTRACT,
@@ -104,9 +106,9 @@ describe('source-grounded benchmark validity and honest confusion denominators',
     ], 'held-out');
     expect(report.total).toBe(12);
     expect(report.missing).toBe(9);
-    expect(report.falseAccept).toEqual({ numerator: 1, denominator: 9, value: 1 / 9 });
-    expect(report.falseReject).toEqual({ numerator: 1, denominator: 3, value: 1 / 3 });
-    expect(report.positiveUnresolved).toEqual({ numerator: 2, denominator: 3, value: 2 / 3 });
+    expect(report.falseAccept).toMatchObject({ numerator: 1, denominator: 9, value: 1 / 9 });
+    expect(report.falseReject).toMatchObject({ numerator: 1, denominator: 3, value: 1 / 3 });
+    expect(report.positiveUnresolved).toMatchObject({ numerator: 2, denominator: 3, value: 2 / 3 });
     expect(report.cases.find((c) => c.id === 'H12')?.observed).toBe('missing');
     expect(dreamReviewerConfusion([], [], 'held-out').exactAgreement.value).toBeNull();
   });
@@ -116,5 +118,22 @@ describe('source-grounded benchmark validity and honest confusion denominators',
     expect(() => dreamReviewerConfusion(DREAM_BENCHMARK_LABELS, [row, row], 'held-out')).toThrow('duplicated');
     expect(() => dreamReviewerConfusion(DREAM_BENCHMARK_LABELS, [{ ...row, id: 'absent' }], 'held-out')).toThrow('Unknown');
     expect(() => dreamReviewerConfusion([...DREAM_BENCHMARK_LABELS, DREAM_BENCHMARK_LABELS[0]!], [], 'held-out')).toThrow('Duplicate');
+  });
+
+  it('replays the actual independently recorded held-out judgments on the exact reviewed source bytes', () => {
+    expect(capabilityHash(readFileSync(new URL('../../test/dream-benchmark-cases.ts', import.meta.url), 'utf8'))).toBe(independentReview.sourceFileSha256);
+    expect(independentReview.sourceRef).toBe('work-item:WI-10000489#comment-200846');
+    expect(independentReview.reviewer).not.toBe('su-a6afb33c-aacd-45a3-a376-3ece53264f94');
+    const report = dreamReviewerConfusion(DREAM_BENCHMARK_LABELS,
+      independentReview.judgments as Array<{ id: string; verdict: 'accept' | 'reject' | 'unverified'; evidence: string }>, 'held-out');
+    expect(report.total).toBe(12);
+    expect(report.missing).toBe(0);
+    expect(report.unverified).toBe(2);
+    expect(report.falseAccept).toMatchObject({ numerator: 0, denominator: 9, value: 0 });
+    expect(report.falseReject).toMatchObject({ numerator: 0, denominator: 3, value: 0 });
+    expect(report.exactAgreement.value).toBe(1);
+    expect(report.falseAccept.wilson95![1]).toBeGreaterThan(0.29);
+    expect(report.falseReject.wilson95![1]).toBeGreaterThan(0.56);
+    expect(report.scope).toContain('not a population estimate');
   });
 });

@@ -115,6 +115,7 @@ export interface DreamEvaluationCost {
 
 /** Same numerator, denominator and accounting for every arm, including ordinary Blender. */
 export function summarizeDreamEvaluationCosts(rows: readonly DreamEvaluationCost[]) {
+  if (rows.some((row) => !DREAM_EVALUATION_ARMS.includes(row.arm))) throw new Error('Unknown Dream evaluation arm');
   return DREAM_EVALUATION_ARMS.map((arm) => {
     const selected = rows.filter((r) => r.arm === arm);
     let discovery: number | null = 0, experiment: number | null = 0;
@@ -152,6 +153,16 @@ export interface DreamBenchmarkLabel {
 }
 export interface DreamBenchmarkJudgment { id: string; verdict: DreamBenchmarkVerdict; evidence: string }
 
+/** Descriptive binomial interval. Curated fixtures are not a random population sample. */
+export function dreamBenchmarkFraction(numerator: number, denominator: number) {
+  if (denominator === 0) return { numerator, denominator, value: null, wilson95: null };
+  const value = numerator / denominator, z2 = 1.959963984540054 ** 2;
+  const scale = 1 + z2 / denominator;
+  const center = (value + z2 / (2 * denominator)) / scale;
+  const radius = Math.sqrt(z2 * (value * (1 - value) / denominator + z2 / (4 * denominator ** 2))) / scale;
+  return { numerator, denominator, value, wilson95: [Math.max(0, center - radius), Math.min(1, center + radius)] };
+}
+
 /** A receipt is keyed to the frozen case. Missing/unverified cases stay in the denominator.
  * Labels never enter the reviewer callback; callers pass its independent receipts here afterwards. */
 export function dreamReviewerConfusion(labels: readonly DreamBenchmarkLabel[], judgments: readonly DreamBenchmarkJudgment[], split: DreamBenchmarkLabel['split']) {
@@ -171,7 +182,7 @@ export function dreamReviewerConfusion(labels: readonly DreamBenchmarkLabel[], j
   });
   const positive = cases.filter((c) => c.expected === 'accept');
   const negative = cases.filter((c) => c.expected !== 'accept');
-  const fraction = (n: number, d: number) => ({ numerator: n, denominator: d, value: d ? n / d : null });
+  const fraction = dreamBenchmarkFraction;
   return { split, cases, total: cases.length, missing: cases.filter((c) => c.observed === 'missing').length,
     unverified: cases.filter((c) => c.observed === 'unverified').length,
     falseAccept: fraction(negative.filter((c) => c.observed === 'accept').length, negative.length),
