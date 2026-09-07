@@ -787,6 +787,7 @@ describe('probeFreshLaunchSessions', () => {
       harnessSlug: 'papercusp',
       planSlug: null,
       model: 'claude-sonnet-5:xhigh',
+      modelSource: null,
       effort: 'xhigh',
       account: 'default',
       carry: 'warm' as const,

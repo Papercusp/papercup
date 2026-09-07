@@ -57,6 +57,16 @@ describe('shapesFromDetection', () => {
 });
 
 describe('seedPackIntoHive', () => {
+  it('P-006 writes standalone identity knowledge to the existing harness pool', async () => {
+    const { backend } = makeBackend();
+    const result = await seedPackIntoHive({ workspaceId: 'w', potSlug: 'member', pack,
+      memoryTarget: { kind: 'harness', slug: 'member' } });
+    expect(result.ok).toBe(true);
+    const calls = backend.remember.mock.calls as unknown as RememberCall[];
+    expect(calls[0]?.[1]).toMatchObject({ scope: 'harness:member',
+      metadata: { scope: 'harness', harness_slug: 'member', workspace_id: 'w', source: 'pack' } });
+    expect(calls[0]?.[1].metadata).not.toHaveProperty('hive_slug');
+  });
   it('writes verbatim rows with hive scope + provenance; filters by shape', async () => {
     const { backend } = makeBackend();
     const res = await seedPackIntoHive({

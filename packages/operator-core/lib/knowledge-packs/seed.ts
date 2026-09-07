@@ -43,7 +43,18 @@ export function shapesFromDetection(detection: unknown): AppliesTo[] | undefined
   return shapes.length > 0 ? shapes : undefined;
 }
 
+export type KnowledgePackMemoryTarget = { kind: 'hive' | 'harness'; slug: string };
+
+/** The same pools consumed by memory injection; an identity never creates another namespace. */
+export function knowledgePackMemoryScope(target: KnowledgePackMemoryTarget): string {
+  if (!['hive', 'harness'].includes(target.kind) || typeof target.slug !== 'string' || !target.slug.trim()) {
+    throw new Error('knowledge-pack memory target needs a hive or harness and a slug');
+  }
+  return target.kind === 'hive' ? hiveScopeKey(target.slug) : 'harness:' + target.slug;
+}
+
 export interface SeedPackInput {
+  memoryTarget?: KnowledgePackMemoryTarget;
   workspaceId: string;
   /** The hive's home slug — rows land in scope `hive:<slug>`. */
   potSlug: string;
@@ -91,15 +102,17 @@ export async function rememberPackItem(opts: {
   pack: KnowledgePack;
   item: KnowledgePack['items'][number];
   createdBy?: string;
+  memoryTarget?: KnowledgePackMemoryTarget;
 }): Promise<string[]> {
   const backend = getMemoryBackend();
+  const target: KnowledgePackMemoryTarget = opts.memoryTarget ?? { kind: 'hive', slug: opts.potSlug };
   const { ids } = await backend.remember(memoryTextOf(opts.item), {
-    scope: hiveScopeKey(opts.potSlug),
+    scope: knowledgePackMemoryScope(target),
     kind: opts.item.kind,
     verbatim: true,
     metadata: {
-      scope: 'hive',
-      hive_slug: opts.potSlug,
+      scope: target.kind,
+      ...(target.kind === 'hive' ? { hive_slug: target.slug } : { harness_slug: target.slug }),
       workspace_id: opts.workspaceId,
       created_by: opts.createdBy ?? 'system',
       applies_to: opts.item.appliesTo,
@@ -150,6 +163,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
             potSlug: input.potSlug,
             pack,
             item,
+            memoryTarget: input.memoryTarget,
             ...(input.createdBy ? { createdBy: input.createdBy } : {}),
           });
         } catch (e) {

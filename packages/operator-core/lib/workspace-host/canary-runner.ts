@@ -42,6 +42,11 @@ import {
   type WorkspaceHostCredentialLifecycleRunResult,
 } from './credential-lifecycle-runner';
 import {
+  verifyWorkspaceHostAgentCredentialAdmission,
+  type WorkspaceHostAgentCredentialAdmissionEvidence,
+  type WorkspaceHostAgentCredentialAdmissionInput,
+} from './agent-credential-admission';
+import {
   runWorkspaceHostInitialization,
   type WorkspaceHostInitializationRunInput,
   type WorkspaceHostInitializationRunResult,
@@ -132,6 +137,9 @@ export interface WorkspaceHostCanaryRunnerDependencies {
   runLifecycle: typeof runWorkspaceHostCredentialLifecycle;
   assembleEvidence: typeof assembleWorkspaceHostCanaryEvidence;
   adaptDestroyEvidence: typeof adaptWorkspaceHostDestroyCanaryEvidence;
+  verifyAgentCredentialAdmission: (
+    input: WorkspaceHostAgentCredentialAdmissionInput,
+  ) => Promise<WorkspaceHostAgentCredentialAdmissionEvidence>;
   now: () => Date;
 }
 
@@ -140,6 +148,7 @@ const DEFAULT_DEPENDENCIES: WorkspaceHostCanaryRunnerDependencies = {
   runLifecycle: runWorkspaceHostCredentialLifecycle,
   assembleEvidence: assembleWorkspaceHostCanaryEvidence,
   adaptDestroyEvidence: adaptWorkspaceHostDestroyCanaryEvidence,
+  verifyAgentCredentialAdmission: verifyWorkspaceHostAgentCredentialAdmission,
   now: () => new Date(),
 };
 
@@ -372,6 +381,25 @@ export async function runWorkspaceHostCanary(
   const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
   const operationIds = workspaceHostCanaryOperationIds(input.runId);
   const { backupManifest, restoreRebindRequest } = preflight(input, operationIds);
+  // A canary names three exact agent generations. Authenticate the future rotate/restore inputs
+  // now, before the initialization runner creates the first paid/durable operation row. The
+  // initialization runner verifies the initial generation at the same boundary and persists all
+  // three closed receipts together, so a healthy controller default cannot satisfy any of them.
+  const additionalCredentialAdmissions: WorkspaceHostAgentCredentialAdmissionEvidence[] = [];
+  for (const label of ['rotated', 'restored'] as const) {
+    const credentialRef = input.credentials[label].credentialRefs.agentCredentialRef;
+    const delivery = input.credentials[label].delivery.agent;
+    if (!credentialRef || !delivery) {
+      throw new WorkspaceHostCanaryRunError([`${label} credential generation is missing channel(s): agent`]);
+    }
+    additionalCredentialAdmissions.push(
+      await dependencies.verifyAgentCredentialAdmission({
+        credentialRef,
+        delivery,
+        materialSource: input.credentialMaterialSource,
+      }),
+    );
+  }
   const common = {
     workspaceId: input.workspaceId,
     hostId: input.hostId,
@@ -390,6 +418,7 @@ export async function runWorkspaceHostCanary(
     credentialRefs: input.credentials.initial.credentialRefs,
     credentialDelivery: input.credentials.initial.delivery,
     credentialMaterialSource: input.credentialMaterialSource,
+    additionalCredentialAdmissions,
     // The initialization runner invokes this only after the exact stored agent generation passed
     // admission and before it creates the operation row. A revoked generation therefore remains a
     // canary preflight rejection rather than masquerading as a durable remote-phase failure.

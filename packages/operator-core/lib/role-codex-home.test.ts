@@ -30,6 +30,7 @@ vi.mock('node:os', async (importActual) => {
 });
 
 let fakeHome = '';
+const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
 
 beforeEach(() => {
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
@@ -41,12 +42,25 @@ afterEach(() => {
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
 });
 
+function withResolvedDefault<T extends (opts: any) => any>(fn: T): T {
+  return ((opts: Parameters<T>[0]) =>
+    fn({ model: RESOLVED_CODEX_DEFAULT, ...opts })) as T;
+}
+
 async function load() {
-  return (await import('./role-codex-home')).writeRoleCodexHome;
+  return withResolvedDefault(
+    (await import('./role-codex-home')).writeRoleCodexHome,
+  );
 }
 
 async function loadMod() {
-  return import('./role-codex-home');
+  const mod = await import('./role-codex-home');
+  return {
+    ...mod,
+    writeRoleCodexHome: withResolvedDefault(mod.writeRoleCodexHome),
+    writeSuCodexHome: withResolvedDefault(mod.writeSuCodexHome),
+    ensureSuCodexHomeConfig: withResolvedDefault(mod.ensureSuCodexHomeConfig),
+  };
 }
 
 /** Install the exact stale cache shape that caused D-007 to rewrite the
@@ -411,18 +425,20 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
-  it('uses Sol xhigh for an omitted model in fresh and repaired homes despite the installed default', async () => {
+  it('rejects an omitted model at fresh/repair boundaries and honors an explicitly resolved Sol xhigh default', async () => {
     mkdirSync(join(fakeHome, '.codex'), { recursive: true });
     writeFileSync(join(fakeHome, '.codex', 'config.toml'), 'model = "gpt-5.6-luna"\n');
     installStaleExtendedWindowRecord('gpt-5.6-luna');
 
-    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
-    const out = writeSuCodexHome({
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await import('./role-codex-home');
+    const base = {
       sessionKey: 'context-default-su',
       mcpUrl: 'http://x/api/mcp?superuser=1',
       promptText: 'P',
       sid: 'su-context-default',
-    });
+    };
+    expect(() => writeSuCodexHome(base)).toThrow(/Codex model is required/);
+    const out = writeSuCodexHome({ ...base, model: RESOLVED_CODEX_DEFAULT });
 
     const config = readFileSync(out.configPath, 'utf8');
     expect(config).toContain('model = "gpt-5.6-sol"\nmodel_reasoning_effort = "xhigh"\n');
@@ -430,10 +446,18 @@ describe('writeSuCodexHome', () => {
       /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
     );
     writeFileSync(out.configPath, config.replace('model_reasoning_effort = "xhigh"\n', ''));
+    expect(() =>
+      ensureSuCodexHomeConfig({
+        sessionKey: 'context-default-su',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        sid: 'su-context-default',
+      }),
+    ).toThrow(/Codex model is required/);
     const repaired = ensureSuCodexHomeConfig({
       sessionKey: 'context-default-su',
       mcpUrl: 'http://x/api/mcp?superuser=1',
       sid: 'su-context-default',
+      model: RESOLVED_CODEX_DEFAULT,
     });
     expect(repaired.repaired).toBe(true);
     expect(readFileSync(repaired.configPath, 'utf8')).toContain(

@@ -937,6 +937,39 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', mode: 'console' }));
   });
 
+  it('uses the configured Sol xhigh default only for a visible Codex bootstrap', async () => {
+    const res = await callPost({ agent: 'codex', harness_slug: null, plan_slug: null });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh' }),
+    );
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchArgv: expect.arrayContaining([
+          '--model=gpt-5.6-sol:xhigh',
+          '--model-source=configured-default',
+        ]),
+      }),
+    );
+  });
+
+  it('fails closed before session/home creation when a headless Codex bootstrap has no model authority', async () => {
+    for (const body of [
+      { agent: 'codex', headless: true },
+      { agent: 'codex', launch_argv: ['psu', '--no-picker', '--agent=codex', '--headless'] },
+    ]) {
+      vi.clearAllMocks();
+      recordAdvSessionMock.mockResolvedValue(42);
+      const res = await callPost(body);
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ code: 'missing_model' });
+      expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+      expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    }
+  });
+
   it('codex folds launch_context into AGENTS.md prompt text before writing CODEX_HOME', async () => {
     const kickoff = join(LC_DIR, 'kickoff.md');
     writeFileSync(kickoff, 'KICKOFF CONTEXT\n- continue the rollout\n');

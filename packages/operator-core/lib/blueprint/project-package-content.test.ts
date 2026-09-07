@@ -31,6 +31,9 @@ describe('P-006 existing blueprint content-hash projection', () => {
       rmSync(dir, { recursive: true, force: true });
       const replay = await projectBlueprintToPg(sql as never, { ...input, specification: a.specification });
       expect(replay.contentHash).toBe(a.contentHash);
+      await expect(projectBlueprintToPg(sql as never, { ...input, harnessSlug: 'other', specification: a.specification }))
+        .rejects.toThrow(/different workspace or harness/);
+      expect(sql).toHaveBeenCalledTimes(3);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

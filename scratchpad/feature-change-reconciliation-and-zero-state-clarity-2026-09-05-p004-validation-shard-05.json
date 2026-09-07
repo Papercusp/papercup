@@ -13,7 +13,8 @@
     "EI-21106811725865856",
     "EI-21107148746088361"
   ],
-  "assignedIdsSha256": "90f725408dc9c9ea159606ba78cd02305e4e2143f67f26f5e047380b711fafeb",
+  "assignedIdsSha256": "1ab7889da46c81f687fb44d2f2deb1d1ab43b12f53a60da7fa98015e81d6710e",
+  "assignedIdListSha256": "1ab7889da46c81f687fb44d2f2deb1d1ab43b12f53a60da7fa98015e81d6710e",
   "assignedIdListSerialization": "JSON.stringify(assignedIds)",
   "summary": {
     "candidateCount": 5,

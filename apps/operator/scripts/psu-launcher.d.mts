@@ -175,7 +175,6 @@ export function parseArgs(argv: any): {
     plan: null;
     noPlan: boolean;
     model: null;
-    modelSource: null;
     resumeSession: null;
     launchContext: null;
     launchedBy: null;
@@ -3055,7 +3054,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     fleet?: any;
     account?: any;
     brain?: boolean | undefined;
-    model_source?: string | undefined;
+    model_source?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     model?: any;
     persona_tier?: any;
     context_size?: any;
@@ -3083,7 +3082,7 @@ export function roleBootstrapBody({ role, agent, workspace, harness, feature, pl
     fleet_role?: any;
     fleet?: any;
     headless?: boolean | undefined;
-    model_source?: string | undefined;
+    model_source?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     model?: any;
     account?: any;
     role: any;
@@ -3168,7 +3167,7 @@ export function sessionPortUpgradeError(error: any): Error;
  * the byte-identical native resume/fork path; a tracked plain Claude source may
  * instead create a fresh Codex/OMP session through protocol v1. */
 export function resolveResumeTarget(session: any, args?: {}, selected?: {}): {
-    modelSource?: string | undefined;
+    modelSource?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     operation: string;
     sourceAgent: any;
     targetAgent: any;
@@ -3184,7 +3183,7 @@ export function resolveResumeTarget(session: any, args?: {}, selected?: {}): {
  */
 export function recordedCodexModelSelectionForResume(session: any): {
     model: string;
-    source: string;
+    source: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource;
 } | null;
 export function sessionPortTargetAccount(account: any): any;
 export function sessionPortRequestBody(source: any, target: any, account: any, args?: {}): {

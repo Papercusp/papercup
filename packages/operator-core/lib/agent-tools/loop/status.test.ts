@@ -24,6 +24,9 @@ vi.mock('../coordination/identity', () => ({
     workspaceId: 'ws-1',
     userId: null,
   })),
+  resolveSelfLiteral: vi.fn((value: string | undefined, callerOwnerId: string) =>
+    value === 'self' ? callerOwnerId : value,
+  ),
 }));
 vi.mock('../../events/await/wake-reachability', () => ({
   probeWakeReachability: vi.fn(async () => ({
@@ -162,6 +165,32 @@ describe('loop:status concurrency (EI-21869094231635430)', () => {
       summary: 'ok',
     });
     expect(out.pendingAwaits).toEqual({ status: 'none', scope: 'non-inbox-wake' });
+  });
+});
+
+describe('loop:status self owner selector (EI-22564327654701627)', () => {
+  it('resolves ownerId:self to the caller instead of querying the literal owner', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+
+    await run({ ownerId: 'self' });
+
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-caller-own-id');
+  });
+
+  it('resolves the owner alias self to the caller as well', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+
+    await run({ owner: 'self' });
+
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-caller-own-id');
+  });
+
+  it('keeps an explicit ownerId ahead of the owner alias', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+
+    await run({ ownerId: 'su-explicit-owner', owner: 'self' });
+
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-explicit-owner');
   });
 });
 

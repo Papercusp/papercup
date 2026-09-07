@@ -21,6 +21,7 @@ import {
   advSessionLivenessEvidenceCoversAgent,
   ADV_SESSION_LIVENESS_EVIDENCE_AGENT,
   readAdvSessionLaunchRecordByOwner,
+  listResumableSessions,
   markAdvSessionShutdownAcceptedByOwner,
   reactivateAdvSessionByOwner,
   repairStaleAdvSessionTerminalMarkers,
@@ -61,6 +62,49 @@ describe('readAdvSessionLaunchRecordByOwner', () => {
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
     expect((template as readonly string[]).join(' ')).toContain('agent');
+  });
+});
+
+describe('listResumableSessions launch provenance', () => {
+  it('returns the recorded psu argv needed for source-aware Codex resume inheritance', async () => {
+    const launchArgv = [
+      'psu',
+      '--agent=codex',
+      '--headless',
+      '--model=gpt-5.6-terra:high',
+      '--model-source=explicit',
+    ];
+    advSessionRowsMock.mockResolvedValueOnce([
+      {
+        id: 7,
+        workspace_id: 'ws-test',
+        plan_slug: null,
+        agent: 'codex',
+        role: null,
+        feature: null,
+        mode: 'console',
+        terminal_bin: null,
+        pid: null,
+        window_id: null,
+        omp_thread_id: null,
+        label: null,
+        cwd: '/repo',
+        coord_owner_id: 'su-7',
+        session_id: null,
+        launch_argv: launchArgv,
+        started_at: '2026-09-07T00:00:00.000Z',
+        last_active_at: '2026-09-07T00:00:00.000Z',
+        ended_at: null,
+        exit_code: null,
+        ended_by: null,
+        ended_signal: null,
+      },
+    ]);
+
+    const rows = await listResumableSessions(1);
+    expect(rows[0]?.launchArgv).toEqual(launchArgv);
+    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    expect((template as readonly string[]).join(' ')).toContain('a.launch_argv');
   });
 });
 

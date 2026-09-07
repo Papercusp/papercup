@@ -35,22 +35,23 @@ const DELIVERY = {
 };
 const NOW = () => new Date('2026-09-07T06:00:00.000Z');
 
-const PROBES = Object.fromEntries(
-  (['claude', 'codex', 'omp'] as const).map((agent) => [
+function probe(agent: 'claude' | 'codex' | 'omp'): WorkspaceHostAgentVerificationProbeSpec {
+  return {
     agent,
-    [
-      {
-        agent,
-        verificationKind: 'authenticated-account',
-        command: `probe-${agent}`,
-        args: [],
-        endpoint: `https://probe.invalid/${agent}`,
-        proofPattern: /^(READY)$/m,
-        subjectDisclosure: 'digest',
-      } satisfies WorkspaceHostAgentVerificationProbeSpec,
-    ],
-  ]),
-) as Record<'claude' | 'codex' | 'omp', readonly WorkspaceHostAgentVerificationProbeSpec[]>;
+    verificationKind: 'authenticated-account',
+    command: `probe-${agent}`,
+    args: [],
+    endpoint: `https://probe.invalid/${agent}`,
+    proofPattern: /^(READY)$/m,
+    subjectDisclosure: 'digest',
+  };
+}
+
+const PROBES = {
+  claude: [probe('claude')],
+  codex: [probe('codex')],
+  omp: [probe('omp')],
+} satisfies Record<'claude' | 'codex' | 'omp', readonly WorkspaceHostAgentVerificationProbeSpec[]>;
 
 function bundle(codex: 'healthy' | 'revoked'): Buffer {
   const file = (agent: string, status: string) => Buffer.from(JSON.stringify({ agent, status }), 'utf8');
@@ -128,7 +129,7 @@ describe('workspace-host exact-generation agent credential admission', () => {
         referenceDigest: workspaceHostCredentialReferenceDigest(AGENT_REF),
       },
       observedAt: '2026-09-07T06:00:00.000Z',
-      verification: { allReady: true },
+      verification: { allReady: true, credentialFreeAgents: [] },
     });
     expect(runner.observed).toEqual({ claude: 'healthy', codex: 'healthy', omp: 'healthy' });
     expect(runner.environments.every((env) => !('OPENAI_API_KEY' in env))).toBe(true);

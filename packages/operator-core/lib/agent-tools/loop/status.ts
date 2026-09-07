@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { describeStoreIdentityMismatch, storeIdentityViolation } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { readLatestLoopTransition } from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta, shortCarryHash } from '../../carry-note';
@@ -80,7 +80,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Inspect the loop for this owner id (default: yourself). Mirrors loop:arm/end/checkpoint.'),
+      .describe("Inspect the loop for this owner id, or 'self' for the caller (default: yourself). Mirrors loop:arm/end/checkpoint."),
     // tool-contract-repair-2026-09-05 P-005 / EI-21206535634211412. `owner` is an
     // unambiguous synonym here: this tool has exactly one selector, so there is no
     // second meaning `owner` could collide with (the ALIAS-vs-BETTER-ERROR test the
@@ -107,7 +107,11 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const ownerId = args.ownerId ?? args.owner ?? identity.ownerId;
+    // Resolve the documented self selector before querying. Passing the literal
+    // through would read a plausible but unrelated row whose ownerId is "self"
+    // instead of this caller's loop (EI-22564327654701627).
+    const ownerId =
+      resolveSelfLiteral(args.ownerId ?? args.owner, identity.ownerId) ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
 
     // EI-21869094231635430: these four probes are each independent of the OTHERS

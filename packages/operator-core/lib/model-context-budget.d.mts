@@ -15,12 +15,15 @@ export function resolveCodexModel(model: any): string;
  * Resolve a model together with the authority that selected it.  The
  * configured-default branch is the ONLY branch allowed to turn absence into a
  * model, making that policy choice visible to launch ledgers and callers.
+ * @param {unknown} model
+ * @param {{ source?: CodexModelSource }} [options]
+ * @returns {{ model: string, source: CodexModelSource }}
  */
-export function resolveCodexModelSelection(model: any, { source }?: {
-    source?: string | undefined;
+export function resolveCodexModelSelection(model: unknown, { source }?: {
+    source?: CodexModelSource;
 }): {
     model: string;
-    source: string;
+    source: CodexModelSource;
 };
 /**
  * Render the root model settings that must survive a model-less resume.  The
@@ -268,6 +271,7 @@ export const MAX_LAUNCH_CONTEXT_BYTES: number;
 export const CODEX_SAFE_DEFAULT_MODEL: "gpt-5.6-sol:xhigh";
 export const CODEX_DEFAULT_MODEL: "gpt-5.6-sol:xhigh";
 export const CODEX_DENIED_MODEL_IDS: readonly string[];
+/** @typedef {'explicit' | 'inherited' | 'configured-default'} CodexModelSource */
 export const CODEX_MODEL_SOURCES: readonly string[];
 /** Stable policy error consumed by launch/request boundaries. */
 export class CodexModelPolicyError extends Error {
@@ -311,3 +315,4 @@ export const CODEX_MAX_CONFIGURED_WINDOW: 1000000;
  * 258,400 window compacts BEFORE a leader's 400k limit is ever reached.
  */
 export const CODEX_AUTO_COMPACT_FRACTION: 0.9;
+export type CodexModelSource = "explicit" | "inherited" | "configured-default";

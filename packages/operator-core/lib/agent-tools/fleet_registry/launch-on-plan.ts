@@ -120,7 +120,7 @@ import { liveFleetMemberIds, occupiesLaunchMemberSeat } from '../../fleet/fleet-
 import { listLiveTasks } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { agentSpawnScopeMemoryMaxG } from '../../systemd-scope';
-import { resolveCodexModel } from '../../model-context-budget.mjs';
+import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
@@ -540,7 +540,11 @@ export function cloudModelBackendHint(model: string | undefined): 'claude' | 'co
 /** The three fleet-member backends (psu `--agent`). Guards an inherited caller backend. */
 const FLEET_BACKENDS = new Set(['claude', 'omp', 'codex']);
 
-export type FleetAgentResolution = { agent: 'claude' | 'omp' | 'codex'; model: string | undefined } | { error: string };
+export type FleetAgentResolution = {
+  agent: 'claude' | 'omp' | 'codex';
+  model: string | undefined;
+  modelSource?: 'explicit' | 'inherited' | 'configured-default';
+} | { error: string };
 
 /**
  * Select the gateway stats projection for the backend that the member launch will use.
@@ -599,16 +603,23 @@ export function resolveFleetAgent(opts: {
   // an omp member would launch on omp's default, not the ornith the leader is actually running.
   const inheritedBackend = !opts.argAgent && agent === opts.callerAgent;
   let model = argModel ?? (inheritedBackend && opts.callerModel ? opts.callerModel : undefined);
+  let modelSource: 'explicit' | 'inherited' | 'configured-default' | undefined;
   if (agent === 'codex') {
     try {
-      // Resolve the omitted-model default and reject Spark while the launch
-      // shape is still pure — before fleet/account/terminal materialization.
-      model = resolveCodexModel(model);
+      modelSource = argModel ? 'explicit' : model ? 'inherited' : undefined;
+      const selection = resolveCodexModelSelection(model, {
+        // Naming Codex explicitly is the caller's deliberate authorization to
+        // use the managed default. Merely inheriting a Codex backend with no
+        // recorded model is unresolved input and must fail closed.
+        source: modelSource ?? (opts.argAgent === 'codex' ? 'configured-default' : 'explicit'),
+      });
+      model = selection.model;
+      modelSource = selection.source;
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
     }
   }
-  return { agent, model };
+  return { agent, model, ...(modelSource ? { modelSource } : {}) };
 }
 
 /** Window inside which a repeat launch of the same fleet is suppressed (the P-005 idempotency
@@ -2414,7 +2425,7 @@ export default defineTool({
       callerModel,
     });
     if ('error' in agentResolution) return err(agentResolution.error);
-    const { agent, model: memberModel } = agentResolution;
+    const { agent, model: memberModel, modelSource: memberModelSource } = agentResolution;
     const count = args.count ?? 1;
 
     // P-003: `plan` is optional. A pure claim-spec fleet launches with no plan — its
@@ -4335,6 +4346,7 @@ export default defineTool({
       workspace: workspaceId,
       role: args.role?.trim() || undefined,
       model: effModel,
+      modelSource: seatsRequested ? 'inherited' : memberModelSource,
       seat: seatPin?.ref,
       feature: args.feature?.trim() || undefined,
       profile: args.profile?.trim() || undefined,
@@ -4566,6 +4578,7 @@ export default defineTool({
         harnessSlug: harness,
         planSlug: planSlug ?? null,
         model: modelSpec,
+        modelSource: folded.modelSource ?? null,
         effort: modelEffortFromSpec(modelSpec),
         account: folded.account ?? 'default',
         carry: folded.carry ?? 'warm',

@@ -191,6 +191,7 @@ Launch context:
   --plan=<slug>                      Plan context
   --no-plan                          Launch without a plan
   --model=<model[:effort]>           Model and optional effort
+  --model-source=<source>            Codex provenance: explicit|inherited|configured-default
   --profile=<engineer|power>         SU prompt profile
   --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)
   --compaction-limit=<tokens>        Requested compaction limit
@@ -682,7 +683,6 @@ export function parseArgs(argv) {
     plan: null,
     noPlan: false,
     model: null,
-    modelSource: null,
     resumeSession: null,
     launchContext: null,
     launchedBy: null,
@@ -937,6 +937,14 @@ export function parseArgs(argv) {
       // must receive configured model ids verbatim; Claude's `[1m]` marker is
       // not part of OMP's model grammar.
       out.model = rawModel;
+    } else if (a.startsWith("--model-source=")) {
+      const source = a.slice("--model-source=".length);
+      if (!["explicit", "inherited", "configured-default"].includes(source)) {
+        throw new Error(
+          `--model-source must be explicit|inherited|configured-default (got ${source || "empty"})`,
+        );
+      }
+      out.modelSource = source;
     } else if (a.startsWith("--resume-session="))
       out.resumeSession = a.slice("--resume-session=".length);
     else if (a.startsWith("--launch-context="))
@@ -1122,7 +1130,9 @@ export function parseArgs(argv) {
     // deliberate configured-default decision when no model was supplied. Only
     // headless/unattended launches fail closed on unresolved input.
     const selection = resolveCodexModelSelection(out.model, {
-      source: out.model ? "explicit" : out.headless ? "explicit" : "configured-default",
+      source:
+        out.modelSource ||
+        (out.model ? "explicit" : out.headless ? "explicit" : "configured-default"),
     });
     out.model = selection.model;
     out.modelSource = selection.source;
@@ -1284,6 +1294,9 @@ export function ompResponsesCompatibilityEnv(agent, model, env = process.env) {
 }
 
 export function modelArgsFor(agent, model) {
+  // Low-level argv construction is never itself authorization to choose a
+  // model. Fresh visible launchers resolve configured-default explicitly;
+  // unattended resume/fleet paths must supply an explicit or inherited model.
   if (agent === "codex") model = resolveCodexModel(model);
   if (!model) return [];
   const effectiveModel =
@@ -8711,6 +8724,7 @@ export function resumeLaunchArgvRecord(
   session,
   {
     model = null,
+    modelSource = null,
     account,
     addDir = [],
     allowSubagents = null,
@@ -8737,6 +8751,7 @@ export function resumeLaunchArgvRecord(
     harness: session?.harnessSlug ?? priorArgs.harness ?? null,
     plan: session?.planSlug ?? priorArgs.plan ?? null,
     model,
+    modelSource,
     addDir,
     allowSubagents,
     passthrough,
@@ -10593,6 +10608,7 @@ async function launchResume(
     accountEnv = null,
     allowSubagents,
     model = null,
+    modelSource = null,
     kickoff = null,
     launchMode = null,
   } = {},
@@ -10811,6 +10827,9 @@ async function launchResume(
     // agent-session marker arms the hook-level scheduler guard (bash gate / omp
     // coord-hook) for the brain only — never the owner's own sessions (D-003).
     const env = buildResumeEnv(session, { fork, brain, accountEnv });
+    if (session.agent === "codex" && modelSource) {
+      env.PAPERCUSP_MODEL_SOURCE = modelSource;
+    }
     // In-place resumes have no bootstrap POST. Apply the same bounded mode payload
     // through the existing admin mode:set seam; forks target the freshly minted SID
     // from buildResumeEnv rather than mutating the original session.
@@ -10984,6 +11003,7 @@ async function launchResume(
     // runWrapper confirms the child/host spawned.
     resumeLaunchArgv = resumeLaunchArgvRecord(session, {
       model: resumeModel,
+      modelSource,
       account: accountEnv,
       addDir,
       allowSubagents,
@@ -11228,6 +11248,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   if (args.compactionLimit)
     argv.push(`--compaction-limit=${args.compactionLimit}`);
   if (args.model) argv.push(`--model=${args.model}`);
+  if (args.modelSource) argv.push(`--model-source=${args.modelSource}`);
   if (args.account) argv.push(`--account=${args.account}`);
   // A joined fleet (--fleet=<slug>) or a new fleet's derived slug (picker → fleetName).
   const fleetSlug =
@@ -11289,6 +11310,7 @@ export function freshSuBootstrapBody(
     launch_argv: psuLaunchArgvRecord(selections, effectiveArgs, { brain }),
     // headless-fleet-launch-and-carry-knob: the launch argv is an audit record;
     // bootstrap also needs the resolved carry value to seed the member's loop.
+    ...(args.headless ? { headless: true } : {}),
     ...(args.carry ? { carry: args.carry } : {}),
     // WI-1356: start fleet/auto launches in AUTO mode — bootstrap-su bakes the durable
     // AUTO directive into the system prompt + prepends it to the seeded kickoff.
@@ -11388,6 +11410,7 @@ export function roleBootstrapBody({
     ...(account ? { account } : {}),
     ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(codexSelection ? { model_source: codexSelection.source } : {}),
+    ...(headless ? { headless: true } : {}),
     ...(fleet ? { fleet } : {}),
     ...(fleetRole ? { fleet_role: fleetRole } : {}),
     ...(fleetName ? { fleet_name: fleetName } : {}),
@@ -11788,7 +11811,13 @@ export function resolveResumeTarget(session, args = {}, selected = {}) {
   const sourceAgent = session?.agent;
   if (!AGENTS.includes(sourceAgent))
     throw new Error(`unsupported source backend ${String(sourceAgent)}`);
-  const requestedModelSpec = selected.modelSpec ?? args.model ?? null;
+  const selectedOwnsModel = Object.prototype.hasOwnProperty.call(
+    selected,
+    "modelSpec",
+  );
+  const requestedModelSpec = selectedOwnsModel
+    ? selected.modelSpec
+    : args.model ?? null;
   const hinted = requestedModelSpec
     ? cloudModelBackendHint(requestedModelSpec)
     : null;
@@ -11796,7 +11825,27 @@ export function resolveResumeTarget(session, args = {}, selected = {}) {
     selected.targetAgent ?? args.agent ?? hinted ?? sourceAgent;
   if (!AGENTS.includes(targetAgent))
     throw new Error(`--agent must be one of ${AGENTS.join("|")}`);
-  const modelSpec = normalizeModelSpecForAgent(targetAgent, requestedModelSpec);
+  let modelSpec = normalizeModelSpecForAgent(targetAgent, requestedModelSpec);
+  let modelSource = null;
+  if (targetAgent === "codex") {
+    const requestedSource = selected.modelSource ?? args.modelSource ?? null;
+    let selection = null;
+    if (modelSpec || requestedSource) {
+      selection = resolveCodexModelSelection(modelSpec, {
+        source: requestedSource ?? "explicit",
+      });
+    } else if (!selectedOwnsModel && targetAgent === sourceAgent) {
+      selection = recordedCodexModelSelectionForResume(session);
+    }
+    if (!selection) {
+      const unattended = args.headless === true || args.picker === false;
+      selection = resolveCodexModelSelection(undefined, {
+        source: unattended ? "explicit" : "configured-default",
+      });
+    }
+    modelSpec = selection.model;
+    modelSource = selection.source;
+  }
   const pair = validateAgentModelPair(targetAgent, modelSpec);
   if (!pair.ok) throw new Error(pair.message);
   const operation = targetAgent === sourceAgent ? "native" : "port";
@@ -11820,7 +11869,27 @@ export function resolveResumeTarget(session, args = {}, selected = {}) {
     targetAgent,
     provider: providerForResumeTarget(targetAgent),
     modelSpec,
+    ...(modelSource ? { modelSource } : {}),
   };
+}
+
+/**
+ * Resolve a native Codex resume from the exact model recorded on its last
+ * successful psu launch. The inherited source is stamped freshly: the prior
+ * launch may itself have been explicit or configured-default, but this process
+ * is authorized by the durable record rather than silently consulting native
+ * Codex cache/default state.
+ */
+export function recordedCodexModelSelectionForResume(session) {
+  if (session?.agent !== "codex" || !Array.isArray(session.launchArgv))
+    return null;
+  const modelArg = session.launchArgv.find(
+    (arg) => typeof arg === "string" && arg.startsWith("--model="),
+  );
+  if (!modelArg) return null;
+  return resolveCodexModelSelection(modelArg.slice("--model=".length), {
+    source: "inherited",
+  });
 }
 
 export function sessionPortTargetAccount(account) {
@@ -12438,6 +12507,7 @@ export function sessionPortTargetArgs(source, target, account, args, prepared) {
     fork: false,
     agent: target.targetAgent,
     model: target.modelSpec,
+    modelSource: target.modelSource,
     account: sessionPortTargetAccount(account),
     fleet: null,
     fleetRole: null,
@@ -12585,6 +12655,7 @@ async function launchResolvedResume(source, args, { tracked }) {
     accountEnv: account,
     allowSubagents: args.allowSubagents,
     model: resumeModel.model,
+    modelSource: target.modelSource,
     kickoff: resumeKickoffText(args),
     launchMode: launchModeFromArgs(args),
   });

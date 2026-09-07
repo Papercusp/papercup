@@ -990,13 +990,18 @@ describe('resolveFleetAgent — explicit Codex launch defaults', () => {
         callerAgent: 'claude',
         callerModel: 'opus:xhigh',
       }),
-    ).toEqual({ agent: 'codex', model: 'gpt-5.6-sol' });
+    ).toEqual({
+      agent: 'codex',
+      model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'configured-default',
+    });
   });
 
   it('normalizes an explicit Codex alias while preserving its effort suffix', () => {
     expect(resolveFleetAgent({ argAgent: 'codex', argModel: 'sol:high' })).toEqual({
       agent: 'codex',
       model: 'gpt-5.6-sol:high',
+      modelSource: 'explicit',
     });
   });
 });

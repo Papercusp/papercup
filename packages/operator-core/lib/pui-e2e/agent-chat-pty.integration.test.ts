@@ -16,9 +16,10 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { ModelRequest, ModelStreamEvent } from '../agent-loop/model-port';
@@ -209,6 +210,7 @@ class PuiPane {
     }
     throw new Error(
       `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` + this.screen(),
+      { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
   }
 
@@ -311,14 +313,17 @@ async function waitForPersistedChat(
 
 let db: OrgTestDb;
 let bin: string;
+let binarySha256: string;
 let home: string;
 let operatorServer: ServerType;
 let operatorPort: number;
 let previousEnv: Record<string, string | undefined>;
+let sessionTraffic: Array<Record<string, unknown>> = [];
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
   bin = ensurePuiBinary();
+  binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
   mkdirSync(path.join(home, '.papercusp'), { recursive: true });
   writeFileSync(path.join(home, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
@@ -370,7 +375,38 @@ beforeAll(async () => {
   await putViewState('Plans');
 
   const { app } = await import('../../../../apps/operator/bin/host-app');
-  operatorServer = createAdaptorServer({ fetch: app.fetch });
+  operatorServer = createAdaptorServer({
+    fetch: async (request, env) => {
+      const pathname = new URL(request.url).pathname;
+      const isLaunch = pathname === '/api/adv/sessions/launch-su';
+      const launchInput = isLaunch ? await request.clone().json() : null;
+      const response = await app.fetch(request, env);
+      if (isLaunch || pathname.includes('/su-session')) {
+        const result = isLaunch ? await response.clone().json() : null;
+        // Keep an allowlisted trace of the production boundary. Never capture
+        // authorization headers, endpoint credentials or arbitrary request text.
+        const observation = {
+          method: request.method,
+          path: pathname,
+          status: response.status,
+          count: 1,
+          ...(isLaunch ? {
+            agent: launchInput?.agent,
+            deferSpawn: launchInput?.defer_spawn,
+            headless: launchInput?.headless === true,
+            deferred: result?.deferred === true,
+            advSessionId: result?.advSessionId,
+            nativeSessionPresent: Boolean(result?.nativeSession),
+          } : {}),
+        };
+        const existing = sessionTraffic.find((entry) =>
+          entry.method === observation.method && entry.path === pathname && entry.status === response.status);
+        if (existing) existing.count = Number(existing.count) + 1;
+        else if (sessionTraffic.length < 30) sessionTraffic.push(observation);
+      }
+      return response;
+    },
+  });
   operatorPort = await listen(operatorServer);
   // Fail at the actual rendezvous boundary instead of spending every PTY
   // timeout on a fixture operator that the installed client cannot identify.
@@ -399,6 +435,7 @@ afterAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
+  sessionTraffic = [];
   scriptedProvider.mode = 'success';
   scriptedProvider.successText = 'PUI provider fixture replied';
   scriptedProvider.requests = [];

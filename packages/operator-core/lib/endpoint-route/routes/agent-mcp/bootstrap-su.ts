@@ -110,7 +110,7 @@ import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type Ses
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
-import { resolveCodexModel } from '../../../model-context-budget.mjs';
+import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -1235,6 +1235,8 @@ export function normalizeLaunchArgv(v: unknown): string[] | null {
 export function reconstructPsuLaunchArgv(o: {
   agent: string;
   model?: string | null;
+  modelSource?: 'explicit' | 'inherited' | 'configured-default' | null;
+  headless?: boolean;
   harnessSlug?: string | null;
   planSlug?: string | null;
   profile?: string | null;
@@ -1248,6 +1250,7 @@ export function reconstructPsuLaunchArgv(o: {
   role?: string | null;
 }): string[] {
   const argv = ['psu', '--no-picker', `--agent=${o.agent}`];
+  if (o.headless) argv.push('--headless');
   if (o.role) argv.push(`--role=${o.role}`);
   if (o.harnessSlug) argv.push(`--harness=${o.harnessSlug}`);
   argv.push(o.planSlug ? `--plan=${o.planSlug}` : '--no-plan');
@@ -1255,6 +1258,7 @@ export function reconstructPsuLaunchArgv(o: {
   if (o.contextSize) argv.push(`--context-size=${o.contextSize}`);
   if (o.account) argv.push(`--account=${o.account}`);
   if (o.agent === 'codex') argv.push(`--model=${resolveCodexModel(o.model)}`);
+  if (o.agent === 'codex' && o.modelSource) argv.push(`--model-source=${o.modelSource}`);
   if (o.fleet) argv.push(`--fleet=${o.fleet}`);
   return argv;
 }
@@ -1523,6 +1527,10 @@ const post = defineTool({
        *  spine (codex path; omp trims client-side in psu-launcher; claude self-trims).
        *  Absent ⇒ 'frontier' tier (no trim) — the safe default. */
       model?: string | null;
+      model_source?: 'explicit' | 'inherited' | 'configured-default' | null;
+      /** Explicit windowless/unattended posture. Older launcher builds are
+       *  recognized from launch_argv's exact --headless discriminator. */
+      headless?: boolean | null;
       /** launch-path-argv-reconstruction (WI-1343): the literal `psu …` argv the
        *  launcher built, recorded on adv_sessions.launch_argv so a killed batch is
        *  reconstructible. Validated + capped server-side (normalizeLaunchArgv);
@@ -1665,16 +1673,31 @@ const post = defineTool({
       );
     }
     const personaTier = personaTierRaw as 'full' | 'fleet' | null;
+    if (body.headless != null && typeof body.headless !== 'boolean') {
+      return jsonRes({ status: 'error', error: 'headless must be a boolean' }, 400);
+    }
+    const headless =
+      body.headless === true ||
+      (Array.isArray(body.launch_argv) && body.launch_argv.some((arg) => arg === '--headless'));
     // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
     const requestedModel = body.model?.trim() || null;
     let model = requestedModel;
+    let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;
     if (agent === 'codex') {
       try {
-        // Reject Spark and materialize the approved default before account
-        // routing, session rows, or CODEX_HOME creation.
-        model = resolveCodexModel(requestedModel);
+        const selection = resolveCodexModelSelection(requestedModel, {
+          // A visible Codex selection is the owner's deliberate opt-in to the
+          // configured default (D-002). A headless/no-picker launch must carry
+          // an explicit/inherited/default-authorized selection and therefore
+          // fails closed when both model and provenance are absent.
+          source:
+            body.model_source ??
+            (requestedModel ? 'explicit' : headless ? 'explicit' : 'configured-default'),
+        });
+        model = selection.model;
+        modelSource = selection.source;
       } catch (error: any) {
-        return jsonRes({ status: 'error', code: 'codex_model_denied', error: error?.message ?? String(error) }, 400);
+        return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
       }
     }
     if (body.carry != null && body.carry !== 'warm' && body.carry !== 'cold') {
@@ -2051,6 +2074,8 @@ const post = defineTool({
       reconstructPsuLaunchArgv({
         agent,
         model,
+        modelSource,
+        headless,
         harnessSlug,
         planSlug,
         profile,
@@ -2811,6 +2836,7 @@ const post = defineTool({
         contextSize,
         personaTier,
         model,
+        ...(modelSource ? { modelSource } : {}),
         planSlug,
         launchedBy,
         autoMode,
@@ -2839,6 +2865,7 @@ const post = defineTool({
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
       // solo-launch-provenance: the launcher's ownerId, readable by hooks/tools.
       ...(launchedBy ? { PAPERCUSP_LAUNCHED_BY: launchedBy } : {}),
+      ...(modelSource ? { PAPERCUSP_MODEL_SOURCE: modelSource } : {}),
     };
 
     // psu-account-chooser P-002: fold the resolved route into the envelope. For

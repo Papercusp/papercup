@@ -16,17 +16,20 @@ import {
   NodeWorkspaceHostAgentProbeRunner,
   WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
   WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_CANARY_AGENTS,
   assertWorkspaceHostSecretIsolation,
   parseWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostCredentialReference,
-  probeWorkspaceHostAgents,
+  probeWorkspaceHostAgentVerification,
   workspaceHostAgentHomeDirectories,
   workspaceHostAgentHomeOmpModelsPath,
   workspaceHostAgentHomePaths,
   workspaceHostCredentialReferenceDigest,
   type ProbeWorkspaceHostAgentsInput,
+  type WorkspaceHostAgentHomeBundle,
   type WorkspaceHostAgentProbeRunner,
-  type WorkspaceHostAgentVerificationReport,
+  type WorkspaceHostAgentVerificationEvidence,
+  type WorkspaceHostCanaryAgent,
   type WorkspaceHostCredentialDelivery,
   type WorkspaceHostCredentialFamily,
   type WorkspaceHostCredentialRefs,
@@ -56,7 +59,14 @@ export interface WorkspaceHostAgentCredentialAdmissionEvidence {
     readonly referenceDigest: string;
   };
   readonly observedAt: string;
-  readonly verification: WorkspaceHostAgentVerificationReport;
+  readonly verification: {
+    readonly contractVersion: typeof WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION;
+    readonly observedAt: string;
+    readonly allReady: boolean;
+    readonly agents: Readonly<Partial<Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>>>;
+    /** Agents whose bundle member is intentionally null and therefore has no credential to authenticate. */
+    readonly credentialFreeAgents: readonly WorkspaceHostCanaryAgent[];
+  };
 }
 
 export class WorkspaceHostAgentCredentialAdmissionError extends Error {
@@ -70,6 +80,26 @@ export class WorkspaceHostAgentCredentialAdmissionError extends Error {
     );
     this.name = 'WorkspaceHostAgentCredentialAdmissionError';
   }
+}
+
+/** Validate a receipt before a caller persists or reuses it as an admission decision. */
+export function assertWorkspaceHostAgentCredentialAdmissionEvidence(
+  evidence: WorkspaceHostAgentCredentialAdmissionEvidence,
+): void {
+  if (
+    evidence.contractVersion !== WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION ||
+    evidence.sourceKind !== 'operator-integration-credentials' ||
+    evidence.binding.channel !== 'agent' ||
+    !Number.isSafeInteger(evidence.binding.generation) ||
+    evidence.binding.generation < 1 ||
+    !evidence.binding.referenceDigest ||
+    !Number.isFinite(Date.parse(evidence.observedAt)) ||
+    evidence.verification.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION ||
+    evidence.verification.allReady !== true
+  ) {
+    throw new Error('workspace-host agent credential admission evidence is incomplete or not ready');
+  }
+  assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.agentCredentialAdmission');
 }
 
 const FORWARDED_PROBE_ENVIRONMENT = [
@@ -99,7 +129,7 @@ export interface WorkspaceHostAgentCredentialAdmissionDependencies {
 
 function probeEnvironment(
   home: string,
-  supplied: Readonly<Record<string, string>> = process.env as Readonly<Record<string, string>>,
+  supplied: Readonly<Record<string, string | undefined>> = process.env,
 ): Readonly<Record<string, string>> {
   const environment: Record<string, string> = {};
   for (const name of FORWARDED_PROBE_ENVIRONMENT) {
@@ -113,7 +143,7 @@ function probeEnvironment(
   return { ...environment, HOME: home, USER: username, LOGNAME: username };
 }
 
-async function installTemporaryAgentHome(home: string, material: Buffer): Promise<void> {
+async function installTemporaryAgentHome(home: string, material: Buffer): Promise<WorkspaceHostAgentHomeBundle> {
   const bundle = parseWorkspaceHostAgentHomeBundle(material);
   for (const directory of workspaceHostAgentHomeDirectories(home)) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -133,6 +163,7 @@ async function installTemporaryAgentHome(home: string, material: Buffer): Promis
       mode: 0o600,
     });
   }
+  return bundle;
 }
 
 /** Authenticate one exact stored agent generation and emit only closed, public evidence. */
@@ -151,21 +182,55 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
     family: parsed.family,
     generation: input.delivery.generation,
   });
-  const temporary = await mkdtemp(join(dependencies.temporaryParent ?? tmpdir(), 'papercusp-agent-admission-'));
+  const materialBytes = material.reveal();
+  let temporary: string | undefined;
+  let bundle: WorkspaceHostAgentHomeBundle | undefined;
   try {
+    temporary = await mkdtemp(join(dependencies.temporaryParent ?? tmpdir(), 'papercusp-agent-admission-'));
     await chmod(temporary, 0o700);
-    await installTemporaryAgentHome(temporary, material.reveal());
+    bundle = await installTemporaryAgentHome(temporary, materialBytes);
     const now = dependencies.now ?? (() => new Date());
-    const verification = await probeWorkspaceHostAgents({
-      runner: dependencies.runner ?? new NodeWorkspaceHostAgentProbeRunner(),
-      probes: dependencies.probes ?? DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES,
-      now,
-      env: probeEnvironment(temporary, dependencies.environment),
-      cwd: temporary,
-    });
-    if (verification.contractVersion !== WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION) {
-      throw new Error('workspace-host agent credential admission received an incompatible probe report');
+    const runner = dependencies.runner ?? new NodeWorkspaceHostAgentProbeRunner();
+    const environment = probeEnvironment(temporary, dependencies.environment);
+    const agents: Partial<Record<WorkspaceHostCanaryAgent, WorkspaceHostAgentVerificationEvidence>> = {};
+    const credentialFreeAgents: WorkspaceHostCanaryAgent[] = [];
+    for (const agent of WORKSPACE_HOST_CANARY_AGENTS) {
+      if (agent === 'omp' && bundle.files.omp === null) {
+        credentialFreeAgents.push(agent);
+        continue;
+      }
+      // A present OMP credential must pass its authenticated-account probe. Falling back to
+      // local inference would prove the controller's Ollama runtime while saying nothing about
+      // the stored OMP bytes this guard exists to validate.
+      const configured =
+        dependencies.probes?.[agent] ?? DEFAULT_WORKSPACE_HOST_AGENT_VERIFICATION_PROBES[agent];
+      const specs =
+        agent === 'omp' ? configured.filter((spec) => spec.verificationKind === 'authenticated-account') : configured;
+      if (specs.length === 0) {
+        throw new Error(`agent credential admission has no credential-authentication probe for '${agent}'`);
+      }
+      for (const spec of specs) {
+        const result = await probeWorkspaceHostAgentVerification({
+          spec,
+          runner,
+          now,
+          env: environment,
+          cwd: temporary,
+        });
+        agents[agent] = result;
+        if (result.ready) break;
+      }
     }
+    const observedAt = now().toISOString();
+    const verification = {
+      contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+      observedAt,
+      allReady: WORKSPACE_HOST_CANARY_AGENTS.every(
+        (agent) => credentialFreeAgents.includes(agent) || agents[agent]?.ready === true,
+      ),
+      agents,
+      credentialFreeAgents,
+    } as const;
     const evidence: WorkspaceHostAgentCredentialAdmissionEvidence = {
       contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
       sourceKind: 'operator-integration-credentials',
@@ -175,15 +240,17 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
         generation: input.delivery.generation,
         referenceDigest: workspaceHostCredentialReferenceDigest(input.credentialRef.ref),
       },
-      observedAt: verification.observedAt,
+      observedAt,
       verification,
     };
-    assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.agentCredentialAdmission');
     if (!verification.allReady) throw new WorkspaceHostAgentCredentialAdmissionError(evidence);
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence);
     return evidence;
   } finally {
     // This tree contains the only plaintext copy outside the encrypted store. Cleanup failure is
     // therefore allowed to fail the request rather than being swallowed behind a successful probe.
-    await rm(temporary, { recursive: true, force: true });
+    for (const bytes of bundle ? Object.values(bundle.files) : []) bytes?.fill(0);
+    materialBytes.fill(0);
+    if (temporary) await rm(temporary, { recursive: true, force: true });
   }
 }

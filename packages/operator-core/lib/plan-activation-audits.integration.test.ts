@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { COORD_REF_HOLDERS_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 
 const h: { sql: FreshPgDb['sql'] } = { sql: null as never };
 const repairFiling = vi.hoisted(() => ({
@@ -107,9 +108,14 @@ beforeAll(async () => {
       created_at bigint
     );
   `);
+  // BAR projection also reconciles already-promoted work-item edges. Reuse the
+  // canonical fixture instead of freezing a local subset of those shared tables.
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(COORD_REF_HOLDERS_DDL);
   await applyMigrationForTest(db.sql, migration('851-first-class-plan-spec-clauses.sql'));
   await applyMigrationForTest(db.sql, migration('929-spec-clause-falsifier.sql'));
   await applyMigrationForTest(db.sql, migration('1111-acceptance-bar-contract-seed.sql'));
+  await applyMigrationForTest(db.sql, migration('855-work-item-spec-evidence-bindings.sql'));
 }, 90_000);
 
 afterAll(async () => {
@@ -118,7 +124,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  await db.sql`TRUNCATE harness_shared.plan_audits, harness_shared.plan_spec_clause_revisions,
+  await db.sql`TRUNCATE harness_shared.spec_evidence_bindings, harness_shared.work_item_spec_revision_edges,
+    harness_shared.work_items, harness_shared.coord_links,
+    harness_shared.plan_audits, harness_shared.plan_spec_clause_revisions,
     harness_shared.plan_spec_clauses, harness_shared.plan_items,
     harness_shared.harness_plans, harness_shared.plan_revisions RESTART IDENTITY`;
 });
@@ -459,7 +467,7 @@ describe('migration 938 activation-audit ledger', () => {
     `).resolves.toEqual([{ n: 3, max_revision: 1 }]);
   });
 
-  it('re-audits an amended pinned revision without reverting its canonical BAR or METHOD', async () => {
+  it.each(['draft', 'active'])('re-audits an amended pinned %s revision without reverting its canonical BAR or METHOD', async (status) => {
     await seedPostEpochPlan();
     const input = {
       workspaceId: 'activation-audit-test', harnessSlug: 'papercusp',
@@ -485,7 +493,7 @@ describe('migration 938 activation-audit ledger', () => {
     await db.sql`UPDATE harness_shared.harness_plans SET
       template_data = ${JSON.stringify(amended)}::text::jsonb, version = 2
       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
-    await db.sql`UPDATE harness_shared.harness_plans SET status = 'active',
+    await db.sql`UPDATE harness_shared.harness_plans SET status = ${status},
       acceptance_bar_set_hash = ${amended.barSetHash}, acceptance_bar_rubric_revision = 2
       WHERE plan_slug = 'post-epoch-seed-target'`;
 

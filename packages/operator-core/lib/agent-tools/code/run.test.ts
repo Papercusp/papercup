@@ -91,6 +91,7 @@ import codeRunTool, {
   codeRunReturnedContextBytes,
   codeRunFailureClass,
   withCodeRunCaptureMode,
+  withCodeRunResponseBudget,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 import type { FieldMiss } from '@papercusp/tooldef';
 
@@ -1007,6 +1008,42 @@ describe('code:run → timeoutSec foreground contract (EI-21636457492876715)', (
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: maxTimeoutSec }).success).toBe(true);
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: maxTimeoutSec + 1 }).success).toBe(false);
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: 120 }).success).toBe(false);
+  });
+});
+
+describe('code:run → response-safe postprocessing budget', () => {
+  it('returns at the shared absolute deadline when trace/record work never settles', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const pending = withCodeRunResponseBudget(
+        () => new Promise<null>(() => {}),
+        { deadlineAtMs: Date.now() + 25, fallback: null, label: 'trace normalization' },
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(pending).resolves.toMatchObject({
+        value: null,
+        degraded: true,
+        reason: 'timeout',
+      });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('trace normalization'));
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not start another postprocessing leg after the response deadline', async () => {
+    const work = vi.fn(async () => 'late');
+    const result = await withCodeRunResponseBudget(work, {
+      deadlineAtMs: Date.now() - 1,
+      fallback: 'fallback',
+      label: 'trace-only recording',
+    });
+
+    expect(result).toMatchObject({ value: 'fallback', degraded: true, reason: 'timeout' });
+    expect(work).not.toHaveBeenCalled();
   });
 });
 

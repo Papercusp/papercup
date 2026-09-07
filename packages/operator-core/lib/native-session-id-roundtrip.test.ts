@@ -231,11 +231,18 @@ describe('native session id round-trip (bootstrap-su → suLaunchArgs → resume
     expect(json.nativeSessionId).toBeNull();
     expect(recordedSessionId).toBeNull();
 
-    const launch = suLaunchArgs('codex', { promptFile: json.promptFile });
+    expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
+    const launch = suLaunchArgs('codex', {
+      promptFile: json.promptFile,
+      model: 'gpt-5.6-sol:xhigh',
+    });
     expect(launch.args).not.toContain('--session-id');
 
     // codex resume with no native id → `resume --last` from its per-session home.
-    const resume = resumeArgsFor({ agent: 'codex', cwd: json.cwd });
+    const resume = resumeArgsFor(
+      { agent: 'codex', cwd: json.cwd },
+      { model: 'gpt-5.6-sol:xhigh' } as unknown as Parameters<typeof resumeArgsFor>[1],
+    );
     expect(resume.args).toContain('resume');
     expect(resume.args).toContain('--last');
   });
@@ -251,7 +258,10 @@ describe('native session id round-trip (bootstrap-su → suLaunchArgs → resume
     const resolved = resolveTrackedResumeSession([tracked], rolloutId, { home });
     expect(resolved).toMatchObject({ ...tracked, sessionId: rolloutId });
 
-    const resume = resumeArgsFor(resolved);
+    const resume = resumeArgsFor(
+      resolved,
+      { model: 'gpt-5.6-sol:xhigh' } as unknown as Parameters<typeof resumeArgsFor>[1],
+    );
     expect(resume.bin).toBe('codex');
     expect(resume.args).toContain('resume');
     expect(resume.args[resume.args.indexOf('resume') + 1]).toBe(rolloutId);

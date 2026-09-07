@@ -54,7 +54,7 @@ import {
   stampFleetMembershipAtBoot,
 } from './bootstrap-su';
 import { backendFeatureGuard } from '../../../backend-feature-capabilities';
-import { resolveCodexModel } from '../../../model-context-budget.mjs';
+import { resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -162,6 +162,9 @@ const post = defineTool({
       plan?: string | null;
       account?: string | null;
       model?: string | null;
+      model_source?: 'explicit' | 'inherited' | 'configured-default' | null;
+      /** Windowless/unattended launch posture supplied by psu. */
+      headless?: boolean | null;
       /** named-su-agent-fleets P-009: the durable slug of a named fleet to JOIN
        *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
        *  spawn env, mirroring bootstrap-su. Ignored when `fleet_name` is present
@@ -251,15 +254,24 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: normalizedContextSize.error }, 400);
     }
     const contextSize = normalizedContextSize.contextSize;
+    if (body.headless != null && typeof body.headless !== 'boolean') {
+      return jsonRes({ status: 'error', error: 'headless must be a boolean' }, 400);
+    }
+    const headless = body.headless === true;
     const requestedModel = body.model?.trim() || null;
     let model = requestedModel;
+    let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;
     if (agent === 'codex') {
       try {
-        // Keep role launches on the same pre-materialization policy as su and
-        // fleet launches: omitted resolves to the safe default, Spark refuses.
-        model = resolveCodexModel(requestedModel);
+        const selection = resolveCodexModelSelection(requestedModel, {
+          source:
+            body.model_source ??
+            (requestedModel ? 'explicit' : headless ? 'explicit' : 'configured-default'),
+        });
+        model = selection.model;
+        modelSource = selection.source;
       } catch (error: any) {
-        return jsonRes({ status: 'error', code: 'codex_model_denied', error: error?.message ?? String(error) }, 400);
+        return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
       }
     }
     const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, model);
@@ -428,6 +440,8 @@ const post = defineTool({
     const launchArgv = reconstructPsuLaunchArgv({
       agent,
       model,
+      modelSource,
+      headless,
       role,
       harnessSlug,
       planSlug: planContext ? plan : null,
@@ -623,6 +637,7 @@ const post = defineTool({
       contextSize: spec.contextSize,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
+        ...(modelSource ? { PAPERCUSP_MODEL_SOURCE: modelSource } : {}),
         PAPERCUSP_ROLE: role,
         // P-022: per-session coord/lock owner. The lock hooks (claude
         // user-level; codex in the role home's settings.json) read this, so a

@@ -513,6 +513,7 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
     expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toEqual({
       agent: 'codex',
       model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'configured-default',
     });
   });
 
@@ -533,6 +534,20 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
     expect(resolveFleetAgent({ argModel: 'gpt-5.6-luna:high', callerAgent: 'claude' })).toEqual({
       agent: 'codex',
       model: 'gpt-5.6-luna:high',
+      modelSource: 'explicit',
+    });
+  });
+
+  it('fails closed when a Codex backend is inherited without a recorded caller model', () => {
+    expect(resolveFleetAgent({ callerAgent: 'codex' })).toMatchObject({
+      error: expect.stringMatching(/Codex model is required/),
+    });
+    expect(
+      resolveFleetAgent({ callerAgent: 'codex', callerModel: 'gpt-5.5:xhigh' }),
+    ).toEqual({
+      agent: 'codex',
+      model: 'gpt-5.5:xhigh',
+      modelSource: 'inherited',
     });
   });
 

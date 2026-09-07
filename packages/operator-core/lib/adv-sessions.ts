@@ -2037,6 +2037,7 @@ export async function listResumableSessions(
                to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
                a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
                a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
+               a.launch_argv,
                a.started_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal,
                -- GREATEST, not COALESCE: each source is a LOWER BOUND on activity that can be
                -- missing or stale independently, so the newest evidence wins and a session with
@@ -2066,6 +2067,7 @@ export async function listResumableSessions(
       SELECT id, workspace_id, harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+             launch_argv,
              started_at, last_active_at, ended_at, exit_code, ended_by, ended_signal
         FROM ranked
        WHERE global_rn <= ${limit} OR agent_rn <= ${perAgentFloor}

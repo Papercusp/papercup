@@ -50,6 +50,7 @@ export const CODEX_SAFE_DEFAULT_MODEL = 'gpt-5.6-sol:xhigh';
 // Alias retained for callers that describe this as the launch default.
 export const CODEX_DEFAULT_MODEL = CODEX_SAFE_DEFAULT_MODEL;
 export const CODEX_DENIED_MODEL_IDS = Object.freeze(['gpt-5.3-codex-spark']);
+/** @typedef {'explicit' | 'inherited' | 'configured-default'} CodexModelSource */
 export const CODEX_MODEL_SOURCES = Object.freeze(['explicit', 'inherited', 'configured-default']);
 
 /** Stable policy error consumed by launch/request boundaries. */
@@ -99,6 +100,9 @@ export function resolveCodexModel(model) {
  * Resolve a model together with the authority that selected it.  The
  * configured-default branch is the ONLY branch allowed to turn absence into a
  * model, making that policy choice visible to launch ledgers and callers.
+ * @param {unknown} model
+ * @param {{ source?: CodexModelSource }} [options]
+ * @returns {{ model: string, source: CodexModelSource }}
  */
 export function resolveCodexModelSelection(model, { source = 'explicit' } = {}) {
   if (!CODEX_MODEL_SOURCES.includes(source)) {

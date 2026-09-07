@@ -5,6 +5,7 @@ import {
 import {
   compileBlueprintWithPackages, provisionBlueprintPackages, resolveBlueprintPackageInputs,
 } from './compile-packages';
+vi.mock('../memory/hive-scope', () => ({ resolvePotSlugsForHarnesses: vi.fn(async () => ['parent-pot']) }));
 
 const pin = (ref: string, packageKind: 'recipe' | 'rubric' | 'knowledge-pack' = 'recipe') => pinPackageInput({
   packageKind, ref, revision: '1.0.0', files: [{ path: 'manifest.json', bytes: ref }],
@@ -59,13 +60,15 @@ describe('P-006 operator package adapter', () => {
     expect(artifact.configuration.knobs.aiBackend?.default?.engine).toBe('loop');
     expect(artifact.inputs).toContainEqual({ kind: 'setting', ref: 'mode', revision: '6', value: { auto: false } });
     expect(artifact.inputs).toContainEqual({ kind: 'setting', ref: 'bundle-scope', revision: '1',
-      value: { workspaceId: 'workspace-a', harnessSlug: 'harness-a' } });
+      value: { workspaceId: 'workspace-a', harnessSlug: 'harness-a', memoryTarget: { kind: 'hive', slug: 'parent-pot' } } });
     expect(artifact.inputs.find((entry) => entry.kind === 'package' && entry.packageKind === 'rubric')).toHaveProperty('value.criteria');
     const recipe = vi.fn(async () => {});
     const knowledge = vi.fn(async () => {});
     await provisionBlueprintPackages(artifact, { recipe, knowledge });
-    expect(recipe).toHaveBeenCalledWith(expect.objectContaining({ ref: 'job' }), { workspaceId: 'workspace-a', harnessSlug: 'harness-a' });
-    expect(knowledge).toHaveBeenCalledWith(expect.objectContaining({ ref: 'facts' }), { workspaceId: 'workspace-a', harnessSlug: 'harness-a' });
+    expect(recipe).toHaveBeenCalledWith(expect.objectContaining({ ref: 'job' }), expect.objectContaining({ workspaceId: 'workspace-a', harnessSlug: 'harness-a' }));
+    expect(knowledge).toHaveBeenCalledWith(expect.objectContaining({ ref: 'facts' }), {
+      workspaceId: 'workspace-a', harnessSlug: 'harness-a', memoryTarget: { kind: 'hive', slug: 'parent-pot' },
+    });
 
     const corrupt = JSON.parse(JSON.stringify(artifact));
     corrupt.inputs.find((entry: { kind: string; ref: string }) => entry.kind === 'package' && entry.ref === 'job').value.script = 'corrupt';

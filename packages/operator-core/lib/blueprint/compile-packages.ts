@@ -19,6 +19,8 @@ import { resolveLocalRecipe } from '../cupboard/recipe-store';
 import { resolveLocalRubric } from '../cupboard/rubric-store';
 import { loadKnowledgePack } from '../knowledge-packs/load-packs';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
+import { resolvePotSlugsForHarnesses } from '../memory/hive-scope';
+import type { KnowledgePackMemoryTarget } from '../knowledge-packs/seed';
 
 type PackageRequest = { kind: string; ref: string; version?: string };
 export type BlueprintPackageResolver = (request: PackageRequest) => Promise<ResolvedPackageInput | null>;
@@ -92,6 +94,8 @@ export async function resolveBlueprintPackageInputs(
 export interface CompileBlueprintPackagesOptions {
   workspaceId: string;
   harnessSlug: string;
+  /** For a not-yet-registered target; existing harnesses resolve through the shared registry. */
+  memoryTarget?: KnowledgePackMemoryTarget;
   resolvePackage?: BlueprintPackageResolver;
   /** Prompt, addressed-document and versioned policy inputs belong to this same boundary. */
   input?: Omit<CompositionCompilerInput, 'source' | 'blueprint' | 'loaded' | 'sourcePath'>;
@@ -107,7 +111,13 @@ export async function compileBlueprintWithPackages(
     requests.push({ kind: 'knowledge-pack', ref: knowledge });
   }
   const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
-  const scope = { workspaceId: options.workspaceId, harnessSlug: options.harnessSlug };
+  let memoryTarget = options.memoryTarget;
+  if (!memoryTarget && packages.some((pin) => pin.packageKind === 'knowledge-pack')) {
+    const pots = await resolvePotSlugsForHarnesses(options.workspaceId, [options.harnessSlug]);
+    memoryTarget = pots[0] ? { kind: 'hive', slug: pots[0] } : { kind: 'harness', slug: options.harnessSlug };
+  }
+  const scope = { workspaceId: options.workspaceId, harnessSlug: options.harnessSlug,
+    ...(memoryTarget ? { memoryTarget } : {}) };
   return compileAgentSpecification({
     ...options.input,
     source: loaded,
@@ -119,9 +129,15 @@ export async function compileBlueprintWithPackages(
   });
 }
 
+export interface BlueprintPackageScope {
+  workspaceId: string;
+  harnessSlug: string;
+  memoryTarget?: KnowledgePackMemoryTarget;
+}
+
 export interface BlueprintPackageProvisioners {
-  recipe: (pin: ResolvedPackageInput, scope: { workspaceId: string; harnessSlug: string }) => Promise<void>;
-  knowledge: (pin: ResolvedPackageInput, scope: { workspaceId: string; harnessSlug: string }) => Promise<void>;
+  recipe: (pin: ResolvedPackageInput, scope: BlueprintPackageScope) => Promise<void>;
+  knowledge: (pin: ResolvedPackageInput, scope: BlueprintPackageScope) => Promise<void>;
 }
 
 /** Provision only explicit bundles, from verified snapshots, before a host applies the artifact. */
@@ -131,19 +147,35 @@ export async function provisionBlueprintPackages(
 ): Promise<void> {
   const specification = replayAgentSpecification(artifact);
   const scopeInput = specification.inputs.find((entry) => entry.kind === 'setting' && entry.ref === 'bundle-scope');
-  const scope = scopeInput?.kind === 'setting' ? scopeInput.value as { workspaceId?: string; harnessSlug?: string } : null;
+  const scope = scopeInput?.kind === 'setting' ? scopeInput.value as Partial<BlueprintPackageScope> : null;
   if (typeof scope?.workspaceId !== 'string' || !scope.workspaceId.trim() ||
       typeof scope.harnessSlug !== 'string' || !scope.harnessSlug.trim()) {
     throw new CompositionCompilerError('setting-invalid', 'bundle provisioning needs an explicit workspace and harness');
   }
-  const target = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug };
+  const target: BlueprintPackageScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+    ...(scope.memoryTarget ? { memoryTarget: scope.memoryTarget } : {}) };
   const bundles = specification.configuration.bundles;
-  const pins = validateAgentInputClosure(specification.inputs).filter((entry): entry is ResolvedPackageInput =>
-    entry.kind === 'package' && bundles.some((bundle) => bundle.kind === entry.packageKind && bundle.ref === entry.ref));
+  const packages = validateAgentInputClosure(specification.inputs).filter((entry): entry is ResolvedPackageInput => entry.kind === 'package');
+  const byKey = new Map(packages.map((pin) => [pin.packageKind + ':' + pin.ref, pin]));
+  const included = new Set<string>();
+  const include = (key: string): void => {
+    if (included.has(key)) return;
+    included.add(key);
+    for (const dependency of byKey.get(key)?.dependencies ?? []) include(dependency.packageKind + ':' + dependency.ref);
+  };
+  for (const bundle of bundles) include(bundle.kind + ':' + bundle.ref);
+  const pins = packages.filter((pin) => included.has(pin.packageKind + ':' + pin.ref));
   // Fully validate before any side effect. Rubrics are attached as immutable input
   // values; interpreting their criteria does not require rewriting the rubric store.
   for (const pin of pins) {
-    if (!pin.value || typeof pin.value !== 'object') throw new CompositionCompilerError('input-invalid', 'bundle lacks its parsed content', pin.ref);
+    if ((pin.packageKind === 'recipe' || pin.packageKind === 'knowledge-pack') && (!pin.value || typeof pin.value !== 'object')) {
+      throw new CompositionCompilerError('input-invalid', 'bundle lacks its parsed content', pin.ref);
+    }
+    if (pin.packageKind === 'knowledge-pack' &&
+        (!target.memoryTarget || !['hive', 'harness'].includes(target.memoryTarget.kind) ||
+          typeof target.memoryTarget.slug !== 'string' || !target.memoryTarget.slug.trim())) {
+      throw new CompositionCompilerError('setting-invalid', 'knowledge provisioning needs its resolved memory target', pin.ref);
+    }
   }
   for (const pin of pins) {
     if (pin.packageKind === 'recipe') await provisioners.recipe(pin, target);
@@ -166,7 +198,7 @@ export function blueprintPackageProvisioners(sql: Sql): BlueprintPackageProvisio
       }
       await upsertRecipe(sql, {
         id: value.id, title: value.title, description: value.description, script: value.script,
-        toolsUsed: value.toolsUsed, tags: value.tags, potSlug: scope.harnessSlug,
+        toolsUsed: value.toolsUsed, tags: value.tags, potSlug: null,
         authorRole: 'blueprint-bundle', createdBy: 'blueprint-package:' + pin.contentHash,
         createOnly: true,
       });
@@ -174,10 +206,12 @@ export function blueprintPackageProvisioners(sql: Sql): BlueprintPackageProvisio
     async knowledge(pin, scope) {
       const { classifyPackInstall, applyPackInstall } = await import('../knowledge-packs/manage');
       const pack = pin.value as import('../knowledge-packs/pack-format').KnowledgePack;
-      const review = await classifyPackInstall({ potSlug: scope.harnessSlug, pack });
+      const review = await classifyPackInstall({ potSlug: scope.harnessSlug, pack,
+        memoryTarget: scope.memoryTarget, requireExactContent: true });
       if (review.conflicts > 0) throw new CompositionCompilerError('package-pin-conflict', 'knowledge pack conflicts with scoped memory; explicit review is required', pin.ref);
       const result = await applyPackInstall({
-        ...scope, potSlug: scope.harnessSlug, pack, review, createdBy: 'blueprint-package:' + pin.contentHash,
+        ...scope, potSlug: scope.harnessSlug, pack, review, memoryTarget: scope.memoryTarget,
+        createdBy: 'blueprint-package:' + pin.contentHash,
       });
       if (!result.ok || result.failed) throw new CompositionCompilerError('package-read-failed', result.error ?? 'knowledge seed failed', pin.ref);
     },

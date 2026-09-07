@@ -71,6 +71,26 @@ const fakeBackend = (opts: {
 const noConflictJudge = async () => ({ conflicts: [] });
 
 describe('classifyPackInstall', () => {
+  it('P-006 binds review/application to one memory pool and refuses stale pinned knowledge', async () => {
+    const { backend } = fakeBackend({ pool: [{ id: 'old', scope: 'harness:member', text: 'old content',
+      metadata: { source: 'pack', pack_id: pack.manifest.id, pack_item_id: 'a', pack_version: '1.0.0' } }] });
+    const review = await classifyPackInstall({ potSlug: 'member', pack, requireExactContent: true,
+      memoryTarget: { kind: 'harness', slug: 'member' } }, { judge: noConflictJudge });
+    expect(review.memoryScope).toBe('harness:member');
+    expect(backend.list).toHaveBeenCalledWith({ scope: 'harness:member' });
+    expect(review.items.find((entry) => entry.itemId === 'a')).toMatchObject({ status: 'conflict', defaultAction: 'skip' });
+    await expect(applyPackInstall({ workspaceId: 'w', potSlug: 'different', pack, review }))
+      .rejects.toThrow(/different memory scope/);
+    expect(backend.remember).not.toHaveBeenCalled();
+  });
+
+  it('P-006 exact package provisioning refuses an unreadable memory pool', async () => {
+    const { backend } = fakeBackend({});
+    backend.list.mockRejectedValueOnce(new Error('pool unavailable'));
+    await expect(classifyPackInstall({ potSlug: 'h', pack, requireExactContent: true }))
+      .rejects.toThrow(/pool unavailable/);
+    expect(backend.remember).not.toHaveBeenCalled();
+  });
   it('clean / duplicate / conflict per item, defaults skip on clashes (D-003)', async () => {
     const { backend } = fakeBackend({
       neighborsFor: {

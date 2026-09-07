@@ -46,6 +46,7 @@ import type {
   WorkspaceHostInitializationStepReceipt,
 } from '@papercusp/deployment-driver';
 import {
+  assertWorkspaceHostAgentCredentialAdmissionEvidence,
   verifyWorkspaceHostAgentCredentialAdmission,
   type WorkspaceHostAgentCredentialAdmissionEvidence,
   type WorkspaceHostAgentCredentialAdmissionInput,
@@ -70,6 +71,11 @@ export interface WorkspaceHostInitializationRunInput {
   credentialDelivery: WorkspaceHostCredentialDeliverySet;
   /** Exact controller-side source shared with the host delivery adapter. */
   credentialMaterialSource: WorkspaceHostCredentialMaterialSource;
+  /**
+   * Additional exact-generation receipts already produced by a compound admission such as the
+   * canary's rotated/restored generations. They are persisted beside this run's own receipt.
+   */
+  additionalCredentialAdmissions?: readonly WorkspaceHostAgentCredentialAdmissionEvidence[];
   /**
    * The executing provider's declared transport features — pass the provider's real profile
    * (`profile.transportProfile.features`) rather than a transcribed boolean. A provider declaring
@@ -103,6 +109,7 @@ export interface WorkspaceHostInitializationRunResult {
   plan: WorkspaceHostInitializationPlan;
   receipts: readonly WorkspaceHostInitializationStepReceipt[];
   credentialAdmission?: WorkspaceHostAgentCredentialAdmissionEvidence;
+  credentialAdmissions?: readonly WorkspaceHostAgentCredentialAdmissionEvidence[];
 }
 
 export interface WorkspaceHostInitializationRunnerDependencies {
@@ -156,13 +163,31 @@ export async function runWorkspaceHostInitialization(
           materialSource: input.credentialMaterialSource,
         })
       : undefined;
+  const credentialAdmissions = [
+    ...(input.additionalCredentialAdmissions ?? []),
+    ...(credentialAdmission ? [credentialAdmission] : []),
+  ];
+  const admissionBindings = new Set<string>();
+  for (const evidence of credentialAdmissions) {
+    assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence);
+    const key = [
+      evidence.binding.family,
+      evidence.binding.generation,
+      evidence.binding.referenceDigest,
+    ].join(':');
+    if (admissionBindings.has(key)) {
+      throw new Error('workspace-host initialization received duplicate credential admission evidence');
+    }
+    admissionBindings.add(key);
+  }
   input.onPlanned?.(plan);
 
   // (2) Persist the secret-isolated plan plus the CLOSED admission receipt. The receipt contains
   // only a public reference digest, generation and probe reason codes — never material bytes or a
   // digest of them. Keeping it on the operation request binds the successful probe to the exact
   // request an audit later reads, instead of leaving it as an ephemeral controller assertion.
-  const persistedRequest = credentialAdmission ? { ...plan, credentialAdmission } : plan;
+  const persistedRequest =
+    credentialAdmissions.length > 0 ? { ...plan, credentialAdmissions } : plan;
   assertWorkspaceHostSecretIsolation(persistedRequest, 'workspaceHost.initialization.admittedPlan');
   await beginWorkspaceHostOperation({
     workspaceId: input.workspaceId,
@@ -263,6 +288,7 @@ export async function runWorkspaceHostInitialization(
       plan,
       receipts,
       ...(credentialAdmission ? { credentialAdmission } : {}),
+      ...(credentialAdmissions.length > 0 ? { credentialAdmissions } : {}),
     };
   } catch (error) {
     // The thrown message may quote host output, so it is passed ONLY through `error`, which the

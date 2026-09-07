@@ -119,7 +119,7 @@ function admissionEvidence(
       referenceDigest: 'public-reference-digest',
     },
     observedAt,
-    verification,
+    verification: { ...verification, credentialFreeAgents: [] },
   };
 }
 
@@ -258,12 +258,14 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
       'bind-agent',
       'verify',
     ]);
-    expect(operation.request?.credentialAdmission).toMatchObject({
+    expect(operation.request?.credentialAdmissions).toHaveLength(1);
+    expect(operation.request?.credentialAdmissions[0]).toMatchObject({
       contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
       binding: { channel: 'agent', generation: 1, referenceDigest: 'public-reference-digest' },
       verification: { allReady: true },
     });
-    expect(result.credentialAdmission).toEqual(operation.request?.credentialAdmission);
+    expect(result.credentialAdmission).toEqual(operation.request?.credentialAdmissions[0]);
+    expect(result.credentialAdmissions).toEqual(operation.request?.credentialAdmissions);
   });
 
   it('rejects failed exact-generation admission before creating an operation row', async () => {

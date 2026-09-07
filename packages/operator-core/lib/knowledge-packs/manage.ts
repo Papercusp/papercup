@@ -36,7 +36,7 @@ import {
   type AppliesTo,
   type KnowledgePack,
 } from './pack-format';
-import { rememberPackItem } from './seed';
+import { rememberPackItem, knowledgePackMemoryScope, type KnowledgePackMemoryTarget } from './seed';
 import { trackDetached } from '../detached-imports';
 
 /** Same env-tunable threshold family as memory:remember's dedup (P-016). */
@@ -71,6 +71,8 @@ export interface InstallClassification {
 }
 
 export interface InstallReview {
+  /** Binds a new review to the pool that was inspected. */
+  memoryScope?: string;
   packId: string;
   packVersion: string;
   items: InstallClassification[];
@@ -114,12 +116,15 @@ export async function classifyPackInstall(
     potSlug: string;
     pack: KnowledgePack;
     shapes?: readonly AppliesTo[];
+    memoryTarget?: KnowledgePackMemoryTarget;
+    /** Compilation must reject a stale seed or an unreadable pool, never report it applied. */
+    requireExactContent?: boolean;
   },
   deps: ManageDeps = {},
 ): Promise<InstallReview> {
   const backend = deps.backend ?? getMemoryBackend();
   const judge = deps.judge ?? realJudge();
-  const scope = hiveScopeKey(opts.potSlug);
+  const scope = knowledgePackMemoryScope(opts.memoryTarget ?? { kind: 'hive', slug: opts.potSlug });
   const items = opts.shapes === undefined ? [...opts.pack.items] : filterByShapes(opts.pack.items, opts.shapes);
 
   // Provenance guard (mirrors planPackUpgrade): an item whose
@@ -129,15 +134,18 @@ export async function classifyPackInstall(
   // → 'install' and write a SECOND row with the same pack_item_id (D-003: a
   // pack row is never double-written). The list is read once, not per item.
   let presentItemIds = new Set<string>();
+  let presentRows: Awaited<ReturnType<typeof backend.list>> = [];
   try {
     const pool = await backend.list({ scope });
+    presentRows = pool.filter((entry) => packIdOf(entry) === opts.pack.manifest.id);
     presentItemIds = new Set(
       pool
         .filter((e) => packIdOf(e) === opts.pack.manifest.id)
         .map((e) => (typeof e.metadata?.pack_item_id === 'string' ? e.metadata.pack_item_id : ''))
         .filter(Boolean),
     );
-  } catch {
+  } catch (error) {
+    if (opts.requireExactContent) throw error;
     /* pool unreadable — fall back to search-only classification (no guard) */
   }
 
@@ -149,6 +157,12 @@ export async function classifyPackInstall(
         const incoming = memoryTextOf(item);
         const base = { itemId: item.id, title: item.title, incoming };
         if (presentItemIds.has(item.id)) {
+          const changed = opts.requireExactContent && presentRows.find((row) =>
+            row.metadata?.pack_item_id === item.id &&
+            (row.text !== incoming || row.metadata?.pack_version !== opts.pack.manifest.version));
+          if (changed) return { ...base, status: 'conflict', defaultAction: 'skip',
+            existing: { id: changed.id, text: changed.text, organic: false, packId: opts.pack.manifest.id },
+            summary: 'installed knowledge differs from the pinned package; explicit upgrade is required' };
           return { ...base, status: 'present', defaultAction: 'skip' };
         }
         try {
@@ -197,7 +211,8 @@ export async function classifyPackInstall(
               };
             }
           }
-        } catch {
+        } catch (error) {
+          if (opts.requireExactContent) throw error;
           /* degraded: classify as clean — same posture as remember's dedup */
         }
         return { ...base, status: 'clean', defaultAction: 'install' };
@@ -207,6 +222,7 @@ export async function classifyPackInstall(
   }
 
   return {
+    memoryScope: scope,
     packId: opts.pack.manifest.id,
     packVersion: opts.pack.manifest.version,
     items: out,
@@ -241,9 +257,14 @@ export async function applyPackInstall(
     review: InstallReview;
     resolutions?: ReadonlyArray<{ itemId: string; action: InstallAction }>;
     createdBy?: string;
+    memoryTarget?: KnowledgePackMemoryTarget;
   },
   deps: ManageDeps = {},
 ): Promise<ApplyInstallResult> {
+  const scope = knowledgePackMemoryScope(opts.memoryTarget ?? { kind: 'hive', slug: opts.potSlug });
+  if (opts.review.memoryScope && opts.review.memoryScope !== scope) {
+    throw new Error('knowledge-pack review belongs to a different memory scope');
+  }
   const backend = deps.backend ?? getMemoryBackend();
   const byId = new Map(opts.resolutions?.map((r) => [r.itemId, r.action]) ?? []);
   let installed = 0;
@@ -278,6 +299,7 @@ export async function applyPackInstall(
         potSlug: opts.potSlug,
         pack: opts.pack,
         item,
+        memoryTarget: opts.memoryTarget,
         ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
       });
       installed += 1;

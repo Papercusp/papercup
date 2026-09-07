@@ -18,6 +18,11 @@ import {
   type WorkspaceHostInitializationHostOperations,
 } from '@papercusp/deployment-driver';
 import type { WorkspaceHostCredentialLifecycleRunInput } from './credential-lifecycle-runner';
+import {
+  WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+  type WorkspaceHostAgentCredentialAdmissionEvidence,
+  type WorkspaceHostAgentCredentialAdmissionInput,
+} from './agent-credential-admission';
 import type { WorkspaceHostCredentialMaterialSource } from './credential-material-source';
 import type { WorkspaceHostInitializationRunInput } from './initialization-runner';
 import {
@@ -86,6 +91,28 @@ function agentReport(): WorkspaceHostAgentVerificationReport {
     },
   };
 }
+
+function admissionEvidence(
+  input: WorkspaceHostAgentCredentialAdmissionInput,
+): WorkspaceHostAgentCredentialAdmissionEvidence {
+  const verification = agentReport();
+  return {
+    contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+    sourceKind: 'operator-integration-credentials',
+    binding: {
+      channel: 'agent',
+      family: 'agent-forwarded-reference',
+      generation: input.delivery.generation,
+      referenceDigest: `agent-ref-${input.delivery.generation}`,
+    },
+    observedAt: verification.observedAt,
+    verification: { ...verification, credentialFreeAgents: [] },
+  };
+}
+
+const verifyAgentCredentialAdmission = vi.fn(
+  async (request: WorkspaceHostAgentCredentialAdmissionInput) => admissionEvidence(request),
+);
 
 const operations: WorkspaceHostInitializationHostOperations = {
   supportedStepKinds: [...WORKSPACE_HOST_INITIALIZATION_STEP_KINDS],
@@ -295,6 +322,7 @@ describe('runWorkspaceHostCanary', () => {
     const result = await runWorkspaceHostCanary(input({ destroyFinalization: destroyFinalization() }), {
       runInitialization,
       runLifecycle,
+      verifyAgentCredentialAdmission,
       now: () => new Date(OBSERVED_AT),
     });
 
@@ -318,8 +346,16 @@ describe('runWorkspaceHostCanary', () => {
     expect(result.adaptedDestroyEvidence).toEqual(destroyFinalization().destroyEvidence);
     expect(runInitialization).toHaveBeenCalledTimes(1);
     expect(runInitialization).toHaveBeenCalledWith(
-      expect.objectContaining({ credentialMaterialSource, onPlanned: expect.any(Function) }),
+      expect.objectContaining({
+        credentialMaterialSource,
+        additionalCredentialAdmissions: [
+          expect.objectContaining({ binding: expect.objectContaining({ generation: 2 }) }),
+          expect.objectContaining({ binding: expect.objectContaining({ generation: 3 }) }),
+        ],
+        onPlanned: expect.any(Function),
+      }),
     );
+    expect(verifyAgentCredentialAdmission.mock.calls.map(([request]) => request.delivery.generation)).toEqual([2, 3]);
     expect(runLifecycle).toHaveBeenCalledTimes(4);
   });
 
@@ -356,12 +392,14 @@ describe('runWorkspaceHostCanary', () => {
       runWorkspaceHostCanary(run, {
         runInitialization,
         runLifecycle,
+        verifyAgentCredentialAdmission,
         now: () => new Date(OBSERVED_AT),
       }),
     ).rejects.toThrow('interrupted after revoke');
     const resumed = await runWorkspaceHostCanary(run, {
       runInitialization,
       runLifecycle,
+      verifyAgentCredentialAdmission,
       now: () => new Date(OBSERVED_AT),
     });
 
@@ -396,6 +434,7 @@ describe('runWorkspaceHostCanary', () => {
       runWorkspaceHostCanary(input(), {
         runInitialization,
         runLifecycle,
+        verifyAgentCredentialAdmission,
         now: () => new Date(OBSERVED_AT),
       }),
     ).rejects.toBeInstanceOf(WorkspaceHostCanaryRunError);
@@ -411,8 +450,27 @@ describe('runWorkspaceHostCanary', () => {
       runWorkspaceHostCanary(incomplete, {
         runInitialization,
         runLifecycle: fakeLifecycle,
+        verifyAgentCredentialAdmission,
       }),
     ).rejects.toThrow(/restored credential generation is missing channel/);
     expect(runInitialization).not.toHaveBeenCalled();
+  });
+
+  it('rejects a revoked future generation before starting initialization', async () => {
+    const runInitialization = vi.fn(fakeInitialization);
+    const verifier = vi.fn(async (request: WorkspaceHostAgentCredentialAdmissionInput) => {
+      if (request.delivery.generation === 2) throw new Error('generation 2 credential-revoked');
+      return admissionEvidence(request);
+    });
+
+    await expect(
+      runWorkspaceHostCanary(input(), {
+        runInitialization,
+        runLifecycle: fakeLifecycle,
+        verifyAgentCredentialAdmission: verifier,
+      }),
+    ).rejects.toThrow(/generation 2 credential-revoked/);
+    expect(runInitialization).not.toHaveBeenCalled();
+    expect(verifier).toHaveBeenCalledTimes(1);
   });
 });

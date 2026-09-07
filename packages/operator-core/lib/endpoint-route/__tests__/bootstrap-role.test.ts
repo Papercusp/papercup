@@ -334,6 +334,34 @@ describe('bootstrap-role', () => {
     );
   });
 
+  it('defaults a visible Codex role deliberately but refuses an unresolved headless role', async () => {
+    const visible = await callPost({
+      role: 'worker',
+      agent: 'codex',
+      harness_slug: 'papercup',
+      feature: 'F-001',
+    });
+    expect(visible.status).toBe(200);
+    const json = await visible.json();
+    expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
+    expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh' }),
+    );
+
+    vi.clearAllMocks();
+    const headless = await callPost({
+      role: 'worker',
+      agent: 'codex',
+      headless: true,
+      harness_slug: 'papercup',
+      feature: 'F-001',
+    });
+    expect(headless.status).toBe(400);
+    await expect(headless.json()).resolves.toMatchObject({ code: 'missing_model' });
+    expect(writeRoleCodexHomeMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
   it('codex account pin is resolved and baked into the role CODEX_HOME config', async () => {
     resolveAccountPinMock.mockResolvedValue({
       env: { PAPERCUSP_ACCOUNT_ID: 'codex-main' },
