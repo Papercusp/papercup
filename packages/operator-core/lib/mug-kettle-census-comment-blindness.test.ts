@@ -132,11 +132,12 @@ describe('mug/kettle census — comment blindness (WI-37661)', () => {
     const expected = new Map([
       ['LearningPotDrawer', 'apps/operator-vite/src/components/adv/LearningPotDrawer.tsx'],
       ['LearningPotPicker', 'apps/operator-vite/src/components/adv/LearningPotPicker.tsx'],
-      // LearningPotRail was the third writer of learning:set-pot-scope until
-      // 2026-09-07, when its chips were folded into the start/pause dropdown
-      // and the component was deleted. The control that absorbed it is the
-      // writer now — same tool, same substrate classification.
-      ['LearningLoopControl', 'apps/operator-vite/src/components/adv/LearningLoopControl.tsx'],
+      // LearningPotRail was the third until 2026-09-07, when its chips were
+      // folded into the start/pause dropdown and the component was deleted.
+      // Its successor, LearningLoopControl, is deliberately NOT listed: this
+      // census raises a 'ui' finding off a basename that NAMES THE TIER, and
+      // that name does not — it writes learning:set-pot-scope without ever
+      // being flagged, so it needs no substrate exemption.
     ]);
     const findings = census().filter(
       (finding) => finding.category === 'ui' && expected.has(finding.subject),

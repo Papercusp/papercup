@@ -11,7 +11,9 @@
  * complaint — because the chip popover is the ONLY surface that operates
  * per-lane switches, and D-007 keeps per-lane control off the picker on
  * purpose. Two attempts to bury off pots were falsified by
- * LearningPotRail.test.tsx for exactly that reason. So this drawer opens from
+ * LearningPotRail.test.tsx for exactly that reason — that file is gone
+ * (2026-09-07, the rail folded into the start/pause dropdown) and the
+ * assertion now lives in LearningPotDrawer.test.tsx. So this drawer opens from
  * the every-pot PICKER, by slug, for a pot with no chip at all. That is what
  * unblocks P-052; a drawer reachable only from a chip would reproduce the
  * dependency it exists to break.

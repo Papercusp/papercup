@@ -294,6 +294,12 @@ describe('arming and budgeting are two separate writes', () => {
    *
    * If this test is ever deleted rather than moved again, `isPotChipDormant`
    * must stop treating 'off' as eligible, or these switches strand silently.
+   *
+   * ⚠ `LearningPotRail.test.tsx` NO LONGER EXISTS (2026-09-07): the rail's
+   * chips were folded into the Learning tab's start/pause dropdown and both the
+   * component and its test were deleted. The provenance above is kept because
+   * it is the REASON this assertion lives here, and the move is what made the
+   * deletion safe — but do not go looking for that file.
    */
   it('arms a lane on a switched-off idle pot — the case the rail no longer carries', async () => {
     H.arming = arming({

@@ -145,7 +145,17 @@ function PotScopeList({
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const chips = useMemo(() => buildLearningPotRail(arming), [arming]);
+  // Every pot the model knows, ACTIVE ONES FIRST. The rail could only ever show
+  // the active partition and summarised the rest as "+47 idle"; a list can hold
+  // both, so the dormant tail is reachable here instead of behind a count — but
+  // it must not push the pots that are actually running down the list, which is
+  // what interleaving them by spend would do.
+  const chips = useMemo(() => {
+    const { active, dormant } = partitionLearningPotRail(
+      buildLearningPotRail(arming),
+    );
+    return [...active, ...dormant];
+  }, [arming]);
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return chips;
