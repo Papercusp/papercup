@@ -569,6 +569,7 @@ export {
   ProductionWorkspaceHostCredentialMaterializer,
   createProductionWorkspaceHostCredentialMaterializers,
   createProductionWorkspaceHostRemoteInitializerDeps,
+  workspaceHostGetOnlyGitCredentialEnvironment,
 } from "./workspace-host-remote-initializer-host";
 
 export type {

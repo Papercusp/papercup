@@ -119,6 +119,33 @@ export const WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND = "papercup";
 /** Default bound on any single host command, so a hung child cannot stall a step forever. */
 export const WORKSPACE_HOST_DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
 
+/**
+ * Build the only Git credential environment allowed to consume a delivered generation.
+ *
+ * Git normally forwards `approve` and `reject` to every configured helper. The delivered file is
+ * immutable evidence, so its helper exposes only `get`; the leading empty helper also resets every
+ * ambient helper inherited from system/global configuration. The path is shell-quoted because Git
+ * invokes `!` helpers through a shell, but it is never interpolated into argv or public evidence.
+ */
+export function workspaceHostGetOnlyGitCredentialEnvironment(
+  materialPath: string,
+): Readonly<Record<string, string>> {
+  if (!isAbsolute(materialPath) || /[\0\r\n]/.test(materialPath)) {
+    throw new Error("Git credential material path must be an absolute single-line path");
+  }
+  const quotedMaterialPath = `'${materialPath.replaceAll("'", "'\\''")}'`;
+  return Object.freeze({
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "3",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_KEY_1: "credential.helper",
+    GIT_CONFIG_VALUE_1: `!f() { if [ "$1" = get ]; then git credential-store --file=${quotedMaterialPath} get; fi; }; f`,
+    GIT_CONFIG_KEY_2: "credential.useHttpPath",
+    GIT_CONFIG_VALUE_2: "true",
+  });
+}
+
 export interface WorkspaceHostCommandResult {
   readonly exitCode: number;
   readonly stdout: string;
@@ -814,21 +841,7 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
           "the bound git credential material is absent from the host",
         );
       }
-      // A generation is immutable: credential-store's store/erase actions would rewrite it
-      // after successful/failed authentication. Expose only its read action, and clear any
-      // ambient helpers so Git cannot copy the delivered secret into another credential store.
-      // Quote the path as shell data; Git invokes ! helpers through a shell.
-      const materialPath = `'${binding.materialPath.replaceAll("'", "'\\''")}'`;
-      env = {
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_CONFIG_COUNT: "3",
-        GIT_CONFIG_KEY_0: "credential.helper",
-        GIT_CONFIG_VALUE_0: "",
-        GIT_CONFIG_KEY_1: "credential.helper",
-        GIT_CONFIG_VALUE_1: `!f() { if [ "$1" = get ]; then git credential-store --file=${materialPath} get; fi; }; f`,
-        GIT_CONFIG_KEY_2: "credential.useHttpPath",
-        GIT_CONFIG_VALUE_2: "true",
-      };
+      env = workspaceHostGetOnlyGitCredentialEnvironment(binding.materialPath);
     }
 
     // A previous initialization can have completed the clone step before the controller lost its

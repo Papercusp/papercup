@@ -12,6 +12,7 @@ import {
   WORKSPACE_HOST_RELEASE_BIN_DIR,
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE,
   createProductionWorkspaceHostRemoteInitializerDeps,
+  workspaceHostGetOnlyGitCredentialEnvironment,
   type WorkspaceHostCommandInput,
   type WorkspaceHostSystem,
 } from "./workspace-host-remote-initializer-host";
@@ -263,6 +264,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
         GIT_CONFIG_GLOBAL: configPath,
         ...system.commands[0]!.env,
       };
+      expect(system.commands[0]!.env).toEqual(
+        workspaceHostGetOnlyGitCredentialEnvironment(materialPath),
+      );
       // useHttpPath requires a stored path to match a path-bearing request. A host-only
       // fixture exercises the host-only protocol; it must not authorize arbitrary paths.
       const query = `protocol=https\nhost=github.com\n${scoped ? `path=${repositoryPath}\n` : ""}\n`;
