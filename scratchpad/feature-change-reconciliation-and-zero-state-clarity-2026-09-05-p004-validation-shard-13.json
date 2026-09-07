@@ -39,9 +39,9 @@
     "EI-21179054120067902",
     "EI-21180701501922313"
   ],
-  "assignedIdListSerialization": "EI-21168075558015506,EI-21170008316339725,EI-21178176955150347,EI-21179054120067902,EI-21180701501922313",
-  "assignedIdsHashAlgorithm": "sha256(UTF-8 comma-separated assignedIdListSerialization)",
-  "assignedIdsSha256": "bb3b84ba4728d6ef63b058392c1447f3ca9a2bd72f3e72157fa25036ace2ef83",
+  "assignedIdListSerialization": "JSON.stringify(assignedIds)",
+  "assignedIdsHashAlgorithm": "sha256(UTF-8 JSON.stringify(assignedIds))",
+  "assignedIdsSha256": "758b5e6b8446dfa13933f4fd795c16559a6f0af05f1455819ba719d3ca996ac6",
   "authoritativeInputs": {
     "parentCoverage": "WI-2146348 carries the sole P-004 plan_item coverage stamp; this child intentionally omits plan_item per D-010.",
     "frozenCandidateOutcomes": "All five frozen entries are candidate-shared-root-consolidation proposals with medium confidence; the frozen ledger requires current-row, code/plan/completion, claim/origin, and bidirectional-reference checks before any later apply decision.",
