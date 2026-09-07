@@ -1155,7 +1155,7 @@ async fn run<B: Backend>(
         pinned,
         selected: Arc::new(Mutex::new(app.tab)),
     };
-    spawn_sync(
+    let sync_refetch = spawn_sync(
         tx.clone(),
         app.active_harness.clone(),
         app.active_doc.clone(),
@@ -1246,6 +1246,7 @@ async fn run<B: Backend>(
     let mut tutorial_persisted = !app.show_tutorial;
 
     'event_loop: while let Some(ev) = rx.recv().await {
+        let prior_tab = app.tab;
         let prior_harness = app.harness.clone();
         let prior_context_target = app.context_projection_target.clone();
         let is_key = matches!(ev, Event::Key(_));
@@ -1289,6 +1290,9 @@ async fn run<B: Backend>(
         }
         if let Ok(mut selected) = sync_pane.selected.lock() {
             *selected = app.tab;
+        }
+        if app.tab != prior_tab && app.tab == app::Tab::Overview {
+            let _ = sync_refetch.send(RefetchSignal::SkipPlanReads);
         }
         // A saved Network view bypasses the normal tab-entry action.
         if restoring_view && app.tab == app::Tab::Network && app.pinned.is_none() {
@@ -5747,7 +5751,7 @@ fn spawn_sync(
     active_plan: Arc<Mutex<Option<(String, String)>>>,
     network_focus: Option<String>,
     pane: PaneFetchScope,
-) {
+) -> UnboundedSender<RefetchSignal> {
     // Internal signal channel: invalidation_loop -> refetch_loop. Keep the
     // plans-heavy reads scoped so unrelated high-volume invalidations do not
     // re-pull plans:list on every frame.
@@ -5766,7 +5770,8 @@ fn spawn_sync(
     // Live worker-activity overlay (pui-fleet-status-view-2026-06-04, P1): a 4th
     // task on the /api/activity/stream SSE → Event::ActivityLive.
     tokio::spawn(activity_loop(tx.clone()));
-    tokio::spawn(invalidation_loop(tx, sig_tx));
+    tokio::spawn(invalidation_loop(tx, sig_tx.clone()));
+    sig_tx
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5789,6 +5794,12 @@ impl PaneFetchScope {
         self.pinned
             .or_else(|| self.selected.lock().ok().map(|selected| *selected))
             == Some(app::Tab::Network)
+    }
+
+    fn fetches_pipeline(&self) -> bool {
+        self.pinned
+            .or_else(|| self.selected.lock().ok().map(|selected| *selected))
+            == Some(app::Tab::Overview)
     }
 }
 
@@ -6123,9 +6134,6 @@ async fn refetch_pinned(client: &OperatorClient, tx: &UnboundedSender<Event>, pi
             if let Ok(rate) = client.fleet_rate_status().await {
                 let _ = tx.send(Event::FleetRate(rate));
             }
-            let _ = tx.send(Event::PipelineStatus(Box::new(
-                client.pipeline_status().await,
-            )));
             if let Ok(frames) = client.deploy_frames().await {
                 let _ = tx.send(Event::Frames(frames));
             }
@@ -6465,12 +6473,13 @@ async fn refetch_all(
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
     }
-    // P-008: registered state cells, read through the operator's generic tool
-    // bridge. Per-cell failures remain in-band in the model, so this never
-    // converts an unavailable measurement into an all-clear.
-    let _ = tx.send(Event::PipelineStatus(Box::new(
-        client.pipeline_status().await,
-    )));
+    // The pipeline tile belongs to Overview. Its Git subprocesses must not
+    // compete with Agent Chat's bounded turn-start reads in the operator.
+    if pane.fetches_pipeline() {
+        let _ = tx.send(Event::PipelineStatus(Box::new(
+            client.pipeline_status().await,
+        )));
+    }
     // Deployed cloud frames (per-frame dock tabs, hive-agent-tabs P-013).
     // Quietly optional: nothing deployed / an older host → no tabs, no toasts.
     if let Ok(fr) = client.deploy_frames().await {
@@ -7135,6 +7144,31 @@ mod tests {
             selected,
         }
         .fetches_network());
+    }
+
+    #[test]
+    fn pipeline_hydration_is_owned_by_overview() {
+        let selected = Arc::new(Mutex::new(app::Tab::Operator));
+        let pane = PaneFetchScope {
+            pinned: None,
+            selected: selected.clone(),
+        };
+        for tab in [
+            app::Tab::Operator,
+            app::Tab::Plans,
+            app::Tab::Network,
+            app::Tab::Fleet,
+        ] {
+            *selected.lock().unwrap() = tab;
+            assert!(!pane.fetches_pipeline(), "{tab:?} has no pipeline tile");
+        }
+        *selected.lock().unwrap() = app::Tab::Overview;
+        assert!(pane.fetches_pipeline());
+        assert!(!PaneFetchScope {
+            pinned: Some(app::Tab::Fleet),
+            selected
+        }
+        .fetches_pipeline());
     }
 
     fn coord_msg(

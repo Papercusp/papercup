@@ -115,30 +115,6 @@ vi.mock('../su-session-claude-engine', async (original) => {
   };
 });
 
-// These observers always delegate to the production readers. They attribute
-// diagnostic runs without substituting data or changing any timeout verdict.
-vi.mock('../agent-tools/pot/_resolve', async (original) => {
-  const actual = await original<typeof import('../agent-tools/pot/_resolve')>();
-  return { ...actual, listPots: (...args: Parameters<typeof actual.listPots>) =>
-    traceOperation('list-pots', () => actual.listPots(...args)) };
-});
-vi.mock('../fleet/assignments', async (original) => {
-  const actual = await original<typeof import('../fleet/assignments')>();
-  return { ...actual, listFleetAssignments: (...args: Parameters<typeof actual.listFleetAssignments>) =>
-    traceOperation('fleet-assignments', () => actual.listFleetAssignments(...args)) };
-});
-vi.mock('../agent-tools/coordination/federated-presence', async (original) => {
-  const actual = await original<typeof import('../agent-tools/coordination/federated-presence')>();
-  return { ...actual, listFederatedPresence: (...args: Parameters<typeof actual.listFederatedPresence>) =>
-    traceOperation('federated-presence', () => actual.listFederatedPresence(...args)) };
-});
-vi.mock('../endpoint-route/routes/agent-mcp/bootstrap-su', async (original) => {
-  const actual = await original<typeof import('../endpoint-route/routes/agent-mcp/bootstrap-su')>();
-  return { ...actual, bootstrapSu: { ...actual.bootstrapSu,
-    handler: (...args: Parameters<typeof actual.bootstrapSu.handler>) =>
-      traceOperation('bootstrap-su', () => actual.bootstrapSu.handler(...args)) } };
-});
-
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 const HARNESS = 'papercusp';
@@ -151,6 +127,11 @@ const execFileAsync = promisify(execFile);
 const timingTrace: Array<Record<string, unknown>> = [];
 const namedQueryRequests: string[] = [];
 const namedQueryReplies: Array<{ name: string; status: number }> = [];
+const pipelineCellRequests: string[] = [];
+const PIPELINE_CELLS = new Set([
+  'gate.greenCheckpoint.verdict', 'gate.greenCheckpoint.candidate',
+  'git.mainBehindStaging', 'deploy.3070.sha',
+]);
 let timingInspector: InspectorSession | undefined;
 let timingInterval: ReturnType<typeof setInterval> | undefined;
 let timingScan: Promise<void> | undefined;
@@ -158,13 +139,6 @@ function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
   if (process.env.PUI_TIMING_DIR && timingTrace.length < 20_000) {
     timingTrace.push({ atMs: performance.now(), kind, ...fields });
   }
-}
-async function traceOperation<T>(name: string, work: () => T | Promise<T>): Promise<T> {
-  if (!process.env.PUI_TIMING_DIR) return work();
-  const start = performance.now();
-  traceTiming('operation-start', { name });
-  try { return await work(); }
-  finally { traceTiming('operation-end', { name, elapsedMs: performance.now() - start }); }
 }
 function profileCommand(method: string): Promise<unknown> {
   return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
@@ -612,6 +586,12 @@ beforeAll(async () => {
       if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
         namedQueryRequests.push(traceFields.query);
       }
+      if (request.method === 'POST' && pathname === '/api/agent-mcp/run-tool') {
+        const input = await request.clone().json() as { name?: string; args?: { cell?: string } };
+        if (input.name === 'state:read' && input.args?.cell && PIPELINE_CELLS.has(input.args.cell)) {
+          pipelineCellRequests.push(input.args.cell);
+        }
+      }
       const isLaunch = pathname === '/api/adv/sessions/launch-su';
       const launchInput = isLaunch ? await request.clone().json() : null;
       const isCommand = request.method === 'POST' && pathname.endsWith('/su-session/commands');
@@ -712,6 +692,7 @@ afterEach(stopEngines);
 beforeEach(async () => {
   namedQueryRequests.length = 0;
   namedQueryReplies.length = 0;
+  pipelineCellRequests.length = 0;
   sessionTraffic = [];
   commandPosts = [];
   commandReplies = [];
@@ -797,6 +778,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(reopened.screen().split(scriptedEngine.successText)).toHaveLength(2);
       } finally { await reopened.stop(); }
       expect(namedQueryRequests).not.toContain('network.board');
+      expect(pipelineCellRequests).toEqual([]);
       console.info('PUI_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256,
         chatId: chat.id, exactText: scriptedEngine.requests[0], traffic: sessionTraffic }));
     } finally { await pane.stop().catch(() => {}); }
@@ -1120,6 +1102,8 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       expect(processes.length).toBeGreaterThan(0);
       expect(processes.every((proc) => proc.tty === '?')).toBe(true);
       expect(processes.some((proc) => /zellij|tmux|xterm|gnome-terminal|konsole|wezterm|alacritty|kitty/.test(proc.name))).toBe(false);
+      expect(namedQueryRequests).not.toContain('network.board');
+      expect(pipelineCellRequests).toEqual([]);
       console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
         greetingReply, fileResult, followupReply, readStart, readEnd,
