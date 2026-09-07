@@ -103,6 +103,7 @@ import {
   type LocalRubric,
 } from './cupboard/rubric-store';
 import { pgTimestampToIso } from './pg-timestamp';
+import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
 
 export type RubricStatus = 'proposed' | 'active' | 'retired';
 export const RUBRIC_STATUSES: readonly RubricStatus[] = ['proposed', 'active', 'retired'];
@@ -2931,6 +2932,118 @@ async function resolveAcceptanceSubjectScope(
   return { workspaceId, harnessSlug: rows[0]!.harness_slug };
 }
 
+type AcceptanceBarAmendmentMapping = { planItemIds: string[] };
+
+/**
+ * Build the post-amendment BAR view used by both dry-run and apply preflights.
+ *
+ * The live snapshot describes the currently persisted contract, while the
+ * criteria/mappings here describe the candidate that the amendment is about to
+ * write. Keep structured verification fields from the candidate explicitly:
+ * scorecards:emit evaluates these fields at pre-vetting, so falling back to the
+ * prior trace would let an amendment preview/apply a BAR that vetting must reject.
+ */
+export function buildAcceptanceBarAmendmentCandidate(
+  snapshot: AcceptanceBarContractSnapshot,
+  nextCriteria: RubricCriterion[],
+  desiredMappingByBar: ReadonlyMap<string, AcceptanceBarAmendmentMapping>,
+  itemStatusById: ReadonlyMap<string, string>,
+): AcceptanceBarContractSnapshot {
+  const priorByKey = new Map(snapshot.bars.map((bar) => [bar.barKey, bar]));
+  const bars: AcceptanceBarTrace[] = nextCriteria
+    .filter((criterion) => criterion.role !== 'disclosure')
+    .map((criterion) => {
+      const barKey = criterion.barKey ?? criterion.key;
+      const prior = priorByKey.get(barKey);
+      const mapping = desiredMappingByBar.get(barKey);
+      const planItemIds = mapping?.planItemIds ?? [];
+      const statuses = planItemIds.map((planItemId) => itemStatusById.get(planItemId) ?? null);
+      const mappingState: AcceptanceBarTrace['readiness']['mapping'] =
+        planItemIds.length === 0
+          ? 'missing'
+          : statuses.every((status) => status === 'dropped')
+            ? 'dropped-only'
+            : 'live';
+      const readinessCodes: AcceptanceBarTrace['readiness']['codes'] =
+        mappingState === 'missing'
+          ? ['bar_snapshot_mapping_missing']
+          : mappingState === 'dropped-only'
+            ? ['bar_snapshot_mapping_dropped_only']
+            : [];
+      const priorMappingByItem = new Map((prior?.mappings ?? []).map((candidate) => [candidate.planItemId, candidate]));
+      const mappings = planItemIds.map((planItemId) => {
+        const priorMapping = priorMappingByItem.get(planItemId);
+        return {
+          ...(priorMapping ?? {}),
+          planItemId,
+          planItemStatus: itemStatusById.get(planItemId) ?? priorMapping?.planItemStatus ?? null,
+          specId: priorMapping?.specId ?? `AUTO-BAR-${barKey}-${planItemId}`,
+          specRevision: priorMapping?.specRevision ?? 0,
+          specContentHash: priorMapping?.specContentHash ?? '',
+          sourceValId: priorMapping?.sourceValId ?? null,
+          sourceBarHash: criterion.barHash ?? priorMapping?.sourceBarHash ?? null,
+          sourceBarSetHash: priorMapping?.sourceBarSetHash ?? snapshot.plan?.barSetHash ?? null,
+          sourceRubricRevision: priorMapping?.sourceRubricRevision ?? snapshot.rubric?.revision ?? null,
+          evidencePlane: criterion.evidencePlane ?? priorMapping?.evidencePlane ?? null,
+        };
+      });
+      return {
+        ...(prior ?? {}),
+        barKey,
+        criterionKey: criterion.key,
+        title: criterion.title,
+        barHash: criterion.barHash ?? null,
+        model: criterion.model ?? '',
+        method: criterion.method ?? '',
+        check: criterion.check ?? null,
+        replication: criterion.replication ?? null,
+        falsifier: criterion.driftMarkers ?? '',
+        role: criterion.role ?? null,
+        mandatory: criterion.mandatory ?? null,
+        requiredScope: criterion.requiredScope ?? [],
+        evidencePlane: criterion.evidencePlane ?? null,
+        requiredTestLayers: criterion.requiredTestLayers ?? [],
+        passRatings: criterion.passRatings ?? [],
+        coversBarKeys: criterion.coversBarKeys ?? [],
+        provenance: criterion.barProvenance ?? null,
+        mappings,
+        workContracts: prior?.workContracts ?? [],
+        proof: prior?.proof ?? {
+          state: 'missing',
+          history: [],
+          currentEvidence: 0,
+          staleEvidence: 0,
+          kinds: [],
+          evidenceRefs: [],
+          uncertainEvidence: 0,
+          evidencePlanes: [],
+          adequacy: { state: 'unknown', checks: [] },
+        },
+        grading: prior?.grading ?? {
+          state: 'missing',
+          history: [],
+          scorecardId: null,
+          rubricRevision: null,
+          gradedBy: null,
+          selectedVia: null,
+          rating: null,
+          evidence: null,
+        },
+        // Recompute candidate structural readiness rather than carrying stale
+        // method/projection codes from the pre-amendment snapshot. Execution
+        // fields are evaluated by the lifecycle evaluator below.
+        readiness: {
+          state: readinessCodes.length === 0 ? 'ready' : 'blocked',
+          codes: readinessCodes,
+          mapping: mappingState,
+          method: criterion.method?.trim() ? 'declared' : 'missing',
+          workContract: prior?.readiness.workContract ?? 'missing',
+        },
+      };
+    });
+  return { ...snapshot, bars };
+}
+
 async function amendAcceptanceBarRubric(
   input: AmendRubricInput,
   rubricScope: { workspaceId: string; harnessSlug: string },
@@ -3039,12 +3152,6 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
-      if (changedBars.length === 0 && !preview) return {
-        rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
-        subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
-        changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
-        idempotencyKey: '', methodOnly: true,
-      };
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
@@ -3179,50 +3286,50 @@ async function amendAcceptanceBarRubric(
         }
       }
 
-      if (preview) {
-        const { readAcceptanceBarContractSnapshot, diffAcceptanceBarContractSnapshots } =
-          await import('./acceptance-bar-contract-snapshot');
-        // One bounded source snapshot. The candidate is used ONLY for the
-        // shared semantic comparison, never as an authoritative gate verdict.
-        const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint);
-        if (
-          snapshot.completeness.truncated ||
-          snapshot.completeness.problems.some((problem) => problem.code === 'bar_snapshot_source_unavailable')
-        ) {
-          throw new Error('acceptance_bar_amendment_preview_source_incomplete');
+      const {
+        readAcceptanceBarContractSnapshot,
+        diffAcceptanceBarContractSnapshots,
+      } = await import('./acceptance-bar-contract-snapshot');
+      const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
+      const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint);
+      if (
+        preview &&
+        (snapshot.completeness.truncated ||
+          snapshot.completeness.problems.some((problem) => problem.code === 'bar_snapshot_source_unavailable'))
+      ) {
+        throw new Error('acceptance_bar_amendment_preview_source_incomplete');
+      }
+      const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
+      const itemStatusById = new Map(itemRows.map((row) => [row.item_id, row.status]));
+      const candidate = buildAcceptanceBarAmendmentCandidate(
+        snapshot,
+        nextCriteria,
+        desiredMappingByBar,
+        itemStatusById,
+      );
+      const nextTemplateData = guard.data as { barContract?: { adoptionEpoch?: number | null } };
+      const startedBar =
+        stored.barContract?.adoptionEpoch != null || nextTemplateData.barContract?.adoptionEpoch != null;
+      if (startedBar) {
+        const lifecycle = evaluateAcceptanceBarLifecycle(
+          candidate.applicable ? candidate : { ...candidate, applicable: true },
+          'pre-vetting',
+        );
+        if (!lifecycle.satisfied) {
+          throw new Error(
+            lifecycle.message ?? 'acceptance_bar_amendment_candidate_not_ready_for_vetting',
+          );
         }
-        const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
-        const priorByKey = new Map(snapshot.bars.map((bar) => [bar.barKey, bar]));
-        const candidate = {
-          ...snapshot,
-          bars: nextCriteria
-            .filter((criterion) => criterion.role !== 'disclosure')
-            .map((criterion) => {
-              const barKey = criterion.barKey ?? criterion.key;
-              const prior = priorByKey.get(barKey);
-              const mapping = desiredMappingByBar.get(barKey);
-              return {
-                ...(prior ?? {}),
-                barKey,
-                barHash: criterion.barHash ?? null,
-                model: criterion.model ?? '',
-                method: criterion.method ?? '',
-                falsifier: criterion.driftMarkers ?? '',
-                role: criterion.role ?? null,
-                mandatory: criterion.mandatory ?? null,
-                requiredScope: criterion.requiredScope ?? [],
-                evidencePlane: criterion.evidencePlane ?? null,
-                requiredTestLayers: criterion.requiredTestLayers ?? [],
-                passRatings: criterion.passRatings ?? [],
-                coversBarKeys: criterion.coversBarKeys ?? [],
-                provenance: criterion.barProvenance ?? null,
-                mappings: (mapping?.planItemIds ?? []).map((planItemId) => ({
-                  planItemId,
-                  specId: `AUTO-BAR-${barKey}-${planItemId}`,
-                })),
-              };
-            }),
-        };
+      }
+
+      if (changedBars.length === 0 && !preview) return {
+        rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
+        subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
+        changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+        idempotencyKey: '', methodOnly: true,
+      };
+
+      if (preview) {
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
         const open = changedBars.length
           ? await tx<Array<{ work_item_id: string }>>`
