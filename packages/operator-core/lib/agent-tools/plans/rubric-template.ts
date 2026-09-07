@@ -359,6 +359,31 @@ export const acceptanceBarContractSchema = z
     subjectPlanRevision: z.number().int().positive(),
     seededAt: z.string().datetime({ offset: true }),
     seededBy: z.string().trim().min(1),
+    /**
+     * The rubric revision at which acceptance-BAR MEANING last changed — the
+     * "meaning epoch". Server-owned, written only by the amendment path.
+     *
+     * A rubric revision advances on every amendment, including ones that touch
+     * only METHOD (how a BAR is probed) and leave every BAR's meaning — and so
+     * its `barHash` — byte-identical. Grading and vetting currentness must
+     * follow the BAR CONTRACT the parties actually judged, not the revision
+     * counter that moves underneath it: a typo fix is not a reason to void a
+     * peer's completed independent grading pass.
+     *
+     * `rubric-loss-guard` already classifies each amended BAR as
+     * added/removed/meaning/provenance; this records the verdict of that
+     * classification so readers need no revision-history replay to use it. Set
+     * to the new revision when any BAR was added, removed, or changed in
+     * meaning; carried forward unchanged otherwise.
+     *
+     * OPTIONAL because rubrics seeded before this field existed have no epoch
+     * to carry. Absence means "unknown", and readers must fall back to strict
+     * revision equality rather than assume revision 1 — assuming an epoch that
+     * was never recorded would silently bless a card from before a real meaning
+     * change as current, which is the failure this field exists to prevent, in
+     * the dangerous direction.
+     */
+    meaningRevision: z.number().int().positive().optional(),
   })
   .strict();
 export type AcceptanceBarContract = z.infer<typeof acceptanceBarContractSchema>;
