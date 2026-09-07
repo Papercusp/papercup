@@ -728,6 +728,11 @@ export function PapercupChat(props: PapercupChatProps) {
             {chat.loadingHistory ? 'Loading…' : 'Load earlier messages'}
           </button>
         ) : null}
+        {!chat.hasMoreEarlier && chat.turns.length > 0 ? (
+          <div className="pc-chat__history-boundary" role="status">
+            Beginning of conversation
+          </div>
+        ) : null}
         {placeholder === 'invite' && emptyState ? (
           <div className="pc-chat__placeholder" data-placeholder={placeholder} role="status">
             {emptyState}

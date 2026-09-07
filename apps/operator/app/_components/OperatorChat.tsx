@@ -3,9 +3,8 @@
 /**
  * OperatorChat — single-thread chat with the Operator.
  *
- * Thin wrapper around the shared `<ChatConversation>` component that
- * also powers OracleDock. The two surfaces share frontend (this
- * component + ChatConversation) and backend (same SSE event format
+ * Thin host adapter around the shared `<PapercupChat>` component. The desktop
+ * and portal surfaces share this renderer and backend (same SSE event format
  * — `event: delta` per token, `event: error` on failure) — only the
  * styling, configuration, and route URL differ:
  *
@@ -96,12 +95,12 @@ interface Props {
   /** Optional error string to render in the .oracle-error row. */
   error?: string | null;
 
-  /** Infinite-scroll plumbing (forwarded to ChatConversation). */
+  /** Infinite-scroll plumbing (forwarded to PapercupChat). */
   onLoadEarlier?: () => void;
   hasMoreEarlier?: boolean;
   loadingEarlier?: boolean;
   /** Open the transcript ON the message containing this text instead of at the
-   *  tail — forwarded verbatim to ChatConversation (HUD search → the matched
+   *  tail — forwarded verbatim to PapercupChat (HUD search → the matched
    *  turn). Same passthrough pattern as the infinite-scroll props above. */
   focusAnchor?: string | null;
   /** Exact message index to focus, when the caller has one (the stream's own
@@ -169,7 +168,7 @@ interface Props {
 
   /**
    * Per-message avatar override, forwarded straight through to
-   * ChatConversation (gui-chat-session-controls-2026-07-25 P-012). Used by
+   * PapercupChat (gui-chat-session-controls-2026-07-25 P-012). Used by
    * SessionChatModal to swap the default agent-kind icon for a roster-driven
    * identity chip (handle + fleet colour + leader/member marker). Omit to
    * keep the default icon avatar — this component adds no behavior of its
@@ -179,7 +178,7 @@ interface Props {
 
   /**
    * The PANE's own mark — the icon a message wears when nothing more specific
-   * applies, and the icon of the empty state (ChatConversation derives its
+   * applies, and the icon of the empty state (PapercupChat derives its
    * `fallbackIcon` from `emptyState.icon`).
    *
    * WI-6503 [owner 2026-07-27, verbatim] "remove the papercup icon from the
@@ -201,20 +200,20 @@ interface Props {
   /**
    * Optional informational row rendered under the composer
    * (gui-chat-session-controls-2026-07-25 P-007). Pure passthrough to
-   * ChatConversation's `footer` prop — same pattern as renderAvatar. Omit
+   * PapercupChat's `footer` prop — same pattern as renderAvatar. Omit
    * to render nothing.
    */
   footer?: ReactNode;
 
   /**
    * Harness scoping this conversation's WI-/EI-/F- ref pills
-   * (chat-ref-pills-2026-07-26 P-008) — forwarded to ChatConversation for
+   * (chat-ref-pills-2026-07-26 P-008) — forwarded to PapercupChat for
    * live pill hydration (P-005) AND used by this component's OWN
    * onWorkRefActivate wiring (below) to scope the WorkItemPopupModal query.
    * Omit when the caller has no single-harness context (e.g. the
    * cross-workspace operator sidebar) — pills still render, just static
    * (no live state, no click destination), same graceful degrade
-   * ChatConversation already documents for a missing harnessSlug.
+   * PapercupChat already documents for a missing harnessSlug.
    */
   harnessSlug?: string;
 }
@@ -295,7 +294,7 @@ export function OperatorChat({
   showQuickDraftPrompts = true,
 }: Props) {
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
-  // WI-/EI-/F-/P- ref pill's click actually DOES something. ChatConversation
+  // WI-/EI-/F-/P- ref pill's click actually DOES something. PapercupChat
   // (P-004) only exposes the plain `onWorkRefActivate` passthrough hook —
   // this component wires it by WRITING the "which item is open" nuqs params.
   // It does not render them: `chat/ChatRefPopupHost` owns the single mount at
