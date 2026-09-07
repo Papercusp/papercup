@@ -1135,13 +1135,18 @@ export function parseArgs(argv) {
   // retired Spark id is denied globally so an explicit provider prefix cannot
   // bypass the policy through that backend.
   if (out.agent === "codex") {
-    // A visible desktop launch has a human in the loop: choosing Codex is the
-    // deliberate configured-default decision when no model was supplied. Only
-    // headless/unattended launches fail closed on unresolved input.
+    // A visible desktop picker has a human in the loop: choosing Codex is the
+    // deliberate configured-default decision when no model was supplied. A
+    // scripted --no-picker launch is unattended even when it opens a visible
+    // terminal, so absence must remain unresolved just like --headless.
     const selection = resolveCodexModelSelection(out.model, {
       source:
         out.modelSource ||
-        (out.model ? "explicit" : out.headless ? "explicit" : "configured-default"),
+        (out.model
+          ? "explicit"
+          : out.headless || out.picker === false
+            ? "explicit"
+            : "configured-default"),
     });
     out.model = selection.model;
     out.modelSource = selection.source;

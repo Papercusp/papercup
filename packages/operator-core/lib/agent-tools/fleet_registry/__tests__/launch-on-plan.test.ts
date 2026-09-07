@@ -983,18 +983,16 @@ describe('gatewayCapacityProviderForFleetAgent', () => {
   });
 });
 
-describe('resolveFleetAgent — explicit Codex launch defaults', () => {
-  it('materializes the managed Codex model when agent is explicit but model is omitted', () => {
+describe('resolveFleetAgent — Codex model authority', () => {
+  it('refuses a Codex backend without an explicit or inherited Codex model', () => {
     expect(
       resolveFleetAgent({
         argAgent: 'codex',
         callerAgent: 'claude',
         callerModel: 'opus:xhigh',
       }),
-    ).toEqual({
-      agent: 'codex',
-      model: 'gpt-5.6-sol:xhigh',
-      modelSource: 'configured-default',
+    ).toMatchObject({
+      error: expect.stringContaining('Codex model is required'),
     });
   });
 
@@ -1904,7 +1902,13 @@ describe('memberLaunchCommand', () => {
 
   it('always carries --no-picker + --plan (the kickoff gate) for every backend', () => {
     for (const agent of ['claude', 'omp', 'codex']) {
-      const cmd = memberLaunchCommand({ fleetSlug: 'f', agent, harness: 'h', plan: 'p' });
+      const cmd = memberLaunchCommand({
+        fleetSlug: 'f',
+        agent,
+        harness: 'h',
+        plan: 'p',
+        model: agent === 'codex' ? 'gpt-5.6-sol:xhigh' : undefined,
+      });
       expect(cmd).toContain('--no-picker');
       expect(cmd).toContain('--plan=p');
       expect(cmd).toContain(`--agent=${agent}`);
@@ -3669,7 +3673,14 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
 
     await invokeLaunchHandler(
-      { name: 'Codex Capacity Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, agent: 'codex' } as never,
+      {
+        name: 'Codex Capacity Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        agent: 'codex',
+        model: 'gpt-5.6-sol:xhigh',
+      } as never,
       {} as never,
     );
     expect(fetchGatewayHeadroomMock).toHaveBeenLastCalledWith({ timeoutMs: 1200, provider: 'codex' });

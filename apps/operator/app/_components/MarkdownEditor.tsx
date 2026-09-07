@@ -611,7 +611,7 @@ const markdownPreviewOutlineCss = `
     color: var(--fg, #e7f7ff);
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0;
     text-transform: uppercase;
     border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.18));
   }
@@ -619,7 +619,7 @@ const markdownPreviewOutlineCss = `
     color: var(--fg-dim, #9db5c8);
     font-size: 9px;
     font-weight: 600;
-    letter-spacing: 0.02em;
+    letter-spacing: 0;
     text-transform: none;
     white-space: nowrap;
   }
