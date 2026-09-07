@@ -29,6 +29,7 @@ import {
   readDurableSuSession,
   type RuntimeReconciliation,
 } from './su-session-persistence';
+import { pgSuSessionCommandStore, type SuSessionCommandStore } from './su-session-commands';
 
 /**
  * Is `pid` a live OS process? Signal 0 = existence check; EPERM = alive-not-ours.
@@ -109,6 +110,9 @@ export interface SuSessionHostSnapshot<B extends SuSessionBackend = SuSessionBac
   floorSequence: number;
   lastSequence: number;
   terminal: boolean;
+  /** A saved descriptor alone does not establish execution readiness. */
+  executorAttached: boolean;
+  streamReady: boolean;
   /**
    * The restart reconciliation that produced this host, or `null` when it was
    * created live at launch and never rehydrated. PUI reads this to surface
@@ -229,6 +233,10 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   private readonly executeCommand?: SuSessionCommandExecutor<B>;
   private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
   private readonly commands = new Map<string, StoredCommand<B>>();
+  private readonly durableCommands = new Map<string, {
+    fingerprint: string;
+    dispatch: Promise<SuSessionCommandDispatch<B>>;
+  }>();
   private readonly runtimeReconciliation: RuntimeReconciliation | null;
   private descriptorValue: SuSessionDescriptor<B>;
   private activeCommands = 0;
@@ -267,6 +275,8 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       floorSequence: recent[0]?.id ?? lastSequence,
       lastSequence,
       terminal: TERMINAL_STATES.has(this.descriptorValue.lifecycle),
+      executorAttached: Boolean(this.executeCommand) && !this.disposed,
+      streamReady: !this.disposed,
       runtimeReconciliation: this.runtimeReconciliation,
     };
   }
@@ -385,7 +395,91 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     return this.transition(state, detail);
   }
 
+  /**
+   * Production command door. Owner turns are committed with their exact text
+   * before an acceptance event or engine call can escape. A prior receipt from
+   * another host is replayed, never re-executed, even if delivery is uncertain.
+   */
+  async acceptCommand(
+    input: unknown,
+    store: SuSessionCommandStore = pgSuSessionCommandStore(),
+  ): Promise<SuSessionCommandDispatch<B>> {
+    const command = parseCommand<B>(input);
+    if (command.type !== 'owner_turn') return this.startCommand(command);
+    if (typeof command.content !== 'string' || !command.content.trim() || !command.turnId) {
+      throw new SuSessionHostError('invalid_command', 'owner turn requires turnId and non-empty content');
+    }
+    const fingerprint = canonicalJson(command);
+    const pending = this.durableCommands.get(command.commandId);
+    if (pending) {
+      if (pending.fingerprint !== fingerprint) {
+        throw new SuSessionHostError('command_id_conflict', 'commandId was reused with a different payload', 409);
+      }
+      return { ...(await pending.dispatch), replayed: true };
+    }
+    if (!identityMatches(this.descriptorValue.identity, command.target)) {
+      return this.rememberImmediateRefusal(command, fingerprint, {
+        code: 'target_mismatch', message: 'command target does not match the attached durable SU session', retryable: false,
+      });
+    }
+    if (!this.executeCommand || this.disposed || ['starting', 'resuming', 'compacting'].includes(this.descriptorValue.lifecycle)) {
+      return this.rememberImmediateRefusal(command, fingerprint, {
+        code: 'session_not_ready', message: 'the session executor and stream are not ready', retryable: true,
+      });
+    }
+    const dispatch = (async (): Promise<SuSessionCommandDispatch<B>> => {
+      const reserved = await store.reserve(command, fingerprint);
+      if (reserved.receipt.fingerprint !== fingerprint) {
+        throw new SuSessionHostError('command_id_conflict', 'commandId was already committed with a different payload', 409);
+      }
+      if (!reserved.created) {
+        const outcome = reserved.receipt.outcome;
+        const accepted = this.emit({
+          type: 'command_result', commandId: command.commandId, commandType: command.type, status: 'accepted',
+        } as SuSessionEventInput<B>) as CommandResult<B>;
+        const terminal = this.emit({
+          type: 'command_result', commandId: command.commandId, commandType: command.type,
+          ...(outcome ?? {
+            status: 'refused',
+            refusal: {
+              code: 'command_delivery_unknown',
+              message: 'This turn was saved by an earlier host. Reconcile its delivery before retrying; it was not sent again.',
+              retryable: false,
+            },
+          }),
+        } as SuSessionEventInput<B>) as CommandResult<B>;
+        return { accepted, terminal: Promise.resolve(terminal), replayed: true };
+      }
+      // A readiness refusal was not an acceptance and must not poison a later
+      // retry after the executor attaches.
+      this.commands.delete(command.commandId);
+      const result = this.dispatchCommand(command, (outcome) => store.finish(command, fingerprint, outcome));
+      if (!result.accepted) {
+        const terminal = await result.terminal;
+        if (terminal.status === 'refused') await store.finish(command, fingerprint, {
+          status: 'refused', refusal: terminal.refusal,
+        });
+      }
+      return result;
+    })();
+    this.durableCommands.set(command.commandId, { fingerprint, dispatch });
+    try {
+      return await dispatch;
+    } catch (error) {
+      this.durableCommands.delete(command.commandId);
+      throw error;
+    }
+  }
+
+  /** In-memory dispatch for attached adapters/tests; HTTP uses acceptCommand. */
   startCommand(input: unknown): SuSessionCommandDispatch<B> {
+    return this.dispatchCommand(input);
+  }
+
+  private dispatchCommand(
+    input: unknown,
+    persistOutcome?: (outcome: SuSessionCommandOutcome) => Promise<void>,
+  ): SuSessionCommandDispatch<B> {
     const command = parseCommand<B>(input);
     const fingerprint = canonicalJson(command);
     const existing = this.commands.get(command.commandId);
@@ -459,6 +553,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
           emit: (event) => this.emit(event),
           transition: (state, reason, runtimeGeneration) => this.transition(state, reason, runtimeGeneration),
         });
+        if (persistOutcome) await persistOutcome(outcome);
         const result = this.emit(
           outcome.status === 'completed'
             ? ({
