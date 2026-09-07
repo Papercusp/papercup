@@ -395,11 +395,19 @@ export interface EvidenceCurrentInput extends EvidenceFingerprints {
  * comparison request. Only an internal server-measured path may establish a fresh
  * verdict.
  */
-export type EvidenceCurrentnessProvenance = 'server-measured' | 'attested-current' | 'not-supplied';
+export type EvidenceCurrentnessProvenance =
+  | 'server-measured'
+  | 'partially-server-measured'
+  | 'attested-current'
+  | 'not-supplied';
 
-/** Internal escape hatch for a future server-side measurement implementation. */
+type OpaqueFingerprintDimension = 'fixture' | 'rubric' | 'environment';
+
+/** Trust metadata for the current-fingerprint tuple used by the classifier. */
 interface CurrentnessClassificationOptions {
   provenance?: 'server-measured';
+  /** Applicable non-repository dimensions supplied by the caller beside server measurements. */
+  attestedDimensions?: OpaqueFingerprintDimension[];
 }
 
 /**
@@ -489,11 +497,20 @@ export function classifySpecEvidenceCurrentness(
   const unknownReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'unknown')
     .map(([dimension]) => `${dimension}-current-fingerprint-not-supplied`);
+  const attestedDimensions = [...new Set(options.attestedDimensions ?? [])].sort();
   const provenance: EvidenceCurrentnessProvenance =
-    current === undefined ? 'not-supplied' : options.provenance ?? 'attested-current';
+    current === undefined
+      ? 'not-supplied'
+      : options.provenance === 'server-measured' && attestedDimensions.length > 0
+        ? 'partially-server-measured'
+        : options.provenance ?? 'attested-current';
   const attestedCurrentGuard =
-    provenance === 'attested-current' && staleReasons.length === 0
-      ? ['current-fingerprints-attested-not-independently-measured']
+    (provenance === 'attested-current' || provenance === 'partially-server-measured') && staleReasons.length === 0
+      ? [
+          provenance === 'partially-server-measured'
+            ? `current-fingerprints-partially-attested-not-independently-measured:${attestedDimensions.join(',')}`
+            : 'current-fingerprints-attested-not-independently-measured',
+        ]
       : [];
   const guardedUnknownReasons = [...unknownReasons, ...attestedCurrentGuard];
   return {
@@ -885,14 +902,29 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
+    const callerCurrent = currentByRef.get(`${row.evidence_kind}\0${row.evidence_ref}`);
+    const attestedDimensions: OpaqueFingerprintDimension[] =
+      measured?.status === 'measured'
+        ? [
+            ...(row.fixture_fingerprint !== null && callerCurrent?.fixtureFingerprint != null
+              ? (['fixture'] as const)
+              : []),
+            ...(row.rubric_fingerprint !== null && callerCurrent?.rubricFingerprint != null
+              ? (['rubric'] as const)
+              : []),
+            ...(row.environment_fingerprint !== null && callerCurrent?.environmentFingerprint != null
+              ? (['environment'] as const)
+              : []),
+          ]
+        : [];
     const current =
       measured?.status === 'measured'
-        ? measured.current
-        : currentByRef.get(`${row.evidence_kind}\0${row.evidence_ref}`);
+        ? { ...callerCurrent, ...measured.current }
+        : callerCurrent;
     const currentness = classifySpecEvidenceCurrentness(
       row,
       current,
-      measured?.status === 'measured' ? { provenance: 'server-measured' } : {},
+      measured?.status === 'measured' ? { provenance: 'server-measured', attestedDimensions } : {},
     );
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
@@ -931,7 +963,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       createdBy: row.created_by,
       createdAt: pgTimestampToIso(row.created_at),
       ...(measured
-        ? { serverMeasurement: measured.status === 'measured' ? { status: measured.status } : measured }
+        ? {
+            serverMeasurement:
+              measured.status === 'measured'
+                ? {
+                    status: measured.status,
+                    measuredDimensions: [
+                      'source',
+                      ...(measured.current.testFingerprint === null ? [] : ['test']),
+                    ],
+                    ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
+                  }
+                : measured,
+          }
         : {}),
       currentness,
     };

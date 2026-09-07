@@ -525,6 +525,61 @@ describe('exact spec evidence bindings', () => {
     });
   });
 
+  it('keeps legacy mixed repo and opaque fingerprints partially measured instead of promoting them', async () => {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const measured = await evidenceStore.measureRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
+    await evidenceStore.bindSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test',
+      evidenceRef: 'test/reconnect.test.ts#legacy-mixed-measurement',
+      ...measured,
+      environmentFingerprint: 'node:24-postgres:17',
+      testRunId: external.testRunId,
+      details: { currentMeasurement: measurement },
+      actorId: 'su-legacy-fixture',
+    });
+
+    const [mixed] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      evidenceRefs: ['test/reconnect.test.ts#legacy-mixed-measurement'],
+      current: [
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'test/reconnect.test.ts#legacy-mixed-measurement',
+          sourceFingerprint: measured.sourceFingerprint,
+          testFingerprint: measured.testFingerprint,
+          environmentFingerprint: 'node:24-postgres:17',
+        },
+      ],
+    });
+    expect(mixed).toMatchObject({
+      serverMeasurement: {
+        status: 'measured',
+        measuredDimensions: ['source', 'test'],
+        attestedDimensions: ['environment'],
+      },
+      currentness: {
+        overall: 'unknown',
+        provenance: 'partially-server-measured',
+        dimensions: { source: 'current', test: 'current', environment: 'current' },
+        unknownReasons: [
+          'current-fingerprints-partially-attested-not-independently-measured:environment',
+        ],
+      },
+    });
+  });
+
   it('keeps historical proof while spec and supplied fingerprints make staleness explicit', async () => {
     await specs.setSpecClause(clause());
     await evidenceStore.bindSpecEvidence({

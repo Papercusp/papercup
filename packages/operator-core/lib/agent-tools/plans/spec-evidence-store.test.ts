@@ -154,6 +154,43 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
       comparisonSupplied: true,
     });
   });
+
+  it('keeps mixed server and caller comparisons explicit instead of laundering opaque dimensions', () => {
+    const currentness = classifySpecEvidenceCurrentness(
+      {
+        spec_is_current: true,
+        source_fingerprint: 'git:one',
+        test_fingerprint: 'sha256:test',
+        fixture_fingerprint: null,
+        rubric_fingerprint: 'sha256:rubric',
+        environment_fingerprint: 'node:24',
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+      },
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'vitest:mixed',
+        sourceFingerprint: 'git:one',
+        testFingerprint: 'sha256:test',
+        rubricFingerprint: 'sha256:rubric',
+        environmentFingerprint: 'node:24',
+      },
+      { provenance: 'server-measured', attestedDimensions: ['rubric', 'environment'] },
+    );
+
+    expect(currentness).toMatchObject({
+      overall: 'unknown',
+      provenance: 'partially-server-measured',
+      dimensions: { source: 'current', test: 'current', rubric: 'current', environment: 'current' },
+      staleReasons: [],
+      unknownReasons: [
+        'current-fingerprints-partially-attested-not-independently-measured:environment,rubric',
+      ],
+      comparisonSupplied: true,
+    });
+  });
 });
 
 describe('listSpecEvidence timestamp normalization', () => {
