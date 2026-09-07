@@ -15,7 +15,7 @@
 import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { promisify } from 'node:util';
 import { Session as InspectorSession } from 'node:inspector';
 import { performance } from 'node:perf_hooks';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
@@ -114,11 +115,36 @@ vi.mock('../su-session-claude-engine', async (original) => {
   };
 });
 
+// These observers always delegate to the production readers. They attribute
+// diagnostic runs without substituting data or changing any timeout verdict.
+vi.mock('../agent-tools/pot/_resolve', async (original) => {
+  const actual = await original<typeof import('../agent-tools/pot/_resolve')>();
+  return { ...actual, listPots: (...args: Parameters<typeof actual.listPots>) =>
+    traceOperation('list-pots', () => actual.listPots(...args)) };
+});
+vi.mock('../fleet/assignments', async (original) => {
+  const actual = await original<typeof import('../fleet/assignments')>();
+  return { ...actual, listFleetAssignments: (...args: Parameters<typeof actual.listFleetAssignments>) =>
+    traceOperation('fleet-assignments', () => actual.listFleetAssignments(...args)) };
+});
+vi.mock('../agent-tools/coordination/federated-presence', async (original) => {
+  const actual = await original<typeof import('../agent-tools/coordination/federated-presence')>();
+  return { ...actual, listFederatedPresence: (...args: Parameters<typeof actual.listFederatedPresence>) =>
+    traceOperation('federated-presence', () => actual.listFederatedPresence(...args)) };
+});
+vi.mock('../endpoint-route/routes/agent-mcp/bootstrap-su', async (original) => {
+  const actual = await original<typeof import('../endpoint-route/routes/agent-mcp/bootstrap-su')>();
+  return { ...actual, bootstrapSu: { ...actual.bootstrapSu,
+    handler: (...args: Parameters<typeof actual.bootstrapSu.handler>) =>
+      traceOperation('bootstrap-su', () => actual.bootstrapSu.handler(...args)) } };
+});
+
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
 const OWNER = 'pui-agent-chat-e2e-owner';
+const execFileAsync = promisify(execFile);
 
 // Opt-in diagnosis uses the actual worker (including cold module evaluation),
 // preserves every console warning, and writes no request bodies or credentials.
@@ -127,10 +153,18 @@ const namedQueryRequests: string[] = [];
 const namedQueryReplies: Array<{ name: string; status: number }> = [];
 let timingInspector: InspectorSession | undefined;
 let timingInterval: ReturnType<typeof setInterval> | undefined;
+let timingScan: Promise<void> | undefined;
 function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
   if (process.env.PUI_TIMING_DIR && timingTrace.length < 20_000) {
     timingTrace.push({ atMs: performance.now(), kind, ...fields });
   }
+}
+async function traceOperation<T>(name: string, work: () => T | Promise<T>): Promise<T> {
+  if (!process.env.PUI_TIMING_DIR) return work();
+  const start = performance.now();
+  traceTiming('operation-start', { name });
+  try { return await work(); }
+  finally { traceTiming('operation-end', { name, elapsedMs: performance.now() - start }); }
 }
 function profileCommand(method: string): Promise<unknown> {
   return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
@@ -146,17 +180,39 @@ async function startTimingProfile(): Promise<void> {
   await profileCommand('Profiler.enable');
   await profileCommand('Profiler.start');
   traceTiming('profile-start', { timeOriginMs: performance.timeOrigin });
+  const diagnostics = await import('../../../../libs/papercusp/libs/db/src/acquire-registry');
   let expected = performance.now() + 25;
+  let lastScan = 0;
   timingInterval = setInterval(() => {
     const now = performance.now();
     if (now - expected > 100) traceTiming('event-loop-delay', { delayMs: now - expected });
     expected = now + 25;
+    if (!timingScan && now - lastScan >= 250) {
+      lastScan = now;
+      timingScan = (async () => {
+        const active = await db.adminSql`
+          SELECT pid, application_name, state, wait_event_type, wait_event,
+                 EXTRACT(EPOCH FROM (clock_timestamp() - query_start)) * 1000 AS age_ms,
+                 pg_blocking_pids(pid) AS blockers, query
+            FROM pg_stat_activity
+           WHERE datname = current_database() AND state <> 'idle' AND pid <> pg_backend_pid()
+        `;
+        traceTiming('database', {
+          // The shared diagnostic writer strips SQL literals and parameters.
+          active: active.map(({ query, ...row }) => ({ ...row, family: diagnostics.pgQueryFamily(String(query)) })),
+          pool: diagnostics.acquireSnapshot('org-admin'),
+          results: diagnostics.pgResultDiagnosticSnapshot('org-admin').results,
+        });
+      })().catch((error: { code?: string }) => traceTiming('database-error', { code: error.code }))
+        .finally(() => { timingScan = undefined; });
+    }
   }, 25);
 }
 
 afterAll(async () => {
   if (!timingInspector) return;
   if (timingInterval) clearInterval(timingInterval);
+  await timingScan;
   const { profile } = await profileCommand('Profiler.stop') as { profile: unknown };
   traceTiming('profile-stop');
   timingInspector.disconnect();
@@ -324,9 +380,19 @@ class PuiPane {
   }
 }
 
-function childPids(parent: number): number[] {
-  const out = spawnSync('ps', ['-o', 'pid=', '--ppid', String(parent)], { encoding: 'utf8' });
-  return (out.stdout ?? '')
+async function processRows(args: string[]): Promise<string> {
+  try {
+    return (await execFileAsync('ps', args, { encoding: 'utf8' })).stdout;
+  } catch (error) {
+    // ps uses 1 for an empty selection (including a process that just exited).
+    if ((error as { code?: number }).code === 1) return '';
+    throw error;
+  }
+}
+
+async function childPids(parent: number): Promise<number[]> {
+  const rows = await processRows(['-o', 'pid=', '--ppid', String(parent)]);
+  return rows
     .split(/\s+/)
     .map(Number)
     .filter((pid) => Number.isInteger(pid) && pid > 0);
@@ -335,10 +401,10 @@ function childPids(parent: number): number[] {
 async function waitForNoChildren(parent: number): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (childPids(parent).length === 0) return;
+    if ((await childPids(parent)).length === 0) return;
     await new Promise((resolve) => setTimeout(resolve, 80));
   }
-  expect(childPids(parent), `processes leaked below pui pid ${parent}`).toEqual([]);
+  expect(await childPids(parent), `processes leaked below pui pid ${parent}`).toEqual([]);
 }
 
 async function listen(server: ServerType): Promise<number> {
@@ -674,7 +740,12 @@ beforeEach(async () => {
         // every other warning still fail this test (EI-22628413686876169).
         optionalMemoryWarnings.push(String(args[0]));
         console.info('PUI_OPTIONAL_MEMORY_DIAGNOSTIC', args[0]);
-      } else warn(...args);
+      } else {
+        if (typeof args[0] === 'string' && /^\[bounded-timeout\].* exceeded \d+ms/.test(args[0])) {
+          traceTiming('diagnostic-warning', { label: args[0] });
+        }
+        warn(...args);
+      }
     });
   }
   await db.adminSql`
@@ -1033,18 +1104,18 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       // touching an existing human/peer terminal. The real CLI has pipe stdio;
       // only the PUI process is attached to our allocated terminal.
       const processes: Array<{ pid: number; tty: string; name: string }> = [];
-      const pending = [engine.pid()!, ...childPids(pane.pty.pid)];
+      const pending = [engine.pid()!, ...await childPids(pane.pty.pid)];
       const seen = new Set<number>();
       while (pending.length) {
         const pid = pending.pop()!;
         if (seen.has(pid)) continue;
         seen.add(pid);
-        const probe = spawnSync('ps', ['-o', 'tty=,comm=', '-p', String(pid)], { encoding: 'utf8' });
-        if (probe.status === 0) {
-          const [tty, ...name] = probe.stdout.trim().split(/\s+/);
+        const rows = await processRows(['-o', 'tty=,comm=', '-p', String(pid)]);
+        if (rows.trim()) {
+          const [tty, ...name] = rows.trim().split(/\s+/);
           processes.push({ pid, tty, name: name.join(' ') });
         }
-        pending.push(...childPids(pid));
+        pending.push(...await childPids(pid));
       }
       expect(processes.length).toBeGreaterThan(0);
       expect(processes.every((proc) => proc.tty === '?')).toBe(true);
