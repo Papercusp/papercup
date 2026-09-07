@@ -48,19 +48,23 @@ vi.mock("@/app/harness/Modal", () => ({
     children,
     contentClassName,
     contentStyle,
+    wrapStyle,
   }: {
     open: boolean;
     children: ReactNode;
     contentClassName?: string;
     contentStyle?: CSSProperties;
+    wrapStyle?: CSSProperties;
   }) =>
     open ? (
-      <div
-        data-testid="plan-popup-modal"
-        className={contentClassName}
-        style={contentStyle}
-      >
-        {children}
+      <div data-testid="plan-popup-wrap" style={wrapStyle}>
+        <div
+          data-testid="plan-popup-modal"
+          className={contentClassName}
+          style={contentStyle}
+        >
+          {children}
+        </div>
       </div>
     ) : null,
 }));
@@ -314,24 +318,47 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
     );
   });
 
-  it("disables fullscreen with an explanation when the API is unavailable", () => {
+  it("fills the host window and restores when the Fullscreen API is unavailable", () => {
     installFullscreenApi(false);
     renderPopup(null, null);
 
     const button = screen.getByRole("button", {
       name: "Enter fullscreen",
     }) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-    // No native title on the button (design-primitives lint): the explanation
-    // is the Tooltip primitive's label (the mock above renders it as a title on
-    // its own span), reached through the focusable wrapper that stands in for
-    // a disabled button, which receives no pointer/focus events of its own.
+    expect(button.disabled).toBe(false);
     expect(button.hasAttribute("title")).toBe(false);
-    const wrap = screen.getByTestId("plan-popup-fullscreen-wrap");
-    expect(wrap.tabIndex).toBe(0);
-    expect(button.closest("[title]")?.getAttribute("title")).toContain(
-      "Fullscreen is not available",
+    fireEvent.click(button);
+    const modal = screen.getByTestId("plan-popup-modal");
+    expect(modal.style.width).toBe("100vw");
+    expect(modal.style.height).toBe("100dvh");
+    expect(screen.getByTestId("plan-popup-wrap").style.padding).toBe("0px");
+    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    expect(modal.style.width).toBe("94vw");
+    expect(modal.style.maxWidth).toBe("1100px");
+    expect(modal.style.maxHeight).toBe("860px");
+    expect(screen.getByTestId("plan-popup-wrap").style.padding).toBe("");
+  });
+
+  it("falls back to filling the window after a rejected browser request", async () => {
+    const fullscreen = installFullscreenApi();
+    fullscreen.requestFullscreen.mockRejectedValueOnce(new Error("Permission denied"));
+    renderPopup(null, null);
+    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("plan-popup-modal").style.width).toBe("100vw"),
     );
+    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
+  });
+
+  it("Escape restores the expanded window without closing the plan", () => {
+    installFullscreenApi(false);
+    const onClose = vi.fn();
+    renderPopup(null, null, { onClose });
+    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Exit fullscreen" }), { key: "Escape" });
+    expect(screen.getByTestId("plan-popup-modal").style.width).toBe("94vw");
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("clears stale popup view and P/D target state on close", async () => {

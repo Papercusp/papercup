@@ -78,7 +78,7 @@ export default function PlanPopupModal({
   const dirtyRef = useRef(false);
   const popupSurfaceRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
+  const [isWindowExpanded, setIsWindowExpanded] = useState(false);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // `wppop` carries only the stable scoped identity (`harness::slug`). The
@@ -120,6 +120,7 @@ export default function PlanPopupModal({
       : (provenancePlan?.ownerIdentity ?? null);
 
   const open = planSlug !== null;
+  const isExpanded = isFullscreen || isWindowExpanded;
   const fullscreenAvailable =
     typeof document !== "undefined" &&
     document.fullscreenEnabled !== false &&
@@ -130,6 +131,7 @@ export default function PlanPopupModal({
   useEffect(() => {
     if (!open || typeof document === "undefined") {
       setIsFullscreen(false);
+      setIsWindowExpanded(false);
       return;
     }
     const sync = () => {
@@ -146,9 +148,18 @@ export default function PlanPopupModal({
   }, [open]);
 
   const toggleFullscreen = async () => {
+    if (isWindowExpanded) {
+      setIsWindowExpanded(false);
+      return;
+    }
     const target = popupSurfaceRef.current;
-    if (!target || !fullscreenAvailable) return;
-    setFullscreenError(null);
+    if (!target) return;
+    // Embedded hosts and desktop webviews may deny the browser API. The
+    // popup can still fill its window through the existing Modal sizing seam.
+    if (!fullscreenAvailable) {
+      setIsWindowExpanded(true);
+      return;
+    }
     try {
       if (document.fullscreenElement === target) {
         await document.exitFullscreen();
@@ -156,14 +167,13 @@ export default function PlanPopupModal({
       }
       await target.requestFullscreen();
     } catch {
-      setFullscreenError(
-        "The browser did not allow fullscreen for this popup.",
-      );
+      setIsWindowExpanded(true);
     }
   };
 
   const reallyClose = () => {
     dirtyRef.current = false;
+    setIsWindowExpanded(false);
     if (
       typeof document !== "undefined" &&
       document.fullscreenElement === popupSurfaceRef.current
@@ -201,9 +211,16 @@ export default function PlanPopupModal({
           title={planTitle ?? planSlug ?? "Plan"}
           srOnlyTitle
           contentClassName="plan-popup"
+          wrapStyle={isWindowExpanded ? { padding: 0 } : undefined}
+          closeOnEscape={!isWindowExpanded}
           contentStyle={{
-            width: "min(1100px, 94vw)",
-            height: "min(860px, calc(100vh - 4rem))",
+            width: isWindowExpanded ? "100vw" : "94vw",
+            maxWidth: isWindowExpanded ? "100vw" : "1100px",
+            height: isWindowExpanded
+              ? "100dvh"
+              : "calc(100vh - 4rem)",
+            maxHeight: isWindowExpanded ? "100dvh" : "860px",
+            borderRadius: isWindowExpanded ? 0 : undefined,
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
@@ -214,6 +231,13 @@ export default function PlanPopupModal({
             ref={popupSurfaceRef}
             className="plan-popup__surface"
             data-testid="plan-popup-fullscreen-surface"
+            onKeyDownCapture={(event) => {
+              if (event.key === "Escape" && isWindowExpanded) {
+                event.preventDefault();
+                event.stopPropagation();
+                setIsWindowExpanded(false);
+              }
+            }}
           >
             <div className="plan-popup__header">
               <div className="plan-popup__identity">
@@ -260,41 +284,24 @@ export default function PlanPopupModal({
               <Tooltip
                 side="bottom"
                 label={
-                  fullscreenError ??
-                  (fullscreenAvailable
-                    ? isFullscreen
-                      ? "Restore plan popup"
-                      : "View plan fullscreen"
-                    : "Fullscreen is not available in this browser")
+                  isExpanded ? "Restore plan popup" : "View plan fullscreen"
                 }
               >
-                {/* The wrapper — not the button — is the Tooltip trigger. A
-                    disabled <button> receives no pointer/focus events, so the
-                    Radix tooltip would never open for the one state where its
-                    label matters most ("not available in this browser"); the
-                    old native `title=` fallback is exactly what the
-                    design-primitives lint forbids on buttons. The wrapper is
-                    focusable only while the button is disabled, and
-                    `.plan-popup__fullscreen:disabled` drops pointer-events so
-                    hovering the dead button reaches the wrapper in every
-                    engine (WebKitGTK included). */}
                 <span
                   className="plan-popup__fullscreen-wrap"
-                  tabIndex={fullscreenAvailable ? undefined : 0}
                   data-testid="plan-popup-fullscreen-wrap"
                 >
                   <button
                     type="button"
                     className="plan-popup__fullscreen"
                     onClick={() => void toggleFullscreen()}
-                    disabled={!fullscreenAvailable}
                     aria-label={
-                      isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
+                      isExpanded ? "Exit fullscreen" : "Enter fullscreen"
                     }
-                    aria-pressed={isFullscreen}
+                    aria-pressed={isExpanded}
                     data-testid="plan-popup-fullscreen"
                   >
-                    {isFullscreen ? (
+                    {isExpanded ? (
                       <Minimize2 size={14} aria-hidden="true" />
                     ) : (
                       <Maximize2 size={14} aria-hidden="true" />
