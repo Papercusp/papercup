@@ -55,6 +55,8 @@ The exact parity sample was degraded at generation `9fdb18df0f498e361ca3`, obser
 
 Still required: independent grading-integrity audit of the revision-6 meta attestation and independent implementation grading (WI-10000514); the accountable acceptance verdict; feature-containing deployment proof; final audit and ship transition.
 
+The final runtime check at **2026-09-07T10:23:22.946735Z** found the deployment requirement unmet. The serving operator's `/api/health` reported `e66be3c4ff`. Its build identity is resolved at module load in `apps/operator/bin/serve.ts` and cached by `getBuildInfo()`. Git object reads at that reported revision could not resolve the four obligation engine, reader, provider and reminder source files. The GUI section and model matching current bytes therefore did not establish deployment of the underlying feature. This is a timestamped negative shipment observation, recorded as WI-2147072 comment200245; it is not a statement about a later runtime or the live release gate.
+
 ## Proof binding index
 
 The table below records the historical spec-revision-2 bindings. Revision 6 projected every clause to **spec revision 3**. Forty current bindings, IDs **1344–1383**, retain the unchanged test and GUI observations and add the launch / OMP witnesses; their complete payload is `/tmp/wi2147072-proof-bindings-r6.json`. All 19 current clauses passed `plans:evaluate-spec-test-adequacy` with explicit current fingerprints (zero fail/unknown). This adequacy result does not supply the missing R-6 deployment proof or independent implementation acceptance. The old binding payload remains `/tmp/wi2147072-proof-bindings-0906.json`.

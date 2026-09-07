@@ -260,6 +260,28 @@ describe('specTestAdequacyCompletionGate', () => {
     expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
 
+  it('refuses terminal completion when the only proof is an ephemeral session-local path', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([
+      listedEvidence({
+        evidenceRef: '/tmp/pui-p001-counterexample-guard.log',
+        coverageEvidenceRef: null,
+        testRunId: null,
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true, checked: [] });
+    if (!result.ok) {
+      expect(result.reason).toContain('traceability');
+    }
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
   it('accepts grading-integrity evidence enrichment without coupling prose to the evaluator fingerprint', async () => {
     const deps = passingDeps();
     const card = matchingCard();
