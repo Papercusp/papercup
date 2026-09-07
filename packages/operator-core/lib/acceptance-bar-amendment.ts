@@ -180,6 +180,16 @@ export const acceptanceBarApprovalSchema = z
 
 export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
 
+/** EI-22617748468342848: reviewers routinely post the approval receipt inside a
+ * ```json fence, which is the natural way to post JSON in a comment thread. The
+ * fence is presentation, so strip it before parsing. Authenticity is unaffected:
+ * it derives from post.author_id and the append-only post row, never from how the
+ * body was framed. A body with no fence is returned unchanged. */
+export function approvalReceiptJsonSource(body: string): string {
+  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n?```$/.exec(body.trim());
+  return fenced ? fenced[1] : body;
+}
+
 export async function resolveAcceptanceBarApproval(
   sql: SpecClauseSql,
   args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval },
@@ -195,7 +205,7 @@ export async function resolveAcceptanceBarApproval(
      FOR SHARE`;
   if (!post?.author_id?.trim()) throw new Error('acceptance_bar_approval_unreadable');
   let body: unknown;
-  try { body = JSON.parse(post.body); } catch { throw new Error('acceptance_bar_approval_invalid_receipt'); }
+  try { body = JSON.parse(approvalReceiptJsonSource(post.body)); } catch { throw new Error('acceptance_bar_approval_unparseable: the approval post body is not JSON. Post the preview approval object as the entire comment body — a heading or a covering sentence around it breaks this (a ```json fence is tolerated).'); }
   const parsed = acceptanceBarApprovalSchema.safeParse(body);
   if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
   const receipt = parsed.data;
