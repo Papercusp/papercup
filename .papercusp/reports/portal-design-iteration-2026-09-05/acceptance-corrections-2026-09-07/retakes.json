@@ -1,0 +1,328 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-07T04:22:24.082Z",
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "_h24SwYOHfExTCskF1rTh",
+    "release": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T04:13:50.070Z",
+    "sourceRootDigest": "baf5921be493a6963c4ec95511779e7615f5bf2cfa8c46d0de7d3f76c1f8b242"
+  },
+  "retakes": [
+    {
+      "slot": "learning/light/1440x900",
+      "releaseId": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+      "first": {
+        "text": "Loading app…\n\nReading the app list.",
+        "unsupported": false
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=learning",
+        "theme": "light",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "unsupported": false,
+        "text": "POT\nSelect Pot\nsub-pots\nNEW\nObserve\nAnalyze\nImprove\nRetain\nVerify\n\nWhat the learning loop produced: each idea and the work it became, from not-ready-yet through shipped. Grading an idea here is what teaches the generator.\n\nYour pot learns as you work\n\nAgents capture friction the moment they hit it, the Gym A/B-refines your playbooks under a budget you set, and the Blender explores new ideas from this pot's own history — everything it learns is scoped to this pot.\n\nOpen Arming\n✕\nImprove\nWhat the learning loop produced — each idea and the work it became. Grading an idea is what teaches the generator.\n\n0\nideas\n\nFrom the loop\nEvery capture\nwork not from the loop lives in Work →\nHow the loop is doing\none question per group, each answered in a line\nThe loop has not produced anything here yet\n\nThe Blender reads this pot's history on a cadence and routes surviving ideas here — cycles usually appear within the hour once armed.\n\nOpen Arming"
+      },
+      "capturePath": "learning-light-1440x900.png",
+      "captureSha256": "80dc3c5b5ddb1fdcae9b04287fca852153aa4a7c622b5f422a17d5b17d9aa64d",
+      "capturedAt": "2026-09-07T04:20:33.419Z",
+      "result": "pass"
+    },
+    {
+      "slot": "workflows/light/1440x900",
+      "releaseId": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+      "first": {
+        "text": "Loading app…\n\nReading the app list.",
+        "unsupported": false
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=workflows",
+        "theme": "light",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "unsupported": false,
+        "text": "AUTOMATION CONTROL\nWorkflows\n12 triggered · 4769 routines · 264 system tasks\n\nCreate, monitor, and repair everything that runs without you.\n\nSchedule\n6/10\nContacts\ndisabled\nGcal\n1/3\nGmail\n1/4\nRefresh\nNew workflow\nBuild with the workflow agent\n\nDescribe the trigger and outcome. The agent assembles the workflow for review.\n\nWhat should happen automatically?\nWire it\nWhen an email from a client arrives…\nNeeds you\ngcal is disabled\nReconnect\nGmail is disabled\nReconnect\n52 workflows need attention\nReview\nVIEW\nWorkflows\nActivity\nSTATE\nAll\n5045\nNeeds attention\n52\nRunning\n267\nPaused\n4733\nKIND\nEvery kind\n5045\nTriggered\n12\nRoutines\n4769\nSystem\n264\nFIND\nSORT\nAttention first\nWorkflow\tTrigger → plan → outcome\tLast\tNext\tSpend\tArmed\n\nbg-host-watchdog-poll\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-local-backend-refresh-health\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-payload-spool-sweep\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-pool-reload\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-ratehint-pin-resync\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-self-heal\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-token-refresh\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-watchdog-poll\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ninference-gateway:proactive-egress-probe\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\nmcp-proxy-session-plane-poll\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\nmcp-proxy-watchdog-poll\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\npsu-supervisor-heartbeat\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\nloop-su-032510f2-f14f-4fbd-8b4f-aaa65622dac0\nROUTINE\n\t\nRoutines\n→\nroutine\n\t7m ago\t—\tpossible\t\non\n\n\nloop-su-1cddcf53-7f12-4c05-a3fa-4d604f69b161\nR"
+      },
+      "capturePath": "workflows-light-1440x900.png",
+      "captureSha256": "878d2762fb0e207ac7388969e6a81b9ccdcc69ac7bea9185581c1679f4c1fe84",
+      "capturedAt": "2026-09-07T04:20:35.887Z",
+      "result": "pass"
+    },
+    {
+      "slot": "settings/light/1440x900",
+      "releaseId": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+      "first": {
+        "text": "Loading app…\n\nReading the app list.",
+        "unsupported": false
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=settings",
+        "theme": "light",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "unsupported": false,
+        "text": "Portal\n\nHow this portal looks on this device, and which agent answers for the workspace. Everything else is the workspace's own Settings, below.\n\nAPPEARANCE\n\nTheme for the portal. System follows your operating system.\n\nAsk Papercup\n\nLoading agent settings…\n\nLoading Settings…"
+      },
+      "capturePath": "settings-light-1440x900.png",
+      "captureSha256": "9d5524672543a58a172884e2a392f0b45681e6b0c7c9a59df6f855edca767b05",
+      "capturedAt": "2026-09-07T04:22:25.598Z",
+      "result": "pass"
+    },
+    {
+      "slot": "learning/dark/1440x900",
+      "releaseId": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+      "first": {
+        "text": "Loading app…\n\nReading the app list.",
+        "unsupported": false
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=learning",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "unsupported": false,
+        "text": "POT\nSelect Pot\nsub-pots\nNEW\nObserve\nAnalyze\nImprove\nRetain\nVerify\n\nWhat the learning loop produced: each idea and the work it became, from not-ready-yet through shipped. Grading an idea here is what teaches the generator.\n\nYour pot learns as you work\n\nAgents capture friction the moment they hit it, the Gym A/B-refines your playbooks under a budget you set, and the Blender explores new ideas from this pot's own history — everything it learns is scoped to this pot.\n\nOpen Arming\n✕\nImprove\nWhat the learning loop produced — each idea and the work it became. Grading an idea is what teaches the generator.\n\n0\nideas\n\nFrom the loop\nEvery capture\nwork not from the loop lives in Work →\nHow the loop is doing\none question per group, each answered in a line\nThe loop has not produced anything here yet\n\nThe Blender reads this pot's history on a cadence and routes surviving ideas here — cycles usually appear within the hour once armed.\n\nOpen Arming"
+      },
+      "capturePath": "learning-dark-1440x900.png",
+      "captureSha256": "599a4c2e36a1a5ab7007dc18027a1a2184ae9bce1a2c772d8e8fd87d416db375",
+      "capturedAt": "2026-09-07T04:22:27.185Z",
+      "result": "pass"
+    },
+    {
+      "slot": "workflows/dark/1440x900",
+      "releaseId": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+      "first": {
+        "text": "Loading app…\n\nReading the app list.",
+        "unsupported": false
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=workflows",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "unsupported": false,
+        "text": "AUTOMATION CONTROL\nWorkflows\nLoading workflow inventory…\n\nCreate, monitor, and repair everything that runs without you.\n\nSchedule\n0 armed\nRefresh\nNew workflow\nBuild with the workflow agent\n\nDescribe the trigger and outcome. The agent assembles the workflow for review.\n\nWhat should happen automatically?\nWire it\nVIEW\nWorkflows\nActivity\nSTATE\nAll\n—\nNeeds attention\n—\nRunning\n—\nPaused\n—\nKIND\nEvery kind\n—\nTriggered\n—\nRoutines\n—\nSystem\n—\nFIND\nSORT\nAttention first\nLoading workflow inventory\nCombining schedules, triggers, routines, and recent runs…\nPreparing the inspector\nWaiting for a workflow selection and its latest run details…"
+      },
+      "capturePath": "workflows-dark-1440x900.png",
+      "captureSha256": "cf2b8695056e7d85d0b9daf0a14bcafa4200be1a0c155a3bd861d26b121baa90",
+      "capturedAt": "2026-09-07T04:22:28.458Z",
+      "result": "pass"
+    },
+    {
+      "slot": "settings/dark/1440x900",
+      "releaseId": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+      "first": {
+        "text": "Loading app…\n\nReading the app list.",
+        "unsupported": false
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=settings",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "unsupported": false,
+        "text": "Portal\n\nHow this portal looks on this device, and which agent answers for the workspace. Everything else is the workspace's own Settings, below.\n\nAPPEARANCE\n\nTheme for the portal. System follows your operating system.\n\nAsk Papercup\n\nLoading agent settings…\n\nLoading Settings…"
+      },
+      "capturePath": "settings-dark-1440x900.png",
+      "captureSha256": "61c22ea5927c1934c3cc0cfb3f3dacdea368e1024006b87ba6a9e30d852eaeb5",
+      "capturedAt": "2026-09-07T04:22:28.863Z",
+      "result": "pass"
+    }
+  ],
+  "states": [
+    {
+      "id": "hidden-navigation-light",
+      "plane": "live",
+      "url": "http://127.0.0.1:3081/?app=evals",
+      "result": "pass",
+      "capturePath": "hidden-navigation-light.png",
+      "captureSha256": "1645410f8c9b0b278fde1fb5fb9f2defe0c4a0b98979b8c12cfbb3e27e347e5c",
+      "capturedAt": "2026-09-07T04:22:26.318Z"
+    },
+    {
+      "id": "hidden-navigation-dark",
+      "plane": "live",
+      "url": "http://127.0.0.1:3081/?app=evals",
+      "result": "pass",
+      "capturePath": "hidden-navigation-dark.png",
+      "captureSha256": "3787ccb4e4676ee6c433a36e8b99343ad9c077659eb27f1744e59723bc544f05",
+      "capturedAt": "2026-09-07T04:22:29.716Z"
+    },
+    {
+      "id": "live-empty-and-unknown",
+      "plane": "live",
+      "observed": {
+        "emptyCalendar": true,
+        "unknownCards": [
+          {
+            "text": "—",
+            "title": "No active desktops count available right now."
+          },
+          {
+            "text": "—",
+            "title": "No running workspaces count available right now."
+          }
+        ],
+        "loading": false
+      },
+      "capturePath": "home-empty-unknown.png",
+      "captureSha256": "4bd8cdf49386113dce81a05565aba1a7b6d291884e9f78ccc6bfd4fdc153b415",
+      "capturedAt": "2026-09-07T04:22:30.840Z"
+    },
+    {
+      "id": "workspace-disabled-status",
+      "plane": "live",
+      "observed": [
+        {
+          "disabled": true,
+          "title": "The desktop is unavailable while this workspace is reconciling (running → provisioning)",
+          "cardText": "p018-canary-20260905-r7\ngcp · us-central1\nRUNNING → PROVISIONING\ninitialize\nFAILED\nStarted 2026-09-07T01:38:02.517Z\nFinished 2026-09-07T01:40:17.560Z\nWorkspace host initialization failed after 5/6 steps\nOpen desktop\nStop\nRestart\nSnapshot\nRestore"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p018-canary-20260905-r6\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T05:38:18.163Z\nFinished 2026-09-05T05:41:43.792Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p018-canary-20260905-r5\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T05:06:23.465Z\nFinished 2026-09-05T05:08:48.840Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p018-canary-20260905-r4\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T04:19:18.442Z\nFinished 2026-09-05T04:22:59.916Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p018-canary-20260905-r3\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T03:39:06.155Z\nFinished 2026-09-05T03:42:49.597Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p018-canary-20260905-r2\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T02:46:25.535Z\nFinished 2026-09-05T02:50:24.726Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: destroying)",
+          "cardText": "p046-canary-06\ngcp · us-central1\nDESTROYING\ndestroy\nFAILED\nStarted 2026-08-31T13:15:15.585Z\nFinished 2026-08-31T13:17:49.125Z\nWorkspace-host resources were deleted, but terminal evidence is incomplete\nOpen desktop\nStart\nRestore"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p046-canary-05\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-08-31T12:35:34.439Z\nFinished 2026-08-31T12:37:26.881Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "P-046 canary 04\ngcp · us-central1\nABSENT\nprovision\nSUCCEEDED\nStarted 2026-08-31T11:55:26.460Z\nFinished 2026-08-31T11:57:25.787Z\nWorkspace-host provider resources are provisioned\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "P-046 live canary host r3\ngcp · us-central1\nABSENT\ninitialize\nFAILED\nStarted 2026-08-28T15:45:44.133Z\nFinished 2026-08-28T15:45:48.159Z\nWorkspace host initialization failed after 0/6 steps\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "p046-canary-03\ngcp · us-central1\nABSENT\nprovision\nRUNNING\nStarted 2026-08-31T11:22:43.741Z\nLifecycle operation is orphaned and requires provider reconciliation\nOpen desktop\nno lifecycle actions while absent"
+        },
+        {
+          "disabled": true,
+          "title": "The desktop opens once this workspace is running (observed: absent)",
+          "cardText": "P-046 live canary host\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-08-28T11:36:37.319Z\nFinished 2026-08-28T11:39:29.477Z\nWorkspace-host discard teardown and evidence census completed\nOpen desktop\nno lifecycle actions while absent"
+        }
+      ],
+      "capturePath": "workspace-disabled-status.png",
+      "captureSha256": "67362502dff57487bc8bc74a7e255e4c68d2f30cd8ba4eb90a416b08a210c7f2",
+      "capturedAt": "2026-09-07T04:22:31.906Z"
+    }
+  ],
+  "previousAttempts": [
+    {
+      "startedAt": "2026-09-07T04:20:30.722Z",
+      "completedAt": "2026-09-07T04:20:57.076Z",
+      "error": "page.waitForFunction: Timeout 20000ms exceeded."
+    }
+  ],
+  "initial": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "final": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "preferencesRestored": true,
+  "completedAt": "2026-09-07T04:22:32.089Z",
+  "releaseStable": true
+}
