@@ -24,8 +24,10 @@
  * asserted at the wiring site, not by actually running it (same rationale as
  * verify-tauri-headless-spa-isolation.test.ts / tty-title-target.test.ts).
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
@@ -84,6 +86,45 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toContain('localStorage.setItem');
     expect(src).toContain('localStorage.removeItem');
     expect(src).toMatch(/rm -rf "\$ISOLATED_WEBVIEW_ROOT"/);
+  });
+
+  it('creates a private registered workspace and overrides hostile inherited identity at the real launch boundary', () => {
+    const work = mkdtempSync(join(tmpdir(), 'dream-workspace-isolation-'));
+    try {
+      const helper = src.match(/prepare_isolated_workspace\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      const envLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE="PAPERCUSP_HOME='));
+      expect(helper).toBeTruthy();
+      expect(envLine).toBeTruthy();
+      const probe = join(work, 'probe.cjs');
+      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT}));`);
+      const script = [
+        'set -eu', helper,
+        'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"',
+        'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234',
+        'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
+        'prepare_isolated_workspace', envLine,
+        'eval "$ISOLATED_ENV_LINE node \\"$WORK/probe.cjs\\""',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', script, 'probe', work], {
+        encoding: 'utf8', env: { ...process.env, PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry' },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces') });
+      const registry = JSON.parse(readFileSync(join(work, 'workspaces/registry.json'), 'utf8'));
+      expect(registry.current).toBe('verify-tauri-isolated-test');
+      expect(registry.workspaces.map((row: { id: string }) => row.id)).toEqual(['verify-tauri-isolated-test']);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('verifies the running sidecar identity and exports it in both assertion and boot-only handoffs', () => {
+    expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACE_ID=$ISOLATED_WORKSPACE" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"');
+    expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
+    expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
+    expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
   });
 
   it('wins over .env.local DATABASE_URL via the admin/app URL resolver precedence', () => {
