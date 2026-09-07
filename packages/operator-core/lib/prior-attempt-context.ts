@@ -13,16 +13,8 @@ import { createHash } from 'node:crypto';
 import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
 import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
-import {
-  listSpecEvidence,
-  listWorkItemSpecRevisionEdges,
-} from './agent-tools/plans/spec-evidence-store';
-import {
-  getWorkItem,
-  getWorkItemThreadWindow,
-  listWorkItems,
-  type WorkItem,
-} from './work-items';
+import { listSpecEvidence, listWorkItemSpecRevisionEdges } from './agent-tools/plans/spec-evidence-store';
+import { getWorkItem, getWorkItemThreadWindow, listWorkItems, type WorkItem } from './work-items';
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointJournal } from './work-item-checkpoint';
 import { getWorkItemLifecycleHistory } from './work-item-lifecycle-history';
 import { getClaimTimePriorWorkHint } from './work-item-prior-work';
@@ -95,7 +87,6 @@ export interface PriorAttemptSource {
   /** Explicit source metadata (evidence refs, lifecycle detail, fingerprints). */
   detail?: Record<string, unknown> | null;
 }
-
 
 export interface PriorAttemptRecord extends PriorAttemptSource {
   id: string;
@@ -230,11 +221,7 @@ const AUTHORITY_RANK: Record<PriorAttemptAuthority, number> = {
   comment: 8,
 };
 
-const CANONICAL_AUTHORITY = new Set<PriorAttemptAuthority>([
-  'current-spec',
-  'plan-decision',
-  'retraction',
-]);
+const CANONICAL_AUTHORITY = new Set<PriorAttemptAuthority>(['current-spec', 'plan-decision', 'retraction']);
 
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -253,7 +240,9 @@ function normalizedRecord(source: PriorAttemptSource): PriorAttemptRecord {
   const isCompletion = source.authority === 'verified-completion';
   const isCheckpoint = source.authority === 'checkpoint';
   const id = createHash('sha256')
-    .update(`${source.rawRef}\0${source.authority}\0${source.scope}\0${text}\0${JSON.stringify(canonicalValue(source.detail ?? null))}`)
+    .update(
+      `${source.rawRef}\0${source.authority}\0${source.scope}\0${text}\0${JSON.stringify(canonicalValue(source.detail ?? null))}`,
+    )
     .digest('hex')
     .slice(0, 20);
   const rungs = extractPriorAttemptRungs(text);
@@ -468,8 +457,9 @@ export const ORPHAN_CLAIM_BRIEF_BUDGET: Required<PriorAttemptBriefBudget> = {
 export function buildBoundedPriorAttemptBrief(
   compilation: PriorAttemptCompilation,
   budget: PriorAttemptBriefBudget = {},
+  includeEmpty = false,
 ): BoundedPriorAttemptBrief | null {
-  if (!compilation.records.length) return null;
+  if (!compilation.records.length && !includeEmpty) return null;
   // 50_000 CHARS (owner directive 2026-09-02, WI-2142006), up from 14_000.
   // WI-40078 measured the 14k budget BINDING on 16 of 20 sampled live claims,
   // dropping an average of 7.5 detail records each — i.e. the common case was a
@@ -485,12 +475,8 @@ export function buildBoundedPriorAttemptBrief(
   const maxChars = Math.max(2_000, budget.maxChars ?? 50_000);
   const maxRecords = Math.max(1, budget.maxRecords ?? 48);
   const maxTextChars = Math.max(80, budget.maxTextChars ?? 700);
-  const protectedRecords = compilation.records.filter(
-    (record) => CANONICAL_AUTHORITY.has(record.authority),
-  );
-  const ordinaryRecords = compilation.records.filter(
-    (record) => !CANONICAL_AUTHORITY.has(record.authority),
-  );
+  const protectedRecords = compilation.records.filter((record) => CANONICAL_AUTHORITY.has(record.authority));
+  const ordinaryRecords = compilation.records.filter((record) => !CANONICAL_AUTHORITY.has(record.authority));
   const residue = compilation.records
     .filter((record) => record.residue.length > 0)
     .map((record) => ({ rawRef: record.rawRef, workItemId: record.workItemId, items: record.residue }));
@@ -650,7 +636,15 @@ export function buildBoundedPriorAttemptBrief(
   }
   while (briefSize(result) > maxChars && result.authority.length > 0) {
     const entry = result.authority[result.authority.length - 1]!;
-    if (entry.text.length > 64 || entry.approach || entry.outcome || entry.rootCauses || entry.falsePremises || entry.touchedFiles || entry.tests) {
+    if (
+      entry.text.length > 64 ||
+      entry.approach ||
+      entry.outcome ||
+      entry.rootCauses ||
+      entry.falsePremises ||
+      entry.touchedFiles ||
+      entry.tests
+    ) {
       result.authority[result.authority.length - 1] = {
         authority: entry.authority,
         scope: entry.scope,
@@ -720,6 +714,8 @@ export interface CollectPriorAttemptsOptions {
   maxDescendants?: number;
   /** How many ring entries of a checkpoint's trajectory to admit (P-003's journal). */
   maxJournalEntries?: number;
+  /** Downward readers preserve failed source reads as unknown. Member callers stay fail-soft. */
+  onReadFailure?: (source: string) => void;
 }
 
 /** How many prior checkpoint-ring entries a claim admits. The ring holds up to
@@ -781,9 +777,8 @@ const DEFAULT_DEPS: CollectorDeps = {
 function planItemIdsOf(item: WorkItem): string[] {
   if (item.sourcePlanItemIds?.length) return item.sourcePlanItemIds;
   const payload = item.payload && typeof item.payload === 'object' ? (item.payload as Record<string, unknown>) : null;
-  const pointer = payload?.plan_item && typeof payload.plan_item === 'object'
-    ? (payload.plan_item as Record<string, unknown>)
-    : null;
+  const pointer =
+    payload?.plan_item && typeof payload.plan_item === 'object' ? (payload.plan_item as Record<string, unknown>) : null;
   const id = typeof pointer?.item_id === 'string' ? pointer.item_id : null;
   return id ? [id] : [];
 }
@@ -825,6 +820,7 @@ function scopeFor(
 export async function collectPriorAttempts(
   options: CollectPriorAttemptsOptions,
   deps: CollectorDeps = DEFAULT_DEPS,
+  resolvedTree?: ContainmentTree,
 ): Promise<PriorAttemptCompilation> {
   const harness = options.harnessSlug;
   const workspaceId = resolveConcreteWorkspaceId();
@@ -833,28 +829,36 @@ export async function collectPriorAttempts(
     ref: options.workItemId,
     harness: harness ?? null,
   };
-  const tree = await resolveContainmentTree(target, {
-    workspaceId: workspaceId || undefined,
-    harness: harness ?? null,
-    direction: options.direction ?? 'up',
-    maxDescendants: options.maxDescendants,
-  }).catch(() => null);
+  const failed = <T>(source: string, fallback: T): T => {
+    options.onReadFailure?.(source);
+    return fallback;
+  };
+  const tree =
+    resolvedTree ??
+    (await resolveContainmentTree(target, {
+      workspaceId: workspaceId || undefined,
+      harness: harness ?? null,
+      direction: options.direction ?? 'up',
+      maxDescendants: options.maxDescendants,
+    }).catch(() => failed('containment', null)));
+  if (tree?.unavailable) options.onReadFailure?.(`containment:${tree.unavailable}`);
   const ancestorPlan = tree?.ancestors.find((node) => node.kind === 'plan') ?? null;
   const ancestorGoal = tree?.ancestors.find((node) => node.kind === 'goal') ?? null;
   // The plan this read is anchored to: an explicit option, else the requested ref
   // itself when it IS a plan, else the ref's plan ancestor. May legitimately be null —
   // that is the 94% case P-018 exists to serve, and every plan-dependent read below
   // is guarded rather than assumed.
-  const planSlug =
-    options.planSlug ?? (target.kind === 'plan' ? target.ref : null) ?? ancestorPlan?.ref ?? null;
+  const planSlug = options.planSlug ?? (target.kind === 'plan' ? target.ref : null) ?? ancestorPlan?.ref ?? null;
   const planItemId = options.planItemId ?? null;
   const planHarness = ancestorPlan?.harness ?? harness ?? null;
 
   const [plan, currentItem, allSpecs, targetEdges] = await Promise.all([
-    planSlug ? deps.getPlan(planSlug, harness ? { harnessSlug: harness } : {}).catch(() => null) : Promise.resolve(null),
+    planSlug
+      ? deps.getPlan(planSlug, harness ? { harnessSlug: harness } : {}).catch(() => failed('plan', null))
+      : Promise.resolve(null),
     target.kind === 'work_item' ? deps.item(options.workItemId, harness).catch(() => null) : Promise.resolve(null),
     planSlug
-      ? deps.specs({ harnessSlug: harness, planSlug, includeHistory: true }).catch(() => [])
+      ? deps.specs({ harnessSlug: harness, planSlug, includeHistory: true }).catch(() => failed('specs', []))
       : Promise.resolve([]),
     planSlug
       ? deps.edges({ harnessSlug: harness, planSlug, workItemId: options.workItemId }).catch(() => [])
@@ -864,26 +868,43 @@ export async function collectPriorAttempts(
   const fallbackSpecIds = planItemId
     ? allSpecs.filter((spec) => spec.planItemId === planItemId).map((spec) => spec.specId)
     : [];
-  const targetSpecIds = new Set(options.specIds?.length ? options.specIds : derivedSpecIds.length ? derivedSpecIds : fallbackSpecIds);
+  const targetSpecIds = new Set(
+    options.specIds?.length
+      ? options.specIds
+      : target.kind === 'plan'
+        ? allSpecs.map((spec) => spec.specId)
+        : derivedSpecIds.length
+          ? derivedSpecIds
+          : fallbackSpecIds,
+  );
+  if (planSlug && !plan) options.onReadFailure?.('plan:unavailable');
 
-  const evidence = targetSpecIds.size && planSlug
-    ? await deps.evidence({
-        harnessSlug: harness,
-        planSlugs: [planSlug],
-        specIds: [...targetSpecIds],
-        limit: Math.max(options.maxPlanWorkItems ?? 200, 1) * 10,
-      }).catch(() => [])
-    : [];
+  const evidence =
+    target.kind === 'work_item' && targetSpecIds.size && planSlug
+      ? await deps
+          .evidence({
+            harnessSlug: harness,
+            planSlugs: [planSlug],
+            specIds: [...targetSpecIds],
+            limit: Math.max(options.maxPlanWorkItems ?? 200, 1) * 10,
+          })
+          .catch(() => [])
+      : [];
   const evidenceItemIds = new Set(evidence.map((entry) => entry.workItemId));
-  const listed = planSlug
-    ? await deps.items({
-        harness,
-        sourcePlanSlug: planSlug,
-        includeChildren: true,
-        includeObservations: true,
-        limit: options.maxPlanWorkItems ?? 200,
-      }).catch(() => [])
-    : [];
+  // A descendant read must use the bounded, authoritative tree selection. Loading
+  // all plan siblings here bypassed both its cap and its scope/omission accounting.
+  const listed =
+    planSlug && target.kind === 'work_item'
+      ? await deps
+          .items({
+            harness,
+            sourcePlanSlug: planSlug,
+            includeChildren: true,
+            includeObservations: true,
+            limit: options.maxPlanWorkItems ?? 200,
+          })
+          .catch(() => [])
+      : [];
   const candidates = new Map<string, WorkItem>();
   for (const item of listed) candidates.set(item.id, item);
   if (currentItem) candidates.set(currentItem.id, currentItem);
@@ -896,14 +917,17 @@ export async function collectPriorAttempts(
   // P-019: descendants of a plan/goal read, admitted in the tree's priority order and
   // carrying their DEPTH so the D-008 ladder can spend against it.
   const descendantDepth = new Map<string, number>();
-  for (const node of tree?.descendants ?? []) {
-    if (node.kind !== 'work_item') continue;
-    descendantDepth.set(node.ref, node.depth);
-    if (!candidates.has(node.ref)) {
-      const item = await deps.item(node.ref, node.harness ?? harness).catch(() => null);
-      if (item) candidates.set(item.id, item);
-    }
-  }
+  await Promise.all(
+    (tree?.descendants ?? []).map(async (node) => {
+      if (node.kind !== 'work_item') return;
+      descendantDepth.set(node.ref, node.depth);
+      if (!candidates.has(node.ref)) {
+        const item = await deps.item(node.ref, node.harness ?? harness).catch(() => failed(`item:${node.ref}`, null));
+        if (item) candidates.set(item.id, item);
+        else options.onReadFailure?.(`item:${node.ref}`);
+      }
+    }),
+  );
 
   const edgeSpecsByItem = new Map<string, Set<string>>();
   for (const entry of evidence) {
@@ -942,18 +966,18 @@ export async function collectPriorAttempts(
           { kind: 'plan', ref: planSlug, harness: planHarness },
           options.maxThreadPosts ?? 25,
           workspaceId || undefined,
-        ).catch(() => [])
+        ).catch(() => failed('plan-thread', []))
       : Promise.resolve([]),
     ancestorGoal || target.kind === 'goal'
       ? readEffortThread(
           { kind: 'goal', ref: target.kind === 'goal' ? target.ref : ancestorGoal!.ref },
           options.maxThreadPosts ?? 25,
           workspaceId || undefined,
-        ).catch(() => [])
+        ).catch(() => failed('goal-thread', []))
       : Promise.resolve([]),
   ]);
   const levelScopes: PriorAttemptScope[] = ['plan-wide', 'goal-wide'];
-  const levelRefs = [planSlug, target.kind === 'goal' ? target.ref : ancestorGoal?.ref ?? null];
+  const levelRefs = [planSlug, target.kind === 'goal' ? target.ref : (ancestorGoal?.ref ?? null)];
   levelThreads.forEach((posts, index) => {
     const ref = levelRefs[index];
     if (!ref) return;
@@ -987,8 +1011,10 @@ export async function collectPriorAttempts(
       const deep = item.id === options.workItemId || (scope !== 'plan-wide' && scope !== 'goal-wide');
       const [thread, checkpoint, lifecycle, priorWork, journal] = await Promise.all([
         deep ? deps.thread(item.id, options.maxThreadPosts ?? 50, harness).catch(() => null) : Promise.resolve(null),
-        deep
-          ? deps.checkpoint({ harness: item.harness, workItemId: item.id }).catch(() => ({ checkpoint: null, updatedAtMs: null }))
+        deep || descendantDepth.has(item.id)
+          ? deps
+              .checkpoint({ harness: item.harness, workItemId: item.id })
+              .catch(() => failed(`checkpoint:${item.id}`, { checkpoint: null, updatedAtMs: null }))
           : Promise.resolve({ checkpoint: null, updatedAtMs: null }),
         deep && workspaceId
           ? deps.lifecycle({ id: item.id, workspaceId, payload: item.payload, family: item.family }).catch(() => null)
@@ -1101,18 +1127,20 @@ export async function collectPriorAttempts(
 }
 
 function planPointer(opts: ClaimTimePriorAttemptOptions): { planSlug: string; planItemId: string } | null {
-  const payload = opts.workItem?.payload && typeof opts.workItem.payload === 'object'
-    ? (opts.workItem.payload as Record<string, unknown>)
-    : null;
-  const pointer = payload?.plan_item && typeof payload.plan_item === 'object'
-    ? (payload.plan_item as Record<string, unknown>)
-    : null;
-  const planSlug = opts.planSlug
-    ?? opts.workItem?.sourcePlanSlug
-    ?? (typeof pointer?.plan_slug === 'string' ? pointer.plan_slug : null);
-  const planItemId = opts.planItemId
-    ?? opts.workItem?.sourcePlanItemIds?.[0]
-    ?? (typeof pointer?.item_id === 'string' ? pointer.item_id : null);
+  const payload =
+    opts.workItem?.payload && typeof opts.workItem.payload === 'object'
+      ? (opts.workItem.payload as Record<string, unknown>)
+      : null;
+  const pointer =
+    payload?.plan_item && typeof payload.plan_item === 'object' ? (payload.plan_item as Record<string, unknown>) : null;
+  const planSlug =
+    opts.planSlug ??
+    opts.workItem?.sourcePlanSlug ??
+    (typeof pointer?.plan_slug === 'string' ? pointer.plan_slug : null);
+  const planItemId =
+    opts.planItemId ??
+    opts.workItem?.sourcePlanItemIds?.[0] ??
+    (typeof pointer?.item_id === 'string' ? pointer.item_id : null);
   return planSlug && planItemId ? { planSlug, planItemId } : null;
 }
 
@@ -1143,9 +1171,7 @@ export async function getClaimTimePriorAttemptBrief(
 ): Promise<BoundedPriorAttemptBrief | null> {
   const pointer = planPointer(opts);
   const workItemId =
-    opts.workItemId
-    ?? opts.workItem?.id
-    ?? (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
+    opts.workItemId ?? opts.workItem?.id ?? (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
   // With no ref of any kind there is nothing to be about — the one remaining null.
   if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
@@ -1187,6 +1213,15 @@ export async function getClaimTimePriorAttemptBrief(
  * that statement made mechanical — a member's claim cannot reach this by passing an
  * argument, and leaders carry a 400k compaction limit against a member's 250k.
  */
+export type ContainmentRollupBrief = BoundedPriorAttemptBrief & {
+  status: 'available' | 'empty' | 'unknown';
+  target: ContainmentRef;
+  fanOut: ContainmentTree['fanOut'];
+  degradedSources: string[];
+  omittedDescendants: ContainmentRef[];
+  omittedDescendantsTruncated: boolean;
+};
+
 export async function getContainmentRollupBrief(
   opts: {
     target: ContainmentRef;
@@ -1196,45 +1231,82 @@ export async function getContainmentRollupBrief(
     maxDescendants?: number;
   },
   deps: CollectorDeps = DEFAULT_DEPS,
-): Promise<(BoundedPriorAttemptBrief & { fanOut: ContainmentTree['fanOut'] }) | null> {
+): Promise<ContainmentRollupBrief | null> {
   if (!opts.target?.ref) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS * 2);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const tree = await resolveContainmentTree(opts.target, {
-      harness: opts.harness ?? opts.target.harness ?? null,
-      direction: 'down',
-      maxDescendants: opts.maxDescendants,
-    });
-    const compilation = await Promise.race([
-      collectPriorAttempts(
-        {
-          harnessSlug: opts.harness ?? opts.target.harness ?? undefined,
-          target: opts.target,
-          // The rollup is ABOUT the level, so no single work-item is "self"; passing the
-          // level's own ref keeps `self` empty rather than crowning an arbitrary child.
-          workItemId: opts.target.kind === 'work_item' ? opts.target.ref : `${opts.target.kind}:${opts.target.ref}`,
+    return await Promise.race([
+      (async () => {
+        const tree = await resolveContainmentTree(opts.target, {
+          harness: opts.harness ?? opts.target.harness ?? null,
           direction: 'down',
           maxDescendants: opts.maxDescendants,
-          maxPlanWorkItems: 200,
-          maxThreadPosts: 25,
-        },
-        deps,
-      ),
+        });
+        const degradedSources = new Set<string>();
+        const compilation = await collectPriorAttempts(
+          {
+            harnessSlug: opts.harness ?? opts.target.harness ?? undefined,
+            target: opts.target,
+            // The rollup is ABOUT the level, so no single work-item is "self"; passing the
+            // level's own ref keeps `self` empty rather than crowning an arbitrary child.
+            workItemId: opts.target.kind === 'work_item' ? opts.target.ref : `${opts.target.kind}:${opts.target.ref}`,
+            direction: 'down',
+            maxDescendants: opts.maxDescendants,
+            maxPlanWorkItems: 200,
+            maxThreadPosts: 25,
+            onReadFailure: (source) => {
+              degradedSources.add(source);
+            },
+          },
+          deps,
+          tree,
+        );
+        const brief = buildBoundedPriorAttemptBrief(compilation, opts.budget, true)!;
+        return {
+          ...brief,
+          status: degradedSources.size
+            ? ('unknown' as const)
+            : compilation.records.length
+              ? ('available' as const)
+              : ('empty' as const),
+          target: opts.target,
+          fanOut: tree.fanOut,
+          degradedSources: [...degradedSources],
+          omittedDescendants: tree.omittedDescendants.slice(0, 8),
+          omittedDescendantsTruncated: tree.omittedDescendantsTruncated || tree.omittedDescendants.length > 8,
+        };
+      })(),
       new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => reject(new Error('prior-attempt-rollup-timeout')), timeoutMs);
+        timer = setTimeout(() => reject(new Error('prior-attempt-rollup-timeout')), timeoutMs);
         timer.unref?.();
       }),
     ]);
-    const brief = buildBoundedPriorAttemptBrief(compilation, opts.budget);
-    if (!brief) return null;
-    // P-019: a rollup that silently drops children is the failure this discloses. The
-    // fan-out numbers ride the brief so a reader can tell "the plan has 12 items and
-    // you have them all" from "the plan has 126 and you have 24".
-    return { ...brief, fanOut: tree.fanOut };
   } catch {
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
+
+/** One bounded projection shared by the plan read, launch seed and leader sink. */
+export async function readPlanHistoryContext(
+  planSlug: string,
+  harness: string,
+  read: typeof getContainmentRollupBrief = getContainmentRollupBrief,
+) {
+  const recovery = { tool: 'plans:get', args: { slug: planSlug, harness, heading: 'History' } };
+  const brief = await read({
+    target: { kind: 'plan', ref: planSlug, harness },
+    harness,
+    budget: { maxChars: 6_000, maxRecords: 16, maxTextChars: 400 },
+    maxDescendants: 24,
+    timeoutMs: 2_500,
+  }).catch(() => null);
+  return { status: brief?.status ?? 'unknown', brief, recovery };
+}
+
+export type PlanHistoryContext = Awaited<ReturnType<typeof readPlanHistoryContext>>;
 
 export interface PriorAttemptRefResolution {
   schemaVersion: 'prior-attempt-refs-v1';
@@ -1262,7 +1334,7 @@ export interface PriorAttemptRefResolution {
  * would otherwise quietly break.
  */
 export async function resolvePriorAttemptRefs(
-  opts: ClaimTimePriorAttemptOptions & { rawRefs: readonly string[] },
+  opts: ClaimTimePriorAttemptOptions & { rawRefs: readonly string[]; target?: ContainmentRef },
   deps: CollectorDeps = DEFAULT_DEPS,
 ): Promise<PriorAttemptRefResolution | null> {
   const wanted = [...new Set(opts.rawRefs.filter((ref) => typeof ref === 'string' && ref.trim()))];
@@ -1288,9 +1360,11 @@ export async function resolvePriorAttemptRefs(
   // never a precondition. What remains is the narrower and honest guard: this function
   // needs SOME anchor to resolve against, not specifically a PLAN one.
   const pointer = planPointer(opts);
-  const workItemId = opts.workItemId
-    ?? opts.workItem?.id
-    ?? (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
+  const workItemId =
+    opts.workItemId ??
+    opts.workItem?.id ??
+    (opts.target ? `${opts.target.kind}:${opts.target.ref}` : null) ??
+    (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
   if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
   try {
@@ -1301,6 +1375,7 @@ export async function resolvePriorAttemptRefs(
           planSlug: pointer?.planSlug ?? null,
           planItemId: pointer?.planItemId ?? null,
           workItemId,
+          ...(opts.target ? { target: opts.target, direction: 'down' as const, maxDescendants: 24 } : {}),
           maxPlanWorkItems: 16,
           maxThreadPosts: 12,
         },
