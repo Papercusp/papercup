@@ -446,6 +446,11 @@ export default defineTool({
         .describe(
           'psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). This is not a lane/job label; put lane direction in the brief or label.',
         ),
+      stack: z
+        .array(z.string().min(1))
+        .max(40)
+        .optional()
+        .describe('Repeatable psu --stack `slot:id` bindings for every fresh launch; members[i].stack overrides this list.'),
       fleet: z
         .string()
         .max(120)
@@ -1270,6 +1275,7 @@ export default defineTool({
       // any persisted fleet profile. This mirrors member > fleet precedence:
       // a saved role is only a fallback when the caller omitted the field.
       role: args.role ?? persistedHeadcountProfile?.config.role,
+      stack: args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
       // supplies its own override in `members[i].carry`.
       carry: args.carry ?? undefined,
@@ -1408,6 +1414,7 @@ export default defineTool({
               contextSize: folded.contextSize ?? null,
               compactionLimit: folded.compactionLimit ?? null,
               role: folded.role ?? null,
+              stack: folded.stack ?? null,
               feature: folded.feature ?? null,
               profile: folded.profile ?? null,
               brain: folded.brain,

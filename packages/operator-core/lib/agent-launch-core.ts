@@ -462,6 +462,8 @@ export function buildAgentLaunchCommand(opts: {
   compactionLimit?: number | null;
   /** psu --role for the launched agent. */
   role?: string | null;
+  /** Repeatable psu --stack launch-time identity bindings (`slot:id`). */
+  stack?: readonly string[] | null;
   /** psu --feature id the agent should pick up. */
   feature?: string | null;
   /** psu --profile launch profile name. */
@@ -564,6 +566,9 @@ export function buildAgentLaunchCommand(opts: {
   if (opts.contextSize) parts.push(`--context-size=${opts.contextSize}`);
   if (opts.compactionLimit) parts.push(`--compaction-limit=${Math.floor(opts.compactionLimit)}`);
   if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
+  if (opts.mode === 'fresh') {
+    for (const ref of opts.stack ?? []) if (ref) parts.push(`--stack=${quoteLaunchValue(ref)}`);
+  }
   if (opts.feature) parts.push(`--feature=${quoteLaunchValue(opts.feature)}`);
   if (opts.profile) parts.push(`--profile=${quoteLaunchValue(opts.profile)}`);
   if (opts.brain) parts.push('--brain');
@@ -628,6 +633,8 @@ export interface MemberLaunchOpts {
   account?: string;
   workspace?: string;
   role?: string;
+  /** Repeatable psu --stack launch-time identity bindings (`slot:id`). */
+  stack?: readonly string[];
   model?: string;
   modelSource?: CodexModelSource;
   /** psu --effort: reasoning effort (low|medium|high|xhigh|max) when not baked into the model spec. */
@@ -674,6 +681,8 @@ export interface MemberSpec {
   contextSize?: 'trimmed' | 'steward';
   compactionLimit?: number;
   role?: string;
+  /** Launch-time identity bindings. Replaces the fleet-wide stack for this member when set. */
+  stack?: string[];
   agent?: string;
   /** Path to a brief file injected as this member's launch context (distinct per member). */
   launchContext?: string;
@@ -730,6 +739,11 @@ export const memberSpecSchema = z
       .describe(
         "psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). This is not a lane/job label; put lane direction in this member's `brief` or the shared `label`.",
       ),
+    stack: z
+      .array(z.string().min(1))
+      .max(40)
+      .optional()
+      .describe("Repeatable psu --stack `slot:id` bindings for this member. Replaces the fleet-wide `stack` when set."),
     agent: z.string().optional().describe("psu --agent (claude|omp|codex) for this member."),
     launchContext: z.string().optional().describe("psu --launch-context: this member's own brief FILE path."),
     brief: z
@@ -792,6 +806,7 @@ export function foldMemberSpec(
     contextSize: pick(spec.contextSize, base.contextSize),
     compactionLimit: pick(spec.compactionLimit, base.compactionLimit),
     role: pick(spec.role, base.role),
+    stack: pick(spec.stack, base.stack),
     launchContext: pick(spec.launchContext, base.launchContext),
     claimKinds: pick(spec.claimKinds, base.claimKinds),
     headless: pick(spec.headless, base.headless),
@@ -862,6 +877,7 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.account) parts.push(`--account=${quoteLaunchValue(opts.account)}`);
   if (opts.workspace) parts.push(`--workspace=${quoteLaunchValue(opts.workspace)}`);
   if (opts.role) parts.push(`--role=${quoteLaunchValue(opts.role)}`);
+  for (const ref of opts.stack ?? []) if (ref) parts.push(`--stack=${quoteLaunchValue(ref)}`);
   // Effort rides the MODEL SPEC, not a flag of its own: psu has no `--effort`
   // (D-001) — an unrecognized flag is WARNED AND DROPPED by parseArgs, so a
   // separate `--effort=` emission is a silent no-op. psu's modelArgsFor splits a

@@ -598,6 +598,26 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnedCommand()).toContain('--role=reviewer');
   });
 
+  it('threads flat and per-member stack bindings into each fresh psu command', async () => {
+    await launchAgent.handler(
+      {
+        brief: 'run the identity-specific work',
+        stack: ['domain:papercusp-engineer'],
+        count: 2,
+        members: [{ stack: ['domain:review-domain', 'practice:careful-review'] }],
+      },
+      ctx,
+    );
+
+    const commands = spawnConsoleMock.mock.calls.map(
+      ([opts]) => (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd,
+    );
+    expect(commands[0]).toContain('--stack=domain:review-domain');
+    expect(commands[0]).toContain('--stack=practice:careful-review');
+    expect(commands[0]).not.toContain('--stack=domain:papercusp-engineer');
+    expect(commands[1]).toContain('--stack=domain:papercusp-engineer');
+  });
+
   it('propagates flat carry to an existing-fleet plan launch with per-member precedence', async () => {
     const res = await launchAgent.handler(
       {

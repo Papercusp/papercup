@@ -366,7 +366,7 @@ describe('buildAgentLaunchCommand', () => {
   it('omits the new optional flags entirely when unset (no flag, not a zero/false)', () => {
     const cmd = buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude' });
     expect(cmd).toBe('psu --no-picker --account=default --agent=claude');
-    for (const flag of ['--compaction-limit', '--context-size', '--role', '--feature', '--profile', '--brain', '--allow-subagents', '--add-dir', '--launch-context']) {
+    for (const flag of ['--compaction-limit', '--context-size', '--role', '--stack', '--feature', '--profile', '--brain', '--allow-subagents', '--add-dir', '--launch-context']) {
       expect(cmd).not.toContain(flag);
     }
   });
@@ -387,10 +387,14 @@ describe('foldMemberSpec (P-002: member field wins; unset falls through, never z
   });
 
   it('a set member field overrides the fleet default for that member only', () => {
-    const folded = foldMemberSpec(base, { model: 'opus', effort: 'high', account: 'pool-2' });
+    const folded = foldMemberSpec(
+      { ...base, stack: ['domain:base-domain'] },
+      { model: 'opus', effort: 'high', account: 'pool-2', stack: ['domain:review-domain'] },
+    );
     expect(folded.model).toBe('opus');
     expect(folded.effort).toBe('high');
     expect(folded.account).toBe('pool-2');
+    expect(folded.stack).toEqual(['domain:review-domain']);
   });
 
   it('an UNSET member field falls through to the fleet default (never a zeroing override)', () => {
@@ -464,6 +468,19 @@ describe('memberLaunchCommand', () => {
   it('omits --compaction-limit entirely when unset (no flag, not a zero)', () => {
     const cmd = memberLaunchCommand({ fleetSlug: 'ops', agent: 'claude', harness: 'h', plan: 'p' });
     expect(cmd).not.toContain('--compaction-limit');
+  });
+
+  it('emits every stack binding as a repeatable --stack flag', () => {
+    const cmd = memberLaunchCommand({
+      fleetSlug: 'ops',
+      agent: 'claude',
+      harness: 'h',
+      plan: 'p',
+      stack: ['domain:papercusp-engineer', 'practice:careful-review'],
+    });
+    expect(cmd.split(' ')).toEqual(
+      expect.arrayContaining(['--stack=domain:papercusp-engineer', '--stack=practice:careful-review']),
+    );
   });
 
   // goal-mode-hardening P-009 / D-013: fleet:launch-on-plan { leader:'spawn' } must write

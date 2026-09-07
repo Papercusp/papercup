@@ -1945,6 +1945,11 @@ export default defineTool({
       .string()
       .optional()
       .describe('psu --role: the su role each member runs as (default the standard su collaborator).'),
+    stack: z
+      .array(z.string().min(1))
+      .max(40)
+      .optional()
+      .describe('Repeatable psu --stack `slot:id` bindings for every member; members[].stack overrides this list.'),
     model: fuzzyEnumAsync(localModelIdsAsync, {
       applies: isOmpLocalModel,
       // A leader passes the PROVIDER-PREFIXED spec (ollama-cc/…); the backend registry stores the
@@ -4346,6 +4351,7 @@ export default defineTool({
       // drain even though the fleet/claim rows live in the correct workspace.
       workspace: workspaceId,
       role: args.role?.trim() || undefined,
+      stack: args.stack,
       model: effModel,
       modelSource: seatsRequested ? 'inherited' : memberModelSource,
       seat: seatPin?.ref,

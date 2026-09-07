@@ -322,6 +322,7 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
       ...base,
       account: 'acct-1',
       role: 'worker',
+      stack: ['domain:papercusp-engineer', 'practice:careful-review'],
       model: 'opus:high',
       feature: 'F-001',
       contextSize: 'trimmed',
@@ -330,6 +331,8 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
     const fleetOccurrences = cmd.match(/--fleet=/g) ?? [];
     expect(fleetOccurrences).toHaveLength(1);
     expect(cmd).toContain('--fleet=atlas-fleet');
+    expect(cmd).toContain('--stack=domain:papercusp-engineer');
+    expect(cmd).toContain('--stack=practice:careful-review');
   });
 
   it('allowSubagents (owner mandate 2026-07-02): omitted by default (deny), --allow-subagents when opted in', () => {
