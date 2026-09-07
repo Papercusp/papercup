@@ -18,13 +18,14 @@
  * Review policy (D-007): a `blueprint` listing lands PENDING and is publicly
  * invisible until an operator approves it — the response says so.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { parse as parseYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
+import { BlueprintLifecycleError, prepareBlueprintPublicRelease } from '../../cupboard/blueprint-release';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -79,15 +80,23 @@ export default defineTool({
         hint: `Expected ${bpYaml}. Author/materialize the blueprint into the repo's .papercusp/blueprints/<id>/ and push it before publishing.`,
       });
     }
-    let blueprintKind: 'hive' | 'harness' = 'harness';
+    let prepared: Awaited<ReturnType<typeof prepareBlueprintPublicRelease>>;
     try {
-      const parsed = parseYaml(readFileSync(bpYaml, 'utf8')) as { kind?: unknown } | null;
-      // pot-rename dual-accept: a kind:'pot' blueprint maps to the SAME stored
-      // cupboard tab class 'hive' (the STORED class is unchanged; only the read accepts pot).
-      if (parsed && (parsed.kind === 'hive' || parsed.kind === 'pot')) blueprintKind = 'hive';
-    } catch {
-      /* unreadable/partial yaml → default 'harness'; the worker re-derives on approve */
+      prepared = await prepareBlueprintPublicRelease({
+        blueprintFile: bpYaml,
+        listingRef: args.blueprintId,
+        resolveExtends: operatorResolveExtends({ localDirs: [join(args.repoDir, '.papercusp', 'blueprints')] }),
+      });
+    } catch (error) {
+      return text({
+        ok: false,
+        error: 'blueprint_release_invalid',
+        detail: error instanceof Error ? error.message : String(error),
+        status: error instanceof BlueprintLifecycleError ? error.status : 422,
+      });
     }
+    const blueprintKind: 'hive' | 'harness' =
+      prepared.source.raw.kind === 'hive' || prepared.source.raw.kind === 'pot' ? 'hive' : 'harness';
 
     // 2. Resolve the repo's GitHub coords — the SAME path knowledge_packs:publish uses.
     const { resolveRepoCoordsFromDir, gitOriginUrl, fetchGithubRepoMeta } = await import(
@@ -119,6 +128,7 @@ export default defineTool({
       github_url: coords.github_url,
       title: args.title,
       description: args.description,
+      release: prepared.release,
     });
     if (!result.ok) {
       return text({ ok: false, error: result.error, detail: result.detail, status: result.status });
@@ -128,6 +138,17 @@ export default defineTool({
       ok: true,
       listingId: data.id,
       blueprintKind,
+      release: {
+        version: prepared.source.version,
+        contentHash: prepared.source.archive.package.rootHash,
+        packageContentHash: prepared.source.archive.root.contentHash,
+        pins: prepared.source.archive.pins.map((pin) => ({
+          kind: pin.packageKind,
+          ref: pin.ref,
+          version: pin.revision,
+          contentHash: pin.contentHash,
+        })),
+      },
       review_status: data.review_status ?? 'pending',
       hint:
         data.review_status === 'pending' || data.pending_review

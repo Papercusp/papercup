@@ -192,6 +192,33 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain('> /tmp/cp.log');
   });
 
+  it('keeps the tooling root separate from the routed subject root and forwards the env overlay safely', () => {
+    const argv = buildCheckpointSystemdArgv(
+      '/papercusp-tooling',
+      '/tmp/portal.log',
+      '/usr/bin:/bin',
+      false,
+      undefined,
+      { workspaceId: 'portal-workspace', installSlug: 'portal' },
+      'shared',
+      undefined,
+      undefined,
+      undefined,
+      '/portal-subject',
+      { PAPERCUSP_RELEASE_SLUG: 'portal', 'bad-key': 'drop-me' },
+      ['DATABASE_URL', 'bad-key'],
+    );
+    const inner = argv.at(-1)!;
+
+    expect(argv).toContain('--working-directory=/papercusp-tooling');
+    expect(argv).toContain('--setenv=PAPERCUSP_RELEASE_SLUG=portal');
+    expect(argv).not.toContain('--setenv=bad-key=drop-me');
+    expect(inner).toContain("unset 'DATABASE_URL' &&");
+    expect(inner).not.toContain("unset 'bad-key'");
+    expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/portal-subject'");
+    expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
+  });
+
   it('EI-211596: transports one validated exact candidate into the detached CLI', () => {
     const candidate = 'a'.repeat(40);
     const inner = buildCheckpointSystemdArgv(
@@ -571,6 +598,45 @@ describe('launchDetachedCheckpoint', () => {
     );
     expect(r).toMatchObject({ launched: false, reason: 'invalid_candidate', argv: [] });
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('uses the routed subject root for probes while launching the tooling command from its own root', async () => {
+    const candidate = 'a'.repeat(40);
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const execFn = vi.fn((_cmd: string, _args: string[]) => ({
+      status: 0,
+      stdout: candidate,
+      stderr: '',
+    }));
+
+    const p = launchDetachedCheckpoint(
+      {
+        root: '/papercusp-tooling',
+        integrationRoot: '/portal-subject',
+        extraEnv: { PAPERCUSP_RELEASE_SLUG: 'portal' },
+        clearEnv: ['DATABASE_URL'],
+        target: { workspaceId: 'portal-workspace', installSlug: 'portal' },
+        force: true,
+        candidate,
+      },
+      spawnFn,
+      execFn,
+    );
+    child.emit('close', 0);
+    const result = await p;
+
+    expect(result.launched).toBe(true);
+    expect(execFn).toHaveBeenCalledWith('git', expect.arrayContaining(['-C', '/portal-subject']));
+    expect(spawnFn).toHaveBeenCalledWith(
+      'systemd-run',
+      expect.arrayContaining([
+        '--working-directory=/papercusp-tooling',
+        '--setenv=PAPERCUSP_RELEASE_SLUG=portal',
+      ]),
+    );
+    expect(result.argv.at(-1)).toContain("PAPERCUSP_INTEGRATION_ROOT='/portal-subject'");
+    expect(result.argv.at(-1)).toContain("unset 'DATABASE_URL' &&");
   });
 });
 

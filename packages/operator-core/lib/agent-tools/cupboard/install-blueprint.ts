@@ -22,7 +22,7 @@ export default defineTool({
   name: 'cupboard:install-blueprint',
   capability: 'harness:write',
   description:
-    "Install a blueprint from the Cupboard: give a listingId (resolves the repo + ref from the listing) OR a githubUrl directly; the operator git-clones the repo, validates <listingRef>/blueprint.yaml (schema + semantics + dep-validation), and places it under ~/.papercusp/blueprints/<id>/ where it shadows the built-in of the same id. installPlugins:true consents to auto-install the blueprint's Cupboard-resolvable plugin deps; declared work-blueprint deps are pulled in too. The response reports the installed blueprint + any dep-closure installs.",
+    "Manage the complete lifecycle of a Cupboard blueprint on the existing blueprint store: install/update validates the repo and immutable full-content closure; rollback selects a previously installed version; uninstall removes the active library entry while retaining pinned version bytes for live sessions. Prompt-text and burn-knob diffs are returned. activationStack preflights exclusive-slot conflicts for a combined install-and-activate; applying the desired revision remains the acknowledged P-040 activation door. No identity-specific installer or listing kind is used.",
   guidance: {
     when: "Installing a blueprint from the Cupboard so it becomes available to harness:create — the user found a blueprint listing (cupboard:search / blueprint:catalog) and wants it installed.",
     notWhen:
@@ -43,24 +43,38 @@ export default defineTool({
       .boolean()
       .optional()
       .describe("Consent to auto-install the blueprint's Cupboard-resolvable plugin deps."),
+    operation: z.enum(['install', 'update', 'rollback', 'uninstall']).default('install'),
+    blueprintId: z.string().max(120).optional().describe('Installed blueprint id; required for rollback/uninstall.'),
+    targetVersion: z.string().max(200).optional().describe('Previously installed version or package content hash; required for rollback.'),
+    activationStack: z.array(z.string().min(1).max(120)).max(40).optional()
+      .describe('Ids already selected for a combined install-and-activate preflight. Library-only install permits alternatives.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
     const subject = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
 
-    if (!args.listingId && !args.githubUrl) {
-      return text({ ok: false, error: 'listingId or githubUrl required' });
+    if ((args.operation === 'install' || args.operation === 'update') && !args.listingId && !args.githubUrl) {
+      return text({ ok: false, error: 'listingId or githubUrl required for install/update' });
+    }
+    if ((args.operation === 'rollback' || args.operation === 'uninstall') && !args.blueprintId) {
+      return text({ ok: false, error: `blueprintId required for ${args.operation}` });
+    }
+    if (args.operation === 'rollback' && !args.targetVersion) {
+      return text({ ok: false, error: 'targetVersion required for rollback' });
     }
 
     // D-045 §3a — the release chain decides BEFORE any bytes move.
     const { gateInstallDoor } = await import('../../cupboard/install-door-gate-io');
-    const gate = await gateInstallDoor({
-      idOrRef: args.listingId ?? args.listingRef,
-      kind: 'blueprint',
-      subject,
-    });
-    if (!gate.ok) {
-      return text({ ok: false, error: gate.code, detail: gate.detail, refusedBy: 'install-door-gate' });
+    if (args.operation !== 'uninstall') {
+      const gate = await gateInstallDoor({
+        idOrRef: args.listingId ?? args.listingRef ?? args.blueprintId,
+        kind: 'blueprint',
+        subject,
+        operation: args.operation === 'rollback' ? 'rollback' : 'install',
+      });
+      if (!gate.ok) {
+        return text({ ok: false, error: gate.code, detail: gate.detail, refusedBy: 'install-door-gate' });
+      }
     }
 
     const { installBlueprintFromCupboard } = await import('../../cupboard/install-blueprint-io');
@@ -69,18 +83,30 @@ export default defineTool({
       ...(args.githubUrl ? { githubUrl: args.githubUrl } : {}),
       ...(args.listingRef ? { listingRef: args.listingRef } : {}),
       installPlugins: args.installPlugins === true,
+      operation: args.operation,
+      ...(args.blueprintId ? { blueprintId: args.blueprintId } : {}),
+      ...(args.targetVersion ? { targetVersion: args.targetVersion } : {}),
+      ...(args.activationStack ? { activationStack: args.activationStack } : {}),
     });
 
     if (!outcome.ok) {
       return text({ ok: false, error: outcome.error, detail: outcome.detail, status: outcome.status });
     }
     const r = outcome.result;
+    if (!('pluginInstalls' in r)) {
+      return text({ ok: true, ...r });
+    }
     return text({
       ok: true,
       id: r.id,
       version: r.version,
+      operation: r.operation,
       abstract: r.abstract,
       installedTo: r.installedTo,
+      release: r.release,
+      diff: r.diff,
+      activationPreflight: r.activationPreflight,
+      activationRequired: r.operation === 'update',
       dependencies: r.dependencies,
       ...(r.pluginInstalls.length > 0 ? { pluginInstalls: r.pluginInstalls } : {}),
       ...(r.blueprintInstalls.length > 0 ? { blueprintInstalls: r.blueprintInstalls } : {}),

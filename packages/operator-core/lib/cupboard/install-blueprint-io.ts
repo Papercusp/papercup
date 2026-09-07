@@ -17,7 +17,9 @@
  * unit — a failure is reported, not swallowed.
  */
 import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { parseDepSpec } from '@papercusp/blueprint-distribution';
+import { parse as parseYaml } from 'yaml';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { resolveCupboardBaseUrl } from './base-url';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
@@ -28,6 +30,12 @@ import {
   type InstallBlueprintCoreResult,
 } from './install-blueprint-core';
 import { gitCloneShallow, buildInstallPluginDeps } from './install-io';
+import {
+  BlueprintLifecycleError,
+  rollbackBlueprintRelease,
+  uninstallBlueprintRelease,
+  type BlueprintActivationLayer,
+} from './blueprint-release';
 
 export interface InstallBlueprintFromCupboardInput {
   /** Resolve the repo URL + listing_ref from the Cupboard listing. */
@@ -37,6 +45,16 @@ export interface InstallBlueprintFromCupboardInput {
   listingRef?: string;
   /** Consent to auto-install the blueprint's Cupboard-resolvable plugin deps. */
   installPlugins?: boolean;
+  /** Omit for the ordinary latest install. Update installs the latest listed
+   *  release; rollback/uninstall operate only on immutable local history. */
+  operation?: 'install' | 'update' | 'rollback' | 'uninstall';
+  /** Required for rollback/uninstall, where no listing fetch is needed. */
+  blueprintId?: string;
+  /** Version or package content hash previously installed here. */
+  targetVersion?: string;
+  /** Combined install-and-activate preflight: ids already chosen for the stack.
+   *  The actual desired/applied transition remains the P-040 activation door. */
+  activationStack?: string[];
 }
 
 export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResult {
@@ -45,13 +63,18 @@ export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResul
 }
 
 export type InstallBlueprintFromCupboardResult =
-  | { ok: true; result: InstallBlueprintClosureResult }
+  | { ok: true; result: InstallBlueprintClosureResult | Awaited<ReturnType<typeof rollbackBlueprintRelease>> | Awaited<ReturnType<typeof uninstallBlueprintRelease>> }
   | { ok: false; status: number; error: string; detail?: string };
 
 /** Resolve a Cupboard listing id → { githubUrl, listingRef }, kind-checked. */
 async function resolveBlueprintListing(
   id: string,
-): Promise<{ githubUrl: string; listingRef?: string } | { error: string; status: number }> {
+): Promise<{
+  githubUrl: string;
+  listingRef?: string;
+  releaseVersion?: string;
+  releaseContentHash?: string;
+} | { error: string; status: number }> {
   const base = resolveCupboardBaseUrl();
   let row: Record<string, unknown> | null = null;
   try {
@@ -74,7 +97,21 @@ async function resolveBlueprintListing(
   const githubUrl = typeof row.github_url === 'string' ? row.github_url : '';
   if (!githubUrl) return { error: 'listing has no github_url', status: 422 };
   const listingRef = typeof row.listing_ref === 'string' ? row.listing_ref : undefined;
-  return { githubUrl, listingRef };
+  const releaseVersion = typeof row.release_version === 'string' ? row.release_version : undefined;
+  const releaseContentHash = typeof row.release_content_hash === 'string' ? row.release_content_hash : undefined;
+  return { githubUrl, listingRef, releaseVersion, releaseContentHash };
+}
+
+function activationLayers(ids: readonly string[] | undefined): BlueprintActivationLayer[] {
+  if (!ids?.length) return [];
+  const resolver = operatorResolveExtends();
+  return [...new Set(ids)].map((id) => {
+    const file = resolver(id);
+    if (!file) throw new InstallBlueprintError(`activation stack blueprint "${id}" is not installed`, 422);
+    const raw = parseYaml(readFileSync(file, 'utf8')) as { slots?: Array<{ slot?: unknown }> } | null;
+    const slots = (raw?.slots ?? []).flatMap((entry) => typeof entry.slot === 'string' ? [entry.slot] : []);
+    return { id, slots };
+  });
 }
 
 /** Fetch the set of Cupboard blueprint listing refs — the dep-validator's
@@ -124,19 +161,46 @@ function makeInstallCoreDeps(): InstallBlueprintCoreDeps {
 export async function installBlueprintFromCupboard(
   input: InstallBlueprintFromCupboardInput,
 ): Promise<InstallBlueprintFromCupboardResult> {
+  const operation = input.operation ?? 'install';
+  if (operation === 'rollback' || operation === 'uninstall') {
+    const id = input.blueprintId?.trim() ?? '';
+    if (!id) return { ok: false, status: 400, error: `blueprintId required for ${operation}` };
+    try {
+      if (operation === 'uninstall') {
+        return { ok: true, result: await uninstallBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id }) };
+      }
+      const target = input.targetVersion?.trim() ?? '';
+      if (!target) return { ok: false, status: 400, error: 'targetVersion required for rollback' };
+      return { ok: true, result: await rollbackBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id, target }) };
+    } catch (error) {
+      if (error instanceof BlueprintLifecycleError) return { ok: false, status: error.status, error: error.message };
+      return { ok: false, status: 500, error: `${operation} failed`, detail: error instanceof Error ? error.message.slice(0, 300) : String(error) };
+    }
+  }
+
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
+  let expectedRelease: { version?: string; contentHash?: string } | undefined;
 
   if (!githubUrl && input.listingId) {
     const resolved = await resolveBlueprintListing(String(input.listingId));
     if ('error' in resolved) return { ok: false, status: resolved.status, error: resolved.error };
     githubUrl = resolved.githubUrl;
     listingRef = listingRef ?? resolved.listingRef;
+    expectedRelease = {
+      ...(resolved.releaseVersion ? { version: resolved.releaseVersion } : {}),
+      ...(resolved.releaseContentHash ? { contentHash: resolved.releaseContentHash } : {}),
+    };
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
   try {
-    const result = await installBlueprintFromCupboardCore({ githubUrl, listingRef }, makeInstallCoreDeps());
+    const result = await installBlueprintFromCupboardCore({
+      githubUrl,
+      listingRef,
+      activationStack: activationLayers(input.activationStack),
+      expectedRelease,
+    }, makeInstallCoreDeps());
 
     // D-001's consent-gated plugin fetch: with `installPlugins: true`, install
     // each declared plugin resolvable from the Cupboard (not yet installed).

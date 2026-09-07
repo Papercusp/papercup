@@ -18,12 +18,37 @@ import { resolveRepoCoordsFromDir } from '../../../cupboard/resolve-repo-coords'
 import { publishListingToCupboard } from '../../../cupboard/publish-listing';
 
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../../blueprint/installed-blueprints', () => ({
+  operatorResolveExtends: vi.fn(() => () => null),
+}));
 vi.mock('../../../cupboard/resolve-repo-coords', () => ({
   resolveRepoCoordsFromDir: vi.fn(),
   gitOriginUrl: vi.fn(),
   fetchGithubRepoMeta: vi.fn(),
 }));
 vi.mock('../../../cupboard/publish-listing', () => ({ publishListingToCupboard: vi.fn() }));
+vi.mock('../../../cupboard/blueprint-release', () => {
+  class BlueprintLifecycleError extends Error {
+    constructor(message: string, readonly status: number) { super(message); }
+  }
+  return {
+    BlueprintLifecycleError,
+    prepareBlueprintPublicRelease: vi.fn(async ({ listingRef }: { listingRef: string }) => ({
+      source: {
+        id: listingRef,
+        version: '1.0.0',
+        raw: { id: listingRef, ...(listingRef.includes('hive') ? { kind: 'hive' } : {}) },
+        archive: {
+          package: { rootHash: `sha256:${'a'.repeat(64)}` },
+          root: { contentHash: 'b'.repeat(64) },
+          pins: [],
+        },
+      },
+      release: { visibility: 'public', manifest: {}, bytes: Buffer.from('release') },
+      manifest: {},
+    })),
+  };
+});
 
 const mockCoords = vi.mocked(resolveRepoCoordsFromDir);
 const mockPublish = vi.mocked(publishListingToCupboard);
@@ -112,6 +137,7 @@ describe('blueprint:publish tool', () => {
         listing_ref: 'my-hive-bp',
         blueprint_kind: 'hive',
         project_ref: 'acme/proj',
+        release: expect.objectContaining({ visibility: 'public' }),
       }),
     );
     expect(res).toMatchObject({ ok: true, listingId: 'listing-1', blueprintKind: 'hive', review_status: 'pending' });

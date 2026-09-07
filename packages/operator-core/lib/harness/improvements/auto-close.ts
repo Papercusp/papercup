@@ -39,6 +39,11 @@ import {
   RED_TEST_GREEN_WINDOW_HOURS,
   type RedTestRun,
 } from './red-test-green-resolve';
+import {
+  decideToolFailurePositiveRepair,
+  toolFailureRepairEvidenceOf,
+  type ToolFailureRepairEvidence,
+} from './tool-error-positive-resolve';
 import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 
 /**
@@ -69,6 +74,12 @@ export interface AutoCloseCandidate {
   issueId: string;
   /** payload.watchdogKey (`<source>:<key>`). */
   watchdogKey: string;
+  /** Stable lifecycle identity persisted under payload.toolFailureProbation. */
+  classKey?: string;
+  /** Contract identity persisted under payload.toolFailureProbation. */
+  contractFingerprint?: string;
+  /** Serving revision persisted under payload.toolFailureProbation. */
+  deployedRevision?: string;
   state: string;
   assignee: string | null;
   /** ms epoch of created_at. */
@@ -215,6 +226,17 @@ export interface AutoCloseDeps {
     completionRef: string,
     evidence: CompletionVerificationEvidence,
   ) => Promise<void>;
+  /** Read durable per-class repair evidence for repeated-tool-error rows. */
+  readToolFailureRepairEvidence?: (
+    issues: EngineerIssue[],
+  ) => Promise<Map<string, ToolFailureRepairEvidence>>;
+  /** Resolve a repeated-tool-error row with real positive completion evidence. */
+  resolveToolFailureRepair?: (
+    id: string,
+    watchdogKey: string,
+    completionRef: string,
+    evidence: CompletionVerificationEvidence,
+  ) => Promise<void>;
 }
 
 const watchdogKeyOfIssue = (i: EngineerIssue): string => {
@@ -231,6 +253,24 @@ const issueCreatedAtMs = (i: EngineerIssue): number => {
   const ms = Date.parse(i.createdAt ?? '');
   return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
 };
+
+function toolFailureRepairFieldsOf(issue: EngineerIssue): {
+  classKey?: string;
+  contractFingerprint?: string;
+  deployedRevision?: string;
+} {
+  const payload = issue.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+    ? (issue.payload as Record<string, unknown>)
+    : {};
+  const probation = payload.toolFailureProbation && typeof payload.toolFailureProbation === 'object' && !Array.isArray(payload.toolFailureProbation)
+    ? (payload.toolFailureProbation as Record<string, unknown>)
+    : {};
+  return {
+    ...(typeof probation.classKey === 'string' ? { classKey: probation.classKey } : {}),
+    ...(typeof probation.contractFingerprint === 'string' ? { contractFingerprint: probation.contractFingerprint } : {}),
+    ...(typeof probation.deployedRevision === 'string' ? { deployedRevision: probation.deployedRevision } : {}),
+  };
+}
 
 function selectCanonicalOpenIssues(open: EngineerIssue[]): {
   canonicalByKey: Map<string, CanonicalWatchdogIssue>;
@@ -382,6 +422,26 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
       // recorded in test_runs), attached as terminal completion evidence.
       await setIssueState(id, 'resolved', 'watchdog-green-resolve', completionRef, { completionEvidence: evidence });
     },
+    // Positive repeated-tool-error evidence is already durable on the issue payload.
+    // Keep the reader injectable so tests cannot accidentally query live PG, while the
+    // default path consumes exactly the persisted per-class record.
+    readToolFailureRepairEvidence: async (issues) => {
+      const byId = new Map<string, ToolFailureRepairEvidence>();
+      for (const issue of issues) {
+        const evidence = toolFailureRepairEvidenceOf(issue.payload);
+        if (evidence) byId.set(issue.id, evidence);
+      }
+      return byId;
+    },
+    resolveToolFailureRepair: async (id, _watchdogKey, completionRef, evidence) => {
+      await commentIssue(
+        id,
+        `🟢 Auto-resolved on POSITIVE repeated-tool-error repair evidence: ${completionRef}. ` +
+          `The exact class was verified; this is not an absence-only close (EI-22438587556370022).`,
+        'watchdog-tool-error-resolve',
+      );
+      await setIssueState(id, 'resolved', 'watchdog-tool-error-resolve', completionRef, { completionEvidence: evidence });
+    },
     nowMs: () => Date.now(),
   };
 }
@@ -428,16 +488,24 @@ export async function processAutoClose(
   // then skipped by the absence loop below.
   const greenResolved = await resolveProvenGreenRedTests(canonical, inFlight, d, opts, out);
 
+  // ── Positive repeated-tool-error repair resolution ──────────────────────────────────
+  // Unlike the absence path, this path needs no quiet-tick history: an exact class/key
+  // contract change or passing probe is affirmative evidence that the rejected call was
+  // repaired. The source remains absent from AUTO_CLOSE_ELIGIBLE_SOURCES, so this is the
+  // only route by which repeated-tool-error can close.
+  const toolFailureResolved = await resolveProvenToolFailureRepairs(canonical, inFlight, d, out);
+
   // ── Absence-based dedup close (needs enough ran-tick history) ───────────────────────
   const { seenKeys, ranTickCount, unobservedTicksBySource } = await d.recentRanTickKeys(minTicks);
   if (ranTickCount >= minTicks) {
     const nowMs = d.nowMs();
     for (const i of canonical) {
-      if (greenResolved.has(i.id)) continue; // already resolved on positive green evidence
+      if (greenResolved.has(i.id) || toolFailureResolved.has(i.id)) continue; // already resolved positively
       const watchdogKey = watchdogKeyOfIssue(i);
       const candidate: AutoCloseCandidate = {
         issueId: i.id,
         watchdogKey,
+        ...toolFailureRepairFieldsOf(i),
         state: i.state,
         assignee: i.assignee,
         createdAtMs: i.createdAt ? Date.parse(i.createdAt) : NaN,
@@ -508,6 +576,64 @@ async function resolveProvenGreenRedTests(
       out.push({ issueId: i.id, watchdogKey, reason: decision.reason });
     } catch (e) {
       console.warn(`[watchdog-green-resolve] resolve failed for ${i.id}:`, e instanceof Error ? e.message : e);
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Resolve repeated-tool-error EIs only on affirmative evidence for their exact
+ * persisted class. This is deliberately injectable: tests and callers can supply the
+ * durable evidence reader, while the default dependency reads the nested payload record.
+ */
+async function resolveProvenToolFailureRepairs(
+  canonical: EngineerIssue[],
+  inFlight: Set<string>,
+  d: AutoCloseDeps,
+  out: AutoCloseOutcome[],
+): Promise<Set<string>> {
+  const resolved = new Set<string>();
+  if (!d.readToolFailureRepairEvidence || !d.resolveToolFailureRepair) return resolved;
+
+  const candidates = canonical.filter((i) =>
+    watchdogKeyOfIssue(i).startsWith('repeated-tool-error:') && !inFlight.has(i.id),
+  );
+  if (candidates.length === 0) return resolved;
+
+  let evidenceByIssue: Map<string, ToolFailureRepairEvidence>;
+  try {
+    evidenceByIssue = await d.readToolFailureRepairEvidence(candidates);
+  } catch (e) {
+    // A failed evidence read is not positive evidence. Keep the item open and let the
+    // rest of this sweep continue; repeated-tool-error is also excluded from absence close.
+    console.warn(
+      '[watchdog-tool-error-resolve] repair-evidence read failed:',
+      e instanceof Error ? e.message : e,
+    );
+    return resolved;
+  }
+
+  for (const i of candidates) {
+    const watchdogKey = watchdogKeyOfIssue(i);
+    const fields = toolFailureRepairFieldsOf(i);
+    const decision = decideToolFailurePositiveRepair(
+      {
+        watchdogKey,
+        ...fields,
+      },
+      evidenceByIssue.get(i.id),
+    );
+    if (!decision.resolve) continue;
+    try {
+      await d.resolveToolFailureRepair(i.id, watchdogKey, decision.completionRef!, decision.evidence!);
+      resolved.add(i.id);
+      out.push({ issueId: i.id, watchdogKey, reason: decision.reason });
+    } catch (e) {
+      // Best-effort: one positive resolution failing must not abort other candidates.
+      console.warn(
+        `[watchdog-tool-error-resolve] resolve failed for ${i.id}:`,
+        e instanceof Error ? e.message : e,
+      );
     }
   }
   return resolved;

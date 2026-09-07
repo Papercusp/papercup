@@ -67,6 +67,10 @@ import {
   type PathContainment,
   type TestImplSplitRisk,
 } from './candidate-contains';
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `\\'"'"'`)}'`;
+}
 /**
  * WI-4494: the harness whose gate a MANUAL checkpoint run judges — stamped into the detached unit's
  * env so the run RECORDS ITS OWN VERDICT instead of discarding it.
@@ -1757,6 +1761,12 @@ export function buildCheckpointSystemdArgv(
   logicalAttemptId?: string | null,
   /** Stable identity shared by this detached fire's anchor and producer outcomes. */
   gateFireId?: string | null,
+  /** Subject integration root. `root` remains the tooling/cwd root. */
+  subjectRoot = root,
+  /** Per-harness environment overlay resolved by the routing helper. */
+  extraEnv: Record<string, string> = {},
+  /** Inherited environment keys that must be removed for a subject run. */
+  clearEnv: string[] = [],
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -1799,6 +1809,10 @@ export function buildCheckpointSystemdArgv(
   // the stable path during startup follows it to the file this run is about to fill.
   const target = runLogPath ?? logPath;
   const link = runLogPath ? `ln -sfn '${runLogPath}' '${logPath}' && ` : '';
+  const validClearEnv = clearEnv.filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+  const clearEnvCommand = validClearEnv.length
+    ? `unset ${validClearEnv.map((key) => shellQuote(key)).join(' ')} && `
+    : '';
   // WI-5377: this run is always detached (systemd-run, no interactive TTY ever reads it
   // live — it goes straight to a file), so stripping ANSI here can never lose the
   // "keep colour for an interactive TTY" case; that case belongs to a foreground/manual
@@ -1813,7 +1827,7 @@ export function buildCheckpointSystemdArgv(
   // single-process write's own loss window — a block-buffered sed could instead lose a
   // whole buffered chunk of otherwise-successfully-produced output.
   const inner =
-    `${link}${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
+    `${link}${clearEnvCommand}${gateEnv}PAPERCUSP_INTEGRATION_ROOT=${shellQuote(subjectRoot)} '${tsxBin(root)}' ` +
     `apps/operator/lib/release/green-checkpoint.ts${candidateArg} 2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > ${target}`;
   // EI-210996: the checkpoint process cannot publish its own verdict after SIGKILL/OOM.
   // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
@@ -1838,6 +1852,9 @@ export function buildCheckpointSystemdArgv(
   const gateFireEnv = isGateFireId(gateFireId)
     ? [`--setenv=${GATE_FIRE_ID_ENV}=${gateFireId}`]
     : [];
+  const routedEnv = Object.entries(extraEnv)
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+    .map(([key, value]) => `--setenv=${key}=${value}`);
   return [
     '--user',
     '--no-block',
@@ -1856,6 +1873,7 @@ export function buildCheckpointSystemdArgv(
     `--setenv=PATH=${pathEnv}`,
     ...greenCheckpointDbPoolSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
+    ...routedEnv,
     ...verdictEnv,
     ...qualificationEnv,
     ...gateFireEnv,
@@ -1944,6 +1962,12 @@ export function checkpointEligibilityPendingId(input: {
 export interface LaunchCheckpointOpts {
   /** Integration tree root (default integrationRoot()). */
   root?: string;
+  /** Subject repo root. The detached command still runs from `root` (tooling root). */
+  integrationRoot?: string;
+  /** Per-harness environment overlay for the detached subject run. */
+  extraEnv?: Record<string, string>;
+  /** Inherited environment keys to remove before the subject overlay is applied. */
+  clearEnv?: string[];
   /** Exact preflight-resolved candidate to transport across the detached CLI seam. */
   candidate?: string | null;
   /** Skip the pre-launch active-run check (WI-1562) and attempt the launch regardless.
@@ -2551,7 +2575,8 @@ export async function launchDetachedCheckpoint(
   readProcessAuthority: CheckpointProcessAuthorityReader = readCheckpointProcessAuthorityCheap,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
-  const unit = checkpointUnitForRoot(root);
+  const subjectRoot = opts.integrationRoot ?? root;
+  const unit = checkpointUnitForRoot(subjectRoot);
   // `logPath` stays the stable, well-known path (readers + the alreadyRunning probe use
   // it); the run itself writes to its own timestamped file behind that symlink.
   const logPath = checkpointLatestLogPath(unit);
@@ -2569,7 +2594,7 @@ export async function launchDetachedCheckpoint(
   }
 
   if (!opts.force) {
-    const active = checkActiveCheckpointRun(root, execFn, readLogHead);
+    const active = checkActiveCheckpointRun(subjectRoot, execFn, readLogHead);
     // WI-6962: an INDETERMINATE probe is not a refusal to launch "because something is
     // running" — it is a refusal to GAMBLE. The costs are wildly asymmetric: refusing costs
     // the caller one retry, while launching into a live run destroys 20+ minutes of an
@@ -2598,7 +2623,7 @@ export async function launchDetachedCheckpoint(
     // intentionally attached synchronously after spawnFn returns; an unconditional await here
     // would also insert a microtask before spawn for a synchronous reader and make callers that
     // drive a fake child immediately after launch lose its close event.
-    const authorityRead = readProcessAuthority(root);
+    const authorityRead = readProcessAuthority(subjectRoot);
     const authority = isPromiseLike(authorityRead) ? await authorityRead : authorityRead;
     if (authority.probeFailed) {
       const authorityProbe: ActiveCheckpointCheck = {
@@ -2699,7 +2724,7 @@ export async function launchDetachedCheckpoint(
           // The wake itself is already fail-soft/best-effort (see cancelStaleCheckpointAwaits),
           // so firing it without blocking keeps the child listener in the same tick.
           if (active.candidate) {
-            void cancelStaleAwaits(root, active.candidate).catch(() => {});
+          void cancelStaleAwaits(subjectRoot, active.candidate).catch(() => {});
           }
         } else {
           return Promise.resolve({
@@ -2734,7 +2759,7 @@ export async function launchDetachedCheckpoint(
   // The request is computed with the SAME expression buildCheckpointSystemdArgv uses for its
   // MemoryMax property, so the admission and the scope can never disagree about the size of
   // this run. Fails open on an unmeasurable probe and on a sole run — see the module note.
-  const capacityMode = process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null;
+  const capacityMode = opts.extraEnv?.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null;
   const memoryAdmission = admitCheckpointMemory({
     requestG: checkpointScopeMemoryMaxG({
       PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: capacityMode ?? 'shared',
@@ -2751,7 +2776,7 @@ export async function launchDetachedCheckpoint(
     });
   }
 
-  const current = currentCheckpointCandidate(root, execFn);
+  const current = currentCheckpointCandidate(subjectRoot, execFn);
   const tipSha = current.current_head;
   const candidateSha = opts.candidate ?? current.current_candidate;
   // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
@@ -2764,7 +2789,7 @@ export async function launchDetachedCheckpoint(
     root,
     logPath,
     process.env.PATH ?? '',
-    process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
+    opts.extraEnv?.PAPERCUSP_PARTIAL_GREEN_GATE === '1' || process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
     runLogPath,
     verdictTarget,
     // WI-39472: forward the launcher's capacity contract, so a manual run uses the same fork
@@ -2773,6 +2798,9 @@ export async function launchDetachedCheckpoint(
     candidateSha,
     opts.logicalAttemptId,
     gateFireId,
+    subjectRoot,
+    opts.extraEnv,
+    opts.clearEnv,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
@@ -2783,7 +2811,7 @@ export async function launchDetachedCheckpoint(
   const quietCutApplied = Boolean(tipSha && candidateSha && tipSha !== candidateSha);
   const excluded =
     quietCutApplied && candidateSha && tipSha
-      ? excludedCommitsSync(root, candidateSha, tipSha, current.quiet_cut_sec, execFn)
+      ? excludedCommitsSync(subjectRoot, candidateSha, tipSha, current.quiet_cut_sec, execFn)
       : [];
   const willJudge: LaunchCheckpointResult['willJudge'] = {
     candidate: candidateSha,
@@ -2795,7 +2823,7 @@ export async function launchDetachedCheckpoint(
     // (`git diff --name-only`) so it stays inside the single-tick constraint this
     // function's spawn path depends on.
     excludedPaths:
-      quietCutApplied && candidateSha && tipSha ? pathsBetweenSync(root, candidateSha, tipSha, execFn) : [],
+      quietCutApplied && candidateSha && tipSha ? pathsBetweenSync(subjectRoot, candidateSha, tipSha, execFn) : [],
     // EI-18759622667757826: how close each exclusion is to aging in — the difference between
     // a prediction a caller can act on and one that talks it into killing a healthy run.
     excludedEligibility: excluded.map(({ sha, subject, eligibleInSec }) => ({ sha, subject, eligibleInSec })),
@@ -2829,7 +2857,7 @@ export async function launchDetachedCheckpoint(
         // NON-recording) run writes no outcome row, so it gets no anchor either — anchoring
         // it would inflate `unaccounted` by construction.
         if (verdictTarget) {
-          void recordGateFire(verdictTarget, { route: 'detached', root, unit, gateFireId });
+          void recordGateFire(verdictTarget, { route: 'detached', root: subjectRoot, unit, gateFireId });
         }
         resolve({ ...base, launched: true });
         return;
@@ -2841,7 +2869,7 @@ export async function launchDetachedCheckpoint(
         // Return the same structured refusal as the normal preflight path when it is. Do not
         // retry under a new unit name: that would create a second process which immediately
         // loses the shared run-lock, and would hide the real in-flight run from the caller.
-        const active = checkActiveCheckpointRun(root, execFn, readLogHead);
+        const active = checkActiveCheckpointRun(subjectRoot, execFn, readLogHead);
         if (active.probe_failed || active.active) {
           resolve({
             ...base,

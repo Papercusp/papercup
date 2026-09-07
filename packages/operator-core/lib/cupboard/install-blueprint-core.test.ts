@@ -81,6 +81,8 @@ describe('installBlueprintFromCupboardCore', () => {
     expect(res.ok).toBe(true);
     expect(res.id).toBe('neat-bp');
     expect(res.version).toBe('0.2.0');
+    expect(res.operation).toBe('install');
+    expect(res.release.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(res.abstract).toBe(false);
     expect(res.installedTo).toBe(join(installedDir, 'neat-bp'));
     expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
@@ -303,9 +305,24 @@ describe('installBlueprintFromCupboardCore', () => {
     await installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps());
     // stale file from a previous version must not survive a re-install
     await fs.writeFile(join(installedDir, 'neat-bp', 'stale.md'), 'old', 'utf8');
-    await installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps());
+    const second = await installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps());
+    expect(second.operation).toBe('no-op');
     expect(existsSync(join(installedDir, 'neat-bp', 'stale.md'))).toBe(false);
     expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
+    expect(existsSync(join(installedDir, '.releases', 'neat-bp', second.release.packageContentHash, 'closure.json'))).toBe(true);
+  });
+
+  it('refuses a listed package hash mismatch and a combined activation slot conflict before replacing the active dir', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\nslots: [{ slot: domain }]');
+    await expect(installBlueprintFromCupboardCore({
+      githubUrl: 'https://github.com/acme/neat-bp',
+      expectedRelease: { contentHash: `sha256:${'0'.repeat(64)}` },
+    }, makeDeps())).rejects.toMatchObject({ status: 422 });
+    await expect(installBlueprintFromCupboardCore({
+      githubUrl: 'https://github.com/acme/neat-bp',
+      activationStack: [{ id: 'other-domain', slots: ['domain'] }],
+    }, makeDeps())).rejects.toMatchObject({ status: 409 });
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 
   it('exports the error class with status mapping', () => {

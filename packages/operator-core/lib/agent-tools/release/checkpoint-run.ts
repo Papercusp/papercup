@@ -69,6 +69,7 @@ import { wakeRecipients } from '../coordination/inbox-wake';
 import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
 import { clampText, LIMITS, softText } from '../limits';
 import { readManualRunAdmission, readQualificationAdmission } from '../../release-checkpoint-config';
+import { resolveCheckpointRouting } from '../../harness/routines/hive-release-env';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -91,6 +92,18 @@ import {
 } from '../../release/checkpoint-eligibility-snapshot';
 
 type SeeAlsoContext = { harnessSlug?: unknown };
+
+type CheckpointHandlerContext = { harnessSlug?: unknown; workspaceId?: unknown };
+
+function concreteCheckpointHarness(ctx: CheckpointHandlerContext): string {
+  const slug = typeof ctx.harnessSlug === 'string' ? ctx.harnessSlug.trim() : '';
+  return slug && slug !== '*' ? slug : operatorHomeHarnessSlug();
+}
+
+function concreteCheckpointWorkspace(ctx: CheckpointHandlerContext): string {
+  const workspace = typeof ctx.workspaceId === 'string' ? ctx.workspaceId.trim() : '';
+  return workspace && workspace !== '*' ? workspace : activeWorkspaceId();
+}
 
 function qualificationMutationContinues(mutation: StoredQualificationMutation): boolean {
   return mutation.status === 'updated' || mutation.status === 'idempotent';
@@ -313,6 +326,28 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    const installSlug = concreteCheckpointHarness(ctx);
+    const workspaceId = concreteCheckpointWorkspace(ctx);
+    const routing = await resolveCheckpointRouting({ installSlug, workspaceId }, integrationRoot());
+    if (routing.skip) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason: 'checkpoint_routing_skip',
+            harness: installSlug,
+            workspace_id: workspaceId,
+            detail: routing.skip.reason,
+            note: `NOT launched: ${installSlug} is not configured as a gated checkpoint harness (${routing.skip.reason}).`,
+          }),
+        }],
+      };
+    }
+    const toolingRoot = routing.root;
+    const checkpointRoot = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
+    const verdictTarget = { workspaceId, installSlug };
     // EI-21209828474655790: D-012/D-013 pauses the release gate under an exact
     // D-016 held-open serializer. The old live-peer rail below was skipped
     // wholesale by force:true, so an unrelated lane could replace the manual
@@ -320,7 +355,7 @@ export default defineTool({
     // fence, not ordinary coordination: force/replaceStale/waitForEligibility do
     // not bypass it, and an unread authority store fails closed before migrations
     // or any detached process can be touched.
-    const serializerAuthority = await readCheckpointSerializerAuthority();
+    const serializerAuthority = await readCheckpointSerializerAuthority({ installSlug, workspaceId });
     if (serializerAuthority.status === 'unreadable') {
       ctx.metadata?.({
         standDown: 'serializer_authority_unreadable',
@@ -427,7 +462,7 @@ export default defineTool({
           ],
         };
       }
-      const ownership = await readGateOwnership();
+      const ownership = await readGateOwnership({ harness: installSlug });
       if (ownership.claimState !== 'held' || !ownership.workItem || ownership.takenBy !== caller.ownerId) {
         return {
           content: [
@@ -451,6 +486,7 @@ export default defineTool({
         callerOwnerId: caller.ownerId,
         gateWorkItemId: ownership.workItem,
         prerequisiteWorkItems: args.prerequisiteWorkItems,
+        installSlug,
         workspaceId: caller.workspaceId ?? undefined,
       });
       ctx.metadata?.({
@@ -460,7 +496,7 @@ export default defineTool({
         ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       });
       if (transition.status === 'armed' || transition.status === 'already-armed') {
-        const pipeline = operatorHomeHarnessSlug();
+        const pipeline = installSlug;
         return {
           content: [
             {
@@ -512,7 +548,7 @@ export default defineTool({
     // Fails CLOSED on `unknown`, unlike release:trace's read of the same token: this call is
     // about to spend a ~55min suite and must not do so unable to prove it is authorized.
     // force/replaceStale/waitForEligibility do not bypass an authority boundary.
-    const manualRunAdmission = await readManualRunAdmission();
+    const manualRunAdmission = await readManualRunAdmission({ workspaceId });
     if (manualRunAdmission.status !== 'clear') {
       const held = manualRunAdmission.status === 'held' ? manualRunAdmission.hold : null;
       const unreadable = manualRunAdmission.status === 'unknown' ? manualRunAdmission.reason : 'unknown';
@@ -594,7 +630,7 @@ export default defineTool({
     // otherwise indistinguishable from "no claim at all" in the metadata.
     let ownershipAbandoned = false;
     if (!args.force) {
-      const ownership = await readGateOwnership();
+      const ownership = await readGateOwnership({ harness: installSlug });
       // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
       // tell who we are, we cannot tell whether the claim is our OWN — and refusing then would
       // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
@@ -713,7 +749,7 @@ export default defineTool({
             recoveryModule ? Promise.resolve(recoveryModule) : import('../work_items/release-force-guard'),
           ]);
           const transferred = await claimWorkItem(ownership.workItem, callerOwnerId, {
-            harness: operatorHomeHarnessSlug(),
+            harness: installSlug,
             expectedAssignee: ownership.takenBy,
           });
           if (!transferred) {
@@ -747,7 +783,7 @@ export default defineTool({
             holder: ownership.takenBy,
             basis: automaticBasis,
             reason: takeoverReason,
-            harness: transferred.harness ?? operatorHomeHarnessSlug(),
+            harness: transferred.harness ?? installSlug,
             replacementAssignee: callerOwnerId,
           });
           await forceTransition.notifyForceTransition(
@@ -757,7 +793,7 @@ export default defineTool({
               holder: ownership.takenBy,
               basis: automaticBasis,
               reason: takeoverReason,
-              harness: transferred.harness ?? operatorHomeHarnessSlug(),
+            harness: transferred.harness ?? installSlug,
               operation: 'claim',
               replacementAssignee: callerOwnerId,
             },
@@ -888,11 +924,11 @@ export default defineTool({
     // Fails OPEN in every ambiguous direction (see assessPreLaunchExclusion's contract): no
     // declared paths, a run already in flight, an unresolved candidate, an undecidable or
     // uncommitted miss, or a wait we cannot compute all LAUNCH. `force` skips it entirely.
-    const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force });
-    const root = integrationRoot();
+    const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force, root: checkpointRoot });
+    const root = checkpointRoot;
     const qualificationTarget = {
-      workspaceId: activeWorkspaceId(),
-      installSlug: operatorHomeHarnessSlug(),
+      workspaceId,
+      installSlug,
     };
     const beginInput = {
       attemptId: checkpointEligibilityPendingId({
@@ -986,11 +1022,11 @@ export default defineTool({
     // lineage check; avoid a second read there so both answers cannot drift across a DB update.
     const frozenRepairQueuePreflight =
       !preflight.refuse && !args.requiredAncestorSha
-        ? await assessFrozenRepairQueuePreflight(preflight.candidate)
+        ? await assessFrozenRepairQueuePreflight(preflight.candidate, checkpointRoot)
         : null;
     const requiredAncestorPreflight =
       !preflight.refuse && args.requiredAncestorSha
-        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)
+        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate, checkpointRoot)
         : null;
     const launchCandidate =
       requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
@@ -1002,7 +1038,7 @@ export default defineTool({
     // detached candidate-migration/dependency/rendezvous stages are explicit
     // `deferred` predicates — resolved to a fail-closed enforcement point, never
     // misreported as already clear.
-    const qualificationAdmission = await readQualificationAdmission();
+    const qualificationAdmission = await readQualificationAdmission({ workspaceId });
     const completionEvents = checkpointEligibilityCompletionEvents(root);
     const predicates: CheckpointEligibilityPredicate[] = [
       {
@@ -1466,7 +1502,7 @@ export default defineTool({
       // Record WHICH process this lease belongs to. Without it the lease is unfalsifiable: a runner
       // that dies without settling holds the gate for the full 3h, and every scheduled fire in that
       // window is skipped (`writer-starved`) — a gate that renders no verdict while reading as red.
-      unit: `${checkpointUnitForRoot(integrationRoot())}.service`,
+      unit: `${checkpointUnitForRoot(checkpointRoot)}.service`,
     });
     if (!qualificationMutationContinues(qualificationReservation)) {
       const transaction = 'transaction' in qualificationReservation ? qualificationReservation.transaction : null;
@@ -1488,6 +1524,11 @@ export default defineTool({
       };
     }
     const result = await launchDetachedCheckpoint({
+      root: toolingRoot,
+      integrationRoot: checkpointRoot,
+      extraEnv: routing.extraEnv,
+      clearEnv: routing.clearEnv,
+      target: verdictTarget,
       force: args.force,
       replaceStale: args.replaceStale,
       ...(launchCandidate ? { candidate: launchCandidate } : {}),
@@ -1573,7 +1614,7 @@ export default defineTool({
       // HERE, at the one call site where acting on its absence does damage. On 2026-08-02 that
       // gap cost three agents a morning of diagnosing reds the refire cleared unaided, and one
       // near-miss recommendation to fire this very verb into a live rescue.
-      const retriage = attributeRetriageToRun(await readInFlightRetriage(), a);
+      const retriage = attributeRetriageToRun(await readInFlightRetriage(installSlug), a);
       // Only trust it for THIS run: a marker written before this run started belongs to an
       // earlier one, and reporting it would silence a genuinely new red with a stale rescue.
       const liveRetriage = retriage && retriage.belongsToRun !== false ? retriage : null;
@@ -1588,7 +1629,7 @@ export default defineTool({
       // re-fix an already-correct guard. Only computed when a marker exists: `runnerBootedAtMs`
       // lives on the marker, so there is nothing to compare against otherwise.
       const runnerFreshness = liveRetriage
-        ? describeRunnerCodeFreshness(liveRetriage.marker, await readRunnerCodeCommittedAtMs(integrationRoot()))
+        ? describeRunnerCodeFreshness(liveRetriage.marker, await readRunnerCodeCommittedAtMs(checkpointRoot))
         : null;
       // EI-21044758600216699: the SIBLING marker (EI-19931692050586322, `gate_health.inFlightCandidate`)
       // — published on EVERY invocation, including a run's FIRST (non-refiring) candidate, unlike
@@ -1605,7 +1646,7 @@ export default defineTool({
       // applies to its own `marker`/`candMarker`).
       const liveCandidateMarker = liveRetriage
         ? null
-        : await readInFlightCandidate((await import('../../harness/operator-home-harness')).operatorHomeHarnessSlug());
+        : await readInFlightCandidate(installSlug, workspaceId);
       // P-001 (plan agent-epistemics-2026-08-02): preferring the marker was necessary but not
       // sufficient. When BOTH markers are ABSENT and the run is `held_externally`, the only candidate
       // left is `a.candidate` — the checkpoint checkout's live HEAD, re-read after the fact
@@ -1646,6 +1687,7 @@ export default defineTool({
               'checkpoint:await, which names its own candidate',
           })
         : await checkpointCandidateContainment({
+            root: checkpointRoot,
             // The markers are what the running process published about ITSELF; `a.candidate` is at best
             // a log read and, on the cron path this branch usually describes, an INFERENCE from the
             // checkpoint checkout's live HEAD. Prefer the observation — same precedence
@@ -1832,6 +1874,7 @@ export default defineTool({
       : null;
     const containment = result.launched
       ? await checkpointCandidateContainment({
+          root: checkpointRoot,
           candidateSha: transportedCandidateSha,
           tipSha: result.willJudge?.tip ?? null,
           paths: args.paths,

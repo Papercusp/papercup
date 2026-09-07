@@ -36,12 +36,27 @@ import { blueprintRegistrySets } from '../blueprint/registry-sets';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
 import { resolveBlueprintPackageInputs, type BlueprintPackageResolver } from '../blueprint/compile-packages';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
+import {
+  BlueprintLifecycleError,
+  commitBlueprintRelease,
+  type BlueprintActivationLayer,
+  type BlueprintActivationPreflight,
+  type BlueprintReleaseDiff,
+  type BlueprintLifecycleOperation,
+} from './blueprint-release';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
   githubUrl: string;
   /** Within-repo blueprint discriminator — the subdir to look in first. */
   listingRef?: string;
+  /** Optional combined install-and-activate preflight. Installing into the
+   *  library is otherwise allowed even when another stored identity fills the
+   *  same exclusive slot (D-029). */
+  activationStack?: readonly BlueprintActivationLayer[];
+  /** Immutable identity pinned on the Cupboard row. A listed release that does
+   *  not match the cloned complete closure is refused before any bytes land. */
+  expectedRelease?: { version?: string | null; contentHash?: string | null };
 }
 
 export interface InstallBlueprintCoreResult {
@@ -59,6 +74,10 @@ export interface InstallBlueprintCoreResult {
   dependencies: { tools: string[]; packs: string[]; plugins: string[]; blueprints: string[] };
   /** Import-time validation, including complete source and bundled-content pins. */
   depCheck: BlueprintDependencyValidation | null;
+  operation: Extract<BlueprintLifecycleOperation, 'install' | 'update' | 'no-op'>;
+  release: { version: string; contentHash: string; packageContentHash: string };
+  diff: BlueprintReleaseDiff;
+  activationPreflight: BlueprintActivationPreflight;
 }
 
 export interface InstallBlueprintCoreDeps {
@@ -136,15 +155,6 @@ function locateBlueprintDir(cloneDir: string, listingRef: string | undefined): s
     'no blueprint.yaml found in the blueprint repo (checked listing_ref subdir + root)',
     422,
   );
-}
-
-/** Recursively copy a blueprint dir into `target`, excluding any .git. */
-async function copyBlueprintDir(src: string, target: string): Promise<void> {
-  await fs.rm(target, { recursive: true, force: true });
-  await fs.cp(src, target, {
-    recursive: true,
-    filter: (s) => !s.split(/[/\\]/).includes('.git'),
-  });
 }
 
 export async function installBlueprintFromCupboardCore(
@@ -279,10 +289,27 @@ export async function installBlueprintFromCupboardCore(
       throw new InstallBlueprintError(`blueprint "${id}" package pins invalid: ${depCheck.messages.join('; ')}`, 422);
     }
 
-    const target = join(deps.installedBlueprintsDir(), id);
-    assertInside(deps.installedBlueprintsDir(), target, `blueprint id "${id}"`);
-    await fs.mkdir(deps.installedBlueprintsDir(), { recursive: true });
-    await copyBlueprintDir(bpDir, target);
+    const version = typeof raw.version === 'string'
+      ? raw.version
+      : depCheck.pins?.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id)?.revision ?? 'unversioned';
+    let lifecycle: Awaited<ReturnType<typeof commitBlueprintRelease>>;
+    try {
+      lifecycle = await commitBlueprintRelease({
+        installedDir: deps.installedBlueprintsDir(),
+        sourceDir: bpDir,
+        id,
+        version,
+        source: url,
+        pins: depCheck.pins ?? [],
+        activationStack: input.activationStack,
+        expectedRelease: input.expectedRelease,
+      });
+    } catch (error) {
+      if (error instanceof BlueprintLifecycleError) {
+        throw new InstallBlueprintError(error.message, error.status);
+      }
+      throw error;
+    }
 
     return {
       ok: true,
@@ -291,9 +318,17 @@ export async function installBlueprintFromCupboardCore(
       description: typeof raw.description === 'string' ? raw.description : null,
       abstract,
       source: url,
-      installedTo: target,
+      installedTo: lifecycle.installedTo,
       dependencies,
       depCheck,
+      operation: lifecycle.operation,
+      release: {
+        version: lifecycle.record.version,
+        contentHash: lifecycle.record.artifactContentHash,
+        packageContentHash: lifecycle.record.contentHash,
+      },
+      diff: lifecycle.diff,
+      activationPreflight: lifecycle.activationPreflight,
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

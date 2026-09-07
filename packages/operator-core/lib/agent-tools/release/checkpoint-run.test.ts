@@ -32,6 +32,9 @@ const qualificationMocks = vi.hoisted(() => ({
   reserve: vi.fn(),
   eligibility: vi.fn(),
 }));
+const routingMocks = vi.hoisted(() => ({
+  resolve: vi.fn(),
+}));
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
   readStoredQualification: (...a: unknown[]) => qualificationMocks.read(...a),
@@ -39,6 +42,9 @@ vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   waitStoredQualification: (...a: unknown[]) => qualificationMocks.wait(...a),
   reserveStoredQualificationRunner: (...a: unknown[]) => qualificationMocks.reserve(...a),
   recordStoredQualificationEligibility: (...a: unknown[]) => qualificationMocks.eligibility(...a),
+}));
+vi.mock('../../harness/routines/hive-release-env', () => ({
+  resolveCheckpointRouting: (...a: unknown[]) => routingMocks.resolve(...a),
 }));
 
 function qualificationTransaction(input: Record<string, unknown>, phase = 'ready') {
@@ -108,6 +114,8 @@ const NO_CONTAINMENT = vi.fn(async () => ({
 beforeEach(() => {
   vi.resetModules();
   NO_CONTAINMENT.mockClear();
+  routingMocks.resolve.mockReset();
+  routingMocks.resolve.mockResolvedValue({ root: '/test-tooling-root', extraEnv: {}, clearEnv: [] });
   qualificationMocks.read.mockReset();
   qualificationMocks.begin.mockReset();
   qualificationMocks.wait.mockReset();
@@ -453,6 +461,52 @@ describe('release:checkpoint-run', () => {
       launched: true,
       unit: 'papercup-green-checkpoint-manual',
     });
+  });
+
+  it('routes a subject-harness manual fire through its tooling root, subject root, env, and verdict target', async () => {
+    const route = {
+      root: '/papercusp-tooling',
+      extraEnv: {
+        PAPERCUSP_INTEGRATION_ROOT: '/portal-subject',
+        PAPERCUSP_RELEASE_SLUG: 'portal',
+      },
+      clearEnv: ['DATABASE_URL'],
+    };
+    routingMocks.resolve.mockResolvedValueOnce(route);
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'portal-checkpoint',
+      argv: [],
+      logPath: '/tmp/portal-checkpoint.log',
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const result = parse(
+      (await tool.handler(
+        {},
+        MAKE_CTX('operator', { harnessSlug: 'portal', workspaceId: 'portal-workspace' }),
+      )) as never,
+    );
+
+    expect(routingMocks.resolve).toHaveBeenCalledWith(
+      { installSlug: 'portal', workspaceId: 'portal-workspace' },
+      expect.any(String),
+    );
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: '/papercusp-tooling',
+        integrationRoot: '/portal-subject',
+        extraEnv: route.extraEnv,
+        clearEnv: ['DATABASE_URL'],
+        target: { workspaceId: 'portal-workspace', installSlug: 'portal' },
+      }),
+    );
+    expect(result).toMatchObject({ ok: true, launched: true });
   });
 
   it('WI-5124: warns loudly in `note` when the quiet-cut excluded fresh commits (the "my fix was silently excluded" trap)', async () => {
@@ -1003,6 +1057,7 @@ describe('release:checkpoint-run', () => {
       candidateSha: 'aaaaaaa',
       tipSha: 'fffffff',
       paths: ['packages/operator-core/lib/mine.ts'],
+      root: '/test-tooling-root',
     });
     expect(b.callerEditsInCandidate).toMatchObject({
       missing: ['packages/operator-core/lib/mine.ts'],
@@ -1102,7 +1157,12 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({ paths: ['mine.ts'] }, MAKE_CTX())) as never);
     // Checked against the IN-FLIGHT candidate, never the hypothetical fresh one.
-    expect(containmentSpy).toHaveBeenCalledWith({ candidateSha: 'inflight1', tipSha: 'tip1', paths: ['mine.ts'] });
+    expect(containmentSpy).toHaveBeenCalledWith({
+      candidateSha: 'inflight1',
+      tipSha: 'tip1',
+      paths: ['mine.ts'],
+      root: '/test-tooling-root',
+    });
     expect(b.containment_warning).toMatch(/cannot see mine\.ts/);
   });
 
@@ -1183,6 +1243,7 @@ describe('release:checkpoint-run', () => {
       candidateSha: MARKER_CANDIDATE,
       tipSha: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
       paths: ['mine.ts'],
+      root: '/test-tooling-root',
     });
     expect(b.callerEditsInCandidate).toMatchObject({ included: ['mine.ts'] });
     // A candidate resolved from the run's own marker is an OBSERVATION, not an inference — no
@@ -2472,6 +2533,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       callerOwnerId: 'su-caller',
       gateWorkItemId: 'WI-40086',
       prerequisiteWorkItems: ['WI-41117'],
+      installSlug: 'papercusp',
       workspaceId: 'papercusp-workspace',
     });
     expect(launchSpy).not.toHaveBeenCalled();

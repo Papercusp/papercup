@@ -9,6 +9,7 @@ import {
 } from './auto-close';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { RedTestRun } from './red-test-green-resolve';
+import type { ToolFailureRepairEvidence } from './tool-error-positive-resolve';
 
 // P-009 (watchdog-and-exposed-systems-improvement-2026-06-18): the auto-close sweep
 // retires a watchdog-sourced EI once its signal stops firing. Auto-closing real items
@@ -494,5 +495,122 @@ describe('processAutoClose — P-007 green-run resolution', () => {
     const out = await processAutoClose('ws', {}, deps);
     expect(closed).toEqual([]);
     expect(out).toEqual([]);
+  });
+});
+
+describe('processAutoClose — positive repeated-tool-error repair', () => {
+  const toolFailureWatchdogKey = 'repeated-tool-error:release:checkpoint-run:requiredAncestorSha';
+  const toolFailureClassKey = 'repeated-tool-error-class:release:checkpoint-run:caller:schema-42~field-requiredAncestorSha:runtime-7';
+  const toolFailureContractFingerprint = 'schema-42~field-requiredAncestorSha';
+  const toolFailureRevision = 'runtime-7';
+
+  const toolFailureIssue = (id: string, repairEvidence?: ToolFailureRepairEvidence): EngineerIssue =>
+    mkIssue({
+      id,
+      watchdogKey: toolFailureWatchdogKey,
+      payload: {
+        watchdogKey: toolFailureWatchdogKey,
+        toolFailureProbation: {
+          classKey: toolFailureClassKey,
+          contractFingerprint: toolFailureContractFingerprint,
+          deployedRevision: toolFailureRevision,
+          ...(repairEvidence ? { repairEvidence } : {}),
+        },
+      },
+    });
+
+  it('resolves an exact class on positive contract-change evidence without requiring tick history', async () => {
+    process.env[FLAG_ENV] = '1';
+    const repairEvidence: ToolFailureRepairEvidence = {
+      classKey: toolFailureClassKey,
+      kind: 'contract-change',
+      contractFingerprint: toolFailureContractFingerprint,
+      fromRevision: toolFailureRevision,
+      toRevision: 'runtime-8',
+      changeRef: 'commit:abc1234 / deployed:runtime-8',
+    };
+    const resolved: Array<{ id: string; key: string; ref: string }> = [];
+    const closed: string[] = [];
+    let readEvidence = false;
+    let readTicks = false;
+    const deps: AutoCloseDeps = {
+      listOpen: async () => [toolFailureIssue('EI-tool-repaired')],
+      recentRanTickKeys: async () => {
+        readTicks = true;
+        return { seenKeys: new Set(), ranTickCount: 0 };
+      },
+      inFlightDispatchIds: async () => new Set(),
+      close: async (id) => { closed.push(id); },
+      nowMs: () => NOW,
+      readToolFailureRepairEvidence: async () => {
+        readEvidence = true;
+        return new Map([['EI-tool-repaired', repairEvidence]]);
+      },
+      resolveToolFailureRepair: async (id, key, ref) => { resolved.push({ id, key, ref }); },
+    };
+
+    const out = await processAutoClose('ws', {}, deps);
+
+    expect(readEvidence).toBe(true);
+    expect(readTicks).toBe(true); // the positive path is independent; the normal sweep still runs
+    expect(resolved).toEqual([{
+      id: 'EI-tool-repaired',
+      key: toolFailureWatchdogKey,
+      ref: expect.stringContaining('commit:abc1234'),
+    }]);
+    expect(closed).toEqual([]);
+    expect(out).toMatchObject([{ issueId: 'EI-tool-repaired', watchdogKey: toolFailureWatchdogKey }]);
+  });
+
+  it('does not resolve a mismatched class and cannot fall through to absence close', async () => {
+    process.env[FLAG_ENV] = '1';
+    const closed: string[] = [];
+    const resolved: string[] = [];
+    const repairEvidence: ToolFailureRepairEvidence = {
+      classKey: 'repeated-tool-error-class:other-tool',
+      kind: 'positive-probe',
+      contractFingerprint: toolFailureContractFingerprint,
+      deployedRevision: toolFailureRevision,
+      probeRef: 'probe:other-tool',
+      passed: true,
+    };
+    const deps: AutoCloseDeps = {
+      listOpen: async () => [toolFailureIssue('EI-tool-mismatch')],
+      recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
+      inFlightDispatchIds: async () => new Set(),
+      close: async (id) => { closed.push(id); },
+      nowMs: () => NOW,
+      readToolFailureRepairEvidence: async () => new Map([['EI-tool-mismatch', repairEvidence]]),
+      resolveToolFailureRepair: async (id) => { resolved.push(id); },
+    };
+
+    const out = await processAutoClose('ws', {}, deps);
+
+    expect(resolved).toEqual([]);
+    expect(closed).toEqual([]);
+    expect(out).toEqual([]);
+  });
+
+  it('fails open when the durable repair-evidence reader fails', async () => {
+    process.env[FLAG_ENV] = '1';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps: AutoCloseDeps = {
+      listOpen: async () => [toolFailureIssue('EI-tool-read-failed')],
+      recentRanTickKeys: async () => ({ seenKeys: new Set(), ranTickCount: 6 }),
+      inFlightDispatchIds: async () => new Set(),
+      close: async () => {},
+      nowMs: () => NOW,
+      readToolFailureRepairEvidence: async () => { throw new Error('repair evidence unavailable'); },
+      resolveToolFailureRepair: async () => {},
+    };
+
+    const out = await processAutoClose('ws', {}, deps);
+
+    expect(out).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[watchdog-tool-error-resolve]'),
+      expect.stringContaining('repair evidence unavailable'),
+    );
+    warn.mockRestore();
   });
 });

@@ -6,10 +6,93 @@
  * default-ordinal severity (healthy<degraded<broken) with unknown/custom ratings
  * excluded as unassessable.
  */
-import { describe, it, expect } from 'vitest';
-import { computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
+import { describe, it, expect, vi } from 'vitest';
+import { computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isIdleUnknown, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale } from './scorecards';
 import type { Rubric } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
+
+describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', () => {
+  it('replaces a settled failed stamp when a validated correction uses a new audit card', async () => {
+    const getIssue = vi.fn(async () => ({
+      payload: {
+        observation: {
+          rubricRef: 'spec-test-adequacy',
+          ratings: { coverage: { rating: 'pass', evidence: 'verified' } },
+          gradingAudit: {
+            state: 'failed' as const,
+            metaRubricRef: 'grading-integrity',
+            auditIssueId: 'EI-AUDIT-FALSE',
+            auditor: 'su-auditor-1',
+            stampedAt: '2026-09-07T00:00:00.000Z',
+            auditedAt: '2026-09-07T00:01:00.000Z',
+          },
+        },
+      },
+    }));
+    const mergeIssuePayload = vi.fn(async () => ({ id: 'EI-TARGET' }));
+
+    const result = await recordGradingAudit(
+      'EI-TARGET',
+      {
+        auditIssueId: 'EI-AUDIT-CORRECTION',
+        auditor: 'su-auditor-2',
+        verdict: 'passed',
+        at: '2026-09-07T00:02:00.000Z',
+      },
+      { getIssue: getIssue as never, mergeIssuePayload: mergeIssuePayload as never },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      issueId: 'EI-TARGET',
+      gradingAudit: {
+        state: 'passed',
+        metaRubricRef: 'grading-integrity',
+        auditIssueId: 'EI-AUDIT-CORRECTION',
+        auditor: 'su-auditor-2',
+        stampedAt: '2026-09-07T00:00:00.000Z',
+        auditedAt: '2026-09-07T00:02:00.000Z',
+      },
+    });
+    expect(mergeIssuePayload).toHaveBeenCalledWith('EI-TARGET', {
+      observation: {
+        rubricRef: 'spec-test-adequacy',
+        ratings: { coverage: { rating: 'pass', evidence: 'verified' } },
+        gradingAudit: {
+          state: 'passed',
+          metaRubricRef: 'grading-integrity',
+          auditIssueId: 'EI-AUDIT-CORRECTION',
+          auditor: 'su-auditor-2',
+          stampedAt: '2026-09-07T00:00:00.000Z',
+          auditedAt: '2026-09-07T00:02:00.000Z',
+        },
+      },
+    });
+  });
+
+  it('keeps a replay of the same settled audit idempotent', async () => {
+    const existing = {
+      state: 'passed' as const,
+      metaRubricRef: 'grading-integrity',
+      auditIssueId: 'EI-AUDIT-1',
+      auditor: 'su-auditor-1',
+      stampedAt: '2026-09-07T00:00:00.000Z',
+      auditedAt: '2026-09-07T00:01:00.000Z',
+    };
+    const mergeIssuePayload = vi.fn();
+    const result = await recordGradingAudit(
+      'EI-TARGET',
+      { auditIssueId: 'EI-AUDIT-1', auditor: 'su-auditor-2', verdict: 'failed' },
+      {
+        getIssue: vi.fn(async () => ({ payload: { observation: { rubricRef: 'r', ratings: {}, gradingAudit: existing } } })) as never,
+        mergeIssuePayload: mergeIssuePayload as never,
+      },
+    );
+
+    expect(result).toEqual({ ok: true, issueId: 'EI-TARGET', gradingAudit: existing });
+    expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+});
 
 // EI-12147: the graded-generation stamp's read-side validator — a scorecard row must
 // surface WHICH generation it graded, and a malformed/pre-stamp payload must degrade.

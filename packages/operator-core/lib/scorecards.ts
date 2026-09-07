@@ -738,8 +738,10 @@ export interface GradingAuditRecordResult {
  * P-013: settle a graded card's audit-pending stamp after its audit scorecard filed.
  * Mirrors {@link retractScorecard}: mergeIssuePayload merges the payload ROOT only,
  * so the COMPLETE nested observation is written back with the settled stamp.
- * Idempotent-safe: an already-settled stamp is returned as-is (never overwritten —
- * the FIRST audit is the audit; a second auditor supersedes the audit card instead).
+ * Idempotent-safe: replays of the same audit card return the existing stamp as-is.
+ * A validated correction that supersedes a settled audit card carries a different
+ * auditIssueId and must replace the target stamp too; otherwise a retracted false
+ * audit leaves the target permanently failed.
  */
 export async function recordGradingAudit(
   issueId: string,
@@ -764,7 +766,7 @@ export async function recordGradingAudit(
   if (!existing) {
     return { ok: false, issueId, error: `'${issueId}' carries no gradingAudit stamp to settle` };
   }
-  if (existing.state !== 'pending') {
+  if (existing.state !== 'pending' && existing.auditIssueId === input.auditIssueId) {
     return { ok: true, issueId, gradingAudit: existing };
   }
   const settled: ScorecardGradingAudit = {

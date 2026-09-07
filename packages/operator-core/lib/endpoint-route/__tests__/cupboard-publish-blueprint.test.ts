@@ -26,6 +26,28 @@ vi.mock('../../cupboard/resolve-repo-coords', () => ({
   parseGithubRemote: vi.fn(() => ({ owner: 'Papercusp', repo: 'blueprints' })),
   fetchGithubRepoMeta: vi.fn(async () => ({ id: 42, html_url: 'https://github.com/Papercusp/blueprints' })),
 }));
+vi.mock('../../cupboard/blueprint-release', () => {
+  class BlueprintLifecycleError extends Error {
+    constructor(message: string, readonly status: number) { super(message); }
+  }
+  return {
+    BlueprintLifecycleError,
+    prepareBlueprintPublicRelease: vi.fn(async ({ listingRef }: { listingRef: string }) => ({
+      source: {
+        id: listingRef,
+        version: '1.0.0',
+        raw: { id: listingRef },
+        archive: {
+          package: { rootHash: `sha256:${'a'.repeat(64)}` },
+          root: { contentHash: 'b'.repeat(64) },
+          pins: [],
+        },
+      },
+      release: { visibility: 'public', manifest: {}, bytes: Buffer.from('release') },
+      manifest: {},
+    })),
+  };
+});
 
 import route from '../routes/cupboard-publish-blueprint';
 import { publishListingToCupboard } from '../../cupboard/publish-listing';
@@ -86,7 +108,11 @@ describe('POST /cupboard/publish-blueprint — public-visibility gate (P-002)', 
     const res = await post({ id: 'coding', github_url: 'https://github.com/Papercusp/blueprints' });
     expect(res.status).toBe(200);
     expect(publishListingToCupboard).toHaveBeenCalledWith(
-      expect.objectContaining({ listing_kind: 'blueprint', listing_ref: 'coding' }),
+      expect.objectContaining({
+        listing_kind: 'blueprint',
+        listing_ref: 'coding',
+        release: expect.objectContaining({ visibility: 'public' }),
+      }),
     );
   });
 

@@ -38,6 +38,10 @@ import {
   assertBlueprintVisibilityPublishable,
   BlueprintVisibilityError,
 } from '../../cupboard/publish-blueprint-visibility';
+import {
+  BlueprintLifecycleError,
+  prepareBlueprintPublicRelease,
+} from '../../cupboard/blueprint-release';
 
 export default defineTool({
   method: 'POST',
@@ -64,7 +68,8 @@ export default defineTool({
 
     // Resolve the blueprint locally (installed → built-in) — the publisher must
     // actually have the blueprint, and its manifest defaults title/description.
-    const file = operatorResolveExtends()(id);
+    const resolver = operatorResolveExtends();
+    const file = resolver(id);
     if (!file) {
       return Response.json(
         { ok: false, error: `blueprint "${id}" not found (installed or built-in)` },
@@ -93,6 +98,24 @@ export default defineTool({
         return Response.json({ ok: false, error: e.message }, { status: e.status });
       }
       throw e;
+    }
+
+    let prepared: Awaited<ReturnType<typeof prepareBlueprintPublicRelease>>;
+    try {
+      prepared = await prepareBlueprintPublicRelease({
+        blueprintFile: file,
+        listingRef: typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : id,
+        resolveExtends: resolver,
+      });
+    } catch (error) {
+      return Response.json(
+        {
+          ok: false,
+          error: 'blueprint_release_invalid',
+          detail: error instanceof Error ? error.message : String(error),
+        },
+        { status: error instanceof BlueprintLifecycleError ? error.status : 422 },
+      );
     }
 
     // The content repo is always explicit for blueprints (the bundled set lives
@@ -137,6 +160,7 @@ export default defineTool({
       // harness blueprint. Default 'harness' (the schema default) when unset.
       // pot-rename dual-accept: kind:'pot' maps to the SAME stored cupboard class 'hive'.
       blueprint_kind: manifest.kind === 'hive' || manifest.kind === 'pot' ? 'hive' : 'harness',
+      release: prepared.release,
     });
 
     if (!result.ok) {
@@ -145,6 +169,14 @@ export default defineTool({
         { status: result.status },
       );
     }
-    return Response.json({ ok: true, listing: result.data });
+    return Response.json({
+      ok: true,
+      listing: result.data,
+      release: {
+        version: prepared.source.version,
+        contentHash: prepared.source.archive.package.rootHash,
+        packageContentHash: prepared.source.archive.root.contentHash,
+      },
+    });
   },
 });
