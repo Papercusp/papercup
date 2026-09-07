@@ -1,0 +1,176 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
+import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
+import type { PuiSuSessionBinding } from './launch-agent';
+import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
+
+const mocks = vi.hoisted(() => ({ link: vi.fn(async () => 'linked'), persist: vi.fn(async () => undefined) }));
+vi.mock('./adv-sessions', () => ({ setAdvSessionOmpThreadId: mocks.link }));
+vi.mock('./su-session-persistence', () => ({
+  bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
+  persistSuSessionDescriptor: mocks.persist, readDurableSuSession: vi.fn(), classifySuSessionRuntime: vi.fn(),
+}));
+vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170' }));
+vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
+vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+  assertLaunchPersona: vi.fn(), sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
+  modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
+  ompCoreToolNames: () => ['tools:invoke'], ompResponsesCompatibilityEnv: () => ({}), recordSessionOwner: vi.fn(),
+  resolveOmpInjectHookPath: () => '/configured/inject.ts', writeOmpSessionConfigDir: () => '.papercusp/su-omp-homes/session-71',
+  suLaunchArgs: (backend: string) => ({ args: backend === 'codex' ? ['--dangerously-bypass-hook-trust'] : ['--system-prompt', '/sealed/su.md'] }),
+}));
+import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
+
+const engines: SuRpcEngine[] = [];
+afterEach(async () => {
+  for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); }
+  vi.clearAllMocks();
+});
+
+function fixture(backend: 'codex' | 'omp', overrides: {
+  nativeId?: string; tools?: boolean; model?: string;
+  request?: (frame: RpcFrame) => Promise<RpcFrame | undefined>;
+  resume?: boolean;
+} = {}) {
+  const binding = { operation: 'created', backend, advSessionId: 71, ownerId: 'su-rpc-fixture',
+    workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', nativeSession: null } as PuiSuSessionBinding & { backend: 'codex' | 'omp' };
+  const boot: BootstrapSuResult = { status: 'ok', specificationRevision: 'spec', stateRevision: 'state', compositionSource: 'blueprint',
+    codexHome: '/configured/codex', coordExtPath: null,
+    agent: backend, sessionId: 71, nativeSessionId: null, cwd: '/project', promptFile: '/sealed/su.md',
+    workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', envelopeEnv: {
+      PAPERCUSP_SID: binding.ownerId!, CODEX_HOME: '/configured/codex', PAPERCUSP_PROFILE: 'engineer',
+    } };
+  let transport!: SuStdioPeerOptions;
+  let exit!: () => void;
+  const done = new Promise<void>((resolve) => { exit = resolve; });
+  const sent: RpcFrame[] = [];
+  const request = vi.fn(async (frame: RpcFrame) => {
+    sent.push(frame);
+    const override = await overrides.request?.(frame);
+    if (override) return override;
+    if (frame.method === 'thread/start' || frame.method === 'thread/resume') return {
+      thread: { id: overrides.nativeId ?? 'native-codex', cwd: '/project', path: '/configured/codex/sessions/rollout.jsonl' },
+      model: overrides.model ?? 'codex-model',
+    };
+    if (frame.method === 'mcpServerStatus/list') return { data: overrides.tools === false ? [] : [{ name: 'papercusp-su', tools: { 'coord:whoami': {} } }] };
+    if (frame.method === 'turn/start') return { turn: { id: 'native-turn' } };
+    if (frame.method === 'turn/interrupt') transport.onMessage({ method: 'turn/completed', params: {
+      threadId: 'native-codex', turn: { id: 'native-turn', status: 'interrupted' },
+    } });
+    if (frame.type === 'abort') transport.onMessage({ type: 'agent_end' });
+    if (frame.type === 'get_state') return {
+      sessionId: overrides.nativeId ?? 'native-omp', sessionFile: '/configured/omp/session.jsonl',
+      model: { provider: 'openai', id: overrides.model ?? 'omp-model' },
+      dumpTools: overrides.tools === false ? [] : [{ name: 'mcp__papercusp_su__coord_whoami' }],
+    };
+    return {};
+  });
+  const close = vi.fn(async () => { exit(); });
+  const nativeSession = backend === 'codex'
+    ? { backend: 'codex' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, codexHome: '/configured/codex', rolloutId: 'native-codex', exactResumeSupported: true, missingReason: null }
+    : { backend: 'omp' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, agentHome: '/configured/omp', ompThreadId: 'native-omp', exactResumeSupported: true, missingReason: null };
+  const engine = startSuRpcEngine(boot, binding, {
+    agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
+    accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
+    ...(overrides.resume ? { nativeSession } : {}),
+    peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
+  });
+  engines.push(engine);
+  return { engine, sent, request, close, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
+}
+
+function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: string = type) {
+  const base = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
+    commandId: id, issuedAt: new Date().toISOString(), target: engine.adapter.host.descriptor().identity };
+  return type === 'owner_turn' ? { ...base, type, turnId: `owner-${id}`, content: 'Hello from PUI' } : { ...base, type };
+}
+
+describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
+  it('binds the native identity only after protocol and SU-tool initialization', async () => {
+    const f = fixture(backend);
+    expect(f.engine.adapter.host.snapshot()).toMatchObject({ executorAttached: false, streamReady: false });
+    await f.engine.ready;
+    expect(f.engine.adapter.host.snapshot()).toMatchObject({ executorAttached: true, streamReady: true,
+      descriptor: { identity: { nativeSessionId: `native-${backend}` }, modes: ['auto'], carry: 'warm', accountRoute: 'default' } });
+    expect(f.transport().env).toMatchObject({ PAPERCUSP_SID: 'su-rpc-fixture', PAPERCUSP_PROFILE: 'engineer' });
+    expect(f.transport().args).toContain(backend === 'codex' ? 'app-server' : 'rpc');
+    // An assigned id and a working executor do not prove native persistence.
+    expect(f.engine.nativeSession().exactResumeSupported).toBe(false);
+  });
+
+  it('refuses a greeting when the SU tool connection is absent', async () => {
+    const f = fixture(backend, { tools: false });
+    await expect(f.engine.ready).rejects.toThrow('SU tools are not connected');
+    expect(f.engine.adapter.host.snapshot()).toMatchObject({ executorAttached: false, streamReady: false, terminal: true });
+    expect(f.close).toHaveBeenCalledOnce();
+    expect(f.sent.some((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toBe(false);
+  });
+
+  it('correlates streaming replies and tools to the submitted owner turn', async () => {
+    const f = fixture(backend);
+    await f.engine.ready;
+    const dispatch = f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never);
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    if (backend === 'codex') {
+      f.emit({ method: 'item/agentMessage/delta', params: { threadId: 'native-codex', itemId: 'reply', delta: 'Hello' } });
+      f.emit({ method: 'item/completed', params: { threadId: 'native-codex', item: { id: 'reply', type: 'agentMessage', text: 'Hello' } } });
+      f.emit({ method: 'item/started', params: { threadId: 'native-codex', item: { id: 'call', type: 'mcpToolCall', tool: 'coord:whoami' } } });
+      f.emit({ method: 'item/completed', params: { threadId: 'native-codex', item: { id: 'call', type: 'mcpToolCall', tool: 'coord:whoami', status: 'completed' } } });
+      f.emit({ method: 'turn/completed', params: { threadId: 'native-codex', turn: { id: 'native-turn', status: 'completed' } } });
+    } else {
+      f.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello' } });
+      f.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello' }] } });
+      f.emit({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'coord:whoami', args: {} });
+      f.emit({ type: 'tool_execution_end', toolCallId: 'call', toolName: 'coord:whoami', result: { ownerId: 'su-rpc-fixture' } });
+      f.emit({ type: 'agent_end' });
+    }
+    const events = f.engine.adapter.host.recent.map(({ event }) => event);
+    const text = events.filter((event) => event.type === 'transcript' && event.phase === 'delta');
+    expect(text).toHaveLength(1);
+    expect(text[0]).toMatchObject({ turnId: 'owner-owner_turn', role: 'assistant', content: 'Hello' });
+    expect(events.filter((event) => event.type === 'tool')).toEqual([
+      expect.objectContaining({ phase: 'started', turnId: 'owner-owner_turn', callId: 'call' }),
+      expect.objectContaining({ phase: 'completed', turnId: 'owner-owner_turn', callId: 'call', isError: false }),
+    ]);
+    expect(f.engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner');
+  });
+
+  it('interrupts the native turn and keeps the connection usable', async () => {
+    const f = fixture(backend); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal;
+    await expect(f.engine.adapter.host.startCommand(command(f.engine, 'interrupt') as never).terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(f.sent).toContainEqual(backend === 'codex'
+      ? { method: 'turn/interrupt', params: { threadId: 'native-codex', turnId: 'native-turn' } } : { type: 'abort' });
+    expect(f.engine.adapter.host.descriptor().lifecycle).toBe('interrupted');
+    expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+  });
+
+  it('resumes only the saved native handle with the same SU scope and context', async () => {
+    const f = fixture(backend, { resume: true }); await f.engine.ready;
+    if (backend === 'codex') {
+      expect(f.sent).toContainEqual(expect.objectContaining({ method: 'thread/resume', params: expect.objectContaining({ threadId: 'native-codex' }) }));
+      expect(f.sent.some((frame) => frame.method === 'thread/start')).toBe(false);
+    } else expect(f.transport().args.slice(-2)).toEqual(['--resume', 'native-omp']);
+    expect(f.engine.adapter.host.descriptor()).toMatchObject({ identity: { ownerId: 'su-rpc-fixture', harnessSlug: 'project', workspaceId: 'workspace' }, modes: ['auto'], carry: 'warm' });
+  });
+
+  it('fails closed if resume returns a different native identity', async () => {
+    const f = fixture(backend, { resume: true, nativeId: 'wrong-thread' });
+    await expect(f.engine.ready).rejects.toThrow('requested native identity');
+    expect(f.engine.adapter.host.descriptor().identity.nativeSessionId).toBe(`native-${backend}`);
+  });
+
+  it('closes uncertain delivery before another saved turn can be sent', async () => {
+    const f = fixture(backend, { request: async (frame) => {
+      if (frame.type === 'prompt' || frame.method === 'turn/start') throw new Error('native acknowledgement lost');
+      return undefined;
+    } });
+    await f.engine.ready;
+    await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal)
+      .resolves.toMatchObject({ status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false } });
+    expect(f.engine.adapter.host.snapshot()).toMatchObject({ terminal: true, streamReady: false });
+    await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'second') as never).terminal)
+      .resolves.toMatchObject({ status: 'refused' });
+    expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
+  });
+});

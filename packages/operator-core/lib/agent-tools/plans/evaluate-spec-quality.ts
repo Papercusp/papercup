@@ -7,23 +7,28 @@ import { readPlanBySlug } from './source';
 import { listSpecClauses } from './spec-clauses-store';
 import { evaluatePlanSpecQuality } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { evaluatePlanStartReadiness } from './plan-input-validation';
+import { resolvePersistedClassRef } from './plan-spec-quality-gate';
+import { getAcceptanceRubricsForPlan } from '../../rubrics';
 
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
-  classRef: z.enum(PLAN_CLASS_RUBRIC_REFS),
+  classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
+    'Optional assertion against the authoritative persisted acceptance-rubric class. Omit to derive it; a mismatch is refused, never used as an override.',
+  ),
 });
 
 export default defineTool({
   name: 'plans:evaluate-spec-quality',
   description:
-    "Grade a plan's exact current first-class spec set against the reusable spec-quality rubric, specialized by plan class. Returns a scorecards:emit-compatible draft, exact specSetHash, and every would-block reason; read-only.",
+    "Preflight plan inputs, persisted acceptance class and first-class clauses together, then grade the exact spec set. Missing/invalid/unknown prerequisites return all discoverable blockers without a scorecard draft. A valid call derives class and exact fingerprint from the stores; read-only.",
   guidance: {
     when: 'Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses.',
     notWhen:
       'Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.',
     chaining:
-      'plans:get-specs → plans:evaluate-spec-quality { classRef } → scorecards:emit the returned draft → plans:start. Any spec revision changes specSetHash and requires a fresh scorecard.',
+      'plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft → plans:start. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence.',
     seeAlso: ['plans:get-specs', 'scorecards:emit', 'rubrics:get spec-quality'],
   },
   capability: 'plans:read',
@@ -35,18 +40,68 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-    const read = await readPlanBySlug(args.slug, await ctxToPlanSourceOpts(sctx));
-    if (!read) {
-      return { data: { ok: false, error: 'plan_not_found', slug: args.slug, harnessSlug } };
+    const opts = await ctxToPlanSourceOpts(sctx);
+    // Discover independent failures together, before evaluation or producing a
+    // draft. Promise callbacks also capture synchronous IO failures in adapters.
+    const [planRead, clauseRead, rubricRead] = await Promise.allSettled([
+      Promise.resolve().then(() => readPlanBySlug(args.slug, opts)),
+      Promise.resolve().then(() => listSpecClauses({ harnessSlug, planSlug: args.slug })),
+      Promise.resolve().then(() => getAcceptanceRubricsForPlan(args.slug, { strict: true })),
+    ]);
+    const blockers: Array<{
+      check: 'plan' | 'inputs' | 'class' | 'clauses';
+      state: 'blocked' | 'unknown';
+      code: string;
+      message: string;
+    }> = [];
+    const unknown = (check: 'plan' | 'class' | 'clauses', reason: unknown) => {
+      blockers.push({
+        check, state: 'unknown', code: `${check}_read_unavailable`,
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+    };
+    if (planRead.status === 'rejected') unknown('plan', planRead.reason);
+    if (clauseRead.status === 'rejected') unknown('clauses', clauseRead.reason);
+    if (rubricRead.status === 'rejected') unknown('class', rubricRead.reason);
+
+    const read = planRead.status === 'fulfilled' ? planRead.value : null;
+    if (planRead.status === 'fulfilled' && !read) {
+      blockers.push({ check: 'plan', state: 'blocked', code: 'plan_not_found', message: `No plan '${args.slug}'.` });
+    }
+    const readiness = read ? evaluatePlanStartReadiness(read.row, read.row.templateData) : null;
+    if (readiness && !readiness.ready) {
+      blockers.push({ check: 'inputs', state: 'blocked', code: readiness.code, message: readiness.hint });
+    }
+    const classResolution = rubricRead.status === 'fulfilled'
+      ? resolvePersistedClassRef(args.slug, rubricRead.value) : null;
+    if (classResolution && !classResolution.ok) {
+      blockers.push({ check: 'class', state: 'blocked', code: classResolution.code, message: classResolution.message });
+    } else if (classResolution?.ok && args.classRef && args.classRef !== classResolution.classRef) {
+      blockers.push({
+        check: 'class', state: 'blocked', code: 'spec_quality_class_mismatch',
+        message: `Caller asserted ${args.classRef}, but the persisted class is ${classResolution.classRef}. Re-read the policy; an assertion cannot override it.`,
+      });
+    }
+    if (clauseRead.status === 'fulfilled' && clauseRead.value.length === 0) {
+      blockers.push({
+        check: 'clauses', state: 'blocked', code: 'no_first_class_spec_clauses',
+        message: 'No first-class clauses to grade. Legacy start remains report-only; author clauses before requesting a spec-quality draft.',
+      });
+    }
+    if (blockers.length || !read || !classResolution?.ok || clauseRead.status !== 'fulfilled') {
+      return { data: {
+        ok: false, error: 'plan_prerequisites_not_ready', slug: args.slug, harnessSlug,
+        readiness, blockers, unknownChecks: blockers.filter((b) => b.state === 'unknown').map((b) => b.check),
+        wouldBlock: blockers.map((b) => b.code),
+      } };
     }
     const planItemIds = (read.row.items.length ? read.row.items : read.parsed.items).map((item) => item.id);
-    const clauses = await listSpecClauses({ harnessSlug, planSlug: args.slug });
     const evaluation = evaluatePlanSpecQuality({
       planSlug: args.slug,
       harnessSlug,
       planItemIds,
-      clauses,
-      classRef: args.classRef,
+      clauses: clauseRead.value,
+      classRef: classResolution.classRef,
     });
     return {
       data: {

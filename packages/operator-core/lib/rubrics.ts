@@ -1093,11 +1093,13 @@ export async function getRubricCriteriaHash(rubricId: string): Promise<string | 
  * returning all rows lets callers fail closed when old data or a concurrent write has
  * violated that invariant. The client-side mapping/filter remains intentional: mocked
  * SQL fixtures often return a wider row set than the query predicates describe.
- * Never throws — reads degrade to an empty result, matching the other rubric reads.
+ * By default reads degrade to an empty result, matching the other rubric reads.
+ * Enforcement/preflight callers use strict:true to distinguish an unavailable
+ * policy store from a successfully read empty set.
  */
 export async function getAcceptanceRubricsForPlan(
   planSlug: string,
-  options: { limit?: number } = {},
+  options: { limit?: number; strict?: boolean } = {},
 ): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
@@ -1116,7 +1118,8 @@ export async function getAcceptanceRubricsForPlan(
        ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
        ${limit == null ? sql`` : sql`LIMIT ${limit}`}`;
     return (await mapRubricPlanRows(rows)).filter((r) => r.kind === 'acceptance' && r.subjectPlan === planSlug);
-  } catch {
+  } catch (error) {
+    if (options.strict) throw error;
     return [];
   }
 }

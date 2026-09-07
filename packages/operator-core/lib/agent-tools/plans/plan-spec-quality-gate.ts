@@ -60,7 +60,7 @@ function isPlanClassRubricRef(value: unknown): value is PlanClassRubricRef {
   return typeof value === 'string' && (PLAN_CLASS_RUBRIC_REFS as readonly string[]).includes(value);
 }
 
-function resolvePersistedClassRef(planSlug: string, rubrics: readonly { classRef?: string | null }[]): ClassResolution {
+export function resolvePersistedClassRef(planSlug: string, rubrics: readonly { classRef?: string | null }[]): ClassResolution {
   if (rubrics.length === 0) {
     return {
       ok: false,
@@ -161,22 +161,23 @@ export async function evaluatePlanSpecQualityGate(
 ): Promise<PlanSpecQualityGateVerdict> {
   const listClauses = deps.listClauses ?? listSpecClauses;
   const listCards = deps.listCards ?? listScorecards;
-  const listAcceptanceRubrics = deps.listAcceptanceRubrics ?? getAcceptanceRubricsForPlan;
+  const listAcceptanceRubrics = deps.listAcceptanceRubrics ??
+    ((planSlug: string) => getAcceptanceRubricsForPlan(planSlug, { strict: true }));
   let clauses;
   try {
     clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
   } catch (error) {
     return {
-      satisfied: true,
+      satisfied: false,
       applicable: false,
-      mode: 'report-only',
+      mode: 'enforced',
       planSlug: input.planSlug,
       specSetHash: null,
       code: 'spec_quality_unavailable',
       wouldBlock: ['spec-quality-read-unavailable'],
       message:
         `Spec-quality report could not read first-class clauses (${error instanceof Error ? error.message : String(error)}). ` +
-        'The plan has not been proven enforcement-eligible, so this legacy-safe rollout reports the gap without freezing promotion.',
+        'The clause store is unavailable, not empty. Refusing promotion until the current contract can be checked; successfully read no-clause plans remain report-only.',
     };
   }
   if (clauses.length === 0) {

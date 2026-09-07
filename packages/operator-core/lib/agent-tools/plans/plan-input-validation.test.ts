@@ -175,6 +175,35 @@ describe('evaluatePlanStartReadiness — THE START GATE', () => {
     expect(r.missing).toEqual(['harness', 'paths']);
   });
 
+  it('reports missing fields AND invalid supplied values in one request', () => {
+    const r = evaluatePlanStartReadiness(
+      { template: null, inputSchema: AUDIT_SCHEMA }, { paths: 'wrong', dryRun: 'wrong' },
+    );
+    expect(r).toMatchObject({ ready: false, code: 'missing_required', missing: ['harness'] });
+    if (r.ready) throw new Error('unreachable');
+    expect(r.issues.some((issue) => issue.includes('paths'))).toBe(true);
+    expect(r.issues.some((issue) => issue.includes('dryRun'))).toBe(true);
+    expect(r.hint).toContain('schema violations');
+  });
+
+  it('also collects registry-schema violations while a required field is absent', () => {
+    const r = evaluatePlanStartReadiness({ template: TMPL, inputSchema: null }, { note: 42 });
+    expect(r).toMatchObject({ ready: false, code: 'missing_required', missing: ['characteristic'] });
+    if (r.ready) throw new Error('unreachable');
+    expect(r.issues.some((issue) => issue.includes('note'))).toBe(true);
+  });
+
+  it.each([false, true, [], 'schema', 1])('does not mistake malformed schema %j for a legacy plan', (inputSchema) => {
+    expect(evaluatePlanStartReadiness({ template: null, inputSchema }, {}))
+      .toMatchObject({ ready: false, code: 'bad_schema', source: 'input-schema' });
+  });
+
+  it('keeps schema compilation failure and discoverable missing keys together', () => {
+    expect(evaluatePlanStartReadiness({
+      template: null, inputSchema: { type: 'banana', required: ['harness'] },
+    }, {})).toMatchObject({ ready: false, code: 'bad_schema', missing: ['harness'] });
+  });
+
   it('BLOCKS on an arg error even when every required field is present', () => {
     const r = evaluatePlanStartReadiness(
       { template: null, inputSchema: AUDIT_SCHEMA },

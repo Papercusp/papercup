@@ -7,8 +7,14 @@
  * degrade-on-malformed). The SQL read leg + the propose/ratify write path end-to-end are
  * covered by the rubrics integration suite; these are the error-prone pure surfaces.
  */
-import { describe, it, expect } from 'vitest';
-import { planStatusToRubricStatus, rubricStatusToPlanStatus, planRowToRubric } from './rubrics';
+import { describe, it, expect, vi } from 'vitest';
+import { planStatusToRubricStatus, rubricStatusToPlanStatus, planRowToRubric, getAcceptanceRubricsForPlan } from './rubrics';
+
+const db = vi.hoisted(() => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...await orig<typeof import('@papercusp/db-org')>(),
+  getOrgPg: db.getOrgPg,
+}));
 
 const baseData = {
   characteristic: 'hive-coordination',
@@ -41,6 +47,20 @@ const planRow = (over: Partial<Parameters<typeof planRowToRubric>[0]> = {}) => (
   archived: false,
   template_data: baseData,
   ...over,
+});
+
+describe('acceptance rubric read policy', () => {
+  it('preserves the legacy empty fallback but strict callers receive the original IO failure', async () => {
+    const error = new Error('policy store unavailable');
+    db.getOrgPg.mockImplementation(() => { throw error; });
+    expect(await getAcceptanceRubricsForPlan('subject-plan')).toEqual([]);
+    await expect(getAcceptanceRubricsForPlan('subject-plan', { strict: true })).rejects.toBe(error);
+  });
+
+  it('a successfully read empty policy set is still empty in strict mode', async () => {
+    db.getOrgPg.mockReturnValue({ sql: vi.fn(async () => []) });
+    expect(await getAcceptanceRubricsForPlan('subject-plan', { strict: true })).toEqual([]);
+  });
 });
 
 describe('planStatusToRubricStatus', () => {

@@ -134,6 +134,24 @@ describe('evaluatePlanSpecQualityGate', () => {
     expect(result.wouldBlock).toEqual(['no-first-class-spec-clauses']);
   });
 
+  it('does not treat an unavailable clause store as a proven legacy/no-clause plan', async () => {
+    const listCards = vi.fn();
+    const listAcceptanceRubrics = vi.fn();
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      {
+        listClauses: async () => { throw new Error('clauses unavailable'); },
+        listCards, listAcceptanceRubrics,
+      },
+    );
+    expect(result).toMatchObject({
+      satisfied: false, mode: 'enforced', code: 'spec_quality_unavailable',
+      wouldBlock: ['spec-quality-read-unavailable'],
+    });
+    expect(listCards).not.toHaveBeenCalled();
+    expect(listAcceptanceRubrics).not.toHaveBeenCalled();
+  });
+
   it('fails closed once a plan adopts clauses but leaves an item uncovered', async () => {
     const result = await evaluatePlanSpecQualityGate(
       { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001', 'P-002'] },

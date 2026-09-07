@@ -48,6 +48,8 @@ import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
 import { checkPlanStartable } from './plan-start-gate';
+import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-input-validation';
+import { parsePlan } from './parser';
 import {
   invalidPlanDependenciesValue,
   validatePlanCandidateDependencies,
@@ -478,6 +480,9 @@ export default defineTool({
 
         let autoApproved = false;
         let activationAudit: ActivationAuditEditNotice | null = null;
+        type CommitRefusal = {
+          ok: false; code: string; message: string; readiness?: PlanStartReadiness; detail?: unknown;
+        };
         try {
           const revision = planRevisionCapture(
             ctx as PlanRevisionCtx,
@@ -485,7 +490,7 @@ export default defineTool({
             'plans:start → auto-approve draft',
             { workspaceId: startWorkspaceId, harnessSlug },
           );
-          const flipResult = await withPlanLock<boolean>(
+          const flipResult = await withPlanLock<boolean | CommitRefusal>(
             ctx as never,
             {
               slug,
@@ -494,19 +499,74 @@ export default defineTool({
               workspaceId: startWorkspaceId,
               afterWrite: revision.afterWrite,
             },
-            async (current) => {
-              if (current === null) return { newBody: null, value: false };
+            async (current, meta) => {
+              // Earlier readiness/consult reads are not write authority.
+              // Validate the locked inputs even on an already-ready plan,
+              // then require the plan revision that was preflighted.
+              if (current === null || !meta) return {
+                newBody: null,
+                value: { ok: false, code: 'plan_not_found', message: `Plan '${slug}' disappeared before approval.` },
+              };
+              const lockedPlan = parsePlan(current, { filePath: `${slug}.md` });
+              const readiness = evaluatePlanStartReadiness({
+                template: lockedPlan.frontmatter.template ?? null, inputSchema: meta.inputSchema,
+              }, meta.templateData);
+              if (!readiness.ready) return {
+                newBody: null,
+                value: { ok: false, code: 'plan_inputs_not_ready', message: readiness.hint, readiness },
+              };
+              if (!read || meta.version !== read.row.version) return {
+                newBody: null,
+                value: {
+                  ok: false, code: 'plan_changed',
+                  message: `Plan '${slug}' changed after preflight. Retry against the current revision; no approval or promotion was written.`,
+                },
+              };
+              // Admission/certificates and the acceptance class live outside
+              // this row's version. Reuse their canonical readers at the write
+              // boundary too: an earlier pass must not outlive a revocation or
+              // a changed class/spec policy while the consult was running.
+              const currentGate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx), null, 'start');
+              if (!currentGate.ok) return {
+                newBody: null,
+                value: {
+                  ok: false, code: currentGate.refusal.code,
+                  message: 'Plan prerequisites no longer permit start at the approval boundary.',
+                  detail: currentGate.refusal,
+                },
+              };
+              const currentSpecQuality = await evaluatePlanSpecQualityGate({
+                harnessSlug, planSlug: slug, planItemIds: lockedPlan.items.map((item) => item.id),
+              });
+              if (!currentSpecQuality.satisfied) return {
+                newBody: null,
+                value: {
+                  ok: false, code: currentSpecQuality.code ?? 'spec_quality_not_current',
+                  message: currentSpecQuality.message ?? 'Current spec policy no longer permits start.',
+                  detail: currentSpecQuality,
+                },
+              };
+              specQuality = currentSpecQuality;
               const flip = flipPlanFrontmatterStatus(current, 'ready', 'draft');
               if (flip.newBody === null) return { newBody: null, value: false };
               return { newBody: bumpUpdatedDate(flip.newBody), value: true };
             },
           );
+          if (flipResult.kind === 'busy') {
+            return { ok: false as const, slug, harnessSlug, error: 'plan_locked', busy: flipResult.busy };
+          }
+          if (typeof flipResult.value === 'object' && flipResult.value?.ok === false) {
+            return { slug, harnessSlug, error: flipResult.value.code, ...flipResult.value };
+          }
           autoApproved = flipResult.kind === 'applied' && flipResult.value === true;
           activationAudit = flipResult.kind === 'applied'
             ? (flipResult.activationAudit ?? null)
             : null;
-        } catch {
-          /* best effort — the plan is started regardless of the status flip */
+        } catch (error) {
+          return {
+            ok: false as const, slug, harnessSlug, error: 'plan_start_revalidation_unavailable',
+            message: error instanceof Error ? error.message : String(error),
+          };
         }
 
         ctxAny.metadata?.({ slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });

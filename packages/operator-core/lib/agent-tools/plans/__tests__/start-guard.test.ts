@@ -260,6 +260,98 @@ const expectNoOpStatusWrite = (): void => {
   expect(writes).toEqual([]);
 };
 
+describe('plans:start commit-time readiness', () => {
+  const body = '---\ntitle: mock\nslug: mock\nstatus: draft\n---\n\n## Now\n**State:** draft\n**Next:** start\n';
+  const meta = {
+    version: 1, contentHash: 'fixture', opStatus: null,
+    templateData: null, inputSchema: null, outputSchema: null,
+  };
+
+  function locked(over: Partial<typeof meta>, beforeCommit: () => void = () => {}) {
+    const writes: string[] = [];
+    planLockMocks.withPlanLock.mockImplementation(async (
+      _ctx: unknown, _opts: unknown,
+      mutate: (current: string, metadata: unknown) => Promise<{ newBody: string | null; value: unknown }>,
+    ) => {
+      beforeCommit();
+      const result = await mutate(body, { ...meta, ...over });
+      if (result.newBody !== null) writes.push(result.newBody);
+      return { kind: 'applied', value: result.value, version: 1 };
+    });
+    return writes;
+  }
+
+  it('rejects a changed revision before approval and promotion', async () => {
+    const writes = locked({ version: 2 });
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'plan_changed' });
+    expect(writes).toEqual([]);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the locked schema and reports both input defects, with no partial write', async () => {
+    const writes = locked({
+      inputSchema: {
+        type: 'object', properties: { harness: { type: 'string' }, attempts: { type: 'integer' } },
+        required: ['harness'],
+      } as never,
+      templateData: { attempts: 'invalid' } as never,
+    });
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({
+      ok: false, error: 'plan_inputs_not_ready',
+      readiness: { missing: ['harness'], issues: [expect.stringContaining('attempts')] },
+    });
+    expect(writes).toEqual([]);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('still approves an unchanged no-schema legacy plan', async () => {
+    const writes = locked({});
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({ ok: true, autoApproved: true });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain('status: ready');
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses policy/evidence invalidation between preflight and approval', async () => {
+    const writes = locked({}, () => {
+      H.state.specQuality = {
+        satisfied: false, applicable: true, mode: 'enforced', planSlug: 'mock', specSetHash: 'changed',
+        code: 'spec_quality_scorecard_missing', wouldBlock: ['current-policy-scorecard-missing'],
+      };
+    });
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
+    expect(writes).toEqual([]);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not promote while the commit lock is unavailable', async () => {
+    planLockMocks.withPlanLock.mockResolvedValue({ kind: 'busy', busy: [] });
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'plan_locked' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not swallow a commit-time conversation audit refusal', async () => {
+    planLockMocks.withPlanLock.mockResolvedValue({
+      kind: 'applied', value: { ok: false, code: 'conversation_audit_required', message: 'audit required' },
+    });
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'conversation_audit_required' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not proceed when commit-time validation is unavailable', async () => {
+    planLockMocks.withPlanLock.mockRejectedValue(new Error('lock transaction unavailable'));
+    const result = await run({ slug: 'mock', consulted: true });
+    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'plan_start_revalidation_unavailable' });
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('plans:start terminal guard', () => {
   it('opts into idempotent completion so a slow finished saga surfaces its outcome', () => {
     // plans:start may commit approval, promotion, and/or the Promoted block

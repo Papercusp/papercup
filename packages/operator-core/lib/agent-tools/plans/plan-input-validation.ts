@@ -31,7 +31,6 @@ import type { z } from 'zod';
 import { getPlanTemplate, validateTemplateData } from './template-registry';
 import {
   checkAgainstJsonSchema,
-  missingRequiredJsonSchemaKeys,
   jsonSchemaRequiredKeys,
   withoutTopLevelRequired,
 } from '../../json-schema-validation';
@@ -86,10 +85,12 @@ function asData(v: unknown): Record<string, unknown> {
 /** Which schema source this plan declares (or `conflict` when it declares both). */
 export function planSchemaSource(ref: PlanSchemaRef): PlanSchemaSource {
   const template = ref.template?.trim() || null;
-  const schema = asJsonSchema(ref.inputSchema);
-  if (template && schema) return 'conflict';
+  // A malformed supplied schema is NOT the legacy/no-schema case. Federation
+  // can bypass the authoring verb, so it must reach validation and fail closed.
+  const hasSchema = ref.inputSchema !== null && ref.inputSchema !== undefined;
+  if (template && hasSchema) return 'conflict';
   if (template) return 'template';
-  if (schema) return 'input-schema';
+  if (hasSchema) return 'input-schema';
   return 'none';
 }
 
@@ -158,7 +159,8 @@ export function validatePlanData(ref: PlanSchemaRef, data: unknown): PlanDataChe
   // objects (a rubric) whose readers assume a complete value, so relaxing it there
   // would let a half-written rubric into a store other code trusts. The two paths
   // differ on WRITE and agree on START, which is where it matters.
-  const schema = asJsonSchema(ref.inputSchema)!;
+  const schema = asJsonSchema(ref.inputSchema);
+  if (!schema) return { ok: false, code: 'bad_schema', issues: ['input_schema must be an object'] };
   const r = checkAgainstJsonSchema(withoutTopLevelRequired(schema), asData(data));
   if (r.ok) return { ok: true, source: 'input-schema', data };
   return r.code === 'bad_schema'
@@ -192,9 +194,9 @@ export type PlanStartReadiness =
  * is why this gate is a no-op for the entire pre-existing plan corpus and needs no
  * feature flag.
  *
- * `missing` is reported ahead of raw validation issues wherever both apply, because
- * "you did not supply `harness`" is the answer a caller can act on, while
- * "/harness must be string" for an absent field is not.
+ * Missing keys retain priority in the compatibility code, but supplied invalid
+ * values are checked in the SAME call. Otherwise fixing one omission merely
+ * reveals a second already-discoverable error on the next request.
  */
 export function evaluatePlanStartReadiness(ref: PlanSchemaRef, data: unknown): PlanStartReadiness {
   const source = planSchemaSource(ref);
@@ -217,27 +219,27 @@ export function evaluatePlanStartReadiness(ref: PlanSchemaRef, data: unknown): P
     };
   }
 
-  // Completeness first: absence is the more actionable failure, and for the
-  // input-schema source it is also cheaper than a full validate.
   const required = planRequiredKeys(ref);
   const supplied = asData(data);
   const missing = required.filter((k) => supplied[k] === undefined);
-  if (missing.length > 0) {
+  const check = validatePlanData(ref, data);
+  if (missing.length > 0 && (check.ok || check.code === 'invalid_data')) {
+    const issues = check.ok ? [] : check.issues;
     return {
       ready: false,
       code: 'missing_required',
       source,
       missing,
-      issues: [],
+      issues,
       ...(source === 'template' ? { template: ref.template!.trim() } : {}),
       hint:
         `Required input${missing.length > 1 ? 's' : ''} not supplied: ${missing.join(', ')}. ` +
         `Supply ${missing.length > 1 ? 'them' : 'it'} via plans:set-template-data { slug, data }, ` +
-        `or pass them as \`inputs\` on this run.`,
+        `or pass them as \`inputs\` on this run.` +
+        (issues.length ? ` Also repair schema violations: ${issues.join('; ')}` : ''),
     };
   }
 
-  const check = validatePlanData(ref, data);
   if (check.ok) return { ready: true, source };
 
   if (check.code === 'no_schema') return { ready: true, source };
@@ -261,7 +263,7 @@ export function evaluatePlanStartReadiness(ref: PlanSchemaRef, data: unknown): P
       ready: false,
       code: 'bad_schema',
       source,
-      missing: [],
+      missing,
       issues: check.issues,
       hint:
         `This plan's input_schema is not a compilable JSON Schema, so its required fields ` +

@@ -9,6 +9,7 @@ import { nativeSessionHandleForAdvSession } from './native-session-handles';
 import { getRegisteredSuSessionHost } from './su-session-host';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor, readDurableSuSession } from './su-session-persistence';
 import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
+import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 import type { NativeSessionHandle } from './native-session-handles';
 import { activeWorkspaceId } from './workspace-registry';
@@ -115,7 +116,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       };
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },
-          { nativeSession: nativeSession as NonNullable<typeof nativeSession> & { backend: 'claude'; sessionId: string }, transcriptPath: null }, options)
+          { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null }, options)
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' }, options);
       state.engines.set(key, engine);
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());
