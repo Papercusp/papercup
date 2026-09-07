@@ -1666,6 +1666,9 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
   const uncertain = uncertainMutations ?? [];
   const attempts = writeAttempts ?? [];
   const settledAttempts = attempts.filter((a) => a.disposition === 'settled');
+  const previewAttempts = attempts.filter((a) => a.disposition === 'preview');
+  const previewByTool: Record<string, number> = {};
+  for (const attempt of previewAttempts) previewByTool[attempt.tool] = (previewByTool[attempt.tool] ?? 0) + 1;
   const inFlightAttempts = attempts.filter((a) => a.disposition === 'in_flight');
   const semanticRejectedAttempts = attempts.filter((a) => a.disposition === 'semantic_rejected');
   // EI-10951: `mutations.count` must count what LANDED, not what was dispatched — a
@@ -1687,7 +1690,7 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
   const dispositionIndexes =
     attempts.length > 0
       ? Object.fromEntries(
-          ['settled', 'in_flight', 'semantic_rejected', 'rejected', 'uncertain']
+            ['settled', 'preview', 'in_flight', 'semantic_rejected', 'rejected', 'uncertain']
             .map((disposition) => [
               disposition,
               attempts.filter((a) => a.disposition === disposition).map((a) => a.index),
@@ -1706,6 +1709,12 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
             attemptedCount: attempts.length,
             settledPrefixCount: settledPrefixCount === -1 ? attempts.length : settledPrefixCount,
             dispositions: dispositionIndexes,
+            ...(previewAttempts.length > 0
+              ? {
+                  previewCount: previewAttempts.length,
+                  previewByTool,
+                }
+              : {}),
             ...(inFlightAttempts.length > 0 ? { inFlightCount: inFlightAttempts.length } : {}),
             ...(semanticRejectedAttempts.length > 0 ? { semanticRejectedCount: semanticRejectedAttempts.length } : {}),
           }
@@ -1733,7 +1742,9 @@ export function shapeMutationEcho(result: OrchestrationRunResult): Orchestration
     ...(!result.ok
       ? buildFailureWarning(
           attempts.length > 0
-            ? attempts.filter((attempt) => attempt.disposition !== 'semantic_rejected')
+            ? attempts.filter(
+                (attempt) => attempt.disposition !== 'semantic_rejected' && attempt.disposition !== 'preview',
+              )
             : plannedMutations,
           rejected,
           uncertain,
