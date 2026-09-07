@@ -3023,6 +3023,21 @@ impl App {
                     self.session_note =
                         Some("SU session failed; preserved as an orphaned session".into());
                 }
+                match lifecycle {
+                    crate::su_session::SuSessionLifecycleState::Running
+                    | crate::su_session::SuSessionLifecycleState::Compacting
+                    | crate::su_session::SuSessionLifecycleState::Resuming => {
+                        self.chat_streaming = true;
+                    }
+                    crate::su_session::SuSessionLifecycleState::WaitingForOwner
+                    | crate::su_session::SuSessionLifecycleState::Interrupted
+                    | crate::su_session::SuSessionLifecycleState::Ended
+                    | crate::su_session::SuSessionLifecycleState::Failed => {
+                        self.su_active_command_id = None;
+                        self.finish_chat_turn();
+                    }
+                    _ => {}
+                }
             }
             crate::su_session::SuSessionEvent::Transcript {
                 phase,
@@ -3062,7 +3077,9 @@ impl App {
                     }
                 }
                 if phase == "completed" && role == "assistant" {
-                    self.finish_chat_turn();
+                    // A text segment can precede another tool or message in
+                    // the same turn. Only the host lifecycle unlocks input.
+                    self.finish_chat_message();
                 }
             }
             crate::su_session::SuSessionEvent::Tool {
@@ -3075,6 +3092,7 @@ impl App {
                 ..
             } => {
                 if phase == "started" {
+                    self.chat_streaming = true;
                     if !self.chat_messages.iter().any(|message| message.streaming) {
                         self.chat_messages.push(ChatMessage::streaming_assistant());
                     }
@@ -3146,7 +3164,8 @@ impl App {
                             && self.su_active_command_id.as_deref() == Some(command_id.as_str())
                         {
                             self.su_active_command_id = None;
-                            self.finish_chat_turn();
+                            // The engine accepted this input; it can still be
+                            // producing the model turn after this receipt.
                         }
                     } else if status == "completed"
                         && matches!(command_type.as_str(), "interrupt" | "end")
@@ -3399,7 +3418,7 @@ impl App {
 
     /// Finalize the in-flight assistant bubble: resolve its raw buffer to the
     /// user-visible `<say>` text and clear the streaming flag.
-    fn finish_chat_turn(&mut self) {
+    fn finish_chat_message(&mut self) {
         if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
             // finalize strips the <report> span with the other control tags —
             // a report is not chat content; it persists via append_turn and
@@ -3407,8 +3426,12 @@ impl App {
             m.content = crate::chat_tags::finalize(&m.content);
             m.streaming = false;
         }
-        self.chat_streaming = false;
         self.chat_scroll = 0;
+    }
+
+    fn finish_chat_turn(&mut self) {
+        self.finish_chat_message();
+        self.chat_streaming = false;
     }
 
     /// Finalize the in-flight bubble as an error (the converse stream failed).
@@ -16390,8 +16413,14 @@ mod tests {
             if !ack_first {
                 app.acknowledge_su_turn(&id);
             }
+            let mut receipt = su_event_base("command_result", 2);
+            receipt["commandId"] = json!(id);
+            receipt["commandType"] = json!("owner_turn");
+            receipt["status"] = json!("completed");
+            app.apply_su_session_event(su_event(receipt));
+            assert!(app.chat_streaming, "delivery receipt is not turn completion");
             for (offset, phase) in ["started", "delta", "completed"].into_iter().enumerate() {
-                let mut reply = su_event_base("transcript", offset as u64 + 2);
+                let mut reply = su_event_base("transcript", offset as u64 + 3);
                 reply["phase"] = json!(phase);
                 reply["turnId"] = json!(turn_id);
                 reply["role"] = json!("assistant");
@@ -16404,6 +16433,13 @@ mod tests {
             assert_eq!(app.chat_messages.len(), 2);
             assert_eq!(app.chat_messages[0].content, "one draft");
             assert_eq!(app.chat_messages[1].content, "one response");
+            assert!(!app.chat_messages[1].streaming);
+            assert!(app.chat_streaming, "a completed segment can precede a tool");
+            let mut completed = su_event_base("lifecycle", 6);
+            completed["state"] = json!("waiting-for-owner");
+            completed["runtimeGeneration"] = json!(0);
+            app.apply_su_session_event(su_event(completed));
+            assert!(!app.chat_streaming);
         }
     }
 

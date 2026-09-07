@@ -66,7 +66,13 @@ vi.mock('../su-session-claude-engine', async (original) => {
             scriptedEngine.requests.push(String(message.message.content));
             output.write({ type: 'system', subtype: 'init', session_id: nativeId, cwd: args[0].cwd });
             output.write(message); // The engine's exact native receipt.
-            if (scriptedEngine.mode === 'stall') continue;
+            if (scriptedEngine.mode === 'stall') {
+              output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                { type: 'text', text: 'PUI tool is still running' },
+                { type: 'tool_use', id: 'pui-pending-tool', name: 'Bash', input: { command: 'sleep 30' } },
+              ] } });
+              continue;
+            }
             if (scriptedEngine.mode === 'failure') {
               output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
                 is_error: true, errors: ['PUI-E2E engine failed visibly'] });
@@ -698,6 +704,32 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       releaseInitialization();
       await pane.stop();
     }
+  });
+
+  test('delivery receipt and assistant segment keep input locked until interruption completes', async () => {
+    scriptedEngine.mode = 'stall';
+    const prompt = 'PUI pending tool turn';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('PUI tool is still running', { timeoutMs: 60_000 });
+      await pane.waitFor('Running — input locked');
+      expect(pane.screen()).toContain('Bash');
+      expect(pane.screen()).not.toContain('Message — Enter send');
+      await waitForSavedTurn(prompt);
+      pane.interrupt();
+      await pane.waitFor('Message — Enter send');
+      expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true);
+      scriptedEngine.mode = 'success';
+      const followup = 'PUI continued after interrupt';
+      pane.write(followup);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText);
+      await pane.waitFor('Message — Enter send');
+      expect(scriptedEngine.requests).toEqual([prompt, followup]);
+    } finally { await pane.stop(); }
   });
 
   test('interrupted startup retains the draft and retries without creating another chat', async () => {
