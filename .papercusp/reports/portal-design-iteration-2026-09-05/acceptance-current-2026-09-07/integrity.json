@@ -1,0 +1,125 @@
+{
+  "checkedAt": "2026-09-07T02:54:44.331Z",
+  "rows": 188,
+  "distinctSlots": 188,
+  "errors": [],
+  "sheets": [
+    {
+      "path": "contact-1.jpg",
+      "slots": [
+        "accounts/dark/1440x900",
+        "accounts/light/1280x800",
+        "adv-settings/dark/1440x900",
+        "adv-settings/light/1280x800",
+        "agent-roster/dark/1440x900",
+        "agent-roster/light/1280x800",
+        "brainstorm/dark/1440x900",
+        "brainstorm/light/1280x800",
+        "calendar/dark/1440x900",
+        "calendar/light/1280x800",
+        "chat-history/dark/1440x900",
+        "chat-history/light/1280x800"
+      ]
+    },
+    {
+      "path": "contact-2.jpg",
+      "slots": [
+        "cloud/dark/1440x900",
+        "cloud/light/1280x800",
+        "conversations/dark/1440x900",
+        "conversations/light/1280x800",
+        "coord/dark/1440x900",
+        "coord/light/1280x800",
+        "create/dark/1440x900",
+        "create/light/1280x800",
+        "cupboard/dark/1440x900",
+        "cupboard/light/1280x800",
+        "desktops/dark/1440x900",
+        "desktops/light/1280x800"
+      ]
+    },
+    {
+      "path": "contact-3.jpg",
+      "slots": [
+        "dev/dark/1440x900",
+        "dev/light/1280x800",
+        "docs/dark/1440x900",
+        "docs/light/1280x800",
+        "evals/dark/1440x900",
+        "evals/light/1280x800",
+        "frames/dark/1440x900",
+        "frames/light/1280x800",
+        "git/dark/1440x900",
+        "git/light/1280x800",
+        "health/dark/1440x900",
+        "health/light/1280x800"
+      ]
+    },
+    {
+      "path": "contact-4.jpg",
+      "slots": [
+        "history/dark/1440x900",
+        "history/light/1280x800",
+        "home/dark/1440x900",
+        "home/light/1280x800",
+        "hud/dark/1440x900",
+        "hud/light/1280x800",
+        "inbox/dark/1440x900",
+        "inbox/light/1280x800",
+        "insights/dark/1440x900",
+        "insights/light/1280x800",
+        "launcher/dark/1440x900",
+        "launcher/light/1280x800"
+      ]
+    },
+    {
+      "path": "contact-5.jpg",
+      "slots": [
+        "learning/dark/1440x900",
+        "learning/light/1280x800",
+        "mail/dark/1440x900",
+        "mail/light/1280x800",
+        "notifications/dark/1440x900",
+        "notifications/light/1280x800",
+        "overview/dark/1440x900",
+        "overview/light/1280x800",
+        "papercup-chat/dark/1440x900",
+        "papercup-chat/light/1280x800",
+        "phone/dark/1440x900",
+        "phone/light/1280x800"
+      ]
+    },
+    {
+      "path": "contact-6.jpg",
+      "slots": [
+        "plans/dark/1440x900",
+        "plans/light/1280x800",
+        "processes/dark/1440x900",
+        "processes/light/1280x800",
+        "prs/dark/1440x900",
+        "prs/light/1280x800",
+        "scheduled/dark/1440x900",
+        "scheduled/light/1280x800",
+        "settings/dark/1440x900",
+        "settings/light/1280x800",
+        "stats/dark/1440x900",
+        "stats/light/1280x800"
+      ]
+    },
+    {
+      "path": "contact-7.jpg",
+      "slots": [
+        "support/dark/1440x900",
+        "support/light/1280x800",
+        "testing/dark/1440x900",
+        "testing/light/1280x800",
+        "work/dark/1440x900",
+        "work/light/1280x800",
+        "workflows/dark/1440x900",
+        "workflows/light/1280x800",
+        "workspaces/dark/1440x900",
+        "workspaces/light/1280x800"
+      ]
+    }
+  ]
+}

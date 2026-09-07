@@ -1208,10 +1208,37 @@
         "height": 900
       },
       "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
-      "capturedAt": "2026-09-07T02:42:56.695Z",
-      "captureStatus": "failed",
+      "capturedAt": "2026-09-07T02:51:22.858Z",
+      "captureStatus": "captured",
       "result": "unknown",
-      "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    35 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n"
+      "notes": "Retake uses attached main because Chat history intentionally replaces the main view. No hidden-main timeout is treated as a UI failure. Image/state judgment remains required.",
+      "priorCapture": {
+        "captureStatus": "failed",
+        "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    35 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n",
+        "capturedAt": "2026-09-07T02:42:56.695Z"
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+        "theme": "light",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentOverflow": false,
+        "bodyText": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nChat history\n\nNo sessions yet. Ask Papercup a question and your conversation will appear here.\n\nPapercup Chat\nChat history\n\nPapercup answers here with full access to this machine — it can read and change files and run commands, with no confirmation step. Only its attached research tools (capability:*, tasks:ops, tasks:todo_write, tasks:update_plan, chat:ask_choice, voice:delegate_deep) are listed below; native file and shell activity is not itemised.\n\nAsk a question to start.\n\nSend",
+        "mainHidden": true,
+        "visibleSurfaces": [
+          {
+            "tag": "ASIDE",
+            "className": "portal-side-pane portal-side-pane--chat",
+            "width": 1360,
+            "height": 900
+          }
+        ]
+      },
+      "capturePath": "chat-history--light--1440x900.png",
+      "captureSha256": "5654795b65fb7f973f2bcba3fb91403c0bbdf7f4a7b443159ab3dfad798fd0b0",
+      "releaseId": "l1_ti6W2OA7E4z9vHlHf6-20260907020239497-3882061-f2cebbf3"
     },
     {
       "slot": "notifications/light/1440x900",
@@ -2727,10 +2754,37 @@
         "height": 800
       },
       "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
-      "capturedAt": "2026-09-07T02:44:35.139Z",
-      "captureStatus": "failed",
+      "capturedAt": "2026-09-07T02:51:25.759Z",
+      "captureStatus": "captured",
       "result": "unknown",
-      "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    35 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n"
+      "notes": "Retake uses attached main because Chat history intentionally replaces the main view. No hidden-main timeout is treated as a UI failure. Image/state judgment remains required.",
+      "priorCapture": {
+        "captureStatus": "failed",
+        "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    35 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n",
+        "capturedAt": "2026-09-07T02:44:35.139Z"
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+        "theme": "light",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "documentOverflow": false,
+        "bodyText": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nChat history\n\nNo sessions yet. Ask Papercup a question and your conversation will appear here.\n\nPapercup Chat\nChat history\n\nPapercup answers here with full access to this machine — it can read and change files and run commands, with no confirmation step. Only its attached research tools (capability:*, tasks:ops, tasks:todo_write, tasks:update_plan, chat:ask_choice, voice:delegate_deep) are listed below; native file and shell activity is not itemised.\n\nAsk a question to start.\n\nSend",
+        "mainHidden": true,
+        "visibleSurfaces": [
+          {
+            "tag": "ASIDE",
+            "className": "portal-side-pane portal-side-pane--chat",
+            "width": 1200,
+            "height": 800
+          }
+        ]
+      },
+      "capturePath": "chat-history--light--1280x800.png",
+      "captureSha256": "be0ed4a9d1bc4a9e9e7b942f710f20b843937e14f072797a5591cffbc1c4dbb1",
+      "releaseId": "l1_ti6W2OA7E4z9vHlHf6-20260907020239497-3882061-f2cebbf3"
     },
     {
       "slot": "notifications/light/1280x800",
@@ -4312,10 +4366,37 @@
         "height": 900
       },
       "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
-      "capturedAt": "2026-09-07T02:46:20.538Z",
-      "captureStatus": "failed",
+      "capturedAt": "2026-09-07T02:51:28.170Z",
+      "captureStatus": "captured",
       "result": "unknown",
-      "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    35 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n"
+      "notes": "Retake uses attached main because Chat history intentionally replaces the main view. No hidden-main timeout is treated as a UI failure. Image/state judgment remains required.",
+      "priorCapture": {
+        "captureStatus": "failed",
+        "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    35 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n",
+        "capturedAt": "2026-09-07T02:46:20.538Z"
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "documentOverflow": false,
+        "bodyText": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nChat history\n\nNo sessions yet. Ask Papercup a question and your conversation will appear here.\n\nPapercup Chat\nChat history\n\nPapercup answers here with full access to this machine — it can read and change files and run commands, with no confirmation step. Only its attached research tools (capability:*, tasks:ops, tasks:todo_write, tasks:update_plan, chat:ask_choice, voice:delegate_deep) are listed below; native file and shell activity is not itemised.\n\nAsk a question to start.\n\nSend",
+        "mainHidden": true,
+        "visibleSurfaces": [
+          {
+            "tag": "ASIDE",
+            "className": "portal-side-pane portal-side-pane--chat",
+            "width": 1360,
+            "height": 900
+          }
+        ]
+      },
+      "capturePath": "chat-history--dark--1440x900.png",
+      "captureSha256": "9a85b376eae243d34a55cd6da8377d4e240ecc95ad2735faf5eae33423a8ec66",
+      "releaseId": "l1_ti6W2OA7E4z9vHlHf6-20260907020239497-3882061-f2cebbf3"
     },
     {
       "slot": "notifications/dark/1440x900",
@@ -5831,10 +5912,37 @@
         "height": 800
       },
       "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
-      "capturedAt": "2026-09-07T02:48:06.731Z",
-      "captureStatus": "failed",
+      "capturedAt": "2026-09-07T02:51:30.594Z",
+      "captureStatus": "captured",
       "result": "unknown",
-      "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    34 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n"
+      "notes": "Retake uses attached main because Chat history intentionally replaces the main view. No hidden-main timeout is treated as a UI failure. Image/state judgment remains required.",
+      "priorCapture": {
+        "captureStatus": "failed",
+        "notes": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.surface') to be visible\u001b[22m\n\u001b[2m    34 × locator resolved to hidden <main class=\"surface\">…</main>\u001b[22m\n",
+        "capturedAt": "2026-09-07T02:48:06.731Z"
+      },
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "documentOverflow": false,
+        "bodyText": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nChat history\n\nNo sessions yet. Ask Papercup a question and your conversation will appear here.\n\nPapercup Chat\nChat history\n\nPapercup answers here with full access to this machine — it can read and change files and run commands, with no confirmation step. Only its attached research tools (capability:*, tasks:ops, tasks:todo_write, tasks:update_plan, chat:ask_choice, voice:delegate_deep) are listed below; native file and shell activity is not itemised.\n\nAsk a question to start.\n\nSend",
+        "mainHidden": true,
+        "visibleSurfaces": [
+          {
+            "tag": "ASIDE",
+            "className": "portal-side-pane portal-side-pane--chat",
+            "width": 1200,
+            "height": 800
+          }
+        ]
+      },
+      "capturePath": "chat-history--dark--1280x800.png",
+      "captureSha256": "7281ce523c0744d966097be9544a6c636893886c3fff219ab01f7e5eb4484d70",
+      "releaseId": "l1_ti6W2OA7E4z9vHlHf6-20260907020239497-3882061-f2cebbf3"
     },
     {
       "slot": "notifications/dark/1280x800",
@@ -6268,5 +6376,6 @@
       "workflows"
     ],
     "dismissed": []
-  }
+  },
+  "retakeCompletedAt": "2026-09-07T02:51:30.594Z"
 }
