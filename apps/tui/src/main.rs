@@ -5028,23 +5028,9 @@ async fn stream_su_session_events(
     // descriptor. Bound retries also cover a reconnect during host startup.
     let mut stream = None;
     let mut last_error = None;
-    let mut ready = false;
     for _ in 0..15 {
         match client.su_session_snapshot(&harness, &chat_id).await {
             Ok(snapshot) => {
-                ready = snapshot.executor_attached
-                    && snapshot.stream_ready
-                    && matches!(
-                        snapshot.descriptor.lifecycle,
-                        crate::su_session::SuSessionLifecycleState::Ready
-                            | crate::su_session::SuSessionLifecycleState::Running
-                    )
-                    && su_turn_target_matches(
-                        &binding,
-                        &snapshot.descriptor.identity,
-                        &harness,
-                        &chat_id,
-                    );
                 let _ = tx.send(Event::SuSessionSnapshot(snapshot));
             }
             Err(error) => last_error = Some(error.to_string()),
@@ -5075,7 +5061,9 @@ async fn stream_su_session_events(
     };
 
     let mut terminal_seen = false;
-    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    // The host may spend 45 seconds initializing its engine and SU MCP. Keep
+    // the draft pending across its starting descriptor and await a ready event.
+    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
         let next = if initial_turn.is_some() {
             match tokio::time::timeout_at(startup_deadline, stream.recv()).await {
@@ -5106,25 +5094,37 @@ async fn stream_su_session_events(
                 return;
             }
         };
-        if matches!(
-            event,
-            crate::su_session::SuSessionEvent::Lifecycle {
-                state: crate::su_session::SuSessionLifecycleState::Ended
-                    | crate::su_session::SuSessionLifecycleState::Failed,
-                ..
+        let lifecycle = match &event {
+            crate::su_session::SuSessionEvent::Session { descriptor, .. } => {
+                Some(descriptor.lifecycle)
             }
-        ) {
-            terminal_seen = true;
-        }
-        let is_session = matches!(event, crate::su_session::SuSessionEvent::Session { .. });
+            crate::su_session::SuSessionEvent::Lifecycle { state, .. } => Some(*state),
+            _ => None,
+        };
+        terminal_seen |= matches!(
+            lifecycle,
+            Some(
+                crate::su_session::SuSessionLifecycleState::Ended
+                    | crate::su_session::SuSessionLifecycleState::Failed
+            )
+        );
+        let can_send = matches!(
+            lifecycle,
+            Some(
+                crate::su_session::SuSessionLifecycleState::Ready
+                    | crate::su_session::SuSessionLifecycleState::Running
+            )
+        );
         let identity_matches =
             su_turn_target_matches(&binding, &event.envelope().session, &harness, &chat_id);
         let _ = tx.send(Event::SuSessionEvent(event));
-        if is_session && initial_turn.is_some() {
+        if initial_turn.is_some() && (can_send || terminal_seen || !identity_matches) {
             let pending = initial_turn.take().expect("checked pending first turn");
-            if !ready || !identity_matches {
+            if terminal_seen || !identity_matches {
                 let _ = tx.send(Event::SuTurnFailed { command_id: pending.command_id, message: "Session executor/stream is not ready for this project. Draft retained; reconnect to retry.".into(), uncertain: false });
             } else {
+                // Re-read the authoritative snapshot in the send path: a
+                // replayed ready event alone cannot authorize this first turn.
                 send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx).await;
             }
         }
@@ -5206,7 +5206,15 @@ async fn send_su_turn_with_client(
                 return;
             }
         };
-        if !snapshot.executor_attached || !snapshot.stream_ready || snapshot.terminal {
+        if !snapshot.executor_attached
+            || !snapshot.stream_ready
+            || snapshot.terminal
+            || !matches!(
+                snapshot.descriptor.lifecycle,
+                crate::su_session::SuSessionLifecycleState::Ready
+                    | crate::su_session::SuSessionLifecycleState::Running
+            )
+        {
             fail(
                 "Session is not ready. Draft retained; reconnect to retry.".into(),
                 false,
