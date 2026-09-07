@@ -1,12 +1,14 @@
 /** P-005 real-Postgres coverage for exact spec evidence edges, tools, and currentness. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import type { SpecClauseWrite } from './spec-clauses-store';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
@@ -16,6 +18,11 @@ vi.mock('@papercusp/db-org', async (orig) => {
       h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql)),
   };
 });
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: async () => ({ projects: [{ slug: 'web', path: h.repoRoot }] }),
+  resolveHarnessContentPath: (registry: { projects: Array<{ slug: string; path: string }> }, slug: string) =>
+    registry.projects.find((project) => project.slug === slug)?.path,
+}));
 
 const WORKSPACE = 'ws-spec-evidence';
 const OTHER_WORKSPACE = 'ws-spec-evidence-other';
@@ -91,6 +98,15 @@ async function seedExternalEvidence() {
 }
 
 beforeAll(async () => {
+  h.repoRoot = await mkdtemp(path.join(tmpdir(), 'spec-evidence-integration-'));
+  await Promise.all([
+    mkdir(path.join(h.repoRoot, 'src'), { recursive: true }),
+    mkdir(path.join(h.repoRoot, 'test'), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(path.join(h.repoRoot, 'src', 'reconnect.ts'), 'export const reconnect = true;\n'),
+    writeFile(path.join(h.repoRoot, 'test', 'reconnect.test.ts'), 'expect(reconnect).toBe(true);\n'),
+  ]);
   db = await createFreshPgDb('plan-spec-evidence');
   h.sql = db.sql;
   await db.sql.unsafe(`DO $$ BEGIN
@@ -167,8 +183,8 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
-  await db?.cleanup();
-});
+  await Promise.all([db?.cleanup(), rm(h.repoRoot, { recursive: true, force: true })]);
+}, 30_000);
 
 beforeEach(async () => {
   await db.sql`TRUNCATE
@@ -452,6 +468,61 @@ describe('exact spec evidence bindings', () => {
       },
     });
     expect(read.data.currentness).toEqual({ current: 0, stale: 0, unknown: 1 });
+  });
+
+  it('binds repository measurement recipes and recomputes currentness server-side', async () => {
+    await specs.setSpecClause(clause());
+    const external = await seedExternalEvidence();
+    const measurement = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/reconnect.ts'],
+      testPaths: ['test/reconnect.test.ts'],
+    };
+    const created = (await bindTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        binding: {
+          workItemId: 'WI-101',
+          specId: 'SPEC-003-01',
+          evidenceKind: 'test',
+          evidenceRef: 'test/reconnect.test.ts#server-measured',
+          measurement,
+          testRunId: external.testRunId,
+          details: { adequacy: { executed: true, skipped: false, collected: true, outcome: 'passed' } },
+        },
+      } as never,
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    expect(created.data.results[0]).toMatchObject({ ok: true, status: 'created' });
+
+    const [current] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      evidenceRefs: ['test/reconnect.test.ts#server-measured'],
+    });
+    expect(current).toMatchObject({
+      details: { currentMeasurement: measurement },
+      serverMeasurement: { status: 'measured' },
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        dimensions: { source: 'current', test: 'current', testRun: 'current' },
+      },
+    });
+
+    await writeFile(path.join(h.repoRoot, 'src', 'reconnect.ts'), 'export const reconnect = false;\n');
+    const [stale] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      evidenceRefs: ['test/reconnect.test.ts#server-measured'],
+    });
+    expect(stale.currentness).toMatchObject({
+      overall: 'stale',
+      provenance: 'server-measured',
+      staleReasons: ['source-stale'],
+    });
   });
 
   it('keeps historical proof while spec and supplied fingerprints make staleness explicit', async () => {

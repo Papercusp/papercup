@@ -1,10 +1,13 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { planItemRef } from '../../issue-blocks-merge';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
@@ -24,6 +27,99 @@ export const SPEC_EVIDENCE_KINDS = [
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
 
 const evidenceFingerprintSchema = z.string().trim().min(1).max(256);
+const repoMeasurementPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(400)
+  .refine(
+    (value) =>
+      !isAbsolute(value) &&
+      !value.startsWith('./') &&
+      !value.includes('\\') &&
+      !value.split('/').some((part) => part === '' || part === '.' || part === '..'),
+    'measurement paths must be normalized repo-relative POSIX file paths',
+  );
+
+export const repoFilesEvidenceMeasurementSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.literal('repo-files'),
+    sourcePaths: z.array(repoMeasurementPathSchema).min(1).max(32),
+    testPaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
+  })
+  .strict();
+
+export type RepoFilesEvidenceMeasurement = z.infer<typeof repoFilesEvidenceMeasurementSchema>;
+
+export interface MeasuredRepoEvidenceFingerprints {
+  sourceFingerprint: string;
+  testFingerprint: string | null;
+}
+
+const MAX_REPO_MEASUREMENT_BYTES = 8 * 1024 * 1024;
+
+function containedBy(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+async function fingerprintRepoFileSet(repoRoot: string, declaredPaths: readonly string[]): Promise<string> {
+  const root = await realpath(repoRoot);
+  const paths = [...new Set(declaredPaths)].sort();
+  const entries: Array<{ path: string; sha256: string }> = [];
+  let totalBytes = 0;
+  for (const path of paths) {
+    const candidate = resolve(root, path);
+    if (!containedBy(root, candidate)) throw new Error(`repo_measurement_path_outside_root:${path}`);
+    const canonical = await realpath(candidate);
+    if (!containedBy(root, canonical)) throw new Error(`repo_measurement_symlink_outside_root:${path}`);
+    const info = await stat(canonical);
+    if (!info.isFile()) throw new Error(`repo_measurement_not_file:${path}`);
+    totalBytes += info.size;
+    if (totalBytes > MAX_REPO_MEASUREMENT_BYTES) {
+      throw new Error(`repo_measurement_too_large:${totalBytes}>${MAX_REPO_MEASUREMENT_BYTES}`);
+    }
+    const content = await readFile(canonical);
+    entries.push({ path, sha256: createHash('sha256').update(content).digest('hex') });
+  }
+  const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+  return `sha256-file-set-v1:${digest}`;
+}
+
+/** Recompute a bounded repository-backed evidence tuple from the current harness tree. */
+export async function measureRepoFilesEvidenceAtRoot(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<MeasuredRepoEvidenceFingerprints> {
+  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  const [sourceFingerprint, testFingerprint] = await Promise.all([
+    fingerprintRepoFileSet(repoRoot, parsed.sourcePaths),
+    parsed.testPaths ? fingerprintRepoFileSet(repoRoot, parsed.testPaths) : Promise.resolve(null),
+  ]);
+  return { sourceFingerprint, testFingerprint };
+}
+
+async function resolveMeasurementRoot(workspaceId: string, harnessSlug: string): Promise<string> {
+  const registry = await loadHarnessRegistry(workspaceId);
+  const root = resolveHarnessContentPath(registry, harnessSlug);
+  if (!root) throw new Error(`repo_measurement_harness_root_unavailable:${harnessSlug}`);
+  return root;
+}
+
+/** Resolve the canonical harness checkout and measure the declared file sets there. */
+export async function measureRepoFilesEvidence(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<MeasuredRepoEvidenceFingerprints> {
+  return measureRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug), measurement);
+}
+
+function measurementFromDetails(details: Record<string, unknown>): RepoFilesEvidenceMeasurement | null {
+  const parsed = repoFilesEvidenceMeasurementSchema.safeParse(details.currentMeasurement);
+  return parsed.success ? parsed.data : null;
+}
 /** Shared wire contract for an explicit comparison with currently measured proof. */
 export const evidenceCurrentInputSchema = z.object({
   evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
@@ -54,7 +150,7 @@ export interface BindSpecEvidenceInput extends EvidenceFingerprints {
    * KEY column in all four tables of the spec chain and carries a composite FK that
    * terminates at `harness_plans`, so it can never hold NULL. The blocker was never the
    * column — it was that the API forced a caller with no plan to invent one.
-   */
+  */
   planSlug?: string;
   workItemId: string;
   specId?: string;
@@ -341,7 +437,7 @@ export interface EvidenceCurrentness {
    * Consumers which gate on uncertainty must distinguish "asked and got a gap" from
    * "never asked"; without this flag the two are indistinguishable and a gate reading
    * `unknown` as doubt becomes a constant refusal (WI-2146375).
-  */
+   */
   comparisonSupplied: boolean;
   /**
    * Caller-supplied matching fingerprints are explicitly attested-current and are
@@ -762,8 +858,45 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
 
   const currentByRef = new Map((options.current ?? []).map((c) => [`${c.evidenceKind}\0${c.evidenceRef}`, c]));
-  const classified = rows.map((row) => {
-    const current = currentByRef.get(`${row.evidence_kind}\0${row.evidence_ref}`);
+  const measurementRoot = rows.some((row) => measurementFromDetails(row.details))
+    ? resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug)
+    : null;
+  const serverMeasurements = await Promise.all(
+    rows.map(async (row) => {
+      const recipe = measurementFromDetails(row.details);
+      if (!recipe) return null;
+      try {
+        const measured = await measureRepoFilesEvidenceAtRoot(await measurementRoot!, recipe);
+        return {
+          status: 'measured' as const,
+          current: {
+            evidenceKind: row.evidence_kind,
+            evidenceRef: row.evidence_ref,
+            ...measured,
+          } satisfies EvidenceCurrentInput,
+        };
+      } catch (error: unknown) {
+        return {
+          status: 'unavailable' as const,
+          reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
+        };
+      }
+    }),
+  );
+  const classified = rows.map((row, index) => {
+    const measured = serverMeasurements[index];
+    const current =
+      measured?.status === 'measured'
+        ? measured.current
+        : currentByRef.get(`${row.evidence_kind}\0${row.evidence_ref}`);
+    const currentness = classifySpecEvidenceCurrentness(
+      row,
+      current,
+      measured?.status === 'measured' ? { provenance: 'server-measured' } : {},
+    );
+    if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
+      currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
+    }
     return {
       id: Number(row.id),
       workItemId: row.work_item_id,
@@ -797,7 +930,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       bindingFingerprint: row.binding_fingerprint,
       createdBy: row.created_by,
       createdAt: pgTimestampToIso(row.created_at),
-      currentness: classifySpecEvidenceCurrentness(row, current),
+      ...(measured
+        ? { serverMeasurement: measured.status === 'measured' ? { status: measured.status } : measured }
+        : {}),
+      currentness,
     };
   });
   const allowed = options.currentness ? new Set(options.currentness) : null;

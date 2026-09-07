@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
@@ -27,7 +30,60 @@ vi.mock('./source', async (importOriginal) => {
   };
 });
 
-import { classifySpecEvidenceCurrentness, listSpecEvidence } from './spec-evidence-store';
+import {
+  classifySpecEvidenceCurrentness,
+  listSpecEvidence,
+  measureRepoFilesEvidenceAtRoot,
+} from './spec-evidence-store';
+
+let measurementRoot = '';
+
+beforeAll(async () => {
+  measurementRoot = await mkdtemp(join(tmpdir(), 'spec-evidence-measurement-'));
+  await Promise.all([
+    mkdir(join(measurementRoot, 'src'), { recursive: true }),
+    mkdir(join(measurementRoot, 'test'), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(join(measurementRoot, 'src', 'feature.ts'), 'export const value = 1;\n'),
+    writeFile(join(measurementRoot, 'test', 'feature.test.ts'), 'expect(value).toBe(1);\n'),
+  ]);
+});
+
+afterAll(async () => {
+  await rm(measurementRoot, { recursive: true, force: true });
+});
+
+describe('repo-backed server measurement', () => {
+  it('hashes normalized source/test file sets deterministically and detects a source change', async () => {
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+    };
+    const first = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    const replay = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(replay).toEqual(first);
+    expect(first.sourceFingerprint).toMatch(/^sha256-file-set-v1:[0-9a-f]{64}$/);
+    expect(first.testFingerprint).toMatch(/^sha256-file-set-v1:[0-9a-f]{64}$/);
+
+    await writeFile(join(measurementRoot, 'src', 'feature.ts'), 'export const value = 2;\n');
+    const changed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(changed.sourceFingerprint).not.toBe(first.sourceFingerprint);
+    expect(changed.testFingerprint).toBe(first.testFingerprint);
+  });
+
+  it('rejects traversal and symlink escapes before reading bytes', async () => {
+    await expect(
+      measureRepoFilesEvidenceAtRoot(measurementRoot, {
+        schemaVersion: 1,
+        kind: 'repo-files',
+        sourcePaths: ['../outside.ts'],
+      }),
+    ).rejects.toThrow(/normalized repo-relative POSIX/);
+  });
+});
 
 describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
   it('treats a complete byte-identical server-measured fingerprint set as current', () => {

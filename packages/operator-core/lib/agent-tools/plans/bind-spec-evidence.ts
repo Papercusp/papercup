@@ -5,7 +5,14 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { bulkContent, runBulk } from '../_bulk';
-import { ADHOC_WORK_ITEM_SPEC_SCOPE, bindSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
+import { resolvePlanScope } from './source';
+import {
+  ADHOC_WORK_ITEM_SPEC_SCOPE,
+  bindSpecEvidence,
+  measureRepoFilesEvidence,
+  repoFilesEvidenceMeasurementSchema,
+  SPEC_EVIDENCE_KINDS,
+} from './spec-evidence-store';
 
 const fingerprint = z.string().trim().min(1).max(256);
 const bindingSchema = z
@@ -19,18 +26,29 @@ const bindingSchema = z
     specRevision: z.number().int().positive().optional(),
     evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
     evidenceRef: z.string().trim().min(1).max(2000),
-    sourceFingerprint: fingerprint,
+    sourceFingerprint: fingerprint.optional().describe(
+      'Caller-declared fingerprint for opaque evidence. Pass this OR measurement, never both.',
+    ),
     testFingerprint: fingerprint.nullable().optional(),
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
     environmentFingerprint: fingerprint.nullable().optional(),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
+    measurement: repoFilesEvidenceMeasurementSchema.optional().describe(
+      'Server-measured repository file sets. The binder stores the recipe and current source/test fingerprints; later reads recompute them from the canonical harness checkout.',
+    ),
     details: z.record(z.string(), z.unknown()).optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })
   .refine((b) => Boolean(b.specId) !== Boolean(b.sourceValId), {
     message: 'pass exactly one of specId or sourceValId (legacy coversVALs resolve through sourceValId)',
+  })
+  .refine((b) => Boolean(b.sourceFingerprint) !== Boolean(b.measurement), {
+    message: 'pass exactly one of sourceFingerprint or measurement',
+  })
+  .refine((b) => !b.measurement || b.testFingerprint === undefined, {
+    message: 'testFingerprint is server-computed when measurement is supplied',
   });
 
 const argsSchema = z
@@ -56,7 +74,7 @@ const OK = new Set(['created', 'unchanged']);
 export default defineTool({
   name: 'plans:bind-spec-evidence',
   description:
-    'Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history.',
+    'Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history.',
   guidance: {
     when: 'Recording execution proof for one or more plan specs before work-item completion or plan acceptance.',
     notWhen: 'Authoring behavior — plans:set-specs. Running a test — testing:run.',
@@ -74,6 +92,9 @@ export default defineTool({
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const actorId = resolveAgentIdentity(ctx).ownerId;
     const bindings = args.items ?? [args.binding!];
+    const measurementScope = bindings.some((binding) => binding.measurement)
+      ? await resolvePlanScope({ harnessSlug })
+      : null;
     // P-022 / D-018: report the scope the binding ACTUALLY landed in, not the argument the
     // caller passed. An omitted `slug` resolves to the ad-hoc scope inside the store, and a
     // result echoing `slug: undefined` would hide which scope now owns the evidence.
@@ -81,8 +102,22 @@ export default defineTool({
     const env = await runBulk(
       bindings,
       async (binding) => {
+        const measured = binding.measurement
+          ? await measureRepoFilesEvidence(measurementScope!.workspaceId, harnessSlug, binding.measurement)
+          : null;
+        const { measurement, ...declared } = binding;
         const result = await bindSpecEvidence({
-          ...binding,
+          ...declared,
+          sourceFingerprint: measured?.sourceFingerprint ?? binding.sourceFingerprint!,
+          ...(measured ? { testFingerprint: measured.testFingerprint } : {}),
+          ...(measurement
+            ? {
+                details: {
+                  ...(binding.details ?? {}),
+                  currentMeasurement: measurement,
+                },
+              }
+            : {}),
           ...(args.slug ? { planSlug: args.slug } : {}),
           harnessSlug,
           actorId,
