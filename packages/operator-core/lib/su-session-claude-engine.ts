@@ -59,14 +59,10 @@ export function startClaudeSuEngine(
   assertLaunchPersona(boot.promptFile);
   const input = new PassThrough({ objectMode: true });
   const abortController = new AbortController();
-  const initialized = deferred<void>();
-  // shouldQuery:false appends to the native transcript without a model turn,
-  // so it produces no turn result or system/init. Its exact replay receipt
-  // proves that the stream consumed input; initialization and MCP controls
-  // separately prove the executor/tool connection. system/init is validated
-  // whenever the CLI later emits it for an actual owner turn.
-  const probeId = randomUUID();
-  let probing = true;
+  // Readiness uses the SDK's actual control responses. A transcript-only
+  // shouldQuery:false append does not promise any output receipt or result;
+  // using one as a probe deadlocks before the first owner turn. Native event
+  // identity remains checked on every frame, including the first system/init.
   let ready = false;
   let closed = false;
   let processId: number | null = null;
@@ -221,14 +217,6 @@ export function startClaudeSuEngine(
             && (event.session_id !== nativeId || resolve(event.cwd) !== resolve(boot.cwd))) {
             throw new Error('Claude startup identity or project does not match');
           }
-          if (probing) {
-            if (event.type === 'user' && event.uuid === probeId) {
-              if (event.session_id !== nativeId) throw new Error('Claude readiness receipt has no matching session identity');
-              probing = false;
-              initialized.resolve();
-            }
-            continue;
-          }
           if (event.type === 'user' && event.uuid) pending.get(event.uuid)?.resolve({ ok: true });
           adapter.ingestNativeLine(JSON.stringify(event));
           if (event.type === 'result') finishActiveTurn?.();
@@ -236,7 +224,6 @@ export function startClaudeSuEngine(
         if (!closed) throw new Error('Claude event stream closed unexpectedly');
       } catch (error) {
         const cause = error instanceof Error ? error : new Error(String(error));
-        initialized.reject(cause);
         if (!closed) {
           adapter.host.emit({ type: 'error', scope: 'transport', code: 'claude_stream_failed', message: cause.message, recoverable: true });
           adapter.reconcileRuntimeExit({ expected: false, reason: cause.message });
@@ -253,11 +240,6 @@ export function startClaudeSuEngine(
       }
     })();
     await sdk.initializationResult();
-    input.write({ type: 'user', uuid: probeId, session_id: nativeId, parent_tool_use_id: null,
-      isSynthetic: true, shouldQuery: false,
-      message: { role: 'user', content: 'PUI transport connected. This is a synthetic readiness record, not an owner request.' },
-    } satisfies SDKUserMessage);
-    await initialized.promise;
     const servers = await sdk.mcpServerStatus();
     if (!servers.some((server) => server.name === 'papercusp-su' && server.status === 'connected')) {
       throw new Error('Claude connected without the Papercusp SU tool server; reconnect the SU tool connection');
@@ -266,8 +248,6 @@ export function startClaudeSuEngine(
     ready = true;
     adapter.host.transition('ready', 'Claude structured stream, SU tools and command executor attached');
   })();
-  // Attach immediately: an early process error can reject before initialize.
-  void initialized.promise.catch(() => undefined);
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([
     startup,
