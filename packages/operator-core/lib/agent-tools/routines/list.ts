@@ -372,11 +372,22 @@ export function deriveGitSyncFreshness(
   const inFlightActive = activity?.active === true;
   const inFlightStartedAtMs = inFlightActive ? epochMs(activity?.started_at) : null;
   const inFlightAgeMs = inFlightStartedAtMs === null ? null : Math.max(0, nowMs - inFlightStartedAtMs);
+  // The writer heartbeats `updated_at` from the liveness guard's onProgress callback.
+  // Prefer the explicit last_progress_at field when a newer writer provides it, then
+  // use the existing updated_at heartbeat, and finally fall back to started_at for
+  // legacy markers that predate progress heartbeats. The total run age remains separate
+  // so a long-running but healthy fire is observable without being called stuck.
+  const inFlightLastProgressAtMs = inFlightActive
+    ? epochMs(activity?.last_progress_at ?? activity?.updated_at ?? activity?.started_at)
+    : null;
+  const inFlightProgressAgeMs =
+    inFlightLastProgressAtMs === null ? null : Math.max(0, nowMs - inFlightLastProgressAtMs);
   // Deliberately the SAME threshold as the completed-outcome clock: a fire still running
   // after the window in which three ticks should have completed is over budget by the
   // only yardstick this routine has, and inventing a second constant would let the two
   // halves of one verdict drift apart.
-  const inFlightStuck = inFlightAgeMs !== null && staleAfterMs !== null && inFlightAgeMs > staleAfterMs;
+  const inFlightStuck =
+    inFlightProgressAgeMs !== null && staleAfterMs !== null && inFlightProgressAgeMs > staleAfterMs;
   const inFlightPhase = typeof activity?.phase === 'string' ? activity.phase : null;
 
   const status = !active
@@ -408,6 +419,9 @@ export function deriveGitSyncFreshness(
           phase: inFlightPhase,
           started_at: isoAt(inFlightStartedAtMs),
           age_ms: inFlightAgeMs,
+          long_running_age_ms: inFlightAgeMs,
+          last_progress_at: isoAt(inFlightLastProgressAtMs),
+          progress_age_ms: inFlightProgressAgeMs,
           stuck: inFlightStuck,
         }
       : null,
@@ -415,8 +429,9 @@ export function deriveGitSyncFreshness(
       status !== 'degraded'
         ? null
         : inFlightStuck
-          ? `A git-sync fire has been in flight for ${Math.round(inFlightAgeMs! / 60_000)}m` +
-            `${inFlightPhase ? ` (phase '${inFlightPhase}')` : ''}; scheduled ticks skip while it holds ` +
+        ? `A git-sync fire has been in flight for ${Math.round(inFlightAgeMs! / 60_000)}m` +
+            `${inFlightPhase ? ` (phase '${inFlightPhase}')` : ''}; its last recorded progress was ` +
+            `${Math.round(inFlightProgressAgeMs! / 60_000)}m ago. Scheduled ticks skip while it holds ` +
             'the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
             'the tick before it.'
           : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
@@ -629,7 +644,7 @@ export default defineTool({
       '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
       '⚠ `health.git_sync_exclusions` — what the last completed sweep LEFT OUT (EI-21900560691158244/WI-2141747): { skip_reason, skipped_at, skipped_count, skipped_sample, oversized_count, oversized_sample, bulk_excluded_count, bulk_excluded_sample, +_truncated markers, sweep_at, sweep_age_ms, sweep_stale, warning }. `oversized_*` is only the per-file blob guard; `bulk_excluded_*` is the cumulative commit-size guard and has a different remedy. Counts are true totals; samples are bounded. `sweep_stale:true` (including legacy rows with no stamp, or a degraded git-sync freshness verdict) suppresses byte-exclusion action advice until a fresh completed sweep is measured. Always present on a git-sync row, so zero counts are measurements, not missing fields.',
-      '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, stuck }, null when the row carries no git_sync_activity. `stuck:true` means one fire has been running longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`.',
+      '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, long_running_age_ms, last_progress_at, progress_age_ms, stuck }, null when the row carries no git_sync_activity. `age_ms`/`long_running_age_ms` measure total fire duration; `progress_age_ms` measures time since the writer heartbeat. `stuck:true` means progress has been absent for longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`. Legacy active markers without a progress timestamp fall back to started_at.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',

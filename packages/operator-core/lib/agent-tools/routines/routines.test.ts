@@ -179,14 +179,50 @@ describe('routines:list', () => {
         phase: 'local-sync',
         started_at: '2026-08-29T16:24:00.000Z',
         age_ms: 34 * 60_000,
+        long_running_age_ms: 34 * 60_000,
+        last_progress_at: '2026-08-29T16:24:00.000Z',
+        progress_age_ms: 34 * 60_000,
         stuck: true,
       },
     });
     expect(verdict.warning).toBe(
-      "A git-sync fire has been in flight for 34m (phase 'local-sync'); scheduled ticks skip while it " +
-        'holds the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
-        'the tick before it.',
+      "A git-sync fire has been in flight for 34m (phase 'local-sync'); its last recorded progress was 34m ago. " +
+        'Scheduled ticks skip while it holds the git-sync lock, so nothing is being committed and the raw last_status ' +
+        'still describes the tick before it.',
     );
+  });
+
+  it('does not mark a long-running local-sync fire stuck while the writer heartbeat shows recent progress', () => {
+    const now = Date.parse('2026-08-29T16:58:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    const verdict = deriveGitSyncFreshness(
+      {
+        last_status: 'synced',
+        last_synced_at: now - 2 * 60_000,
+        git_sync_activity: {
+          active: true,
+          phase: 'local-sync',
+          started_at: now - 34 * 60_000,
+          updated_at: now - 1 * 60_000,
+        },
+      },
+      '0 */3 * * * *',
+      true,
+      now,
+    );
+    expect(verdict).toMatchObject({
+      status: 'fresh',
+      in_flight: {
+        active: true,
+        phase: 'local-sync',
+        age_ms: 34 * 60_000,
+        long_running_age_ms: 34 * 60_000,
+        last_progress_at: '2026-08-29T16:57:00.000Z',
+        progress_age_ms: 1 * 60_000,
+        stuck: false,
+      },
+      warning: null,
+    });
   });
 
   it('CONTROL: the same row WITHOUT the in-flight marker reads fresh — proving the check above convicts on the wedged fire, not on the clock', () => {
