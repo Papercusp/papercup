@@ -3002,24 +3002,31 @@ export function createFatalCheckpointFinalizer(deps: {
 export async function emitTerminalCheckpointResult(
   result: CheckpointResult,
   deps: {
+    /**
+     * Persist the logical qualification disposition before any marker/event can wake a
+     * successor. Optional for callers that are only rendering an already-recorded result.
+     */
+    record?(result: CheckpointResult): Promise<boolean>;
     writeHuman(result: CheckpointResult): void;
     writeMarker(line: string): void;
     emitInconclusive(result: CheckpointResult): Promise<void>;
     retire(result: CheckpointResult): Promise<void>;
   },
 ): Promise<void> {
-  deps.writeHuman(result);
+  const recorded = deps.record ? await deps.record(result) : false;
+  const terminal = recorded ? { ...result, recorded: true } : result;
+  deps.writeHuman(terminal);
   deps.writeMarker(
-    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(result)}`,
+    `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(terminal)}`,
   );
   if (
-    result.green === null &&
-    result.candidateSource !== "pinned" &&
-    result.diagnostic !== "candidate-pinned"
+    terminal.green === null &&
+    terminal.candidateSource !== "pinned" &&
+    terminal.diagnostic !== "candidate-pinned"
   ) {
-    await deps.emitInconclusive(result);
+    await deps.emitInconclusive(terminal);
   }
-  await deps.retire(result);
+  await deps.retire(terminal);
 }
 
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
@@ -18715,6 +18722,10 @@ if (require.main === module) {
     // the pipeline). One object on stdout keeps the old brace-slice AND the new marker
     // parse both working.
     await emitTerminalCheckpointResult(r, {
+      // WI-10000288: recording belongs inside the one terminal seam, before the marker/event.
+      // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
+      // emitted inconclusive wake from leaving its logical qualification falsely `running`.
+      record: recordOwnVerdict,
       writeHuman: (result) => console.error(JSON.stringify(result, null, 2)),
       writeMarker: (line) => console.log(line),
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
@@ -19063,12 +19074,9 @@ if (require.main === module) {
           candidateSource,
           ...(diagnostic ? { diagnostic } : {}),
         };
-        // Record first, then emit the marker + inconclusive wake. The signal handler awaits this
-        // finalizer, so releaseAndExit cannot tear down either write before it is durable.
-        const recorded = await recordOwnVerdict(cancelled);
-        await emitResult(
-          recorded ? { ...cancelled, recorded: true } : cancelled,
-        );
+        // emitResult owns record-before-marker ordering for every terminal path. The signal
+        // handler awaits it, so releaseAndExit cannot tear down either write before it is durable.
+        await emitResult(cancelled);
         return true;
       };
       const releaseAfterSignal = (code: number): void => {
@@ -19139,11 +19147,9 @@ if (require.main === module) {
           // Claim the terminal race before recording/emitting. If a managed signal already owns
           // it, its awaited finalizer is responsible for the only marker and process exit.
           if (!claimTerminal("normal")) return;
-          // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
-          // would kill an un-awaited write. The marker then carries `recorded` so the routine knows
-          // not to record this same verdict a second time (double-counting the red streak).
-          const recorded = await recordOwnVerdict(r);
-          await emitResult(recorded ? { ...r, recorded: true } : r);
+          // emitResult records BEFORE marker/event/exit and stamps `recorded` on the marker, so
+          // the routine never records the same verdict twice and process.exit cannot cut it off.
+          await emitResult(r);
           releaseAndExit(0);
         })
         .catch(async (e) => {
