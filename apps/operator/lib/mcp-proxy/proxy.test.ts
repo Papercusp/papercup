@@ -54,6 +54,10 @@ import {
   MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER,
   DEFAULT_DATA_PLANE_WARNING_WINDOW_MS,
   withDataPlaneDegradedHeader,
+  DEFAULT_MCP_PROXY_TARGET_PORT,
+  DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT,
+  staticMcpProxyTargets,
+  resolveDefaultMcpProxyTargets,
   type McpProxyTarget,
 } from "./proxy";
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from "./budgets.mjs";
@@ -68,6 +72,51 @@ describe("shouldRetry — refused-only + in-window (no double-execution)", () =>
   });
   it("does NOT retry past the window even if still refused", () => {
     expect(shouldRetry(false, 46_000, 45_000)).toBe(false);
+  });
+});
+
+describe("MCP proxy target topology — dev fallback and fail-closed pins", () => {
+  it("resolves the unpinned dev topology in canonical-then-staging order", () => {
+    expect(resolveDefaultMcpProxyTargets({})).toEqual([
+      {
+        host: "127.0.0.1",
+        port: DEFAULT_MCP_PROXY_TARGET_PORT,
+        source: "static",
+      },
+      {
+        host: "127.0.0.1",
+        port: DEFAULT_MCP_PROXY_DEV_FALLBACK_PORT,
+        source: "static-fallback",
+      },
+    ]);
+  });
+
+  it("keeps explicit target and inherited Hono pins single-candidate", () => {
+    expect(
+      resolveDefaultMcpProxyTargets({
+        PAPERCUSP_MCP_PROXY_TARGET_PORT: "3199",
+        PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT: "3170",
+      }),
+    ).toEqual([
+      { host: "127.0.0.1", port: 3199, source: "static" },
+    ]);
+    expect(
+      resolveDefaultMcpProxyTargets({
+        PAPERCUSP_HONO_PORT: "3198",
+        PAPERCUSP_MCP_PROXY_DEV_FALLBACK_PORT: "3170",
+      }),
+    ).toEqual([
+      { host: "127.0.0.1", port: 3198, source: "static" },
+    ]);
+  });
+
+  it("omits an invalid or duplicate fallback rather than inventing a target", () => {
+    expect(staticMcpProxyTargets("127.0.0.1", 3197, 3197)).toEqual([
+      { host: "127.0.0.1", port: 3197, source: "static" },
+    ]);
+    expect(staticMcpProxyTargets("127.0.0.1", 3197, 0)).toEqual([
+      { host: "127.0.0.1", port: 3197, source: "static" },
+    ]);
   });
 });
 
@@ -1288,6 +1337,71 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(r.body).toBe('{"result":"new-port"}');
   });
 
+  it("uses an ordered dev fallback only after the primary refuses pre-connect", async () => {
+    const primaryPort = await freePort(); // the canonical target is down
+    const hits: string[] = [];
+    const fallback = track(
+      http.createServer((_req, res) => {
+        hits.push("fallback");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"staging-fallback"}');
+      }),
+    );
+    await listen(fallback);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        resolveTargets: () =>
+          staticMcpProxyTargets("127.0.0.1", primaryPort, port(fallback)),
+        retryWindowMs: 1_000,
+        retryBackoffMs: 20,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(port(proxy));
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"staging-fallback"}');
+    expect(hits).toEqual(["fallback"]);
+  });
+
+  it("keeps a dynamic packaged/operator.json resolver single-candidate", async () => {
+    const operatorPort = await freePort(); // the packaged target is down
+    let devFallbackHits = 0;
+    const devFallback = track(
+      http.createServer((_req, res) => {
+        devFallbackHits++;
+        res.writeHead(200);
+        res.end('{"result":"must-not-be-used"}');
+      }),
+    );
+    await listen(devFallback);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        // This static target stands in for the dev fallback. The dynamic resolver
+        // must win and must not be augmented with an implicit second candidate.
+        targetHost: "127.0.0.1",
+        targetPort: port(devFallback),
+        resolveTarget: () => ({
+          host: "127.0.0.1",
+          port: operatorPort,
+          source: "operator.json",
+        }),
+        retryWindowMs: 160,
+        retryBackoffMs: 20,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(port(proxy));
+    expect(r.status).toBe(503);
+    expect(r.body).toContain("mcp_proxy_upstream_unavailable");
+    expect(devFallbackHits).toBe(0);
+  });
+
   it("exposes proxy-local health without touching the upstream", async () => {
     const targetPort = await freePort(); // down; health should still be proxy-local
     const proxy = track(
@@ -1513,6 +1627,42 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       }
     };
   }
+
+  it(
+    "does not fail over to a second candidate after a connected tools/call reset",
+    withKeyedRetry("1", async () => {
+      const primary = resetOnceUpstream(
+        '{"result":"must-not-replay"}',
+      ) as http.Server & { hits: () => number };
+      await listen(primary);
+      let fallbackHits = 0;
+      const fallback = track(
+        http.createServer((_req, res) => {
+          fallbackHits++;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end('{"result":"unsafe-fallback"}');
+        }),
+      );
+      await listen(fallback);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          resolveTargets: () =>
+            staticMcpProxyTargets("127.0.0.1", port(primary), port(fallback)),
+          retryWindowMs: 2_000,
+          retryBackoffMs: 40,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const r = await request(port(proxy), TOOLS_CALL);
+      expect(r.status).toBe(502);
+      expect(r.body).toContain("mcp_proxy_upstream_error");
+      expect(primary.hits()).toBe(1);
+      expect(fallbackHits).toBe(0);
+    }),
+  );
 
   it(
     "a KEYED tools/call does not replay after a post-connect reset while the first execution may still be running",

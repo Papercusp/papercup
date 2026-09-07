@@ -1,4 +1,13 @@
-# Portal Work surfaces mockups
+# UI mockups and specs
+
+The PUI public-release interaction contract lives in
+[`../../apps/tui/PUBLIC_RELEASE_UX.md`](../../apps/tui/PUBLIC_RELEASE_UX.md).
+Its machine-validated UI-IR companion is
+[`pui-public-release-ux.ir.json`](./pui-public-release-ux.ir.json), derived from
+the accepted Surface B reference in
+[`pui-agent-cockpit.html`](./pui-agent-cockpit.html).
+
+## Portal Work surfaces
 
 [`portal-work-plans-inbox.html`](./portal-work-plans-inbox.html) is a self-contained
 design board for bringing the operator Plans rail/page and Resolution Inbox
