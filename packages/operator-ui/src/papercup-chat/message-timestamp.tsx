@@ -74,6 +74,7 @@ function subscribeToChatClock(onChange: () => void): () => void {
   if (clock.timer === null) {
     // A UI clock, not host scheduling: it exists only while a stamp is mounted
     // and is torn down by the last unsubscribe below.
+    // timer-classification: ui-timer — relative-time re-render, no store read.
     clock.timer = setInterval(() => {
       clock.nowMs = Date.now();
       for (const l of clock.listeners) l();
