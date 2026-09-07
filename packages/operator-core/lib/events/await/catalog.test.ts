@@ -152,6 +152,9 @@ describe('renderCatalog', () => {
     expect(byFamily['fleet-member-stalled'].key).toBe('fleet:member-stalled:<slug>');
     expect(byFamily['fleet-admission-blocked'].awaitable_now).toBe(true);
     expect(byFamily['fleet-admission-blocked'].key).toBe('fleet:admission-blocked:<slug>');
+    expect(byFamily['fleet-repeated-recovery'].awaitable_now).toBe(true);
+    expect(byFamily['fleet-repeated-recovery'].key).toBe('fleet:repeated-recovery:<slug>');
+    expect(byFamily['fleet-repeated-recovery'].describe).toContain('takeoverAuthorized=false');
     // WI-1632193: still RENDERED (that is what makes the shape discoverable), even
     // though keyMatchesCatalog no longer matches it — see the announcedShape tests.
     expect(byFamily['plan-event'].key).toBe('plan:<slug>:<gate>');

@@ -108,6 +108,7 @@ export const DYNAMIC_KEY_FAMILIES: Readonly<Record<string, string>> = {
   'fleet-item-completed': 'fleetTransitionKey() interpolates the KIND segment',
   'fleet-member-stalled': 'fleetTransitionKey() interpolates the KIND segment',
   'fleet-admission-blocked': 'fleetTransitionKey() interpolates the KIND segment',
+  'fleet-repeated-recovery': 'fleetTransitionKey() interpolates the KIND segment',
   'service-up': 'one emitter builds both up/down from a `to` discriminant',
   'service-down': 'one emitter builds both up/down from a `to` discriminant',
   'git-sync': 'key assembled from a phase variable inside the git-sync event helper',

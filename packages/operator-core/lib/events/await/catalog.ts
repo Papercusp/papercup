@@ -748,6 +748,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling fleet:leader-brief for admission-blocked transitions',
   },
   {
+    family: 'fleet-repeated-recovery',
+    keyTemplate: 'fleet:repeated-recovery:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      'A non-leader member crossed from one to two fully observed checkpoint-bounded recovery-only cycles while holding no progressing claim. Diagnostic-only: payload action=diagnose and takeoverAuthorized=false; inspect the real blocker and last useful artifact rather than killing, reclaiming, duplicating, or widening authority. Fires only on the measured 1→2 edge; unknown coverage, first sighting, and persistent 2→3 do not fire.',
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — classified from agent_activity + session_turn_parts by the periodic fleet-transition sweep',
+    exists: true,
+    replacesPoll: 'polling fleet:leader-brief for repeated recovery-only member cycles',
+  },
+  {
     family: 'goal-drain-dead',
     keyTemplate: 'goal:drain-dead:<goalId>',
     params: [{ name: 'goalId', required: true, describe: 'the goal whose drain fleet you hold' }],
