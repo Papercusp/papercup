@@ -249,11 +249,9 @@ const launchSu = defineTool({
       return json({ status: 'error', error: 'invalid agent chat id' }, 400);
     }
 
-    // PUI attach is intentionally a READ on the canonical session row, not a
-    // resume/spawn. It lives on this route so create and attach share the same
-    // active-workspace scope, backend vocabulary and native-handle resolver.
-    // Branch before fleet creation, safety-floor admission, psu discovery and
-    // terminal setup: none belongs to a no-spawn attach.
+    // PUI attaches through the same canonical session row. Structured sessions
+    // reconnect their saved engine here after an operator restart; legacy
+    // native sessions retain their existing read-only attachment behavior.
     if (attachAdvSessionId != null) {
       const row = await getAdvSession(attachAdvSessionId);
       if (!row) {
@@ -285,6 +283,14 @@ const launchSu = defineTool({
           },
           409,
         );
+      }
+      const { readDurableSuSession } = await import('../../../su-session-persistence');
+      const durable = await readDurableSuSession({ advSessionId: row.id, workspaceId: activeWorkspaceId() });
+      if (durable?.descriptor && durable.agentChatId && durable.harnessSlug) {
+        const { launchAttachedSuSession } = await import('../../../su-session-attached-launch');
+        return launchAttachedSuSession(req, { agent, agent_chat_id: durable.agentChatId,
+          harness_slug: durable.harnessSlug, account: durable.descriptor.accountRoute ?? 'default',
+          carry: durable.descriptor.carry, model: durable.descriptor.model });
       }
       return json({
         status: 'ok',

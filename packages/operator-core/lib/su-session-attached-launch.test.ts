@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
+  resume: vi.fn(), rehydrate: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
 vi.mock('./adv-sessions', () => ({ getAdvSession: vi.fn(), markAdvSessionEnded: mocks.ended, setAdvSessionPid: mocks.pid }));
 vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: vi.fn() }));
-vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host }));
+vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host, rehydrateRegisteredSuSessionHost: mocks.rehydrate }));
+vi.mock('./su-session-resume', () => ({ prepareStructuredSuResume: mocks.resume }));
 vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist }));
 vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine }));
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
@@ -24,6 +26,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.chat.mockResolvedValue({ ok: true, data: { archived_at: null, su_runtime_class: 'su-session' } });
   mocks.read.mockResolvedValue(null);
+  mocks.resume.mockRejectedValue(new Error('Reconnect requires a saved native session'));
   mocks.bind.mockResolvedValue({ status: 'bound' });
   mocks.bootstrap.mockImplementation(async () => Response.json(boot));
   mocks.engine.mockReturnValue({ ready: Promise.resolve(), done: new Promise(() => {}), close, pid: () => 4321,
@@ -72,9 +75,32 @@ describe('attached launch authority', () => {
     mocks.host.mockReturnValue({ snapshot: () => ({ executorAttached: false, streamReady: true, terminal: false, descriptor: { lifecycle: 'ready' } }) });
     const response = await launchAttachedSuSession(request(), input);
     expect(response.status).toBe(503);
-    expect((await response.json()).error).toContain('Reconnect');
+    expect((await response.json()).error).toMatch(/Reconnect|reconnect/);
     expect(mocks.bootstrap).not.toHaveBeenCalled();
     expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it.each(['claude', 'codex', 'omp'])('reattaches saved %s without bootstrap or a new identity', async (agent) => {
+    const chatId = `restored-${agent}`;
+    const restored = { snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true }) };
+    const binding = { operation: 'attached', backend: agent, advSessionId: 18, ownerId: 'su-engine',
+      workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'saved-plan' };
+    const native = { backend: agent, sessionId: 'saved-native', rolloutId: 'saved-native', ompThreadId: 'saved-native' };
+    const options = { agentChatId: chatId, model: 'saved-model', accountRoute: 'saved-account',
+      carry: 'cold', modes: ['auto'], runtimeGeneration: 4 };
+    const beforeReady = vi.fn(), onExit = vi.fn(), release = vi.fn();
+    mocks.read.mockResolvedValue({ backend: agent, harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine' });
+    mocks.rehydrate.mockResolvedValue(restored);
+    mocks.resume.mockResolvedValue({ boot: { ...boot, agent }, binding, nativeSession: native,
+      options, beforeReady, onExit, release });
+    const response = await launchAttachedSuSession(request(), { ...input, agent, agent_chat_id: chatId });
+    expect(await response.json()).toMatchObject({ resumed: true, ready: false, advSessionId: 18,
+      ownerId: 'su-engine', planSlug: 'saved-plan', nativeSession: native });
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.bind).not.toHaveBeenCalled();
+    const call = (agent === 'claude' ? mocks.engine : mocks.rpc).mock.calls[0];
+    expect(call[agent === 'claude' ? 3 : 2]).toMatchObject({ ...options, host: restored, beforeReady, onExit,
+      ...(agent === 'claude' ? { resume: true } : { nativeSession: native }) });
   });
 
   it('closes the allocated runtime and row on readiness failure', async () => {

@@ -72,7 +72,8 @@ export function reportDreamQuality(
     const entry = faults.get(code) ?? { code, severity, runIds: [], evidence: [] };
     if (severity === 'major') entry.severity = severity;
     if (runId && !entry.runIds.includes(runId)) entry.runIds.push(runId);
-    if (!entry.evidence.includes(evidence) && entry.evidence.length < 8) entry.evidence.push(evidence);
+    const boundedEvidence = evidence.slice(0, 1000);
+    if (!entry.evidence.includes(boundedEvidence) && entry.evidence.length < 8) entry.evidence.push(boundedEvidence);
     faults.set(code, entry);
   };
   const unique = new Map<string, DreamRun>();
@@ -155,7 +156,7 @@ export function reportDreamQuality(
   }
   return {
     policy: DREAM_QUALITY_POLICY, scope, coverage: { complete: options.complete ?? true, inspected, valid: valid.length },
-    faults: [...faults.values()], calibration,
+    faults: [...faults.values()].map(f => ({ ...f, runCount: f.runIds.length, runIds: f.runIds.slice(0, 12) })), calibration,
     reviewPassRate: metrics?.funnel.reviewPassRate ?? null,
     rejectedReview: sampleRejectedDreams(valid),
     // The evidence time is stable across ticks; a later clock tick is not new evidence.
@@ -181,6 +182,7 @@ export async function collectDreamQualitySignals(
     group.push(run); groups.set(run.potSlug, group);
   }
   const reports = [...groups].map(([potSlug, rows]) => reportDreamQuality(rows, { workspaceId, potSlug, since, until }, { complete }));
+  const rejectionSamples = reports.flatMap(r => r.rejectedReview.sample.map(s => ({ pot: r.scope.potSlug, ...s })));
   return {
     signals: reports.flatMap(report => report.faults.map(f => ({
       source: 'dream-quality' as const, key: `${report.scope.potSlug}:${f.code}`,
@@ -190,6 +192,6 @@ export async function collectDreamQualitySignals(
       scope: `harness:${report.scope.potSlug}`, latestAt: report.latestEvidenceAt ?? until,
       paths: ['packages/operator-core/lib/dream/dream-quality.ts'],
     }))),
-    note: JSON.stringify({ window: { since, until }, fetched: runs.length, complete, rejectedReview: reports.map(r => ({ pot: r.scope.potSlug, ...r.rejectedReview })) }),
+    note: JSON.stringify({ window: { since, until }, fetched: runs.length, complete, rejectedSample: rejectionSamples.slice(0, 12), omittedSamples: Math.max(0, rejectionSamples.length - 12) }),
   };
 }

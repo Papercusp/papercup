@@ -232,15 +232,15 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   readonly channelKey: string;
   private readonly channel: BusChannel<SuSessionEvent<B>>;
   private readonly now: () => Date;
-  private readonly executeCommand?: SuSessionCommandExecutor<B>;
-  private readonly runtimeReady: () => boolean;
+  private executeCommand?: SuSessionCommandExecutor<B>;
+  private runtimeReady: () => boolean;
   private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
   private readonly commands = new Map<string, StoredCommand<B>>();
   private readonly durableCommands = new Map<string, {
     fingerprint: string;
     dispatch: Promise<SuSessionCommandDispatch<B>>;
   }>();
-  private readonly runtimeReconciliation: RuntimeReconciliation | null;
+  private runtimeReconciliation: RuntimeReconciliation | null;
   private descriptorValue: SuSessionDescriptor<B>;
   private activeCommands = 0;
   private disposed = false;
@@ -269,6 +269,23 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
 
   descriptor(): SuSessionDescriptor<B> {
     return jsonClone(this.descriptorValue);
+  }
+
+  /** Attach one replacement engine to a descriptor-only restored host. Keep
+   * its channel and replay receipts; an existing executor cannot be displaced. */
+  attachRuntime(options: Pick<SuSessionHostOptions<B>, 'descriptor' | 'executeCommand' | 'runtimeReady'>): void {
+    validateDescriptor(options.descriptor);
+    if (this.disposed || this.executeCommand || this.activeCommands || !options.executeCommand) {
+      throw new SuSessionHostError('runtime_already_attached', 'only a restored host without an executor can be reattached', 409);
+    }
+    if (!identityMatches(this.descriptorValue.identity, options.descriptor.identity)
+      || options.descriptor.runtimeGeneration <= this.descriptorValue.runtimeGeneration) {
+      throw new SuSessionHostError('identity_conflict', 'resume must preserve identity and advance the runtime generation', 409);
+    }
+    this.executeCommand = options.executeCommand;
+    this.runtimeReady = options.runtimeReady ?? (() => false);
+    this.runtimeReconciliation = { action: 'reattach', reason: 'runtime_replacement', stalePid: false };
+    this.emit({ type: 'session', descriptor: options.descriptor } as SuSessionEventInput<B>);
   }
 
   /** Codex/OMP assign their native id during the structured handshake. An

@@ -41,6 +41,9 @@ const spawnHeadlessMock = vi.fn(
   }),
 );
 const attachedMock = vi.fn(async (_request: Request, _input: unknown) => Response.json({ status: 'ok', transport: 'structured' }));
+const durableMock = vi.fn();
+const getSessionMock = vi.fn();
+vi.mock('../../../su-session-persistence', () => ({ readDurableSuSession: (...args: unknown[]) => durableMock(...args) }));
 vi.mock('../../../su-session-attached-launch', () => ({ launchAttachedSuSession: (request: Request, input: unknown) => attachedMock(request, input) }));
 
 // `shellEscape` stays REAL (importOriginal): the oneliner we assert on is then
@@ -92,6 +95,7 @@ const markAdvSessionEndedMock = vi.fn(async () => {});
 vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()),
   DISPLAY_TERMINAL_LAUNCH: 'terminal',
   recordAdvSession: vi.fn(async () => 7 as number | null),
+  getAdvSession: (...args: unknown[]) => getSessionMock(...args),
   setAdvSessionPid: (...a: unknown[]) => setAdvSessionPidMock(...(a as [])),
   markAdvSessionEnded: (...a: unknown[]) => markAdvSessionEndedMock(...(a as [])),
 }));
@@ -163,6 +167,8 @@ function headedPsuCommand(): string {
 const normaliseOwner = (s: string): string => s.replace(/--owner-id=su-[0-9a-f-]+/i, '--owner-id=<pinned>');
 
 beforeEach(() => {
+  durableMock.mockReset();
+  getSessionMock.mockReset();
   vi.clearAllMocks();
 });
 
@@ -178,6 +184,19 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
   it.each([{ defer_spawn: true }, { headless: true }, { resume_session_id: 'native-id' }])('rejects conflicting attached/native launch modes %j', async (conflict) => {
     expect((await launch({ attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', ...conflict })).status).toBe(400);
     expect(attachedMock).not.toHaveBeenCalled();
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('routes the PUI conversation-picker attach through structured recovery', async () => {
+    getSessionMock.mockResolvedValue({ id: 7, agent: 'claude', workspaceId: 'default',
+      harnessSlug: 'papercusp', planSlug: null, coordOwnerId: 'saved-owner' });
+    durableMock.mockResolvedValue({ agentChatId: 'saved-chat', harnessSlug: 'papercusp',
+      descriptor: { accountRoute: 'saved-account', carry: 'cold', model: 'saved-model' } });
+    expect(await launch({ attach_adv_session_id: 7, harness_slug: 'papercusp' }))
+      .toMatchObject({ status: 200, json: { transport: 'structured' } });
+    expect(attachedMock).toHaveBeenCalledWith(expect.any(Request), { agent: 'claude', agent_chat_id: 'saved-chat',
+      harness_slug: 'papercusp', account: 'saved-account', carry: 'cold', model: 'saved-model' });
     expect(spawnInTerminalMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });

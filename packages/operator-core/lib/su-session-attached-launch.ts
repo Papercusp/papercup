@@ -6,13 +6,14 @@ import { getAdvSession, markAdvSessionEnded, setAdvSessionPid } from './adv-sess
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import { nativeSessionHandleForAdvSession } from './native-session-handles';
-import { getRegisteredSuSessionHost } from './su-session-host';
+import { getRegisteredSuSessionHost, rehydrateRegisteredSuSessionHost, type SuSessionHost } from './su-session-host';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor, readDurableSuSession } from './su-session-persistence';
 import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 import type { NativeSessionHandle } from './native-session-handles';
 import { activeWorkspaceId } from './workspace-registry';
+import { prepareStructuredSuResume } from './su-session-resume';
 
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
   starting: new Map<string, Promise<Record<string, unknown>>>(),
@@ -64,7 +65,36 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       const snapshot = host?.snapshot();
       const initializing = state.engines.has(key) && snapshot?.descriptor.lifecycle === 'starting';
       if (!snapshot || snapshot.terminal || (!initializing && (!snapshot.executorAttached || !snapshot.streamReady))) {
-        throw new Error('This conversation already has a saved session. Reconnect that session before sending another turn.');
+        if (state.engines.has(key)) throw new Error('The previous native process is still closing; reconnect after it exits');
+        const restored = host ?? await rehydrateRegisteredSuSessionHost({ workspaceId,
+          harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
+        if (!restored) throw new Error('Reconnect requires the saved session descriptor');
+        const resume = await prepareStructuredSuResume(previous);
+        let active: ClaudeSuEngine | SuRpcEngine | undefined;
+        try {
+          const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady, onExit: resume.onExit };
+          active = previous.backend === 'claude'
+            ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
+              { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
+              { ...options, host: restored as SuSessionHost<'claude'>, resume: true })
+            : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
+              { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }> });
+          state.engines.set(key, active);
+          await persistSuSessionDescriptor(previous.advSessionId, active.adapter.host.descriptor());
+        } catch (error) { await active?.close(); await resume.release(); throw error; }
+        const resumed = active;
+        void (async () => {
+          try { await resumed.ready; await resumed.done; }
+          catch (error) {
+            if (!resumed.adapter.host.snapshot().terminal) resumed.adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
+            await resumed.close();
+            await resume.release();
+          } finally { if (state.engines.get(key) === resumed) state.engines.delete(key); }
+        })().catch((error: unknown) => console.warn('[su-session] resume bookkeeping failed', error));
+        return { status: 'ok', attached: true, resumed: true, transport: 'structured', ready: false,
+          advSessionId: previous.advSessionId, ownerId: previous.ownerId, workspaceId,
+          harnessSlug: previous.harnessSlug, planSlug: resume.binding.planSlug, agent: previous.backend,
+          nativeSession: resume.nativeSession };
       }
       const row = await getAdvSession(previous.advSessionId);
       const existingEngine = state.engines.get(key);

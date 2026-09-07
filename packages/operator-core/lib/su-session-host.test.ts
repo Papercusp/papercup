@@ -93,6 +93,32 @@ function eventTypes(host: SuSessionHost<'claude'>): string[] {
 }
 
 describe('runtime-assigned native identity', () => {
+  it('reattaches a restored host on its existing stream with the same identity and receipts', async () => {
+    const saved = { ...descriptor(), lifecycle: 'ended' as const };
+    const host = new SuSessionHost({ descriptor: saved });
+    let ready = false;
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    try {
+      const before = host.recent.at(-1)!.id;
+      const resumed = { ...saved, lifecycle: 'starting' as const, runtimeGeneration: 2 };
+      expect(() => host.attachRuntime({ descriptor: saved, executeCommand: execute })).toThrow('advance the runtime generation');
+      expect(() => host.attachRuntime({ descriptor: { ...resumed, identity: { ...saved.identity, ownerId: 'another-owner' } }, executeCommand: execute })).toThrow('preserve identity');
+      host.attachRuntime({ descriptor: resumed, executeCommand: execute, runtimeReady: () => ready });
+      expect(host.snapshot().executorAttached).toBe(false);
+      expect(host.descriptor()).toEqual(resumed);
+      expect(host.snapshot().runtimeReconciliation).toEqual({ action: 'reattach', reason: 'runtime_replacement', stalePid: false });
+      expect(host.recentSince(before)[0].event).toMatchObject({ type: 'session', session: saved.identity });
+      ready = true;
+      host.transition('ready');
+      const dispatch = await host.acceptCommand(command('focus'));
+      expect(await dispatch.terminal).toMatchObject({ status: 'completed' });
+      expect(execute).toHaveBeenCalledOnce();
+      expect((await host.acceptCommand(command('focus'))).replayed).toBe(true);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(() => host.attachRuntime({ descriptor: { ...resumed, runtimeGeneration: 3 }, executeCommand: execute })).toThrow('without an executor');
+    } finally { host.dispose(); }
+  });
+
   it('keeps initialization unready and binds only the first native id', () => {
     const initial = descriptor();
     initial.identity.nativeSessionId = '';
