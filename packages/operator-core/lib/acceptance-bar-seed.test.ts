@@ -136,7 +136,7 @@ describe('acceptance BAR seed builder', () => {
   });
 
   it('creates one mandatory outcome per requirement and one hash-pinned clause per map edge', () => {
-    const built = buildAcceptanceBarSeed({ ...input, planContent: plan() });
+    const built = buildAcceptanceBarSeed({ ...input, classRef: 'plan-class-bugfix', planContent: plan() });
     expect(built.ok).toBe(true);
     if (!built.ok) return;
 
@@ -173,6 +173,7 @@ describe('acceptance BAR seed builder', () => {
     expect(built.templateData).toMatchObject({
       kind: 'acceptance',
       subjectPlan: 'seed-target',
+      classRef: 'plan-class-bugfix',
       barSetHash: built.barSetHash,
       barContract: {
         schemaVersion: 1,
@@ -188,6 +189,7 @@ describe('acceptance BAR seed builder', () => {
     if (!first.ok) return;
     const existing = {
       ...first.templateData,
+      classRef: 'plan-class-migration',
       criteria: first.criteria.map((criterion) =>
         criterion.barKey === 'R-1'
           ? { ...criterion, method: 'Run the focused test.', check: { kind: 'requirements' } }
@@ -198,6 +200,7 @@ describe('acceptance BAR seed builder', () => {
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(second.criteria[0]).toMatchObject({ method: 'Run the focused test.', check: { kind: 'requirements' } });
+    expect(second.templateData).toMatchObject({ classRef: 'plan-class-migration' });
 
     const changed = buildAcceptanceBarSeed({
       ...input,
