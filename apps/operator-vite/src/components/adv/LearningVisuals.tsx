@@ -268,6 +268,8 @@ export function LearningDisclosure({
   aside,
   children,
   defaultOpen = false,
+  open,
+  onOpenChange,
 }: {
   label: string;
   /**
@@ -287,11 +289,15 @@ export function LearningDisclosure({
   aside?: ReactNode;
   children: ReactNode;
   defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
     <Collapsible.Root
       className="pc-learning-visual__disclosure"
       defaultOpen={defaultOpen}
+      open={open}
+      onOpenChange={onOpenChange}
     >
       <Collapsible.Trigger className="pc-learning-visual__disclosure-trigger">
         <ChevronDown size={13} aria-hidden />

@@ -40,6 +40,7 @@ import {
   LearningVisualError,
 } from "./LearningVisuals";
 import { snapshotFault } from "./snapshot-fault";
+import { DreamPanel } from "./DreamPanel";
 
 function cycleWhen(at: string | null): string {
   const ms = at ? Date.parse(at) : NaN;
@@ -139,6 +140,7 @@ export function AnalyzePanel({
           </button>
         }
       />
+      <DreamPanel active={active} />
       {fault.failed ? (
         <LearningVisualError
           title={fault.message ?? "Pipeline unavailable"}

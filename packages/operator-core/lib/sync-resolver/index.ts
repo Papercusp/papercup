@@ -4829,15 +4829,31 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs'],
     argsSchema: z.object({
       potSlug: z.string().trim().min(1).max(120),
-      view: z.enum(['controls', 'metrics']).optional(),
+      view: z.enum(['controls', 'metrics', 'history', 'run']).optional(),
       since: z.string().datetime().optional(), until: z.string().datetime().optional(),
-    }),
+      cursor: z.string().max(800).optional(), runId: z.string().trim().min(1).max(500).optional(),
+    }).refine(args => args.view !== 'run' || Boolean(args.runId), 'A run id is required for Dream detail'),
     resolve: async (raw: unknown) => {
-      const args = raw as { potSlug: string; view?: 'controls' | 'metrics'; since?: string; until?: string };
+      const args = raw as { potSlug: string; view?: 'controls' | 'metrics' | 'history' | 'run'; since?: string; until?: string; cursor?: string; runId?: string };
       const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
       ]);
       const workspaceId = activeWorkspaceId();
+      if (args.view === 'run') {
+        const { readDreamDetail } = await import('../dream/dream-read');
+        return routeWithWorkspace(async tx => {
+          const detail = await readDreamDetail(tx as unknown as import('postgres').Sql,
+            { workspaceId, potSlug: args.potSlug, runId: args.runId! });
+          return detail ? [detail] : [];
+        });
+      }
+      if (args.view === 'history') {
+        const { readDreamHistory } = await import('../dream/dream-read');
+        const until = args.until ?? new Date().toISOString();
+        const since = args.since ?? new Date(Date.parse(until) - 7 * 86_400_000).toISOString();
+        return routeWithWorkspace(async tx => [await readDreamHistory(tx as unknown as import('postgres').Sql,
+          { workspaceId, potSlug: args.potSlug, since, until }, args.cursor)]);
+      }
       if (args.view === 'metrics') {
         const { readDreamMetrics } = await import('../dream/dream-metrics');
         const until = args.until ?? new Date().toISOString();
