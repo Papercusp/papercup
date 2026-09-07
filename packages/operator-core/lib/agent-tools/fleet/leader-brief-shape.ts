@@ -153,6 +153,34 @@ function compactAnnouncedGate(value: unknown): unknown {
   return pick(value, ['event', 'note', 'scope', 'announcedBy', 'fired', 'firedAt', 'awaiters'], 180) ?? value;
 }
 
+/** History is optional detail, but its recovery identity must survive every tier. */
+function compactPlanHistory(value: unknown, emergency = false): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const brief = asDict(source.brief);
+  const rows = brief
+    ? [
+        ...(Array.isArray(brief.authority) ? brief.authority : []),
+        ...(Array.isArray(brief.attempts) ? brief.attempts : []),
+      ]
+    : [];
+  const shown = emergency
+    ? []
+    : rows.slice(0, 2).map((entry) => pick(entry, ['authority', 'rawRef', 'workItemId', 'text'], 160));
+  return {
+    status: source.status,
+    recovery: source.recovery,
+    ...(brief
+      ? {
+          fingerprint: brief.fingerprint,
+          fanOut: brief.fanOut,
+          records: shown,
+          detailOmitted: emergency || rows.length > shown.length || asDict(brief.omission)?.truncated === true,
+        }
+      : {}),
+  };
+}
+
 /** P-002 / D-004: compact the claimable aggregate as one atomic unit. The
  * verbose family evidence is full-tier diagnostic material; the bounded
  * monitor tiers retain the value, its exact population contract, and any
@@ -624,9 +652,7 @@ function compactIntentAttention(value: unknown): unknown {
 
 /** D-007: compact, complete repeated-recovery identity + authority row. */
 function compactRepeatedRecovery(value: unknown): unknown {
-  return (
-    pick(value, ['agentId', 'consecutiveRecoveryOnlyCycles', 'action', 'takeoverAuthorized'], 120) ?? {}
-  );
+  return pick(value, ['agentId', 'consecutiveRecoveryOnlyCycles', 'action', 'takeoverAuthorized'], 120) ?? {};
 }
 
 function compactVerdict(value: unknown): unknown {
@@ -852,6 +878,7 @@ function buildProjection(
     out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
   }
   if ('agentObligations' in data) out.agentObligations = compactAgentObligations(data.agentObligations);
+  if ('planHistory' in data) out.planHistory = compactPlanHistory(data.planHistory);
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if ('dependencyBottlenecks' in data) {
     out.dependencyBottlenecks = compactDependencyBottlenecks(
@@ -1005,6 +1032,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   }
   const emergency: Dict = {
     ok: source.ok === true,
+    ...(source.planHistory !== undefined ? { planHistory: compactPlanHistory(source.planHistory, true) } : {}),
     ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt, 20, false) } : {}),
     ...(source.monitoringBlindAdvisory !== undefined
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }

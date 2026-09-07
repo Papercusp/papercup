@@ -3,6 +3,31 @@ import leaderBriefTool from './leader-brief';
 import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 import { projectFleetHeadcountState } from '../../agent-fleets-store';
 
+describe('leader plan history delivery', () => {
+  const recovery = { tool: 'plans:get', args: { slug: 'history', harness: 'papercusp', heading: 'History' } };
+  const planHistory = {
+    status: 'available',
+    recovery,
+    brief: {
+      fingerprint: 'history-2',
+      authority: [],
+      attempts: [{ authority: 'checkpoint', rawRef: 'WI-1#checkpoint', text: 'Root cause: child lesson.' }],
+      fanOut: { admitted: 1, total: 1, cap: 24, truncated: false },
+      omission: { truncated: false },
+    },
+  };
+  it('retains a child lesson, generation and exact recovery in the final lean sink', () => {
+    const result = shapeLeaderBrief({ ok: true, planHistory }, 'trimmed');
+    expect(JSON.stringify(result)).toContain('Root cause: child lesson');
+    expect(result).toMatchObject({ planHistory: { status: 'available', fingerprint: 'history-2', recovery } });
+  });
+  it('keeps recovery under pressure and unknown scope explicit', () => {
+    const result = shapeLeaderBrief({ ...largeBrief(), planHistory: { ...planHistory, status: 'unknown' } }, 'trimmed');
+    expect(result).toMatchObject({ planHistory: { status: 'unknown', recovery } });
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+});
+
 function largeBrief() {
   const members = Array.from({ length: 53 }, (_, index) => ({
     agentId: `su-${String(index).padStart(2, '0')}`,
@@ -226,9 +251,11 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
   });
 
   it('declares both runtime membersTruncated representations in the result contract', () => {
-    const resultSchema = (leaderBriefTool as unknown as {
-      result: { safeParse: (value: unknown) => { success: boolean } };
-    }).result;
+    const resultSchema = (
+      leaderBriefTool as unknown as {
+        result: { safeParse: (value: unknown) => { success: boolean } };
+      }
+    ).result;
     const shaped = shapeLeaderBrief(largeBrief(), 'trimmed') as Record<string, unknown>;
 
     expect(shaped.membersTruncated).toMatchObject({ total: 53 });

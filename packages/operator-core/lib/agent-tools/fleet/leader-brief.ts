@@ -145,7 +145,7 @@ import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { buildPolicyParkedCapacity, resolveFleetParkResumePath } from '../../fleet-park-resume-path';
 import { listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
-import { getContainmentRollupBrief, type PriorAttemptBriefBudget } from '../../prior-attempt-context';
+import { readPlanHistoryContext, type PlanHistoryContext } from '../../prior-attempt-context';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import {
   FLEET_METRICS_SCHEMA_VERSION,
@@ -173,46 +173,6 @@ import {
 // trimming.
 const LEADER_BRIEF_MEMBER_DETAIL_BUDGET = 8_000;
 const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
-
-/**
- * P-019 / D-007 / D-008: the plan-history rollup is a leader-only read. Keep
- * its compiler budget explicit at this consumer boundary so descendant fan-out
- * can never inherit the member claim budget or grow with the plan size.
- */
-export const LEADER_BRIEF_PLAN_HISTORY_ROLLUP_BUDGET: Required<PriorAttemptBriefBudget> = {
-  maxChars: 8_000,
-  maxRecords: 24,
-  maxTextChars: 500,
-};
-export const LEADER_BRIEF_PLAN_HISTORY_ROLLUP_TIMEOUT_MS = 2_500;
-
-export type LeaderBriefPlanHistoryRollup = NonNullable<Awaited<ReturnType<typeof getContainmentRollupBrief>>>;
-
-/**
- * Read the plan-level descendant rollup used by the leader brief. This wrapper
- * keeps the target explicitly at `kind:'plan'` and injects the fixed consumer
- * budget, making it impossible for this surface to accidentally call the
- * member-safe ancestor reader or inherit its defaults. Fail-soft matches the
- * other optional leader-brief diagnostics: an unavailable history leg must not
- * make the fleet health read fail.
- */
-export async function readLeaderBriefPlanHistoryRollup(
-  input: { planSlug: string; harness: string; maxDescendants?: number },
-  read: typeof getContainmentRollupBrief = getContainmentRollupBrief,
-): Promise<LeaderBriefPlanHistoryRollup | null> {
-  if (!input.planSlug.trim() || !input.harness.trim()) return null;
-  try {
-    return await read({
-      target: { kind: 'plan', ref: input.planSlug, harness: input.harness },
-      harness: input.harness,
-      budget: LEADER_BRIEF_PLAN_HISTORY_ROLLUP_BUDGET,
-      timeoutMs: LEADER_BRIEF_PLAN_HISTORY_ROLLUP_TIMEOUT_MS,
-      ...(input.maxDescendants === undefined ? {} : { maxDescendants: input.maxDescendants }),
-    });
-  } catch {
-    return null;
-  }
-}
 
 /**
  * EI-21577690778811728: the leader brief has several independent, read-only
@@ -961,9 +921,7 @@ export function prioritizeBenchSuggestedMembers<T extends { benchSuggestion?: un
  * to survive the common payload tier. */
 export function prioritizeActionableMembers<
   T extends { benchSuggestion?: unknown; intentAttention?: unknown; repeatedRecovery?: unknown },
->(
-  members: readonly T[],
-): T[] {
+>(members: readonly T[]): T[] {
   return [
     ...members.filter(
       (member) => member.benchSuggestion != null || member.intentAttention != null || member.repeatedRecovery != null,
@@ -4092,7 +4050,8 @@ export async function buildLeaderBrief(
     boundedLeaderBriefRead(
       'repeated-recovery',
       async () => {
-        const { readFleetRepeatedRecoveryStates, repeatedRecoveryAlert } = await import('../../fleet-repeated-recovery');
+        const { readFleetRepeatedRecoveryStates, repeatedRecoveryAlert } =
+          await import('../../fleet-repeated-recovery');
         const states = await readFleetRepeatedRecoveryStates(
           grouped.map((member) => ({
             ownerId: member.agentId,
@@ -4383,6 +4342,7 @@ export async function buildLeaderBrief(
   let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert> | undefined;
   let fleetHeadcountVsExecutableFrontierAlert: FleetHeadcountVsExecutableFrontierEvaluation | undefined;
   let leaderPlanSlug: string | null = null;
+  let planHistory: PlanHistoryContext | undefined;
   // P-006: always in-band. A missing/exploded dependency read is UNKNOWN,
   // never an omitted field that a leader can mistake for a measured empty view.
   let dependencyBottlenecks: LeaderDependencyBottleneckView = {
@@ -4460,7 +4420,7 @@ export async function buildLeaderBrief(
         planSlug: exactPlanSlug,
       };
     } else {
-      const [measured, readyWidth] = await runBoundedLeaderBriefReads(
+      const [measured, readyWidth, history] = await runBoundedLeaderBriefReads(
         [
           () =>
             readDependencyBottlenecks({
@@ -4478,10 +4438,16 @@ export async function buildLeaderBrief(
             const planRow = await getPlanRow(exactPlanSlug, { workspaceId, harnessSlug: planHarness });
             return planRow ? analyzePlanDagParallelism(planItemsForRow(planRow)).readyWidth : null;
           },
+          () => readPlanHistoryContext(exactPlanSlug, planHarness),
         ] as const,
-        [null, null] as const,
+        [null, null, null] as const,
         'plan-diagnostics',
       );
+      planHistory = history ?? {
+        status: 'unknown',
+        brief: null,
+        recovery: { tool: 'plans:get', args: { slug: exactPlanSlug, harness: planHarness, heading: 'History' } },
+      };
       if (measured) {
         dependencyBottlenecks = buildLeaderDependencyBottleneckView(measured, grouped);
       } else {
@@ -4750,6 +4716,7 @@ export async function buildLeaderBrief(
       // measured|unknown discriminator survives shaping; an unread graph never
       // becomes rows:[] or an absent field that looks like "no bottlenecks".
       dependencyBottlenecks,
+      ...(planHistory ? { planHistory } : {}),
       // P-009/R7: observability only. This carries the triggering row and
       // independent read-only falsifier, but performs no remediation.
       leaderBlockerStall,
