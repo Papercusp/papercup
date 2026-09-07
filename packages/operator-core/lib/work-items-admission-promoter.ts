@@ -3870,6 +3870,17 @@ async function persistApprovedAdmissionMerge(
   if (receiptWritten.length !== 1) {
     throw new Error(`admission reversal receipt conditional-write-miss: ${input.loserId}`);
   }
+
+  // Persist the typed relation in the same transaction as the merge receipt.
+  // `see_also` remains a compatibility receipt, while coord_links is the
+  // traversable canonical identity edge used by later duplicate-aware reads.
+  await persistAdmissionDuplicateLink(sql, {
+    workspaceId: input.workspaceId,
+    actor: input.actor,
+    nowMs: input.nowMs,
+    loser: input.loserSnapshot,
+    canonical: input.canonicalSnapshot,
+  });
 }
 
 interface PersistAdmissionPlanInput {
