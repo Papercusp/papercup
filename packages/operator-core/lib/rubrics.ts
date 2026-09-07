@@ -474,11 +474,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
       };
     }),
     ratingScale: d.ratingScale,
-    criteriaHash: computeSeedContentHash({
-      ...d,
-      ...(d.classRef ? { delegatedClassRef: d.classRef } : {}),
-      ...(d.classRef && delegatedClassRevision !== undefined ? { delegatedClassRevision } : {}),
-    }),
+    criteriaHash: computeRubricCriteriaHash(d, delegatedClassRevision),
     methodRef: d.methodRef ?? null,
     ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
     ...(d.stalenessWatched !== undefined ? { stalenessWatched: d.stalenessWatched } : {}),
@@ -494,14 +490,43 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
   };
 }
 
-const RUBRIC_REVISION_SNAPSHOT_HEADING = '## Structured rubric data (`template_data`)';
+type ParsedRubricTemplateData = ReturnType<typeof rubricTemplateDataSchema.parse>;
 
 /**
- * Recover the structured rubric document appended by rubricRevisionSnapshot.
- * Historical reads fail closed when a legacy/backfilled revision has no
- * structured snapshot; they must never silently grade the current template_data.
+ * Keep the grading hash construction in one place so current reads and the
+ * write-time revision snapshot record exactly the same identity. The delegated
+ * class revision is intentionally optional: a failed class lookup preserves the
+ * pre-existing degraded-read behavior, while a successful lookup pins the class
+ * revision into the hash.
  */
-export function parseRubricRevisionTemplateData(snapshot: string): unknown | null {
+function computeRubricCriteriaHash(
+  templateData: ParsedRubricTemplateData,
+  delegatedClassRevision?: number | null,
+): string {
+  return computeSeedContentHash({
+    ...templateData,
+    ...(templateData.classRef ? { delegatedClassRef: templateData.classRef } : {}),
+    ...(templateData.classRef && delegatedClassRevision !== undefined ? { delegatedClassRevision } : {}),
+  });
+}
+
+const RUBRIC_REVISION_SNAPSHOT_HEADING = '## Structured rubric data (`template_data`)';
+const RUBRIC_REVISION_SNAPSHOT_SCHEMA_VERSION = 2;
+
+interface ParsedRubricRevisionSnapshot {
+  templateData: unknown;
+  /** Hash captured when the revision was written; absent on legacy snapshots. */
+  criteriaHash?: string | null;
+  schemaVersion?: number;
+}
+
+/**
+ * Parse the enriched revision envelope, while retaining compatibility with the
+ * original raw-template-data snapshots. The latter can still be read, but their
+ * criteriaHash necessarily follows the current hash algorithm because no
+ * write-time hash was persisted.
+ */
+function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnapshot | null {
   const marker = snapshot.lastIndexOf(RUBRIC_REVISION_SNAPSHOT_HEADING);
   if (marker < 0) return null;
   const fenced = snapshot
@@ -509,10 +534,39 @@ export function parseRubricRevisionTemplateData(snapshot: string): unknown | nul
     .match(/~~~json\s*\n([\s\S]*?)\n~~~/);
   if (!fenced) return null;
   try {
-    return JSON.parse(fenced[1]);
+    const parsed: unknown = JSON.parse(fenced[1]);
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      'schemaVersion' in parsed &&
+      parsed.schemaVersion === RUBRIC_REVISION_SNAPSHOT_SCHEMA_VERSION &&
+      'templateData' in parsed
+    ) {
+      const envelope = parsed as {
+        schemaVersion: number;
+        templateData: unknown;
+        criteriaHash?: unknown;
+      };
+      return {
+        schemaVersion: envelope.schemaVersion,
+        templateData: envelope.templateData,
+        criteriaHash: typeof envelope.criteriaHash === 'string' ? envelope.criteriaHash : null,
+      };
+    }
+    // Legacy revisions stored template_data directly under the fence.
+    return { templateData: parsed };
   } catch {
     return null;
   }
+}
+
+/**
+ * Recover the structured rubric document appended by rubricRevisionSnapshot.
+ * Historical reads fail closed when a legacy/backfilled revision has no
+ * structured snapshot; they must never silently grade the current template_data.
+ */
+export function parseRubricRevisionTemplateData(snapshot: string): unknown | null {
+  return parseRubricRevisionSnapshot(snapshot)?.templateData ?? null;
 }
 
 /**
@@ -950,22 +1004,30 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
       harnessSlug: row.harness_slug,
     });
     if (!snapshot) return null;
-    const parsed = rubricTemplateDataSchema.safeParse(parseRubricRevisionTemplateData(snapshot.contentSnapshot));
+    const parsedSnapshot = parseRubricRevisionSnapshot(snapshot.contentSnapshot);
+    const parsed = rubricTemplateDataSchema.safeParse(parsedSnapshot?.templateData);
     if (!parsed.success) return null;
 
     // Preserve current plan-row metadata (title/status/ownership/lifecycle) but
     // replace both the revision and the structured grading data with the exact
     // historical snapshot. mapRubricPlanRows also preserves the existing
     // delegated-class hash semantics.
-    return (
+    const historical =
       (await mapRubricPlanRows([
         {
           ...row,
           version: revision,
           template_data: parsed.data,
         },
-      ]))[0] ?? null
-    );
+      ]))[0] ?? null;
+    if (!historical) return null;
+    // New snapshots pin the hash produced at write time. This prevents a later
+    // hash-algorithm change or delegated-class revision from rewriting history
+    // when an old attestation is re-verified. Legacy raw snapshots intentionally
+    // retain the best-effort current-hash fallback above.
+    return typeof parsedSnapshot?.criteriaHash === 'string' && parsedSnapshot.criteriaHash.length > 0
+      ? { ...historical, criteriaHash: parsedSnapshot.criteriaHash }
+      : historical;
   } catch {
     return null;
   }
@@ -2178,14 +2240,46 @@ export function preserveRubricPlanBody(
  * `recordPlanRevision` never throws, so this can never fail the rubric write (it runs
  * post-commit, and withPlanLock awaits it).
  */
-function rubricRevisionSnapshot(writtenBody: string, templateData: unknown): string {
+function rubricRevisionSnapshot(writtenBody: string, templateData: unknown, criteriaHash: string | null): string {
   if (templateData === null || templateData === undefined) return writtenBody;
-  const serialized = JSON.stringify(templateData, null, 2);
+  const serialized = JSON.stringify(
+    {
+      schemaVersion: RUBRIC_REVISION_SNAPSHOT_SCHEMA_VERSION,
+      templateData,
+      criteriaHash,
+    },
+    null,
+    2,
+  );
   if (serialized === undefined) return writtenBody;
   const separator = writtenBody.endsWith('\n') ? '\n' : '\n\n';
   return (
     writtenBody + separator + '## Structured rubric data (`template_data`)\n\n' + '~~~json\n' + serialized + '\n~~~\n'
   );
+}
+
+/** Compute the same current-read hash without triggering first-party seeding. */
+async function rubricRevisionCriteriaHash(
+  templateData: unknown,
+  scope: { workspaceId: string; harnessSlug: string },
+): Promise<string | null> {
+  const [rubric] = await mapRubricPlanRows([
+    {
+      plan_slug: '__rubric_revision_snapshot__',
+      workspace_id: scope.workspaceId,
+      harness_slug: scope.harnessSlug,
+      title: null,
+      status: 'active',
+      created: null,
+      updated: null,
+      updated_at: new Date(0).toISOString(),
+      version: 1,
+      owner: null,
+      archived: false,
+      template_data: templateData,
+    },
+  ]);
+  return rubric?.criteriaHash ?? null;
 }
 
 function rubricRevisionAfterWrite(
@@ -2209,6 +2303,9 @@ function rubricRevisionAfterWrite(
     userId: null,
   };
   return async (writtenBody, scope, committedTemplateData) => {
+    const snapshotTemplateData =
+      committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData;
+    const criteriaHash = await rubricRevisionCriteriaHash(snapshotTemplateData, scope);
     // Thread the (workspaceId, harnessSlug) withPlanLock resolved for THIS write so the
     // revision lands on the rubric plan's own PK (recordPlanRevision re-resolves through
     // the same resolvePlanScope — the operator-home short-circuit for the rubric harness).
@@ -2221,7 +2318,8 @@ function rubricRevisionAfterWrite(
       // invoke this helper without the third hook argument.
       content: rubricRevisionSnapshot(
         writtenBody,
-        committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData,
+        snapshotTemplateData,
+        criteriaHash,
       ),
       // The revision hash remains the canonical plan-body fingerprint used by
       // activation/current-revision comparisons. Only content_snapshot is
@@ -3424,13 +3522,17 @@ async function amendAcceptanceBarRubric(
     workspaceId: null,
     userId: null,
   };
+  const criteriaHash =
+    txResult.rubricBody && txResult.templateData
+      ? await rubricRevisionCriteriaHash(txResult.templateData, rubricScope)
+      : null;
   await Promise.all([
     txResult.rubricBody && txResult.templateData
       ? recordPlanRevision({
           planSlug: input.rubricId,
           harnessSlug: rubricScope.harnessSlug,
           workspaceId: rubricScope.workspaceId,
-          content: rubricRevisionSnapshot(txResult.rubricBody, txResult.templateData),
+          content: rubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash),
           rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
           identity,
         })
