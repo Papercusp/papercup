@@ -6,7 +6,7 @@ import { resolveDreamCycleConfig, resolveDreamPassConfig, resolveDreamReviewConf
 import { CAPABILITY_DREAM_PROMPT_VERSION, runCapabilityDreamPass } from './capability-pass';
 import { CAPABILITY_REVIEW_VERSION, runCapabilityDreamReview, rerankCapabilityPriors,
   type CapabilityReviewSources } from './capability-review';
-import { buildCapabilitySamplingSnapshot, sampleCapabilities,
+import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination,
   type CapabilitySamplingOptions, type CapabilitySamplingResult } from './capability-sampler';
 import type { CapabilityManifest, CapabilityPacket } from './capability-contracts';
 import { dreamCapabilityRun, type BeginCapabilityRunInput, type DreamRunCall } from './dream-run-provenance';
@@ -51,7 +51,7 @@ export interface DreamCycleDeps {
   recordSpend: (run: DreamRun) => Promise<RecordDreamSpendResult>;
   sink: (runId: string, packets: CapabilityPacket[]) => Promise<SinkDreamInsightResult>;
   buildSnapshot?: typeof buildCapabilitySamplingSnapshot;
-  sample?: typeof sampleCapabilities;
+  sample?: typeof sampleCapabilityCombination;
   dream?: typeof runCapabilityDreamPass;
   review?: typeof runCapabilityDreamReview;
   rerank?: typeof rerankCapabilityPriors;
@@ -249,7 +249,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         const exposures: Record<string, number> = {};
         for (const p of past) for (const entry of [p.selection.a, p.selection.b, ...(p.selection.c ? [p.selection.c.entry] : [])])
           exposures[entry.packet.unit.id] = (exposures[entry.packet.unit.id] ?? 0) + 1;
-        const sampling = (deps.sample ?? sampleCapabilities)(snapshot, {
+        const sampling = (deps.sample ?? sampleCapabilityCombination)(snapshot, {
           ...input.sampler, seed: runId, promptVersion: CAPABILITY_DREAM_PROMPT_VERSION, now: now(), exposures,
           history: past.map((p) => ({ pairKey: p.selection.pairKey, selectedAt: p.selectedAt })),
         });
