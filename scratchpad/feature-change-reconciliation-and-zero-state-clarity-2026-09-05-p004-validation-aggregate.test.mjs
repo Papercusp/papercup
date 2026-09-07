@@ -167,3 +167,87 @@ test('a complete terminal cohort with a validated artifact remains green', () =>
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('a terminal artifact with a hardcoded developer home path is invalid and not ready', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'p004-aggregate-identity-path-'));
+  try {
+    const candidateId = 'EI-1';
+    const artifactPath = join(
+      directory,
+      'feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-shard-01.json',
+    );
+    const artifact = {
+      schemaVersion: 'feature-change-p004-validation-shard-v1',
+      shard: 1,
+      readOnlyValidation: true,
+      assignedIds: [candidateId],
+      assignedIdListSha256: sha256(JSON.stringify([candidateId])),
+      validationEvidence: {
+        workingTree: { root: ['', 'home', 'fixtureperson', 'private-checkout'].join('/') },
+      },
+      entries: [
+        {
+          id: candidateId,
+          frozenSourceSha256: 'source-1',
+          frozenOutcome: 'candidate-no-longer-relevant',
+          currentState: 'open',
+          currentOrigin: 'local',
+          currentFingerprint: 'current-1',
+          inboundReferences: [],
+          outboundReferences: [],
+          canonicalId: null,
+          recommendation: 'preserve',
+          rationale: 'Current evidence requires preservation.',
+        },
+      ],
+    };
+    const artifactText = JSON.stringify(artifact, null, 2) + '\n';
+    writeFileSync(artifactPath, artifactText);
+    const assignments = [
+      {
+        feature_id: 'WI-1',
+        status: 'done',
+        payload: {
+          shard: 1,
+          candidateIds: [candidateId],
+          resultPath: artifactPath,
+          _completionEvidence: {
+            testsRun: 'node --test aggregate.test.mjs',
+            testResult: 'passed',
+            verifiedHow: 'Re-read artifact and aggregate output.',
+            settlementManifest: {
+              contentIdentity: [
+                {
+                  path: artifactPath,
+                  workingTreeBlobSha: gitBlobSha(artifactText),
+                },
+              ],
+            },
+          },
+        },
+      },
+    ];
+    const ledger = [
+      {
+        id: candidateId,
+        sourceSha256: 'source-1',
+        outcome: 'candidate-no-longer-relevant',
+      },
+    ];
+
+    const result = runAggregate(directory, assignments, ledger, 1, 1);
+
+    assert.equal(result.status, 1);
+    assert.equal(result.output.ok, false);
+    assert.equal(result.output.readiness.ready, false);
+    assert.deepEqual(result.output.readiness.invalidArtifactShards, [1]);
+    assert.equal(result.output.shards[0].checks.portableArtifact, false);
+    assert.equal(result.output.shards[0].identityPathFindings[0].user, 'fixtureperson');
+    assert.deepEqual(
+      result.output.errors.filter(({ code }) => code === 'shard-check-failed'),
+      [{ code: 'shard-check-failed', shard: 1, check: 'portableArtifact' }],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { findBoxIdentityPaths } from '../scripts/lib/identity-leak-patterns.mjs';
 
 const TERMINAL_STATES = new Set(['done', 'closed', 'resolved', 'dropped']);
 const ARTIFACT_RE =
@@ -189,9 +190,11 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
 
   let artifact;
   let artifactBuffer;
+  let artifactText;
   try {
     artifactBuffer = readFileSync(artifactPath);
-    artifact = JSON.parse(artifactBuffer.toString('utf8'));
+    artifactText = artifactBuffer.toString('utf8');
+    artifact = JSON.parse(artifactText);
   } catch (error) {
     errors.push({ code: 'artifact-unreadable', shard, message: String(error) });
     shardResults.push(result);
@@ -245,6 +248,7 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
         entry.outboundReferences != null,
     };
   });
+  const identityPathFindings = findBoxIdentityPaths(artifactText);
   result.artifactBlobSha = artifactBlobSha;
   result.completionBlobSha = contentIdentity?.workingTreeBlobSha ?? null;
   result.hashEncoding = hash.encoding;
@@ -270,6 +274,7 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
       new Set(entryIds).size === entries.length,
     frozenLedger: ledgerChecks.every((check) => check.present && check.sourceShaExact && check.outcomeExact),
     requiredFields: requiredFields.every(({ valid }) => valid),
+    portableArtifact: identityPathFindings.length === 0,
     noLiveMutation: noLiveMutationClaim(artifact),
     completionEvidence:
       !terminal ||
@@ -291,6 +296,9 @@ for (const shard of [...assignmentByShard.keys()].sort((a, b) => a - b)) {
   const failedRequiredRows = requiredFields.filter(({ valid }) => !valid).map(({ id }) => id);
   if (failedRequiredRows.length > 0) {
     result.failedRequiredRows = failedRequiredRows;
+  }
+  if (identityPathFindings.length > 0) {
+    result.identityPathFindings = identityPathFindings;
   }
   shardResults.push(result);
 }
