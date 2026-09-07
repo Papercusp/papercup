@@ -87,6 +87,8 @@ interface StoredCommand<B extends SuSessionBackend> {
 export interface SuSessionHostOptions<B extends SuSessionBackend> {
   descriptor: SuSessionDescriptor<B>;
   executeCommand?: SuSessionCommandExecutor<B>;
+  /** Live transports can withdraw readiness when their engine stream closes. */
+  runtimeReady?: () => boolean;
   /** Persist the descriptor after every identity/lifecycle mutation. The
    * callback is deliberately fire-and-forget so a PG outage never blocks the
    * live event stream; the adv row remains the authoritative identity. */
@@ -231,6 +233,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   private readonly channel: BusChannel<SuSessionEvent<B>>;
   private readonly now: () => Date;
   private readonly executeCommand?: SuSessionCommandExecutor<B>;
+  private readonly runtimeReady: () => boolean;
   private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
   private readonly commands = new Map<string, StoredCommand<B>>();
   private readonly durableCommands = new Map<string, {
@@ -247,6 +250,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     this.descriptorValue = jsonClone(options.descriptor);
     this.now = options.now ?? (() => new Date());
     this.executeCommand = options.executeCommand;
+    this.runtimeReady = options.runtimeReady ?? (() => true);
     this.persistDescriptor = options.persistDescriptor;
     this.runtimeReconciliation = options.runtimeReconciliation ?? null;
     this.channelKey = hostChannelKey(this.descriptorValue.identity);
@@ -275,8 +279,8 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       floorSequence: recent[0]?.id ?? lastSequence,
       lastSequence,
       terminal: TERMINAL_STATES.has(this.descriptorValue.lifecycle),
-      executorAttached: Boolean(this.executeCommand) && !this.disposed,
-      streamReady: !this.disposed,
+      executorAttached: Boolean(this.executeCommand) && !this.disposed && this.runtimeReady(),
+      streamReady: !this.disposed && this.runtimeReady(),
       runtimeReconciliation: this.runtimeReconciliation,
     };
   }
@@ -422,7 +426,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
         code: 'target_mismatch', message: 'command target does not match the attached durable SU session', retryable: false,
       });
     }
-    if (!this.executeCommand || this.disposed || ['starting', 'resuming', 'compacting'].includes(this.descriptorValue.lifecycle)) {
+    if (!this.executeCommand || this.disposed || !this.runtimeReady() || ['starting', 'resuming', 'compacting'].includes(this.descriptorValue.lifecycle)) {
       return this.rememberImmediateRefusal(command, fingerprint, {
         code: 'session_not_ready', message: 'the session executor and stream are not ready', retryable: true,
       });
