@@ -30,6 +30,7 @@ import {
   parseCapabilityClassRef,
 } from '../capability-class-registry-store';
 import { activeWorkspaceId } from '../workspace-registry';
+import { potHomeSlugForHarness } from '../hive-federation';
 import { resolveCupboardBaseUrl } from './base-url';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
@@ -357,12 +358,20 @@ export async function installBlueprintFromCupboard(
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
-  const potSlug = input.potSlug?.trim();
+  const requestedPotSlug = input.potSlug?.trim();
+  const workspaceId = input.workspaceId?.trim() || activeWorkspaceId();
+  // The storefront's active selection is a HARNESS slug. Capability bindings
+  // are pot-scoped, so collapse a member harness to its existing Hive home at
+  // the server boundary instead of asking the client to duplicate federation
+  // rules or silently binding against the member slug.
+  const potSlug = requestedPotSlug
+    ? await potHomeSlugForHarness(workspaceId, requestedPotSlug)
+    : null;
+  // A plain blueprint with no capability grants remains installable outside a
+  // pot. If grants are present, the core returns capability_grants_need_pot;
+  // that is the accurate failure after the source has actually been parsed.
   const capabilityScope = potSlug
-    ? {
-        workspaceId: input.workspaceId?.trim() || activeWorkspaceId(),
-        potSlug,
-      }
+    ? { workspaceId, potSlug }
     : undefined;
   const capabilityContext = capabilityScope
     ? {
