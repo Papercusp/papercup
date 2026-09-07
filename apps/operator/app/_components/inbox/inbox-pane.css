@@ -984,7 +984,7 @@
   color: var(--fg-mute);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.13em;
+  letter-spacing: 0;
   line-height: 1.35;
   text-transform: uppercase;
 }
@@ -1028,7 +1028,7 @@
   color: var(--warn);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   line-height: 1.4;
 }
 .op-inbox__aside .pc-items__detail {
