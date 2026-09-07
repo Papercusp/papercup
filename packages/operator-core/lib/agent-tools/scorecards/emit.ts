@@ -232,13 +232,13 @@ export const scorecardEmitArgs = z
       ),
     acceptance: z
       .object({
-        verdict: z.enum(['accept', 'reject']),
+        verdict: z.enum(['accept', 'reject', 'accept-pending-delivery']),
         reasoning: z.string().trim().min(1).max(2000),
       })
       .strict()
       .optional()
       .describe(
-        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The top-level ratings field remains schema-required and must contain the complete rubric ratings; acceptance does not replace it. Independent graders omit it.",
+        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. The top-level ratings field remains schema-required and must contain the complete rubric ratings; acceptance does not replace it. Independent graders omit it. Use 'accept-pending-delivery' when the graded work is accepted and the ONLY outstanding obligation is evidence on a delivery plane you cannot reach (a deployed/live BAR behind a gate or a deploy another agent owns): 'accept' would overclaim delivery and 'reject' would be false, so this records the acceptance judgment durably while leaving the delivery fact separately open. It does NOT waive the delivery-plane evidence, which keeps blocking on its own code.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     current: z.array(evidenceCurrentInputSchema).max(2000).optional().describe(

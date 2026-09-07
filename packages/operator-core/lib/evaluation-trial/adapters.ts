@@ -480,7 +480,13 @@ export function trialFromScorecard(card: ScorecardRow): EvaluationTrial {
   const status: TrialStatus = acceptance
     ? acceptance.verdict === 'accept'
       ? 'passed'
-      : 'failed'
+      : // An accepted-pending-delivery verdict is NOT a failed trial: the work
+        // was judged healthy and only an unreachable delivery plane is
+        // outstanding. Reporting it as 'failed' would turn a disclosure into a
+        // fabricated negative result wherever trials are aggregated.
+        acceptance.verdict === 'accept-pending-delivery'
+        ? 'incomplete'
+        : 'failed'
     : card.missingKeys.length > 0
       ? 'incomplete'
       : 'unknown';

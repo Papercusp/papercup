@@ -114,7 +114,14 @@ export interface AcceptanceSeatSuccession {
 }
 
 export interface ScorecardAcceptance {
-  verdict: 'accept' | 'reject';
+  /**
+   * 'accept-pending-delivery' records an ACCEPTED judgment whose only
+   * outstanding obligation is evidence on a delivery plane the author cannot
+   * reach. It is deliberately distinct from both: 'accept' would overclaim a
+   * delivery that has not happened, and 'reject' would misstate a healthy
+   * grading as a failed one.
+   */
+  verdict: 'accept' | 'reject' | 'accept-pending-delivery';
   /** Why the independent grading is (or is not) acceptable for this plan. */
   reasoning: string;
   /**
@@ -1046,7 +1053,15 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (o.acceptance && typeof o.acceptance === 'object' && !Array.isArray(o.acceptance)) {
     const a = o.acceptance as Record<string, unknown>;
-    if ((a.verdict === 'accept' || a.verdict === 'reject') && typeof a.reasoning === 'string' && a.reasoning.trim()) {
+    // This allowlist is what makes an author verdict DURABLE: a value missing
+    // from it is dropped silently, so the card reads back with no acceptance at
+    // all rather than with an unrecognized one. 'accept-pending-delivery' must
+    // therefore be listed here to be persisted and read back.
+    if (
+      (a.verdict === 'accept' || a.verdict === 'reject' || a.verdict === 'accept-pending-delivery') &&
+      typeof a.reasoning === 'string' &&
+      a.reasoning.trim()
+    ) {
       const seat = asAcceptanceSeatSuccession(a.seat);
       out.acceptance = { verdict: a.verdict, reasoning: a.reasoning, ...(seat ? { seat } : {}) };
     }

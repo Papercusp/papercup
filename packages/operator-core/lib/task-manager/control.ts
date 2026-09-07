@@ -301,8 +301,22 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
 
   if (opts.includeSubtree) {
     const tree = await getSubtree(row.rootTaskId);
+    // The ledger read returns the WHOLE root tree. A nested task owns only
+    // its descendants, never its ancestors or sibling scopes.
+    const subtreeIds = new Set([taskId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const task of tree) {
+        if (task.parentTaskId && subtreeIds.has(task.parentTaskId) && !subtreeIds.has(task.taskId)) {
+          subtreeIds.add(task.taskId);
+          expanded = true;
+        }
+      }
+    }
     const descendants = tree.filter(
-      (t) => t.taskId !== taskId && (isLiveOwnedState(t.state) || opts.reapTerminalResidue),
+      (t) => t.taskId !== taskId && subtreeIds.has(t.taskId)
+        && (isLiveOwnedState(t.state) || opts.reapTerminalResidue),
     );
     for (const t of descendants) {
       await killTask(t.taskId, { ...opts, includeSubtree: false });
