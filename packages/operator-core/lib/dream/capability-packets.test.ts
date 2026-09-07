@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rename, rm, symlink } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PackerResult } from '../code-intelligence/packer-facade';
+import { REPOMIX_PINNED_VERSION, SECRET_DENY_GLOBS, type PackerResult } from '../code-intelligence/packer-facade';
 import type { CodeIntelAnswer } from '../code-intelligence/contracts';
 import { getPilotCapabilityManifest } from './capability-catalog';
 import { buildCapabilityPacket, verifyCapabilityPacket, type CapabilityPacketDeps } from './capability-packets';
@@ -31,21 +31,50 @@ async function fixture() {
         values.set(ws + key, value);
       }),
     },
-    pack: vi.fn(async (_root, paths) => {
+    pack: vi.fn(async (_root: string, paths: string[]): Promise<PackerResult> => {
       const fragments = await Promise.all(
         paths.map(
           async (path) =>
             '<file path="' + path + '">\n' + (await readFile(join(root, path), 'utf8')).trim() + '\n</file>',
         ),
       );
-      await writeFile(artifact, fragments.join('\n'));
+      const body = fragments.join('\n');
+      const capturedAt = '2026-09-07T08:00:00.000Z';
+      await writeFile(artifact, body);
       return {
-        answer: { error: null, truncation: { truncated: false }, sites: paths.map((path) => ({ path })) },
+        answer: {
+          backend: 'repomix',
+          intent: 'pack',
+          query: 'fixture',
+          error: null,
+          latencyMs: 0,
+          truncation: { truncated: false, totalAvailable: paths.length, continuation: null },
+          sites: paths.map((path) => ({ path, line1: null, kind: 'file', detail: null })),
+          freshness: { health: 'healthy', indexedAt: capturedAt, staleVsDisk: true, indexedCommit: null },
+        },
         artifact: {
           path: artifact,
-          provenance: { engine: 'repomix', securityScan: 'secretlint+deny-set', commit: null, dirty: true },
+          preview: body,
+          provenance: {
+            engine: 'repomix',
+            engineVersion: REPOMIX_PINNED_VERSION,
+            rootPath: root,
+            securityScan: 'secretlint+deny-set',
+            commit: null,
+            dirty: true,
+            baseRef: null,
+            baseCommit: null,
+            include: paths,
+            ignore: [],
+            denyGlobs: SECRET_DENY_GLOBS,
+            template: 'none',
+            fileCount: paths.length,
+            bytes: Buffer.byteLength(body),
+            chars: body.length,
+            capturedAt,
+          },
         },
-      } as PackerResult;
+      };
     }),
     lookup: vi.fn(
       async () =>
@@ -101,10 +130,15 @@ describe('source-backed capability extraction', () => {
     expect(first.packet.unit.contracts).toEqual(f.input.unit.contracts);
     expect(await verifyCapabilityPacket(first.packet, f.input, f.deps)).toEqual({ fresh: true });
   });
-  it.each(['edit', 'rename', 'delete'])('invalidates %s of a cited source', async (change) => {
+  it.each(
+    (['implementation', 'test'] as const).flatMap((kind) =>
+      ['edit', 'rename', 'delete'].map((change) => ({ kind, change })),
+    ),
+  )('invalidates $change of cited $kind evidence', async ({ kind, change }) => {
     const f = await fixture();
     const built = await ready(f);
-    const path = join(f.root, f.input.unit.evidence[0]!.path);
+    const ref = f.input.unit.evidence.find((ref) => ref.kind === kind)!;
+    const path = join(f.root, ref.path);
     if (change === 'edit') await writeFile(path, (await readFile(path, 'utf8')) + 'changed');
     if (change === 'rename') await rename(path, path + '.moved');
     if (change === 'delete') await rm(path);
@@ -113,7 +147,9 @@ describe('source-backed capability extraction', () => {
     expect(next.status).toBe(change === 'edit' ? 'ready' : 'unavailable');
     if (next.status === 'ready') {
       expect(next.cacheHit).toBe(false);
-      expect(next.packet.sources[0]!.sourceHash).not.toBe(built.packet.sources[0]!.sourceHash);
+      expect(next.packet.sources.find((source) => source.id === ref.id)!.sourceHash).not.toBe(
+        built.packet.sources.find((source) => source.id === ref.id)!.sourceHash,
+      );
     }
   });
   it('queries a declaration identifier and bounds caller/callee discovery after compiler resolution', async () => {
@@ -162,18 +198,17 @@ describe('source-backed capability extraction', () => {
   });
   it.each(['manifest', 'recipe', 'prompt', 'contract'])('invalidates changed %s inputs', async (change) => {
     const f = await fixture();
-    await ready(f);
+    const built = await ready(f);
     const input = structuredClone(f.input);
     if (change === 'manifest') input.manifestRevision = 'fixture-v2';
     if (change === 'contract') input.unit.contracts.prerequisites[0]!.text += ' New prerequisite.';
-    const next = await buildCapabilityPacket(
-      {
-        ...input,
-        ...(change === 'recipe' ? { recipeVersion: 'v2' } : {}),
-        ...(change === 'prompt' ? { promptVersion: 'v2' } : {}),
-      },
-      f.deps,
-    );
+    const changed = {
+      ...input,
+      ...(change === 'recipe' ? { recipeVersion: 'v2' } : {}),
+      ...(change === 'prompt' ? { promptVersion: 'v2' } : {}),
+    };
+    expect((await verifyCapabilityPacket(built.packet, changed, f.deps)).fresh).toBe(false);
+    const next = await buildCapabilityPacket(changed, f.deps);
     expect(next.status).toBe('ready');
     if (next.status === 'ready') expect(next.cacheHit).toBe(false);
     expect(f.deps.pack).toHaveBeenCalledTimes(2);
@@ -283,6 +318,24 @@ describe('source-backed capability extraction', () => {
     });
     expect(f.input.unit.contracts).toEqual(contracts);
     expect(f.deps.cache.set).not.toHaveBeenCalled();
+  });
+  it('admits the exact packet budget and rejects one character less without dropping contracts', async () => {
+    const f = await fixture();
+    const built = await ready(f);
+    const exact = JSON.stringify(built.packet).length;
+    const admitted = await buildCapabilityPacket({ ...f.input, maxPacketChars: exact }, f.deps);
+    expect(admitted.status, JSON.stringify(admitted)).toBe('ready');
+    if (admitted.status !== 'ready') throw new Error(admitted.reason);
+    expect(admitted.packet.unit.contracts).toEqual(built.packet.unit.contracts);
+    expect(JSON.stringify(admitted.packet).length).toBe(exact);
+    expect(await buildCapabilityPacket({ ...f.input, maxPacketChars: exact - 1 }, f.deps)).toMatchObject({
+      status: 'unavailable',
+      reason: expect.stringContaining('exceeds budget'),
+    });
+    expect((await verifyCapabilityPacket(built.packet, { ...f.input, maxPacketChars: exact - 1 }, f.deps)).fresh).toBe(
+      false,
+    );
+    expect(f.deps.cache.set).toHaveBeenCalledTimes(2);
   });
   it('preserves hostile source text as evidence without executing it', async () => {
     const f = await fixture();

@@ -133,7 +133,7 @@ function extract(unit: CapabilityUnit, files: Map<string, string>, excerptLines:
 
 export async function verifyCapabilityPacket(
   value: unknown,
-  input: Pick<BuildCapabilityPacketInput, 'rootPath' | 'scope' | 'unit'>,
+  input: BuildCapabilityPacketInput,
   deps: Pick<CapabilityPacketDeps, 'readArtifact'> = defaultDeps,
 ): Promise<{ fresh: true } | { fresh: false; reason: string }> {
   const parsed = CapabilityPacketSchema.safeParse(value);
@@ -145,9 +145,26 @@ export async function verifyCapabilityPacket(
     packet.scope.workspaceId !== input.scope.workspaceId ||
     packet.scope.potSlug !== input.scope.potSlug ||
     packet.scope.repositoryId !== input.scope.repositoryId ||
-    packet.unitHash !== capabilityUnitHash(expectedUnit.data)
+    packet.unitHash !== capabilityUnitHash(expectedUnit.data) ||
+    packet.manifestRevision !== input.manifestRevision ||
+    packet.extraction.recipeVersion !== (input.recipeVersion ?? CAPABILITY_EXTRACTION_RECIPE) ||
+    packet.extraction.promptVersion !== (input.promptVersion ?? CAPABILITY_SUMMARY_PROMPT)
   ) {
     return { fresh: false, reason: 'Packet scope or manifest changed' };
+  }
+  const maxPacketChars = input.maxPacketChars ?? 32_000;
+  const excerptLines = input.excerptLines ?? 40;
+  if (
+    !Number.isInteger(maxPacketChars) ||
+    maxPacketChars < 1_000 ||
+    maxPacketChars > 64_000 ||
+    !Number.isInteger(excerptLines) ||
+    excerptLines < 4 ||
+    excerptLines > 100 ||
+    JSON.stringify(packet).length > maxPacketChars ||
+    packet.sources.some((source) => source.endLine - source.startLine + 1 > excerptLines)
+  ) {
+    return { fresh: false, reason: 'Packet exceeds current extraction budget' };
   }
   if (packet.coverage.truncated || packet.coverage.unresolved.length > 0)
     return { fresh: false, reason: 'Required packet evidence is incomplete' };
