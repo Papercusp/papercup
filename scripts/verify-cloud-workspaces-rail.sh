@@ -120,6 +120,21 @@ if ! "$POLL" --require "$RAIL" --require-min 1 \
   exit 1
 fi
 
+# A rail can render before its sync-backed hosts arrive. When a caller names
+# a host, that host is required coverage, never an optional fixture skip.
+if [ -n "${CW_HOST_ID:-}" ]; then
+  if ! "$POLL" --require "ul[aria-label=\"Managed workspace hosts\"] button[aria-controls=\"host-panel-${CW_HOST_ID}\"]" \
+       --require-min 1 --eval "location.href.indexOf('vnonce=0')>=0" >/dev/null 2>&1; then
+    echo "FATAL: requested host ${CW_HOST_ID} did not render; refusing to skip required host acceptance." >&2
+    exit 1
+  fi
+else
+  if ! bash "${VERIFY_TAURI_SETTLE:?VERIFY_TAURI_SETTLE not exported}" >/dev/null 2>&1; then
+    echo "FATAL: workspace data did not settle; host absence is not measurable." >&2
+    exit 1
+  fi
+fi
+
 HOSTS="$(ev "document.querySelectorAll('ul[aria-label=\"Managed workspace hosts\"] li').length" | tr -dc '0-9')"
 HOSTS="${HOSTS:-0}"
 DRIFTING="$(ev "document.querySelectorAll('[data-drifting=\"true\"]').length" | tr -dc '0-9')"
