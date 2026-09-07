@@ -567,10 +567,17 @@ export function evaluateSpecTestAdequacy(input: {
       row.currentness.overall === 'current' ||
       (row.currentness.overall === 'unknown' && row.currentness.provenance === 'attested-current'),
   );
-  // Immutable historical bindings remain available to the evidence store, but once an exact
-  // current cohort exists they can neither satisfy nor veto the verdict for that cohort. When
-  // there is no current cohort, retain the full exact set so stale/unknown diagnostics survive.
-  const evidence = currentEvidence.length > 0 ? currentEvidence : exactEvidence;
+  // A caller-supplied `current[]` is a per-binding comparison input, not a population
+  // selector. Keep every exact binding in that case so an omitted fingerprint remains
+  // visible as unknown instead of silently disappearing from the graded population. The
+  // historical current-cohort behavior is retained only for internally/server-classified
+  // evidence when no caller comparison input was supplied.
+  const evidence =
+    input.current !== undefined
+      ? exactEvidence
+      : currentEvidence.length > 0
+        ? currentEvidence
+        : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
   const lineageAssessments = evidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));

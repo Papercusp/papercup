@@ -581,6 +581,48 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(notSatisfiedByHistory.verdict).not.toBe('pass');
   });
 
+  it('keeps omitted bindings in the graded population when current fingerprints are partial', () => {
+    const selected = evidence({ evidenceRef: 'surface:selected' });
+    const omitted = evidence({ evidenceRef: 'surface:omitted' });
+    const current: EvidenceCurrentInput[] = [
+      {
+        evidenceKind: selected.evidenceKind,
+        evidenceRef: selected.evidenceRef,
+        ...selected.fingerprints,
+      },
+    ];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [selected, omitted].map((row) => ({
+        ...row,
+        currentness: classifySpecEvidenceCurrentness(
+          {
+            spec_is_current: true,
+            source_fingerprint: row.fingerprints.sourceFingerprint,
+            test_fingerprint: row.fingerprints.testFingerprint,
+            fixture_fingerprint: row.fingerprints.fixtureFingerprint,
+            rubric_fingerprint: row.fingerprints.rubricFingerprint,
+            environment_fingerprint: row.fingerprints.environmentFingerprint,
+            coverage_evidence_ref: row.coverageEvidenceRef,
+            coverage_evidence_present: true,
+            test_run_id: row.testRunId,
+            test_run_present: true,
+          },
+          current.find(
+            (input) => input.evidenceKind === row.evidenceKind && input.evidenceRef === row.evidenceRef,
+          ),
+        ),
+      })),
+      current,
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.evidenceRefs).toEqual(['surface:omitted', 'surface:selected']);
+    expect(result.ratings.freshness.rating).toBe('unknown');
+    expect(result.ratings.freshness.evidence).toContain('surface:omitted');
+    expect(result.verdict).toBe('unknown');
+  });
+
   it('never lets evidence for another revision establish traceability', () => {
     const historical = evidence({ specRevision: 0 });
     const result = evaluateSpecTestAdequacy({
@@ -616,7 +658,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
 describe('rerunRecipe is submittable to its own evaluator', () => {
   it.each(['emitted', 'persisted'] as const)(
-    '%s recipe reproduces the current cohort instead of reviving legacy proof',
+    '%s recipe preserves the full evidence population when current fingerprints are partial',
     (surface) => {
       const selected = evidence({ evidenceRef: 'surface:replacement' });
       const legacy = evidence({ evidenceRef: 'surface:rejected-legacy' });
@@ -674,7 +716,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
         current: rerunCurrent,
         classRef: args.classRef,
       });
-      expect(original.evidenceRefs).toEqual([selected.evidenceRef]);
+      expect(original.evidenceRefs).toEqual([legacy.evidenceRef, selected.evidenceRef]);
       expect(rerun.evidenceRefs).toEqual(original.evidenceRefs);
       expect(rerun.ratings).toEqual(original.ratings);
       expect(rerun.verdict).toBe(original.verdict);
@@ -684,10 +726,10 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
         classRef: args.classRef,
       });
       expect(withoutFingerprints.evidenceRefs).toContain(legacy.evidenceRef);
-      // Both paths are non-green now: the caller-supplied recipe is explicitly
-      // attested-current, while omission is unknown because no comparison was
-      // requested. The important distinction is the selected evidence cohort and
-      // the reason recorded on freshness, not a fabricated pass on either path.
+      // Both paths retain the full exact population: the caller-supplied fingerprint
+      // is attested-current for one binding, while the omitted binding is unknown.
+      // The important distinction is that the missing binding remains visible rather
+      // than allowing a partial input to manufacture a passing subset.
       expect(withoutFingerprints.verdict).toBe('unknown');
       expect(withoutFingerprints.ratings.freshness.evidence).toContain('current[] was omitted');
       expect(withoutFingerprints.ratings.freshness.evidence).toContain('not evidence that stored bindings are stale');
