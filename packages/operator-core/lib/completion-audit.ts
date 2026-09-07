@@ -1106,7 +1106,7 @@ export function citesBrowserDriveEvidence(
  * prevent. A guard whose easiest escape is weakening your own evidence is mis-calibrated.
  *
  * Order matters and is deliberate: cwd FIRST, so nothing that resolved before resolves
- * differently now, then the two ways the repo root is knowable —
+ * differently now, then the explicit environment pointers and git-root walk —
  *  - `PAPERCUSP_REPO_ROOT`, the explicit pointer console-launcher stamps on every spawned
  *    agent (EI-10938) and therefore the most authoritative when present;
  *  - `PAPERCUSP_INTEGRATION_ROOT`, the operator/release pipeline's explicit pointer to

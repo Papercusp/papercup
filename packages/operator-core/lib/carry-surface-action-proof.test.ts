@@ -71,18 +71,55 @@ describe('carry-surface same-turn action proof', () => {
 
   it('reads bounded successful rows scoped to concrete workspace and spawn', async () => {
     sql.mockResolvedValue([{ tool_name: 'coord:send', args_json: { to: ['su-bce40c51'] } }]);
-    const rows = await readSuccessfulActionInvocations({ workspaceId: 'ws-1', spawnId: 'spawn-1' });
+    const rows = await readSuccessfulActionInvocations({
+      workspaceId: 'ws-1',
+      spawnId: 'spawn-1',
+      coordOwnerId: 'su-owner',
+    });
     expect(rows).toEqual([{ toolName: 'coord:send', args: { to: ['su-bce40c51'] } }]);
     const query = String(sql.mock.calls[0]?.[0]?.join(' '));
     expect(query).toContain('workspace_id');
     expect(query).toContain('spawn_id');
+    expect(query).not.toContain('coord_owner_id =');
     expect(query).toContain("status = 'ok'");
     expect(query).toContain('LIMIT');
+  });
+
+  it('falls back to the stable coordination owner when the spawn has no current rows', async () => {
+    sql.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      { tool_name: 'coord:send', args_json: { to: ['su-bce40c51'] } },
+    ]);
+
+    const rows = await readSuccessfulActionInvocations({
+      workspaceId: 'ws-1',
+      spawnId: 'ephemeral-spawn',
+      coordOwnerId: 'su-owner',
+    });
+
+    expect(rows).toEqual([{ toolName: 'coord:send', args: { to: ['su-bce40c51'] } }]);
+    expect(sql).toHaveBeenCalledTimes(2);
+    const fallbackQuery = String(sql.mock.calls[1]?.[0]?.join(' '));
+    expect(fallbackQuery).toContain('coord_owner_id');
+    expect(fallbackQuery).not.toContain('spawn_id =');
+  });
+
+  it('uses the stable coordination owner when spawn_id is absent', async () => {
+    sql.mockResolvedValue([{ tool_name: 'events:await', args_json: { event: 'work-item:done:EI-7' } }]);
+
+    const rows = await readSuccessfulActionInvocations({ workspaceId: 'ws-1', coordOwnerId: 'su-owner' });
+
+    expect(rows).toEqual([{ toolName: 'events:await', args: { event: 'work-item:done:EI-7' } }]);
+    expect(sql).toHaveBeenCalledTimes(1);
+    const query = String(sql.mock.calls[0]?.[0]?.join(' '));
+    expect(query).toContain('coord_owner_id');
+    expect(query).not.toContain('spawn_id =');
   });
 
   it('fails soft on missing scope and ledger errors', async () => {
     await expect(readSuccessfulActionInvocations({ workspaceId: 'ws-1' })).resolves.toBeNull();
     sql.mockImplementationOnce(() => Promise.reject(new Error('ledger unavailable')));
-    await expect(readSuccessfulActionInvocations({ workspaceId: 'ws-1', spawnId: 'spawn-1' })).resolves.toBeNull();
+    await expect(
+      readSuccessfulActionInvocations({ workspaceId: 'ws-1', spawnId: 'spawn-1', coordOwnerId: 'su-owner' }),
+    ).resolves.toBeNull();
   });
 });

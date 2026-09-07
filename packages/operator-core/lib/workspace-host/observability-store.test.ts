@@ -387,6 +387,76 @@ describe('workspace-host observability store', () => {
     });
   });
 
+  it('does not project stale operation progress for an absent host tombstone', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts', [
+      {
+        id: 'host-tombstone',
+        name: 'removed host',
+        connection_id: 'connection-1',
+        target: 'gcp',
+        scope_label: 'project-1',
+        region: 'us-central1',
+        size: 'e2-standard-4',
+        image: 'ubuntu',
+        disk_gib: 100,
+        network: 'default',
+        estimated_monthly_usd: '72.9',
+        desired_state: 'absent',
+        observed_state: 'absent',
+        observed_at: '2026-08-31T11:49:15Z',
+        created_at: '2026-08-31T11:22:43Z',
+        endpoint: null,
+        recoverability_kind: 'none',
+        recoverability_label: 'Not recoverable',
+        recoverability_updated_at: null,
+        health_status: null,
+        health_attested_at: null,
+        health_checks: [],
+        bootstrap_version: null,
+        version_drift: [],
+        tunnel_status: {},
+        cost_signals: [],
+        quota_signals: [],
+        host_generation: 1,
+        desired_revision: 1,
+        observed_revision: 1,
+        runtime_release: null,
+        controller_id: null,
+        controller_fence: 0,
+      },
+    ]);
+    H.rows.set('FROM harness_shared.workspace_host_operations', [
+      {
+        id: 'stale-running-operation',
+        host_id: 'host-tombstone',
+        action: 'destroy',
+        status: 'running',
+        percent: 85,
+        message: 'destroying',
+        request: null,
+        error: null,
+        created_at: '2026-08-31T11:22:43Z',
+        started_at: '2026-08-31T11:22:43Z',
+        finished_at: null,
+        updated_at: '2026-09-06T21:48:55Z',
+        desired_revision: 1,
+        controller_id: null,
+        controller_fence: null,
+      },
+    ]);
+
+    const rows = await readWorkspaceHostControl('ws-1');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'workspace',
+      id: 'host-tombstone',
+      desiredState: 'absent',
+      observedState: 'absent',
+    });
+    expect((rows[0] as { operation?: unknown }).operation).toBeUndefined();
+  });
+
   it('pushes exactly once after a committed diagnostics batch', async () => {
     const ids = await appendWorkspaceHostLogs('ws-1', 'host-1', [
       { id: 'log-1', stream: 'cloud-init', message: 'booting' },

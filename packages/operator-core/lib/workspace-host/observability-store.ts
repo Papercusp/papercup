@@ -1288,7 +1288,13 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
     }));
 
     const hostRows = hosts.map((row) => {
-      const operation = latestOperation.get(row.id);
+      // A fully absent host is a tombstone, not an active controller target. Its
+      // latest operation may be a stale running row left behind by an interrupted
+      // destroy, so do not project that row as current progress.
+      const operation =
+        row.desired_state === 'absent' && row.observed_state === 'absent'
+          ? undefined
+          : latestOperation.get(row.id);
       const hostResources = resourcesByHost.get(row.id) ?? [];
       return {
         kind: 'workspace' as const,

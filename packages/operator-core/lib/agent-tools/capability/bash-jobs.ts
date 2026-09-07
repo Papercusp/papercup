@@ -1215,6 +1215,70 @@ export interface SelfOutputRedirect {
   literalPath: boolean;
 }
 
+interface HeredocDeclaration {
+  delimiter: string;
+  stripTabs: boolean;
+}
+
+/**
+ * Read the delimiter from a heredoc operator outside shell quotes. The body is
+ * not shell syntax, so a `>` in JavaScript, Markdown, or another embedded
+ * language must not be mistaken for a stdout redirect by the advisory scanner.
+ */
+function readHeredocDeclaration(command: string, operatorIndex: number): HeredocDeclaration | null {
+  if (command[operatorIndex + 1] !== '<' || command[operatorIndex + 2] === '<') return null;
+
+  const lineEnd = command.indexOf('\n', operatorIndex + 2);
+  if (lineEnd < 0) return null;
+
+  let i = operatorIndex + 2;
+  let stripTabs = false;
+  if (command[i] === '-') {
+    stripTabs = true;
+    i++;
+  }
+  while (i < lineEnd && /[ \t]/.test(command[i])) i++;
+
+  let delimiter = '';
+  let quote: "'" | '"' | null = null;
+  for (; i < lineEnd; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else delimiter += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < lineEnd) {
+      delimiter += command[++i];
+      continue;
+    }
+    if (/[ \t;|&<>]/.test(ch)) break;
+    delimiter += ch;
+  }
+
+  return delimiter.length > 0 ? { delimiter, stripTabs } : null;
+}
+
+/** Return the character after a heredoc's delimiter line, or command.length. */
+function skipHeredocBody(command: string, bodyStart: number, declaration: HeredocDeclaration): number {
+  let lineStart = bodyStart;
+  while (lineStart <= command.length) {
+    const newline = command.indexOf('\n', lineStart);
+    const lineEnd = newline < 0 ? command.length : newline;
+    let line = command.slice(lineStart, lineEnd);
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+    if (declaration.stripTabs) line = line.replace(/^\t+/, '');
+    if (line === declaration.delimiter) return newline < 0 ? command.length : newline + 1;
+    if (newline < 0) return command.length;
+    lineStart = newline + 1;
+  }
+  return command.length;
+}
+
 /**
  * Detects whether `command` redirects its OWN stdout to a file, anywhere in the
  * command (not just the last stage — `for i in …; do echo … >> /tmp/x; done`
@@ -1228,7 +1292,17 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
   let inSingle = false;
   let inDouble = false;
   let found: SelfOutputRedirect | null = null;
+  const pendingHeredocs: HeredocDeclaration[] = [];
   for (let i = 0; i < command.length; i++) {
+    if (command[i] === '\n' && !inSingle && !inDouble && pendingHeredocs.length > 0) {
+      let bodyCursor = i + 1;
+      for (const heredoc of pendingHeredocs) {
+        bodyCursor = skipHeredocBody(command, bodyCursor, heredoc);
+      }
+      pendingHeredocs.length = 0;
+      i = bodyCursor - 1;
+      continue;
+    }
     const ch = command[i];
     if (ch === "'" && !inDouble) {
       inSingle = !inSingle;
@@ -1237,6 +1311,14 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
     if (ch === '"' && !inSingle) {
       inDouble = !inDouble;
       continue;
+    }
+    if (!inSingle && !inDouble && ch === '<' && command[i + 1] === '<') {
+      const heredoc = readHeredocDeclaration(command, i);
+      if (heredoc) {
+        // Keep scanning the declaration line: a real redirect may follow the
+        // heredoc (`cat <<EOF > /tmp/out`). Its body begins after the line.
+        pendingHeredocs.push(heredoc);
+      }
     }
     if (inSingle || inDouble || ch !== '>') continue;
 

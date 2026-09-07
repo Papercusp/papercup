@@ -21,7 +21,11 @@ import {
   blueprintHash,
   loadBlueprintFromFile,
   type Blueprint,
+  type LoadedBlueprint,
+  type CompiledAgentSpecification,
+  replayAgentSpecification,
 } from '@papercusp/orchestrator/blueprint';
+import { compileBlueprintWithPackages, provisionBlueprintPackages, blueprintPackageProvisioners } from './compile-packages';
 import { blueprintRegistrySets } from './registry-sets.js';
 import { registerHarnessOpProxies, type HarnessOpManifestEntry } from '../harness-ops/proxy.js';
 
@@ -52,6 +56,10 @@ export interface ProjectBlueprintInput {
   contentHash?: string;
   sourcePath?: string | null;
   sourceCommit?: string | null;
+  /** Reuse the validated source stack when the caller has just loaded it. */
+  loaded?: LoadedBlueprint;
+  /** A replayed artifact avoids consulting mutable inputs during an explicit replay. */
+  specification?: CompiledAgentSpecification;
 }
 
 /**
@@ -67,8 +75,20 @@ export interface ProjectBlueprintInput {
 export async function projectBlueprintToPg(
   sql: Sql,
   input: ProjectBlueprintInput,
-): Promise<{ contentHash: string }> {
-  const contentHash = input.contentHash ?? blueprintHash(input.blueprint);
+): Promise<{ contentHash: string; specification?: CompiledAgentSpecification }> {
+  const loaded = input.loaded ?? (!input.specification && input.sourcePath
+    ? loadBlueprintFromFile(input.sourcePath, undefined, blueprintRegistrySets()) : undefined);
+  const specification = input.specification ? replayAgentSpecification(input.specification)
+    : loaded ? await compileBlueprintWithPackages(loaded, {
+      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+    }) : undefined;
+  if (specification && blueprintHash(BlueprintSchema.parse(specification.configuration)) !== blueprintHash(input.blueprint)) {
+    throw new Error('compiled specification does not describe the blueprint being projected');
+  }
+  if (specification && specification.configuration.bundles.length) {
+    await provisionBlueprintPackages(specification, blueprintPackageProvisioners(sql));
+  }
+  const contentHash = specification?.specificationRevision ?? input.contentHash ?? blueprintHash(input.blueprint);
   await sql`
     INSERT INTO harness_shared.blueprints
       (workspace_id, harness_slug, blueprint_id, version, resolved, content_hash, source_path, source_commit)
@@ -86,7 +106,7 @@ export async function projectBlueprintToPg(
       source_commit = EXCLUDED.source_commit,
       projected_at  = now()
   `;
-  return { contentHash };
+  return { contentHash, ...(specification ? { specification } : {}) };
 }
 
 /**
@@ -164,6 +184,7 @@ export async function getEffectiveBlueprint(
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
     blueprint: loaded.blueprint,
+    loaded,
     contentHash: loaded.contentHash,
     sourcePath: loaded.sourcePath,
   });

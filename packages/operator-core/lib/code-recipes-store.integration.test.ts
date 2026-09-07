@@ -60,6 +60,16 @@ describe('code_recipes store (real PG)', () => {
     await db?.cleanup();
   });
 
+  it('P-006 create-only registration cannot replace an existing executable recipe', async () => {
+    const input = { id: 'p006-create-only', title: 'Pinned recipe', description: 'fixture',
+      script: 'return 1', potSlug: 'p006-harness', createOnly: true };
+    await upsertRecipe(db.adminSql, input);
+    await expect(upsertRecipe(db.adminSql, { ...input, script: 'return 2' })).rejects.toThrow(/refused to overwrite/);
+    expect((await getRecipe(db.adminSql, input.id))?.script).toBe('return 1');
+    await upsertRecipe(db.adminSql, { ...input, createOnly: false, script: 'return 3' });
+    expect((await getRecipe(db.adminSql, input.id))?.script).toBe('return 3');
+  });
+
   it('upserts a recipe and reads it back (getRecipe + listRecipes)', async () => {
     const ws = 'ws-cr-basic';
     const row = await upsertRecipe(db.adminSql, {

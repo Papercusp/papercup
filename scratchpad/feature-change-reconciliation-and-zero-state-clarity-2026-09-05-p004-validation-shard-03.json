@@ -1,6 +1,6 @@
 {
   "schemaVersion": "feature-change-p004-validation-shard-v1",
-  "validationTimestamp": "2026-09-06T18:54:31.032Z",
+  "validationTimestamp": "2026-09-07T05:55:14.812Z",
   "shard": 3,
   "shardCount": 50,
   "readOnlyValidation": true,
@@ -68,7 +68,7 @@
     "canonicalRowsWithPriorReviewResidue": [
       "EI-21235337127214716"
     ],
-    "codeTestHead": "a53a00f9076612b1171b62c66387b84401bf9237",
+    "codeTestHead": "d5156b25eb56b6bc43f90537ad06b812b60eb489",
     "focusedTestFiles": 7,
     "focusedTestCount": 245
   },
@@ -190,10 +190,10 @@
           "custom title still derives body",
           "missing title/toolFailure still throws"
         ],
-        "sourceHead": "a53a00f9076612b1171b62c66387b84401bf9237",
+        "sourceHead": "d5156b25eb56b6bc43f90537ad06b812b60eb489",
         "focusedTestBatch": {
           "command": "npm run test:file -- packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/coordination/presence-roster-select.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-legacy-arg-redirect.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-owners-alias.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-contract.test.ts packages/operator-core/lib/agent-tools/__tests__/harness-scope-gate.test.ts packages/operator-core/lib/agent-tools/_harness-scope.test.ts",
-          "result": "7 files passed; 245 tests passed; 0 skipped; head a53a00f907; clean tested paths"
+          "result": "7 files passed; 245 tests passed; 0 skipped; head d5156b25eb5; clean tested paths"
         },
         "planLineage": {
           "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
@@ -233,7 +233,7 @@
         "Preserve local/remote-origin boundary: current candidate and canonical rows are local; any changed origin requires preservation or author routing."
       ],
       "confidence": "medium",
-      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21102856384784046. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD a53a00f9076612b1171b62c66387b84401bf9237 cover the claimed corrective behavior. Candidate consolidation: complete-record review found the same shared root \"toolFailure-only capture requires title/body\" as EI-21102856384784046; this row contributes occurrence evidence but no distinct product subcase requiring a separate backlog item."
+      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21102856384784046. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD d5156b25eb56b6bc43f90537ad06b812b60eb489 cover the claimed corrective behavior. Candidate consolidation: complete-record review found the same shared root \"toolFailure-only capture requires title/body\" as EI-21102856384784046; this row contributes occurrence evidence but no distinct product subcase requiring a separate backlog item."
     },
     {
       "id": "EI-21100343234455150",
@@ -356,10 +356,10 @@
           "ownerIds alias normalizes to owners",
           "removed legacy keys excluded and guidance redirects callers"
         ],
-        "sourceHead": "a53a00f9076612b1171b62c66387b84401bf9237",
+        "sourceHead": "d5156b25eb56b6bc43f90537ad06b812b60eb489",
         "focusedTestBatch": {
           "command": "npm run test:file -- packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/coordination/presence-roster-select.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-legacy-arg-redirect.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-owners-alias.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-contract.test.ts packages/operator-core/lib/agent-tools/__tests__/harness-scope-gate.test.ts packages/operator-core/lib/agent-tools/_harness-scope.test.ts",
-          "result": "7 files passed; 245 tests passed; 0 skipped; head a53a00f907; clean tested paths"
+          "result": "7 files passed; 245 tests passed; 0 skipped; head d5156b25eb5; clean tested paths"
         },
         "planLineage": {
           "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
@@ -399,7 +399,7 @@
         "Preserve local/remote-origin boundary: current candidate and canonical rows are local; any changed origin requires preservation or author routing."
       ],
       "confidence": "medium",
-      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21188486922004498. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD a53a00f9076612b1171b62c66387b84401bf9237 cover the claimed corrective behavior. The complete record is another occurrence of the plural owner-selector naming root represented by EI-21188486922004498; P-004 must retain this occurrence's distinct producer identity and references."
+      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21188486922004498. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD d5156b25eb56b6bc43f90537ad06b812b60eb489 cover the claimed corrective behavior. The complete record is another occurrence of the plural owner-selector naming root represented by EI-21188486922004498; P-004 must retain this occurrence's distinct producer identity and references."
     },
     {
       "id": "EI-21100858200100255",
@@ -529,10 +529,10 @@
           "concrete per-call harness wins",
           "exact plan slug can recover owning harness"
         ],
-        "sourceHead": "a53a00f9076612b1171b62c66387b84401bf9237",
+        "sourceHead": "d5156b25eb56b6bc43f90537ad06b812b60eb489",
         "focusedTestBatch": {
           "command": "npm run test:file -- packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/coordination/presence-roster-select.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-legacy-arg-redirect.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-owners-alias.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-contract.test.ts packages/operator-core/lib/agent-tools/__tests__/harness-scope-gate.test.ts packages/operator-core/lib/agent-tools/_harness-scope.test.ts",
-          "result": "7 files passed; 245 tests passed; 0 skipped; head a53a00f907; clean tested paths"
+          "result": "7 files passed; 245 tests passed; 0 skipped; head d5156b25eb5; clean tested paths"
         },
         "planLineage": {
           "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
@@ -572,7 +572,7 @@
         "Preserve local/remote-origin boundary: current candidate and canonical rows are local; any changed origin requires preservation or author routing."
       ],
       "confidence": "medium",
-      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21103511457277071. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD a53a00f9076612b1171b62c66387b84401bf9237 cover the claimed corrective behavior. The complete record is another occurrence of the plans:get per-call harness scoping/guidance root represented by EI-21103511457277071; P-004 must prove equivalence and retain this occurrence’s producer identity, evidence, and references."
+      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21103511457277071. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD d5156b25eb56b6bc43f90537ad06b812b60eb489 cover the claimed corrective behavior. The complete record is another occurrence of the plans:get per-call harness scoping/guidance root represented by EI-21103511457277071; P-004 must prove equivalence and retain this occurrence’s producer identity, evidence, and references."
     },
     {
       "id": "EI-21101061050589225",
@@ -699,10 +699,10 @@
           "includeStale/include_stale redirect says removed and points to targeted owner",
           "legacy filters remain absent from schema"
         ],
-        "sourceHead": "a53a00f9076612b1171b62c66387b84401bf9237",
+        "sourceHead": "d5156b25eb56b6bc43f90537ad06b812b60eb489",
         "focusedTestBatch": {
           "command": "npm run test:file -- packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/coordination/presence-roster-select.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-legacy-arg-redirect.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-owners-alias.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-contract.test.ts packages/operator-core/lib/agent-tools/__tests__/harness-scope-gate.test.ts packages/operator-core/lib/agent-tools/_harness-scope.test.ts",
-          "result": "7 files passed; 245 tests passed; 0 skipped; head a53a00f907; clean tested paths"
+          "result": "7 files passed; 245 tests passed; 0 skipped; head d5156b25eb5; clean tested paths"
         },
         "planLineage": {
           "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
@@ -743,7 +743,7 @@
         "Retain canonical agent-review and prior-worker checkpoint residue; revision-requested status is a preservation floor for this shard."
       ],
       "confidence": "medium",
-      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21235337127214716. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD a53a00f9076612b1171b62c66387b84401bf9237 cover the claimed corrective behavior. The complete record is another occurrence of the retired include_stale/carry-guidance root represented by EI-21235337127214716; P-004 must retain this occurrence's distinct producer identity and references."
+      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21235337127214716. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD d5156b25eb56b6bc43f90537ad06b812b60eb489 cover the claimed corrective behavior. The complete record is another occurrence of the retired include_stale/carry-guidance root represented by EI-21235337127214716; P-004 must retain this occurrence's distinct producer identity and references."
     },
     {
       "id": "EI-21101358317411322",
@@ -869,10 +869,10 @@
           "current description/guidance names live accepted keys",
           "targeted ended-row preservation behavior is tested"
         ],
-        "sourceHead": "a53a00f9076612b1171b62c66387b84401bf9237",
+        "sourceHead": "d5156b25eb56b6bc43f90537ad06b812b60eb489",
         "focusedTestBatch": {
           "command": "npm run test:file -- packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/coordination/presence-roster-select.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-legacy-arg-redirect.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-owners-alias.test.ts packages/operator-core/lib/agent-tools/coordination/tools/presence-contract.test.ts packages/operator-core/lib/agent-tools/__tests__/harness-scope-gate.test.ts packages/operator-core/lib/agent-tools/_harness-scope.test.ts",
-          "result": "7 files passed; 245 tests passed; 0 skipped; head a53a00f907; clean tested paths"
+          "result": "7 files passed; 245 tests passed; 0 skipped; head d5156b25eb5; clean tested paths"
         },
         "planLineage": {
           "plan": "feature-change-reconciliation-and-zero-state-clarity-2026-09-05",
@@ -913,15 +913,23 @@
         "Retain canonical agent-review and prior-worker checkpoint residue; revision-requested status is a preservation floor for this shard."
       ],
       "confidence": "medium",
-      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21235337127214716. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD a53a00f9076612b1171b62c66387b84401bf9237 cover the claimed corrective behavior. The complete record is another occurrence of the retired include_stale/carry-guidance root represented by EI-21235337127214716; P-004 must retain this occurrence's distinct producer identity and references."
+      "rationale": "Frozen ledger outcome=candidate-shared-root-consolidation proposed canonical=EI-21235337127214716. Current full-row read confirms state=open, origin=local, assignee=None, holder=None, claimHold=False, needsHuman=False, completion=None, inbound=[] and outbound=[]. Current source and focused tests at HEAD d5156b25eb56b6bc43f90537ad06b812b60eb489 cover the claimed corrective behavior. The complete record is another occurrence of the retired include_stale/carry-guidance root represented by EI-21235337127214716; P-004 must retain this occurrence's distinct producer identity and references."
     }
   ],
   "verification": {
     "readSet": "5 assigned candidates + 4 proposed canonical survivors via full work_items:get; links read in and out for all 9",
     "linksResult": "all 18 direction/item queries returned []",
     "planRead": "P-004 and D-003..D-010 read from plans:get/plans:items with harness=papercusp",
-    "workingTree": "staging; no uncommitted paths at focused-test provenance before artifact write",
+    "workingTree": "staging; focused-test provenance at HEAD d5156b25eb reports all 7 tested paths clean; unrelated shared-tree paths were dirty and preserved",
     "mutationsPerformed": [],
+    "liveRevalidation": {
+      "at": "2026-09-07T05:55:14.812Z",
+      "rowsRead": 9,
+      "assignedRows": "all 5 remain open/local/unassigned with no takenAt, completion, claimHold, or needsHuman gate",
+      "canonicalRows": "all 4 proposed survivors re-read; EI-21235337127214716 retains prior-work checkpoint residue and agentReview.status=revision-requested, so the preservation floor remains",
+      "linksRead": "18 explicit inbound/outbound queries across all 9 rows returned []",
+      "focusedTests": "7 files passed; 245 tests passed; 0 skipped; TEST_FILE_PROVENANCE head=d5156b25eb; uncommittedPaths=0/7"
+    },
     "artifactAssertions": [
       "every assigned ID appears exactly once",
       "no extra IDs",

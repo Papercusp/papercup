@@ -1443,6 +1443,43 @@ describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
     expect(detectSelfOutputRedirect('echo "x > y"')).toBeNull();
   });
 
+  it('does not mistake JavaScript arrows inside a quoted heredoc for stdout redirection', () => {
+    const command = [
+      "node --input-type=module <<'NODE' | tee logs/r28-r7-repair.log",
+      "const provision = items.find((o) => o.id === input.workspaceId + '-provision');",
+      "console.log(provision);",
+      'NODE',
+    ].join('\n');
+    expect(detectSelfOutputRedirect(command)).toBeNull();
+  });
+
+  it('resumes scanning after a heredoc body for redirects in later shell syntax', () => {
+    const command = [
+      "node --input-type=module <<'NODE'",
+      'const result = values.filter((value) => value > 0);',
+      'NODE',
+      'node follow-up.js > /tmp/follow-up.log',
+    ].join('\n');
+    expect(detectSelfOutputRedirect(command)).toEqual({
+      target: '/tmp/follow-up.log',
+      op: '>',
+      literalPath: true,
+    });
+  });
+
+  it('still detects a redirect on the heredoc declaration line', () => {
+    const command = [
+      "node --input-type=module <<'NODE' > /tmp/heredoc.log",
+      'const result = values.filter((value) => value > 0);',
+      'NODE',
+    ].join('\n');
+    expect(detectSelfOutputRedirect(command)).toEqual({
+      target: '/tmp/heredoc.log',
+      op: '>',
+      literalPath: true,
+    });
+  });
+
   it('a digit glued to the preceding word still redirects stdout (`echo hi1>f`)', () => {
     expect(detectSelfOutputRedirect('echo hi1>/tmp/f.log')).toEqual({
       target: '/tmp/f.log',

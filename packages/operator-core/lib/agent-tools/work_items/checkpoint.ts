@@ -1533,8 +1533,12 @@ export default defineTool({
         // Compute against exactly the bytes supplied by this call, then prefix the
         // stored narrative when owner authority is not mechanically established.
         const successfulActions =
-          c.spawnId && hasPotentialActionClaim(currentProvenanceText)
-            ? await readSuccessfulActionInvocations({ workspaceId, spawnId: c.spawnId })
+          hasPotentialActionClaim(currentProvenanceText)
+            ? await readSuccessfulActionInvocations({
+                workspaceId,
+                spawnId: c.spawnId,
+                coordOwnerId: ident.ownerId,
+              })
             : undefined;
         // EI-19425644478222007: expand `[turn:self]` / `[turn:current]` into this write's
         // REAL anchor (see carry-surface-provenance-stamp for why a sentinel beats making

@@ -7,9 +7,12 @@
  * module supplies a narrow, fail-soft proof path for the two coordination tools
  * whose input arguments contain the target of the side effect.
  *
- * The query is intentionally scoped to one concrete workspace and spawn, and
- * only reads successful rows.  Returned ids (await_id/msg_id) are not stored in
- * args_json and therefore cannot prove a claim by themselves.
+ * The query is intentionally scoped to one concrete workspace and, when
+ * available, the caller's spawn. Interactive continuations can carry an
+ * absent/ephemeral spawn id, so an empty spawn-scoped read falls back to the
+ * stable coordination owner id. Only successful rows are read. Returned ids
+ * (await_id/msg_id) are not stored in args_json and therefore cannot prove a
+ * claim by themselves.
  */
 
 import type { ProvenanceLintMatch, ProvenanceLintResult } from './carry-surface-provenance-lint';
@@ -31,6 +34,8 @@ type StampedProvenanceLint = {
 export interface ActionProofReadOptions {
   workspaceId?: string | null;
   spawnId?: string | null;
+  /** Stable coordination identity used when spawn_id is absent or has no rows. */
+  coordOwnerId?: string | null;
   limit?: number;
 }
 
@@ -151,22 +156,47 @@ export async function readSuccessfulActionInvocations(
 ): Promise<SuccessfulActionInvocation[] | null> {
   const workspaceId = options.workspaceId?.trim();
   const spawnId = options.spawnId?.trim();
-  if (!workspaceId || !spawnId) return null;
+  const coordOwnerId = options.coordOwnerId?.trim();
+  if (!workspaceId || (!spawnId && !coordOwnerId)) return null;
   const limit = Math.min(Math.max(options.limit ?? ACTION_PROOF_SCAN_ROWS, 1), ACTION_PROOF_SCAN_ROWS);
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ tool_name: string | null; args_json: unknown }>>`
-      SELECT tool_name, args_json
-        FROM harness_shared.tool_invocations
-       WHERE workspace_id = ${workspaceId}
-         AND spawn_id = ${spawnId}
-         AND status = 'ok'
-         AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
-       ORDER BY invoked_at DESC
-       LIMIT ${limit}
-    `;
-    return rows.map((row) => ({ toolName: row.tool_name, args: row.args_json }));
+    const readRows = async (
+      scope: 'spawn' | 'owner',
+    ): Promise<Array<{ tool_name: string | null; args_json: unknown }>> => {
+      if (scope === 'spawn') {
+        return sql<Array<{ tool_name: string | null; args_json: unknown }>>`
+          SELECT tool_name, args_json
+            FROM harness_shared.tool_invocations
+           WHERE workspace_id = ${workspaceId}
+             AND spawn_id = ${spawnId}
+             AND status = 'ok'
+             AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
+           ORDER BY invoked_at DESC
+           LIMIT ${limit}
+        `;
+      }
+      return sql<Array<{ tool_name: string | null; args_json: unknown }>>`
+        SELECT tool_name, args_json
+          FROM harness_shared.tool_invocations
+         WHERE workspace_id = ${workspaceId}
+           AND coord_owner_id = ${coordOwnerId}
+           AND status = 'ok'
+           AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
+         ORDER BY invoked_at DESC
+         LIMIT ${limit}
+      `;
+    };
+
+    // Prefer the narrow spawn key. An empty result means this continuation's
+    // action rows were stamped under another/ephemeral spawn, so consult the
+    // stable owner key before declaring the ledger empty. A non-empty result
+    // is authoritative for the current spawn and avoids widening the proof
+    // surface unnecessarily.
+    const rows = spawnId ? await readRows('spawn') : [];
+    const scopedRows = rows.length > 0 || !coordOwnerId ? rows : await readRows('owner');
+    return scopedRows.map((row) => ({ toolName: row.tool_name, args: row.args_json }));
   } catch {
     return null;
   }

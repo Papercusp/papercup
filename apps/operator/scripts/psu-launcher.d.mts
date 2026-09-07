@@ -2493,8 +2493,9 @@ export function reportSessionResumeReleased(advSessionId: number | string | null
  * argv is only sent after runWrapper reports a concrete child spawn, so a
  * failed setup never erases the last known-good launch record.
  */
-export function resumeLaunchArgvRecord(session: any, { model, account, addDir, allowSubagents, passthrough, launchMode, brain, }?: {
+export function resumeLaunchArgvRecord(session: any, { model, modelSource, account, addDir, allowSubagents, passthrough, launchMode, brain, }?: {
     model?: null | undefined;
+    modelSource?: null | undefined;
     addDir?: never[] | undefined;
     allowSubagents?: null | undefined;
     passthrough?: never[] | undefined;
@@ -3066,6 +3067,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     mode?: string | undefined;
     auto?: boolean | undefined;
     carry?: any;
+    headless?: boolean | undefined;
     launch_argv: string[];
     bootstrap_idempotency_key?: undefined;
     agent: any;
@@ -3080,6 +3082,7 @@ export function roleBootstrapBody({ role, agent, workspace, harness, feature, pl
     fleet_name?: any;
     fleet_role?: any;
     fleet?: any;
+    headless?: boolean | undefined;
     model_source?: string | undefined;
     model?: any;
     account?: any;
@@ -3165,12 +3168,24 @@ export function sessionPortUpgradeError(error: any): Error;
  * the byte-identical native resume/fork path; a tracked plain Claude source may
  * instead create a fresh Codex/OMP session through protocol v1. */
 export function resolveResumeTarget(session: any, args?: {}, selected?: {}): {
+    modelSource?: string | undefined;
     operation: string;
     sourceAgent: any;
     targetAgent: any;
     provider: string;
     modelSpec: any;
 };
+/**
+ * Resolve a native Codex resume from the exact model recorded on its last
+ * successful psu launch. The inherited source is stamped freshly: the prior
+ * launch may itself have been explicit or configured-default, but this process
+ * is authorized by the durable record rather than silently consulting native
+ * Codex cache/default state.
+ */
+export function recordedCodexModelSelectionForResume(session: any): {
+    model: string;
+    source: string;
+} | null;
 export function sessionPortTargetAccount(account: any): any;
 export function sessionPortRequestBody(source: any, target: any, account: any, args?: {}): {
     protocolVersion: number;

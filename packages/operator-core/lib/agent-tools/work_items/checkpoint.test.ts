@@ -3751,8 +3751,8 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
   });
 });
 
-describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268)', () => {
-  it('queries the caller spawn and clears only a successful matching coord action', async () => {
+describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268/EI-22550731555241787)', () => {
+  it('queries the caller spawn with the stable owner fallback and clears only a successful matching coord action', async () => {
     const stored = 'Messaged fleet leader su-bce40c51 directly';
     getWorkItem.mockResolvedValue({ id: 'WI-ACTION-PROOF', harness: 'papercup' });
     setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
@@ -3777,6 +3777,35 @@ describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268
     expect(readSuccessfulActionInvocations).toHaveBeenCalledWith({
       workspaceId: 'default',
       spawnId: 'spawn-action-proof',
+      coordOwnerId: 'opspawn-bee-1',
+    });
+  });
+
+  it('uses the stable owner fallback when the caller has no spawn id', async () => {
+    const stored = 'Messaged fleet leader su-bce40c51 directly';
+    getWorkItem.mockResolvedValue({ id: 'WI-ACTION-PROOF-OWNER', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+    readSuccessfulActionInvocations.mockResolvedValue([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+
+    const result = await one(
+      { id: 'WI-ACTION-PROOF-OWNER', checkpoint: stored },
+      {
+        uiClientId: 'su-test',
+        isSuperuser: true,
+        workspaceId: 'default',
+        harnessSlug: 'papercup',
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint).toBeUndefined();
+    expect(readSuccessfulActionInvocations).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      spawnId: undefined,
+      coordOwnerId: 'su-test',
     });
   });
 

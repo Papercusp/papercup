@@ -10,7 +10,6 @@ import {
   snapshotPackageDirectory,
   validateAgentInputClosure,
   replayAgentSpecification,
-  type BundleRef,
   type LoadedBlueprint,
   type CompiledAgentSpecification,
   type CompositionCompilerInput,
@@ -71,9 +70,6 @@ export async function resolveBlueprintPackageInputs(
           throw new CompositionCompilerError('package-pin-conflict', 'resolver returned a different package', key);
         }
         selected.set(key, pin);
-        await Promise.all(pin.dependencies.map((dependency) => visit({
-          kind: dependency.packageKind, ref: dependency.ref, version: dependency.revision,
-        }, [...ancestors, key])));
         return pin;
       })();
       resolved.set(key, pending);
@@ -82,6 +78,9 @@ export async function resolveBlueprintPackageInputs(
     if (request.version && request.version !== pin.revision) {
       throw new CompositionCompilerError('package-pin-conflict', 'requires ' + request.version + ', selected ' + pin.revision, key);
     }
+    await Promise.all(pin.dependencies.map((dependency) => visit({
+      kind: dependency.packageKind, ref: dependency.ref, version: dependency.revision,
+    }, [...ancestors, key])));
     return pin;
   };
   await Promise.all(requests.map((request) => visit(request, [])));
@@ -133,9 +132,12 @@ export async function provisionBlueprintPackages(
   const specification = replayAgentSpecification(artifact);
   const scopeInput = specification.inputs.find((entry) => entry.kind === 'setting' && entry.ref === 'bundle-scope');
   const scope = scopeInput?.kind === 'setting' ? scopeInput.value as { workspaceId?: string; harnessSlug?: string } : null;
-  if (!scope?.workspaceId || !scope.harnessSlug) throw new CompositionCompilerError('setting-invalid', 'bundle provisioning needs an explicit workspace and harness');
+  if (typeof scope?.workspaceId !== 'string' || !scope.workspaceId.trim() ||
+      typeof scope.harnessSlug !== 'string' || !scope.harnessSlug.trim()) {
+    throw new CompositionCompilerError('setting-invalid', 'bundle provisioning needs an explicit workspace and harness');
+  }
   const target = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug };
-  const bundles: readonly BundleRef[] = specification.configuration.bundles;
+  const bundles = specification.configuration.bundles;
   const pins = validateAgentInputClosure(specification.inputs).filter((entry): entry is ResolvedPackageInput =>
     entry.kind === 'package' && bundles.some((bundle) => bundle.kind === entry.packageKind && bundle.ref === entry.ref));
   // Fully validate before any side effect. Rubrics are attached as immutable input

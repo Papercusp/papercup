@@ -248,8 +248,11 @@ export async function synchronizeAcceptanceBarRevision(
       source_val_id: string | null;
       current_revision: number | string;
       source_bar_key: string;
+      source_bar_hash: string;
       plan_item_id: string;
+      behavior: string;
       behavior_class: SpecClauseWrite['behaviorClass'];
+      falsifier: SpecClauseWrite['falsifier'];
       required_evidence: string[];
       required_test_layers: string[];
       mutation_required: boolean;
@@ -259,8 +262,8 @@ export async function synchronizeAcceptanceBarRevision(
       exemption: Record<string, unknown> | null;
     }>
   >`
-    SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key,
-           r.plan_item_id, r.behavior_class, r.required_evidence, r.required_test_layers,
+    SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
+           r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence, r.required_test_layers,
            r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
            r.supersedes_revision, r.exemption
       FROM harness_shared.plan_spec_clauses c
@@ -337,8 +340,8 @@ export async function synchronizeAcceptanceBarRevision(
       }
     }
     clauses = await sql<typeof clauses>`
-      SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key,
-             r.plan_item_id, r.behavior_class, r.required_evidence, r.required_test_layers,
+      SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
+             r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence, r.required_test_layers,
              r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
              r.supersedes_revision, r.exemption
         FROM harness_shared.plan_spec_clauses c
@@ -360,16 +363,22 @@ export async function synchronizeAcceptanceBarRevision(
     if (!criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
     }
+    // A metadata/METHOD revision refreshes provenance, not the author's atomic
+    // contract. Replacing it with the parent BAR would discard its narrower
+    // behavior and falsifier while leaving the replacement marked accepted.
+    const unchangedBar = clause.source_bar_hash === criterion.barHash;
     const result = await setSpecClause({
       planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
-      behavior: criterion.model!, behaviorClass: clause.behavior_class,
-      requiredEvidence: clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
-      requiredTestLayers: criterion.requiredTestLayers ?? clause.required_test_layers, mutationRequired: clause.mutation_required,
+      behavior: unchangedBar ? clause.behavior : criterion.model!, behaviorClass: clause.behavior_class,
+      requiredEvidence: unchangedBar ? clause.required_evidence
+        : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
+      requiredTestLayers: unchangedBar ? clause.required_test_layers
+        : criterion.requiredTestLayers ?? clause.required_test_layers, mutationRequired: clause.mutation_required,
       lifecycleStatus: clause.lifecycle_status, exemption: clause.exemption,
       supersedes: clause.supersedes_spec_id && clause.supersedes_revision
         ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
-      falsifier: { observation: criterion.driftMarkers! },
+      falsifier: unchangedBar ? clause.falsifier : { observation: criterion.driftMarkers! },
       acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${clause.source_bar_key}`,
       sourceBar: { barKey: clause.source_bar_key, barHash: criterion.barHash,
         barSetHash: data.barSetHash, rubricSlug: args.rubricSlug,
