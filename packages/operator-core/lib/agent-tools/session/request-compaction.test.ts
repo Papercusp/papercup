@@ -783,6 +783,19 @@ describe('session:request-compaction — focus-integrity warning wired into the 
     expect(msg.data).toContain('carry-note e5729a1f033a');
   });
 
+  it('removes a foreign ref from the executable resume directive when the recipient has no lane', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+    await call({
+      focus: 'Continue P-003 (WI-10000572) on the peer portal performance lane.',
+    });
+    const note = injected().data.replace(ENVELOPE_LINE, '');
+    expect(note).toContain('⚠ FOCUS INTEGRITY');
+    expect(note).toContain('WI-10000572');
+    expect(note).toContain('do not infer or claim a lane');
+    expect(note).not.toMatch(/Then resume:[\s\S]*WI-10000572/);
+  });
+
   it("stays SILENT when focus only names the owner's own held item (no false positive)", async () => {
     findLiveHost.mockReturnValue(carryHost);
     buildCarryBrief.mockResolvedValue(briefWithHeld);

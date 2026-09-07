@@ -182,6 +182,22 @@ async function carryBriefFocus(brief: import('../../carry-brief').CarryBrief | n
 }
 
 /**
+ * A caller-authored focus that names state outside the recipient's brief is
+ * unsafe to carry verbatim. Keep the successor on recipient-owned anchors;
+ * when there are no such anchors, say so explicitly instead of turning a
+ * peer's work-item into an executable `Then resume:` directive.
+ */
+async function safeFocusAfterIntegrityCheck(
+  brief: import('../../carry-brief').CarryBrief | null,
+): Promise<string> {
+  if (brief?.heldItems.length || brief?.loop?.carryNote) return carryBriefFocus(brief);
+  return (
+    'No recipient-owned held work-item or loop carry-note is available; do not infer or claim a ' +
+    'lane from the rejected focus; continue only from live role context.'
+  );
+}
+
+/**
  * A no-PTY loop cannot be cut through a host socket. An ACTIVE WARM loop can,
  * however, make the same boundary through its next COLD wake — provided the
  * carry anchor exists before the loop is retuned. Keep this recovery here,
@@ -611,6 +627,15 @@ export default defineTool({
     const focus = (args.focus ?? '').trim() || (await carryBriefFocus(brief));
     const focusCarryRefusal = frozenCompactionCarryRefusal(focus);
     if (focusCarryRefusal) return focusCarryRefusal;
+    const focusIntegrityRefs = unverifiedFocusRefs(
+      [focus, args.continueNote ?? ''].join('\n'),
+      brief,
+    );
+    const hasUnverifiedFocusRefs =
+      focusIntegrityRefs.workItemIds.length > 0 || focusIntegrityRefs.carryHashes.length > 0;
+    const safeFocus = hasUnverifiedFocusRefs
+      ? await safeFocusAfterIntegrityCheck(brief)
+      : focus;
     const rawStaleCheckpoints = staleCheckpointWarnings(brief);
     // P-016 enforcement gate: the WARN above becomes teeth. Unflushed state
     // (missing/stale held checkpoint, or an armed loop with no carry-note) HOLDS
@@ -740,10 +765,12 @@ export default defineTool({
         );
         const integrityWarning = retractedHintRefs.length
           ? ''
-          : renderFocusIntegrityWarning(unverifiedFocusRefs([focus, args.continueNote ?? ''].join('\n'), brief));
+          : renderFocusIntegrityWarning(focusIntegrityRefs);
         const rawNote = retractedHintRefs.length
           ? retractionSafeContinueNote(retractedHintRefs, role)
-          : (args.continueNote ?? defaultContinueNote(focus, role)).trim();
+          : hasUnverifiedFocusRefs
+            ? defaultContinueNote(safeFocus, role)
+            : (args.continueNote ?? defaultContinueNote(focus, role)).trim();
         // WI-2140968: address the note to the owner it was written for BEFORE
         // tagging, so the line is inside the payload the ledger hashes and
         // travels with the text down whichever path delivers it.
