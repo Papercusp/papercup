@@ -11,7 +11,7 @@
  * their providers in (spawned-blueprint closure).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -48,8 +48,11 @@ export default defineTool({
     targetVersion: z.string().max(200).optional().describe('Previously installed version or package content hash; required for rollback.'),
     activationStack: z.array(z.string().min(1).max(120)).max(40).optional()
       .describe('Ids already selected for a combined install-and-activate preflight. Library-only install permits alternatives.'),
-    potSlug: z.string().min(1).max(120).optional()
-      .describe('Target pot for install-time capability-class grant resolution; required when the identity declares grants.'),
+    potSlug: entityRef('pot', {
+      soft: true,
+      max: 120,
+      describe: 'Target pot for install-time capability-class grant resolution; required when the identity declares grants.',
+    }).optional(),
     capabilityProviderSelections: z.record(z.string(), z.string().min(1)).optional()
       .describe('Explicit provider choices keyed by exact class@version ref; values are provider package or package@version.'),
     workspace: z.string().max(120).optional(),
