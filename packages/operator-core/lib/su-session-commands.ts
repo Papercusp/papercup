@@ -39,13 +39,8 @@ export function pgSuSessionCommandStore(options: { sql?: Sql } = {}): SuSessionC
       const target = command.target;
       const sourceId = receiptKey(command);
       return db().begin(async (sql) => {
-        const rows = await sql<{ receipt: SuSessionCommandReceipt | null }[]>`
-          SELECT (
-            SELECT turn->'su_command'
-              FROM jsonb_array_elements(COALESCE(c.transcript, '[]'::jsonb)) AS turn
-             WHERE turn->>'source_id' = ${sourceId}
-             LIMIT 1
-          ) AS receipt
+        const rows = await sql<{ id: string }[]>`
+          SELECT c.id
             FROM harness_shared.agent_chats_consolidated c
            WHERE c.workspace_id = ${target.workspaceId}
              AND c.harness_slug IS NOT DISTINCT FROM ${target.harnessSlug}
@@ -57,10 +52,24 @@ export function pgSuSessionCommandStore(options: { sql?: Sql } = {}): SuSessionC
                 WHERE a.workspace_id = c.workspace_id AND a.id = ${target.advSessionId}
                   AND a.su_agent_chat_id = c.id AND a.coord_owner_id = ${target.ownerId}
                   AND a.agent = ${target.backend}
+                  AND COALESCE(a.session_id, a.su_session_descriptor->'identity'->>'nativeSessionId') = ${target.nativeSessionId}
              )
            FOR UPDATE OF c`;
         if (!rows[0]) throw new Error('SU command target has no writable, identity-bound conversation');
-        if (rows[0].receipt) return { created: false, receipt: rows[0].receipt };
+        // Read after acquiring the row lock, so a concurrent reservation sees
+        // the committed winner even when its first statement waited for it.
+        const previous = await sql<{ receipt: SuSessionCommandReceipt | null }[]>`
+          SELECT turn->'su_command' AS receipt
+            FROM harness_shared.agent_chats_consolidated c,
+                 LATERAL jsonb_array_elements(COALESCE(c.transcript, '[]'::jsonb)) AS turn
+           WHERE c.workspace_id = ${target.workspaceId}
+             AND c.harness_slug IS NOT DISTINCT FROM ${target.harnessSlug}
+             AND c.id = ${target.agentChatId} AND turn->>'source_id' = ${sourceId}
+           LIMIT 1`;
+        if (previous[0]) {
+          if (!previous[0].receipt?.fingerprint) throw new Error('SU command receipt is corrupt; delivery must be reconciled');
+          return { created: false, receipt: previous[0].receipt };
+        }
         const receipt: SuSessionCommandReceipt = {
           fingerprint, command, acceptedAt: new Date().toISOString(),
         };

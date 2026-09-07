@@ -1,6 +1,6 @@
 {
   "schemaVersion": "feature-change-p004-validation-shard-v1",
-  "validationTimestamp": "2026-09-06T04:54:33.392Z",
+  "validationTimestamp": "2026-09-07T13:50:11Z",
   "readOnlyValidation": true,
   "workItem": "WI-2146807",
   "parentWorkItem": "WI-2146348",
@@ -80,7 +80,7 @@
   "assignedIdListSerialization": "JSON.stringify(assignedIds)",
   "assignedIdListSha256": "8a323d7daee6b0add20b53ef6a9b0a95f35588e4b29efa67e0e92be62792f478",
   "validation": {
-    "currentHead": "9a407c719e702348d6430e39d285e92ae405cc65",
+    "currentHead": "8e1a29ce25e57bd68ae5d9140652e8c419f2c70c",
     "focusedTestsHead": "3fcedffa782151487614b85686dd8823b12618ee2",
     "planStatus": "ready",
     "planItemStatus": "todo",
@@ -91,6 +91,32 @@
       "assignee": "su-bcd1a39-2b9e-4f30-849a-37ab2e97145e",
       "coverageLink": "WI-2146348 -> P-004",
       "state": "open"
+    },
+    "settlement": {
+      "settledAt": "2026-09-07T13:50:11Z",
+      "currentStateCounts": {
+        "open": 4,
+        "done": 1
+      },
+      "currentOriginCounts": {
+        "local": 5
+      },
+      "currentAssigneeCounts": {
+        "unassigned": 5
+      },
+      "completion": {
+        "resolvedId": "EI-21186639557436599",
+        "state": "done",
+        "completionAuthority": "committed",
+        "terminalOwner": "su-bcd1a39d-2b9e-4f30-849a-37ab2e97145e",
+        "postApplySha256": "d070acea492aac91b403c9ef43799b51ca4c7020be8134b7a68eda07535c1c58",
+        "replay": false
+      },
+      "artifactPortability": {
+        "repositoryRoot": "<repository-root>",
+        "absoluteRepositoryRootCount": 0
+      },
+      "readOnlyMutationBoundary": "No live feature/change/reference/plan row was mutated; four apply recommendations remain deferred to the centralized lane."
     },
     "method": [
       "Read the complete frozen P-003 ledger entry for each assigned ID from the authoritative final ledger.",
@@ -116,7 +142,9 @@
       "entriesExpected": 5,
       "entriesWritten": 5,
       "extraEntryIds": [],
-      "artifactWrittenUnderLock": "lock 7eaa0500-47b8-4f1b-9980-d8478dfec950",
+      "artifactWrittenUnderLock": "lock 6ba832af-d99f-40bb-959b-539b4a37310a",
+      "currentStateCompletionSettlement": true,
+      "portableArtifact": true,
       "gitDiffCheck": "passed (git diff --no-index --check; no whitespace diagnostics)"
     }
   },

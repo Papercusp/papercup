@@ -37,8 +37,8 @@ beforeEach(async () => {
     VALUES (${workspaceId}, ${harnessSlug}, ${agentChatId}, 'operator', '[]'::jsonb,
             ${Date.now()}, ${Date.now()}, 'su-session')`;
   const [row] = await sql<{ id: number }[]>`
-    INSERT INTO harness_shared.adv_sessions (workspace_id, mode, agent, coord_owner_id, su_agent_chat_id)
-    VALUES (${workspaceId}, 'console', 'claude', 'su-command-fixture', ${agentChatId}) RETURNING id`;
+    INSERT INTO harness_shared.adv_sessions (workspace_id, mode, agent, coord_owner_id, su_agent_chat_id, session_id)
+    VALUES (${workspaceId}, 'console', 'claude', 'su-command-fixture', ${agentChatId}, 'native-command-fixture') RETURNING id`;
   advSessionId = Number(row.id);
 });
 
@@ -92,6 +92,9 @@ describe('SU command acceptance through real PostgreSQL', () => {
     expect((await dispatch.terminal).status).toBe('completed');
     _resetSuSessionHostsForTest();
     const replacement = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    await expect(replacement.acceptCommand({ ...ownerTurn(), content: 'changed' })).rejects.toMatchObject({
+      code: 'command_id_conflict',
+    });
     const replay = await replacement.acceptCommand(ownerTurn());
     expect(replay.replayed).toBe(true);
     expect((await replay.terminal).status).toBe('completed');
@@ -99,17 +102,11 @@ describe('SU command acceptance through real PostgreSQL', () => {
     expect(await storedTurns()).toHaveLength(1);
   });
 
-  it('reserves one turn under concurrent connections and refuses changed command text', async () => {
+  it('reserves one turn under concurrent connections', async () => {
     const store = pgSuSessionCommandStore({ sql });
     const reservations = await Promise.all(Array.from({ length: 6 }, () => store.reserve(ownerTurn(), 'exact-payload')));
     expect(reservations.filter((r) => r.created)).toHaveLength(1);
     expect(await storedTurns()).toHaveLength(1);
-    const execute = vi.fn(async () => ({ status: 'completed' as const }));
-    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
-    await expect(host.acceptCommand({ ...ownerTurn(), content: 'changed' }, store)).rejects.toMatchObject({
-      code: 'command_id_conflict',
-    });
-    expect(execute).not.toHaveBeenCalled();
   });
 
   it('survives a restart between reservation and dispatch without silently re-executing', async () => {
@@ -140,6 +137,7 @@ describe('SU command acceptance through real PostgreSQL', () => {
       { ...ownerTurn().target, workspaceId: 'another-workspace' },
       { ...ownerTurn().target, ownerId: 'another-owner' },
       { ...ownerTurn().target, harnessSlug: 'another-project' },
+      { ...ownerTurn().target, nativeSessionId: 'another-engine-session' },
     ]) {
       await expect(store.reserve({ ...ownerTurn(), target }, 'payload')).rejects.toThrow('identity-bound');
     }
@@ -147,5 +145,23 @@ describe('SU command acceptance through real PostgreSQL', () => {
       WHERE workspace_id = ${workspaceId} AND id = ${agentChatId}`;
     await expect(store.reserve(ownerTurn(), 'payload')).rejects.toThrow('identity-bound');
     expect(await storedTurns()).toHaveLength(0);
+  });
+
+  it('does not repeat execution when the host loses persistence after acknowledgement', async () => {
+    const store = pgSuSessionCommandStore({ sql });
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    const accepted = await host.acceptCommand(ownerTurn(), {
+      ...store, finish: async () => { throw new Error('injected loss after dispatch'); },
+    });
+    expect(accepted.accepted?.status).toBe('accepted');
+    expect(await accepted.terminal).toMatchObject({ refusal: { code: 'command_delivery_unknown', retryable: false } });
+    expect(execute).toHaveBeenCalledTimes(1);
+    host.dispose();
+    const replacement = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    const replay = await replacement.acceptCommand(ownerTurn(), store);
+    expect(await replay.terminal).toMatchObject({ refusal: { code: 'command_delivery_unknown' } });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(await storedTurns()).toHaveLength(1);
   });
 });
