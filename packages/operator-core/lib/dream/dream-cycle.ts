@@ -1,58 +1,63 @@
-/** Bounded, injected orchestration for one REM dream cycle (P-005). */
+/** Capability orchestration over the existing Dream run, governor and Blender seams. */
+import { costFromTokens } from '@papercusp/model-pricing';
 import type { ScoutLlmCall } from '../scout/types';
-import type { CorpusEntry } from '../scout/critique-core';
-import {
-  resolveDreamCycleConfig,
-  resolveDreamPassConfig,
-  type DreamCycleConfig,
-  type DreamPassConfig,
-  type DreamReviewConfig,
-  type DreamSamplerConfig,
-} from './dream-config';
-import { runDreamPass, type DreamPassUsage } from './dream-pass';
-import { runDreamReview, type DreamReviewUsage } from './dream-review';
-import {
-  sampleDreamPair,
-  type DreamFragment,
-  type DreamFragmentPair,
-  type SampleDreamPairOptions,
-} from './fragment-sampler';
-import { sinkDreamInsight, type SinkDreamInsightResult } from './dream-sink';
-import type { DreamGovernorPreflight, RecordDreamSpendResult } from './dream-governor';
-import type { DreamRun, DreamRunMode, DreamRunTerminalStatus, FinalizeDreamRunInput } from './dream-run-store';
-import type { DreamSourceSnapshot } from './dream-sources';
+import { resolveDreamCycleConfig, resolveDreamPassConfig, resolveDreamReviewConfig,
+  type DreamCycleConfig, type DreamPassConfig, type DreamReviewConfig } from './dream-config';
+import { CAPABILITY_DREAM_PROMPT_VERSION, runCapabilityDreamPass } from './capability-pass';
+import { CAPABILITY_REVIEW_VERSION, runCapabilityDreamReview, rerankCapabilityPriors,
+  type CapabilityReviewSources } from './capability-review';
+import { buildCapabilitySamplingSnapshot, sampleCapabilities,
+  type CapabilitySamplingOptions, type CapabilitySamplingResult } from './capability-sampler';
+import type { CapabilityManifest, CapabilityPacket } from './capability-contracts';
+import { dreamCapabilityRun, type BeginCapabilityRunInput, type DreamRunCall } from './dream-run-provenance';
+import { verifyCapabilityPacket } from './capability-packets';
+import { DreamAdmissionError, type DreamGovernorPreflight, type RecordDreamSpendResult } from './dream-governor';
+import type { DreamPassUsage } from './dream-pass';
+import type { SinkDreamInsightResult } from './dream-sink';
+import type { DreamRun, DreamRunMode, FinalizeDreamRunInput } from './dream-run-store';
 
 export interface DreamCycleInput {
   workspaceId: string;
   potSlug: string;
+  repositoryId: string;
+  rootPath: string;
+  manifest: CapabilityManifest;
   mode: DreamRunMode;
   cycleId: string;
   cycle?: Partial<DreamCycleConfig>;
-  sampler?: Partial<DreamSamplerConfig>;
+  sampler?: Omit<CapabilitySamplingOptions, 'seed' | 'now' | 'promptVersion' | 'history' | 'exposures'>;
   pass?: Partial<DreamPassConfig>;
   review?: Partial<DreamReviewConfig>;
   signal?: AbortSignal;
 }
-
 type FinalizeInput = Omit<FinalizeDreamRunInput, 'workspaceId'>;
-
+type CallInput = Pick<DreamRunCall, 'callId' | 'phase' | 'model' | 'reservedUsd'>;
 export interface DreamCycleDeps {
   llmCall: ScoutLlmCall;
   preflight: () => Promise<DreamGovernorPreflight>;
-  loadSources: () => Promise<DreamSourceSnapshot>;
-  readCorpus: (fragments: readonly DreamFragment[]) => Promise<CorpusEntry[]>;
-  beginRun: (input: { runId: string; cycleId: string }) => Promise<{ created: boolean; run: DreamRun }>;
-  recordSelection: (input: { runId: string; pair: DreamFragmentPair; dreamerModel: string }) => Promise<DreamRun>;
+  /** Re-read the Start/Pause/auto switches before every phase and sink. */
+  canContinue?: () => Promise<boolean>;
+  loadPackets: (signal: AbortSignal) => Promise<CapabilityPacket[]>;
+  loadHistory: () => Promise<DreamRun[]>;
+  reviewSources: (packets: CapabilityPacket[]) => CapabilityReviewSources;
+  beginRun: (input: { runId: string; cycleId: string; capability: BeginCapabilityRunInput }) =>
+    Promise<{ created: boolean; run: DreamRun }>;
+  recordSelection: (input: { runId: string; capability: CapabilitySamplingResult }) => Promise<DreamRun>;
+  beginCall: (input: { runId: string; call: CallInput }) =>
+    Promise<{ started: boolean; run: DreamRun; call: DreamRunCall }>;
+  settleCall: (input: { runId: string; callId: string; usage: DreamPassUsage | null; error?: string }) => Promise<DreamRun>;
+  recordReview: (input: { runId: string; outcome: Record<string, unknown>; review: Record<string, unknown> }) => Promise<DreamRun>;
   finalizeRun: (input: FinalizeInput) => Promise<DreamRun>;
   recordSpend: (run: DreamRun) => Promise<RecordDreamSpendResult>;
-  samplePair?: typeof sampleDreamPair;
-  dream?: typeof runDreamPass;
-  review?: typeof runDreamReview;
-  sink?: typeof sinkDreamInsight;
-  rng?: () => number;
+  sink: (runId: string, packets: CapabilityPacket[]) => Promise<SinkDreamInsightResult>;
+  buildSnapshot?: typeof buildCapabilitySamplingSnapshot;
+  sample?: typeof sampleCapabilities;
+  dream?: typeof runCapabilityDreamPass;
+  review?: typeof runCapabilityDreamReview;
+  rerank?: typeof rerankCapabilityPriors;
+  estimateCall?: (input: Parameters<ScoutLlmCall>[0]) => number;
   now?: () => number;
 }
-
 export interface DreamCycleRunSummary {
   runId: string;
   status: DreamRun['status'];
@@ -60,15 +65,8 @@ export interface DreamCycleRunSummary {
   routedRef: string | null;
   replayed: boolean;
 }
-
-export type DreamCycleReason =
-  | 'completed'
-  | 'no-pair'
-  | 'cycle-cost-cap'
-  | 'rolling-cost-cap'
-  | 'governor-refused'
-  | 'aborted';
-
+export type DreamCycleReason = 'completed' | 'no-pair' | 'cycle-cost-cap' | 'rolling-cost-cap'
+  | 'governor-refused' | 'aborted' | 'in-progress';
 export interface DreamCycleResult {
   fired: boolean;
   reason: DreamCycleReason;
@@ -79,269 +77,227 @@ export interface DreamCycleResult {
   costUsd: number;
   newSpendUsd: number;
   runs: DreamCycleRunSummary[];
-  sources?: DreamSourceSnapshot['census'];
+  sources?: { units: number; eligible: number; exclusions: Array<{ unitId: string; reason: string }> };
 }
-
 export function dreamRunId(cycleId: string, index: number): string {
   if (!cycleId.trim()) throw new RangeError('cycleId must be a non-empty string');
   if (!Number.isInteger(index) || index < 0) throw new RangeError('dream index must be a non-negative integer');
-  return `${cycleId}:dream:${index + 1}`;
+  return cycleId + ':dream:' + (index + 1);
+}
+const record = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+/** List-price admission estimate, not a promise about the final provider bill. */
+export function estimateDreamCall(input: Parameters<ScoutLlmCall>[0]): number {
+  const bytes = Buffer.byteLength((input.system ?? '') + JSON.stringify(input.messages), 'utf8') + 256;
+  const estimate = costFromTokens(input.model, {
+    inputTokens: bytes, outputTokens: (input.maxTokens ?? 4096) + (input.thinkingBudgetTokens ?? 0),
+  });
+  if (!estimate.priced || !Number.isFinite(estimate.usd) || estimate.usd <= 0)
+    throw new Error('Dream cannot admit an unpriced model: ' + input.model);
+  return estimate.usd;
+}
+async function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason ?? new Error('Dream aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try { return await Promise.race([operation(), aborted]); }
+  finally { signal.removeEventListener('abort', onAbort); }
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
-function withoutRefs(fragments: readonly DreamFragment[], refs: readonly string[]): DreamFragment[] {
-  const used = new Set(refs);
-  return fragments.filter((fragment) => !used.has(fragment.ref));
-}
-
-function combinedSignal(parent: AbortSignal | undefined, controller: AbortController): AbortSignal {
-  if (!parent) return controller.signal;
-  if (parent.aborted) controller.abort(parent.reason);
-  else parent.addEventListener('abort', () => controller.abort(parent.reason), { once: true });
-  return controller.signal;
-}
-
-/**
- * Run at most maxDreamsPerCycle attempts. Stable run ids + write-once finalize
- * make a DBOS replay heal accounting and return prior outcomes without another
- * model call or another Blender artifact.
- */
+/** Terminal replays spend nothing. A recent in-flight run is left to its owner;
+ * an expired interrupted run retains its reservations as unknown usage. */
 export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps): Promise<DreamCycleResult> {
   const config = resolveDreamCycleConfig(input.cycle);
-  const preflight = await deps.preflight();
-  if (!preflight.allow) {
-    return {
-      fired: false,
-      reason: 'governor-refused',
-      governorReason: preflight.reason,
-      cycleId: input.cycleId,
-      attempts: 0,
-      accepted: 0,
-      costUsd: 0,
-      newSpendUsd: 0,
-      runs: [],
-    };
-  }
-  if (config.maxCostUsd <= 0) {
-    return {
-      fired: false,
-      reason: 'cycle-cost-cap',
-      cycleId: input.cycleId,
-      attempts: 0,
-      accepted: 0,
-      costUsd: 0,
-      newSpendUsd: 0,
-      runs: [],
-    };
-  }
-
-  const controller = new AbortController();
-  const signal = combinedSignal(input.signal, controller);
-  const deadlineMs = (deps.now ?? Date.now)() + config.timeoutMs;
-  const timer = setTimeout(() => controller.abort(new Error('dream cycle deadline exceeded')), config.timeoutMs);
+  const pass = resolveDreamPassConfig({ maxOutputTokens: 4096, ...input.pass });
+  const reviewConfig = resolveDreamReviewConfig({ maxOutputTokens: 4096, ...input.review });
+  const now = deps.now ?? Date.now;
+  const result: DreamCycleResult = {
+    fired: false, reason: 'completed', cycleId: input.cycleId,
+    attempts: 0, accepted: 0, costUsd: 0, newSpendUsd: 0, runs: [],
+  };
+  const ctrl = new AbortController();
+  const cancel = () => ctrl.abort(input.signal?.reason ?? new Error('Dream aborted'));
+  if (input.signal?.aborted) cancel();
+  else input.signal?.addEventListener('abort', cancel, { once: true });
+  const signal = ctrl.signal;
+  const deadlineMs = now() + config.timeoutMs;
+  const timer = setTimeout(() => ctrl.abort(new Error('Dream cycle deadline exceeded')), config.timeoutMs);
   timer.unref?.();
-
-  let sources: DreamSourceSnapshot;
+  let packets: CapabilityPacket[] | undefined;
+  let history: DreamRun[] | undefined;
+  const account = async (run: DreamRun) => {
+    const spend = await deps.recordSpend(run);
+    if (spend.recorded) result.newSpendUsd += spend.costUsd;
+  };
+  const summarize = (run: DreamRun, replayed: boolean) => {
+    result.runs.push({ runId: run.runId, status: run.status, costUsd: run.costUsd, routedRef: run.routedRef, replayed });
+    result.costUsd += run.costUsd;
+    if (run.status === 'accepted') result.accepted++;
+    result.attempts++;
+    result.fired = true;
+  };
+  const proceed = async () => {
+    signal.throwIfAborted();
+    if (deps.canContinue && !(await deps.canContinue())) ctrl.abort(new Error('Dream paused'));
+    signal.throwIfAborted();
+  };
   try {
-    sources = await deps.loadSources();
-  } catch (error) {
-    clearTimeout(timer);
-    throw error;
-  }
-
-  const sample = deps.samplePair ?? sampleDreamPair;
-  const dream = deps.dream ?? runDreamPass;
-  const review = deps.review ?? runDreamReview;
-  const sink = deps.sink ?? sinkDreamInsight;
-  const dreamerModel = resolveDreamPassConfig(input.pass).model;
-  let remaining = [...sources.fragments];
-  let corpusPromise: Promise<CorpusEntry[]> | null = null;
-  let cycleSpend = 0;
-  let newSpend = 0;
-  let accepted = 0;
-  let reason: DreamCycleReason = 'completed';
-  const runs: DreamCycleRunSummary[] = [];
-
-  const account = async (run: DreamRun): Promise<void> => {
-    const result = await deps.recordSpend(run);
-    if (result.recorded) newSpend += result.costUsd;
-  };
-  const complete = async (input: FinalizeInput): Promise<DreamRun> => {
-    const run = await deps.finalizeRun(input);
-    await account(run);
-    return run;
-  };
-  const summarize = (run: DreamRun, replayed: boolean): void => {
-    runs.push({
-      runId: run.runId,
-      status: run.status,
-      costUsd: run.costUsd,
-      routedRef: run.routedRef,
-      replayed,
-    });
-  };
-
-  try {
-    for (let index = 0; index < config.maxDreamsPerCycle; index += 1) {
-      if (signal.aborted) {
-        reason = 'aborted';
-        break;
+    if (signal.aborted) { result.reason = 'aborted'; return result; }
+    const preflight = await deps.preflight();
+    if (!preflight.allow) {
+      result.reason = 'governor-refused'; result.governorReason = preflight.reason; return result;
+    }
+    if (config.maxCostUsd <= 0) { result.reason = 'cycle-cost-cap'; return result; }
+    for (let index = 0; index < config.maxDreamsPerCycle; index++) {
+      try { await proceed(); } catch { result.reason = 'aborted'; break; }
+      if (result.costUsd >= Math.min(config.maxCostUsd, preflight.cycleRemainingUsd)) {
+        result.reason = 'cycle-cost-cap'; break;
       }
-      if (cycleSpend >= config.maxCostUsd) {
-        reason = 'cycle-cost-cap';
-        break;
+      if (result.newSpendUsd >= preflight.rollingRemainingUsd) {
+        result.reason = 'rolling-cost-cap'; break;
       }
-      if (newSpend >= preflight.rollingRemainingUsd) {
-        reason = 'rolling-cost-cap';
-        break;
-      }
-
       const runId = dreamRunId(input.cycleId, index);
-      const begun = await deps.beginRun({ runId, cycleId: input.cycleId });
+      const begun = await deps.beginRun({ runId, cycleId: input.cycleId, capability: {
+        manifest: input.manifest, dreamerModel: pass.model, reviewerModel: reviewConfig.model,
+        dreamPromptVersion: CAPABILITY_DREAM_PROMPT_VERSION, reviewPromptVersion: CAPABILITY_REVIEW_VERSION,
+      } });
       if (begun.run.status !== 'running') {
-        await account(begun.run);
-        cycleSpend += begun.run.costUsd;
-        if (begun.run.status === 'accepted') accepted += 1;
-        summarize(begun.run, true);
-        remaining = withoutRefs(remaining, begun.run.fragmentRefs);
-        if (begun.run.status === 'no-pair') {
-          reason = 'no-pair';
-          break;
-        }
+        await account(begun.run); summarize(begun.run, true);
+        if (begun.run.status === 'no-pair') { result.reason = 'no-pair'; break; }
         continue;
       }
+      if (!begun.created) {
+        if (now() < Date.parse(begun.run.startedAt) + config.timeoutMs + 5000) {
+          result.reason = 'in-progress'; break;
+        }
+        // Never regenerate an uncertain call. A frozen accepted review may finish its idempotent sink.
+        if (begun.run.review?.verdict === 'accept' && dreamCapabilityRun(begun.run)?.sampling?.status === 'selected') {
+          const saved = dreamCapabilityRun(begun.run)!.sampling!;
+          if (saved.status === 'selected') {
+            const savedPackets = [saved.selection.a.packet, saved.selection.b.packet,
+              ...(saved.selection.c ? [saved.selection.c.entry.packet] : [])];
+            await proceed();
+            const sunk = await deps.sink(runId, savedPackets);
+            const run = await deps.finalizeRun({ runId, status: sunk.sunk ? 'accepted' : 'rejected',
+              error: sunk.sunk ? null : sunk.reason });
+            await account(run); summarize(run, true); continue;
+          }
+        }
+        const run = await deps.finalizeRun({ runId, status: 'error', error: 'Interrupted Dream; prior call reservations remain charged. No call was repeated.' });
+        await account(run); summarize(run, true); continue;
+      }
 
-      const sampleOptions: SampleDreamPairOptions = {
-        harness: input.potSlug,
-        now: deps.now ? deps.now() : Date.now(),
+      let outcome: Record<string, unknown> | undefined;
+      let latest = begun.run;
+      let stopped: DreamCycleReason | undefined;
+      const pending = new Set<Promise<unknown>>();
+      const phase = async <T>(callId: string, kind: DreamRunCall['phase'], model: string, reservedUsd: number,
+        execute: () => Promise<T>, usage: (value: T) => DreamPassUsage): Promise<T> => {
+        await proceed();
+        let admitted: Awaited<ReturnType<DreamCycleDeps['beginCall']>>;
+        try { admitted = await deps.beginCall({ runId, call: { callId, phase: kind, model, reservedUsd } }); }
+        catch (error) {
+          if (error instanceof DreamAdmissionError) stopped = error.reason;
+          throw error;
+        }
+        latest = admitted.run;
+        if (!admitted.started) throw new Error('Dream call already dispatched: ' + callId);
+        let value: T;
+        try { value = await abortable(execute, signal); }
+        catch (error) {
+          latest = await deps.settleCall({ runId, callId,
+            usage: reservedUsd === 0 ? { model, costUsd: 0, inputTokens: 0, outputTokens: 0 } : null,
+            error: error instanceof Error ? error.message : String(error) });
+          throw error;
+        }
+        latest = await deps.settleCall({ runId, callId, usage: usage(value) });
+        return value;
       };
-      if (input.sampler) sampleOptions.config = input.sampler;
-      if (deps.rng) sampleOptions.rng = deps.rng;
-      const pair = sample(remaining, sampleOptions);
-      if (!pair) {
-        const run = await complete({ runId, status: 'no-pair', outcome: { verdict: 'no-pair' } });
-        summarize(run, false);
-        reason = 'no-pair';
-        break;
-      }
-      await deps.recordSelection({ runId, pair, dreamerModel });
-      remaining = withoutRefs(remaining, [pair.anchor.ref, pair.partner.ref]);
-
-      let dreamUsage: DreamPassUsage | null = null;
-      let reviewUsage: DreamReviewUsage | null = null;
-      let outcome: Record<string, unknown> | null = null;
+      const local = <T>(callId: string, kind: DreamRunCall['phase'], execute: () => Promise<T>) =>
+        phase(callId, kind, 'local:' + kind, 0, execute,
+          () => ({ model: 'local:' + kind, costUsd: 0, inputTokens: 0, outputTokens: 0 }));
+      const llmFor = (kind: 'generation' | 'control-a' | 'control-b' | 'review'): ScoutLlmCall => (call) => {
+        const task = phase(kind, kind, call.model, (deps.estimateCall ?? estimateDreamCall)(call),
+          () => abortable(() => deps.llmCall({ ...call, retryDeadlineMs: deadlineMs }), call.signal ?? signal),
+          (r) => ({ model: call.model, costUsd: r.costUsd, inputTokens: r.inputTokens, outputTokens: r.outputTokens }));
+        pending.add(task);
+        void task.then(() => pending.delete(task), () => pending.delete(task));
+        return task;
+      };
+      const finish = async (value: FinalizeInput) => {
+        await Promise.allSettled([...pending]);
+        const run = await deps.finalizeRun(value);
+        await account(run); summarize(run, false);
+        history?.push(run);
+      };
       try {
-        const dreamed = await dream({
-          fragments: [pair.anchor, pair.partner],
-          llmCall: deps.llmCall,
-          config: input.pass,
-          signal,
-          cycleDeadlineMs: deadlineMs,
+        packets ??= await local('packet:catalogue', 'packet', () => deps.loadPackets(signal));
+        history ??= await local('retrieval:history', 'retrieval', deps.loadHistory);
+        const snapshot = await local('retrieval:snapshot', 'retrieval', () =>
+          (deps.buildSnapshot ?? buildCapabilitySamplingSnapshot)({
+            rootPath: input.rootPath, manifest: input.manifest, packets: packets!,
+            scope: { workspaceId: input.workspaceId, potSlug: input.potSlug, repositoryId: input.repositoryId },
+          }));
+        result.sources = { units: input.manifest.units.length, eligible: snapshot.eligible.length, exclusions: snapshot.exclusions };
+        const past = history.filter((r) => r.workspaceId === input.workspaceId && r.potSlug === input.potSlug)
+          .flatMap((r) => {
+            const saved = dreamCapabilityRun(r)?.sampling;
+            return saved?.status === 'selected' ? [{ selection: saved.selection, selectedAt: Date.parse(r.startedAt) }] : [];
+          });
+        const exposures: Record<string, number> = {};
+        for (const p of past) for (const entry of [p.selection.a, p.selection.b, ...(p.selection.c ? [p.selection.c.entry] : [])])
+          exposures[entry.packet.unit.id] = (exposures[entry.packet.unit.id] ?? 0) + 1;
+        const sampling = (deps.sample ?? sampleCapabilities)(snapshot, {
+          ...input.sampler, seed: runId, promptVersion: CAPABILITY_DREAM_PROMPT_VERSION, now: now(), exposures,
+          history: past.map((p) => ({ pairKey: p.selection.pairKey, selectedAt: p.selectedAt })),
         });
-        dreamUsage = dreamed.usage;
+        latest = await deps.recordSelection({ runId, capability: sampling });
+        if (sampling.status === 'no-pair') {
+          await finish({ runId, status: 'no-pair', outcome: { verdict: 'no-pair', reason: sampling.reason } });
+          result.reason = 'no-pair'; break;
+        }
+        const dreamed = await (deps.dream ?? runCapabilityDreamPass)({
+          selection: sampling.selection, llmCall: llmFor('generation'), config: pass, signal, cycleDeadlineMs: deadlineMs,
+        });
+        await Promise.allSettled([...pending]);
         outcome = record(dreamed);
-        if (dreamed.verdict === 'none') {
-          const run = await complete({ runId, status: 'abstained', dreamUsage, outcome });
-          cycleSpend += run.costUsd;
-          summarize(run, false);
+        if (dreamed.verdict !== 'insight') {
+          await finish({ runId, status: dreamed.verdict === 'none' ? 'abstained' : 'malformed', outcome,
+            error: dreamed.verdict === 'malformed' ? dreamed.error : null });
           continue;
         }
-        if (dreamed.verdict === 'malformed') {
-          const run = await complete({
-            runId,
-            status: 'malformed',
-            dreamUsage,
-            outcome,
-            error: dreamed.error,
-          });
-          cycleSpend += run.costUsd;
-          summarize(run, false);
-          continue;
+        const reviewed = await local('retrieval:review', 'retrieval', () =>
+          (deps.review ?? runCapabilityDreamReview)({
+            candidate: dreamed.insight.capability, selection: sampling.selection, rootPath: input.rootPath,
+            manifest: input.manifest, sources: deps.reviewSources(packets!), dreamerModel: pass.model,
+            llmCall: llmFor('review'), callForPhase: llmFor, config: reviewConfig, signal, cycleDeadlineMs: deadlineMs,
+          }, { verifyPacket: verifyCapabilityPacket,
+            rerank: (query, priors) => local('rerank', 'rerank', () => (deps.rerank ?? rerankCapabilityPriors)(query, priors)),
+          }));
+        await Promise.allSettled([...pending]);
+        latest = await deps.recordReview({ runId, outcome, review: record(reviewed) });
+        if (reviewed.verdict !== 'accept') {
+          await finish({ runId, status: reviewed.reason === 'duplicate' ? 'duplicate' : 'rejected' });
+        } else {
+          await proceed();
+          const sunk = await deps.sink(runId, packets);
+          if (!sunk.sunk) throw new Error('Reviewed Dream not sunk: ' + sunk.reason);
+          await finish({ runId, status: 'accepted' });
         }
-
-        corpusPromise ??= deps.readCorpus(sources.fragments);
-        const reviewed = await review({
-          insight: dreamed.insight,
-          fragments: [pair.anchor, pair.partner],
-          corpus: await corpusPromise,
-          dreamerModel: dreamed.usage.model,
-          llmCall: deps.llmCall,
-          config: input.review,
-          signal,
-          cycleDeadlineMs: deadlineMs,
-        });
-        reviewUsage = reviewed.usage;
-        if (reviewed.verdict === 'reject') {
-          const status: DreamRunTerminalStatus = reviewed.reason === 'duplicate' ? 'duplicate' : 'rejected';
-          const run = await complete({
-            runId,
-            status,
-            dreamUsage,
-            reviewUsage,
-            outcome,
-            review: record(reviewed),
-          });
-          cycleSpend += run.costUsd;
-          summarize(run, false);
-          continue;
-        }
-
-        const sunk: SinkDreamInsightResult = await sink({
-          dreamRunId: runId,
-          cycleId: input.cycleId,
-          harnessSlug: input.potSlug,
-          insight: dreamed.insight,
-          fragments: [pair.anchor, pair.partner],
-          review: reviewed,
-          workspaceId: input.workspaceId,
-          createdBy: 'system:dream-cycle',
-        });
-        if (!sunk.sunk) throw new Error(`accepted dream was not sunk: ${sunk.reason}`);
-        const run = await complete({
-          runId,
-          status: 'accepted',
-          dreamUsage,
-          reviewUsage,
-          outcome,
-          review: record(reviewed),
-          routedRef: sunk.routedRef,
-        });
-        accepted += 1;
-        cycleSpend += run.costUsd;
-        summarize(run, false);
       } catch (error) {
-        const run = await complete({
-          runId,
-          status: 'error',
-          dreamUsage,
-          reviewUsage,
-          outcome,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        cycleSpend += run.costUsd;
-        summarize(run, false);
-        if (signal.aborted) {
-          reason = 'aborted';
-          break;
-        }
+        // A sibling control can settle after the review aborts; drain its accounting first.
+        await Promise.allSettled([...pending]);
+        await finish({ runId, status: 'error', ...(latest.review ? {} : { outcome }),
+          error: error instanceof Error ? error.message : String(error) });
       }
+      if (signal.aborted) { result.reason = 'aborted'; break; }
+      if (stopped) { result.reason = stopped; break; }
     }
+    return result;
   } finally {
     clearTimeout(timer);
+    input.signal?.removeEventListener('abort', cancel);
   }
-
-  return {
-    fired: runs.length > 0,
-    reason,
-    cycleId: input.cycleId,
-    attempts: runs.length,
-    accepted,
-    costUsd: cycleSpend,
-    newSpendUsd: newSpend,
-    runs,
-    sources: sources.census,
-  };
 }

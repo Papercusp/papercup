@@ -138,6 +138,8 @@ export interface RunCapabilityReviewOptions {
   sources: CapabilityReviewSources;
   dreamerModel: string;
   llmCall: ScoutLlmCall;
+  /** Stable phase identities let the cycle admit and account each concurrent control separately. */
+  callForPhase?: (phase: 'control-a' | 'control-b' | 'review') => ScoutLlmCall;
   config?: Partial<DreamReviewConfig>;
   signal?: AbortSignal;
   cycleDeadlineMs?: number;
@@ -155,9 +157,14 @@ export interface CapabilityReviewDeps {
 }
 const defaultDeps: CapabilityReviewDeps = {
   verifyPacket: verifyCapabilityPacket,
-  rerank: async (query, priors) => {
+  rerank: rerankCapabilityPriors,
+};
+
+/** Dream uses the shared local cross-encoder; a configured hosted key cannot add unmetered spend. */
+export async function rerankCapabilityPriors(query: string, priors: CapabilityReviewPrior[]) {
     let outcome: RerankStageOutcome = { attempted: false, reason: 'no-outcome' };
     const ranked = await rerankRows(query, priors, {
+      engine: 'local',
       limit: 8,
       id: (p) => p.ref,
       text: (p) => p.text,
@@ -167,8 +174,7 @@ const defaultDeps: CapabilityReviewDeps = {
       },
     });
     return { priors: ranked, outcome };
-  },
-};
+}
 
 function sameScope(a: Scope, b: Scope): boolean {
   return a.workspaceId === b.workspaceId && a.potSlug === b.potSlug && a.repositoryId === b.repositoryId;
@@ -474,10 +480,10 @@ export async function runCapabilityDreamReview(
     return unavailable('search-unavailable', error instanceof Error ? error.message : String(error));
   }
 
-  async function call(phase: string, user: string): Promise<unknown> {
+  async function call(phase: 'control-a' | 'control-b' | 'review', user: string): Promise<unknown> {
     if (user.length > 120_000) throw new Error('Review evidence exceeds the bounded prompt budget.');
     const response = await callScoutPhaseLlm({
-      llmCall: options.llmCall,
+      llmCall: options.callForPhase?.(phase) ?? options.llmCall,
       phase,
       timeoutMs: config.timeoutMs,
       signal: options.signal,
@@ -488,7 +494,7 @@ export async function runCapabilityDreamReview(
         system: SYSTEM,
         messages: [{ role: 'user', content: user }],
         responseFormat: 'json',
-        maxTokens: phase.endsWith('-only') ? Math.min(config.maxOutputTokens, 1_024) : config.maxOutputTokens,
+        maxTokens: phase !== 'review' ? Math.min(config.maxOutputTokens, 1_024) : config.maxOutputTokens,
       },
     });
     result.usage.costUsd += response.costUsd;
@@ -503,7 +509,7 @@ export async function runCapabilityDreamReview(
     const controls = await Promise.allSettled(
       (['A', 'B'] as const).map(async (label) => {
         const payload = await call(
-          'dream-review-' + label + '-only',
+          label === 'A' ? 'control-a' : 'control-b',
           JSON.stringify({
             task:
               'Can the retained unit alone deliver the target behavior materially unchanged? The other primary is withheld. ' +
@@ -543,7 +549,7 @@ export async function runCapabilityDreamReview(
 
     const judgment = ReviewSchema.parse(
       await call(
-        'dream-review-skeptic',
+        'review',
         JSON.stringify({
           task:
             'Check each observed claim against code/tests; compare every closest prior by behavior, not naming or a similarity threshold. ' +

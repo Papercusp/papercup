@@ -8482,6 +8482,7 @@ impl App {
                 load_token,
                 summaries,
                 messages,
+                owner_turn_ids,
                 approvals,
             } => {
                 // A slow fetch from the previously selected pot must never
@@ -8513,6 +8514,7 @@ impl App {
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
                     self.chat_messages = messages;
+                    self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
                     self.pending_approvals = approvals;
                     self.chat_scroll = 0;
                 }
@@ -12723,6 +12725,7 @@ mod tests {
             load_token: stale_token,
             summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("stale")],
+            owner_turn_ids: Vec::new(),
             approvals: Vec::new(),
         });
         assert!(app.agent_chat_id.is_none());
@@ -12734,6 +12737,7 @@ mod tests {
             load_token: current_token,
             summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("current")],
+            owner_turn_ids: Vec::new(),
             approvals: Vec::new(),
         });
         assert_eq!(app.agent_chat_id.as_deref(), Some("current-chat"));
@@ -16365,6 +16369,45 @@ mod tests {
     }
 
     #[test]
+    fn su_receipt_and_native_echo_render_one_owner_turn_and_one_final_reply() {
+        for ack_first in [false, true] {
+            let mut app = composing("one draft");
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            app.set_su_session_binding(su_binding());
+            app.agent_chat_id = Some("chat-1".into());
+            let id = app.su_pending_turn.as_ref().unwrap().command_id.clone();
+            let turn_id = format!("pui-turn-{id}");
+            if ack_first {
+                app.acknowledge_su_turn(&id);
+            }
+            let mut owner = su_event_base("transcript", 1);
+            owner["phase"] = json!("completed");
+            owner["turnId"] = json!(turn_id);
+            owner["role"] = json!("owner");
+            owner["channel"] = json!("text");
+            owner["content"] = json!("one draft");
+            app.apply_su_session_event(su_event(owner));
+            if !ack_first {
+                app.acknowledge_su_turn(&id);
+            }
+            for (offset, phase) in ["started", "delta", "completed"].into_iter().enumerate() {
+                let mut reply = su_event_base("transcript", offset as u64 + 2);
+                reply["phase"] = json!(phase);
+                reply["turnId"] = json!(turn_id);
+                reply["role"] = json!("assistant");
+                reply["channel"] = json!("text");
+                if phase != "started" {
+                    reply["content"] = json!("one response");
+                }
+                app.apply_su_session_event(su_event(reply));
+            }
+            assert_eq!(app.chat_messages.len(), 2);
+            assert_eq!(app.chat_messages[0].content, "one draft");
+            assert_eq!(app.chat_messages[1].content, "one response");
+        }
+    }
+
+    #[test]
     fn fresh_su_session_carries_projected_mode_and_explicit_launch_context() {
         let mut a = composing("start the selected plan");
         a.set_operator_config(crate::models::OperatorConfig {
@@ -18675,6 +18718,7 @@ mod tests {
             load_token: a.chat_load_token,
             summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("wrong")],
+            owner_turn_ids: Vec::new(),
             approvals: Vec::new(),
         });
         assert!(a.agent_chat_id.is_none());
@@ -18685,6 +18729,7 @@ mod tests {
             load_token: a.chat_load_token,
             summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("persisted")],
+            owner_turn_ids: Vec::new(),
             approvals: Vec::new(),
         });
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat-a"));

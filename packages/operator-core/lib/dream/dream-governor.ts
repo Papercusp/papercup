@@ -15,6 +15,8 @@ import {
   type RegisterLearningLoopInput,
 } from '../learning-governor/store';
 import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { beginDreamRunCall, getDreamRun } from './dream-run-store';
+import { dreamCapabilityRun, type DreamRunCall } from './dream-run-provenance';
 
 export const DREAM_LOOP_ID_PREFIX = 'dream:';
 export const DREAM_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
@@ -97,11 +99,17 @@ export async function sumDreamSpendSince(
 ): Promise<{ totalUsd: number; loopCount: number }> {
   const rows = await sql<Array<{ total: number; loops: number }>>`
     SELECT COALESCE(SUM(cost_usd), 0)::float8 AS total,
-           COUNT(DISTINCT loop_id)::int AS loops
-      FROM harness_shared.learning_spend_events
-     WHERE workspace_id = ${input.workspaceId}
-       AND loop_id LIKE ${DREAM_LOOP_ID_PREFIX + '%'}
-       AND created_at >= ${new Date(input.sinceMs)}`;
+           COUNT(DISTINCT loop_id)::int AS loops FROM (
+      SELECT cost_usd, loop_id FROM harness_shared.learning_spend_events
+       WHERE workspace_id = ${input.workspaceId}
+         AND loop_id LIKE ${DREAM_LOOP_ID_PREFIX + '%'}
+         AND created_at >= ${new Date(input.sinceMs)}
+      UNION ALL
+      SELECT cost_usd, ${DREAM_LOOP_ID_PREFIX} || pot_slug AS loop_id
+        FROM harness_shared.dream_runs
+       WHERE workspace_id = ${input.workspaceId} AND spend_recorded_at IS NULL
+         AND (status = 'running' OR completed_at >= ${new Date(input.sinceMs)})
+    ) committed`;
   return { totalUsd: Number(rows[0]?.total ?? 0), loopCount: Number(rows[0]?.loops ?? 0) };
 }
 
@@ -172,6 +180,52 @@ export interface RecordDreamSpendResult {
   reason?: 'already-recorded' | 'zero-cost';
 }
 
+export class DreamAdmissionError extends Error {
+  constructor(public readonly reason: 'cycle-cost-cap' | 'rolling-cost-cap' | 'governor-refused') {
+    super('Dream phase admission refused: ' + reason);
+  }
+}
+
+/** Serialize admission across pots, then reserve in the EXISTING run ledger.
+ * No transaction or connection stays held during source/model work. The actual
+ * response can exceed its estimate; that cost is retained and stops later calls. */
+export async function admitDreamRunCall(
+  sql: Sql,
+  input: {
+    workspaceId: string;
+    potSlug: string;
+    runId: string;
+    config?: Partial<DreamCycleConfig>;
+    call: Pick<DreamRunCall, 'callId' | 'phase' | 'model' | 'reservedUsd'>;
+  },
+  deps: DreamGovernorDeps = defaultDeps,
+): ReturnType<typeof beginDreamRunCall> {
+  const config = resolveDreamCycleConfig(input.config);
+  if (!Number.isFinite(input.call.reservedUsd) || input.call.reservedUsd < 0)
+    throw new RangeError('Invalid Dream call reservation');
+  return await sql.begin(async (transaction) => {
+    const tx = transaction as unknown as Sql;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'dream-admission:' + input.workspaceId}, 0))`;
+    const run = await getDreamRun(tx, input);
+    if (!run || run.potSlug !== input.potSlug) throw new Error('Dream admission crosses run scope');
+    if (dreamCapabilityRun(run)?.calls.some((c) => c.callId === input.call.callId))
+      return beginDreamRunCall(tx, input);
+    const verdict = await preflightDreamCycle(tx, input, deps);
+    if (!verdict.allow) throw new DreamAdmissionError(
+      verdict.reason === 'rolling-cap-exceeded' ? 'rolling-cost-cap' : 'governor-refused',
+    );
+    const rows = await tx<Array<{ total: number }>>`
+      SELECT COALESCE(SUM(cost_usd), 0)::float8 AS total FROM harness_shared.dream_runs
+       WHERE workspace_id = ${input.workspaceId} AND cycle_id = ${run.cycleId}`;
+    const remaining = Math.min(config.maxCostUsd, verdict.cycleRemainingUsd) - Number(rows[0]?.total ?? 0);
+    if (remaining <= 0 || input.call.reservedUsd > remaining + 1e-9)
+      throw new DreamAdmissionError('cycle-cost-cap');
+    if (input.call.reservedUsd > verdict.rollingRemainingUsd + 1e-9)
+      throw new DreamAdmissionError('rolling-cost-cap');
+    return beginDreamRunCall(tx, input);
+  }) as Awaited<ReturnType<typeof beginDreamRunCall>>;
+}
+
 /**
  * Idempotently account one terminal dream.  The dream row is locked; event
  * insertion, registrant accumulation, and the replay fence commit together.
@@ -181,13 +235,14 @@ export async function recordDreamRunSpend(
   input: { workspaceId: string; runId: string; potSlug: string },
 ): Promise<RecordDreamSpendResult> {
   return sql.begin(async (tx) => {
-    const rows = await tx<Array<{ status: string; cost_usd: number; spend_recorded_at: Date | null }>>`
-      SELECT status, cost_usd, spend_recorded_at
+    const rows = await tx<Array<{ pot_slug: string; status: string; cost_usd: number; spend_recorded_at: Date | null }>>`
+      SELECT pot_slug, status, cost_usd, spend_recorded_at
         FROM harness_shared.dream_runs
        WHERE workspace_id = ${input.workspaceId} AND run_id = ${input.runId}
        FOR UPDATE`;
     const row = rows[0];
     if (!row) throw new Error(`dream governor: run not found ${input.workspaceId}/${input.runId}`);
+    if (row.pot_slug !== input.potSlug) throw new Error('Dream spend crosses run scope');
     if (row.status === 'running') throw new Error(`dream governor: run ${input.runId} is not terminal`);
     const costUsd = Number(row.cost_usd ?? 0);
     if (row.spend_recorded_at) return { recorded: false, costUsd, reason: 'already-recorded' };

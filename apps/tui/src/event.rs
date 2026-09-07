@@ -404,6 +404,7 @@ pub enum Event {
         load_token: u64,
         summaries: Vec<crate::agent_chats::AgentChatSummary>,
         messages: Vec<crate::models::ChatMessage>,
+        owner_turn_ids: Vec<String>,
         approvals: Vec<crate::models::PendingApproval>,
     },
     /// A parked historical HITL request was decided through the resolve POST.

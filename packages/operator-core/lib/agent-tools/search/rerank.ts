@@ -393,6 +393,8 @@ export async function rerankRows<T>(
   query: string,
   rows: readonly T[],
   opts: {
+    /** A caller with a local-compute budget must not silently dispatch a hosted paid reranker. */
+    engine?: 'auto' | 'local';
     /** How many rows to return. Pass `rows.length` to reorder without cutting. */
     limit: number;
     /** Stable identity for the pair cache / dedup inside the reranker. */
@@ -464,7 +466,9 @@ export async function rerankRows<T>(
   }
 
   try {
-    const resolved = await resolveProseRerankEngine();
+    const resolved = opts.engine === 'local'
+      ? (await localRerankEnabled()) ? { engine: 'local' as const, scorer: await localRerankScorer() } : null
+      : await resolveProseRerankEngine();
     // Local engine flagged off and no hosted key → the pre-P-007 dark seam.
     if (!resolved) {
       opts.onOutcome?.({ attempted: false, reason: 'no-engine' });

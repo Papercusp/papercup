@@ -158,6 +158,8 @@ pub struct AgentChat {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AgentChatTranscriptTurn {
+    #[serde(default)]
+    pub su_command: Option<Value>,
     pub role: String,
     pub content: String,
     pub ts: String,

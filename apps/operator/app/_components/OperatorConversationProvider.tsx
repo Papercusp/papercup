@@ -1858,10 +1858,20 @@ export function OperatorConversationProvider({
 
         if (turnHasContent) {
           const sayContent = parsed.say ?? "";
+          // EI-22620210089467846: a tool-only assistant turn has no visible
+          // <say> delta, so streamedAssistantId is still null here. Give that
+          // row an optimistic identity anyway. persistTurn can then replace
+          // it with the PG id + seq that OperatorChat requires before a
+          // chat:ask_choice card can submit its answer. Without an id the
+          // sync cursor advanced past the persisted row while the local card
+          // remained permanently seq-less (every click said "still saving").
+          const assistantMessageId =
+            streamedAssistantId ??
+            `opt-assistant-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
           const assistantMessage: ChatMessage = {
             role: "assistant",
             content: sayContent,
-            ...(streamedAssistantId ? { id: streamedAssistantId } : {}),
+            id: assistantMessageId,
           };
           if (collectedTools) assistantMessage.tools = collectedTools;
           if (streamedAssistantId) {
@@ -1907,7 +1917,7 @@ export function OperatorConversationProvider({
             "assistant",
             sayContent,
             isGlobalTarget && opts?.spokenReply ? "voice_tts" : "text_typed",
-            streamedAssistantId ?? undefined,
+            assistantMessageId,
             collectedTools,
             report,
           );

@@ -235,9 +235,21 @@ describe("OperatorConversationProvider streamed say projection", () => {
 
   it("backfills the persisted seq onto in-session messages so a streamed chat:ask_choice card is answerable without a reload (P-011)", async () => {
     const generationFn: GenerationFn = vi.fn(async () => ({
-      chunks: (async function* () {
-        yield "<say>Pick one of these.</say>";
-      })(),
+      // Exact regression shape: the model's entire response is the tool call,
+      // so there is no <say> delta to allocate a streamed assistant id first.
+      chunks: (async function* () {})(),
+      tools: [
+        {
+          name: "chat:ask_choice",
+          input: {
+            question: "Keep this change?",
+            options: [
+              { id: "keep", label: "Keep" },
+              { id: "drop", label: "Drop" },
+            ],
+          },
+        },
+      ],
     }));
 
     render(
@@ -262,6 +274,7 @@ describe("OperatorConversationProvider streamed say projection", () => {
       );
       expect(user).toHaveLength(1);
       expect(assistant).toHaveLength(1);
+      expect(assistant[0].textContent).toBe("");
       expect(Number(user[0].getAttribute("data-seq"))).toBeGreaterThanOrEqual(
         100,
       );

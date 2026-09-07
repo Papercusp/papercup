@@ -532,6 +532,8 @@ describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', ()
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       await pane.waitFor('Message — Enter send');
       expect(pane.screen()).toContain('Read');
+      expect(pane.screen().split('PUI exact Unicode draft')).toHaveLength(2);
+      expect(pane.screen().split(scriptedEngine.successText)).toHaveLength(2);
       expect(scriptedEngine.requests).toEqual([prompt]);
       const chat = await waitForSavedTurn(prompt);
       expect(chat.role).toBe('operator');
@@ -555,6 +557,8 @@ describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', ()
         reopened.write('o');
         await reopened.waitFor(prompt.trim(), { timeoutMs: 30_000 });
         await reopened.waitFor(scriptedEngine.successText);
+        expect(reopened.screen().split('PUI exact Unicode draft')).toHaveLength(2);
+        expect(reopened.screen().split(scriptedEngine.successText)).toHaveLength(2);
       } finally { await reopened.stop(); }
       console.info('PUI_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256,
         chatId: chat.id, exactText: scriptedEngine.requests[0], traffic: sessionTraffic }));
@@ -630,6 +634,7 @@ describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', ()
         pane.enter();
         await pane.waitFor('Delivery uncertain', { timeoutMs: 60_000 });
         expect(pane.screen()).toContain(`> ${prompt}`);
+        await pane.waitFor(scriptedEngine.successText);
         await vi.waitFor(() => expect(scriptedEngine.requests).toEqual([prompt]));
         const chat = await waitForSavedTurn(prompt);
         expect(chat.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);

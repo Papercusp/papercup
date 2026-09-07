@@ -1,52 +1,155 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "plan": "pui-first-party-public-release-2026-09-07",
   "planItem": "P-004",
   "workItem": "WI-10000426",
-  "status": "implementation-in-progress",
+  "status": "pty-passed-final-rust-and-audits-pending",
+  "verifiedAt": "2026-09-07T16:36:03.968459+00:00",
   "files": {
-    "apps/tui/src/app.rs": "797910ea28ee83f6fb0e5072f073297b128e034b31b9373e354ec520d10369f9",
-    "apps/tui/src/main.rs": "4c7590970c76ea30349c793d387a261c96dbb005c1441bf9363bced5a428f9ab",
-    "apps/tui/src/event.rs": "dda75b98c35f77637d5e19e082b7a3c9e709e9f0aff6b0cf19add3a679bafd6c",
-    "apps/tui/src/su_session.rs": "90848d78721fadc76701d922b073062d23a112f03923cf532ec797774d8dd201",
-    "apps/tui/src/ui.rs": "88b81767d18c314fde974be5cd74673b12c922bbf33b89bca6c41e9de1549e13",
+    "apps/tui/src/app.rs": "2c8d1d8b1d90e72455e9caf7429b73f441f019fe3ba9762ca039a3ac9a6d6fc5",
+    "apps/tui/src/main.rs": "b5b89d4b9ed4e131158ef58af39e63480656137104821c3be1764f9abb2b0f1b",
+    "apps/tui/src/event.rs": "bcf60f118110911cb49c29dd308c125a3b685367f73cefc89c1ef101a3ec0a26",
+    "apps/tui/src/su_session.rs": "b0bb5dccdece9c8eda4c0cd2ac227fb5194b696bcbeeaa77d700e35ce63fc46f",
+    "apps/tui/src/ui.rs": "8afb1f9b48fbf02c7d686c6c6851fdcc557e4440f8d2bed5f9aa0f560170fec0",
+    "apps/tui/src/client.rs": "0d9dbf95585cc8115e592240034d34db121c8137fbdae289ba44033d94648513",
+    "apps/tui/src/agent_chats.rs": "408b10083dc511be1c79b8ce14700fce55af11e75155cb6e4e6fe48861139122",
     "apps/tui/src/http.rs": "8e04bf63825998452e8924f0f840dfc70aa374c0bafd3028ecdead44e6262792",
-    "apps/tui/src/ipc.rs": "78a73ab88280751d66766d2f1601c21b34f266c28c01756602eb28c03465f49b"
+    "apps/tui/src/ipc.rs": "78a73ab88280751d66766d2f1601c21b34f266c28c01756602eb28c03465f49b",
+    "packages/operator-core/lib/su-session-host.ts": "b4fa229407b4d4243240dc52c08126b3890954fff750c349409356f813365bb5",
+    "packages/operator-core/lib/su-session-commands.ts": "f4a6990ce23928813a6efb29d0fc2c645c0ca73ece06d3339d3f933680eb6ea4",
+    "packages/operator-core/lib/su-session-claude-engine.ts": "4cc07116dba940dbf25854cb685f8baa22fcc845684d050ccbc8d489db4c337a",
+    "packages/operator-core/lib/su-session-attached-launch.ts": "4be06028dd4afe6b0aea28b1bf9a5714670bf0f652ca9daf8629bd2622a9541c",
+    "packages/operator-core/lib/endpoint-route/routes/agent-chats/su-session.ts": "7a7f0f9fc8a22a737092db82b8af7c6632715cb2de3ff58f79343c7aef4cfaeb",
+    "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts": "40dc63a010780d09466fa46a37e7c28fc70d88970a07166d043559e3ae247a66"
+  },
+  "fixtureFiles": {
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "41aef64ae852d85da0fa5ac28e597182a70d7f180dce14a43f171c3404795f6e",
+    "packages/operator-core/lib/pui-e2e/vt-screen.ts": "d535e450306a3926e6212e92af1b257d0f4c30dc446db6439885030c50df43e7",
+    "packages/operator-core/test/_org-test-db.ts": "30914cebac599a6f30981e112ffaac8d4495ba661cd108e5402cfa5d04d6b2be"
+  },
+  "adequacyCurrent": [
+    {
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "sourceFingerprint": "c4dbeac34efabfee4fa6ccb56b0f346f95c0c091418e6ceeff7153bcdbbaba80",
+      "testFingerprint": "41aef64ae852d85da0fa5ac28e597182a70d7f180dce14a43f171c3404795f6e",
+      "fixtureFingerprint": "f699c7344be3320a438a3a14a17824cc49329ffe301232f0a356bb38f0b91b1e",
+      "environmentFingerprint": "linux-x86_64:real-PTY-Hono-OrgTestDb:scripted-structured-engine:binary-993578d173e64a840c0785ab84f9e4e2c2da303559c6e3250d10cb3c508b2072"
+    },
+    {
+      "evidenceKind": "counterexample",
+      "evidenceRef": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts#fault-cases",
+      "sourceFingerprint": "c4dbeac34efabfee4fa6ccb56b0f346f95c0c091418e6ceeff7153bcdbbaba80",
+      "testFingerprint": "41aef64ae852d85da0fa5ac28e597182a70d7f180dce14a43f171c3404795f6e",
+      "fixtureFingerprint": "f699c7344be3320a438a3a14a17824cc49329ffe301232f0a356bb38f0b91b1e",
+      "environmentFingerprint": "linux-x86_64:real-PTY-Hono-OrgTestDb:scripted-structured-engine:binary-993578d173e64a840c0785ab84f9e4e2c2da303559c6e3250d10cb3c508b2072"
+    }
+  ],
+  "pty": {
+    "command": "node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+    "log": "/tmp/pui-p004-pty-final.log",
+    "passed": 8,
+    "failed": 0,
+    "skipped": 0,
+    "tests": [
+      {
+        "name": "first exact draft reaches the structured SU engine, streams tools/reply, and reopens",
+        "status": "passed"
+      },
+      {
+        "name": "interrupted startup retains the draft and retries without creating another chat",
+        "status": "passed"
+      },
+      {
+        "name": "engine startup exit releases input while preserving the exact unsent draft",
+        "status": "passed"
+      },
+      {
+        "name": "host refusal retains an editable draft and a ready retry commits it once",
+        "status": "passed"
+      },
+      {
+        "name": "lost-ack keeps the draft and retries the exact persisted command without a second execution",
+        "status": "passed"
+      },
+      {
+        "name": "wrong-command-ack keeps the draft and retries the exact persisted command without a second execution",
+        "status": "passed"
+      },
+      {
+        "name": "wrong-session-ack keeps the draft and retries the exact persisted command without a second execution",
+        "status": "passed"
+      },
+      {
+        "name": "canonical-identity mismatch fails quickly with an actionable visible error",
+        "status": "passed"
+      }
+    ],
+    "firstTurn": {
+      "binary": "/mnt/data/cargo-target/debug/pui",
+      "binarySha256": "993578d173e64a840c0785ab84f9e4e2c2da303559c6e3250d10cb3c508b2072",
+      "chatId": "4fb88d50-5600-40ed-a942-53aad61af822",
+      "exactText": "  PUI exact Unicode draft λ 雪  ",
+      "traffic": [
+        {
+          "method": "POST",
+          "path": "/api/adv/sessions/launch-su",
+          "status": 200,
+          "count": 1,
+          "agent": "claude",
+          "attachedEngine": true,
+          "transport": "structured",
+          "headless": false,
+          "deferred": false,
+          "advSessionId": 1,
+          "nativeSessionPresent": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/harness/papercusp/agent-chats/4fb88d50-5600-40ed-a942-53aad61af822/su-session",
+          "status": 200,
+          "count": 5
+        },
+        {
+          "method": "GET",
+          "path": "/api/harness/papercusp/agent-chats/4fb88d50-5600-40ed-a942-53aad61af822/su-session/events",
+          "status": 200,
+          "count": 2
+        },
+        {
+          "method": "POST",
+          "path": "/api/harness/papercusp/agent-chats/4fb88d50-5600-40ed-a942-53aad61af822/su-session/commands",
+          "status": 202,
+          "count": 1
+        }
+      ]
+    },
+    "resultLine": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=3c2b1cb764 uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-07T16:28:36.749Z skippedTests=0"
   },
   "implemented": [
-    "Exact composer text retained until matching command/session acknowledgement",
-    "Same wire command retained on unknown delivery; retry reuses commandId, timestamp, target and text",
-    "First turn requires attached executor plus usable stream; identity checks precede dispatch",
-    "Startup retry reuses existing agent-chat identity",
-    "Typed HTTP errors preserved through HTTP and IPC; known refusal vs unknown delivery remain distinct",
-    "Session/startup/stream/command failures release busy state and show retained draft",
-    "30-second startup stream and acknowledgement deadlines"
+    "Retain exact draft until matching host command/session ACK over HTTP or stream",
+    "Retry unknown delivery with the original command and reconcile host lifecycle on a replayed receipt",
+    "Consume shared SSE heartbeats before session replay",
+    "Scope async SU work to harness and selected-chat generation; validate bound native ID",
+    "Render rejected-draft retry guidance in the composer",
+    "Deduplicate ACK/native echo by owner turnId and replace final assistant content without duplicating deltas",
+    "Restore owner turnIds from persisted command receipts before stream replay",
+    "Preserve the typed operator identity mismatch diagnosis"
   ],
-  "verification": {
-    "rustUnit": {
-      "passed": 887,
-      "failed": 0,
-      "ignored": 17
-    },
-    "rustIntegration": {
-      "passed": 13,
-      "failed": 0
-    },
-    "clippy": "cargo clippy --all-targets -- -D warnings passed after final edit",
-    "liveIpc": "cargo test live_ipc_smoke -- --ignored --nocapture passed 1/1",
-    "commands": [
-      "cd apps/tui && ../../scripts/pc-heavy.sh cargo test -- --quiet",
-      "cd apps/tui && ../../scripts/pc-heavy.sh cargo clippy --all-targets -- -D warnings",
-      "cd apps/tui && ../../scripts/pc-heavy.sh cargo test live_ipc_smoke -- --ignored --nocapture"
-    ],
-    "scopeNote": "Full Cargo suite passed before a signature-only tuple grouping required by Clippy. Clippy and the live IPC test compiled the final files. No actual PTY acceptance result is claimed."
+  "limits": [
+    "Current-built PUI, real PTY, production Hono/bootstrap/host and real isolated migrated PG; only external engine protocol peer is scripted. P005 owns installed/live-provider acceptance.",
+    "Intermediate full PTY run failed7/8 and is preserved in /tmp/pui-p004-pty-all.log. Receipt-loss fixture had incorrectly filtered command instead of command_result; those failures did not prove lost receipt behavior until fixed.",
+    "Printed temporary Vitest JSON report was deleted by the test-file router; this artifact preserves the actual stdout outcomes and structured acceptance record.",
+    "Prior Rust890unit+13integrationpass17ignored and cleanClippy precede final UI/replay/transcript changes. Current full Rust exec49916 is queued in pc-heavy, log /tmp/pui-p004-rust-full.log; no final result claimed."
+  ],
+  "findings": {
+    "asyncIdentity": "EI-22619265790546745 done",
+    "heartbeat": "EI-22619471490748377 done",
+    "draftGuidance": "EI-22620231573194732 held, PTY now passes"
   },
   "remaining": [
-    "Actual PUI PTY composer send/ACK/reply/tool and no native UI action",
-    "Real PUI interrupted startup, refused acknowledgement and uncertain retry/draft retention",
-    "Review HTTP/stream ordering using production host and isolated PG",
-    "Exact revision6 R01/R02 evidence binding, adequacy cards and independent audits",
-    "P005 installed first-engine journey and all remaining plan items including full P016; P015 public publication approval gate"
-  ],
-  "reuse": "Use existing pui-e2e VtScreen/node-pty and production Hono/OrgTestDb fixture. Existing agent-chat-pty test uses the retired ModelPort fixture; adapt the engine boundary to the structured SU host."
+    "Final Cargo full suite and Clippy",
+    "Bind exact revision6 R01/R02 evidence, evaluate adequacy, emit cards and obtain independent audit",
+    "Complete P004, proceed P005 onward including fullP016; preserve explicitP015publicpublicationgate"
+  ]
 }
