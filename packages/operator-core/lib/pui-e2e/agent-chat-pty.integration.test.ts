@@ -27,16 +27,18 @@ import { promisify } from 'node:util';
 import { Session as InspectorSession } from 'node:inspector';
 import { performance } from 'node:perf_hooks';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
-import type { SuSessionCommand, SuSessionEvent, SuSessionToolEvent } from '@papercusp/chat-protocol';
+import type { SuRpcEngine } from '../su-session-rpc-engine';
+import type { SuSessionCommand, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
 
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
+  backend: process.env.PUI_REAL_BACKEND ?? 'claude',
   mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit',
   successText: 'PUI structured engine replied',
   requests: [] as string[],
-  engines: [] as ClaudeSuEngine[],
+  engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
   initialization: Promise.resolve(),
 }));
@@ -117,6 +119,18 @@ vi.mock('../su-session-claude-engine', async (original) => {
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
+
+vi.mock('../su-session-rpc-engine', async (original) => {
+  const actual = await original<typeof import('../su-session-rpc-engine')>();
+  return { ...actual, startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
+    const engine = actual.startSuRpcEngine(...args);
+    scriptedEngine.engines.push(engine);
+    void (async () => {
+      for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
+    })();
+    return engine;
+  } };
+});
 const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
 const OWNER = 'pui-agent-chat-e2e-owner';
@@ -480,6 +494,15 @@ async function openComposer(pane: PuiPane): Promise<void> {
   await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
   pane.escape();
   await pane.waitFor('i type · v speak');
+  if (scriptedEngine.real && scriptedEngine.backend !== 'claude') {
+    const selection = ['claude', 'codex', 'omp'].indexOf(scriptedEngine.backend);
+    if (selection < 0) throw new Error(`Unknown PUI_REAL_BACKEND: ${scriptedEngine.backend}`);
+    pane.write('b');
+    await pane.waitFor('Backend — Enter select');
+    pane.write('j'.repeat(selection));
+    pane.enter();
+    await pane.waitFor(`backend ${['Claude', 'Codex', 'OMP'][selection]}`);
+  }
   pane.write('i');
 }
 
@@ -540,6 +563,10 @@ beforeAll(async () => {
     'PAPERCUSP_HONO_PORT',
     'PAPERCUSP_OPERATOR_URL',
     'PAPERCUSP_MCP_PROXY_BASE',
+    'PAPERCUSP_SU_CODEX_HOMES_DIR',
+    'PAPERCUSP_SU_OMP_HOMES_DIR',
+    'PAPERCUSP_SESSION_CLAUDE_DIR',
+    'PAPERCUSP_SESSION_MCP_DIR',
   ];
   previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -552,7 +579,19 @@ beforeAll(async () => {
     PAPERCUSP_WORKSPACE_ID: WORKSPACE,
     PAPERCUSP_WORKSPACES_ROOT: path.join(home, '.papercusp-workspaces'),
     PAPERCUSP_SERVE_UI: '0',
+    PAPERCUSP_SU_CODEX_HOMES_DIR: path.join(home, 'native-codex'),
+    PAPERCUSP_SU_OMP_HOMES_DIR: path.join(home, 'native-omp'),
+    PAPERCUSP_SESSION_CLAUDE_DIR: path.join(home, 'native-claude'),
+    PAPERCUSP_SESSION_MCP_DIR: path.join(home, 'native-mcp'),
   });
+  // The org fixture reuses numeric ids. Resolve the actual writers' roots
+  // before any bootstrap so they cannot replace a real user's native home.
+  const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
+  const { ompAgentHomeForSessionKey } = await import('../session-transcript-resolvers');
+  for (const nativeHome of [codexHomeForSessionKey('isolation-check'),
+    sessionClaudeConfigDir('isolation-check'), ompAgentHomeForSessionKey('isolation-check')]) {
+    expect(path.relative(home, nativeHome).startsWith('..'), `native home escaped fixture: ${nativeHome}`).toBe(false);
+  }
 
   const dbOrg = await import('@papercusp/db-org');
   await dbOrg._resetForTests();
@@ -996,7 +1035,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   });
 });
 
-describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Claude engine', () => {
+describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifestPath = process.env.PUI_INSTALL_MANIFEST
       ?? path.join(process.env.HOME!, '.papercusp', 'pui-install.json');
@@ -1014,7 +1053,7 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
     const fileResult = `PUI-FILE-${randomUUID()}`;
     const fixturePath = path.join(home, `read-${nonce}.txt`);
     writeFileSync(fixturePath, fileResult + '\n');
-    const fileRequest = `Use the Read tool to inspect ${fixturePath}, then reply with its contents. Do not modify any file.`;
+    const fileRequest = `Use your file-reading tool to inspect ${fixturePath}, then reply with its contents. Do not modify any file.`;
     const longRequest = `For interruption check PUI-CANCELLED-${nonce}, count from 1 through 10000, one number per line. Do not summarize or use tools.`;
     const followupReply = `PUI-CONTINUED-${nonce}`;
     const followup = `Reply with exactly ${followupReply} and no other text. Do not resume the interrupted task.`;
@@ -1030,16 +1069,17 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       const engine = scriptedEngine.engines[0];
       expect(engine?.pid()).toBeGreaterThan(0);
       const identity = structuredClone(engine.adapter.host.descriptor().identity);
+      expect(identity.backend).toBe(scriptedEngine.backend);
 
       pane.write(fileRequest);
       pane.enter();
       await pane.waitFor(fileResult, { timeoutMs: 120_000 });
       await pane.waitFor('Message — Enter send', { timeoutMs: 120_000 });
-      expect(pane.screen()).toContain('Read');
       frames.file = pane.screen();
-      const readStart = scriptedEngine.events.find((event): event is SuSessionToolEvent<'claude'> & { phase: 'started' } => event.type === 'tool'
-        && event.phase === 'started' && event.name === 'Read' && JSON.stringify(event.input).includes(fixturePath));
+      const readStart = scriptedEngine.events.find((event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> => event.type === 'tool'
+        && event.phase === 'started' && JSON.stringify(event.input).includes(fixturePath));
       expect(readStart, 'the model must actually request the generated fixture').toBeDefined();
+      expect(pane.screen()).toContain(readStart!.name);
       const readEnd = scriptedEngine.events.find((event) => event.type === 'tool'
         && event.phase === 'completed' && event.callId === readStart?.callId
         && JSON.stringify(event.output).includes(fileResult));
@@ -1102,11 +1142,47 @@ describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Cl
       expect(processes.length).toBeGreaterThan(0);
       expect(processes.every((proc) => proc.tty === '?')).toBe(true);
       expect(processes.some((proc) => /zellij|tmux|xterm|gnome-terminal|konsole|wezterm|alacritty|kitty/.test(proc.name))).toBe(false);
+      // Lose the native process and its in-memory host, then reconnect using
+      // the installed PUI's conversation picker. This tests the production
+      // resume door; the Hono fixture itself remains in the same process.
+      const savedDescriptor = engine.adapter.host.descriptor();
+      await pane.stop();
+      await engine.close();
+      await engine.done;
+      engine.adapter.dispose();
+      await putViewState('Plans');
+      const resumedPane = new PuiPane(bin, operatorPort, home);
+      let resumedDescriptor;
+      const resumePrompt = 'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.';
+      const resumedReply = `RESUMED:${greetingReply}`;
+      try {
+        await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+        resumedPane.write('o');
+        await resumedPane.waitFor(followupReply, { timeoutMs: 60_000 });
+        resumedPane.escape();
+        resumedPane.write('l');
+        await resumedPane.waitFor('Conversation — Enter select');
+        resumedPane.enter();
+        await vi.waitFor(() => expect(scriptedEngine.engines).toHaveLength(2), { timeout: 120_000, interval: 100 });
+        const resumedEngine = scriptedEngine.engines[1];
+        await resumedEngine.ready;
+        resumedDescriptor = resumedEngine.adapter.host.descriptor();
+        expect(resumedDescriptor).toMatchObject({ identity, carry: savedDescriptor.carry,
+          modes: savedDescriptor.modes, accountRoute: savedDescriptor.accountRoute,
+          runtimeGeneration: savedDescriptor.runtimeGeneration + 1 });
+        resumedPane.write('i');
+        resumedPane.write(resumePrompt);
+        resumedPane.enter();
+        const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReply);
+        await resumedPane.waitForReply(resumedReply);
+        expect(resumedChat.id).toBe(firstChat.id);
+        frames.resumed = resumedPane.screen();
+      } finally { await resumedPane.stop(); }
       expect(namedQueryRequests).not.toContain('network.board');
       expect(pipelineCellRequests).toEqual([]);
       console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
-        greetingReply, fileResult, followupReply, readStart, readEnd,
+        greetingReply, fileResult, followupReply, resumedReply, resumedDescriptor, readStart, readEnd,
         commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
         initializeWarnings, optionalMemoryWarnings,
         assistantReplies: scriptedEngine.events.filter((event) => event.type === 'transcript'

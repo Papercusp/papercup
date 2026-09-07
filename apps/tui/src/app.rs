@@ -4307,6 +4307,25 @@ impl App {
         ));
     }
 
+    pub fn open_backend_picker(&mut self) {
+        use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
+        use crate::su_session::SuSessionBackend;
+        let bound = self.agent_chat_id.is_some() || self.su_session.is_some();
+        let options = [SuSessionBackend::Claude, SuSessionBackend::Codex, SuSessionBackend::Omp]
+            .into_iter()
+            .map(|backend| PickerOption {
+                id: backend.label().to_ascii_lowercase(),
+                label: backend.label().to_string(),
+                hint: Some(if bound {
+                    "This conversation keeps its saved backend. Open a new conversation to change it.".into()
+                } else {
+                    "Use this backend for the new SU session.".into()
+                }),
+                disabled: bound,
+            }).collect();
+        self.session_picker = Some(SessionPicker::new(PickerAxis::Backend, options));
+    }
+
     pub fn open_effort_picker(&mut self) {
         let levels = self
             .operator_config
@@ -4394,23 +4413,17 @@ impl App {
                                 .find(|chat| chat.id == chat_id)
                                 .map(|chat| chat.role.clone())
                                 .unwrap_or_else(|| "operator".to_string());
-                            // D-012: a chat whose SU-session inventory row is
-                            // reconciled `Attached` has a live binding to one
-                            // specific prior adv_session_id, so re-attach to
-                            // that session rather than re-loading the chat.
-                            // Every other reconciliation state (Pending /
-                            // RuntimeReplaced / EndedArchived / FailedOrphaned)
-                            // and every chat with no inventory row fall through
-                            // to the load path below: only `Attached` asserts a
-                            // reconciled, still-present runtime, and a wrong
-                            // attach is user-visible.
+                            // A saved native identity can reconnect through the
+                            // structured engine's lease even after its process
+                            // ended. Pending identities remain history-only.
                             let attach_target = self
                                 .su_session_inventory
                                 .iter()
                                 .find(|entry| {
                                     entry.agent_chat_id == chat_id
-                                        && entry.reconciliation
-                                            == crate::su_session::SuSessionReconciliation::Attached
+                                        && !matches!(entry.reconciliation,
+                                            crate::su_session::SuSessionReconciliation::Pending
+                                            | crate::su_session::SuSessionReconciliation::Rematerializing)
                                 })
                                 .map(|entry| (entry.adv_session_id, entry.backend));
                             if let Some((adv_session_id, backend)) = attach_target {
@@ -4471,6 +4484,16 @@ impl App {
                                 load_token: self.chat_load_token,
                             };
                         }
+                    }
+                    crate::session_config::PickerAxis::Backend => {
+                        self.su_backend = match id.as_str() {
+                            "claude" => Some(crate::su_session::SuSessionBackend::Claude),
+                            "codex" => Some(crate::su_session::SuSessionBackend::Codex),
+                            "omp" => Some(crate::su_session::SuSessionBackend::Omp),
+                            _ => None,
+                        };
+                        self.chat_model = None;
+                        self.session_note = Some(format!("next fresh SU session uses {label}"));
                     }
                     crate::session_config::PickerAxis::Model => {
                         self.chat_model = crate::session_config::model_pick(&id);
@@ -4540,12 +4563,13 @@ impl App {
         let effort = self.chat_effort.as_deref().unwrap_or("model/default");
         let account = self.chat_account.as_deref().unwrap_or("default");
         let mode = self.chat_mode.as_deref().unwrap_or("manual");
+        let selected_backend = self.su_backend.unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND).label();
         let backend = self
             .backend_identity_status()
             .unwrap_or_else(|| "backend loading".to_string());
         format!(
-            "pot {} · role {} · session {} · model {} · effort {} · account {} · mode {} · {}",
-            self.harness, self.agent_chat_role, session, model, effort, account, mode, backend
+            "pot {} · role {} · session {} · backend {} · model {} · effort {} · account {} · mode {} · {}",
+            self.harness, self.agent_chat_role, session, selected_backend, model, effort, account, mode, backend
         )
     }
 
@@ -9854,6 +9878,10 @@ impl App {
                 self.open_model_picker();
                 Action::Render
             }
+            KeyCode::Char('b') if self.tab == Tab::Operator => {
+                self.open_backend_picker();
+                Action::Render
+            }
             KeyCode::Char('e') if self.tab == Tab::Operator => {
                 self.open_effort_picker();
                 Action::Render
@@ -12209,18 +12237,10 @@ mod tests {
         assert!(a.session_picker.is_none());
     }
 
-    /// Falsifiability control for the test above: if the emitter ever stopped
-    /// gating on `Attached` and fired for any inventory row, this fails. Only
-    /// `Attached` asserts a reconciled, still-present runtime.
     #[test]
-    fn session_picker_loads_rather_than_attaches_for_every_non_attached_reconciliation() {
+    fn session_picker_loads_while_native_identity_is_pending_or_restoring() {
         use crate::su_session::SuSessionReconciliation as R;
-        for reconciliation in [
-            R::Pending,
-            R::RuntimeReplaced,
-            R::EndedArchived,
-            R::FailedOrphaned,
-        ] {
+        for reconciliation in [R::Pending, R::Rematerializing] {
             let mut a = App::new();
             a.agent_chat_summaries = vec![chat_summary_for("chat-x")];
             a.su_session_inventory = vec![inventory_row_for("chat-x", reconciliation)];
@@ -12229,6 +12249,36 @@ mod tests {
                 matches!(action, Action::LoadAgentChat { .. }),
                 "reconciliation {reconciliation:?} must NOT attach, got {action:?}"
             );
+        }
+    }
+
+    #[test]
+    fn session_picker_reconnects_stopped_native_sessions() {
+        use crate::su_session::SuSessionReconciliation as R;
+        for reconciliation in [R::RuntimeReplaced, R::EndedArchived, R::FailedOrphaned] {
+            let mut a = App::new();
+            a.agent_chat_summaries = vec![chat_summary_for("saved-chat")];
+            a.su_session_inventory = vec![inventory_row_for("saved-chat", reconciliation)];
+            assert!(matches!(select_session_option(&mut a, "chat:saved-chat"),
+                Action::AttachSuSession { adv_session_id: 42, .. }));
+        }
+    }
+
+    #[test]
+    fn backend_picker_selects_each_engine_and_keeps_saved_sessions_immutable() {
+        use crate::su_session::SuSessionBackend;
+        for (index, backend) in [SuSessionBackend::Claude, SuSessionBackend::Codex, SuSessionBackend::Omp].into_iter().enumerate() {
+            let mut a = App::new();
+            a.open_backend_picker();
+            a.session_picker.as_mut().unwrap().sel = index;
+            assert_eq!(a.commit_session_picker(), Action::Render);
+            assert_eq!(a.su_backend, Some(backend));
+            assert!(a.agent_chat_selection_label().contains(&format!("backend {}", backend.label())));
+            a.agent_chat_id = Some("saved-chat".into());
+            a.open_backend_picker();
+            assert!(a.session_picker.as_ref().unwrap().options.iter().all(|option| option.disabled));
+            a.commit_session_picker();
+            assert_eq!(a.su_backend, Some(backend));
         }
     }
 
