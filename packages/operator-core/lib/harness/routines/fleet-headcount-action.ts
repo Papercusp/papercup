@@ -1209,7 +1209,6 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         launchContext,
         composeMemberLaunchContext({
           fleetSlug,
-          plan: config.plan,
           count: attempt.target,
           carry: config.carry,
           customBriefText: config.brief,
@@ -1226,7 +1225,6 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       fleetSlug,
       agent: config.agent,
       harness: config.harness,
-      plan: config.plan,
       headless: config.headless,
       ownerId,
       workspace: workspaceId,
@@ -1248,7 +1246,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       agent: config.agent,
       workspaceId,
       harnessSlug: config.harness,
-      planSlug: config.plan,
+      // Governor members pull from the fleet claim spec. The persisted plan is
+      // the leader fleet's provenance, not a member launch lane; forwarding it
+      // transiently claims the parent plan item before scheduler:get_next runs.
+      planSlug: null,
       model: modelSpec,
       effort: modelEffortFromSpec(modelSpec),
       account: effectiveAccount,

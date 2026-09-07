@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -704,5 +705,47 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
       outcome: 'unverified',
       action: 'retry',
     });
+  });
+
+  it('does not forward the persisted plan to a governor refill member', async () => {
+    const config = {
+      ...baseConfig,
+      brief: 'Use only the fleet claim spec.',
+    };
+    mocks.listTargets.mockResolvedValue([grantedTarget(config)]);
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 1,
+      config,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    mocks.verify.mockImplementation(async (args: {
+      expectedOwnerIds: string[];
+      expectedAttestations?: Array<{ planSlug: string | null }>;
+    }) => {
+      expect(args.expectedAttestations).toEqual([
+        expect.objectContaining({ planSlug: null }),
+      ]);
+      return verifierResult(args.expectedOwnerIds[0]!, true);
+    });
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    const spawnArgs = mocks.spawnHeadless.mock.calls[0]?.[0];
+    expect(spawnArgs).toBeDefined();
+    expect(spawnArgs.envelope.greetingCmd).not.toContain('--plan=');
+    const launchContext = readFileSync(
+      '/tmp/fleet-headcount-action-test/launch-context/fleet-fleet-a-headcount-context.md',
+      'utf8',
+    );
+    expect(launchContext).toContain('draining your fleet claim-lane backlog');
+    expect(launchContext).not.toContain('working plan `plan-a`');
   });
 });
