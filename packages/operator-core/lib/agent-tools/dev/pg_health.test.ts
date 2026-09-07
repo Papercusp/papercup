@@ -15,6 +15,7 @@ vi.mock('../../dev-data', () => ({
 
 import {
   _resetStoreIdentityForTests,
+  beginAcquire,
   pinOrVerifyStoreIdentity,
   resetAcquireRegistryForTest,
 } from '@papercusp/db-org';
@@ -32,7 +33,7 @@ const run = (args: { localOnly?: boolean } = {}) =>
     handler: (a: unknown) => Promise<{ data: Record<string, any> }>;
   }).handler(args);
 
-const recordResult = (pool = 'org-app', queryId = 1) =>
+const recordResult = (pool = 'org-app', queryId = 1, status: 'ok' | 'error' = 'ok') =>
   recordPgResult(pool, {
     connectionId: 2,
     queryId,
@@ -42,7 +43,8 @@ const recordResult = (pool = 'org-app', queryId = 1) =>
     rowCount: 7,
     wireBytes: 2048,
     elapsedMs: 25,
-    status: 'ok',
+    status,
+    errorCode: status === 'error' ? '42P01' : null,
   });
 
 beforeEach(() => {
@@ -139,6 +141,38 @@ describe('dev:pg_health completed-result delivery', () => {
     const second = await run({ localOnly: true });
 
     expect(second.data.processDiagnostics.pools[0].results[0].rowCount).toBe(7);
+  });
+
+  it('bounds all selected pools and preserves terminal failure metadata', async () => {
+    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint']) {
+      for (let queryId = 1; queryId <= 6; queryId += 1) recordResult(pool, queryId, 'error');
+    }
+
+    const { data } = await run({ localOnly: true });
+    const pools = data.processDiagnostics.pools;
+
+    expect(pools).toHaveLength(3);
+    for (const pool of pools) {
+      expect(pool).toMatchObject({ totalRecorded: 6, dropped: 0, retained: 6, omittedRetained: 2 });
+      expect(pool.results).toHaveLength(4);
+      expect(pool.results[3]).toMatchObject({ queryId: 6, status: 'error', errorCode: '42p01' });
+    }
+  });
+
+  it('does not treat an acquired connection as a completed-query observation', async () => {
+    const acquisition = beginAcquire('org-app');
+    acquisition.acquired();
+    try {
+      const { data } = await run({ localOnly: true });
+
+      expect(data.processDiagnostics.pools[0]).toMatchObject({
+        observed: false,
+        totalRecorded: 0,
+        results: [],
+      });
+    } finally {
+      acquisition.release();
+    }
   });
 
   it('preserves store-identity warnings on the query-free path', async () => {

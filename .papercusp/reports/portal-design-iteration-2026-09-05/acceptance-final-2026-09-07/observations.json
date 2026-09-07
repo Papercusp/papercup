@@ -4071,6 +4071,2273 @@
       "result": "unknown",
       "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
       "pageErrors": []
+    },
+    {
+      "slot": "testing/dark/1440x900",
+      "surface": "testing",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=testing&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=testing&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Tests\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 28 THINKING\n672 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nTests is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "testing--dark--1440x900.png",
+      "captureSha256": "e6aa777dd3c970ef82424422c6d93bc26c637edd5e49c8e07de266991c3dbb12",
+      "capturedAt": "2026-09-07T03:22:44.352Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "create/dark/1440x900",
+      "surface": "create",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=create&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=create&accountsPane=false&chatPane=false&scope=all&plan=calendar-meeting-prep",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Create\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 29 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nPOT\nOwner\nSmart order\nallmineothers'\nallone-timetriggered\ntoday\n7 days\n30 days\nneeds human\nactionable\nscout\nscheduled\nlegacy\narchived\nDraft\n121\nReady\n322\nRunning\n2\nAwaiting acceptance\n209\nShipped\n738\nSuperseded\n375\n\nDrag started plans to set their priority\n\n⠿\nGOAL mode hardening — pot rename, contract rewrite, goal provenance, per-goal launch settings, TEST mode\nPause\nPAPERCUSP\nACTIVE\n9d\nedited by\n⚙\nsu-776ce3cc\n5 blocked\n5 todo\n11 done\nNEXT\nThe plan's WORK is drained; nothing inside it is open. What remains is the SHIP step and one external follow-up. (1) SHIP IS BLOCKED, DELIBERATELY — do not force it. Plan frontmatter is still status:active. This repo now requires a graded acceptance rubric before 'shipped' (aut…\n⠿\nAlign the psu tool seed with the prom",
+        "dialogs": []
+      },
+      "capturePath": "create--dark--1440x900.png",
+      "captureSha256": "9b8a092821018d1f327055b2c6cd4f83a03999f6f1a7834ca9dc0f9b39883217",
+      "capturedAt": "2026-09-07T03:22:47.526Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "scheduled/dark/1440x900",
+      "surface": "scheduled",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=scheduled&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=scheduled&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Scheduled\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 29 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\n\nSCHEDULED PLANS\n\nCalendar\n0\nin view\n0\narmed\nSchedule\nlast run ok\nlast run failed\npartial\npaused\nitalic = one-shot\n0 scheduled\n0 active\nNo routines scheduled in the next 30 days.\nToday\nSeptember 2026\nMonth\nWeek\nDay\nMon\n\t\nTue\n\t\nWed\n\t\nThu\n\t\nFri\n\t\nSat\n\t\nSun\n\n\n31\n\t\n1\n\t\n2\n\t\n3\n\t\n4\n\t\n5\n\t\n6\n\n\n7\n\t\n8\n\t\n9\n\t\n10\n\t\n11\n\t\n12\n\t\n13\n\n\n14\n\t\n15\n\t\n16\n\t\n17\n\t\n18\n\t\n19\n\t\n20\n\n\n21\n\t\n22\n\t\n23\n\t\n24\n\t\n25\n\t\n26\n\t\n27\n\n\n28\n\t\n29\n\t\n30\n\t\n1\n\t\n2\n\t\n3\n\t\n4\n\n\n5\n\t\n6\n\t\n7\n\t\n8\n\t\n9\n\t\n10\n\t\n11",
+        "dialogs": []
+      },
+      "capturePath": "scheduled--dark--1440x900.png",
+      "captureSha256": "620484a0931df5ae140da3ee8ec745065101db2e7799515f771042ae82869253",
+      "capturedAt": "2026-09-07T03:22:50.800Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "frames/dark/1440x900",
+      "surface": "frames",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=frames&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=frames&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Frames\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 29 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\nFLEET LIVE VIEW\n1 local desktop\nabar-clause5-proof\n:110\nXVFB-LOCAL",
+        "dialogs": []
+      },
+      "capturePath": "frames--dark--1440x900.png",
+      "captureSha256": "da8b1db7d5957249ecd55c273c61c2f4accafc0ca5c8f3496e64430aa24729a2",
+      "capturedAt": "2026-09-07T03:22:54.141Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "evals/dark/1440x900",
+      "surface": "evals",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=evals&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=evals&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Evaluation\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 29 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\nEvaluation\n\nThe impartial benchmark suite — public third-party tasks, graded by each benchmark’s official external grader, run across four arms held to the same model, task set, and cost axis. This is the honest systems claim: holding the model constant, how much does the Papercusp harness add, and at what cost? (The self-referential internal evals — gym, IQ-battery, pot-eval — live under Learning.)\n\nPapercusp\nA · ablation\nB · native\nC · best-of-N\nLaunch\nrun a benchmark\nExternal benchmarks\npublic · graded fairly\nThroughput\nfleet speedup · $/task\nValue\n$ captured / budget\nCoordination\nMAST failure rates\nInternal trends\nscore over time\nReport\nheadline + deltas\nPreserved runs\nreal graded runs\nCompare\narm vs arm\nSUITE\nagentsnet\n\nLaunch a managed SWE-bench Pro run with th",
+        "dialogs": []
+      },
+      "capturePath": "evals--dark--1440x900.png",
+      "captureSha256": "458a0842df824dfc1510afcaa1129963f12dd0457c7ae5afb9e816463bf49570",
+      "capturedAt": "2026-09-07T03:22:57.355Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "coord/dark/1440x900",
+      "surface": "coord",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=coord&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=coord&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Coordination\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 28 THINKING\n673 PROCESSES\nStart voice chat\nDownload TUI\n87\nCoordination\n\nAgent coordination surface — presence, the human inbox, plans, and the event history. Backed by coord/* + plans/*.\n\nSessions\nInbox\nPlans\nHistory\nActive (0)\n\nNo active agent sessions.",
+        "dialogs": []
+      },
+      "capturePath": "coord--dark--1440x900.png",
+      "captureSha256": "66668801fba50348ddc42be85e77e8276271e36b4d03bbb188f90265dee86f2e",
+      "capturedAt": "2026-09-07T03:23:00.554Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "accounts/dark/1440x900",
+      "surface": "accounts",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 995.203125,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 995,
+        "surfaceScrollWidth": 995,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 28 THINKING\n673 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "accounts--dark--1440x900.png",
+      "captureSha256": "6ba100d0635091e5d3c15c60be6ff00f77a7efff5486c6d9b0d35c20dd4b2b1b",
+      "capturedAt": "2026-09-07T03:23:03.775Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "papercup-chat/dark/1440x900",
+      "surface": "papercup-chat",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 937.609375,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 938,
+        "surfaceScrollWidth": 938,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\nStart voice chat\nDownload TUI\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n—\n\nunread conversations\n\nInbox: no unread conversations count available. Open Inbox.\nTODAY\n—\n\nevents today\n\nToday: no events today count available. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nCouldn’t read the calendar just now.\n\nOpen Calendar\nNOTIFICATIONS\n\nYour notifications could not be loaded.",
+        "dialogs": []
+      },
+      "capturePath": "papercup-chat--dark--1440x900.png",
+      "captureSha256": "a8b16eee7cc5c85cf6c40630e7084a24325873c02026cbef98b53dc433848182",
+      "capturedAt": "2026-09-07T03:23:06.959Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "chat-history/dark/1440x900",
+      "surface": "chat-history",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 0,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 0,
+        "surfaceScrollWidth": 0,
+        "documentOverflow": false,
+        "mainText": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nChat history\n\nNo sessions yet. Ask Papercup a question and your conversation will appear here.\n\nPapercup Chat\nChat history\n\nPapercup answers here with full access to this machine — it can read and change files and run commands, with no confirmation step. Only its attached research tools (capability:*, tasks:ops, tasks:todo_write, tasks:update_plan, chat:ask_choice, voice:delegate_deep) are listed below; native file and shell activity is not itemised.\n\nAsk a question to start.\n\nSend",
+        "dialogs": []
+      },
+      "capturePath": "chat-history--dark--1440x900.png",
+      "captureSha256": "4a645c59ad3b6c28299b2fa6585ce7a4e82dc4f0792fc115ebe80ea514176275",
+      "capturedAt": "2026-09-07T03:23:10.158Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "notifications/dark/1440x900",
+      "surface": "notifications",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=notifications",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=notifications",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 17 THINKING\n673 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": [
+          {
+            "label": "Notification center",
+            "text": "Notification centerRecentUnread (87)mail18d ago[Papercusp/papercup] Run failed: Test - main (7caaed6)papercupai <notifications@github.com> — [Papercusp/papercup] Test workflow run "
+          }
+        ]
+      },
+      "capturePath": "notifications--dark--1440x900.png",
+      "captureSha256": "163de34f06e8020063b6f2205f7b3f64f0b218f8687d0ddebb5eec5e200642e2",
+      "capturedAt": "2026-09-07T03:23:13.383Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "launcher/dark/1440x900",
+      "surface": "launcher",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=launcher",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=launcher",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 17 THINKING\n673 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": [
+          {
+            "label": "App launcher",
+            "text": "App launcherHomeIn shellMailIn shellCalendarIn shellPhoneIn shellDesktopsEmbeddedPlansEmbeddedInboxEmbeddedWorkspacesIn shellBrainstormEmbeddedOverviewEmbeddedHUDEmbeddedWorkEmbedd"
+          }
+        ]
+      },
+      "capturePath": "launcher--dark--1440x900.png",
+      "captureSha256": "7ab5702aa1ccef82a959b9d81a1468a239cb282ba72b954413afb873726af5d5",
+      "capturedAt": "2026-09-07T03:23:16.602Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "agent-roster/dark/1440x900",
+      "surface": "agent-roster",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=agents",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=agents",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 18 THINKING\n☕ brain\n🫖 overwatch\n🍵 contributor\n🥤 operator\n📋 planner\n🛠 su\n▾\nbyoc-alpha-ship-2026-09-05\n(1)\n42s\n🛠\nsu · su-db4b0\nContinue P-018: build, sign, publish, and independently verify exact-source r30 before bootstrapping R7 and submitting one fresh initialize-r30 operation; keep READY unfired through acceptance.\n▾\nmain-green-reds-2026-09-05\n(1)\n4s\n🛠\nsu · su-c5e15\nContinue P-004 by completing WI-2145418: inspect the four reachability-red modules and August 27 decisions/history, wire or retire them correctly, and drive lint:guard-reachability green before resuming the canonical test recovery.\n▾\nnonp2p-bug-drain-luna-max-50\n(17)\n17s\n🛠\nsu · su-03251\nResume EI-22365043549794437 after compaction: re-check the item and current staging tree, preserve completed work, leave loop-deps.ts unchanged, then acquire manual",
+        "dialogs": [
+          {
+            "label": "Agent roster",
+            "text": "\n      .pc-agents-roster { font-size: 12px; display: flex; flex-direction: column; min-height: 0; }\n      .pc-agents-roster__tabs { display: flex; gap: 2px; padding: 4px 6px 0; fle"
+          }
+        ]
+      },
+      "capturePath": "agent-roster--dark--1440x900.png",
+      "captureSha256": "8d76d9ff36c7e20a8b89251ddfa5cb03cca0c17125f8682cc46bd75b0a4fe3a3",
+      "capturedAt": "2026-09-07T03:23:19.811Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "processes/dark/1440x900",
+      "surface": "processes",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=processes",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=processes",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 1264,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 1264,
+        "surfaceScrollWidth": 1264,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 18 THINKING\n676 PROCESSES\nMEMORY\n16.3 GB\nCPU\n…\nENROLLED\n112\nSCANNED\n670\nSTRANDED\n0\nUNACCOUNTED\n3\n\nEnrolled counts tasks; Scanned counts processes. One task holds many processes — these are different units, not a coverage ratio.\n\n3 unaccounted cgroups\nRunning with no live ledger row. The cgroup path distinguishes a managed scope from a process outside every task scope; inspect that provenance before attributing the cause.\n◆\nAGENT-SESSION\n(94)\n13m\nheadless member: nonp2p-bug-drain-luna-max-50 · governor member 3/3 (nonp2p-bug-drain-2026-08-08)\nsu-1e71fc41-1940-41f4-aed9-4e06831cde81\n338 MB\n172\nkill\n13m\nheadless member: nonp2p-bug-drain-luna-max-50 · governor member 2/3 (nonp2p-bug-drain-2026-08-08)\nsu-1e71fc41-1940-41f4-aed9-4e06831cde81\n340 MB\n172\nkill\n13m\nheadless member: nonp2p-bug-drain-luna-max-50 · governor member 1",
+        "dialogs": [
+          {
+            "label": "Process manager",
+            "text": "Memory16.3 GBCPU…Enrolled112Scanned670Stranded0Unaccounted3Enrolled counts tasks; Scanned counts processes. One task holds many processes — these are different units, not a coverag"
+          }
+        ]
+      },
+      "capturePath": "processes--dark--1440x900.png",
+      "captureSha256": "52bd3002c5bc2c1b61fab2718a55fe07dee757cc6d5018d5ede5e694beb53059",
+      "capturedAt": "2026-09-07T03:23:23.038Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "home/dark/1440x900/docks-expanded",
+      "surface": "home",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 668.8125,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 669,
+        "surfaceScrollWidth": 669,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 20 THINKING\n676 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "home--dark--1440x900--docks-expanded.png",
+      "captureSha256": "7b2f1a9f37534b92e584dc707012cf41e5387e54432e0c87912e47ae5fefd78c",
+      "capturedAt": "2026-09-07T03:23:26.278Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "mail/dark/1440x900/docks-expanded",
+      "surface": "mail",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=mail&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=mail&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 668.8125,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 669,
+        "surfaceScrollWidth": 669,
+        "documentOverflow": false,
+        "mainText": "Mail\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 20 THINKING\n676 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\n\nMAIL\n\nInbox\nAccount view\nAll accounts · 87 unread\nUnknown mailbox · 200 threads · 87 unread\nIdentity stays visible on every thread.\nThe Google Workspace Team <workspace-noreply@google.com>\n7/25/2026\n Welcome to Google Workspace\nDo your best work with better tools.\nUnknown mailbox\n1 message\nUnread\nUpdates\nThe Google Workspace Team <workspace-noreply@google.com>\n7/26/2026\n Set up Google Workspace for papercusp.com\nGoogle Workspace is ready for you Set up your Google Workspace account to start using business email, video conferencing, cloud storage, file sharing, and more. Get started Before using Google\nUnknown mailbox\n1 message\nUnread\nUpdates\nThe Google Workspace Team <workspace-noreply@google.com>\n7/28/2026\n Your r",
+        "dialogs": []
+      },
+      "capturePath": "mail--dark--1440x900--docks-expanded.png",
+      "captureSha256": "2a7d99f91b9353c5a49ad78ddec00f71bb8b8abfbdfaf010d22a8c1949b27ed1",
+      "capturedAt": "2026-09-07T03:23:29.515Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "calendar/dark/1440x900/docks-expanded",
+      "surface": "calendar",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=calendar&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=calendar&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 668.8125,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 669,
+        "surfaceScrollWidth": 669,
+        "documentOverflow": false,
+        "mainText": "Calendar\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n679 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nToday\nSeptember 2026\nMonth\nWeek\nDay\nAgenda\nRead-only\n\nMONTH\n\n1 event\n\nSynced 7d ago · google-calendar\n\nSUN\nMON\nTUE\nWED\nTHU\nFRI\nSAT\n30\n2:22 AM grader latency probe\n31\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10",
+        "dialogs": []
+      },
+      "capturePath": "calendar--dark--1440x900--docks-expanded.png",
+      "captureSha256": "63c1511d3e49e0e78ca639bf1e28bfe42395fa4524a2fa3a1e704cdb7ae87bee",
+      "capturedAt": "2026-09-07T03:23:32.781Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "phone/dark/1440x900/docks-expanded",
+      "surface": "phone",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=phone&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=phone&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 668.8125,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 669,
+        "surfaceScrollWidth": 669,
+        "documentOverflow": false,
+        "mainText": "Phone\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n680 PROCESSES\nStart voice chat\nDownload TUI\n87\nCall\nRecents\n50\nVoicemail\nScheduled\nPhone\n\nConnects over your microphone — no phone number needed.\n\nCall assistant\nSimulate an incoming call\n\nRings your assistant from an unknown caller so you can try screening. The same path a carrier call will take.\n\nLIVE TRANSCRIPT\n\nThe transcript appears here as you speak.",
+        "dialogs": []
+      },
+      "capturePath": "phone--dark--1440x900--docks-expanded.png",
+      "captureSha256": "652d83c1e7457994db859009018579cdd670af9e299c584097d40a522eb69dce",
+      "capturedAt": "2026-09-07T03:23:35.989Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "workspaces/dark/1440x900/docks-expanded",
+      "surface": "workspaces",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "url": "http://127.0.0.1:3081/?app=workspaces&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=workspaces&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "surfaceWidth": 668.8125,
+        "pageWidth": 1440,
+        "surfaceClientWidth": 669,
+        "surfaceScrollWidth": 669,
+        "documentOverflow": false,
+        "mainText": "Workspaces\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n666 PROCESSES\nStart voice chat\nDownload TUI\n87\nProvider\nAll providers\ngcp\nConnect a provider\nProvision a workspace\nProviders\nBYOC bounded canary\ngcp\nINVALID\nGCP ADC/Compute validation failed\nBYOC Canary GCP\ngcp\nCONNECTED\nbyoc-p018-20260905\ngcp\nCONNECTED\nYour workspaces\n\nNo health checks have been recorded for these workspaces, so none of the states below are health-verified.\n\np018-canary-20260905-r7\ngcp · us-central1\nRUNNING → PROVISIONING\ninitialize\nFAILED\nStarted 2026-09-07T01:38:02.517Z\nFinished 2026-09-07T01:40:17.560Z\nWorkspace host initialization failed after 5/6 steps\nOpen desktop\nStop\nRestart\nSnapshot\nRestore\np018-canary-20260905-r6\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T05:38:18.163Z\nFinished 2026-09-05T05:41:43.792Z\nWorkspace-host discard teardown and evidence census completed\nOpe",
+        "dialogs": []
+      },
+      "capturePath": "workspaces--dark--1440x900--docks-expanded.png",
+      "captureSha256": "6e19428f99729a301968ed74bb9d14a13b855a39d50e4af49db68b3c4c1fda1e",
+      "capturedAt": "2026-09-07T03:23:39.245Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "home/dark/1280x800",
+      "surface": "home",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n666 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "home--dark--1280x800.png",
+      "captureSha256": "52b99a4599ffd651c8cefa1ff0f13a23c75ac1d91c61c3dcecc206dad7469752",
+      "capturedAt": "2026-09-07T03:23:42.560Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "mail/dark/1280x800",
+      "surface": "mail",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=mail&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=mail&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mail\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n669 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPapercusp Email\nInbox\nDrafts\n0\nAutomation\nDraft-only by default\n\nMAIL\n\nInbox\nAccount view\nAll accounts · 87 unread\nUnknown mailbox · 200 threads · 87 unread\nIdentity stays visible on every thread.\nThe Google Workspace Team <workspace-noreply@google.com>\n7/25/2026\n Welcome to Google Workspace\nDo your best work with better tools.\nUnknown mailbox\n1 message\nUnread\nUpdates\nThe Google Workspace Team <workspace-noreply@google.com>\n7/26/2026\n Set up Google Workspace for papercusp.com\nGoogle Workspace is ready for you Set up your Google Workspace account to start using business email, video conferencing, cloud storage, file sharing, and more. Get started Before using Google\nUnknown mailbox\n1 message\nUnread\nUpdates\nThe Google",
+        "dialogs": []
+      },
+      "capturePath": "mail--dark--1280x800.png",
+      "captureSha256": "475db9a3622bfa560860ed601a73d1b44205238ed3316cdab6f0382f2e377e60",
+      "capturedAt": "2026-09-07T03:23:45.783Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "calendar/dark/1280x800",
+      "surface": "calendar",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=calendar&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=calendar&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Calendar\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n669 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nToday\nSeptember 2026\nMonth\nWeek\nDay\nAgenda\nRead-only\n\nMONTH\n\n1 event\n\nSynced 7d ago · google-calendar\n\nSUN\nMON\nTUE\nWED\nTHU\nFRI\nSAT\n30\n2:22 AM grader latency probe\n31\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n\nPAPERCUSP CALENDAR\n\nSelect an event\n\nInspect, edit, search, or prepare for a meeting from the same web and desktop workspace.",
+        "dialogs": []
+      },
+      "capturePath": "calendar--dark--1280x800.png",
+      "captureSha256": "070e106e9cfdfb4a398e2484a801d1992aed706b74d68f9e006ecb1b7b36fe8e",
+      "capturedAt": "2026-09-07T03:23:48.971Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "phone/dark/1280x800",
+      "surface": "phone",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=phone&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=phone&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Phone\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nPhone\nCall\nRecents\n50\nVoicemail\nScheduled\nTalk to your assistant, live.\nPhone\n\nConnects over your microphone — no phone number needed.\n\nCall assistant\nSimulate an incoming call\n\nRings your assistant from an unknown caller so you can try screening. The same path a carrier call will take.\n\nLIVE TRANSCRIPT\n\nThe transcript appears here as you speak.",
+        "dialogs": []
+      },
+      "capturePath": "phone--dark--1280x800.png",
+      "captureSha256": "9431ede39ffe3ac0c0d5df259b575de8aede25d0f7353b2de07da3998f1bde6e",
+      "capturedAt": "2026-09-07T03:23:52.166Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "desktops/dark/1280x800",
+      "surface": "desktops",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=desktops&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=desktops&accountsPane=false&chatPane=false&step=operate&tab=desktops&connection=byoc-canary-gcp",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Desktops\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\n\nLOCAL BYOC CONTROL PLANE\n\nCloud Workspaces\n\nProvision and operate durable Papercusp hosts in infrastructure you control. Desired state and observed state stay separate so drift is visible instead of guessed away.\n\nRefresh\nLive control state\n\n03\nOPERATE\n\nManaged workspaces\n\nActions set desired state; reconciliation updates observed state and the durable progress stream.\n\n1 host has diverged from its desired state\np018-canary-20260905-r7\nrunning → provisioning · diverged for 2h\np018-canary-20260905-r7\nGCP · us-central1 · e2-standard-2 · 40 GiB\nrunning → provisioning\nUnavailable / mo\nStop\np018-canary-20260905-r6\nGCP · us-central1 · e2-standard-2 · 40 GiB\nabsent\nUnavailable / mo\np018-canary-20260905-r5\nGCP · us-central1 · e2-standard-2 · 30 GiB\nabsent\nUnavailable / mo\np01",
+        "dialogs": []
+      },
+      "capturePath": "desktops--dark--1280x800.png",
+      "captureSha256": "8e4c3e011d98bf313cfa695a4834f1c681873d73b0023c48482181a878febfa9",
+      "capturedAt": "2026-09-07T03:23:55.663Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "plans/dark/1280x800",
+      "surface": "plans",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=plans&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=plans&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Plans\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\nPLAN WORKSPACE\nPlans\nTrack active work, decisions, and live progress in one place.\n445\nSHOWN\nNext run · Default model · claude · default · warm · safe-high\nClean up 445 shown plans\nReconciles stale statuses, cleared blockers & finished work · you review the rest\nsettle refused: this run recorded no outcomes and never reported a heartbeat, so there is no evidence the resolver ran. \"Nothing to do\" is not distinguishable from \"never started\" here.\nFIND AND FOCUS\n445 shown · active only\nNeeds you\nFinished\nall\none-time\ntriggered\nAll\nUser\nBlender\nREADY\npapercusp\n2d\n—\nBlender evidence-driven learning redesign\n1 decision need you\nUSER\n1\n11/12\nREADY\npapercusp\n13d\n—\niPhone app — public release readiness and delivery\n1 decision need you\nAVIYNW\n1\n4/5\nREADY\npapercusp\n65d\n—\nWindows des",
+        "dialogs": []
+      },
+      "capturePath": "plans--dark--1280x800.png",
+      "captureSha256": "7b4f06b4135e0325f749ccbb261e3363ecf4d6931e873d86ff87170510a0c976",
+      "capturedAt": "2026-09-07T03:23:58.895Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "inbox/dark/1280x800",
+      "surface": "inbox",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=inbox&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=inbox&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Resolution Inbox\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\nInbox\n100\nNEED YOU\nNeeds you\n100\nAlerts\n0\nAll\n100\n\nKINDS\n\nwork item\n82\nowner wall\n8\nescalation\n7\nitem\n3\nLAUNCHED\nLaunch settings not recorded (legacy run)\nfresh · headless · su\n\nREVIEW READY\n\n143 unresolved · 0 retryable\nrun 11774m 24s\n143 recommendations\nReview 143\n\nNothing applies without your gesture.\n\nFIND AND FOCUS\n100 items\nPriority\nOWNER WALL\nsu-c86de2dd-45a1-4e86-8b17-c07c4a096f7f · papercusp\n1h\nAtomic BAR meaning amendment still requires an authenticated outside-lineage thread post containing the exact dry-run a…\nwaiting\nOWNER WALL\nsu-8b9d39ca-4bd8-44bd-ba29-f25593b1c246 · portal\n1h\nWI-10000288 still owns global checkpoint admission with live remediation.\nwaiting\nOWNER WALL\nsu-db4b0543-5fee-432d-8b3c-5a193acb03a9 · papercusp\n4h\nbyoc-delivery-accelerati",
+        "dialogs": []
+      },
+      "capturePath": "inbox--dark--1280x800.png",
+      "captureSha256": "097d9bb5c4118d2f097dcf9e600dfa59a1a5678dea6bb674c377f76a72aaef9f",
+      "capturedAt": "2026-09-07T03:24:02.284Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "workspaces/dark/1280x800",
+      "surface": "workspaces",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=workspaces&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=workspaces&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Workspaces\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n657 PROCESSES\nStart voice chat\nDownload TUI\n87\nProvider\nAll providers\ngcp\nConnect a provider\nProvision a workspace\nProviders\nBYOC bounded canary\ngcp\nINVALID\nGCP ADC/Compute validation failed\nBYOC Canary GCP\ngcp\nCONNECTED\nbyoc-p018-20260905\ngcp\nCONNECTED\nYour workspaces\n\nNo health checks have been recorded for these workspaces, so none of the states below are health-verified.\n\np018-canary-20260905-r7\ngcp · us-central1\nRUNNING → PROVISIONING\ninitialize\nFAILED\nStarted 2026-09-07T01:38:02.517Z\nFinished 2026-09-07T01:40:17.560Z\nWorkspace host initialization failed after 5/6 steps\nOpen desktop\nStop\nRestart\nSnapshot\nRestore\np018-canary-20260905-r6\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T05:38:18.163Z\nFinished 2026-09-05T05:41:43.792Z\nWorkspace-host discard teardown and evidence census completed\nOpe",
+        "dialogs": []
+      },
+      "capturePath": "workspaces--dark--1280x800.png",
+      "captureSha256": "127ba1c4975b0d96d8486207dc21e9939d1f56b19a1a2f41a9a38d7d27fa77f6",
+      "capturedAt": "2026-09-07T03:24:05.475Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "overview/dark/1280x800",
+      "surface": "overview",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=overview&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=overview&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Overview\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n657 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nSPEND 1H\n$875.36\nLIVE\n91\nGOVERNED\n0 / 16\nGOVERNED CAP\n0\nPLANS\n206\nOPEN\nSilent wrong answers: results that look right and are not\n20/20\nRetire the work-item mail surface (messages:*) — parallel lanes\n8/8\nStop the health tick computing dedup it discards — and audit every server-side timer against push-don't-poll\n17/17\nSession chat popup: message timestamps, visible sends, live mode state, drain instructions\n6/6\nLocal ONNX cross-encoder reranking via gte-reranker-modernbert-base (replaces the dark ZeroEntropy seam)\n12/12\nBroad desktop performance test suite — catch real slow desktop interactions reliably\n12/12\nNEEDS YOU\n6\nOPEN\nbyoc-delivery-acceleration-2026-09-06 is review-only draft; await Avi's ",
+        "dialogs": []
+      },
+      "capturePath": "overview--dark--1280x800.png",
+      "captureSha256": "0f4bb42585aacbb1ae518e0cacb59ed17c7e7b758f3b201bdf444c56b17628b8",
+      "capturedAt": "2026-09-07T03:24:08.742Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "hud/dark/1280x800",
+      "surface": "hud",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=hud&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=hud&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "HUD\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n669 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nWorkspace activity\n\nFollow your agents and keep work moving.\n\nPlan for new session\nModel for new session\nEffort level for new session\nFleet for new session\nAccount for new session\nContext size for new session\nMode for new session\n+ New session\nGoals\nSessions\nPlans\nWork items\nFilter by plan\nsu sessions\n8\nneeds you\n22\nworking\n5\nblocked\n11\nstalled\n104\nparked · done\nall fleets\n150\nnonp2p-bug-drain-luna-max-50\n86\n· 2 blocked, 8 stalled\np2p-release-sol-endgame\n4\n· 1 needs you, 1 blocked\nbyoc-alpha-ship-2026-09-05\n1\n· 1 needs you\nmain-green-reds-2026-09-05\n2\n· 1 blocked\nnonp2p-feature-change-drain-2026-09-04-v3\n10\n· 1 blocked\nmain-greening-ship\n1\nornith-doc-resync-fleet\n1\n· no leader\nsolo\n45\n· 6 needs you, ",
+        "dialogs": []
+      },
+      "capturePath": "hud--dark--1280x800.png",
+      "captureSha256": "cd594b4ff924c4e771c5d61b4ff761dd0b71fb34ea9ccc380a9182ae97d6b94f",
+      "capturedAt": "2026-09-07T03:24:11.953Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "work/dark/1280x800",
+      "surface": "work",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=work&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=work&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Work\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n669 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nP\n89 pots\nNew pot\nPOT\nKIND\nPOT\nDESCRIPTION\nHARNESSES\nSTATE\nSHARED\nSPEC\nPATH\nbrood-box-alpha\nHARNESS\n—\nUsers should be able to click on a spreadsheet cell and edit its value inline, with auto-save after 500ms of inactivity.\n—\nready\n—\n/home/marsh-office/papercupai-workspace/brood-box-alpha\nc\nHARNESS\n—\n—\n—\nnew\n—\n—\n/tmp/create-atomic-c-JGQpM7\ncalendar\nHIVE\n—\n—\n—\nready\n—\n—\n/home/marsh-office/papercupai-workspace/calendar\ncloud-e2e-smoke\nHARNESS\n—\n—\n—\nready\n—\n—\n/home/marsh-office/.papercusp/cloud-e2e-smoke\ndummy-pot-0707\nHIVE\n—\n—\n—\nready\n—\n—\n/home/marsh-office/.papercusp/hives/dummy-pot-0707\ne2e-imp-j1\nHARNESS\n—\n—\n—\nnew\n—\n—\n/tmp/e2e-imp-projects/e2e-imp-j1\nei669-repro-su-b621d\nHIVE\n—\n—\n—\nnew\n—\n—\n/tmp/ei66",
+        "dialogs": []
+      },
+      "capturePath": "work--dark--1280x800.png",
+      "captureSha256": "ecfe55e0c9b8a6965689a2f8782bfaa3ec47db32d1145b1ea2f903e54704f00b",
+      "capturedAt": "2026-09-07T03:24:15.186Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "learning/dark/1280x800",
+      "surface": "learning",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=learning&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=learning&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Learning\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 24 THINKING\n675 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nObserve\nAnalyze\ndata unavailable\nImprove\nRetain\nVerify\npaused\n$0.00\nLearning controls for\npapercusp\nlearning off\nscout\ngym\nlanes\n11/11\n$560.67+\nLearning controls for\ncalendar\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nemail\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nphone-app\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nportal\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nstonebrook-android-20260821\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\nLearning controls for\nthornbury-iphone-20260821\nlearning off\nscout\ngym\nlanes\n1/1\n$0.00+\n+19 off\n\nWhat the learning loop produced: each idea and the work it became, from not-ready-yet through",
+        "dialogs": []
+      },
+      "capturePath": "learning--dark--1280x800.png",
+      "captureSha256": "5490f94fe6a841337eda7e21ac3f9fdc4a43810e83190f457661aabf5dd75da5",
+      "capturedAt": "2026-09-07T03:24:18.411Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "workflows/dark/1280x800",
+      "surface": "workflows",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=workflows&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=workflows&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Workflow Editor\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n674 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nAUTOMATION CONTROL\nWorkflows\n12 triggered · 4754 routines · 261 system tasks\n\nCreate, monitor, and repair everything that runs without you.\n\nSchedule\n6/10\nContacts\ndisabled\nGcal\n1/3\nGmail\n1/4\nRefresh\nNew workflow\nBuild with the workflow agent\n\nDescribe the trigger and outcome. The agent assembles the workflow for review.\n\nWhat should happen automatically?\nWire it\nWhen an email from a client arrives…\nNeeds you\ngcal is disabled\nReconnect\nGmail is disabled\nReconnect\n37 workflows need attention\nReview\nVIEW\nWorkflows\nActivity\nSTATE\nAll\n5027\nNeeds attention\n37\nRunning\n269\nPaused\n4728\nKIND\nEvery kind\nFIND\nSORT\nAttention first\nWorkflow\tNext\tArmed\n\nbg-host-watchdog-poll\nSYSTEM\n\t—\t—\n\ngateway-local-backend-refresh-h",
+        "dialogs": []
+      },
+      "capturePath": "workflows--dark--1280x800.png",
+      "captureSha256": "f142dd968fb777c4afefa10ca627e542b752275f22f1e6f6f69afce5f2effb61",
+      "capturedAt": "2026-09-07T03:24:21.650Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "brainstorm/dark/1280x800",
+      "surface": "brainstorm",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=brainstorm&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=brainstorm&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Brainstorm\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n674 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nPOT\nAll Pots\nNEW\nBrainstorm is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "brainstorm--dark--1280x800.png",
+      "captureSha256": "714f9ccefece656a0fe3bb09d515ba93dcaa72c16ac6d80fc7debdd72da0982c",
+      "capturedAt": "2026-09-07T03:24:24.847Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "cloud/dark/1280x800",
+      "surface": "cloud",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=cloud&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=cloud&accountsPane=false&chatPane=false&connection=byoc-canary-gcp",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Cloud\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 24 THINKING\n665 PROCESSES\nStart voice chat\nDownload TUI\n87\n\nLOCAL BYOC CONTROL PLANE\n\nCloud Workspaces\n\nProvision and operate durable Papercusp hosts in infrastructure you control. Desired state and observed state stay separate so drift is visible instead of guessed away.\n\nRefresh\nLive control state\n\n03\nOPERATE\n\nManaged workspaces\n\nActions set desired state; reconciliation updates observed state and the durable progress stream.\n\n1 host has diverged from its desired state\np018-canary-20260905-r7\nrunning → provisioning · diverged for 2h\np018-canary-20260905-r7\nGCP · us-central1 · e2-standard-2 · 40 GiB\nrunning → provisioning\nUnavailable / mo\nStop\np018-canary-20260905-r6\nGCP · us-central1 · e2-standard-2 · 40 GiB\nabsent\nUnavailable / mo\np018-canary-20260905-r5\nGCP · us-central1 · e2-standard-2 · 30 GiB\nabsent\nUnavailable / mo\np018-c",
+        "dialogs": []
+      },
+      "capturePath": "cloud--dark--1280x800.png",
+      "captureSha256": "fc4184945cf363dfae0b3640edd7741c46c738e53b4b67423ae2366c0c2cdabc",
+      "capturedAt": "2026-09-07T03:24:28.234Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "cupboard/dark/1280x800",
+      "surface": "cupboard",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=cupboard&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=cupboard&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Cupboard\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 24 THINKING\n665 PROCESSES\nStart voice chat\nDownload TUI\n87\nDistribution shelf\nCupboard\n\nDiscover installable pots, blueprints, templates, plugins, packs, and tools from the shared Papercusp registry.\n\nHow sharing works\nLISTINGS\n34\nFACETS\n6\nVIEW\nAll facets\nAll\n34\nPots\n2\nApps\n1\nBlueprints\n14\nTemplates\n13\nPlugins\n1\nKnowledge Packs\n3\nTools\nAll\nClaimed\nUnclaimed\noctocat/Hello-World\n0/1 CLAIMED\noctocat/Hello-World\nView Pot\n1\noctocat/Spoon-Knife\n0/1 CLAIMED\noctocat/Spoon-Knife\nView Pot\n1\nPapercusp Official: Data Sync (Live UI State)\nTEMPLATE\nUnclaimed\n\nAspect template: live UI state sync — client transports + an SSE server leg + event-maintained projections, so every pane reflects writes in real time without polling. Compose into any papercusp app with a web UI. Docs: /internal/docs on your install.\n\n4 contributors\n12 days ago\nTypeSc",
+        "dialogs": []
+      },
+      "capturePath": "cupboard--dark--1280x800.png",
+      "captureSha256": "cc0709a6fecb62eed35944c3dc91587ec7cdf0f697f837f7789ac4c145331f6e",
+      "capturedAt": "2026-09-07T03:24:31.709Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "dev/dark/1280x800",
+      "surface": "dev",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=dev&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=dev&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "DEV\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n668 PROCESSES\nStart voice chat\nDownload TUI\n87\nWORKSPACES\nAll workspaces\nP\nOPERATE\nAPI\ninvoke tools\nPots\nhealth matrix\nSessions\nspawn drilldown\nRoutes\nHTTP traffic\nTelemetry\nlatency + errors\nAudit\noperator log\nDATA\nTables\nschema + rows\nSQL\nread-only query\nPG\nconnections\nDrizzle Studio\nembedded db UI\nRUNTIME\nProcesses\nlocal pids\nBackups\nkopia + restore\nTerminal\nxterm.js shell\nIPC\nendpoint-IPC probe\nStatus rail\nOPEN\nBuilt-ins\nPlugins\nABLATION\n1\nablation:report\nACCOUNTS\n16\naccounts:get-session-override\n1\naccounts:link-complete\n1 req\naccounts:link-start\n1 req\naccounts:link-status\n1 req\naccounts:list\n5\naccounts:pin\n2 req\n1\naccounts:probe-capacity\n24·1\naccounts:register\n2 req\naccounts:remove\naccounts:reset-rate\naccounts:scale_out\n1 req\naccounts:scale_policy\n1 req\naccounts:set-session-override\naccounts:status\n1811\naccounts:tes",
+        "dialogs": []
+      },
+      "capturePath": "dev--dark--1280x800.png",
+      "captureSha256": "808bcbeec4de7d019966a572882b2db54018b5a304aa0cc26c3351fe47da61dc",
+      "capturedAt": "2026-09-07T03:24:34.940Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "support/dark/1280x800",
+      "surface": "support",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=support&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=support&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Support\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n668 PROCESSES\nStart voice chat\nDownload TUI\n87\nSupport\n\nFirst check the FAQs below — they cover the most common stuck points. If you're still blocked, start a chat with our support team or open a GitHub issue.\n\n🤖 Try the AI assistant\n$0.0000 / $0.50\n\nAsk anything about Papercusp — install, harness setup, plugins, errors. Powered by Claude over the spec docs. Per-session $0.50 cap; falls back to a human if it can't help.\n\nAsk\n👤\n💬 Start support chat\n🐛 Open a GitHub issue\n📚 Browse the docs\nFrequently asked\n›\nFirst-run says 'agent CLI not found'. What do I install?\n›\nI added my API key but the pot still says it can't reach the LLM.\n›\nMy pot exited unexpectedly. How do I see what happened?\n›\nWhere do I publish my own pot template / plugin?\n›\nMy desktop app says \"Apple cannot verify the developer\" / Windows SmartScre",
+        "dialogs": []
+      },
+      "capturePath": "support--dark--1280x800.png",
+      "captureSha256": "2bb9b3d53d7b3425601cd76dc65df8b3816601279333e535df712a4ae2774e4c",
+      "capturedAt": "2026-09-07T03:24:38.155Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "settings/dark/1280x800",
+      "surface": "settings",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=settings&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=settings&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Settings\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nPortal\n\nHow this portal looks on this device, and which agent answers for the workspace. Everything else is the workspace's own Settings, below.\n\nAPPEARANCE\n\nTheme for the portal. System follows your operating system.\n\nAsk Papercup\n\nWhich agent and model answers questions asked from the search bar.\n\nModel\nUse the default (sonnet[1m]:high)\nquick — claude-opus-5:xhigh\nstandard — claude-opus-5:xhigh\nsonnet-high — claude-opus-5:xhigh\ndeep — claude-opus-5:xhigh\nmax — claude-opus-5:xhigh\nox-alpha — openrouter/stealth/ox-alpha:max\nSomething else…\nBackend\nUse the default (claude-code)\nclaude-code\nomp\ncodex\n\nThe operator’s own default backend is claude-code. Ask Papercup does not follow it — it runs on the backend stored here.\n\nThis is a workspace setting, not a personal one — ",
+        "dialogs": []
+      },
+      "capturePath": "settings--dark--1280x800.png",
+      "captureSha256": "be923b136ca9ad166893f51c59297110f8a4c4005a884b51c0ec42a379630de1",
+      "capturedAt": "2026-09-07T03:24:41.357Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "health/dark/1280x800",
+      "surface": "health",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=health&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=health&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Health\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nAction needed for 4h\n5 RED\n9 YELLOW\nchecked 7s ago\nMUG\nCRIT FOR 24H+\npaused — 2 placeable item(s) queued (silent outage)\npaused\nSTATE\n26h ago\nLAST WAKE\n55\nWATCHDOG 24H\n399a/0g\nDECISIONS\n0\nTRACKING\nCUPS / FLEET\nno Mug-placed cups running (does not measure the broader SU/agent fleet, which may still be busy)\n0\nRUNNING\n0\nALIVE\n0\nSTALE\n0\nORPHANED\n0\nINVALID MODEL\n0\nCURSED\nWORK ITEMS\nWARN FOR 24H+\n71910 items — 24 todo, 63 in-flight, 392 blocked, 127 need human\n24\nTODO\n63\nIN-FLIGHT\n392\nBLOCKED\n127\nNEEDS-HUMAN\n54681\nDONE\n0\nSTUCK\n0\nSETTLEMENT FAILURES\n20s\nREAPER AGE\nWORK-FEED\nCRIT FOR 1M\nDEAD ROUTINE(S) 4/191: cross-hive-outbox-drain, personal-vault-import, …\n84\nFRONTIER\n82\nSTUCK\n1\nBLOCKED\n13\nSTARTED PLANS\n430\nAUTO-STUCK\n125\nKEYLESS HUMAN-REVIEW\n4\nDEAD ROUTINES\n916\nSTALE-PAUSED ",
+        "dialogs": []
+      },
+      "capturePath": "health--dark--1280x800.png",
+      "captureSha256": "16893dca11598a2af65eb9d2fe42dc6e0f69c4a9f815d8c5d513614b3c245145",
+      "capturedAt": "2026-09-07T03:24:44.572Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "prs/dark/1280x800",
+      "surface": "prs",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=prs&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=prs&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "PRs\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 26 THINKING\n663 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nPRs is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "prs--dark--1280x800.png",
+      "captureSha256": "5deb18c426ced240fff61de6b1d66db8aeb6c60de8abed5369439646a59f0aec",
+      "capturedAt": "2026-09-07T03:24:48.062Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "insights/dark/1280x800",
+      "surface": "insights",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=insights&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=insights&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Insights\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 26 THINKING\n663 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nInsights is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "insights--dark--1280x800.png",
+      "captureSha256": "14d92559466e488de11bee914ba055a36a99c4d0d9539d7f8076dd9671e0e4eb",
+      "capturedAt": "2026-09-07T03:24:51.246Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "conversations/dark/1280x800",
+      "surface": "conversations",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=conversations&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=conversations&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Conversations\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n665 PROCESSES\nStart voice chat\nDownload TUI\n87\nCONVERSATIONS\n364 · THE LATEST BOUNDED CONVERSATION WINDOW (UP TO 100 PER SOURCE)\nFilter option counts cover the latest bounded conversation window (up to 100 per source).\nTYPE\nAgent chat\n100\nAgent messages\n100\nGroup decisions\n87\nQuestions & discussions\n77\nSTATE\narchived\n21\nclosed\n2\nopen\n144\nresolved\n10\nSender\nRecipient\nPOT\nhello-world-3-pot\n1\npapercup\n1\npapercusp\n210\nportal\n83\npot-verify\n4\nRelated work\nAgent messages\n1m ago\nIdentity matched: su-respawn-06db007dd312fdcf3d9e6c78d7dd5830; WI-2146823 remains open/unassigned. I will read the live claim spec, then make only scheduler:get_next; no older shard pulls or loop-based claiming.\nfeature-change-reconciliation-and-zero-state-clarity-2026-09-05\nsu-respawn-06db007dd312fdcf3d9e6c78d7dd5830\n→ su-bdc0fb41-eeac-4627-8",
+        "dialogs": []
+      },
+      "capturePath": "conversations--dark--1280x800.png",
+      "captureSha256": "a1b78e5492c034ee18c8a59231d0f56b693c111598d1d67358e65dddbd6b33b6",
+      "capturedAt": "2026-09-07T03:24:54.460Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "adv-settings/dark/1280x800",
+      "surface": "adv-settings",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=adv-settings&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=adv-settings&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "ADV Settings\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n665 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nSettings is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "adv-settings--dark--1280x800.png",
+      "captureSha256": "5c0a33e690ca2d644ab05d02f90e5178106b35f3fcc4d762b18e60e15d72e202",
+      "capturedAt": "2026-09-07T03:24:57.643Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "docs/dark/1280x800",
+      "surface": "docs",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=docs&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=docs&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Docs\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nDocs is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "docs--dark--1280x800.png",
+      "captureSha256": "a3df384d354afccc8d5faa8aa42d5edd65afd77b7544a1b6adf86676bfc449ff",
+      "capturedAt": "2026-09-07T03:25:00.828Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "history/dark/1280x800",
+      "surface": "history",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=history&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=history&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "History\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nVERIFIED DELIVERY RECORD\nHistory\n\nPlans, completed work, commits, and the validation evidence that proves each change.\n\nSelect a pot\n\nHistory is scoped to one project at a time.",
+        "dialogs": []
+      },
+      "capturePath": "history--dark--1280x800.png",
+      "captureSha256": "75ec4ee68e8a38b3337a28807fcf1ce5cd4c983757bb84667a92231787826755",
+      "capturedAt": "2026-09-07T03:25:04.030Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "git/dark/1280x800",
+      "surface": "git",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=git&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=git&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Git\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n664 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nGit is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "git--dark--1280x800.png",
+      "captureSha256": "00c3f767acb1b306f4bb826515bd462afdf63594af6405b08445bb6e86769799",
+      "capturedAt": "2026-09-07T03:25:07.209Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "stats/dark/1280x800",
+      "surface": "stats",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=stats&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=stats&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Stats\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 28 THINKING\n664 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nPick one pot to inspect its repository statistics.Stats are measured from a single Git repository, so the All Pots rollup is intentionally unavailable.",
+        "dialogs": []
+      },
+      "capturePath": "stats--dark--1280x800.png",
+      "captureSha256": "2177abf1359e4cac05c1adfaf6a9b9846f64ef3dc6db6e70e76653ab2cf0dc33",
+      "capturedAt": "2026-09-07T03:25:10.378Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "testing/dark/1280x800",
+      "surface": "testing",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=testing&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=testing&accountsPane=false&chatPane=false&scope=all",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Tests\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 23 THINKING\n672 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nTests is a per-pot view — pick a Pot from the dropdown above.",
+        "dialogs": []
+      },
+      "capturePath": "testing--dark--1280x800.png",
+      "captureSha256": "e09b0c9a032e4282abb05f468197ed26990049d8f1a79f823914302e425397cd",
+      "capturedAt": "2026-09-07T03:25:13.543Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "create/dark/1280x800",
+      "surface": "create",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=create&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=create&accountsPane=false&chatPane=false&scope=all&plan=calendar-meeting-prep",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Create\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 23 THINKING\n672 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nPOT\nOwner\nSmart order\nallmineothers'\nallone-timetriggered\ntoday\n7 days\n30 days\nneeds human\nactionable\nscout\nscheduled\nlegacy\narchived\nDraft\n121\nReady\n322\nRunning\n2\nAwaiting acceptance\n209\nShipped\n738\nSuperseded\n375\n\nDrag started plans to set their priority\n\n⠿\nGOAL mode hardening — pot rename, contract rewrite, goal provenance, per-goal launch settings, TEST mode\nPause\nPAPERCUSP\nACTIVE\n9d\nedited by\n⚙\nsu-776ce3cc\n5 blocked\n5 todo\n11 done\nNEXT\nThe plan's WORK is drained; nothing inside it is open. What remains is the SHIP step and one external follow-up. (1) SHIP IS BLOCKED, DELIBERATELY — do not force it. Plan frontmatter is still status:active. This repo now requires a graded acceptance rubric before 'shipped' (aut…\n⠿\nAlign the psu tool seed with the prom",
+        "dialogs": []
+      },
+      "capturePath": "create--dark--1280x800.png",
+      "captureSha256": "2dfeb04dda8af1597bccb4efd44507eb25b0a2e334ea65f375a720efa5bad853",
+      "capturedAt": "2026-09-07T03:25:16.724Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "scheduled/dark/1280x800",
+      "surface": "scheduled",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=scheduled&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=scheduled&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Scheduled\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 26 THINKING\n671 PROCESSES\nStart voice chat\nDownload TUI\n87\n\nSCHEDULED PLANS\n\nCalendar\n0\nin view\n0\narmed\nSchedule\nlast run ok\nlast run failed\npartial\npaused\nitalic = one-shot\n0 scheduled\n0 active\nNo routines scheduled in the next 30 days.\nToday\nSeptember 2026\nMonth\nWeek\nDay\nMon\n\t\nTue\n\t\nWed\n\t\nThu\n\t\nFri\n\t\nSat\n\t\nSun\n\n\n31\n\t\n1\n\t\n2\n\t\n3\n\t\n4\n\t\n5\n\t\n6\n\n\n7\n\t\n8\n\t\n9\n\t\n10\n\t\n11\n\t\n12\n\t\n13\n\n\n14\n\t\n15\n\t\n16\n\t\n17\n\t\n18\n\t\n19\n\t\n20\n\n\n21\n\t\n22\n\t\n23\n\t\n24\n\t\n25\n\t\n26\n\t\n27\n\n\n28\n\t\n29\n\t\n30\n\t\n1\n\t\n2\n\t\n3\n\t\n4\n\n\n5\n\t\n6\n\t\n7\n\t\n8\n\t\n9\n\t\n10\n\t\n11",
+        "dialogs": []
+      },
+      "capturePath": "scheduled--dark--1280x800.png",
+      "captureSha256": "dc2664828f6aedf457caf23e9c6e9cf7af4145ec20f669288b33c5db3db4d555",
+      "capturedAt": "2026-09-07T03:25:19.894Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "frames/dark/1280x800",
+      "surface": "frames",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=frames&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=frames&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Frames\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 26 THINKING\n671 PROCESSES\nStart voice chat\nDownload TUI\n87\nFLEET LIVE VIEW\n1 local desktop\nabar-clause5-proof\n:110\nXVFB-LOCAL",
+        "dialogs": []
+      },
+      "capturePath": "frames--dark--1280x800.png",
+      "captureSha256": "53833d337b5e35403ac5a5aaf6e3a799405c6fd83096347bdee329bb8e3d0eb9",
+      "capturedAt": "2026-09-07T03:25:23.058Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "evals/dark/1280x800",
+      "surface": "evals",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=evals&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=evals&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Evaluation\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 23 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nEvaluation\n\nThe impartial benchmark suite — public third-party tasks, graded by each benchmark’s official external grader, run across four arms held to the same model, task set, and cost axis. This is the honest systems claim: holding the model constant, how much does the Papercusp harness add, and at what cost? (The self-referential internal evals — gym, IQ-battery, pot-eval — live under Learning.)\n\nPapercusp\nA · ablation\nB · native\nC · best-of-N\nLaunch\nrun a benchmark\nExternal benchmarks\npublic · graded fairly\nThroughput\nfleet speedup · $/task\nValue\n$ captured / budget\nCoordination\nMAST failure rates\nInternal trends\nscore over time\nReport\nheadline + deltas\nPreserved runs\nreal graded runs\nCompare\narm vs arm\nSUITE\nagentsnet\n\nLaunch a managed SWE-bench Pro run with th",
+        "dialogs": []
+      },
+      "capturePath": "evals--dark--1280x800.png",
+      "captureSha256": "6295638387ccd13658864a08c861ca96ba559af5b2558ed508bbb6c5d6f438fc",
+      "capturedAt": "2026-09-07T03:25:26.253Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "coord/dark/1280x800",
+      "surface": "coord",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=coord&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=coord&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Coordination\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 23 THINKING\n670 PROCESSES\nStart voice chat\nDownload TUI\n87\nCoordination\n\nAgent coordination surface — presence, the human inbox, plans, and the event history. Backed by coord/* + plans/*.\n\nSessions\nInbox\nPlans\nHistory\nActive (0)\n\nNo active agent sessions.",
+        "dialogs": []
+      },
+      "capturePath": "coord--dark--1280x800.png",
+      "captureSha256": "f86301bca5f3ef9f1be3af6e6d703da0e1fbc45c6e52ffc6377ed8255f43be7a",
+      "capturedAt": "2026-09-07T03:25:29.528Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "accounts/dark/1280x800",
+      "surface": "accounts",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 870.40625,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 870,
+        "surfaceScrollWidth": 870,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 21 THINKING\n667 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "accounts--dark--1280x800.png",
+      "captureSha256": "a483f6e6050bf24cb56d51a2afa658d24ddc6257d586f2d29fcbf284e22926af",
+      "capturedAt": "2026-09-07T03:25:32.745Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "papercup-chat/dark/1280x800",
+      "surface": "papercup-chat",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 819.203125,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 819,
+        "surfaceScrollWidth": 819,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 21 THINKING\n667 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "papercup-chat--dark--1280x800.png",
+      "captureSha256": "de86fcd71496cb7915a1f41bb878fa06895a7fd3d644541077e5459235773b40",
+      "capturedAt": "2026-09-07T03:25:35.941Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "chat-history/dark/1280x800",
+      "surface": "chat-history",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=sessions",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 0,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 0,
+        "surfaceScrollWidth": 0,
+        "documentOverflow": false,
+        "mainText": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nChat history\n\nNo sessions yet. Ask Papercup a question and your conversation will appear here.\n\nPapercup Chat\nChat history\n\nPapercup answers here with full access to this machine — it can read and change files and run commands, with no confirmation step. Only its attached research tools (capability:*, tasks:ops, tasks:todo_write, tasks:update_plan, chat:ask_choice, voice:delegate_deep) are listed below; native file and shell activity is not itemised.\n\nAsk a question to start.\n\nSend",
+        "dialogs": []
+      },
+      "capturePath": "chat-history--dark--1280x800.png",
+      "captureSha256": "50dc46f2088c4f69893927fa74d11b9c541bb5fd5e552c2728a8752f6dbe0292",
+      "capturedAt": "2026-09-07T03:25:39.134Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "notifications/dark/1280x800",
+      "surface": "notifications",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=notifications",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=notifications",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 25 THINKING\n663 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": [
+          {
+            "label": "Notification center",
+            "text": "Notification centerRecentUnread (87)mail18d ago[Papercusp/papercup] Run failed: Test - main (7caaed6)papercupai <notifications@github.com> — [Papercusp/papercup] Test workflow run "
+          }
+        ]
+      },
+      "capturePath": "notifications--dark--1280x800.png",
+      "captureSha256": "ea60d1b9dad0f152a6c86ceab22461802a633f16bd6f9487a96a99e4b087dd8b",
+      "capturedAt": "2026-09-07T03:25:42.412Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "launcher/dark/1280x800",
+      "surface": "launcher",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=launcher",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=launcher",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 25 THINKING\n667 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": [
+          {
+            "label": "App launcher",
+            "text": "App launcherHomeIn shellMailIn shellCalendarIn shellPhoneIn shellDesktopsEmbeddedPlansEmbeddedInboxEmbeddedWorkspacesIn shellBrainstormEmbeddedOverviewEmbeddedHUDEmbeddedWorkEmbedd"
+          }
+        ]
+      },
+      "capturePath": "launcher--dark--1280x800.png",
+      "captureSha256": "ca12a9b0f96bf8e080f8e119cd24094989b0b9f19758cceff9dd735cfeef91ad",
+      "capturedAt": "2026-09-07T03:25:45.752Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "agent-roster/dark/1280x800",
+      "surface": "agent-roster",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=agents",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=agents",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 25 THINKING\n☕ brain\n🫖 overwatch\n🍵 contributor\n🥤 operator\n📋 planner\n🛠 su\n▾\nbyoc-alpha-ship-2026-09-05\n(1)\n15s\n🛠\nsu · su-db4b0\nResume BYOC P-018 R7 shipment: verify live r30 publication lock and source state, build/publish exact-source r30, then bootstrap and initialize R7 only after byte verification.\n▾\nmain-green-reds-2026-09-05\n(1)\n14s\n🛠\nsu · su-c5e15\nContinue P-004 by completing WI-2145418: inspect the four reachability-red modules and August 27 decisions/history, wire or retire them correctly, and drive lint:guard-reachability green before resuming the canonical test recovery.\n▾\nnonp2p-bug-drain-luna-max-50\n(17)\n19s\n🛠\nsu · su-03251\nresync after compaction and resume the claimed non-P2P bug-drain lane\n53s\n🛠\nsu · su-1e71f\nProcess coalesced WI-38129 leader wake: answer any genuinely unanswered directed mail, re",
+        "dialogs": [
+          {
+            "label": "Agent roster",
+            "text": "\n      .pc-agents-roster { font-size: 12px; display: flex; flex-direction: column; min-height: 0; }\n      .pc-agents-roster__tabs { display: flex; gap: 2px; padding: 4px 6px 0; fle"
+          }
+        ]
+      },
+      "capturePath": "agent-roster--dark--1280x800.png",
+      "captureSha256": "1addbace0faf5ca94b3d3900ca9fd276c2fdb0ab49824eb3ac68a8f7fc4a85b6",
+      "capturedAt": "2026-09-07T03:25:49.246Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "processes/dark/1280x800",
+      "surface": "processes",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=processes",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false&panel=processes",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 26 THINKING\n662 PROCESSES\nMEMORY\n16.4 GB\nCPU\n…\nENROLLED\n112\nSCANNED\n662\nSTRANDED\n0\nUNACCOUNTED\n3\n\nEnrolled counts tasks; Scanned counts processes. One task holds many processes — these are different units, not a coverage ratio.\n\n3 unaccounted cgroups\nRunning with no live ledger row. The cgroup path distinguishes a managed scope from a process outside every task scope; inspect that provenance before attributing the cause.\n◆\nAGENT-SESSION\n(93)\n15m\nheadless member: nonp2p-bug-drain-luna-max-50 · governor member 3/3 (nonp2p-bug-drain-2026-08-08)\nsu-1e71fc41-1940-41f4-aed9-4e06831cde81\n373 MB\n185\nkill\n15m\nheadless member: nonp2p-bug-drain-luna-max-50 · governor member 2/3 (nonp2p-bug-drain-2026-08-08)\nsu-1e71fc41-1940-41f4-aed9-4e06831cde81\n366 MB\n172\nkill\n15m\nheadless member: nonp2p-bug-drain-luna-max-50 · governor member 1",
+        "dialogs": [
+          {
+            "label": "Process manager",
+            "text": "Memory16.4 GBCPU…Enrolled112Scanned662Stranded0Unaccounted3Enrolled counts tasks; Scanned counts processes. One task holds many processes — these are different units, not a coverag"
+          }
+        ]
+      },
+      "capturePath": "processes--dark--1280x800.png",
+      "captureSha256": "5795c320d9f3c9f7ddc21cd080692b71c5911ca97224a6983c1701b39307d1b5",
+      "capturedAt": "2026-09-07T03:25:52.649Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "home/dark/1280x800/docks-expanded",
+      "surface": "home",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 585.609375,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 586,
+        "surfaceScrollWidth": 586,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡33 AGENTS RUNNING · 26 THINKING\n662 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "home--dark--1280x800--docks-expanded.png",
+      "captureSha256": "86930b1e98a910b991811c23e19eae60b5ad8fe24de51801930f822cfee7849b",
+      "capturedAt": "2026-09-07T03:25:55.903Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "mail/dark/1280x800/docks-expanded",
+      "surface": "mail",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=mail&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=mail&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 585.609375,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 586,
+        "surfaceScrollWidth": 586,
+        "documentOverflow": false,
+        "mainText": "Mail\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n666 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\n\nMAIL\n\nInbox\nAccount view\nAll accounts · 87 unread\nUnknown mailbox · 200 threads · 87 unread\nIdentity stays visible on every thread.\nThe Google Workspace Team <workspace-noreply@google.com>\n7/25/2026\n Welcome to Google Workspace\nDo your best work with better tools.\nUnknown mailbox\n1 message\nUnread\nUpdates\nThe Google Workspace Team <workspace-noreply@google.com>\n7/26/2026\n Set up Google Workspace for papercusp.com\nGoogle Workspace is ready for you Set up your Google Workspace account to start using business email, video conferencing, cloud storage, file sharing, and more. Get started Before using Google\nUnknown mailbox\n1 message\nUnread\nUpdates\nThe Google Workspace Team <workspace-noreply@google.com>\n7/28/2026\n Your r",
+        "dialogs": []
+      },
+      "capturePath": "mail--dark--1280x800--docks-expanded.png",
+      "captureSha256": "33b3a5885d5f8b1c7592b642431dc6f520823d15f56030b3b1f20b0103221dc3",
+      "capturedAt": "2026-09-07T03:25:59.221Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "calendar/dark/1280x800/docks-expanded",
+      "surface": "calendar",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=calendar&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=calendar&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 585.609375,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 586,
+        "surfaceScrollWidth": 586,
+        "documentOverflow": false,
+        "mainText": "Calendar\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 23 THINKING\n666 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nToday\nSeptember 2026\nMonth\nWeek\nDay\nAgenda\nRead-only\n\nMONTH\n\n1 event\n\nSynced 7d ago · google-calendar\n\nSUN\nMON\nTUE\nWED\nTHU\nFRI\nSAT\n30\n2:22 AM grader latency probe\n31\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10",
+        "dialogs": []
+      },
+      "capturePath": "calendar--dark--1280x800--docks-expanded.png",
+      "captureSha256": "c4325490c739e471f840d9ca06cc3c65c89f7cca71f527e98e63066f2dcf4922",
+      "capturedAt": "2026-09-07T03:26:02.662Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "phone/dark/1280x800/docks-expanded",
+      "surface": "phone",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=phone&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=phone&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 585.609375,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 586,
+        "surfaceScrollWidth": 586,
+        "documentOverflow": false,
+        "mainText": "Phone\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n668 PROCESSES\nStart voice chat\nDownload TUI\n87\nCall\nRecents\n50\nVoicemail\nScheduled\nPhone\n\nConnects over your microphone — no phone number needed.\n\nCall assistant\nSimulate an incoming call\n\nRings your assistant from an unknown caller so you can try screening. The same path a carrier call will take.\n\nLIVE TRANSCRIPT\n\nThe transcript appears here as you speak.",
+        "dialogs": []
+      },
+      "capturePath": "phone--dark--1280x800--docks-expanded.png",
+      "captureSha256": "f8ed924e8f6e99cf3797167a464ea886d6b289d5288298bf60b544089e6e99da",
+      "capturedAt": "2026-09-07T03:26:05.914Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "workspaces/dark/1280x800/docks-expanded",
+      "surface": "workspaces",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "url": "http://127.0.0.1:3081/?app=workspaces&accountsPane=true&chatPane=true",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=workspaces&accountsPane=true&chatPane=true",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 800
+        },
+        "surfaceWidth": 585.609375,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 586,
+        "surfaceScrollWidth": 586,
+        "documentOverflow": false,
+        "mainText": "Workspaces\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n668 PROCESSES\nStart voice chat\nDownload TUI\n87\nProvider\nAll providers\ngcp\nConnect a provider\nProvision a workspace\nProviders\nBYOC bounded canary\ngcp\nINVALID\nGCP ADC/Compute validation failed\nBYOC Canary GCP\ngcp\nCONNECTED\nbyoc-p018-20260905\ngcp\nCONNECTED\nYour workspaces\n\nNo health checks have been recorded for these workspaces, so none of the states below are health-verified.\n\np018-canary-20260905-r7\ngcp · us-central1\nRUNNING → PROVISIONING\ninitialize\nFAILED\nStarted 2026-09-07T01:38:02.517Z\nFinished 2026-09-07T01:40:17.560Z\nWorkspace host initialization failed after 5/6 steps\nOpen desktop\nStop\nRestart\nSnapshot\nRestore\np018-canary-20260905-r6\ngcp · us-central1\nABSENT\ndestroy\nSUCCEEDED\nStarted 2026-09-05T05:38:18.163Z\nFinished 2026-09-05T05:41:43.792Z\nWorkspace-host discard teardown and evidence census completed\nOpe",
+        "dialogs": []
+      },
+      "capturePath": "workspaces--dark--1280x800--docks-expanded.png",
+      "captureSha256": "9fe261089be7b1d34fe6d98fa94bddbb500425ef216e32dfabf80abfeedfaba4",
+      "capturedAt": "2026-09-07T03:26:09.147Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "home/dark/1280x768/rail-compact",
+      "surface": "home",
+      "theme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 768
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 1280,
+          "height": 768
+        },
+        "surfaceWidth": 1104,
+        "pageWidth": 1280,
+        "surfaceClientWidth": 1104,
+        "surfaceScrollWidth": 1104,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n672 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "home--dark--1280x768--rail-compact.png",
+      "captureSha256": "b69239e5bc23bdb1dea92bafe62e2e3512875940a9c833df1729448b14bfb0ba",
+      "capturedAt": "2026-09-07T03:26:12.352Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
+    },
+    {
+      "slot": "home/dark/390x768/rail-compact",
+      "surface": "home",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 768
+      },
+      "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+      "observed": {
+        "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+        "theme": "dark",
+        "viewport": {
+          "width": 390,
+          "height": 768
+        },
+        "surfaceWidth": 326,
+        "pageWidth": 390,
+        "surfaceClientWidth": 326,
+        "surfaceScrollWidth": 326,
+        "documentOverflow": false,
+        "mainText": "Mission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡32 AGENTS RUNNING · 25 THINKING\n672 PROCESSES\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n18d\nMove your A",
+        "dialogs": []
+      },
+      "capturePath": "home--dark--390x768--rail-compact.png",
+      "captureSha256": "0860a764cb78ed43761170658d1e92603aa70376e313c3d731f30246945d4cb2",
+      "capturedAt": "2026-09-07T03:26:15.559Z",
+      "releaseId": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+      "captureStatus": "captured",
+      "result": "unknown",
+      "notes": "Capture and dimensions recorded; independent visual/state judgment remains required.",
+      "pageErrors": []
     }
-  ]
+  ],
+  "completedAt": "2026-09-07T03:26:15.939Z",
+  "releaseAfter": {
+    "schemaVersion": 2,
+    "buildId": "8yDtR949AGueJCPe7Q-EU",
+    "release": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T03:09:28.688Z",
+    "sourceRootDigest": "747c93d7b8a102f7237152873f4509114433d5598273f1b7132e4b94e8befc78"
+  },
+  "releaseStable": true,
+  "preferencesRestored": true,
+  "originalPreferences": {
+    "theme": "dark",
+    "voiceMuted": false,
+    "homeApp": "home",
+    "pinnedApps": [
+      "calendar",
+      "phone",
+      "desktops",
+      "plans",
+      "inbox",
+      "workspaces",
+      "overview",
+      "hud",
+      "work",
+      "learning",
+      "workflows"
+    ],
+    "dismissed": []
+  },
+  "finalPreferences": {
+    "theme": "dark",
+    "voiceMuted": false,
+    "homeApp": "home",
+    "pinnedApps": [
+      "calendar",
+      "phone",
+      "desktops",
+      "plans",
+      "inbox",
+      "workspaces",
+      "overview",
+      "hud",
+      "work",
+      "learning",
+      "workflows"
+    ],
+    "dismissed": []
+  }
 }
