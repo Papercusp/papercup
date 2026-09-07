@@ -794,6 +794,17 @@ fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
+# The operator sidecar must not compile the mutable shared checkout while this
+# verifier is running. Keep an independent source tree (with a pinned
+# dependency farm) under WORK for the whole run; boot-only stop.sh owns its
+# lifetime after this process hands the rig to the caller.
+OPERATOR_SOURCE_ROOT=""
+cleanup_operator_source_snapshot() {
+  if [ -n "${OPERATOR_SOURCE_ROOT:-}" ]; then
+    rm -rf -- "$OPERATOR_SOURCE_ROOT" 2>/dev/null || true
+    OPERATOR_SOURCE_ROOT=""
+  fi
+}
 # Set before the first EXIT trap so the generated stop script can safely expand
 # the value even when boot fails before the isolated branch runs.
 ISOLATED_WEBVIEW_ROOT=""
@@ -827,6 +838,65 @@ write_run_marker "$$" || {
   echo "FATAL: could not write verifier ownership marker under $WORK" >&2
   exit 1
 }
+
+# EI-22478219188163557: freeze the operator source/dependency graph before the
+# isolated Tauri launch. The source copy is independent; dependency trees use
+# the reusable pinned-deps hardlink snapshot under the donor install mutex.
+snapshot_operator_source() {
+  local snapshot_root="$WORK/operator-source"
+  local pinned_deps_lib="$DESKTOP_DIR/bin/lib/pinned-deps.sh"
+  local pinned_deps_copy="$WORK/pinned-deps.sh"
+  command -v rsync >/dev/null 2>&1 || {
+    echo "FATAL: rsync is required to snapshot the isolated verifier operator source" >&2
+    return 1
+  }
+  [ -f "$REPO_DIR/apps/operator/package.json" ] && [ -f "$REPO_DIR/libs/papercusp/package.json" ] || {
+    echo "FATAL: verifier source root is missing apps/operator/package.json or libs/papercusp/package.json" >&2
+    return 1
+  }
+  [ -f "$pinned_deps_lib" ] || {
+    echo "FATAL: reusable pinned dependency helper is missing: $pinned_deps_lib" >&2
+    return 1
+  }
+  mkdir -p "$snapshot_root" || return 1
+  rsync -a --delete \
+    --exclude='node_modules' \
+    --exclude='papercusp-desktop' \
+    --exclude='.git' \
+    --exclude='target' \
+    --exclude='.turbo' \
+    --exclude='.next' \
+    --exclude='dist' \
+    --exclude='build' \
+    --exclude='coverage' \
+    --exclude='.cache' \
+    --exclude='.pnpm-store' \
+    "$REPO_DIR/" "$snapshot_root/" || {
+      echo "FATAL: could not copy an independent verifier operator source snapshot" >&2
+      return 1
+    }
+  cp -- "$pinned_deps_lib" "$pinned_deps_copy" || return 1
+  # shellcheck source=/dev/null
+  . "$pinned_deps_copy" || return 1
+  papercusp_pinned_deps_snapshot_locked "$REPO_DIR" "$snapshot_root" || {
+    echo "FATAL: could not create the verifier's locked dependency snapshot" >&2
+    return 1
+  }
+  # The helper enumerates every donor dependency tree, including ones below
+  # excluded product directories; remove those orphaned trees from the source
+  # root after the locked snapshot completes.
+  rm -rf -- "$snapshot_root/papercusp-desktop" "$snapshot_root/.git" \
+    "$snapshot_root/target" "$snapshot_root/.turbo" "$snapshot_root/.next" \
+    "$snapshot_root/dist" "$snapshot_root/build" "$snapshot_root/coverage" \
+    "$snapshot_root/.cache" "$snapshot_root/.pnpm-store"
+  [ -f "$snapshot_root/apps/operator/package.json" ] && [ -f "$snapshot_root/libs/papercusp/package.json" ] || {
+    echo "FATAL: verifier source snapshot failed its exact marker check" >&2
+    return 1
+  }
+  OPERATOR_SOURCE_ROOT="$(cd "$snapshot_root" && pwd -P)" || return 1
+  log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
+}
+snapshot_operator_source || exit $?
 
 ASSERTION_INPUT_MANIFEST=""
 ASSERTION_INPUT_COUNT=0
@@ -1690,6 +1760,8 @@ rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" 2>/dev/null
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
+# Boot-only stop.sh owns the per-run source/dependency snapshot.
+[ -n "$OPERATOR_SOURCE_ROOT" ] && rm -rf -- "$OPERATOR_SOURCE_ROOT" 2>/dev/null
 # EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
 # profile too. Remove it on the explicit --boot-only stop path as well as the
 # normal EXIT teardown; otherwise localStorage would outlive the run.
@@ -1787,6 +1859,7 @@ teardown() {
   # the husk after its TTL, and is also what catches runs that never reach this trap
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
   rm -rf "$WORK/spa" 2>/dev/null
+  cleanup_operator_source_snapshot
   cleanup_assertion_script_snapshot
   cleanup_verifier_source_snapshot
   exit "$ec"
@@ -2143,6 +2216,7 @@ fi
 # disappears when no snapshot was frozen.
 SPA_ENV_LINE=""
 [ -n "$SPA_DIST" ] && SPA_ENV_LINE="PAPERCUSP_SPA_DIST=\"$SPA_DIST\""
+OPERATOR_SOURCE_ENV_LINE="PAPERCUSP_DEV_SOURCE_ROOT=\"$OPERATOR_SOURCE_ROOT\" PATH=\"$OPERATOR_SOURCE_ROOT/apps/operator/node_modules/.bin:$OPERATOR_SOURCE_ROOT/node_modules/.bin:$PATH\""
 # write_and_launch_tauri — (re)generate launch.sh for the CURRENT $DEV_PORT /
 # $PTY_PORT / $LOG and exec it, setting $TAURI_PID. Factored out so the
 # bind-time retry below (EI-18734124566158657) can call it again against a
@@ -2247,6 +2321,7 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET \\
   PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR=0 \\
   PAPERCUSP_SID="$TAURI_OWNER_SID" PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" \\
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
+  $OPERATOR_SOURCE_ENV_LINE \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '$TAURI_CONFIG'
