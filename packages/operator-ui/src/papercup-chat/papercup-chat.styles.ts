@@ -21,6 +21,7 @@ export const PAPERCUP_CHAT_CSS = `
 .pc-chat__scroller { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 2px; }
 .pc-chat__list { position: relative; width: 100%; }
 .pc-chat__load-earlier { display: block; margin: 4px auto 8px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--pc-chat-border, rgba(127, 127, 127, 0.3)); background: transparent; color: var(--pc-chat-fg-mute, #6b7280); font: inherit; font-size: 11px; cursor: pointer; }
+.pc-chat__history-boundary { margin: 4px auto 8px; color: var(--pc-chat-fg-mute, #6b7280); font: inherit; font-size: 11px; text-align: center; }
 .pc-chat__placeholder { margin: 24px 8px; text-align: center; color: var(--pc-chat-fg-mute, #6b7280); }
 .pc-chat__turn { box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 6px 4px; }
 .pc-chat__message-line { display: flex; align-items: flex-start; gap: 6px; min-width: 0; width: 100%; }

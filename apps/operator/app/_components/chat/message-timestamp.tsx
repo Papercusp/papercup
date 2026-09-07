@@ -7,9 +7,8 @@
  * component live there now — ONE clock for every mounted stamp, whichever
  * surface mounts it. This module is the operator's historical import surface:
  * it re-exports the implementation and pins the operator's legacy class names
- * (`oracle-msg-time`, styled in globals.css) onto the shared stamp, so the
- * not-yet-migrated transcript (ChatConversation, retired by P-012) follows the
- * same compact D-011 clock while that compatibility surface still exists.
+ * (`oracle-msg-time`, styled in globals.css) onto the shared stamp for the
+ * operator host's existing CSS vocabulary.
  */
 import {
   MessageTimestamp as SharedMessageTimestamp,
