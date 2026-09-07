@@ -694,6 +694,51 @@ describe('work-item admission promoter (real Postgres)', () => {
     });
   });
 
+  it('holds conflicting recurrence identities without starving an unrelated pending item', async () => {
+    const conflictingIds = ['WI-producer-first', 'WI-producer-second'];
+    for (const id of conflictingIds) {
+      await seedItem({ id, payload: { watchdogKey: `watchdog:${id}` } });
+    }
+    await seedItem({
+      id: 'WI-independent-review',
+      title: 'Independent release signing review',
+      summary: 'Inventory the remaining package signing inputs.',
+      vector: '[0,1,0]',
+    });
+    const modelCall = judgementCall('r-finding-merge');
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-recurrence-component-hold',
+      sql: db.sql,
+      llmCall: modelCall,
+      now: () => NOW,
+    });
+
+    expect(modelCall).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ batchSize: 3, promoted: 1, merged: 0, held: 2, writerCoverageGap: [] });
+    const rows = await db.sql<Array<{ feature_id: string; status: string; admission: string; watchdog_key: string | null }>>`
+      SELECT feature_id, status, admission, payload->>'watchdogKey' AS watchdog_key
+        FROM harness_shared.work_items ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'WI-independent-review', status: 'open', admission: 'admitted', watchdog_key: null },
+      ...conflictingIds.map((id) => ({ feature_id: id, status: 'open', admission: 'pending', watchdog_key: `watchdog:${id}` })),
+    ]);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    const [run] = await db.sql<Array<{ status: string; held: number; reasons: Array<{ itemId: string; reason: string }> }>>`
+      SELECT detail->>'status' AS status, held, detail->'heldReasons' AS reasons
+        FROM harness_shared.admission_runs WHERE id = 'promoter-recurrence-component-hold'`;
+    expect(run).toMatchObject({
+      status: 'complete',
+      held: 2,
+      reasons: conflictingIds.map((itemId) => ({
+        itemId,
+        reason: expect.stringContaining('conflicting stable producer identities'),
+      })),
+    });
+  });
+
   it('selects the keyed pending survivor and preserves recurrence, references, satisfied deps and reversal data', async () => {
     const historicalId = 'WI-historical-unkeyed';
     const keyedId = 'WI-keyed-successor';

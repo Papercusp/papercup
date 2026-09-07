@@ -13,6 +13,7 @@ import {
   parsePromoterJudgements,
   planPromoterDispositions,
   responsePayload,
+  selectAdmissionRecurrenceCanonicals,
   type PromoterItem,
   type PromoterJudgement,
   type PromoterLlmResult,
@@ -205,6 +206,62 @@ describe('planPromoterDispositions', () => {
       { itemId: 'WI-1', action: 'hold', reason: `model omitted ${p.pairKey}` },
       { itemId: 'WI-2', action: 'hold', reason: `model omitted ${p.pairKey}` },
     ]);
+  });
+});
+
+describe('selectAdmissionRecurrenceCanonicals', () => {
+  it.each(['conditionKey', 'watchdogKey'] as const)(
+    'holds the complete conflicting %s component while retaining independent work',
+    (identityField) => {
+      const first = item('WI-1', { [identityField]: 'producer:first' });
+      const bridge = item('WI-2');
+      const second = item('WI-3', { [identityField]: 'producer:second' });
+      const historical = item('WI-4', { admission: 'admitted' });
+      const keyed = item('WI-5', { watchdogKey: 'producer:compatible' });
+      const independent = item('WI-6');
+      const pending = [first, bridge, second, keyed, independent];
+      const conflictPairs = [pair(first, bridge), pair(bridge, second)];
+      const compatiblePair = pair(historical, keyed, [keyed.id]);
+      const relatedPair = pair(first, independent);
+      const plan = planPromoterDispositions(
+        pending,
+        [...conflictPairs, compatiblePair, relatedPair],
+        [
+          ...conflictPairs.map((candidate) => judgement(candidate, 'r-finding-merge')),
+          judgement(compatiblePair, 'r-finding-merge'),
+          judgement(relatedPair, 'r-related'),
+        ],
+      );
+      const items = new Map([...pending, historical].map((candidate) => [candidate.id, candidate]));
+
+      expect(() => selectAdmissionRecurrenceCanonicals(plan, items)).toThrow('conflicting stable producer identities');
+      const guarded = selectAdmissionRecurrenceCanonicals(plan, items, { onConflict: 'hold' });
+
+      for (const conflicting of [first, bridge, second]) {
+        expect(guarded.dispositions).toContainEqual({
+          itemId: conflicting.id,
+          action: 'hold',
+          reason: expect.stringContaining('conflicting stable producer identities'),
+        });
+      }
+      expect(guarded.dispositions).toContainEqual({ itemId: independent.id, action: 'promote' });
+      expect(guarded.dispositions).toContainEqual({ itemId: historical.id, action: 'merge', canonicalId: keyed.id });
+      expect(guarded.dispositions).toContainEqual({ itemId: keyed.id, action: 'promote' });
+      expect(guarded.adjudications).toEqual([expect.objectContaining({ pairKey: compatiblePair.pairKey, canonical: keyed.id })]);
+      expect(guarded.relatedPairs).toEqual([]);
+      expect(plan.adjudications).toHaveLength(4);
+    },
+  );
+
+  it('does not turn a missing endpoint into a tolerated conflict', () => {
+    const first = item('WI-1');
+    const second = item('WI-2');
+    const candidatePair = pair(first, second);
+    const plan = planPromoterDispositions([first, second], [candidatePair], [judgement(candidatePair, 'r-finding-merge')]);
+
+    expect(() =>
+      selectAdmissionRecurrenceCanonicals(plan, new Map([[first.id, first]]), { onConflict: 'hold' }),
+    ).toThrow('missing endpoint(s)');
   });
 });
 

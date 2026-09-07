@@ -228,6 +228,18 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
+  it('does not treat an explicit instead-of-waiting phrase as a release-plane gate', () => {
+    const parsed = plan(
+      ['- **P-004** `todo` Validate the item-open rail using staging/current-build.'],
+      `### D-003 — P-004 acceptance proceeds on staging/current-build
+Date: 2026-09-07
+Continue P-004 against staging instead of waiting for green main.
+Related: P-004`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
   it("does not attribute another item's decision clause through a textual reference", () => {
     const parsed = plan(
       ['- **P-001** `todo` Implement the interactive client on staging.'],
