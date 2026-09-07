@@ -151,7 +151,8 @@ export function resetMcpAdmissionForTests(): void {
  * pressure is critical without opening the broad file-read surface. `work_items:get` is admitted
  * only for one item with the default shallow read; bulk, detail, and thread reads remain shed
  * under critical pressure. `scorecards:list` is admitted only for an exact rubric+subject audit
- * read; broad history remains shed.
+ * read; broad history remains shed. `rubrics:get` is admitted only for one rubric (the full
+ * criteria body is required by a judge); multi-rubric reads remain shed.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -165,6 +166,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
+const RUBRICS_GET_NAME = normalizeMcpName('rubrics:get');
 const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
 const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
 const CRITICAL_CAPABILITY_READ_MAX_BYTES = 4_096;
@@ -243,11 +245,42 @@ export function isBoundedScorecardsListArgs(args: unknown): boolean {
   return true;
 }
 
+/**
+ * A judge needs the complete criteria body from one rubric while the operator is
+ * under critical pressure. Keep the exemption to a single lookup: rubrics:get
+ * also accepts a bulk `rubricRefs` form whose full criteria bodies would turn the
+ * recovery reserve into a history/export lane.
+ */
+function isBoundedRubricsGetArgs(args: unknown): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const singleAliases = ['rubricRef', 'ref', 'slug', 'id'].filter(
+    (field) => typeof record[field] === 'string' && (record[field] as string).trim().length > 0,
+  );
+  const rubricRefs = record.rubricRefs;
+  const singleRubricRefs =
+    Array.isArray(rubricRefs) &&
+    rubricRefs.length === 1 &&
+    typeof rubricRefs[0] === 'string' &&
+    rubricRefs[0].trim().length > 0;
+  if ((singleAliases.length === 0) === !singleRubricRefs || singleAliases.length > 1) return false;
+  if (rubricRefs !== undefined && !singleRubricRefs) return false;
+  if (
+    record.revision !== undefined &&
+    (!Number.isInteger(record.revision) || (record.revision as number) < 1)
+  ) {
+    return false;
+  }
+  if (record.harness !== undefined && typeof record.harness !== 'string') return false;
+  return true;
+}
+
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
+  if (normalized === RUBRICS_GET_NAME) return isBoundedRubricsGetArgs(args);
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
 }

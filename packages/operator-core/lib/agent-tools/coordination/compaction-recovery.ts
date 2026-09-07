@@ -12,6 +12,50 @@ import {
 export const AUTOMATIC_COMPACTION_RECOVERY_SCHEMA = 'post-compaction-recovery-v1' as const;
 export const AUTOMATIC_COMPACTION_RECOVERY_MARKER = '⟦post-compaction-recovery⟧' as const;
 
+const MAX_PLAN_AUTHORITY_DECISIONS = 6;
+const MAX_PLAN_AUTHORITY_SPECS = 24;
+const PLAN_AUTHORITY_DECISION_BODY_CAP = 600;
+
+export interface CompactionPlanAuthorityCurrent {
+  resolution: 'current';
+  controlGeneration: number;
+  workspaceId: string;
+  harness: string;
+  planSlug: string;
+  version: number;
+  contentHash: string;
+  planStatus: string | null;
+  decisions: Array<{ id: string; title: string; body: string; truncated: boolean }>;
+  decisionsMore?: number;
+  items: Array<{ id: string; status: string | null; text: string | null; missing: boolean }>;
+  specs: Array<{
+    specId: string;
+    revision: number;
+    contentHash: string;
+    planItemId: string | null;
+  }>;
+  specsMore?: number;
+}
+
+export interface CompactionPlanAuthorityUnavailable {
+  resolution: 'unavailable';
+  controlGeneration: number;
+  workspaceId: string;
+  harness: string | null;
+  planSlug: string;
+  reason:
+    | 'missing-control-harness'
+    | 'not-found-in-control-harness'
+    | 'plan-parse-failed'
+    | 'spec-read-failed'
+    | 'plan-read-failed';
+  detail?: string;
+}
+
+export type CompactionPlanAuthority =
+  | CompactionPlanAuthorityCurrent
+  | CompactionPlanAuthorityUnavailable;
+
 /** D-017/P-018: one canonical successor instruction for every deterministic
  * context-wipe producer. Keeping this beside the marker schema prevents the
  * carry-respawn, watchdog, loop-overflow, drill, and tool-guidance paths from
@@ -53,6 +97,10 @@ export interface CompactionRecovery {
    *  authoritative full-resync payload for AUTO/IDEATE/DRAIN, loop/carry,
    *  route, and active scope after compaction. */
   control?: import('./control-anchor').ControlAnchor | null;
+  /** P-006: current authority for the ONE plan named by the compact control
+   *  scope. Rendered before carried summaries so an older checkpoint cannot
+   *  silently outrank the plan revision, decisions, item state, or specs. */
+  planAuthority?: CompactionPlanAuthority | null;
   /** WI-7302 part 2: fires when this session is registered in an autonomy mode
    *  (modeImpliesAutonomy — the registry's derived set) while NOTHING will wake
    *  it unprompted — no
@@ -120,6 +168,9 @@ export interface CompactionRecovery {
     selfSession: boolean;
     control: boolean;
     heldItems: boolean;
+    /** null means the compact control scope names no active plan. False makes
+     *  the boundary marker incomplete and preserves the one-shot orient fallback. */
+    planAuthority: boolean | null;
     /** null means no compact-boundary timestamp was available, not a failure. */
     staleness: boolean | null;
   };
@@ -172,6 +223,7 @@ export async function buildCompactionRecovery(
       selfSession: false,
       control: false,
       heldItems: false,
+      planAuthority: null,
       staleness: null,
     },
   };
@@ -229,6 +281,112 @@ export async function buildCompactionRecovery(
   } catch {
     recovery.loop = null;
     recovery.control = null;
+  }
+
+  // P-006 — the compact CTRL anchor tells us exactly which ONE plan matters.
+  // Read its canonical current row/spec revisions once, at the boundary, and
+  // carry that authority ahead of every older checkpoint/summary. Absence and
+  // wrong scope are explicit failures, never an empty snapshot that looks safe.
+  const control = recovery.control;
+  const scopedPlan = control?.state.scope.plan ?? null;
+  if (control && scopedPlan) {
+    const scopedHarness = control.state.scope.harness;
+    const unavailable = (
+      reason: CompactionPlanAuthorityUnavailable['reason'],
+      detail?: string,
+    ): void => {
+      recovery.planAuthority = {
+        resolution: 'unavailable',
+        controlGeneration: control.generation,
+        workspaceId,
+        harness: scopedHarness,
+        planSlug: scopedPlan,
+        reason,
+        ...(detail ? { detail: detail.slice(0, 240) } : {}),
+      };
+      recovery.coverage.planAuthority = false;
+    };
+    if (!scopedHarness) {
+      unavailable('missing-control-harness');
+    } else {
+      try {
+        const { getPlanRow } = await import('../plans/source');
+        const row = await getPlanRow(scopedPlan, { workspaceId, harnessSlug: scopedHarness });
+        if (!row) {
+          unavailable('not-found-in-control-harness');
+        } else {
+          let parsed: ReturnType<(typeof import('../plans/parser'))['parsePlan']>;
+          try {
+            const { parsePlan } = await import('../plans/parser');
+            parsed = parsePlan(row.content, { filePath: `${scopedPlan}.md` });
+          } catch (err: unknown) {
+            unavailable('plan-parse-failed', err instanceof Error ? err.message : String(err));
+            parsed = null as never;
+          }
+          if (recovery.coverage.planAuthority !== false) {
+            let specRows: Awaited<ReturnType<(typeof import('../plans/spec-clauses-store'))['listSpecClauses']>>;
+            try {
+              const { listSpecClauses } = await import('../plans/spec-clauses-store');
+              specRows = control.state.scope.items.length > 0
+                ? await listSpecClauses({
+                    harnessSlug: scopedHarness,
+                    planSlug: scopedPlan,
+                    planItemIds: control.state.scope.items,
+                    limit: MAX_PLAN_AUTHORITY_SPECS + 1,
+                  })
+                : [];
+            } catch (err: unknown) {
+              unavailable('spec-read-failed', err instanceof Error ? err.message : String(err));
+              specRows = [];
+            }
+            if (recovery.coverage.planAuthority !== false) {
+              const allDecisions = parsed.decisions;
+              const decisions = allDecisions.slice(-MAX_PLAN_AUTHORITY_DECISIONS).map((decision) => ({
+                id: decision.id,
+                title: decision.title,
+                body: decision.body.slice(0, PLAN_AUTHORITY_DECISION_BODY_CAP),
+                truncated: decision.body.length > PLAN_AUTHORITY_DECISION_BODY_CAP,
+              }));
+              const itemById = new Map(parsed.items.map((item) => [item.id, item]));
+              const specs = specRows.slice(0, MAX_PLAN_AUTHORITY_SPECS);
+              recovery.planAuthority = {
+                resolution: 'current',
+                controlGeneration: control.generation,
+                workspaceId,
+                harness: scopedHarness,
+                planSlug: scopedPlan,
+                version: row.version,
+                contentHash: row.contentHash,
+                planStatus: row.status,
+                decisions,
+                ...(allDecisions.length > decisions.length
+                  ? { decisionsMore: allDecisions.length - decisions.length }
+                  : {}),
+                items: control.state.scope.items.map((id) => {
+                  const item = itemById.get(id);
+                  return item
+                    ? { id, status: item.storedStatus, text: item.text, missing: false }
+                    : { id, status: null, text: null, missing: true };
+                }),
+                specs: specs.map((spec) => ({
+                  specId: spec.specId,
+                  revision: spec.revision,
+                  contentHash: spec.contentHash,
+                  planItemId: spec.planItemId,
+                })),
+                ...(specRows.length > specs.length ? { specsMore: specRows.length - specs.length } : {}),
+              };
+              recovery.coverage.planAuthority = true;
+            }
+          }
+        }
+      } catch (err: unknown) {
+        unavailable('plan-read-failed', err instanceof Error ? err.message : String(err));
+      }
+    }
+  } else {
+    recovery.planAuthority = null;
+    recovery.coverage.planAuthority = null;
   }
 
   // (a) held work-items' checkpoints — normally re-injected only on pickup;
@@ -359,7 +517,10 @@ export async function buildAutomaticCompactionRecovery(
   return {
     marker: {
       schemaVersion: AUTOMATIC_COMPACTION_RECOVERY_SCHEMA,
-      complete: recovery.coverage.control && recovery.coverage.heldItems,
+      complete:
+        recovery.coverage.control &&
+        recovery.coverage.heldItems &&
+        recovery.coverage.planAuthority !== false,
       memoryEpoch,
       controlGeneration: recovery.control?.generation ?? null,
       fallback: {

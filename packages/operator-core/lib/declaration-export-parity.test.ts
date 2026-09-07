@@ -123,7 +123,7 @@ describe('declaration export parity — calibration', () => {
     expect(unregistered).toContain('scripts/lib/typecheck-fanout.d.mts');
   });
 
-  it('excludes frozen-candidate worktrees without hiding canonical filesystem-only drift', () => {
+  it('excludes frozen worktrees and generated runtime mirrors without hiding canonical drift', () => {
     const root = mkdtempSync(join(tmpdir(), 'declaration-parity-scope-'));
     try {
       const canonical = join(root, 'scripts');
@@ -146,6 +146,22 @@ describe('declaration export parity — calibration', () => {
       writeFileSync(
         join(frozen, 'stale.mjs'),
         'export const old = 1;\nexport const candidateOnly = 2;\n',
+      );
+
+      const runtime = join(root, '.papercusp', 'tmp', 'verify-tauri-headless-stale', 'scripts');
+      mkdirSync(runtime, { recursive: true });
+      writeFileSync(join(runtime, 'stale.d.mts'), 'export const old: number;\n');
+      writeFileSync(
+        join(runtime, 'stale.mjs'),
+        'export const old = 1;\nexport const runtimeOnly = 2;\n',
+      );
+
+      const runtimeSibling = join(root, '.papercusp', 'tmp-old-candidate', 'scripts');
+      mkdirSync(runtimeSibling, { recursive: true });
+      writeFileSync(join(runtimeSibling, 'stale.d.mts'), 'export const old: number;\n');
+      writeFileSync(
+        join(runtimeSibling, 'stale.mjs'),
+        'export const old = 1;\nexport const runtimeSiblingOnly = 2;\n',
       );
 
       expect(allDeclarations(root)).toEqual(['scripts/canonical.d.mts']);

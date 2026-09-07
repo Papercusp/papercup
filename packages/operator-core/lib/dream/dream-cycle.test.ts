@@ -150,6 +150,9 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
 
   it('runs the real skeptical reviewer with governed phase identities', async () => {
     const h = harness(); delete h.d.review;
+    const judgment = structuredClone(f.review.judgment)!;
+    judgment.observations[1]!.evidence = f.review.controls.bOnly!.evidence;
+    judgment.relation.evidence = [...f.review.controls.aOnly!.evidence, ...f.review.controls.bOnly!.evidence];
     const prior = f.review.priorMatches[0]!;
     h.d.reviewSources = () => ({
       readCurrent: async () => prior,
@@ -160,7 +163,7 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
       .mockResolvedValueOnce({ text: '', json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate: f.candidate }, costUsd: 0.01, inputTokens: 100, outputTokens: 10 })
       .mockResolvedValueOnce({ text: '', json: f.review.controls.aOnly, costUsd: 0.02, inputTokens: 100, outputTokens: 10 })
       .mockResolvedValueOnce({ text: '', json: f.review.controls.bOnly, costUsd: 0.03, inputTokens: 100, outputTokens: 10 })
-      .mockResolvedValueOnce({ text: '', json: f.review.judgment, costUsd: 0.04, inputTokens: 100, outputTokens: 10 });
+      .mockResolvedValueOnce({ text: '', json: judgment, costUsd: 0.04, inputTokens: 100, outputTokens: 10 });
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ accepted: 1, costUsd: 0.1 });
     expect(h.d.sink).toHaveBeenCalledTimes(1);
   });

@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { dreamRegistrationInput, recordDreamRunSpend } from './dream-governor';
+import { dreamRegistrationInput, recordDreamRunSpend, admitDreamRunCall, sumDreamSpendSince,
+  type DreamGovernorDeps } from './dream-governor';
 import {
   beginDreamRun,
   finalizeDreamRun,
@@ -295,6 +296,67 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
+  });
+
+  it('AUTO-REQ-M-002-P-005-admission: concurrent pots share rolling reservations and settlement never double counts', async () => {
+    const workspaceId = 'ws-dream-concurrent-cap';
+    const fixture = await createDreamCapabilityFixture(workspaceId, POT);
+    try {
+      const deps: DreamGovernorDeps = {
+        enabled: async () => true, register: registerLearningLoop,
+        check: async () => ({ allow: true, remainingUsd: 1 }),
+        sumSince: sumDreamSpendSince, now: Date.now,
+      };
+      const make = async (potSlug: string) => {
+        const runId = 'cycle-' + potSlug + ':dream:1';
+        await beginDreamRun(db.adminSql, { workspaceId, potSlug, runId, cycleId: 'cycle-' + potSlug,
+          mode: 'manual', capability: fixture.header });
+        return { workspaceId, potSlug, runId, config: { rolling24hCostUsd: 1 },
+          call: { callId: 'generation', phase: 'generation' as const, model: 'dreamer', reservedUsd: 0.6 } };
+      };
+      const inputs = await Promise.all([make('pot-a'), make('pot-b')]);
+      const attempts = await Promise.allSettled(inputs.map((i) => admitDreamRunCall(db.adminSql, i, deps)));
+      expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+      const loser = attempts.find((a) => a.status === 'rejected');
+      expect(loser).toMatchObject({ status: 'rejected', reason: { reason: 'rolling-cost-cap' } });
+      const winnerIndex = attempts.findIndex((a) => a.status === 'fulfilled');
+      const winner = inputs[winnerIndex]!, second = inputs[1 - winnerIndex]!;
+      expect(await sumDreamSpendSince(db.adminSql, { workspaceId, sinceMs: Date.now() - 86400000 }))
+        .toMatchObject({ totalUsd: 0.6 });
+      expect(await admitDreamRunCall(db.adminSql, winner, deps)).toMatchObject({ started: false });
+      await settleDreamRunCall(db.adminSql, { workspaceId, runId: winner.runId, callId: 'generation',
+        usage: { model: 'dreamer', costUsd: 0.2, inputTokens: 100, outputTokens: 10 } });
+      await admitDreamRunCall(db.adminSql, second, deps);
+      await finalizeDreamRun(db.adminSql, { workspaceId, runId: winner.runId, status: 'abstained' });
+      expect(await sumDreamSpendSince(db.adminSql, { workspaceId, sinceMs: Date.now() - 86400000 }))
+        .toMatchObject({ totalUsd: 0.8 });
+      await expect(recordDreamRunSpend(db.adminSql, { ...winner, potSlug: 'wrong-pot' })).rejects.toThrow('scope');
+      await recordDreamRunSpend(db.adminSql, winner);
+      expect(await sumDreamSpendSince(db.adminSql, { workspaceId, sinceMs: Date.now() - 86400000 }))
+        .toMatchObject({ totalUsd: 0.8 });
+      expect(await recordDreamRunSpend(db.adminSql, winner)).toMatchObject({ recorded: false });
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it('bounds two simultaneous phases by the same cycle and rejects foreign admission', async () => {
+    const workspaceId = 'ws-dream-cycle-cap';
+    const fixture = await createDreamCapabilityFixture(workspaceId, POT);
+    try {
+      const runId = 'cycle-reserve:dream:1';
+      await beginDreamRun(db.adminSql, { workspaceId, potSlug: POT, runId, cycleId: 'cycle-reserve',
+        mode: 'manual', capability: fixture.header });
+      const deps: DreamGovernorDeps = {
+        enabled: async () => true, register: registerLearningLoop,
+        check: async () => ({ allow: true, remainingUsd: 1 }), sumSince: sumDreamSpendSince, now: Date.now,
+      };
+      const calls = (['control-a', 'control-b'] as const).map((phase) => ({ workspaceId, potSlug: POT, runId,
+        call: { callId: phase, phase, model: 'reviewer', reservedUsd: 0.6 } }));
+      const results = await Promise.allSettled(calls.map((i) => admitDreamRunCall(db.adminSql, i, deps)));
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(results.find((r) => r.status === 'rejected')).toMatchObject({ reason: { reason: 'cycle-cost-cap' } });
+      await expect(admitDreamRunCall(db.adminSql, { ...calls[0]!, potSlug: 'foreign' }, deps)).rejects.toThrow('scope');
+      expect((await getDreamRun(db.adminSql, { workspaceId, runId }))?.costUsd).toBeCloseTo(0.6);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
   });
 
   it('freezes the reviewed candidate before the sink and refuses accepted finalization without routing', async () => {

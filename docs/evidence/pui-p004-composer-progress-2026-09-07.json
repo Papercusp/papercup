@@ -3,10 +3,10 @@
   "plan": "pui-first-party-public-release-2026-09-07",
   "planItem": "P-004",
   "workItem": "WI-10000426",
-  "status": "pty-passed-final-rust-and-audits-pending",
-  "verifiedAt": "2026-09-07T16:36:03.968459+00:00",
+  "status": "all-local-verification-passed-acceptance-audits-pending",
+  "verifiedAt": "2026-09-07T16:46:20.155752+00:00",
   "files": {
-    "apps/tui/src/app.rs": "2c8d1d8b1d90e72455e9caf7429b73f441f019fe3ba9762ca039a3ac9a6d6fc5",
+    "apps/tui/src/app.rs": "74e096492d503e2348325ea1e35470fca3d77a015a57f3026cd8722df32f9593",
     "apps/tui/src/main.rs": "b5b89d4b9ed4e131158ef58af39e63480656137104821c3be1764f9abb2b0f1b",
     "apps/tui/src/event.rs": "bcf60f118110911cb49c29dd308c125a3b685367f73cefc89c1ef101a3ec0a26",
     "apps/tui/src/su_session.rs": "b0bb5dccdece9c8eda4c0cd2ac227fb5194b696bcbeeaa77d700e35ce63fc46f",
@@ -31,23 +31,23 @@
     {
       "evidenceKind": "test",
       "evidenceRef": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
-      "sourceFingerprint": "c4dbeac34efabfee4fa6ccb56b0f346f95c0c091418e6ceeff7153bcdbbaba80",
+      "sourceFingerprint": "8c9e73e25fec16b13f61c42684d60a0dac31dbaeb74ef9737fc6d12778639233",
       "testFingerprint": "41aef64ae852d85da0fa5ac28e597182a70d7f180dce14a43f171c3404795f6e",
       "fixtureFingerprint": "f699c7344be3320a438a3a14a17824cc49329ffe301232f0a356bb38f0b91b1e",
-      "environmentFingerprint": "linux-x86_64:real-PTY-Hono-OrgTestDb:scripted-structured-engine:binary-993578d173e64a840c0785ab84f9e4e2c2da303559c6e3250d10cb3c508b2072"
+      "environmentFingerprint": "linux-x86_64:real-PTY-Hono-OrgTestDb:scripted-structured-engine:binary-07cbb10d73e57295555440c8ecc3b1823a4dba758fd85466e20e4f5528ef9286"
     },
     {
       "evidenceKind": "counterexample",
       "evidenceRef": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts#fault-cases",
-      "sourceFingerprint": "c4dbeac34efabfee4fa6ccb56b0f346f95c0c091418e6ceeff7153bcdbbaba80",
+      "sourceFingerprint": "8c9e73e25fec16b13f61c42684d60a0dac31dbaeb74ef9737fc6d12778639233",
       "testFingerprint": "41aef64ae852d85da0fa5ac28e597182a70d7f180dce14a43f171c3404795f6e",
       "fixtureFingerprint": "f699c7344be3320a438a3a14a17824cc49329ffe301232f0a356bb38f0b91b1e",
-      "environmentFingerprint": "linux-x86_64:real-PTY-Hono-OrgTestDb:scripted-structured-engine:binary-993578d173e64a840c0785ab84f9e4e2c2da303559c6e3250d10cb3c508b2072"
+      "environmentFingerprint": "linux-x86_64:real-PTY-Hono-OrgTestDb:scripted-structured-engine:binary-07cbb10d73e57295555440c8ecc3b1823a4dba758fd85466e20e4f5528ef9286"
     }
   ],
   "pty": {
-    "command": "node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
-    "log": "/tmp/pui-p004-pty-final.log",
+    "command": "PUI_BIN=/mnt/data/cargo-target/debug/pui node scripts/test-files.mjs packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+    "log": "/tmp/pui-p004-pty-verified.log",
     "passed": 8,
     "failed": 0,
     "skipped": 0,
@@ -87,8 +87,8 @@
     ],
     "firstTurn": {
       "binary": "/mnt/data/cargo-target/debug/pui",
-      "binarySha256": "993578d173e64a840c0785ab84f9e4e2c2da303559c6e3250d10cb3c508b2072",
-      "chatId": "4fb88d50-5600-40ed-a942-53aad61af822",
+      "binarySha256": "07cbb10d73e57295555440c8ecc3b1823a4dba758fd85466e20e4f5528ef9286",
+      "chatId": "d90e7e6f-d6bd-464b-97ad-2f05a1bfc52b",
       "exactText": "  PUI exact Unicode draft λ 雪  ",
       "traffic": [
         {
@@ -106,25 +106,25 @@
         },
         {
           "method": "GET",
-          "path": "/api/harness/papercusp/agent-chats/4fb88d50-5600-40ed-a942-53aad61af822/su-session",
+          "path": "/api/harness/papercusp/agent-chats/d90e7e6f-d6bd-464b-97ad-2f05a1bfc52b/su-session",
           "status": 200,
           "count": 5
         },
         {
           "method": "GET",
-          "path": "/api/harness/papercusp/agent-chats/4fb88d50-5600-40ed-a942-53aad61af822/su-session/events",
+          "path": "/api/harness/papercusp/agent-chats/d90e7e6f-d6bd-464b-97ad-2f05a1bfc52b/su-session/events",
           "status": 200,
           "count": 2
         },
         {
           "method": "POST",
-          "path": "/api/harness/papercusp/agent-chats/4fb88d50-5600-40ed-a942-53aad61af822/su-session/commands",
+          "path": "/api/harness/papercusp/agent-chats/d90e7e6f-d6bd-464b-97ad-2f05a1bfc52b/su-session/commands",
           "status": 202,
           "count": 1
         }
       ]
     },
-    "resultLine": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=3c2b1cb764 uncommittedPaths=1/1 provenance=stamped startedAt=2026-09-07T16:28:36.749Z skippedTests=0"
+    "resultLine": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=ca2e1fac4d uncommittedPaths=0/1 provenance=unknown startedAt=2026-09-07T16:40:28.822Z skippedTests=0"
   },
   "implemented": [
     "Retain exact draft until matching host command/session ACK over HTTP or stream",
@@ -140,16 +140,38 @@
     "Current-built PUI, real PTY, production Hono/bootstrap/host and real isolated migrated PG; only external engine protocol peer is scripted. P005 owns installed/live-provider acceptance.",
     "Intermediate full PTY run failed7/8 and is preserved in /tmp/pui-p004-pty-all.log. Receipt-loss fixture had incorrectly filtered command instead of command_result; those failures did not prove lost receipt behavior until fixed.",
     "Printed temporary Vitest JSON report was deleted by the test-file router; this artifact preserves the actual stdout outcomes and structured acceptance record.",
-    "Prior Rust890unit+13integrationpass17ignored and cleanClippy precede final UI/replay/transcript changes. Current full Rust exec49916 is queued in pc-heavy, log /tmp/pui-p004-rust-full.log; no final result claimed."
+    "Named source/fixture hashes were captured before and checked after final PTY run; all matched. Global HEAD moved through git-sync; this is current-build acceptance, not a global commit/gate verdict."
   ],
   "findings": {
     "asyncIdentity": "EI-22619265790546745 done",
     "heartbeat": "EI-22619471490748377 done",
-    "draftGuidance": "EI-22620231573194732 held, PTY now passes"
+    "draftGuidance": "EI-22620231573194732 done"
   },
   "remaining": [
-    "Final Cargo full suite and Clippy",
     "Bind exact revision6 R01/R02 evidence, evaluate adequacy, emit cards and obtain independent audit",
     "Complete P004, proceed P005 onward including fullP016; preserve explicitP015publicpublicationgate"
-  ]
+  ],
+  "finalRegression": {
+    "command": "cd apps/tui && ../../scripts/pc-heavy.sh bash -c 'cargo test -- --quiet && cargo clippy --all-targets -- -D warnings'",
+    "log": "/tmp/pui-p004-rust-final.log",
+    "unitPassed": 892,
+    "integrationPassed": 13,
+    "failed": 0,
+    "ignored": 17,
+    "clippy": "passed",
+    "evidence": [
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.85s",
+      "test result: ok. 892 passed; 0 failed; 17 ignored; 0 measured; 0 filtered out; finished in 1.21s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+      "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+      "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.15s"
+    ],
+    "scope": "Final source. No gate-reserve override was applied; queued job completed normally."
+  },
+  "sourceCapture": {
+    "beforeAndAfterMatched": true,
+    "binaryMatched": true
+  }
 }
