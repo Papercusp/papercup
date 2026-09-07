@@ -26984,7 +26984,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

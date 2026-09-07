@@ -46,6 +46,12 @@ const rubric = (rubricId: string, criteriaCount: number) => ({
 
 beforeEach(() => vi.clearAllMocks());
 
+describe('rubrics:list — judge read access', () => {
+  it('allows the evidence-only judge role to discover rubric refs', () => {
+    expect(listTool.agentRoles).toContain('judge');
+  });
+});
+
 describe('rubrics:list — criteriaCount truthfulness', () => {
   it('a fully-authored rubric (N>0 criteria) reports criteriaCount === N, never 0', async () => {
     listM.mockResolvedValue([rubric('dumb-agent-execution', 6), rubric('stretch-discipline', 4)] as never);

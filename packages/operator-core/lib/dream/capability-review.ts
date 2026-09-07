@@ -12,7 +12,7 @@ import {
 } from './capability-pass';
 import { verifyCapabilityPacket, type BuildCapabilityPacketInput } from './capability-packets';
 import type { CapabilitySelection } from './capability-sampler';
-import { capabilityContentVersion } from './capability-sampler';
+import { capabilityContentVersion, CapabilityThirdRoleSchema } from './capability-sampler';
 import { resolveDreamReviewConfig, type DreamReviewConfig } from './dream-config';
 import type { DreamReviewUsage } from './dream-review';
 
@@ -33,6 +33,12 @@ const PriorSchema = z
     // Only a source-owned, freshly resolved identity can take the cheap duplicate path.
     candidateHash: hash.nullable(),
     evidenceHash: hash.nullable(),
+    locator: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('code'), id: ref }).strict(),
+      z.object({ kind: z.literal('plan'), id: ref }).strict(),
+      z.object({ kind: z.literal('dream'), id: ref }).strict(),
+      z.object({ kind: z.literal('idea'), id: ref, subref: ref }).strict(),
+    ]).optional(),
   })
   .strict();
 export type CapabilityReviewPrior = z.infer<typeof PriorSchema>;
@@ -179,15 +185,45 @@ export function capabilityProposalHash(candidate: CapabilityProposal): string {
 export function capabilityReviewEvidenceHash(selection: CapabilitySelection): string {
   return capabilityHash(
     JSON.stringify({
-      scope: selection.a.packet.scope,
+      scope: scopeSchema.parse(selection.a.packet.scope),
       units: [selection.a, selection.b, ...(selection.c ? [selection.c.entry] : [])].map((entry) => ({
         id: entry.packet.unit.id,
         unitHash: entry.packet.unitHash,
         sources: capabilityContentVersion(entry.packet),
       })),
-      thirdRole: selection.c?.declaration ?? null,
+      thirdRole: selection.c ? CapabilityThirdRoleSchema.parse(selection.c.declaration) : null,
     }),
   );
+}
+
+/** A review certifies one frozen candidate and source version, not future source bytes. */
+export async function verifyCapabilityReviewAdmission(input: {
+  candidate: CapabilityProposal; selection: CapabilitySelection; review: CapabilityReviewResult;
+  rootPath: string; manifest: CapabilityManifest; sources: CapabilityReviewSources; dreamerModel: string;
+}): Promise<{ admitted: true } | { admitted: false; reason: string }> {
+  try {
+    const { review, selection } = input;
+    const packets = Object.values(validateCapabilityDreamSelection(selection)).filter((p): p is CapabilityPacket => p !== null);
+    const parsed = parseCapabilityDreamPayload({ schemaVersion: CAPABILITY_DREAM_RESULT_VERSION, verdict: 'insight', candidate: input.candidate }, selection, 2_000);
+    if (!parsed.ok || review.schemaVersion !== CAPABILITY_REVIEW_VERSION || review.verdict !== 'accept' ||
+        review.reason !== 'supported-delta' || review.judgment?.verdict !== 'accept' ||
+        review.controls.aOnly?.unchanged !== false || review.controls.bOnly?.unchanged !== false ||
+        review.candidateHash !== capabilityProposalHash(input.candidate) || review.evidenceHash !== capabilityReviewEvidenceHash(selection) ||
+        !input.dreamerModel.trim() || review.usage.model.trim().toLowerCase() === input.dreamerModel.trim().toLowerCase() ||
+        !sameScope(review.coverage.scope, selection.a.packet.scope))
+      return { admitted: false, reason: 'Review is not bound to this independently reviewed candidate and source version' };
+    const checks = await Promise.all(packets.map(async (packet) => {
+      const unit = input.manifest.units.find((u) => u.id === packet.unit.id);
+      if (!unit) return false;
+      return (await verifyCapabilityPacket(packet, { rootPath: input.rootPath, scope: packet.scope, unit, manifestRevision: input.manifest.revision })).fresh;
+    }));
+    const current = await Promise.all(review.priorMatches.map((p) => input.sources.readCurrent(p)));
+    if (checks.some((fresh) => !fresh) || !review.priorMatches.length || current.some((p, i) => !samePrior(p, review.priorMatches[i]!)))
+      return { admitted: false, reason: 'Reviewed source or prior art is stale, missing, or unavailable' };
+    return { admitted: true };
+  } catch (error) {
+    return { admitted: false, reason: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** All three facets, including both primary units, drive independent bounded retrieval. */

@@ -2213,6 +2213,7 @@ pub struct App {
     pub chat_streaming: bool,
     /// Exact draft and command retained until the host acknowledges this turn.
     pub su_pending_turn: Option<PendingSuTurn>,
+    pub su_active_command_id: Option<String>,
     pub conversation_id: Option<String>,
     /// The agent-chat id backing this pane's SU-session transcript. Distinct
     /// from `conversation_id`, the legacy operator-converse lane used by voice.
@@ -2570,6 +2571,7 @@ impl App {
             chat_scroll: 0,
             chat_streaming: false,
             su_pending_turn: None,
+            su_active_command_id: None,
             conversation_id: None,
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
@@ -2685,6 +2687,7 @@ impl App {
         }
         let text = pending.content.clone();
         self.su_pending_turn = None;
+        self.su_active_command_id = Some(command_id.to_string());
         if self.chat_input == text {
             self.chat_input.clear();
         }
@@ -2697,6 +2700,7 @@ impl App {
     }
 
     fn fail_su_turn(&mut self, message: &str, uncertain: bool) {
+        let pending_draft = self.su_pending_turn.is_some();
         if let Some(pending) = self.su_pending_turn.as_mut() {
             pending.uncertain = uncertain;
             if self.chat_input.is_empty() {
@@ -2704,8 +2708,12 @@ impl App {
             }
         }
         self.finish_chat_turn();
+        self.su_active_command_id = None;
         self.last_error = Some(message.to_string());
-        self.session_note = Some(if uncertain {
+        self.session_note = Some(if !pending_draft {
+            "Session stopped — accepted messages remain in the transcript. Reconnect to continue."
+                .into()
+        } else if uncertain {
             "Delivery uncertain — draft retained. Enter checks the same turn.".into()
         } else {
             "Message not accepted — draft retained. Enter retries; Esc then s opens Sessions."
@@ -3086,6 +3094,7 @@ impl App {
                         .unwrap_or_else(|| "SU-session command refused".into());
                     state.error = Some(message.clone());
                     if command_type != "owner_turn"
+                        || self.su_active_command_id.as_deref() == Some(command_id.as_str())
                         || self
                             .su_pending_turn
                             .as_ref()
@@ -3107,10 +3116,16 @@ impl App {
                         if matches {
                             self.acknowledge_su_turn(&command_id);
                         }
-                        if status == "completed" {
+                        if status == "completed"
+                            && self.su_active_command_id.as_deref() == Some(command_id.as_str())
+                        {
+                            self.su_active_command_id = None;
                             self.finish_chat_turn();
                         }
-                    } else if status == "completed" {
+                    } else if status == "completed"
+                        && matches!(command_type.as_str(), "interrupt" | "end")
+                    {
+                        self.su_active_command_id = None;
                         self.finish_chat_turn();
                     }
                 }
@@ -18337,8 +18352,8 @@ mod tests {
         a.update(key('2', KeyModifiers::NONE)); // a digit types, does NOT switch tab
         assert_eq!(a.chat_input, "h2");
         assert_eq!(a.tab, Tab::Operator);
-        // Enter sends: appends the user msg + a streaming bubble, and carries the
-        // typed text into the dispatch. Since P-011 an UNBOUND conversation's
+        // Enter retains the draft until its correlated host acknowledgement.
+        // Since P-011 an UNBOUND conversation's
         // first turn opens an SU session rather than an untyped provider path;
         // what this test is about is that the composed text is what gets sent.
         match a.update(ev(KeyCode::Enter)) {
@@ -18347,16 +18362,19 @@ mod tests {
             }
             other => panic!("expected the SU-session default, got {other:?}"),
         }
-        assert!(a.chat_input.is_empty());
+        assert_eq!(a.chat_input, "h2");
         assert!(a.chat_streaming);
-        assert_eq!(a.chat_messages.len(), 2);
+        assert!(a.chat_messages.is_empty());
+        let id = a.su_pending_turn.as_ref().unwrap().command_id.clone();
+        a.acknowledge_su_turn(&id);
+        assert!(a.chat_input.is_empty());
+        assert_eq!(a.chat_messages.len(), 1);
         assert_eq!(a.chat_messages[0].role, "user");
         assert_eq!(a.chat_messages[0].content, "h2");
-        assert!(a.chat_messages[1].streaming);
         // Enter while a turn is in flight is a no-op send.
         a.chat_input = "again".into();
         assert_eq!(a.update(ev(KeyCode::Enter)), Action::Render);
-        assert_eq!(a.chat_messages.len(), 2);
+        assert_eq!(a.chat_messages.len(), 1);
     }
 
     #[test]
@@ -18396,6 +18414,8 @@ mod tests {
                 a.update(key(c, KeyModifiers::NONE));
             }
             a.update(arrow(KeyCode::Enter));
+            let id = a.su_pending_turn.as_ref().unwrap().command_id.clone();
+            a.acknowledge_su_turn(&id);
             a.update(Event::ChatDone); // finish the turn so the next Enter is allowed
         }
 
@@ -19235,7 +19255,7 @@ mod tests {
             }
             other => panic!("expected the dock's send to dispatch, got {other:?}"),
         }
-        assert_eq!(a.chat_input, "");
+        assert_eq!(a.chat_input, "hi", "dock retains unaccepted draft");
     }
 
     #[test]

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-004",
+  "workItem": "WI-10000426",
+  "status": "implementation-in-progress",
+  "files": {
+    "apps/tui/src/app.rs": "797910ea28ee83f6fb0e5072f073297b128e034b31b9373e354ec520d10369f9",
+    "apps/tui/src/main.rs": "4c7590970c76ea30349c793d387a261c96dbb005c1441bf9363bced5a428f9ab",
+    "apps/tui/src/event.rs": "dda75b98c35f77637d5e19e082b7a3c9e709e9f0aff6b0cf19add3a679bafd6c",
+    "apps/tui/src/su_session.rs": "90848d78721fadc76701d922b073062d23a112f03923cf532ec797774d8dd201",
+    "apps/tui/src/ui.rs": "88b81767d18c314fde974be5cd74673b12c922bbf33b89bca6c41e9de1549e13",
+    "apps/tui/src/http.rs": "8e04bf63825998452e8924f0f840dfc70aa374c0bafd3028ecdead44e6262792",
+    "apps/tui/src/ipc.rs": "78a73ab88280751d66766d2f1601c21b34f266c28c01756602eb28c03465f49b"
+  },
+  "implemented": [
+    "Exact composer text retained until matching command/session acknowledgement",
+    "Same wire command retained on unknown delivery; retry reuses commandId, timestamp, target and text",
+    "First turn requires attached executor plus usable stream; identity checks precede dispatch",
+    "Startup retry reuses existing agent-chat identity",
+    "Typed HTTP errors preserved through HTTP and IPC; known refusal vs unknown delivery remain distinct",
+    "Session/startup/stream/command failures release busy state and show retained draft",
+    "30-second startup stream and acknowledgement deadlines"
+  ],
+  "verification": {
+    "rustUnit": {
+      "passed": 887,
+      "failed": 0,
+      "ignored": 17
+    },
+    "rustIntegration": {
+      "passed": 13,
+      "failed": 0
+    },
+    "clippy": "cargo clippy --all-targets -- -D warnings passed after final edit",
+    "liveIpc": "cargo test live_ipc_smoke -- --ignored --nocapture passed 1/1",
+    "commands": [
+      "cd apps/tui && ../../scripts/pc-heavy.sh cargo test -- --quiet",
+      "cd apps/tui && ../../scripts/pc-heavy.sh cargo clippy --all-targets -- -D warnings",
+      "cd apps/tui && ../../scripts/pc-heavy.sh cargo test live_ipc_smoke -- --ignored --nocapture"
+    ],
+    "scopeNote": "Full Cargo suite passed before a signature-only tuple grouping required by Clippy. Clippy and the live IPC test compiled the final files. No actual PTY acceptance result is claimed."
+  },
+  "remaining": [
+    "Actual PUI PTY composer send/ACK/reply/tool and no native UI action",
+    "Real PUI interrupted startup, refused acknowledgement and uncertain retry/draft retention",
+    "Review HTTP/stream ordering using production host and isolated PG",
+    "Exact revision6 R01/R02 evidence binding, adequacy cards and independent audits",
+    "P005 installed first-engine journey and all remaining plan items including full P016; P015 public publication approval gate"
+  ],
+  "reuse": "Use existing pui-e2e VtScreen/node-pty and production Hono/OrgTestDb fixture. Existing agent-chat-pty test uses the retired ModelPort fixture; adapt the engine boundary to the structured SU host."
+}

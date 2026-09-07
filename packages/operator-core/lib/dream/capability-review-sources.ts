@@ -178,9 +178,9 @@ export function buildCapabilityReviewSources(
     packets.set(packet.unit.id, packet);
   }
   const locators = new Map<string, { kind: 'plan' | 'idea' | 'dream' | 'code'; id: string; subref?: string }>();
-  const remember = (p: CapabilityReviewPrior, locator: typeof locators extends Map<string, infer T> ? T : never) => {
+  const remember = (p: CapabilityReviewPrior, locator: NonNullable<CapabilityReviewPrior['locator']>) => {
     locators.set(p.ref, locator);
-    return p;
+    return { ...p, locator };
   };
   async function fresh(packet: CapabilityPacket) {
     const unit = input.manifest.units.find((u) => u.id === packet.unit.id);
@@ -269,24 +269,25 @@ export function buildCapabilityReviewSources(
     readCurrent: async (p, signal) => {
       signal?.throwIfAborted();
       if (!sameScope(p.scope, scope)) return null;
-      const locator = locators.get(p.ref);
+      const locator = locators.get(p.ref) ?? p.locator;
       if (!locator) return null;
+      const located = (value: CapabilityReviewPrior | null) => value?.ref === p.ref ? { ...value, ...(p.locator ? { locator: p.locator } : {}) } : null;
       if (locator.kind === 'code') {
         const packet = packets.get(locator.id)!;
         await fresh(packet);
-        return packetPriors(packet).find((current) => current.ref === p.ref) ?? null;
+        return located(packetPriors(packet).find((current) => current.ref === p.ref) ?? null);
       }
       if (locator.kind === 'plan') {
         const row = await deps.plan(locator.id, planOpts);
-        return row ? planPrior(scope, row) : null;
+        return located(row ? planPrior(scope, row) : null);
       }
       if (locator.kind === 'idea') {
         const ideas = await deps.ideas({ ...ideaOpts, ideaIds: [locator.id] });
         const idea = ideas.find((i) => i.routedRef === locator.subref);
-        return idea ? ideaPrior(scope, idea) : null;
+        return located(idea ? ideaPrior(scope, idea) : null);
       }
       const run = await deps.run(input.sql, { workspaceId: scope.workspaceId, runId: locator.id });
-      return run ? runPrior(scope, run) : null;
+      return located(run ? runPrior(scope, run) : null);
     },
   };
 }
