@@ -28,6 +28,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
@@ -125,6 +126,24 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
+  });
+
+  it.each([200, 400])('retains bounded response evidence and browser identity in the real health probe (%i)', async (status) => {
+    const probe = src.match(/    const timeoutMs = \$\{HEALTH_PROBE_TIMEOUT\}[\s\S]*?\n  " 2>&1/)?.[0]
+      .replace('${HEALTH_PROBE_TIMEOUT}', '8').replace(/\n  " 2>&1$/, '');
+    expect(probe).toBeTruthy();
+    const body = JSON.stringify({ error: 'unknown_workspace', workspace: 'wrong-window' }) + 'x'.repeat(1400);
+    const result = JSON.parse(await runInNewContext(probe!, {
+      AbortSignal, URL,
+      window: { __PAPERCUSP_WS__: 'wrong-window', location: { href: 'http://127.0.0.1:33700/?ws=private-window' } },
+      fetch: async (url: string) => new Response(url === '/api/health' ? body : 'ok', { status: url === '/api/health' ? status : 200 }),
+    }));
+    expect(result.apiHealth).toBe(status);
+    expect(result.rootHtml).toBe(200);
+    expect(result.apiHealthError).toBe(status === 400 ? body.slice(0, 1200) : undefined);
+    expect(result.rootHtmlError).toBeUndefined();
+    expect(result.browserWorkspace).toBe('wrong-window');
+    expect(result.queryWorkspace).toBe('private-window');
   });
 
   it('wins over .env.local DATABASE_URL via the admin/app URL resolver precedence', () => {
