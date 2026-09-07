@@ -69,6 +69,9 @@ describe('verify-tauri-headless tauri-agent-tools dependency', () => {
 
     expect(health).toBeTruthy();
     expect(health).toContain('"$VERIFY_TAURI_AGENT_TOOLS_BIN" eval');
+    expect(health).toContain('HEALTH_PROBE_TIMEOUT="${VERIFY_TAURI_HEALTH_PROBE_TIMEOUT:-8}"');
+    expect(health).toContain('timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s"');
+    expect(health).toContain('AbortSignal.timeout(timeoutMs)');
     expect(health).toContain('HEALTH_PROBE_STATUS" -eq 126');
     expect(health).toContain(
       'This is a verifier dependency/PATH failure, not evidence that the webview origin is unreachable.',

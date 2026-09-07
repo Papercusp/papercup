@@ -252,6 +252,12 @@
 #                                ~4-minute build+boot investment because this
 #                                clock alone was too tight, same rationale as
 #                                VERIFY_TAURI_BUILD_TIMEOUT above)
+#   VERIFY_TAURI_HEALTH_PROBE_TIMEOUT
+#                               seconds allowed for each individual in-webview
+#                               origin probe (default 8). A navigation can
+#                               destroy the evaluated JS context without
+#                               resolving tauri-agent-tools; this bound lets the
+#                               outer HEALTH_TIMEOUT loop retry on the new page.
 #   VERIFY_TAURI_DOM_TIMEOUT    seconds VERIFY_TAURI_POLL waits for a DOM
 #                                assertion after navigation (default 30)
 #   VERIFY_TAURI_DOM_POLL_INTERVAL
@@ -3111,6 +3117,15 @@ export VERIFY_TAURI_POLL="$POLL"
 # EI-21894787139229424: was 15s — too tight for a substrate-booting sidecar
 # under fleet load; see the VERIFY_TAURI_HEALTH_TIMEOUT header doc above.
 HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-120}"
+HEALTH_PROBE_TIMEOUT="${VERIFY_TAURI_HEALTH_PROBE_TIMEOUT:-8}"
+case "$HEALTH_TIMEOUT" in
+  ''|*[!0-9]*) echo "FATAL: VERIFY_TAURI_HEALTH_TIMEOUT must be a positive integer" >&2; exit 2 ;;
+esac
+case "$HEALTH_PROBE_TIMEOUT" in
+  ''|*[!0-9]*) echo "FATAL: VERIFY_TAURI_HEALTH_PROBE_TIMEOUT must be a positive integer" >&2; exit 2 ;;
+esac
+[ "$HEALTH_TIMEOUT" -gt 0 ] || { echo "FATAL: VERIFY_TAURI_HEALTH_TIMEOUT must be > 0" >&2; exit 2; }
+[ "$HEALTH_PROBE_TIMEOUT" -gt 0 ] || { echo "FATAL: VERIFY_TAURI_HEALTH_PROBE_TIMEOUT must be > 0" >&2; exit 2; }
 HEALTH_DEADLINE=$((SECONDS + HEALTH_TIMEOUT))
 HEALTH_JSON=""
 HEALTH_PROBE_STATUS=0
@@ -3119,11 +3134,25 @@ while :; do
     exit 1
   fi
   HEALTH_PROBE_STATUS=0
-  HEALTH_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+  # EI-22627117414188444: a navigation can destroy this evaluated context and
+  # strand the bridge callback forever. Bound BOTH the fetches and the CLI
+  # process so one attempt cannot consume the entire outer retry budget.
+  HEALTH_JSON="$(timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s" "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+    const timeoutMs = ${HEALTH_PROBE_TIMEOUT} * 1000;
+    const inspectResponse = async r => ({
+      status: r.status,
+      errorBody: r.ok ? undefined : (await r.text()).slice(0, 1200)
+    });
+    const inspectError = e => ({ status: 'ERR:' + e.message });
     Promise.all([
-      fetch('/api/health').then(r => r.status).catch(e => 'ERR:' + e.message),
-      fetch('/').then(r => r.status).catch(e => 'ERR:' + e.message)
-    ]).then(v => JSON.stringify({ apiHealth: v[0], rootHtml: v[1] }))
+      fetch('/api/health', { signal: AbortSignal.timeout(timeoutMs) }).then(inspectResponse).catch(inspectError),
+      fetch('/', { signal: AbortSignal.timeout(timeoutMs) }).then(inspectResponse).catch(inspectError)
+    ]).then(v => JSON.stringify({
+      apiHealth: v[0].status, rootHtml: v[1].status,
+      apiHealthError: v[0].errorBody, rootHtmlError: v[1].errorBody,
+      browserWorkspace: window.__PAPERCUSP_WS__ || null,
+      queryWorkspace: new URL(window.location.href).searchParams.get('ws')
+    }))
   " 2>&1)" || HEALTH_PROBE_STATUS=$?
   if [ "$HEALTH_PROBE_STATUS" -eq 0 ] \
     && echo "$HEALTH_JSON" | grep -Eq '"apiHealth"[[:space:]]*:[[:space:]]*200' \
