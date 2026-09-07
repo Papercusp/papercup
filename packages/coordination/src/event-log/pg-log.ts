@@ -365,6 +365,61 @@ function readEventsCacheRefreshMs(): number {
 function readEventsCacheEnabled(): boolean {
   return process.env.PAPERCUSP_COORD_READEVENTS_CACHE !== '0';
 }
+
+/**
+ * Bound every full/rebuild read. The cache
+ * is process-local, so a fleet of fresh operator processes can legitimately
+ * prime the same (workspace, surface) key at once; leaving the prime query
+ * unbounded still makes each process a furnace even though later calls use the
+ * watermark. The `(workspace_id, surface, id)` index makes this forward keyset
+ * pagination cheap and preserves the same complete `id ASC` result.
+ */
+export const COORD_LOG_READ_PAGE_SIZE = 10_000;
+
+interface CoordLogRow {
+  id: string | number;
+  body: unknown;
+  ts: Date;
+  msg_id: string;
+}
+
+async function readCoordLogRows(
+  sql: Sql,
+  workspaceId: string,
+  surface: LineSurface | EventSurface,
+  startAfterId: number | null = null,
+): Promise<CoordLogRow[]> {
+  const all: CoordLogRow[] = [];
+  let afterId = startAfterId;
+
+  for (;;) {
+    const page =
+      afterId === null
+        ? await sql<CoordLogRow[]>`
+            SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
+             WHERE workspace_id = ${workspaceId} AND surface = ${surface}
+             ORDER BY id ASC
+             LIMIT ${COORD_LOG_READ_PAGE_SIZE}
+          `
+        : await sql<CoordLogRow[]>`
+            SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
+             WHERE workspace_id = ${workspaceId} AND surface = ${surface} AND id > ${afterId}
+             ORDER BY id ASC
+             LIMIT ${COORD_LOG_READ_PAGE_SIZE}
+          `;
+    if (page.length === 0) break;
+
+    all.push(...page);
+    const nextId = Number(page[page.length - 1].id);
+    if (!Number.isFinite(nextId) || (afterId !== null && nextId <= afterId)) {
+      throw new Error(`coord_event_log pagination did not advance for surface=${surface}`);
+    }
+    afterId = nextId;
+    if (page.length < COORD_LOG_READ_PAGE_SIZE) break;
+  }
+
+  return all;
+}
 /** The readEvents return contract: envelopes in `id ASC` (append) order —
  *  identical to the pre-cache `ORDER BY id ASC` read. */
 function sortedEventEnvelopes(entry: ReadEventsCacheEntry): CoordEnvelope[] {
@@ -589,11 +644,7 @@ export class PgCoordLog implements CoordEventLog {
     // read-only (they always received fresh parses before and never mutated
     // them). Kill switch: PAPERCUSP_COORD_READLINES_CACHE=0.
     if (!readLinesCacheEnabled()) {
-      const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
-        SELECT body, ts, msg_id FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-         ORDER BY id ASC
-      `;
+      const rows = await readCoordLogRows(sql, this.resolveWs(), surface);
       return rows.map((r) => parseBody(r.body, r));
     }
 
@@ -632,12 +683,9 @@ export class PgCoordLog implements CoordEventLog {
 
     if (!entry) {
       // Full (re)read — first call for this key, or a deletion was detected above.
-      // int8 `id` arrives as a STRING from postgres-js — Number() everywhere.
-      const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
-        SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${ws} AND surface = ${surface}
-         ORDER BY id ASC
-      `;
+      // The full rebuild itself is keyset-paged; int8 `id` arrives as a STRING
+      // from postgres-js — Number() everywhere.
+      const rows = await readCoordLogRows(sql, ws, surface);
       const recentIds = new Set<number>();
       for (let i = Math.max(0, rows.length - READLINES_CACHE_RECENT_IDS); i < rows.length; i++) {
         recentIds.add(Number(rows[i].id));
@@ -654,11 +702,7 @@ export class PgCoordLog implements CoordEventLog {
 
     // Delta read: only rows past the watermark, minus the overlap window.
     const sinceId = Math.max(0, entry.maxId - READLINES_CACHE_OVERLAP_IDS);
-    const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
-      SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${ws} AND surface = ${surface} AND id > ${sinceId}
-       ORDER BY id ASC
-    `;
+    const rows = await readCoordLogRows(sql, ws, surface, sinceId);
     for (const r of rows) {
       const idNum = Number(r.id);
       if (entry.recentIds.has(idNum)) continue; // already folded (overlap / concurrent delta)
@@ -788,11 +832,7 @@ export class PgCoordLog implements CoordEventLog {
     // envelope OBJECTS shared across calls (callers treat them as read-only),
     // `id ASC` order. Kill switch: PAPERCUSP_COORD_READEVENTS_CACHE=0.
     if (!readEventsCacheEnabled()) {
-      const rows = await sql<{ body: unknown; ts: Date; msg_id: string }[]>`
-        SELECT body, ts, msg_id FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
-         ORDER BY id ASC
-      `;
+      const rows = await readCoordLogRows(sql, this.resolveWs(), surface);
       return rows.map((r) => parseBody(r.body, r));
     }
 
@@ -830,12 +870,9 @@ export class PgCoordLog implements CoordEventLog {
 
     if (!entry) {
       // Full (re)read — first call for this key, or a deletion was detected above.
-      // int8 `id` arrives as a STRING under default postgres-js — Number().
-      const rows = await sql<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
-        SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${ws} AND surface = ${surface}
-         ORDER BY id ASC
-      `;
+      // The full rebuild itself is keyset-paged; int8 `id` arrives as a STRING
+      // from postgres-js — Number().
+      const rows = await readCoordLogRows(sql, ws, surface);
       const byMsgId = new Map<string, { id: number; envelope: CoordEnvelope }>();
       let maxId = 0;
       for (const r of rows) {

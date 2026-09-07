@@ -176,6 +176,30 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
     });
   });
 
+  it('lets the explicit stale-plan recovery path reach the current fleet binding', async () => {
+    const stalePlanReaders = emptyReaders();
+    stalePlanReaders.plan.mockResolvedValue({
+      stale: true,
+      refs: ['retired-plan'],
+      detail: 'bound plan no longer resolves',
+    });
+    stalePlanReaders.fleet.mockResolvedValue({ harnesses: ['papercusp'], refs: ['fleet-slug'] });
+
+    await expect(
+      resolveInheritedHarnessScope({ ownerId: 'su-1', workspaceId: 'ws-1' }, stalePlanReaders),
+    ).resolves.toMatchObject({ kind: 'none', reason: 'stale', source: 'plan' });
+    expect(stalePlanReaders.fleet).not.toHaveBeenCalled();
+
+    const recovered = await resolveInheritedHarnessScope(
+      { ownerId: 'su-1', workspaceId: 'ws-1', allowStalePlanFallback: true },
+      stalePlanReaders,
+    );
+    expect(recovered).toMatchObject({ kind: 'harness', slug: 'papercusp', source: 'fleet' });
+    expect(recovered.candidates).toEqual([
+      { source: 'fleet', harnessSlug: 'papercusp', refs: ['fleet-slug'] },
+    ]);
+  });
+
   it('keeps the explicit all sentinel distinct from one-harness inference', async () => {
     const result = await resolveInheritedHarnessScope({ explicitHarness: 'all' }, emptyReaders());
     expect(result).toEqual({ kind: 'all', source: 'explicit', candidates: [], conflictingBindings: [] });

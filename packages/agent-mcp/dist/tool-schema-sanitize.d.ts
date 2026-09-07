@@ -27,9 +27,24 @@
  * the literal `additionalProperties: false`. Everything else is copied
  * byte-for-byte.
  */
+/** `inputSchema` (what a model must GENERATE args against) vs `outputSchema`
+ *  (what the MCP client SDK VALIDATES the tool's real return value against —
+ *  see `Client.callTool` in `@modelcontextprotocol/sdk`, which fetches
+ *  `tool.outputSchema` from tools/list and runs a real JSON-Schema validator
+ *  over `result.structuredContent`). The two need DIFFERENT "matches anything"
+ *  encodings — see `boolToSchema` — so every objectifying helper takes this. */
+export type SanitizePosition = "input" | "output";
 /**
- * Recursively objectify boolean sub-schemas in `properties[*]` and `items`
- * positions. Returns a new value; the input is not mutated. Non-object
- * input (incl. a top-level boolean) is returned as-is.
+ * @param position `"input"` (default, unchanged behavior) objectifies
+ *   unconstrained/boolean sub-schemas to `type: "object"` so they survive
+ *   OMP's outbound request-building collapse (see `boolToSchema`) — correct
+ *   for an `inputSchema`, which only describes what a MODEL must generate.
+ *   `"output"` keeps them as a plain annotated object (never a bare boolean,
+ *   so Ollama's Go unmarshal into `api.ToolProperty` still succeeds) WITHOUT
+ *   constraining the JSON type, because an `outputSchema` is validated by the
+ *   MCP client SDK against the tool's REAL return value
+ *   (EI-22064217935223876) — forcing `type: "object"` there rejects any
+ *   non-object return value a `z.unknown()`/`z.any()` result field legitimately
+ *   carries (a string, number, array, or boolean).
  */
-export declare function sanitizeToolSchema<T>(node: T): T;
+export declare function sanitizeToolSchema<T>(node: T, position?: SanitizePosition): T;

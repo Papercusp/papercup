@@ -60,18 +60,54 @@ export interface BulkEnvelope<R extends BulkItemResult = BulkItemResult> {
     };
 }
 /**
- * Run an async per-item `op` over `items` SEQUENTIALLY, collecting one result
- * per item and NEVER throwing on a single failure. `op` returns the
+ * The `BulkEnvelope` interface above, as a runtime schema — so a bulk tool's
+ * `result:` (and therefore its DERIVED `outputJsonSchema`) states the envelope
+ * structurally instead of only describing it in `guidance.returns` prose.
+ *
+ * Why this lives here rather than in each tool: this module is already "the
+ * single implementation every bulk verb routes through — reuse it, do NOT
+ * re-hand-roll the loop + envelope in each tool". A per-tool hand-written
+ * envelope schema is exactly that re-hand-rolling, one layer up, and it would
+ * drift from `runBulk`'s actual output the moment either side changed. Declaring
+ * it beside the interface and the producer keeps all three in one place.
+ *
+ * The per-item schema is deliberately OPEN (`.passthrough()`). That is a
+ * description, not a shortcut: `runBulk` results are assembled from per-tool
+ * spreads (work_items:release alone spreads delta / stranding / completion /
+ * claimHoldFailure / reasonDisclosure), so the only fields every bulk result is
+ * guaranteed to carry are `ok`, the self-describing correlation key, and `error`
+ * on failure. Pinning more here would assert a shape the producer does not
+ * promise. Pass a concrete `item` schema when a specific tool's per-item result
+ * genuinely is closed.
+ */
+export declare function bulkEnvelopeSchema<T extends z.ZodTypeAny>(item?: T): z.ZodObject<{
+    ok: z.ZodLiteral<true>;
+    results: z.ZodArray<T | z.ZodObject<{
+        ok: z.ZodBoolean;
+        error: z.ZodOptional<z.ZodString>;
+    }, z.core.$loose>>;
+    counts: z.ZodObject<{
+        ok: z.ZodNumber;
+        failed: z.ZodNumber;
+    }, z.core.$strip>;
+}, z.core.$strip>;
+/**
+ * Run an async per-item `op` over `items`, collecting one result per item and
+ * NEVER throwing on a single failure. Execution is sequential by default;
+ * callers whose per-item operations are independent may opt into a bounded
+ * worker pool with `maxConcurrency`. `op` returns the
  * self-describing result (it embeds the item's key). A thrown error becomes
  * `{ ok:false, ...keyOf(item), error }` so even a crash self-describes its key.
  * Returns the house envelope `{ ok, results, counts }`.
  *
- * Sequential by design — matches work_items:batch and avoids hammering the PG
- * pool. Result order follows input order as a convenience; the CONTRACT is the
- * embedded key, not the index.
+ * The serial default matches work_items:batch and avoids hammering the PG pool.
+ * Opt-in concurrency remains bounded, and completion order never leaks into
+ * the envelope: result order follows input order as a convenience; the CONTRACT
+ * is the embedded key, not the index.
  */
 export declare function runBulk<I, R extends BulkItemResult>(items: readonly I[], op: (item: I, index: number) => Promise<R>, opts?: {
     keyOf?: (item: I, index: number) => Record<string, unknown>;
+    maxConcurrency?: number;
 }): Promise<BulkEnvelope<R>>;
 /**
  * Wrap a bulk envelope (or any JSON payload) in the framework's NATIVE canonical

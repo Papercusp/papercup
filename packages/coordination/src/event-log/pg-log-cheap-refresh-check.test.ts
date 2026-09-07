@@ -35,7 +35,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { PgCoordLog } from './pg-log';
+import { COORD_LOG_READ_PAGE_SIZE, PgCoordLog } from './pg-log';
 
 /** One row as it would come back from postgres-js for the FULL/delta readers:
  *  int8 `id` arrives as a STRING under default postgres-js. */
@@ -95,6 +95,9 @@ function makeRoutedFakeSql(script: {
     } else {
       kind = 'other';
       rows = [];
+    }
+    if (kind === 'full-select' && text.includes('LIMIT ?')) {
+      rows = rows.slice(0, COORD_LOG_READ_PAGE_SIZE);
     }
     calls.push({ kind, text });
     return {
@@ -244,6 +247,28 @@ describe('PgCoordLog TTL re-check is a cheap COUNT, not an unconditional full re
       expect(countCalls(calls, 'count')).toBe(0);
       expect(out.map((e) => e.msg_id)).toEqual(['m1']);
     });
+
+    it('bounds a cache prime/rebuild with keyset pages while preserving the complete stream', async () => {
+      const firstPage = Array.from({ length: COORD_LOG_READ_PAGE_SIZE }, (_, i) => makeRow(i + 1, `m${i + 1}`));
+      const next = makeRow(COORD_LOG_READ_PAGE_SIZE + 1, `m${COORD_LOG_READ_PAGE_SIZE + 1}`);
+      const { sql, calls } = makeRoutedFakeSql({
+        count: () => [],
+        fullSelect: () => [...firstPage, next],
+        deltaSelect: () => [next],
+      });
+
+      const out = await makeLog(sql).readLines('messages');
+
+      expect(out).toHaveLength(COORD_LOG_READ_PAGE_SIZE + 1);
+      expect(out.at(-1)?.msg_id).toBe(next.msg_id);
+      expect(countCalls(calls, 'full-select')).toBe(1);
+      expect(countCalls(calls, 'delta-select')).toBe(1);
+      expect(
+        calls
+          .filter((call) => call.kind === 'full-select' || call.kind === 'delta-select')
+          .every((call) => call.text.includes('LIMIT ?')),
+      ).toBe(true);
+    });
   });
 
   describe('readEvents (EVENT surface, e.g. escalations)', () => {
@@ -327,6 +352,28 @@ describe('PgCoordLog TTL re-check is a cheap COUNT, not an unconditional full re
 
       expect(countCalls(calls, 'count')).toBe(0);
       expect(out.map((e) => e.msg_id)).toEqual(['e1']);
+    });
+
+    it('bounds an event-surface cache prime/rebuild with keyset pages while preserving the complete stream', async () => {
+      const firstPage = Array.from({ length: COORD_LOG_READ_PAGE_SIZE }, (_, i) => makeRow(i + 1, `e${i + 1}`));
+      const next = makeRow(COORD_LOG_READ_PAGE_SIZE + 1, `e${COORD_LOG_READ_PAGE_SIZE + 1}`);
+      const { sql, calls } = makeRoutedFakeSql({
+        count: () => [],
+        fullSelect: () => [...firstPage, next],
+        deltaSelect: () => [next],
+      });
+
+      const out = await makeLog(sql).readEvents('escalations');
+
+      expect(out).toHaveLength(COORD_LOG_READ_PAGE_SIZE + 1);
+      expect(out.at(-1)?.msg_id).toBe(next.msg_id);
+      expect(countCalls(calls, 'full-select')).toBe(1);
+      expect(countCalls(calls, 'delta-select')).toBe(1);
+      expect(
+        calls
+          .filter((call) => call.kind === 'full-select' || call.kind === 'delta-select')
+          .every((call) => call.text.includes('LIMIT ?')),
+      ).toBe(true);
     });
   });
 });

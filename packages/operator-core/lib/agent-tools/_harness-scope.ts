@@ -130,6 +130,12 @@ export interface HarnessScopeInheritanceInput {
   /** Exact plan identities already bound by the caller. Presence supplies this when omitted. */
   planSlugs?: readonly string[];
   sessionHarness?: string | null;
+  /**
+   * Recovery-only escape for the coord:orient bootstrap: a missing plan binding
+   * may be skipped so a current fleet/brief binding can restore the session.
+   * Ordinary resolution remains fail-closed on stale durable bindings.
+   */
+  allowStalePlanFallback?: boolean;
 }
 
 export interface HarnessScopeInheritanceReaders {
@@ -381,6 +387,10 @@ export async function resolveInheritedHarnessScope(
     ].map((harnessSlug) => ({ source, harnessSlug, refs }));
     candidates.push(...sourceCandidates);
     if (read.stale) {
+      // coord:orient is the recovery surface for a session whose launch-bound
+      // plan was retired or moved. Let that one caller continue to a current
+      // fleet/brief binding; every ordinary resolver still fails closed here.
+      if (source === 'plan' && input.allowStalePlanFallback) continue;
       return {
         kind: 'none',
         reason: 'stale',

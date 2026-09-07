@@ -63,21 +63,64 @@ export function mergeIds(single, many) {
     return out;
 }
 /**
- * Run an async per-item `op` over `items` SEQUENTIALLY, collecting one result
- * per item and NEVER throwing on a single failure. `op` returns the
+ * The `BulkEnvelope` interface above, as a runtime schema — so a bulk tool's
+ * `result:` (and therefore its DERIVED `outputJsonSchema`) states the envelope
+ * structurally instead of only describing it in `guidance.returns` prose.
+ *
+ * Why this lives here rather than in each tool: this module is already "the
+ * single implementation every bulk verb routes through — reuse it, do NOT
+ * re-hand-roll the loop + envelope in each tool". A per-tool hand-written
+ * envelope schema is exactly that re-hand-rolling, one layer up, and it would
+ * drift from `runBulk`'s actual output the moment either side changed. Declaring
+ * it beside the interface and the producer keeps all three in one place.
+ *
+ * The per-item schema is deliberately OPEN (`.passthrough()`). That is a
+ * description, not a shortcut: `runBulk` results are assembled from per-tool
+ * spreads (work_items:release alone spreads delta / stranding / completion /
+ * claimHoldFailure / reasonDisclosure), so the only fields every bulk result is
+ * guaranteed to carry are `ok`, the self-describing correlation key, and `error`
+ * on failure. Pinning more here would assert a shape the producer does not
+ * promise. Pass a concrete `item` schema when a specific tool's per-item result
+ * genuinely is closed.
+ */
+export function bulkEnvelopeSchema(item) {
+    return z.object({
+        ok: z.literal(true),
+        results: z.array(item ??
+            z
+                .object({
+                ok: z.boolean(),
+                error: z.string().optional(),
+            })
+                .passthrough()),
+        counts: z.object({
+            ok: z.number().int().nonnegative(),
+            failed: z.number().int().nonnegative(),
+        }),
+    });
+}
+/**
+ * Run an async per-item `op` over `items`, collecting one result per item and
+ * NEVER throwing on a single failure. Execution is sequential by default;
+ * callers whose per-item operations are independent may opt into a bounded
+ * worker pool with `maxConcurrency`. `op` returns the
  * self-describing result (it embeds the item's key). A thrown error becomes
  * `{ ok:false, ...keyOf(item), error }` so even a crash self-describes its key.
  * Returns the house envelope `{ ok, results, counts }`.
  *
- * Sequential by design — matches work_items:batch and avoids hammering the PG
- * pool. Result order follows input order as a convenience; the CONTRACT is the
- * embedded key, not the index.
+ * The serial default matches work_items:batch and avoids hammering the PG pool.
+ * Opt-in concurrency remains bounded, and completion order never leaks into
+ * the envelope: result order follows input order as a convenience; the CONTRACT
+ * is the embedded key, not the index.
  */
 export async function runBulk(items, op, opts) {
-    const results = [];
-    let ok = 0;
-    let failed = 0;
-    for (let i = 0; i < items.length; i += 1) {
+    const results = new Array(items.length);
+    const requestedConcurrency = opts?.maxConcurrency ?? 1;
+    const maxConcurrency = Number.isFinite(requestedConcurrency)
+        ? Math.max(1, Math.floor(requestedConcurrency))
+        : 1;
+    let nextIndex = 0;
+    const runOne = async (i) => {
         let r;
         try {
             r = await op(items[i], i);
@@ -89,12 +132,19 @@ export async function runBulk(items, op, opts) {
                 error: e instanceof Error ? e.message : String(e),
             };
         }
-        if (r.ok)
-            ok += 1;
-        else
-            failed += 1;
-        results.push(r);
-    }
+        results[i] = r;
+    };
+    const worker = async () => {
+        while (nextIndex < items.length) {
+            const i = nextIndex;
+            nextIndex += 1;
+            await runOne(i);
+        }
+    };
+    const workerCount = Math.min(items.length, maxConcurrency);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    const ok = results.filter((result) => result.ok).length;
+    const failed = results.length - ok;
     return { ok: true, results, counts: { ok, failed } };
 }
 /**
