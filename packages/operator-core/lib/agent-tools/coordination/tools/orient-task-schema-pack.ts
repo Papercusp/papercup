@@ -203,6 +203,17 @@ function compactSchema(schema: unknown): string | null {
         ? [root]
         : [];
   const terminalContracts = new Map<string, { fragment: string; priority: number }>();
+  const completionHasRootCauseContract = rawBranches.some((rawBranch) => {
+    if (!rawBranch || typeof rawBranch !== 'object' || Array.isArray(rawBranch)) return false;
+    const properties = (rawBranch as Record<string, unknown>).properties;
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return false;
+    const completion = (properties as Record<string, unknown>).completion;
+    if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
+    const description = (completion as Record<string, unknown>).description;
+    return typeof description === 'string'
+      && /rootCauseVerification/.test(description)
+      && /bug\/capability-gap/.test(description);
+  });
   for (const rawBranch of rawBranches) {
     if (!rawBranch || typeof rawBranch !== 'object' || Array.isArray(rawBranch)) continue;
     const properties = (rawBranch as Record<string, unknown>).properties;
@@ -219,12 +230,16 @@ function compactSchema(schema: unknown): string | null {
       const fragment = schemaToText({ type: 'object', properties: { [name]: rawProperty } });
       if (!fragment && !isCompletion) continue;
 
-      // Keep the structured-completion marker short enough to share the bounded
-      // suffix with the terminal assumptions contract. The full schema remains
-      // available through tools/list_changed; this marker prevents a recovery
-      // caller from mistaking the write for a prose-only shorthand.
+      // Keep the terminal markers short enough to share the bounded suffix. The
+      // full schema remains available through tools/list_changed, but a recovery
+      // caller still needs the conditional root-cause contract: omitting it makes
+      // a valid-looking bug close fail only after the write is attempted.
       const compactFragment = isCompletion
-        ? `${name}?:object structured record`
+        ? completionHasRootCauseContract
+          ? `${name}?:object; rootCauseVerification required {hypothesis,alternativeHypothesis,distinguishingTest,testResult}`
+          : `${name}?:object structured record`
+        : name === 'assumptions' && completionHasRootCauseContract
+          ? `${name}?:terminal close; record-only; \"none\"|facts`
         : fragment;
       if (compactFragment) {
         terminalContracts.set(name, {

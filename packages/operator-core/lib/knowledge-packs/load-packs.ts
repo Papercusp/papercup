@@ -136,6 +136,8 @@ export interface LoadedKnowledgePack {
   source: KnowledgePackSource;
   /** Per-item parse problems for a pack that still loaded (none ⇒ clean). */
   warnings: string[];
+  /** Exact resolved directory for the composition compiler's complete-content pin. */
+  directory?: string;
 }
 
 /**
@@ -194,7 +196,7 @@ async function readPackDir(
   if (packErrors.length > 0) {
     return { errors: packErrors.map((e) => `${manifest.id}: ${e}`) };
   }
-  return { loaded: { pack, source, warnings }, errors };
+  return { loaded: { pack, source, warnings, directory: dir }, errors };
 }
 
 /** Enumerate every resolvable pack across the roots (earlier root wins on id). */

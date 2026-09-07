@@ -134,13 +134,15 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     expect(pack.toolNames).not.toContain('rubrics:list');
   });
 
-  it('keeps a late terminal assumptions contract in the bounded quick schema', () => {
+  it('keeps late terminal completion contracts in the bounded quick schema', () => {
     const verboseCompletion = {
       type: 'object',
       properties: Object.fromEntries(
         Array.from({ length: 20 }, (_, i) => [`evidence${i}`, { type: 'string' }]),
       ),
-      description: 'Structured completion evidence. '.repeat(20),
+      description:
+        'Structured completion evidence. '.repeat(20) +
+        'Successful bug/capability-gap closes require completion.rootCauseVerification with hypothesis, alternativeHypothesis, a contrastive distinguishingTest, and the observed testResult.',
     };
     const completeSchema = {
       type: 'object',
@@ -171,7 +173,9 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     const args = pack.tools.find((tool) => tool.name === 'work_items:complete')?.args ?? '';
 
     expect(args.length).toBeLessThanOrEqual(180);
-    expect(args).toContain('completion?:object structured record');
+    expect(args).toContain(
+      'completion?:object; rootCauseVerification required {hypothesis,alternativeHypothesis,distinguishingTest,testResult}',
+    );
     expect(args).toContain('assumptions?');
     expect(args).toContain('terminal close');
     expect(args).toContain('record-only');

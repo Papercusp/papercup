@@ -890,7 +890,10 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
   describe('resolves a REPO-RELATIVE citation, not only a cwd-relative one', () => {
     let repo: string;
     let nested: string;
+    let integrationRoot: string;
+    let releaseCwd: string;
     const savedRepoRootEnv = process.env.PAPERCUSP_REPO_ROOT;
+    const savedIntegrationRootEnv = process.env.PAPERCUSP_INTEGRATION_ROOT;
 
     beforeAll(async () => {
       repo = await mkdtemp(join(tmpdir(), 'completion-audit-repo-'));
@@ -904,12 +907,22 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
       // NOT resolve against it.
       nested = join(repo, 'apps', 'operator');
       await mkdir(nested, { recursive: true });
+      // The live operator can run from a separate release checkout while the
+      // current-build evidence remains under the canonical staging tree.
+      integrationRoot = await mkdtemp(join(tmpdir(), 'completion-audit-integration-'));
+      releaseCwd = await mkdtemp(join(tmpdir(), 'completion-audit-release-'));
+      await mkdir(join(integrationRoot, '.papercusp-artifacts'), { recursive: true });
+      await writeFile(join(integrationRoot, '.papercusp-artifacts', 'staging-only.png'), contentPng());
     });
 
     afterAll(async () => {
       if (savedRepoRootEnv === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
       else process.env.PAPERCUSP_REPO_ROOT = savedRepoRootEnv;
+      if (savedIntegrationRootEnv === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = savedIntegrationRootEnv;
       await rm(repo, { recursive: true, force: true });
+      await rm(integrationRoot, { recursive: true, force: true });
+      await rm(releaseCwd, { recursive: true, force: true });
     });
 
     it('ACCEPTS the real file when cwd is deeper than the repo root (the reported case)', async () => {
@@ -924,6 +937,32 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
       expect(verdict.ok).toBe(true);
       expect(verdict.artifacts[0].status).toBe('content');
       expect(verdict.artifacts[0].resolved).toBe(join(repo, '.papercusp-artifacts', 'wi6443-experiments.png'));
+    });
+
+    it('ACCEPTS a staging-only artifact when cwd is the live release checkout', async () => {
+      const previousRepoRootEnv = process.env.PAPERCUSP_REPO_ROOT;
+      const previousIntegrationRootEnv = process.env.PAPERCUSP_INTEGRATION_ROOT;
+      delete process.env.PAPERCUSP_REPO_ROOT;
+      process.env.PAPERCUSP_INTEGRATION_ROOT = integrationRoot;
+      try {
+        const verdict = await verifyLiveDroveUiArtifacts(
+          {
+            verifiedHow: 'live-drove-ui',
+            testResult: 'drove the live UI, capture at .papercusp-artifacts/staging-only.png',
+          },
+          { cwd: releaseCwd },
+        );
+        expect(verdict.ok).toBe(true);
+        expect(verdict.artifacts[0].status).toBe('content');
+        expect(verdict.artifacts[0].resolved).toBe(
+          join(integrationRoot, '.papercusp-artifacts', 'staging-only.png'),
+        );
+      } finally {
+        if (previousRepoRootEnv === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+        else process.env.PAPERCUSP_REPO_ROOT = previousRepoRootEnv;
+        if (previousIntegrationRootEnv === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+        else process.env.PAPERCUSP_INTEGRATION_ROOT = previousIntegrationRootEnv;
+      }
     });
 
     it('ACCEPTS via PAPERCUSP_REPO_ROOT when no git root is reachable from cwd', async () => {

@@ -18,10 +18,10 @@
  *
  * So this guard runs the LIVE projected catalog through the real pack builder
  * across a representative slice of the input space (intents × mode stacks), and
- * checks the property an agent actually depends on: after compaction, the
+ * checks the properties an agent actually depends on: after compaction, the
  * preview it is handed must still say that a terminal close needs
- * `assumptions` and that `completion` is a structured object — not a prose
- * shorthand.
+ * `assumptions`, and that successful bug/capability-gap closes need the
+ * contrastive `rootCauseVerification` fields — not a prose-only shorthand.
  *
  * Two things keep this from being a vacuous green:
  *   1. a catalog-size floor, so an unregistered registry (the standalone-probe
@@ -40,7 +40,8 @@ import { buildTaskToolSchemaPack } from './orient-task-schema-pack';
 
 const TOOL = 'work_items:complete';
 const ASSUMPTIONS_MARKER = /assumptions\?/;
-const COMPLETION_MARKER = 'completion?:object structured record';
+const COMPLETION_MARKER =
+  'completion?:object; rootCauseVerification required {hypothesis,alternativeHypothesis,distinguishingTest,testResult}';
 
 interface CatalogEntry {
   expose?: { mcp?: { name?: string } | null };

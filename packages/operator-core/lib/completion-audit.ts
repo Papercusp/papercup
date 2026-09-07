@@ -1109,6 +1109,8 @@ export function citesBrowserDriveEvidence(
  * differently now, then the two ways the repo root is knowable —
  *  - `PAPERCUSP_REPO_ROOT`, the explicit pointer console-launcher stamps on every spawned
  *    agent (EI-10938) and therefore the most authoritative when present;
+ *  - `PAPERCUSP_INTEGRATION_ROOT`, the operator/release pipeline's explicit pointer to
+ *    the canonical staging tree when the process itself runs from a release checkout;
  *  - a git-root walk up from cwd, via the shared {@link hasValidGitEntry} (WI-4722: a
  *    stray empty `.git` must not pass), for hosts/processes that carry no such env.
  *
@@ -1124,6 +1126,7 @@ export function artifactResolutionBases(cwd: string): string[] {
   };
 
   add(process.env.PAPERCUSP_REPO_ROOT);
+  add(process.env.PAPERCUSP_INTEGRATION_ROOT);
 
   let dir = resolvePath(cwd);
   for (let i = 0; i < 16; i += 1) {

@@ -65,6 +65,8 @@ export interface CodeRecipeRow {
 export type CodeRecipeListRow = Omit<CodeRecipeRow, 'script' | 'bindingSchema' | 'capabilityManifest'>;
 
 export interface UpsertCodeRecipeInput {
+  /** Package registration must not overwrite a concurrently created recipe. */
+  createOnly?: boolean;
   /** Stable kebab slug derived from the title (the PRIMARY KEY). */
   id: string;
   title: string;
@@ -247,7 +249,9 @@ export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInp
       -- keep the existing embedding when this write carries none (no embedder)
       embedding   = COALESCE(EXCLUDED.embedding, harness_shared.code_recipes.embedding),
       updated_at  = now()
+    WHERE ${input.createOnly !== true}
     RETURNING ${SELECT_COLS(sql)}`;
+  if (!rows.length) throw new Error('recipe already exists; create-only registration refused to overwrite it');
   return mapRow(rows[0]);
 }
 
