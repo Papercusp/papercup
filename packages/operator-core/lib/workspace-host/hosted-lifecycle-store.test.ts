@@ -121,6 +121,37 @@ describe('hosted lifecycle store', () => {
     ]);
   });
 
+  it('clears orphaned_at when recovery advances to pending or exhausted', async () => {
+    const queries: string[] = [];
+    setHostedLifecycleStoreHooks({
+      transaction: fakeTransaction((text) => {
+        queries.push(text);
+        if (text.includes('FOR UPDATE OF operation')) {
+          return [
+            {
+              operation_id: 'stale-orphan-1', host_id: 'host-a', action: 'repair', status: 'running',
+              heartbeat_at: '2026-08-28T01:50:00Z', operation_updated_at: '2026-08-28T01:50:00Z',
+              recovery_attempts: 0, customer_workspace_id: 'customer-a',
+            },
+            {
+              operation_id: 'stale-orphan-2', host_id: 'host-a', action: 'restart', status: 'running',
+              heartbeat_at: '2026-08-28T01:50:00Z', operation_updated_at: '2026-08-28T01:50:00Z',
+              recovery_attempts: 3, customer_workspace_id: 'customer-a',
+            },
+          ];
+        }
+        return [];
+      }),
+    });
+
+    const result = await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
+    expect(result.recoveryPending).toEqual(['stale-orphan-1']);
+    expect(result.exhausted).toEqual(['stale-orphan-2']);
+    const recoveryUpdates = queries.filter((query) => query.includes('UPDATE harness_shared.workspace_host_operations'));
+    expect(recoveryUpdates).toHaveLength(2);
+    expect(recoveryUpdates.every((query) => query.includes('orphaned_at = NULL'))).toBe(true);
+  });
+
   // WI-2143803. The BYOC case is the one that motivated the sweep and the one it could not see:
   // an operation created through /api/workspace-hosts/action has customer_workspace_id NULL, so
   // the reconciler's former INNER JOIN to customer_workspaces eliminated it. Measured on a live

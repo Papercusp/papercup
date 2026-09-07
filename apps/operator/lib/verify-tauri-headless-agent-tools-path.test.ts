@@ -72,6 +72,9 @@ describe('verify-tauri-headless tauri-agent-tools dependency', () => {
     expect(health).toContain('HEALTH_PROBE_TIMEOUT="${VERIFY_TAURI_HEALTH_PROBE_TIMEOUT:-8}"');
     expect(health).toContain('timeout --signal=TERM --kill-after=1 "${HEALTH_PROBE_TIMEOUT}s"');
     expect(health).toContain('AbortSignal.timeout(timeoutMs)');
+    expect(health).toContain('apiHealthError: v[0].errorBody');
+    expect(health).toContain('(await r.text()).slice(0, 1200)');
+    expect(health).toContain('browserWorkspace: window.__PAPERCUSP_WS__ || null');
     expect(health).toContain('HEALTH_PROBE_STATUS" -eq 126');
     expect(health).toContain(
       'This is a verifier dependency/PATH failure, not evidence that the webview origin is unreachable.',

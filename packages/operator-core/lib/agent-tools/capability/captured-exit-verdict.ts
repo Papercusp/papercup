@@ -1,7 +1,7 @@
 /**
  * Detects when a background job's OWN captured exit-code marker (an
- * `EXIT=<n>` / `SOMETHING_EXIT=<n>` line the command's own redirect idiom
- * wrote into its log) disagrees with the `exit_code` `capability:bash_output`
+ * `EXIT=<n>` line the command's own redirect idiom wrote into its log) disagrees
+ * with the `exit_code` `capability:bash_output`
  * is about to report.
  *
  * WHY (EI-21852949719867845, filed 2026-08-30)
@@ -25,20 +25,31 @@
  * inventing one would be a false alarm in the alarm.
  */
 
-/** Matches a whole log line shaped like `EXIT=1` or `AFFECTED_EXIT=137`. */
-const CAPTURED_EXIT_RE = /^[ \t]*[A-Za-z_]*EXIT=(-?\d+)[ \t]*$/gm;
+/** Only an unprefixed whole log line can describe the job's aggregate exit. */
+const CAPTURED_EXIT_RE = /^[ \t]*EXIT=(-?\d+)[ \t]*$/;
 
-/** The LAST captured-exit marker line in the log (parsed value + the exact
- *  matched text, e.g. `EXIT=1` or `AFFECTED_EXIT=137`), or `null` if none. */
+/**
+ * Per-step probes commonly print their own `<LABEL>_EXIT=<n>` lines throughout
+ * the log. Restrict the aggregate marker to a small non-empty tail window so an
+ * unrelated `EXIT=<n>` line in ordinary output is not promoted to a verdict.
+ */
+const CAPTURED_EXIT_TAIL_LINES = 5;
+
+/** The last unprefixed captured-exit marker in the non-empty log tail (parsed
+ * value + exact matched text), or `null` if no such marker is near the tail. */
 function lastCapturedExit(log: string): { value: number; raw: string } | null {
-  CAPTURED_EXIT_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let last: { value: number; raw: string } | null = null;
-  while ((match = CAPTURED_EXIT_RE.exec(log)) !== null) {
+  let tailLinesRemaining = CAPTURED_EXIT_TAIL_LINES;
+  const lines = log.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0 && tailLinesRemaining > 0; index -= 1) {
+    const line = lines[index]!;
+    if (line.trim() === '') continue;
+    tailLinesRemaining -= 1;
+    const match = CAPTURED_EXIT_RE.exec(line);
+    if (match === null) continue;
     const parsed = Number.parseInt(match[1]!, 10);
-    if (Number.isFinite(parsed)) last = { value: parsed, raw: match[0].trim() };
+    if (Number.isFinite(parsed)) return { value: parsed, raw: match[0].trim() };
   }
-  return last;
+  return null;
 }
 
 /**
@@ -59,10 +70,10 @@ export function capturedExitMismatch(job: {
     headline: `exit_code (${job.exitCode}) disagrees with a captured EXIT marker in the log (${captured.value})`,
     advice:
       `This job's reported exit_code (${job.exitCode}) is the shell's LAST command's status, which the log's ` +
-      `own captured marker (\`${captured.raw}\`) shows disagrees with the real run. This usually means the ` +
+      `own captured marker (\`${captured.raw}\`) may disagree with the real run. This usually means the ` +
       `command ends in \`echo\`/\`printf\` after capturing \`$?\` (e.g. \`cmd; echo "EXIT=$?"\`) — the echo's own ` +
-      `exit status (always 0) overwrites the shell's reported status the wrapper reads. Trust the log's captured ` +
-      `marker (\`${captured.raw}\`) as this job's real verdict, not exit_code. For a rerun, capture the status ` +
+      `exit status (always 0) overwrites the shell's reported status the wrapper reads. Treat this as a warning ` +
+      `to verify, not as proof of the job's real verdict. For a rerun, capture the status ` +
       `BEFORE printing it and re-exit it, e.g. \`cmd > /tmp/job.log 2>&1; rc=$?; echo "EXIT=$rc" >> /tmp/job.log; exit $rc\`.`,
   };
 }

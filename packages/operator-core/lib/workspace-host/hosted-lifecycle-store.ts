@@ -438,6 +438,7 @@ export async function reconcileHostedLifecycleJobs(
         await tx`
           UPDATE harness_shared.workspace_host_operations
           SET recovery_state = 'recovery-pending', recovery_attempts = recovery_attempts + 1,
+              orphaned_at = NULL,
               message = 'Lifecycle operation is stuck; DBOS recovery requested', updated_at = now()
           WHERE workspace_id = ${workspaceId} AND id = ${job.operation_id}`;
         out.recoveryPending.push(job.operation_id);
@@ -462,6 +463,7 @@ export async function reconcileHostedLifecycleJobs(
       await tx`
         UPDATE harness_shared.workspace_host_operations
         SET recovery_state = 'exhausted', status = 'failed', finished_at = now(),
+            orphaned_at = NULL,
             message = 'Lifecycle recovery attempts exhausted',
             error = jsonb_build_object('code', 'hosted_lifecycle_recovery_exhausted'),
             updated_at = now()
@@ -550,4 +552,3 @@ export async function readHostedLifecycleSupportDiagnostics(
     };
   });
 }
-

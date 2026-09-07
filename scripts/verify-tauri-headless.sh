@@ -3128,6 +3128,7 @@ esac
 [ "$HEALTH_PROBE_TIMEOUT" -gt 0 ] || { echo "FATAL: VERIFY_TAURI_HEALTH_PROBE_TIMEOUT must be > 0" >&2; exit 2; }
 HEALTH_DEADLINE=$((SECONDS + HEALTH_TIMEOUT))
 HEALTH_JSON=""
+HEALTH_LAST_RESPONSE=""
 HEALTH_PROBE_STATUS=0
 while :; do
   if ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
@@ -3154,6 +3155,10 @@ while :; do
       queryWorkspace: new URL(window.location.href).searchParams.get('ws')
     }))
   " 2>&1)" || HEALTH_PROBE_STATUS=$?
+  # Keep an informative HTTP response even when the final retry times out.
+  if [ "$HEALTH_PROBE_STATUS" -eq 0 ] && echo "$HEALTH_JSON" | grep -q '"apiHealth"'; then
+    HEALTH_LAST_RESPONSE="$HEALTH_JSON"
+  fi
   if [ "$HEALTH_PROBE_STATUS" -eq 0 ] \
     && echo "$HEALTH_JSON" | grep -Eq '"apiHealth"[[:space:]]*:[[:space:]]*200' \
     && echo "$HEALTH_JSON" | grep -Eq '"rootHtml"[[:space:]]*:[[:space:]]*200'; then
@@ -3171,6 +3176,9 @@ while :; do
     echo "       The bridge/PID is alive but /api/health and/or / did not return 200 — refusing to" >&2
     echo "       hand back a shell whose DOM may be a stale false-positive (EI-13218). Last result:" >&2
     echo "       ${HEALTH_JSON}" >&2
+    if [ -n "$HEALTH_LAST_RESPONSE" ]; then
+      echo "       Last completed response: ${HEALTH_LAST_RESPONSE}" >&2
+    fi
     exit 1
   fi
   sleep 1

@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { capturedExitMismatch } from './captured-exit-verdict';
 
-describe('capturedExitMismatch (EI-21852949719867845)', () => {
+describe('capturedExitMismatch (EI-21852949719867845 / EI-22335721041071018)', () => {
   it('flags the exact repro: `false; echo "EXIT=$?"` reports exit_code 0 but the log captured 1', () => {
     const verdict = capturedExitMismatch({
       status: 'completed',
@@ -21,15 +21,14 @@ describe('capturedExitMismatch (EI-21852949719867845)', () => {
     expect(verdict?.advice).toContain('exit_code');
   });
 
-  it("flags the reporter's actual observed shape: a namespaced `AFFECTED_EXIT=1` marker", () => {
-    const verdict = capturedExitMismatch({
-      status: 'completed',
-      exitCode: 0,
-      log: '33 failing\n12 files\nAFFECTED_EXIT=1\n',
-    });
-    expect(verdict).not.toBeNull();
-    expect(verdict?.headline).toContain('exit_code (0)');
-    expect(verdict?.advice).toContain('captured marker');
+  it.each(['D_EXIT=1', 'AFFECTED_EXIT=1'])('ignores namespaced per-step marker `%s`', (marker) => {
+    expect(
+      capturedExitMismatch({
+        status: 'completed',
+        exitCode: 0,
+        log: `33 failing\n12 files\n${marker}\n`,
+      }),
+    ).toBeNull();
   });
 
   it('is silent when the captured marker AGREES with exit_code', () => {
@@ -37,7 +36,7 @@ describe('capturedExitMismatch (EI-21852949719867845)', () => {
       capturedExitMismatch({
         status: 'completed',
         exitCode: 1,
-        log: 'AFFECTED_EXIT=1\n',
+        log: 'EXIT=1\n',
       }),
     ).toBeNull();
   });
@@ -91,6 +90,28 @@ describe('capturedExitMismatch (EI-21852949719867845)', () => {
     });
     // Last marker agrees with exit_code 0 -> no mismatch to report.
     expect(verdict).toBeNull();
+  });
+
+  it('ignores an unprefixed marker that is mid-log rather than near the tail', () => {
+    expect(
+      capturedExitMismatch({
+        status: 'completed',
+        exitCode: 0,
+        log: ['EXIT=1', 'step output 1', 'step output 2', 'step output 3', 'step output 4', 'step output 5'].join(
+          '\n',
+        ),
+      }),
+    ).toBeNull();
+  });
+
+  it('still detects an unprefixed mismatch within the final five non-empty lines', () => {
+    const verdict = capturedExitMismatch({
+      status: 'completed',
+      exitCode: 0,
+      log: ['test output', 'EXIT=1', 'cleanup output', '', 'final status'].join('\n'),
+    });
+    expect(verdict).not.toBeNull();
+    expect(verdict?.headline).toContain('(1)');
   });
 
   it('ignores leading/trailing whitespace around a captured marker line', () => {

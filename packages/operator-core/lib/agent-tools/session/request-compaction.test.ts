@@ -1036,8 +1036,8 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
     });
 
     it('a normal short focus rides untouched inside the first prompt', async () => {
-      await call({ focus: 'finish EI-7032' });
-      expect(injected().data).toContain('finish EI-7032');
+      await call({ focus: 'finish the compaction test' });
+      expect(injected().data).toContain('finish the compaction test');
     });
   });
 

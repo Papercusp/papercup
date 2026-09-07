@@ -171,7 +171,10 @@ export function startEndpointIpcServer(
     upstreamBaseUrl:
       options.upstreamBaseUrl ??
       process.env.PAPERCUSP_OPERATOR_BASE ??
-      `http://127.0.0.1:${process.env.PORT ?? 3055}`,
+      // Bootstrap starts IPC before the migration gate lets the HTTP server
+      // assign PORT. Match hono-host's listener precedence now; otherwise the
+      // socket for an isolated host can proxy every request to another host.
+      `http://127.0.0.1:${process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070}`,
     // In-boundary credential for the sys:http bridge. The webview rides IPC
     // for same-origin /api/* fetches, but its HttpOnly `papercusp_session`
     // cookie can't ride the bridge (JS can't forward it nor honor Set-Cookie),

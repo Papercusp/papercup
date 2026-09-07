@@ -20,6 +20,15 @@ import { planHarnessesForSlugs } from './source';
  *  same deterministic pick `resolvePlanHarnessSlug` makes. */
 export type SlugCandidates = Record<string, string[]>;
 
+export interface PlanHarnessMismatch {
+  callerHarness: string;
+  reportedHarness?: string;
+  availableHarnesses: string[];
+  /** Whether the caller NAMED the searched harness, or inherited it from the session. */
+  harnessSource: 'explicit' | 'ambient';
+  warning: string;
+}
+
 export type SlugScopeDecision =
   | {
       /** Every requested slug is store-backed and resolves to ONE harness. */
@@ -109,6 +118,49 @@ export async function recoverHarnessFromSlugs(
   const candidates: SlugCandidates = {};
   for (const [slug, list] of rowsBySlug) candidates[slug] = list;
   return decideSlugScope(slugs, candidates, workspaceId);
+}
+
+/**
+ * Explain a miss caused by a concrete harness that does not own the exact slug.
+ *
+ * Read tools use this only after their normal scoped read misses (or before an
+ * ambient read where the index can prove the miss up front). The lookup is
+ * best-effort: an unavailable index leaves the ordinary not_found result intact.
+ */
+export async function harnessMismatchForMiss(
+  ctx: unknown,
+  callerHarness: string,
+  slug: string,
+  harnessSource: 'explicit' | 'ambient',
+): Promise<PlanHarnessMismatch | null> {
+  try {
+    const decision = await recoverHarnessFromSlugs(ctx, [slug]);
+    if (decision.status !== 'resolved') return null;
+    const availableHarnesses = decision.ambiguous[slug] ?? [decision.harnessSlug];
+    if (availableHarnesses.includes(callerHarness)) return null;
+    const reportedHarness = availableHarnesses.length === 1 ? availableHarnesses[0] : undefined;
+    const target = reportedHarness
+      ? `harness '${reportedHarness}'`
+      : `harnesses ${availableHarnesses.map((h) => `'${h}'`).join(', ')}`;
+    const suggested = reportedHarness ?? availableHarnesses[0];
+    const searched =
+      harnessSource === 'explicit'
+        ? `plans read searched harness '${callerHarness}' because you passed harness:'${callerHarness}' for '${slug}', `
+        : `plans read searched ambient harness '${callerHarness}' for '${slug}', `;
+    const remedy =
+      harnessSource === 'explicit'
+        ? `Pass harness:'${suggested}' instead, or omit harness to auto-resolve the owning harness from the slug.`
+        : `Pass harness:'${suggested}' to read that plan explicitly.`;
+    return {
+      callerHarness,
+      ...(reportedHarness ? { reportedHarness } : {}),
+      availableHarnesses,
+      harnessSource,
+      warning: `${searched}but the exact slug is stored under ${target}. ${remedy}`,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -32,7 +32,7 @@ import {
 import { isTerminalItemStatus } from "../../fleet-drained-events";
 import { ctxToPlanSourceOpts } from "./_ctx-opts";
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from "../_harness-scope";
-import { recoverHarnessFromSlugs, slugScopeErrorResult } from "./slug-scope";
+import { harnessMismatchForMiss, recoverHarnessFromSlugs, slugScopeErrorResult } from "./slug-scope";
 import {
   resolveEffectiveStatusForItems,
   type ResolvedItem,
@@ -341,6 +341,35 @@ export default defineTool({
       sctx = harnessScopedCtx(args.harness, ctx);
     }
     const opts = await ctxToPlanSourceOpts(sctx);
+    const ambientCallerHarness = !args.harness && scope.kind === "harness" ? scope.slug : null;
+    const explicitCallerHarness = args.harness && scope.kind === "harness" ? scope.slug : null;
+    // A concrete ambient harness is part of the read scope. If the exact slug
+    // is known to live elsewhere, disclose the owning harness instead of
+    // returning a bare not_found that looks like a missing plan.
+    if (ambientCallerHarness && args.slug) {
+      const mismatch = await harnessMismatchForMiss(ctx, ambientCallerHarness, args.slug, "ambient");
+      if (mismatch) {
+        ctxAny.metadata?.({
+          slug: args.slug,
+          searchedHarness: ambientCallerHarness,
+          harnessMismatch: mismatch,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "not_found",
+                slug: args.slug,
+                harness: ambientCallerHarness,
+                harnessMismatch: mismatch,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
     const includeArchived = args.includeArchived === true;
     // Resolve every exact-item alias spelling into the canonical `itemIds`
     // array. Precedence is fixed and documented on each argument:
@@ -591,6 +620,32 @@ export default defineTool({
     // not_found (explicit single-slug query for a missing plan) — cached too, so a
     // plan-create write busts it via the harness_plans tag.
     if ("notFound" in cached) {
+      // An explicit harness is usually the right one, so only pay the exact-slug
+      // index lookup when the scoped read actually misses.
+      if (explicitCallerHarness && args.slug) {
+        const mismatch = await harnessMismatchForMiss(ctx, explicitCallerHarness, args.slug, "explicit");
+        if (mismatch) {
+          ctxAny.metadata?.({
+            slug: args.slug,
+            searchedHarness: explicitCallerHarness,
+            harnessMismatch: mismatch,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "not_found",
+                  slug: args.slug,
+                  harness: explicitCallerHarness,
+                  harnessMismatch: mismatch,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
       return {
         content: [
           {
