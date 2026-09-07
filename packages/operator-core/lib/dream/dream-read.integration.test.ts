@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
-import { readDreamDetail, readDreamHistory } from './dream-read';
-import { readDreamMetrics } from './dream-metrics';
+import { projectDreamDetail, readDreamDetail, readDreamHistory } from './dream-read';
+import { computeDreamMetrics, readDreamMetrics } from './dream-metrics';
+import type { DreamCapabilityRun } from './dream-run-provenance';
 
 const scope = { workspaceId: 'dream-history-test', potSlug: 'pot-a', since: '2026-09-07T00:00:00Z', until: '2026-09-08T00:00:00Z' };
 describe('Analyze Dream history (real PostgreSQL)', () => {
@@ -44,6 +45,12 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
     await expect(readDreamHistory(db.adminSql, scope, 'not-json')).rejects.toThrow();
     await expect(readDreamHistory(db.adminSql, { ...scope, since: '2026-07-01T00:00:00Z' })).rejects.toThrow(/31 days/);
   });
+  it('validates the frozen UI/native fixture against the current real read and metric projections', async () => {
+    const frozen = JSON.parse(await readFile(new URL('../../../../apps/operator-vite/src/components/adv/dream-view.fixture.json', import.meta.url), 'utf8'));
+    expect(projectDreamDetail(frozen.detail.run)).toEqual(frozen.detail);
+    expect(computeDreamMetrics([{ run: frozen.detail.run, routed: null, experiments: [] }], frozen.metrics.scope)).toEqual(frozen.metrics);
+    expect(computeDreamMetrics([], frozen.emptyMetrics.scope)).toEqual(frozen.emptyMetrics);
+  });
   it('reads legacy rows honestly and refuses cross-pot or cross-workspace detail', async () => {
     expect((await readDreamDetail(db.adminSql, { ...scope, runId: 'r-01' }))?.provenance).toBeNull();
     expect(await readDreamDetail(db.adminSql, { ...scope, runId: 'other-pot' })).toBeNull();
@@ -51,8 +58,8 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
   });
   it('preserves frozen packets, rejection, unknown usage and title without executing or charging anything', async () => {
     const outcome = structuredClone(fixture.run.outcome!);
-    const provenance = structuredClone(fixture.provenance);
-    provenance.calls[0] = { ...provenance.calls[0]!, status: 'unknown', usage: null } as typeof provenance.calls[number];
+    const provenance: DreamCapabilityRun = structuredClone(fixture.provenance);
+    provenance.calls[0] = { ...provenance.calls[0]!, status: 'unknown', usage: null };
     outcome.capabilityRun = provenance;
     await db.adminSql`UPDATE harness_shared.dream_runs SET outcome = ${JSON.stringify(outcome)}::jsonb,
       review = ${JSON.stringify({ ...fixture.review, verdict: 'reject', note: 'Rejected fixture' })}::jsonb,

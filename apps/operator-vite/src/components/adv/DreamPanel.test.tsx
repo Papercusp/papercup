@@ -93,7 +93,7 @@ describe('Dreams in Analyze', () => {
     render(<DreamRunDetail detail={d} />);
     expect(screen.getByText('Review was inconclusive')).toBeTruthy();
     expect(screen.getByText(/Source freshness now: not rechecked/)).toBeTruthy();
-    expect(screen.getByText(/A:.*Produces the input/)).toBeTruthy();
+    expect(screen.getByText('A:').parentElement?.textContent).toContain('Produces the input.');
     const link = screen.getByRole('link', { name: /implementation: evidence\/A.ts/ });
     const anchor = document.getElementById(link.getAttribute('href')!.slice(1));
     expect(anchor?.textContent).toContain('export function A()');
@@ -114,7 +114,7 @@ describe('Dreams in Analyze', () => {
     d.proposal!.thirdContribution = { role: 'constraint', uniqueContribution: 'Restricts output.', removalEffect: 'Constraint disappears.', sources: [{ unit: 'C', evidenceId: 'code' }] };
     render(<DreamRunDetail detail={d} />);
     expect(screen.getByRole('region', { name: 'Source C' })).toBeTruthy();
-    expect(screen.getByText(/C \(constraint\):.*Constraint disappears/)).toBeTruthy();
+    expect(screen.getByText('C (constraint):').parentElement?.textContent).toContain('Constraint disappears.');
   });
   it('keeps legacy attempts visible with unknown provenance', () => {
     const d: DreamDetail = { ...captured, run: { ...fixture.run, outcome: { verdict: 'none' }, review: null, status: 'abstained' },

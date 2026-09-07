@@ -21,15 +21,15 @@ export default defineTool({
   profile: 'engineer',
   crossWorkspace: true,
   description:
-    "Owner: the RUNTIME (no-restart) escape hatch for the pot-git secrets scanner (WI-5591) — clears a false positive that would otherwise permanently freeze git egress for the hive. Covers BOTH the own-head publish guard and the GitHub-bridge EGRESS guard (WI-5738). Actions: list {} | add {path, reason} — exempt from the scan starting the NEXT git-sync tick | remove {path} — re-arm. `path` is an exact file OR a directory prefix (`dir/`, `dir/**`) to clear a whole bad tree. Data-driven sibling of secrets-guard.ts's FIXTURE_FILES; use INSTEAD of editing that source + restarting papercup-bg-host.",
+    "Owner: the RUNTIME (no-restart) escape hatch for the pot-git secrets scanner (WI-5591) — clears a false positive that would otherwise permanently freeze git egress for the hive. Covers BOTH the own-head publish guard and the GitHub-bridge EGRESS guard (WI-5738). Actions: list {} | add {path, reason} — exempt from the scan starting the NEXT git-sync tick | remove {path} — re-arm.",
   capability: 'audit:write',
   guidance: {
     when:
-      "own_head_publish.refused === 'secrets' (readable at harness_shared.routines.metadata->'own_head_publish'->>'refused', or git-sync's own console warning) AND you've confirmed the flagged finding is a false positive (a detector fixture, a documented example credential, a placeholder — never a REAL live secret) — {action:'add', path, reason}. Check {action:'list'} first so you don't duplicate an existing exemption.",
+      "own_head_publish.refused === 'secrets' (harness_shared.routines.metadata->'own_head_publish'->>'refused') AND you have ADJUDICATED the flagged finding as a false positive (a detector fixture, a documented example credential, a placeholder — never a REAL live secret) — {action:'add', path, reason}.",
     notWhen:
       "The finding might be a genuine leaked credential — rotate/revoke it and fix the source instead. A false-positive class across many DIFFERENT trees — that needs a rule fix in secrets-guard.ts, not N exemptions. A prefix is a broad waiver: scope it to the actual accident.",
     chaining:
-      "{action:'list'} → confirm the path isn't already exempt → {action:'add', path, reason} → the next git-sync tick (or dev:restart of the affected host if you need it sooner) retries the publish.",
+      "{action:'list'} (don't duplicate a row) → ADJUDICATE: `npx tsx scripts/adjudicate-publish-refusal.mts --commit <own_head_publish.blockedAtCommit> --exemptions` replays the guard and prints every finding it saw, so 'false positive' is MEASURED, not assumed — exit 2 means the scanner is UNUSABLE, never read that as clean → {action:'add', path, reason} → the next git-sync tick (or dev:restart) retries the publish.",
     seeAlso: ['pot_git:integration_requests (a different G-10-adjacent queue — below-tier member heads, not secrets)'],
   },
   requirePrincipal: false,
