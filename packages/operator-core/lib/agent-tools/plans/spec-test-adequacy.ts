@@ -877,7 +877,15 @@ export function evaluateSpecTestAdequacy(input: {
               const callerAttestedCurrent = unknownEvidence.some(
                 (row) => row.currentness.provenance === 'attested-current',
               );
-              return callerAttestedCurrent
+              const partiallyServerMeasured = unknownEvidence.filter(
+                (row) => row.currentness.provenance === 'partially-server-measured',
+              );
+              return partiallyServerMeasured.length > 0
+                ? `Repository fingerprints were server-measured, but applicable non-repository dimensions ` +
+                    `were only caller-attested and cannot establish freshness for: ${partiallyServerMeasured
+                      .map((row) => row.evidenceRef)
+                      .join(', ')}.`
+                : callerAttestedCurrent
                 ? `Current fingerprints were caller-supplied and are labeled attested-current; matching stored values cannot establish independently measured freshness, so freshness is unknown for this replay input. Missing comparison for: ${refs}.`
                 : callerOmittedCurrent
                 ? `Current fingerprints were not supplied by this call (current[] was omitted), so freshness is unknown for this replay input—not evidence that stored bindings are stale. If replaying a rerunRecipe, pass rerunRecipe.current.fingerprints. Missing comparison for: ${refs}.`

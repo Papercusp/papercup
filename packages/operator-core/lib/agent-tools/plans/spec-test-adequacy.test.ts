@@ -552,6 +552,31 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
+  it('explains partially server-measured opaque dimensions without calling them missing', () => {
+    const row = evidence({
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'partially-server-measured',
+        comparisonSupplied: true,
+        unknownReasons: [
+          'current-fingerprints-partially-attested-not-independently-measured:environment',
+        ],
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.freshness).toMatchObject({ rating: 'unknown' });
+    expect(result.ratings.freshness.evidence).toContain(
+      'Repository fingerprints were server-measured, but applicable non-repository dimensions were only caller-attested',
+    );
+    expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
+  });
+
   it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {
     const staleHistorical = evidence({
       evidenceRef: 'surface:historical-stale',
