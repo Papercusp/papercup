@@ -487,6 +487,16 @@ Preserve this plan body.
     expect(afterPropose[0].content_snapshot).toContain(sampleCriteria[0].method);
     expect(afterPropose[0].content_snapshot).toContain(sampleCriteria[0].driftMarkers);
     expect(afterPropose[0].content_snapshot).toContain('"ratingScale"');
+    const snapshotJson = afterPropose[0].content_snapshot.match(/~~~json\s*\n([\s\S]*?)\n~~~/)?.[1];
+    expect(snapshotJson).toBeTruthy();
+    const snapshot = JSON.parse(snapshotJson!) as {
+      schemaVersion: number;
+      templateData: { characteristic: string };
+      criteriaHash: string;
+    };
+    expect(snapshot.schemaVersion).toBe(2);
+    expect(snapshot.templateData.characteristic).toBe('hive-coordination');
+    expect(snapshot.criteriaHash).toMatch(/^[a-f0-9]{64}$/);
     const [proposedPlan] = await db.adminSql<{ content_hash: string }[]>`
       SELECT content_hash FROM harness_shared.harness_plans WHERE plan_slug = 'audited-rubric'`;
     expect(afterPropose[0].content_hash).toBe(proposedPlan.content_hash); // canonical body hash, not enriched snapshot hash
@@ -549,15 +559,48 @@ Preserve this plan body.
     expect(historical!.criteriaHash).not.toBe(current.criteriaHash);
     expect(await rubrics.getRubric(rubricId, 99)).toBeNull();
 
+    const [firstRevision] = await db.adminSql<{ content_snapshot: string }[]>`
+      SELECT content_snapshot FROM harness_shared.plan_revisions
+       WHERE plan_slug = ${rubricId} AND seq = 1`;
+    const firstSnapshotJson = firstRevision.content_snapshot.match(/~~~json\s*\n([\s\S]*?)\n~~~/)?.[1];
+    expect(firstSnapshotJson).toBeTruthy();
+    const firstSnapshot = JSON.parse(firstSnapshotJson!) as { schemaVersion: number; criteriaHash: string };
+    expect(firstSnapshot.schemaVersion).toBe(2);
+    expect(historical!.criteriaHash).toBe(firstSnapshot.criteriaHash);
+
+    // Simulate a revision written under an older hash algorithm: the structured
+    // rubric is valid, but its pinned hash is deliberately different from the
+    // current computation. Historical reads must honor the stored attestation.
+    const [currentPlanRow] = await db.adminSql<{ template_data: Record<string, unknown> }[]>`
+      SELECT template_data FROM harness_shared.harness_plans WHERE plan_slug = ${rubricId}`;
+    const pinnedHash = '86b552e2de1bee03a65047056f772438998264572eb06b98983623178303ea5d';
+    const pinnedSnapshot =
+      '# pinned historical rubric\n\n' +
+      '## Structured rubric data (`template_data`)\n\n' +
+      '~~~json\n' +
+      JSON.stringify(
+        { schemaVersion: 2, templateData: currentPlanRow.template_data, criteriaHash: pinnedHash },
+        null,
+        2,
+      ) +
+      '\n~~~\n';
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_revisions
+        (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+         rationale, author_kind, author_id, created_at)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${rubricId}, 3, md5('pinned'),
+              ${pinnedSnapshot}, 'test', 'agent', 'test', 1)`;
+    expect((await rubrics.getRubric(rubricId, 3))?.criteriaHash).toBe(pinnedHash);
+
     // A revision row without the enriched structured snapshot is not safe to grade:
     // the historical read must fail closed instead of using the current row.
     await db.adminSql`
       INSERT INTO harness_shared.plan_revisions
         (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
          rationale, author_kind, author_id, created_at)
-      VALUES (${activeWorkspaceId()}, 'papercusp', ${rubricId}, 3, md5('malformed'),
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${rubricId}, 4, md5('malformed'),
               '# malformed historical rubric', 'test', 'agent', 'test', 1)`;
-    expect(await rubrics.getRubric(rubricId, 3)).toBeNull();
+    expect(await rubrics.getRubric(rubricId, 4)).toBeNull();
   });
 
   it('ratify PRESERVES every criterion replication drill in template_data (EI-10443 — the status-flip must not strip them)', async () => {
@@ -1362,6 +1405,39 @@ describe('template_data persistence boundary — the set-template-data door', ()
       expect((await rubrics.getRubric(rubricSlug))?.revision).toBe(rubricBefore?.revision);
     },
   );
+
+  it.each(['class', 'method'] as const)('preserves authored atomic clauses across a %s-only rubric revision', async (change) => {
+    const seeded = await seedBarContract(`atomic-preservation-${change}`);
+    const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+    const draft = (await listSpecClauses(scope))[0]!;
+    const authored = {
+      behavior: 'The selected task remains complete after restarting the application.',
+      behaviorClass: 'lifecycle' as const,
+      requiredEvidence: ['Restart the application and read the selected task.'],
+      requiredTestLayers: ['e2e', 'integration'],
+      falsifier: { observation: 'The completed task reopens after restart.', probeMethod: 'Restart after completing one task.' },
+      lifecycleStatus: 'accepted' as const,
+    };
+    await setSpecClause({ ...draft, ...scope, ...authored, expectedRevision: draft.revision, actorId: 'atomic-author' });
+    const before = (await listSpecClauses(scope))[0]!;
+    const rubricBefore = await rubrics.getRubric(seeded.rubricSlug);
+    if (change === 'class') {
+      await insertRubricPlan('atomic-preservation-standard-class');
+      await rubrics.amendRubric({ rubricId: seeded.rubricSlug, classRef: 'atomic-preservation-standard-class' });
+    } else {
+      await rubrics.amendRubric({ rubricId: seeded.rubricSlug, criterion: {
+        key: rubricBefore!.criteria[0]!.key, field: 'method', mode: 'append', text: 'Inspect the restart evidence.',
+      } });
+    }
+    const rubricAfter = await rubrics.getRubric(seeded.rubricSlug);
+    const after = (await listSpecClauses(scope))[0]!;
+    expect(rubricAfter!.barSetHash).toBe(rubricBefore!.barSetHash);
+    expect(after).toMatchObject(authored);
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.sourceBar).toEqual({ ...before.sourceBar, rubricRevision: rubricAfter!.revision });
+    expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter!.revision}:${before.sourceBar!.barKey}`);
+  });
 
   it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject');
