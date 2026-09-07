@@ -175,9 +175,10 @@
 #                                Default 0 (today's shared-live-DB behavior).
 #   VERIFY_TAURI_ISOLATED_PG_TIMEOUT
 #                               seconds to wait for the isolated Postgres to
-#                                come up (default 90 — a from-scratch initdb +
-#                                full migration replay is ~10-30s; a pre-built
-#                                seed extract is ~1s). Only used with
+#                                come up (default 300 — a from-scratch initdb +
+#                                full migration replay can exceed 90s on a busy
+#                                shared host; a pre-built seed extract is ~1s).
+#                                Only used with
 #                                VERIFY_TAURI_ISOLATED_DB=1.
 #   VERIFY_TAURI_ISOLATED_SEED  which app STATE the isolated run starts from
 #                                (EI-20191599988350937). Default `fresh` — a
@@ -792,7 +793,26 @@ if [ "$ISOLATED_SEED" = "ready" ] && [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]
   exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
+# The dependency snapshot uses hardlinks. A fast /tmp mount may be on another
+# device, so keep the verifier's existing lifetime/cleanup layout on the donor
+# filesystem. .papercusp is excluded from both source and dependency snapshots.
+select_verifier_work_root() {
+  local work_root="${TMPDIR:-/tmp}" donor_device work_device
+  donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
+  work_device="$(stat -c %d -- "$work_root")" || return 1
+  if [ "$donor_device" != "$work_device" ]; then
+    work_root="$REPO_DIR/.papercusp/tmp"
+    mkdir -p -- "$work_root" || return 1
+    work_device="$(stat -c %d -- "$work_root")" || return 1
+  fi
+  if [ "$donor_device" != "$work_device" ]; then
+    echo "FATAL: no verifier work root on the dependency donor filesystem: $work_root" >&2
+    return 1
+  fi
+  printf '%s\n' "$work_root"
+}
+WORK_ROOT="$(select_verifier_work_root)" || exit $?
+WORK="$(mktemp -d "$WORK_ROOT/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 # The operator sidecar must not compile the mutable shared checkout while this
 # verifier is running. Keep an independent source tree (with a pinned
@@ -2091,7 +2111,7 @@ ISOLATED_DB="${VERIFY_TAURI_ISOLATED_DB:-0}"
 ISOLATED_ENV_LINE=""
 ISOLATED_HOME=""
 if [ "$ISOLATED_DB" = "1" ]; then
-  ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
+  ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-300}"
   ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"
   ISOLATED_PG_LOG="$WORK/isolated-pg.log"
   ISOLATED_HOME="$WORK/papercusp-home"
