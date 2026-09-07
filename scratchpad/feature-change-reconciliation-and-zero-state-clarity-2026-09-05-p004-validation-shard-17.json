@@ -19,7 +19,7 @@
   "assignedIdListSerialization": "JSON.stringify(assignedIds)",
   "assignedIdListSha256": "b88d6c7f0a0f4ab20a8bde2776664c6970aca7f4c505af52b6d6a209d834c2ee",
   "readOnlyValidation": true,
-  "validationTimestamp": "2026-09-06T17:49:57Z",
+  "validationTimestamp": "2026-09-07T04:11:15-04:00",
   "validation": {
     "testedHead": "40d315a4d9ca92ef3f1be95f7166bfe9d184475d",
     "planStatus": "ready",
@@ -54,7 +54,7 @@
     "ledgerCommit": "f70ea2e6c4be8651b4d6488256d3b4886e83b7b6",
     "ledgerSha256": "57387275469ff54bf367c9271d1e5be785c6e0ba64d573d2c2b0c0de685f18ae",
     "currentRows": "work_items:get detail=false for five assigned IDs and four proposed canonical IDs, with targeted payload re-reads for shaped rows",
-    "typedReferences": "work_items:links direction=in and direction=out for all nine rows, limit=100",
+    "typedReferences": "work_items:links direction=in and direction=out for all nine rows, limit=100; reconciliation recheck found canonical EI-21104648883881842 inbound duplicates from EI-22568825013823458",
     "planLineage": "plans:get-item P-004 plus plans:get decisions D-006, D-009, and D-010",
     "code": [
       "packages/operator-core/lib/agent-tools/coordination/tools/presence.ts",
@@ -93,7 +93,7 @@
     "apply": 0,
     "alreadyApplied": 0,
     "canonicalFamilies": 4,
-    "typedInboundReferences": 0,
+    "typedInboundReferences": 1,
     "typedOutboundReferences": 0,
     "extraIds": 0,
     "overallRationale": "All five candidates are still open/local/unassigned and lack completion or plan lineage. Each shares a documented root with a live proposed survivor, but every candidate and survivor has distinct producer/watchdog identity or occurrence evidence. D-006 requires preserving those identities and references; D-009 makes this shard read-only; D-010 requires the single P-004 coverage stamp to remain on WI-2146348. No isolated cleanup is safe in this shard."
@@ -360,7 +360,15 @@
         },
         "canonicalLinks": {
           "id": "EI-21104648883881842",
-          "in": [],
+          "in": [
+            {
+              "rel": "duplicates",
+              "src": {
+                "kind": "issue",
+                "ref": "EI-22568825013823458"
+              }
+            }
+          ],
           "out": []
         }
       },
@@ -370,7 +378,7 @@
         "state": "open",
         "origin": "local",
         "assignee": null,
-        "review": "ideaLifecycle=open; claim/hold/blocker/completion absent",
+        "review": "ideaLifecycle=open; claim/hold/blocker/completion absent; inbound duplicates link from completed EI-22568825013823458",
         "watchdogKey": "repeated-tool-error:capability:read:caller:too-big-expected-number-to-be",
         "distinctEvidence": "direct byte_limit-over-4096 rejection with clearServerMismatch=false, distinct reporter and message fingerprint"
       },
@@ -379,10 +387,10 @@
       "requiredIdentityAndEvidenceTransfers": [
         "Retain candidate source SHA, empty-summary fact, WI-40303 workaround observation, watchdogKey, cursor wording, and attempted-size evidence.",
         "Retain canonical watchdogKey, direct byte_limit rejection, reporter occurrence, and its distinct message/correlation fingerprint.",
-        "Preserve both empty typed-reference directions and run the focused current recurrence guard again in any later apply lane."
+        "Preserve the candidate's empty typed-reference directions and the canonical's inbound duplicates edge from completed EI-22568825013823458; run the focused current recurrence guard again in any later apply lane."
       ],
       "confidence": "medium",
-      "rationale": "Both rows concern the capability:read 4096-byte ceiling, but the candidate reports recovery-cursor guidance that omitted the cap while the canonical reports direct oversized-byte_limit rejection. The current source and tests verify the 4096 contract; they do not erase either historical producer occurrence. Both rows remain open/local/unassigned with no completion or typed links, so D-006/D-009 require preserve."
+      "rationale": "Both rows concern the capability:read 4096-byte ceiling, but the candidate reports recovery-cursor guidance that omitted the cap while the canonical reports direct oversized-byte_limit rejection. The current source and tests verify the 4096 contract; they do not erase either historical producer occurrence. Both rows remain open/local/unassigned with no completion; the canonical now also has one inbound duplicates edge from completed EI-22568825013823458, so D-006/D-009 require preserving the rows and that edge."
     }
   ]
 }
