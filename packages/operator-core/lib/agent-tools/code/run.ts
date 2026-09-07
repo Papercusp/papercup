@@ -28,6 +28,7 @@ import type { SimilarRecipe } from '../../code-recipes-search';
 import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { recordRecipeRun } from '../../code-recipes-store';
+import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import {
   normalizeExecutionTrace,
   type NormalizedExecutionTrace,
@@ -77,6 +78,39 @@ export function withCodeRunContract(ctx: UnifiedToolContext, contract: CodeRunCo
 
 function codeRunContract(ctx: UnifiedToolContext): CodeRunContract | undefined {
   return (ctx as UnifiedToolContext & { [CODE_RUN_CONTRACT]?: CodeRunContract })[CODE_RUN_CONTRACT];
+}
+
+/**
+ * Bound best-effort work performed after the orchestration worker returns.
+ *
+ * `code:run` is a foreground tool: the worker itself is clamped below the MCP transport
+ * deadline, but trace normalization, recipe capture, and trace-only recording run on the host
+ * after that worker settles. Every one of those legs can touch the database or lazy-load code,
+ * so a slow leg must not consume the serialization headroom that makes the foreground response
+ * safe. The deadline is absolute (shared by every leg), rather than a fresh timeout per leg.
+ * `withBoundedTimeout` deliberately leaves late best-effort work running; it only prevents that
+ * work from holding the response open.
+ */
+export async function withCodeRunResponseBudget<T>(
+  work: () => Promise<T>,
+  opts: { deadlineAtMs: number; fallback: T; label?: string },
+): Promise<BoundedTimeoutResult<T>> {
+  const remainingMs = opts.deadlineAtMs - Date.now();
+  if (remainingMs <= 0) {
+    return {
+      value: opts.fallback,
+      degraded: true,
+      reason: 'timeout',
+      elapsedMs: 0,
+    };
+  }
+  // Resolve the thunk on a microtask so a synchronous adapter failure follows the same
+  // best-effort/error path as an async rejection instead of escaping before the race is set up.
+  return withBoundedTimeout(() => Promise.resolve().then(work), {
+    fallback: opts.fallback,
+    timeoutMs: remainingMs,
+    ...(opts.label ? { label: opts.label } : {}),
+  });
 }
 
 // Compatibility export for the focused branch tests and any internal callers
@@ -212,6 +246,10 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const runStartedAtMs = Date.now();
+    // Keep the whole foreground handler below the transport ceiling, including all best-effort
+    // host-side work after the orchestration worker returns. The worker's own timeout is only one
+    // leg of this response budget; it must not be followed by an unbounded trace/capture tail.
+    const responseDeadlineAtMs = runStartedAtMs + FOREGROUND_TIMEOUT_CEILING_MS;
     const script = args.script;
 
     // EI-21570021207351896 / EI-21569537333182760: keep the requested and the EFFECTIVE budget as
@@ -352,16 +390,30 @@ export default defineTool({
     // payload. callRecords are internal dispatch evidence; the normalized trace
     // keeps the safe subset and the raw records never cross the result door.
     let executionTrace: NormalizedExecutionTrace | null = null;
-    try {
-      executionTrace = await normalizeExecutionTrace({
-        script,
-        backend: 'server',
-        tools: all,
-        allowed,
-        callRecords: result.callRecords,
+    const runPostprocessing = <T>(label: string, work: () => Promise<T>, fallback: T) =>
+      withCodeRunResponseBudget(work, {
+        deadlineAtMs: responseDeadlineAtMs,
+        fallback,
+        label: `code:run ${label}`,
       });
-    } catch (err) {
-      ctx.log(`code:run trace normalization failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
+    const traceNormalization = await runPostprocessing(
+      'trace normalization',
+      () =>
+        normalizeExecutionTrace({
+          script,
+          backend: 'server',
+          tools: all,
+          allowed,
+          callRecords: result.callRecords,
+        }),
+      null,
+    );
+    if (!traceNormalization.degraded) {
+      executionTrace = traceNormalization.value;
+    } else if (traceNormalization.reason === 'error') {
+      ctx.log(`code:run trace normalization failed (swallowed): ${traceNormalization.errorMessage ?? 'unknown error'}`);
+    } else {
+      ctx.log('code:run trace normalization skipped: response budget exhausted');
     }
 
     // CAPTURE + DEDUP (code-recipes-2026-06-21 P-003/P-004): every SUCCESSFUL, non-dry-run
@@ -384,9 +436,32 @@ export default defineTool({
     // time, and that refusal is permanent — capturing it anyway mints a recipe that
     // can never run, then lets it accrue run/success counts that certify it.
     if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
-      if (await isRecipeCaptureAuthorityEligible(args.script)) {
-        recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract);
+      const authority = await runPostprocessing(
+        'recipe authority check',
+        () => isRecipeCaptureAuthorityEligible(args.script),
+        false,
+      );
+      if (authority.value && !authority.degraded) {
+        const capture = await runPostprocessing(
+          'recipe capture',
+          () => maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract),
+          null,
+        );
+        recipeCapture = capture.value;
         similarRecipes = recipeCapture?.similarRecipes ?? [];
+        if (capture.degraded) {
+          ctx.log(
+            capture.reason === 'error'
+              ? `code:run recipe capture failed (swallowed): ${capture.errorMessage ?? 'unknown error'}`
+              : 'code:run recipe capture skipped: response budget exhausted',
+          );
+        }
+      } else if (authority.degraded) {
+        ctx.log(
+          authority.reason === 'error'
+            ? `code:run recipe authority check failed (swallowed): ${authority.errorMessage ?? 'unknown error'}`
+            : 'code:run recipe authority check skipped: response budget exhausted',
+        );
       } else {
         // Logged, not silent: this is the one capture-skip reason that is invisible
         // in the result (the run itself succeeded), so without this line a missing
@@ -398,7 +473,18 @@ export default defineTool({
     // durable trace row. A successful capture already recorded this same trace
     // against its recipe, so do not emit a duplicate execution row.
     if (executionTrace && !recipeCapture) {
-      await maybeRecordTraceOnly(ctx, executionTrace, Boolean(result.ok));
+      const traceRecord = await runPostprocessing(
+        'trace-only recording',
+        () => maybeRecordTraceOnly(ctx, executionTrace as NormalizedExecutionTrace, Boolean(result.ok)),
+        undefined,
+      );
+      if (traceRecord.degraded) {
+        ctx.log(
+          traceRecord.reason === 'error'
+            ? `code:run trace record failed (swallowed): ${traceRecord.errorMessage ?? 'unknown error'}`
+            : 'code:run trace record skipped: response budget exhausted',
+        );
+      }
     }
 
     // P-007 (agent-tooling-token-efficiency): cut the discovery ritual. The old flow demanded a
@@ -536,7 +622,11 @@ export default defineTool({
     // tool_name censuses exclude it by default. A zero-dispatch run (pure compute) is
     // NOT a wrapper occurrence and stays countable, which is why this keys off the
     // orchestrator's dispatchCount rather than the tool name.
-    if ((result.dispatchCount ?? 0) > 0 && (await dispatchWrapperMarkEnabled())) {
+    const wrapperMark =
+      (result.dispatchCount ?? 0) > 0
+        ? await runPostprocessing('dispatch wrapper marker', () => dispatchWrapperMarkEnabled(), false)
+        : null;
+    if ((result.dispatchCount ?? 0) > 0 && wrapperMark?.value) {
       invocationMetadata[DISPATCH_WRAPPER_METADATA_KEY] = true;
       invocationMetadata.dispatchedToolCalls = result.dispatchCount;
     }
