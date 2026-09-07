@@ -1982,7 +1982,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await getSystemAction('green-checkpoint')!(ctx);
     // The stall-tracking SELECT ran against the fake sql, scoped to the install slug.
-    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness', 'ws-42']);
     // …so the fail-safe catch never logged a stall-tracking failure (the flake's warn).
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('stall tracking failed'));
     warn.mockRestore();
@@ -2585,7 +2585,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       }),
     );
     // …and the gate_health blob was read + written for that harness (the streak now moves).
-    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness', 'ws-42']);
   });
 
   it.each([
@@ -3869,7 +3869,7 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
     await getSystemAction('green-checkpoint')!(ctx);
     expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'not-green' }));
-    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness', 'ws-42']);
   });
 
   it('EI-213458: a pinned old-CLI fallback retains history but emits no red wake and mutates no gate health', async () => {
