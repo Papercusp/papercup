@@ -222,7 +222,7 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
   });
 });
 
-describe('acceptance BAR subject pin follows only progress/completion bookkeeping', () => {
+describe('acceptance BAR subject pin follows BAR-neutral writes only', () => {
   it.each([
     ['completion backlink', 'done', 'alpha — note: ← WI-100 completed (done)', 'done', 'alpha — note: ← EI-200 completed (done)', true],
     ['todo → wip', 'todo', 'alpha', 'wip', 'alpha', true],
@@ -230,8 +230,10 @@ describe('acceptance BAR subject pin follows only progress/completion bookkeepin
     ['blocked → needs-human', 'blocked', 'alpha', 'needs-human', 'alpha', true],
     ['needs-human → done + backlink', 'needs-human', 'alpha', 'done', 'alpha — note: ← WI-100 completed (done)', true],
     ['dropped remains semantic', 'todo', 'alpha', 'dropped', 'alpha', false],
-    ['item meaning', 'done', 'alpha — note: ← WI-100 completed (done)', 'done', 'beta — note: ← WI-100 completed (done)', false],
-    ['authored note', 'done', 'alpha — note: strict acceptance', 'done', 'alpha — note: relaxed acceptance', false],
+    // Only Requirements + Bar-to-work map content is canonical BAR source.
+    // Phase item prose is therefore neutral while the mapped item remains live.
+    ['item implementation prose', 'done', 'alpha — note: ← WI-100 completed (done)', 'done', 'beta — note: ← WI-100 completed (done)', true],
+    ['authored item note', 'done', 'alpha — note: strict acceptance', 'done', 'alpha — note: relaxed acceptance', true],
   ])('%s preserves the appropriate revision boundary', async (_label, beforeStatus, before, afterStatus, after, follows) => {
     const rubricSlug = `${SLUG}-acceptance`;
     const initial = body({ items: [`- **P-001** \`${beforeStatus}\` ${before}`] });
@@ -256,6 +258,8 @@ describe('acceptance BAR subject pin follows only progress/completion bookkeepin
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) throw new Error(seeded.message);
     const data = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
+    if (!data.barSetHash) throw new Error('canonical acceptance BAR seed omitted barSetHash');
+    const barSetHash = data.barSetHash;
     await admin`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, version, template, template_data)
@@ -266,7 +270,7 @@ describe('acceptance BAR subject pin follows only progress/completion bookkeepin
       UPDATE harness_shared.harness_plans
          SET acceptance_bar_epoch = 1, acceptance_bar_cohort = 'legacy-backfilled',
              acceptance_bar_rubric_slug = ${rubricSlug}, acceptance_bar_rubric_revision = 25,
-             acceptance_bar_set_hash = ${data.barSetHash}, acceptance_bar_seeded_at = now(),
+             acceptance_bar_set_hash = ${barSetHash}, acceptance_bar_seeded_at = now(),
              acceptance_bar_seeded_by = 'su-author'
        WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
 
