@@ -106,6 +106,18 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/Refusing to proceed — this would silently/);
   });
 
+  it('discovers the frozen plain-node host as well as the legacy source-entry process', () => {
+    expect(src).toContain(
+      "OPERATOR_HOST_PROCESS_RE='bin/hono-host\\.ts|dist-verify/hono-host\\.mjs'",
+    );
+    const isolationGuard = src.match(
+      /if \[ "\$ISOLATED_DB" = "1" \]; then[\s\S]*?EI-10387 isolation VERIFIED[\s\S]*?\nfi/,
+    )?.[0];
+    expect(isolationGuard).toBeTruthy();
+    expect(isolationGuard).toContain('pgrep -f "$OPERATOR_HOST_PROCESS_RE"');
+    expect(isolationGuard).toContain('OPERATOR_DEV_PORT=$DEV_PORT');
+  });
+
   it('removes the throwaway datadir at teardown (never leaks a migrated cluster into $TMPDIR)', () => {
     expect(src).toMatch(/rm -rf "\$ISOLATED_PG_DATA_DIR"/);
   });
