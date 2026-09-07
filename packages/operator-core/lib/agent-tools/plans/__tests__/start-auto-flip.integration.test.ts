@@ -50,6 +50,40 @@ vi.mock('../../../pot/started', async (importOriginal) => {
   return { ...actual, mugKettleSystemEnabled: async () => MUG_KETTLE.on };
 });
 
+// This fixture targets the real draft→ready body write and revision spine, not
+// the lifecycle/admission contracts that every production start must satisfy.
+// Keep those unrelated doors deterministic, matching start-guard.test.ts; the
+// Postgres-backed withPlanLock below remains real and is the subject under test.
+const START_GATES = vi.hoisted(() => ({
+  activation: vi.fn(),
+  admission: vi.fn(),
+  claimSpec: vi.fn(),
+}));
+vi.mock('../plan-activation-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plan-activation-gate')>();
+  return {
+    ...actual,
+    evaluateConversationActivationGate: (...args: unknown[]) => START_GATES.activation(...args),
+  };
+});
+vi.mock('../plan-admission-preflight', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plan-admission-preflight')>();
+  return {
+    ...actual,
+    preflightExactPlanAdmission: (...args: unknown[]) => START_GATES.admission(...args),
+  };
+});
+vi.mock('../../../plan-workitem-promotion-run', () => ({
+  promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false, workItems: [] })),
+}));
+vi.mock('../../../scheduler/claim-spec-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../scheduler/claim-spec-store')>();
+  return {
+    ...actual,
+    setClaimSpec: (...args: unknown[]) => START_GATES.claimSpec(...args),
+  };
+});
+
 // Import AFTER the mock is declared (vi.mock is hoisted, but these pull in `start`,
 // which resolves the scope at call time, not at import time — either ordering works;
 // kept dynamic for symmetry with the mock-then-import convention elsewhere).
@@ -149,6 +183,17 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  START_GATES.activation.mockReset();
+  START_GATES.activation.mockResolvedValue({ satisfied: true, auditSeq: 1 });
+  START_GATES.admission.mockReset();
+  START_GATES.admission.mockResolvedValue({
+    ready: true,
+    status: 'ready',
+    reason: 'ready',
+    message: 'exact-plan admission fixture override',
+  });
+  START_GATES.claimSpec.mockReset();
+  START_GATES.claimSpec.mockResolvedValue({ ok: true, errors: [], revision: 1 });
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
