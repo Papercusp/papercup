@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createGymRunnerPorts, type GymRunnerPortsConfig } from '../runner-ports';
 import type { Sql } from 'postgres';
 
@@ -46,8 +49,39 @@ function cfg(over: Partial<GymRunnerPortsConfig> = {}): { config: GymRunnerPorts
 describe('createGymRunnerPorts', () => {
   it('exposes the full GymRunnerPorts surface', () => {
     const p = createGymRunnerPorts(cfg().config);
-    for (const k of ['cloneSubstrate', 'registerThrowawayHarness', 'applyPromptOverride', 'fileFeature', 'startPipeline', 'pollStatus', 'teardownHarness', 'now', 'sleep']) {
+    for (const k of ['cloneSubstrate', 'registerThrowawayHarness', 'applyPromptOverride', 'fileFeature', 'startPipeline', 'pollStatus', 'runOracle', 'teardownHarness', 'now', 'sleep']) {
       expect(typeof (p as Record<string, unknown>)[k]).toBe('function');
+    }
+  });
+
+  it('default runOracle executes the supported test:file command and parses measured Vitest assertions', async () => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-'));
+    try {
+      const { config, execs } = cfg({
+        execCapture: async (_cmd, args) => {
+          const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
+          expect(outputArg).toBeTruthy();
+          writeFileSync(outputArg!.slice('--outputFile='.length), JSON.stringify({
+            testResults: [{
+              assertionResults: [
+                { fullName: 'oracle > passes', status: 'passed' },
+                { fullName: 'oracle > fails', status: 'failed' },
+                { fullName: 'oracle > skipped', status: 'skipped' },
+              ],
+            }],
+          }));
+          return { stdout: '', stderr: '' };
+        },
+      });
+      const p = createGymRunnerPorts(config);
+      const results = await p.runOracle!({ clonePath, testPath: 'oracle.test.js' });
+      expect(results).toEqual([
+        { name: 'oracle > passes', passed: true },
+        { name: 'oracle > fails', passed: false },
+      ]);
+      expect(execs).toEqual([]);
+    } finally {
+      rmSync(clonePath, { recursive: true, force: true });
     }
   });
 

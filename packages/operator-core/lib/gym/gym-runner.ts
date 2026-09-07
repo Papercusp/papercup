@@ -15,6 +15,18 @@ import { join } from 'node:path';
 import { gymRunIdentity, type GymRunIdentity, type GymRunKey } from './run-identity';
 import { planVariantOverlay, type VariantOverlay } from './variant-overlay';
 import { classifyGymRun, type GymRunOutcome } from './pipeline-status';
+import { regressionsFromTests, type TestResult } from './signals';
+
+export interface GymOracleSpec {
+  /** Repo-relative path of the real test file that judges the task. */
+  testPath: string;
+  /** Repo-relative implementation file the task restores. */
+  implPath: string;
+  /** Commit at which the oracle and reference implementation are pinned. */
+  pinCommit: string;
+  /** Auditable work-item/commit provenance for the real task. */
+  sourceRef: string;
+}
 
 export interface GymTaskSpec {
   id: string;
@@ -26,6 +38,8 @@ export interface GymTaskSpec {
   spec: string;
   /** The high-level intent the work should achieve. */
   intent: string;
+  /** Real-corpus oracle metadata, when this task is test-anchored. */
+  oracle?: GymOracleSpec;
 }
 
 export interface GymVariantSpec {
@@ -62,6 +76,8 @@ export interface GymRunnerPorts {
     workflowStatus: string;
     featureStatus: string | null;
   }>;
+  /** Run the task's immutable oracle inside the clone and return per-test results. */
+  runOracle?(i: { clonePath: string; testPath: string }): Promise<TestResult[] | undefined>;
   teardownHarness(i: { slug: string; clonePath: string; workspaceId: string }): Promise<void>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -77,6 +93,8 @@ export interface GymRunResult {
   outcome: GymRunOutcome;
   terminal: boolean;
   elapsedMs: number;
+  /** Deterministic signals measured by the runner; absent means not measured. */
+  deterministicSignals?: Record<string, unknown>;
 }
 
 export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): Promise<GymRunResult> {
@@ -87,8 +105,26 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
 
   // --- setup phase: any failure → best-effort teardown of what we created, then rethrow ---
   let workflowID: string;
+  let preOracle: TestResult[] | undefined;
+  const measureOracle = async (): Promise<TestResult[] | undefined> => {
+    if (!spec.task.oracle || !ports.runOracle) return undefined;
+    try {
+      const results = await ports.runOracle({
+        clonePath,
+        testPath: spec.task.oracle.testPath,
+      });
+      return results && results.length > 0 ? results : undefined;
+    } catch {
+      // Oracle collection is evidence, not a reason to hide the pipeline outcome.
+      return undefined;
+    }
+  };
   try {
     await ports.cloneSubstrate({ source: spec.task.source, commit: spec.task.commit, destDir: clonePath });
+    // The task commit starts with the implementation rewound. Measure the oracle
+    // BEFORE the agent pipeline changes the clone so regressionsFromTests compares
+    // the same immutable test set pre/post.
+    preOracle = await measureOracle();
     await ports.registerThrowawayHarness({ slug: identity.harnessSlug, clonePath, workspaceId: spec.workspaceId });
     for (const op of overlayPlan.promptOverrideOps) {
       await ports.applyPromptOverride({
@@ -132,6 +168,11 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
       timeoutMs: spec.timeoutMs,
     });
     if (cls.terminal) {
+      const postOracle = await measureOracle();
+      const deterministicSignals =
+        preOracle && postOracle
+          ? { regressions: regressionsFromTests(preOracle, postOracle) }
+          : undefined;
       return {
         runKey,
         identity,
@@ -142,6 +183,7 @@ export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): P
         outcome: cls.outcome,
         terminal: true,
         elapsedMs,
+        ...(deterministicSignals ? { deterministicSignals } : {}),
       };
     }
     await ports.sleep(spec.pollIntervalMs);

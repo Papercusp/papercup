@@ -118,6 +118,7 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
           commit: input.task.repoCommit,
           spec: input.task.spec,
           intent: input.task.intent,
+          ...(input.task.oracle ? { oracle: input.task.oracle } : {}),
         },
         variant: { id: input.variant.variantId, overlay: input.variant.overlay },
         cycle: input.cycle,
@@ -143,6 +144,7 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
         workflowID: result.workflowID,
         outcome: result.outcome,
         pipelineUsd: Number(rows[0]?.c ?? 0),
+        ...(result.deterministicSignals ? { deterministicSignals: result.deterministicSignals } : {}),
       };
     },
 
@@ -157,6 +159,7 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
           clonePath: handle.clonePath,
           baseCommit: task.repoCommit,
           terminalState: handle.outcome,
+          signals: handle.deterministicSignals,
         },
         {
           readRunOutputs: async (slug) => {

@@ -63,6 +63,7 @@
  */
 import { isPinnedCommit, type GitCommand } from './clone';
 import type { GymTaskPool } from './task-generator';
+import type { GymOracleSpec } from './gym-runner';
 
 /**
  * The cone-sparse-checkout dirs that make up the real substrate.
@@ -401,6 +402,7 @@ export function papercuspTaskToGymTask(
   corpus: 'real';
   repoUrl: string;
   repoCommit: string;
+  oracle: GymOracleSpec;
 } {
   assertDescriptorPins(desc);
   if (!isPinnedCommit(taskCommit)) {
@@ -427,5 +429,11 @@ export function papercuspTaskToGymTask(
     corpus: 'real' as const,
     repoUrl,
     repoCommit: taskCommit,
+    oracle: {
+      testPath: desc.testPath,
+      implPath: desc.implPath,
+      pinCommit: desc.pinCommit,
+      sourceRef: desc.sourceRef,
+    },
   };
 }

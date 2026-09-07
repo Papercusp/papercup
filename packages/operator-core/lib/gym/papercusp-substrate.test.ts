@@ -220,6 +220,15 @@ describe('papercuspTaskToGymTask', () => {
     expect(row.corpus).toBe('real');
   });
 
+  it('carries immutable oracle metadata into the real gym task', () => {
+    expect(papercuspTaskToGymTask(TASK, '/scratch/sub', TASK_COMMIT).oracle).toEqual({
+      testPath: TASK.testPath,
+      implPath: TASK.implPath,
+      pinCommit: PIN,
+      sourceRef: TASK.sourceRef,
+    });
+  });
+
   /**
    * D-007. The runner clones `repoCommit` from the object store with NO setup
    * hook, so `repoCommit: pinCommit` hands the agent the SHIPPED file — the

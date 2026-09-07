@@ -28,6 +28,7 @@ import type { VariantOverlay } from './variant-overlay';
 import type { VariantComparisonRow } from './store';
 import type { RatePauseDeps } from './rate-pause';
 import type { GymTaskCorpus } from './task-corpus';
+import type { GymOracleSpec } from './gym-runner';
 
 export interface AbVariant {
   variantId: string;
@@ -44,6 +45,8 @@ export interface AbTask {
   intent: string;
   /** Repo summary the judge weighs spec-gaps against. */
   projectContext: string;
+  /** Real-corpus oracle metadata, when this task is test-anchored. */
+  oracle?: GymOracleSpec;
   /**
    * Which corpus this task belongs to (gym-real-fitness-signal-2026-07-27 P-003).
    * 'synthetic' = a generated stub substrate (proves the MECHANISM only); 'real' =
@@ -85,6 +88,8 @@ export interface AbRunHandle {
   outcome: string;
   /** Cost of the harness pipeline run (its agent spawns). */
   pipelineUsd: number;
+  /** Deterministic signals measured while running the task's oracle. */
+  deterministicSignals?: Record<string, unknown>;
 }
 
 export interface AbStore {

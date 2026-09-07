@@ -18,17 +18,39 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { rm as rmCb } from 'node:fs';
+import { readFileSync, rm as rmCb, unlinkSync } from 'node:fs';
 import { basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { buildSubstrateCloneCommands } from './clone';
 import type { GymRunnerPorts } from './gym-runner';
+import type { TestResult } from './signals';
 
 const execFileP = promisify(execFileCb);
 const rmP = promisify(rmCb);
 
 const SAFE_SLUG = /^[a-z0-9]+$/;
+
+/** Parse one Vitest JSON report into the per-test evidence the gym signal core consumes. */
+export function parseVitestOracleResults(jsonText: string): TestResult[] {
+  let parsed: { testResults?: Array<{ assertionResults?: Array<{ status?: string; fullName?: string; title?: string }> }> };
+  try {
+    parsed = JSON.parse(jsonText) as typeof parsed;
+  } catch {
+    return [];
+  }
+  const out: TestResult[] = [];
+  for (const file of Array.isArray(parsed.testResults) ? parsed.testResults : []) {
+    for (const assertion of Array.isArray(file?.assertionResults) ? file.assertionResults : []) {
+      const name = (assertion.fullName ?? assertion.title ?? '').trim();
+      if (!name) continue;
+      if (assertion.status === 'passed') out.push({ name, passed: true });
+      else if (assertion.status === 'failed') out.push({ name, passed: false });
+    }
+  }
+  return out;
+}
 
 /**
  * Capabilities the gym pipeline's spawned roles need on the EPHEMERAL gym-operator.
@@ -122,12 +144,21 @@ export interface GymRunnerPortsConfig {
   principalSeedWorkspaceIds?: readonly string[];
   fetchFn?: typeof fetch;
   exec?: (cmd: string, args: string[]) => Promise<void>;
+  execCapture?: (
+    cmd: string,
+    args: string[],
+    options: { cwd: string; timeout: number; maxBuffer: number },
+  ) => Promise<{ stdout: string; stderr: string }>;
   rm?: (path: string) => Promise<void>;
 }
 
 export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts {
   const doFetch = cfg.fetchFn ?? fetch;
   const exec = cfg.exec ?? (async (cmd: string, args: string[]) => { await execFileP(cmd, args); });
+  const execCapture =
+    cfg.execCapture ??
+    (async (cmd: string, args: string[], options: { cwd: string; timeout: number; maxBuffer: number }) =>
+      (await execFileP(cmd, args, options)) as { stdout: string; stderr: string });
   const rm = cfg.rm ?? (async (p: string) => { await rmP(p, { recursive: true, force: true }); });
   const sql = cfg.gymSql;
 
@@ -224,6 +255,27 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         SELECT status FROM harness_shared.harness_features_consolidated
          WHERE harness_slug = ${slug} AND feature_id = ${featureId} LIMIT 1`;
       return { workflowStatus: wf[0]?.status ?? 'PENDING', featureStatus: feat[0]?.status ?? null };
+    },
+
+    async runOracle({ clonePath, testPath }) {
+      const reportPath = `${tmpdir()}/papercusp-gym-oracle-${randomBytes(12).toString('hex')}.json`;
+      try {
+        await execCapture(
+          'npm',
+          ['run', 'test:file', '--', testPath, '--', '--reporter=json', `--outputFile=${reportPath}`],
+          { cwd: clonePath, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
+        );
+      } catch {
+        // A failing oracle still writes a JSON report; parse it below. If it did
+        // not, the caller records deterministic evidence as not measured.
+      }
+      try {
+        return parseVitestOracleResults(readFileSync(reportPath, 'utf8'));
+      } catch {
+        return undefined;
+      } finally {
+        try { unlinkSync(reportPath); } catch { /* best effort */ }
+      }
     },
 
     async teardownHarness({ slug, clonePath, workspaceId }) {

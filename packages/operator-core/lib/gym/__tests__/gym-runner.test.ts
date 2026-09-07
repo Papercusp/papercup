@@ -107,6 +107,33 @@ describe('runGymPipeline', () => {
     expect(result.terminal).toBe(true);
   });
 
+  it('measures the immutable oracle before and after the pipeline and emits regressions only when both are measured', async () => {
+    const { ports } = makePorts({ poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }] });
+    let oracleRun = 0;
+    ports.runOracle = async () => {
+      oracleRun += 1;
+      return [{ name: 'oracle > preserves behaviour', passed: oracleRun === 1 }];
+    };
+
+    const result = await runGymPipeline(
+      makeSpec({
+        task: {
+          ...makeSpec().task,
+          oracle: {
+            testPath: 'oracle.test.js',
+            implPath: 'impl.js',
+            pinCommit: 'fedcba9876543210fedcba9876543210fedcba98',
+            sourceRef: 'WI-ORACLE',
+          },
+        },
+      }),
+      ports,
+    );
+
+    expect(oracleRun).toBe(2);
+    expect(result.deterministicSignals).toEqual({ regressions: true });
+  });
+
   it('tears down on a setup failure and never starts the pipeline', async () => {
     const { ports, calls } = makePorts({
       poll: [{ workflowStatus: 'SUCCESS', featureStatus: 'passed' }],
