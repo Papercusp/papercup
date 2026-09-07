@@ -574,10 +574,10 @@ status: draft
     });
     const validateDependencies = vi.fn(
       async (_deps: Parameters<NonNullable<InstallPluginCoreDeps['validateDependencies']>>[0]) => ({
-      ok: true,
-      missing: { tools: [], packs: [], plugins: [], events: [] },
-      installable: { tools: [], packs: [], plugins: [], events: [] },
-      messages: [],
+        ok: true,
+        missing: { tools: [], packs: [], plugins: [], events: [] },
+        installable: { tools: [], packs: [], plugins: [], events: [] },
+        messages: [],
       }),
     );
     const res = await installPluginFromCupboardCore(
