@@ -340,9 +340,31 @@ function barSetHash(criteria: readonly Record<string, unknown>[]): string | unde
 function deriveContract(
   stored: AcceptanceBarContract,
   subject: AcceptanceBarSubjectState | null | undefined,
+  incoming?: AcceptanceBarContract | null,
 ): AcceptanceBarContract {
+  // The MEANING EPOCH is the one contract field with NO subject-plan authority:
+  // `amendRubric` is its only writer, and it computes the value from the revision
+  // counter this guard cannot see. Rebuilding the contract from `stored` alone
+  // therefore DISCARDED every epoch the amender stamped, so the field could never
+  // be written by any path (the write half of P-003 was dead on arrival while the
+  // read half tested green against fixture-injected epochs).
+  //
+  // Carry an incoming epoch forward — but only FORWARD. Lowering it would bless a
+  // card graded before a real meaning change as current, which is exactly the
+  // failure this field exists to prevent, in the dangerous direction; raising it
+  // only ever invalidates, which is the safe direction. A non-integer, zero, or
+  // negative value is not an epoch at all and is ignored rather than trusted.
+  const storedEpoch = typeof stored.meaningRevision === 'number' ? stored.meaningRevision : undefined;
+  const offered = typeof incoming?.meaningRevision === 'number' ? incoming.meaningRevision : undefined;
+  const acceptable =
+    offered !== undefined &&
+    Number.isInteger(offered) &&
+    offered > 0 &&
+    (storedEpoch === undefined || offered >= storedEpoch);
+  const meaningRevision = acceptable ? offered : storedEpoch;
   return {
     ...stored,
+    ...(meaningRevision !== undefined ? { meaningRevision } : {}),
     // A subject-plan row is the authority.  Fall back to the stored contract only
     // for legacy rows whose subject was deleted/unreadable; never trust incoming data.
     ...(subject?.adoptionEpoch != null && subject.adoptionEpoch > 0
@@ -454,7 +476,11 @@ export function guardAcceptanceBarTemplateDataWrite(
   }
 
   const now = args.now ?? new Date().toISOString();
-  const contract = deriveContract(storedContract, args.subjectPlan);
+  const contract = deriveContract(
+    storedContract,
+    args.subjectPlan,
+    next.barContract as AcceptanceBarContract | undefined,
+  );
   const canonicalCriteria = nextCriteria.map((criterion) => {
     const key = barKeyOf(criterion);
     const prior = priorByKey.get(key);

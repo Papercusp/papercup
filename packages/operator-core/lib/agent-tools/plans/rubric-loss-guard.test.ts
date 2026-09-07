@@ -23,6 +23,7 @@ import {
   REPLICATION_DRILL_MARKER,
   type RubricLossCriterion,
   guardAcceptanceBarTemplateDataWrite,
+  nextAcceptanceBarMeaningRevision,
 } from './rubric-loss-guard';
 
 const LONG_DRILL =
@@ -300,5 +301,132 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     expect(() => guardAcceptanceBarTemplateDataWrite({
       ...input, subjectPlan: { seededAt: 'not-a-timestamp' },
     })).toThrow();
+  });
+
+  /**
+   * The WRITE half of the meaning epoch (P-003).
+   *
+   * The read half is pinned in acceptance-bar-contract-snapshot.test.ts, but those
+   * cases INJECT `meaningRevision` into their fixtures — so they pass whether or not
+   * any writer can actually produce one. Measured 2026-09-07: no writer could. This
+   * guard rebuilt `barContract` from the STORED contract alone, so every epoch
+   * `amendRubric` stamped was discarded on its way to the column, and the field was
+   * unwritable by any path while the read tests stayed green. These cases pin the
+   * writer end of the same contract so that gap cannot reopen silently.
+   */
+  describe('acceptance-BAR meaning epoch — the WRITE half (P-003)', () => {
+    const withEpoch = (epoch: number | undefined, overrides: Record<string, unknown> = {}) => {
+      const data = started(overrides) as Record<string, unknown>;
+      data.barContract = epoch === undefined ? { ...contract } : { ...contract, meaningRevision: epoch };
+      return data;
+    };
+    const epochOf = (result: { data: Record<string, unknown> }) =>
+      (result.data.barContract as { meaningRevision?: number }).meaningRevision;
+
+    it('CARRIES an incoming epoch through a method-only write (the regression)', () => {
+      const result = guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: withEpoch(undefined),
+        nextTemplateData: withEpoch(7, { method: 'Run the as-built check.' }),
+      });
+      // Before the fix this was `undefined`: the guard rebuilt barContract from
+      // `stored` and never looked at what the amender had just stamped.
+      expect(epochOf(result)).toBe(7);
+    });
+
+    it('CONTROL — refuses to LOWER a recorded epoch (the dangerous direction)', () => {
+      const result = guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: withEpoch(9),
+        nextTemplateData: withEpoch(4, { method: 'Run the as-built check.' }),
+      });
+      // Lowering would bless a card graded BEFORE a real meaning change as current —
+      // exactly the failure the field exists to prevent. The stored floor stands.
+      expect(epochOf(result)).toBe(9);
+    });
+
+    it('accepts a RAISED epoch (the safe direction — it only ever invalidates)', () => {
+      const result = guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: withEpoch(4),
+        nextTemplateData: withEpoch(9, { model: 'An intentionally amended outcome.' }),
+        actorId: 'amend-author',
+        amendment: { actorId: 'amend-author', reason: 'Correct the declared contract.' },
+      });
+      expect(epochOf(result)).toBe(9);
+    });
+
+    it('CONTROL — absence stays ABSENT, never defaulted to 1', () => {
+      const result = guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: withEpoch(undefined),
+        nextTemplateData: withEpoch(undefined, { method: 'Run the as-built check.' }),
+      });
+      // A fabricated epoch would bless a card from before an UNTRACKED meaning change;
+      // readers must fall back to strict revision equality instead.
+      expect(epochOf(result)).toBeUndefined();
+    });
+
+    it('CONTROL — a non-epoch value is REFUSED at the boundary, never written', () => {
+      // A revision counter is a positive integer; the contract schema rejects
+      // anything else before this guard ever sees it, and a started BAR turns that
+      // parse failure into a refusal rather than a silent pass-through. Pinned here
+      // because the carry-forward above is only safe while this door stays shut.
+      for (const bogus of [0, -3, 2.5]) {
+        expect(
+          () =>
+            guardAcceptanceBarTemplateDataWrite({
+              slug: 'acceptance-subject-plan',
+              storedTemplateData: withEpoch(5),
+              nextTemplateData: withEpoch(bogus, { method: 'Run the as-built check.' }),
+            }),
+          `offered ${bogus}`,
+        ).toThrow(/started acceptance BAR contract/);
+      }
+    });
+
+    it('composes with the amender: a method-only edit holds the epoch, a meaning edit advances it', () => {
+      const priorCriteria = [criterion()];
+      // Method-only: meaning is unchanged, so the epoch stays put at the prior floor…
+      const held = nextAcceptanceBarMeaningRevision({
+        priorCriteria,
+        nextCriteria: [criterion({ method: 'Run the as-built check.' })],
+        priorMeaningRevision: null,
+        priorRevision: 6,
+        nextRevision: 7,
+      });
+      expect(held).toBe(6);
+      // …and SURVIVES the guard, which is the half that was broken.
+      expect(
+        epochOf(
+          guardAcceptanceBarTemplateDataWrite({
+            slug: 'acceptance-subject-plan',
+            storedTemplateData: withEpoch(undefined),
+            nextTemplateData: withEpoch(held, { method: 'Run the as-built check.' }),
+          }),
+        ),
+      ).toBe(6);
+
+      // A real meaning change advances the epoch to the new revision.
+      const advanced = nextAcceptanceBarMeaningRevision({
+        priorCriteria,
+        nextCriteria: [criterion({ model: 'An intentionally amended outcome.' })],
+        priorMeaningRevision: 6,
+        priorRevision: 6,
+        nextRevision: 7,
+      });
+      expect(advanced).toBe(7);
+      expect(
+        epochOf(
+          guardAcceptanceBarTemplateDataWrite({
+            slug: 'acceptance-subject-plan',
+            storedTemplateData: withEpoch(6),
+            nextTemplateData: withEpoch(advanced, { model: 'An intentionally amended outcome.' }),
+            actorId: 'amend-author',
+            amendment: { actorId: 'amend-author', reason: 'Correct the declared contract.' },
+          }),
+        ),
+      ).toBe(7);
+    });
   });
 });
