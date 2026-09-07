@@ -69,7 +69,8 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
 vi.mock('../../agent-tools/fleet/kill', () => ({
   default: { handler: (...args: unknown[]) => mocks.kill(...args) },
 }));
-vi.mock('../../goal-launch-settings', () => ({
+vi.mock('../../goal-launch-settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../goal-launch-settings')>()),
   resolveGoalLaunch: (...args: unknown[]) => mocks.resolveGoalLaunch(...args),
 }));
 vi.mock('../../modes/goal-context', () => ({
@@ -712,6 +713,12 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
       ...baseConfig,
       brief: 'Use only the fleet claim spec.',
     };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
     mocks.listTargets.mockResolvedValue([grantedTarget(config)]);
     mocks.claimAttempt.mockResolvedValue({
       workspaceId: 'ws',
