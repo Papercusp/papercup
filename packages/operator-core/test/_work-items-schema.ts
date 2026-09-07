@@ -559,6 +559,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     body text NOT NULL DEFAULT '',
     decision_date text,
     item_refs text[] NOT NULL DEFAULT '{}'::text[],
+    affects text[] NOT NULL DEFAULT '{}'::text[],
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, harness_slug, plan_slug, decision_id)
   );
@@ -572,6 +573,8 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     ON harness_shared.plan_decisions (workspace_id, harness_slug, plan_slug, seq);
   CREATE INDEX IF NOT EXISTS plan_decisions_item_refs_gin
     ON harness_shared.plan_decisions USING gin (item_refs);
+  CREATE INDEX IF NOT EXISTS plan_decisions_affects_gin
+    ON harness_shared.plan_decisions USING gin (affects);
   -- The watchdog recovery-window floor is also unconditional in the shared claim SQL. Keep an
   -- empty, production-shaped relation in the common fixture so tests that do not seed watchdog
   -- evidence still exercise the same fail-open query path.

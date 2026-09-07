@@ -20,7 +20,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
+import { rubricTemplateDataAuthoringSchema } from '../rubric-template';
 import { setupPlanPgFixture, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
+import { buildAcceptanceBarSeed } from '../../../acceptance-bar-seed';
 
 const HARNESS = `zzz-planidx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'plan-index-rows-probe';
@@ -44,6 +46,18 @@ updated: 2026-07-26
 
 **State:** probing
 **Next:** probing
+
+## Requirements
+
+**R-1 — Preserve the approved outcome.** Progress-only writes keep this acceptance BAR current.
+
+## Design
+
+### Bar-to-work map for this plan
+
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
 
 ## Phase 1 — probe
 
@@ -97,7 +111,9 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
           '- **P-002** `wip` second item',
           '- **P-003** `todo` third item',
         ],
-        decisions: ['### D-001 — a decision\nDate: 2026-07-26\nthe body'],
+        decisions: [
+          '### D-001 — a decision\nDate: 2026-07-26\nAffects: target-plan, second-plan\nthe body',
+        ],
       }),
     );
 
@@ -109,11 +125,12 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
     expect(rows.find((r) => r.item_id === 'P-002')?.status).toBe('wip');
 
     const decisions = await admin`
-      SELECT decision_id, seq, title FROM harness_shared.plan_decisions
+      SELECT decision_id, seq, title, affects FROM harness_shared.plan_decisions
        WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
     `;
     expect(decisions.length).toBe(1);
     expect(decisions[0].decision_id).toBe('D-001');
+    expect(decisions[0].affects).toEqual(['target-plan', 'second-plan']);
   });
 
   it('an edit REPLACES the rows rather than accumulating them', async () => {
@@ -223,13 +240,22 @@ describe('acceptance BAR subject pin follows only progress/completion bookkeepin
       SELECT version FROM harness_shared.harness_plans
        WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
     const priorVersion = Number(subject.version);
-    const data = {
-      kind: 'acceptance', subjectPlan: SLUG, characteristic: 'plan-acceptance',
-      barSetHash: 'a'.repeat(64),
-      criteria: [{ key: 'r-1', model: 'Preserve the approved outcome', method: 'Inspect the outcome' }],
-      barContract: { schemaVersion: 1, adoptionEpoch: 1, cohort: 'legacy-backfilled',
-        subjectPlanRevision: priorVersion, seededAt: '2026-09-05T00:00:00.000Z', seededBy: 'su-author' },
-    };
+    const seeded = buildAcceptanceBarSeed({
+      planSlug: SLUG,
+      planContent: initial,
+      actorId: 'su-author',
+      declaredAt: '2026-09-05T00:00:00.000Z',
+      cohort: 'legacy-backfilled',
+      backfilled: true,
+      adoptionEpoch: 1,
+      subjectPlanRevision: priorVersion,
+      planStatus: 'draft',
+      rubricSlug,
+      rubricRevision: 25,
+    });
+    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) throw new Error(seeded.message);
+    const data = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
     await admin`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, version, template, template_data)

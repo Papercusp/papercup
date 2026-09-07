@@ -85,6 +85,7 @@ export async function writePlanIndexRows(
     body: typeof d.body === 'string' ? d.body : '',
     decisionDate: typeof d.date === 'string' ? d.date : null,
     itemRefs: asStringArray(d.itemRefs),
+    affects: asStringArray(d.affects),
   }));
 
   // Unconditional delete: an edit that removes the last item must clear the
@@ -126,14 +127,14 @@ export async function writePlanIndexRows(
     await tx`
       INSERT INTO harness_shared.plan_decisions (
         workspace_id, harness_slug, plan_slug,
-        decision_id, seq, title, body, decision_date, item_refs
+        decision_id, seq, title, body, decision_date, item_refs, affects
       )
       SELECT ${workspaceId}, ${harnessSlug}, ${planSlug},
              e.id, e.seq, e.title, e.body, e."decisionDate",
-             COALESCE(e."itemRefs", '{}')
+             COALESCE(e."itemRefs", '{}'), COALESCE(e.affects, '{}')
         FROM jsonb_to_recordset(${JSON.stringify(decisions)}::text::jsonb) AS e(
                id text, seq integer, title text, body text,
-               "decisionDate" text, "itemRefs" text[]
+               "decisionDate" text, "itemRefs" text[], affects text[]
              )
     `;
   }

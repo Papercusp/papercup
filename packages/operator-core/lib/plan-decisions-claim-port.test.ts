@@ -5,7 +5,7 @@ vi.mock('./agent-tools/plans/source', () => ({
   getPlanRow: (...args: unknown[]) => mockGetPlanRow(...args),
 }));
 
-import { getClaimTimePlanDecisions } from './plan-decisions-claim-port';
+import { getClaimTimePlanDecisions, renderPlanDecisionsNote } from './plan-decisions-claim-port';
 
 const PLAN_WITH_DECISIONS = `## Now
 
@@ -121,6 +121,71 @@ describe('getClaimTimePlanDecisions (agent-trap-guards-2026-07-26 P-003b)', () =
     // The whole point: total and window length must be independently readable,
     // so a caller can say "8 of 12" instead of announcing 8 as the total.
     expect(r?.totalDecisions).toBeGreaterThan(r!.decisions.length);
+  });
+
+  it('puts source-qualified affected-plan authority before local decisions and warns explicitly', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITH_DECISIONS,
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'target-plan',
+    });
+    const lookupAffectedDecisions = vi.fn(async () => ({
+      decisions: [
+        {
+          planSlug: 'source-plan',
+          decisionId: 'D-900',
+          title: 'The target must not launch from staging',
+          body: 'This affected-plan ruling supersedes stale local carry prose.',
+        },
+      ],
+      totalDecisions: 1,
+    }));
+
+    const r = await getClaimTimePlanDecisions({
+      planSlug: 'target-plan',
+      harness: 'papercusp',
+      workspaceId: 'ws-1',
+      lookupAffectedDecisions,
+    });
+
+    expect(r?.decisions.map((d) => d.id)).toEqual(['D-900', 'D-001', 'D-002']);
+    expect(r?.decisions[0]).toMatchObject({
+      sourcePlanSlug: 'source-plan',
+      ref: 'source-plan#D-900',
+      relation: 'affects',
+    });
+    expect(r).toMatchObject({
+      affectedDecisions: 1,
+      totalAffectedDecisions: 1,
+      totalLocalDecisions: 2,
+      authorityReadFailed: false,
+    });
+    expect(renderPlanDecisionsNote(r!)).toMatch(/^⚠ CROSS-PLAN AUTHORITY CONFLICT\/SUPERSESSION WARNING:/);
+    expect(lookupAffectedDecisions).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      affectedPlanSlug: 'target-plan',
+      limit: 8,
+    });
+  });
+
+  it('surfaces an explicit authority-read failure instead of asserting that no affected decision exists', async () => {
+    mockGetPlanRow.mockResolvedValueOnce({
+      content: PLAN_WITHOUT_DECISIONS,
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'target-plan',
+    });
+    const r = await getClaimTimePlanDecisions({
+      planSlug: 'target-plan',
+      lookupAffectedDecisions: async () => {
+        throw new Error('column read failed');
+      },
+    });
+    expect(r?.authorityReadFailed).toBe(true);
+    expect(r?.decisions).toEqual([]);
+    expect(renderPlanDecisionsNote(r!)).toMatch(/^⚠ CROSS-PLAN AUTHORITY READ FAILED/);
   });
 
   it('fails soft to null on a lookup error — never throws, never blocks the claim it decorates', async () => {

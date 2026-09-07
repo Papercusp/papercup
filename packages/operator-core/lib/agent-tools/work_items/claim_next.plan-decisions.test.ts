@@ -99,10 +99,18 @@ async function body(args: unknown) {
 }
 
 const BRIEF = {
-  planSlug: 'a-plan',
-  decisions: [{ id: 'D-001', title: 'Do the thing', snippet: 'body excerpt' }],
+  planSlug: 'target-plan',
+  decisions: [{
+    id: 'D-009', title: 'Inbound authority', snippet: 'body excerpt',
+    sourcePlanSlug: 'source-plan', ref: 'source-plan#D-009', relation: 'affects',
+  }],
   totalDecisions: 1,
+  totalLocalDecisions: 0,
+  totalAffectedDecisions: 1,
+  affectedDecisions: 1,
+  authorityReadFailed: false,
 };
+const AFFECTS_WARNING = '⚠ CROSS-PLAN AUTHORITY CONFLICT/SUPERSESSION WARNING: source-plan#D-009';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -120,7 +128,7 @@ beforeEach(() => {
   });
   claimNextM.mockResolvedValue({ id: 'WI-raw', assignee: 'su-me' } as never);
   getClaimTimePlanDecisions.mockResolvedValue(null);
-  renderPlanDecisionsNote.mockReturnValue('rendered note');
+  renderPlanDecisionsNote.mockReturnValue(AFFECTS_WARNING);
   getClaimTimePriorAttemptBrief.mockResolvedValue(null);
 });
 
@@ -137,7 +145,7 @@ describe('work_items:claim_next — plan-Decisions brief (EI-19387745408924340)'
     const b = await body({ harness: 'papercusp' });
     expect(b.ok).toBe(true);
     expect(b.planDecisions).toEqual(BRIEF.decisions);
-    expect(b.planDecisionsNote).toBe('rendered note');
+    expect(b.planDecisionsNote).toBe(AFFECTS_WARNING);
     expect(getClaimTimePlanDecisions).toHaveBeenCalledWith(
       expect.objectContaining({
         workItem: { payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } } },
@@ -183,7 +191,7 @@ describe('work_items:claim_next — plan-Decisions brief (EI-19387745408924340)'
     expect(b.claimed).toHaveLength(2);
     expect(b.claimed[0].workItem.id).toBe('WI-1');
     expect(b.claimed[0].planDecisions).toEqual(BRIEF.decisions);
-    expect(b.claimed[0].planDecisionsNote).toBe('rendered note');
+    expect(b.claimed[0].planDecisionsNote).toBe(AFFECTS_WARNING);
     expect(b.claimed[0].priorAttemptBrief.fingerprint).toBe('one');
     expect(b.claimed[1].workItem.id).toBe('WI-2');
     expect(b.claimed[1].planDecisions).toBeUndefined();

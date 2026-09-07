@@ -57,6 +57,8 @@ export interface PlanIndexDecision {
   body: string;
   date: string | null;
   itemRefs: string[];
+  /** Reverse authority edges parsed from canonical `Affects:` metadata. */
+  affects?: string[];
 }
 
 /**
@@ -120,6 +122,7 @@ export function deriveIndexFromContent(content: string): PlanIndex {
       body: d.body,
       date: d.date,
       itemRefs: d.itemRefs,
+      affects: d.affects ?? [],
     })),
     nowState: p.now?.state ?? null,
     nowNext: p.now?.next ?? null,

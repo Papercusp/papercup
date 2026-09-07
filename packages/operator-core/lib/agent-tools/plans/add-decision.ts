@@ -65,7 +65,7 @@ const AFFECTED_PLAN_SLUG = z
 
 const AFFECTS = z.array(AFFECTED_PLAN_SLUG).max(20);
 const AFFECTS_DESC =
-  'Existing plan slugs of OTHER plans this decision bears on. The decision stays canonically in `slug`; each affected plan gets a cross-reference plan_event + a notify to its watchers. Surface labels and item/work-item ids are not accepted here.';
+  'Existing plan slugs of OTHER plans this decision bears on. The edge is stored canonically as `Affects:` metadata on the source decision and indexed for affected-plan claimants; each affected plan also gets a cross-reference plan_event + watcher notify. Surface labels and item/work-item ids are not accepted here.';
 
 const DECISION_BODY_DESC =
   'The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling. ' +
@@ -193,12 +193,15 @@ export { allocateNextDecisionId, appendDecisionToBody, normalizeAffects } from '
  *     whole history, so a genuinely repeated title+body recorded long ago
  *     (a different decision that happens to read the same) is untouched;
  *   - requires an EXACT match on both title and (normalized) body — a
- *     retry always sends byte-identical args, so this never has to guess.
+ *     retry always sends byte-identical args, so this never has to guess;
+ *   - requires the same normalized `affects` set, because changing cross-plan
+ *     execution authority is a semantic change even when prose is identical.
  */
 export function findRetryDuplicateOfLastDecision(
   decisions: PlanDecision[],
   title: string,
   body: string,
+  affects: string[] = [],
 ): PlanDecision | null {
   if (decisions.length === 0) return null;
   let last: PlanDecision | null = null;
@@ -213,6 +216,8 @@ export function findRetryDuplicateOfLastDecision(
   }
   if (!last) return null;
   if (last.title.trim() !== title.trim()) return null;
+  const sorted = (values: readonly string[]) => [...new Set(values)].sort();
+  if (JSON.stringify(sorted(last.affects ?? [])) !== JSON.stringify(sorted(affects))) return null;
   const { body: safeBody } = normalizeDecisionBodyHeadings(body.trim());
   // `last.body` (as parsed) also carries the `Date: …` line and any trailing
   // `Related: …` refs line the append wrote alongside it — compare by
@@ -346,6 +351,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     it.rationale,
     harnessSlug ? { harnessSlug } : {},
   );
+  const affects = normalizeAffects(it.affects, it.slug);
   const result = await withPlanLock<AddDecisionValue>(
     ctx as never,
     {
@@ -368,12 +374,20 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
       // EI-19383795443003151: a blind retry of a timed-out-but-actually-landed
       // write must not duplicate. No-op (no write, no revision, no plan-event)
       // and hand back the id that already carries this exact decision.
-      const retryDup = findRetryDuplicateOfLastDecision(parsed.decisions, it.title, it.body);
+      const retryDup = findRetryDuplicateOfLastDecision(parsed.decisions, it.title, it.body, affects);
       if (retryDup) {
         return { newBody: null, value: { ok: true, decisionId: retryDup.id, slug: it.slug, deduped: true } };
       }
       const decisionId = allocateNextDecisionId(current);
-      const appended = appendDecisionToBody(current, decisionId, it.title, it.body, todayISO(), it.refs ?? []);
+      const appended = appendDecisionToBody(
+        current,
+        decisionId,
+        it.title,
+        it.body,
+        todayISO(),
+        it.refs ?? [],
+        affects,
+      );
       const final = bumpUpdatedDate(appended);
       return {
         newBody: final,
@@ -444,7 +458,6 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   // watchers. The decision itself is NOT duplicated — it lives only in
   // `it.slug`; affected plans merely reference it. Unknown slugs are
   // reported back rather than silently skipped.
-  const affects = normalizeAffects(it.affects, it.slug);
   const propagatedTo: string[] = [];
   const unknownAffects: string[] = [];
   for (const affectedSlug of affects) {

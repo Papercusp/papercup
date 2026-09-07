@@ -820,6 +820,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           workItem,
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
+          // A cross-plan affects warning is execution authority. Keep the shared
+          // decisions bundle before plan-local checkpoint prose in serialized order.
+          ...(planDecisionsResult
+            ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+            : {}),
           checkpoint: hint.checkpoint,
           checkpointAgeMs: hint.checkpointAgeMs,
           checkpointWarning:
@@ -852,9 +857,6 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
-          ...(planDecisionsResult
-            ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
-            : {}),
           ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
           ...(behaviorContractHint
             ? {

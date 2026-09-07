@@ -128,9 +128,11 @@ export function appendDecisionToBody(
   decisionBody: string,
   date: string,
   refs: string[],
+  affects: string[] = [],
 ): string {
   const refsLine =
     refs.length > 0 ? `\nRelated: ${refs.join(', ')}` : '';
+  const affectsLine = affects.length > 0 ? `Affects: ${[...new Set(affects)].join(', ')}\n` : '';
   // Demote `#`/`##` headings in the body so they cannot break out of the
   // `## Decisions` section and shred the decision (EI-18804290731494084).
   // Enforced HERE, at authorship, rather than documented as a convention:
@@ -139,6 +141,7 @@ export function appendDecisionToBody(
   const block =
     `\n### ${decisionId} — ${title.trim()}\n` +
     `Date: ${date}\n` +
+    affectsLine +
     `${safeBody}${refsLine}\n`;
 
   // Find the `## Decisions` section — allowing a numbered prefix

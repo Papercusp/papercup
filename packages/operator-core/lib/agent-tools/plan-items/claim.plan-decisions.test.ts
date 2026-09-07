@@ -31,6 +31,10 @@ vi.mock('../../plan-items/agent-names', () => ({
 }));
 vi.mock('../../plan-items/liveness', () => ({ claimPlanItem: vi.fn() }));
 vi.mock('../../plan-items/convert', () => ({ convertPlanItem: vi.fn() }));
+const getClaimTimeCheckpointHint = vi.fn();
+vi.mock('../../work-item-checkpoint', () => ({
+  getClaimTimeCheckpointHint: (...a: unknown[]) => getClaimTimeCheckpointHint(...a),
+}));
 
 const getClaimTimePlanDecisions = vi.fn();
 const renderPlanDecisionsNote = vi.fn();
@@ -60,10 +64,18 @@ const body = async (args: Record<string, unknown>) => ((await tool.handler(args 
 const one = async (args: Record<string, unknown>) => (await body(args)).results[0];
 
 const BRIEF = {
-  planSlug: 'a-plan',
-  decisions: [{ id: 'D-076', title: 'Design intent before defect', snippet: 'body excerpt' }],
+  planSlug: 'target-plan',
+  decisions: [{
+    id: 'D-076', title: 'Inbound authority', snippet: 'body excerpt',
+    sourcePlanSlug: 'source-plan', ref: 'source-plan#D-076', relation: 'affects',
+  }],
   totalDecisions: 1,
+  totalLocalDecisions: 0,
+  totalAffectedDecisions: 1,
+  affectedDecisions: 1,
+  authorityReadFailed: false,
 };
+const AFFECTS_WARNING = '⚠ CROSS-PLAN AUTHORITY CONFLICT/SUPERSESSION WARNING: source-plan#D-076';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -82,8 +94,9 @@ beforeEach(() => {
       }) as never,
   );
   getClaimTimePlanDecisions.mockResolvedValue(null);
-  renderPlanDecisionsNote.mockReturnValue('rendered note');
+  renderPlanDecisionsNote.mockReturnValue(AFFECTS_WARNING);
   getClaimTimePriorAttemptBrief.mockResolvedValue(null);
+  getClaimTimeCheckpointHint.mockResolvedValue(null);
 });
 
 describe('plan_items:claim — prior-attempt brief (P-010)', () => {
@@ -105,7 +118,7 @@ describe('plan_items:claim — plan-Decisions brief, bare-lease path (flag OFF)'
     const r = await one({ plan: 'a-plan', item: 'P-001' });
     expect(r.ok).toBe(true);
     expect(r.planDecisions).toEqual(BRIEF.decisions);
-    expect(r.planDecisionsNote).toBe('rendered note');
+    expect(r.planDecisionsNote).toBe(AFFECTS_WARNING);
     expect(renderPlanDecisionsNote).toHaveBeenCalledWith(BRIEF);
   });
 
@@ -152,7 +165,15 @@ describe('plan_items:claim — plan-Decisions brief, auto-convert path (flag ON)
     expect(r.result.status).toBe('claimed');
     expect(r.convertStatus).toBe('converted');
     expect(r.planDecisions).toEqual(BRIEF.decisions);
-    expect(r.planDecisionsNote).toBe('rendered note');
+    expect(r.planDecisionsNote).toBe(AFFECTS_WARNING);
+  });
+
+  it('serializes affected-plan authority before a resumed work-item checkpoint', async () => {
+    getClaimTimePlanDecisions.mockResolvedValue(BRIEF);
+    getClaimTimeCheckpointHint.mockResolvedValue({ checkpoint: 'local carry prose', checkpointAgeMs: 10 });
+    const r = await one({ plan: 'a-plan', item: 'P-001' });
+    expect(r.checkpoint).toBe('local carry prose');
+    expect(Object.keys(r).indexOf('planDecisionsNote')).toBeLessThan(Object.keys(r).indexOf('checkpoint'));
   });
 
   it('does NOT fetch decisions when convertPlanItem refuses/conflicts', async () => {

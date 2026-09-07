@@ -307,9 +307,15 @@ describe('plans:add-decision — retry-safety (EI-19383795443003151)', () => {
     '',
   ].join('\n');
 
-  function appendOne(body: string, title: string, decisionBody: string, refs: string[] = []): string {
+  function appendOne(
+    body: string,
+    title: string,
+    decisionBody: string,
+    refs: string[] = [],
+    affects: string[] = [],
+  ): string {
     const id = allocateNextDecisionId(body);
-    return appendDecisionToBody(body, id, title, decisionBody, '2026-08-03', refs);
+    return appendDecisionToBody(body, id, title, decisionBody, '2026-08-03', refs, affects);
   }
 
   it('findRetryDuplicateOfLastDecision: no decisions yet → null', () => {
@@ -362,6 +368,35 @@ describe('plans:add-decision — retry-safety (EI-19383795443003151)', () => {
     const parsed = parsePlan(withOne, { filePath: 'some-plan.md' });
     const dup = findRetryDuplicateOfLastDecision(parsed.decisions, 'Pick option A', 'We chose A because it is simpler.');
     expect(dup?.id).toBe(parsed.decisions[0]?.id);
+  });
+
+  it('persists affects metadata and only dedupes a retry with the same authority set', () => {
+    const withOne = appendOne(
+      BASE_PLAN,
+      'Cross-plan ruling',
+      'This governs the target plan.',
+      [],
+      ['target-plan', 'second-plan'],
+    );
+    const parsed = parsePlan(withOne, { filePath: 'some-plan.md' });
+    expect(parsed.decisions[0]?.affects).toEqual(['target-plan', 'second-plan']);
+    expect(parsed.decisions[0]?.body).toContain('Affects: target-plan, second-plan');
+    expect(
+      findRetryDuplicateOfLastDecision(
+        parsed.decisions,
+        'Cross-plan ruling',
+        'This governs the target plan.',
+        ['second-plan', 'target-plan'],
+      )?.id,
+    ).toBe(parsed.decisions[0]?.id);
+    expect(
+      findRetryDuplicateOfLastDecision(
+        parsed.decisions,
+        'Cross-plan ruling',
+        'This governs the target plan.',
+        ['different-plan'],
+      ),
+    ).toBeNull();
   });
 
   it('whitespace-only differences in title/body still match (both sides are trimmed)', () => {

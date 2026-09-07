@@ -22,6 +22,7 @@ const RUN_ID = '11111111-2222-4333-8444-555555555557';
 const DECISION_MARKER = 'EI-20202324455243251-GOVERNING-DECISION-SURVIVED';
 const CLAIM_MARKER = 'EI-20243251614343957';
 const RETRACTION_MARKER = 'EI-20027532687512023-RETRACTION-ADVISORY-SURVIVED';
+const AFFECTS_WARNING = '⚠ CROSS-PLAN AUTHORITY CONFLICT/SUPERSESSION WARNING: source-plan#D-009';
 
 let sandbox: string;
 let previousScratchRoot: string | undefined;
@@ -65,6 +66,9 @@ function decisions() {
     id: `D-${String(index + 1).padStart(3, '0')}`,
     title: index === 5 ? DECISION_MARKER : `ordinary ruling ${index + 1}`,
     snippet: 'Read this ruling before acting on the claimed item.',
+    ...(index === 0
+      ? { sourcePlanSlug: 'source-plan', ref: 'source-plan#D-009', relation: 'affects' }
+      : {}),
   }));
 }
 
@@ -72,7 +76,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
   it('keeps the complete governing decision window ahead of the bulky work-item echo', () => {
     const assembled = assembleSchedulerClaimResult({
       planDecisions: decisions(),
-      planDecisionsNote: 'Showing the 8 MOST RECENT of 8 governing decision(s).',
+      planDecisionsNote: AFFECTS_WARNING,
       retractionWarning: RETRACTION_MARKER,
       workItem: bulkyWorkItem(),
       claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
@@ -104,6 +108,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     expect(kept).toContain(RETRACTION_MARKER);
     expect(kept).toContain(DECISION_MARKER);
     expect(kept).toContain('planDecisionsNote');
+    expect(kept).toContain(AFFECTS_WARNING);
   });
 
   it('preserves the governing decision even in the legacy tail placement', () => {

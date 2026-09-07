@@ -330,8 +330,10 @@ export default defineTool({
               // premise, retraction, authorship and contradiction guards key on the
               // payload/title/summary/state that only the full row carries. Handing
               // over the id alone is exactly how this surface stayed at 2 of 6.
-              ...checkpointContext,
+              // Cross-plan affects authority in enrichment must serialize before
+              // the plan-local checkpoint/carry prose it can supersede.
               ...enrichment,
+              ...checkpointContext,
             };
           }
           return {

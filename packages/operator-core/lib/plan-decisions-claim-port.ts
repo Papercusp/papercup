@@ -39,6 +39,7 @@ import type { WorkItem } from './work-items';
 import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
 import { clampSnippet } from './agent-tools/coordination/ref-hydrate';
+import { planDecisionRef } from './agent-goal-ref';
 
 export interface ClaimTimePlanDecision {
   id: string;
@@ -46,6 +47,11 @@ export interface ClaimTimePlanDecision {
   /** Bounded verbatim excerpt — `plans:get { slug, heading:'Decisions' }` (or
    *  mode:'full') for the complete body. */
   snippet: string;
+  /** Present only for an inbound decision whose canonical home is another plan. */
+  sourcePlanSlug?: string;
+  /** Globally citable form for an inbound decision (`<plan>#D-NNN`). */
+  ref?: string;
+  relation?: 'affects';
 }
 
 export interface ClaimTimePlanDecisionsBrief {
@@ -62,7 +68,34 @@ export interface ClaimTimePlanDecisionsBrief {
    * that it had seen the governing rulings).
    */
   totalDecisions: number;
+  /** Total local decisions before the bounded authority window is selected. */
+  totalLocalDecisions: number;
+  /** Total current decisions on other plans whose canonical `affects` edge targets this plan. */
+  totalAffectedDecisions: number;
+  /** Number of affected-plan decisions included in `decisions`. */
+  affectedDecisions: number;
+  /** The reverse-authority read failed. Absence must not be interpreted as no inbound authority. */
+  authorityReadFailed: boolean;
 }
+
+export interface ClaimTimeAffectedDecisionRow {
+  planSlug: string;
+  decisionId: string;
+  title: string;
+  body: string;
+}
+
+export interface ClaimTimeAffectedDecisionLookupResult {
+  decisions: ClaimTimeAffectedDecisionRow[];
+  totalDecisions: number;
+}
+
+export type ClaimTimeAffectedDecisionLookup = (scope: {
+  workspaceId: string;
+  harnessSlug: string;
+  affectedPlanSlug: string;
+  limit: number;
+}) => Promise<ClaimTimeAffectedDecisionLookupResult>;
 
 /** Per-decision excerpt cap — generous enough to read the ruling's substance
  *  inline without re-fetching for the routine case, bounded so a decision-heavy
@@ -96,6 +129,43 @@ const SNIPPET_CHARS = 240;
  */
 const MAX_DECISIONS = 8;
 
+async function defaultAffectedDecisionLookup(scope: {
+  workspaceId: string;
+  harnessSlug: string;
+  affectedPlanSlug: string;
+  limit: number;
+}): Promise<ClaimTimeAffectedDecisionLookupResult> {
+  const { withWorkspace } = await import('@papercusp/db-org');
+  const rows = await withWorkspace(scope.workspaceId, async (tx) =>
+    tx<Array<{
+      plan_slug: string;
+      decision_id: string;
+      title: string;
+      body: string;
+      total_count: number | string;
+    }>>`
+      SELECT d.plan_slug, d.decision_id, d.title, d.body,
+             count(*) OVER ()::int AS total_count
+        FROM harness_shared.plan_decisions d
+       WHERE d.workspace_id = ${scope.workspaceId}
+         AND d.harness_slug = ${scope.harnessSlug}
+         AND d.plan_slug <> ${scope.affectedPlanSlug}
+         AND ${scope.affectedPlanSlug} = ANY(COALESCE(d.affects, ARRAY[]::text[]))
+       ORDER BY d.updated_at DESC, d.plan_slug ASC, d.seq DESC
+       LIMIT ${scope.limit}
+    `,
+  );
+  return {
+    decisions: rows.map((row) => ({
+      planSlug: row.plan_slug,
+      decisionId: row.decision_id,
+      title: row.title,
+      body: row.body,
+    })),
+    totalDecisions: Number(rows[0]?.total_count ?? 0),
+  };
+}
+
 /**
  * Resolve the CURRENT structured Decisions (`### D-NNN` entries — see
  * `@papercusp/plan-parser`) for the plan the just-claimed work-item — or plan
@@ -119,6 +189,7 @@ export async function getClaimTimePlanDecisions(opts: {
   planSlug?: string | null;
   harness?: string | null;
   workspaceId?: string | null;
+  lookupAffectedDecisions?: ClaimTimeAffectedDecisionLookup;
 }): Promise<ClaimTimePlanDecisionsBrief | null> {
   const planSlug = opts.planSlug ?? (opts.workItem ? planSlugOfWorkItem(opts.workItem as WorkItem) : null);
   if (!planSlug) return null;
@@ -128,19 +199,55 @@ export async function getClaimTimePlanDecisions(opts: {
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
     });
     if (!row) return null;
-    const decisions = parsePlan(row.content).decisions;
-    if (!decisions.length) return null;
-    return {
-      planSlug,
-      // The most RECENT window, oldest-first within it — see MAX_DECISIONS. A
-      // negative slice on a shorter array is the whole array, so a plan at or
-      // under the cap is unaffected and still surfaces every decision.
-      decisions: decisions.slice(-MAX_DECISIONS).map((d) => ({
+    const localDecisions = parsePlan(row.content).decisions;
+    let affected: ClaimTimeAffectedDecisionLookupResult = { decisions: [], totalDecisions: 0 };
+    let authorityReadFailed = false;
+    try {
+      const lookup = opts.lookupAffectedDecisions ?? defaultAffectedDecisionLookup;
+      // A real PlanRow always carries both keys. The guard keeps old partial
+      // unit fixtures from accidentally opening a database connection.
+      if (row.workspaceId && row.harnessSlug) {
+        affected = await lookup({
+          workspaceId: row.workspaceId,
+          harnessSlug: row.harnessSlug,
+          affectedPlanSlug: row.planSlug || planSlug,
+          limit: MAX_DECISIONS,
+        });
+      }
+    } catch {
+      authorityReadFailed = true;
+    }
+
+    const affectedRows = affected.decisions.slice(0, MAX_DECISIONS);
+    const remainingLocalSlots = Math.max(0, MAX_DECISIONS - affectedRows.length);
+    const localWindow = remainingLocalSlots > 0 ? localDecisions.slice(-remainingLocalSlots) : [];
+    const decisions: ClaimTimePlanDecision[] = [
+      ...affectedRows.map((d) => ({
+        id: d.decisionId,
+        title: d.title,
+        snippet: clampSnippet(d.body, SNIPPET_CHARS),
+        sourcePlanSlug: d.planSlug,
+        ref: planDecisionRef(d.planSlug, d.decisionId),
+        relation: 'affects' as const,
+      })),
+      ...localWindow.map((d) => ({
         id: d.id,
         title: d.title,
         snippet: clampSnippet(d.body, SNIPPET_CHARS),
       })),
-      totalDecisions: decisions.length,
+    ];
+    const totalAffectedDecisions = Math.max(affected.totalDecisions, affected.decisions.length);
+    if (!decisions.length && !authorityReadFailed) return null;
+    return {
+      planSlug,
+      // Cross-plan execution authority consumes the bounded window first;
+      // remaining space carries the most recent local rulings.
+      decisions,
+      totalDecisions: totalAffectedDecisions + localDecisions.length,
+      totalLocalDecisions: localDecisions.length,
+      totalAffectedDecisions,
+      affectedDecisions: affectedRows.length,
+      authorityReadFailed,
     };
   } catch {
     return null;
@@ -157,7 +264,21 @@ export async function getClaimTimePlanDecisions(opts: {
  * behavior-identical, not a rewording.
  */
 export function renderPlanDecisionsNote(brief: ClaimTimePlanDecisionsBrief): string {
+  const authorityWarning = brief.authorityReadFailed
+    ? `⚠ CROSS-PLAN AUTHORITY READ FAILED for plan '${brief.planSlug}'. Do NOT interpret missing affected-plan decisions as absence; retry the claim or read the source plans before relying on local checkpoint/carry prose. `
+    : brief.totalAffectedDecisions > 0
+      ? `⚠ CROSS-PLAN AUTHORITY CONFLICT/SUPERSESSION WARNING: ${brief.totalAffectedDecisions} current decision(s) on other plan(s) explicitly affect '${brief.planSlug}' and are listed BEFORE plan-local rulings. If one conflicts with or supersedes local checkpoint/carry prose, do not let the local prose silently win; resolve the source-qualified decision before acting. `
+      : '';
+
+  if (brief.totalAffectedDecisions > 0) {
+    const omitted = brief.totalDecisions - brief.decisions.length;
+    return authorityWarning +
+      (omitted > 0
+        ? `Showing ${brief.decisions.length} of ${brief.totalDecisions} governing decision(s), prioritized as affected-plan authority first and then the most recent local rulings; ${omitted} lower-priority/older decision(s) are NOT shown. Read full bodies from the source-qualified refs before concluding no ruling governs your item.`
+        : `${brief.totalDecisions} governing decision(s) are included, ordered as affected-plan authority first and then plan-local rulings. Read every source-qualified affected decision before acting.`);
+  }
+  if (brief.authorityReadFailed && brief.totalDecisions === 0) return authorityWarning.trim();
   return brief.totalDecisions > brief.decisions.length
-    ? `Showing the ${brief.decisions.length} MOST RECENT of ${brief.totalDecisions} governing decision(s) on plan '${brief.planSlug}' — ${brief.totalDecisions - brief.decisions.length} older one(s) are NOT shown. Read before acting, and read the rest before concluding no ruling governs your item: plans:get { slug:'${brief.planSlug}', heading:'Decisions' }.`
-    : `${brief.totalDecisions} governing decision(s) recorded on plan '${brief.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${brief.planSlug}', heading:'Decisions' } for full bodies).`;
+    ? authorityWarning + `Showing the ${brief.decisions.length} MOST RECENT of ${brief.totalDecisions} governing decision(s) on plan '${brief.planSlug}' — ${brief.totalDecisions - brief.decisions.length} older one(s) are NOT shown. Read before acting, and read the rest before concluding no ruling governs your item: plans:get { slug:'${brief.planSlug}', heading:'Decisions' }.`
+    : authorityWarning + `${brief.totalDecisions} governing decision(s) recorded on plan '${brief.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${brief.planSlug}', heading:'Decisions' } for full bodies).`;
 }

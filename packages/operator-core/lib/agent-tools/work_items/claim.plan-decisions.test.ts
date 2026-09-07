@@ -75,10 +75,22 @@ const body = async (args: unknown) => ((await tool.handler(args as never, {} as 
 const one = async (args: unknown) => (await body(args)).results[0];
 
 const BRIEF = {
-  planSlug: 'a-plan',
-  decisions: [{ id: 'D-001', title: 'Do the thing', snippet: 'body excerpt' }],
+  planSlug: 'target-plan',
+  decisions: [{
+    id: 'D-009',
+    title: 'Inbound authority',
+    snippet: 'body excerpt',
+    sourcePlanSlug: 'source-plan',
+    ref: 'source-plan#D-009',
+    relation: 'affects',
+  }],
   totalDecisions: 1,
+  totalLocalDecisions: 0,
+  totalAffectedDecisions: 1,
+  affectedDecisions: 1,
+  authorityReadFailed: false,
 };
+const AFFECTS_WARNING = '⚠ CROSS-PLAN AUTHORITY CONFLICT/SUPERSESSION WARNING: source-plan#D-009';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -94,7 +106,7 @@ beforeEach(() => {
   getClaimTimePriorWorkHint.mockResolvedValue(null);
   planItemClaimCollision.mockResolvedValue(null);
   getClaimTimePlanDecisions.mockResolvedValue(null);
-  renderPlanDecisionsNote.mockReturnValue('rendered note');
+  renderPlanDecisionsNote.mockReturnValue(AFFECTS_WARNING);
   getClaimTimePriorAttemptBrief.mockResolvedValue(null);
 });
 
@@ -115,7 +127,7 @@ describe('work_items:claim — plan-Decisions brief (EI-19387745408924340)', () 
     const r = await one({ id: 'F-100' });
     expect(r.ok).toBe(true);
     expect(r.planDecisions).toEqual(BRIEF.decisions);
-    expect(r.planDecisionsNote).toBe('rendered note');
+    expect(r.planDecisionsNote).toBe(AFFECTS_WARNING);
     expect(renderPlanDecisionsNote).toHaveBeenCalledWith(BRIEF);
   });
 
@@ -153,6 +165,7 @@ describe('work_items:claim — plan-Decisions brief (EI-19387745408924340)', () 
     const r = await one({ id: 'F-100' });
     expect(r.checkpoint).toBe('prior in-flight state');
     expect(r.planDecisions).toEqual(BRIEF.decisions);
-    expect(r.planDecisionsNote).toBe('rendered note');
+    expect(r.planDecisionsNote).toBe(AFFECTS_WARNING);
+    expect(Object.keys(r).indexOf('planDecisionsNote')).toBeLessThan(Object.keys(r).indexOf('checkpoint'));
   });
 });
