@@ -674,3 +674,218 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.uncertainEvidence).toBe(1);
   });
 });
+
+/**
+ * Plan `bar-reporting-layer-repairs-2026-09-07` — the reporting layer's four
+ * projection/evaluator repairs. (Its fifth, R-5/P-005, is an authorization
+ * surface and lives beside its own subject in
+ * `agent-tools/scorecards/grader-eligibility.test.ts`.)
+ *
+ * Each `it` below is the corresponding spec clause's `falsifier.probeMethod`
+ * executed literally, so the clause and its proof cannot drift apart. Every
+ * rule keeps a permanent CONTROL that must fail in the opposite direction —
+ * the discipline the sibling blocks in this file already follow, and the only
+ * thing that keeps a later green run evidence of anything. The shared defect
+ * these four repair (plan D-002) is one confusion: asserting a fact about the
+ * AUTHOR where the system only observed a failed read.
+ */
+describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)', () => {
+  describe('R-1 / P-001 — a readiness verdict is attributable to the BAR that produced it', () => {
+    /** One blocked BAR beside one clean BAR — the shape the flat message erased. */
+    const oneBlockedOfTwo = () => {
+      const input = provedFixture(2);
+      // The lever the sibling blocks above already use: a clause demanding a test
+      // layer its BAR does not require blocks exactly that one BAR.
+      input.clauses.rows[0]!.requiredTestLayers = ['e2e'];
+      return projectAcceptanceBarContractSnapshot(input);
+    };
+
+    it('names the blocking barKey adjacent to its own codes', () => {
+      const verdict = evaluateAcceptanceBarLifecycle(oneBlockedOfTwo(), 'pre-start');
+
+      expect(verdict.blockingBars).toEqual([{ barKey: 'R-1', codes: ['bar_snapshot_projection_stale'] }]);
+      expect(verdict.message).toContain('R-1: bar_snapshot_projection_stale');
+      // The clean BAR is counted out loud, so "one BAR is blocked" cannot be read as
+      // "the whole contract regressed" — the misreading whose wrong next action is
+      // `rubrics:amend`, which destroys an in-flight grading card.
+      expect(verdict.message).toContain('1 of 2 BAR(s) blocking, 1 clean');
+    });
+
+    it('attributes each code to its owning BAR and leaves contract-level empty', () => {
+      const verdict = evaluateAcceptanceBarLifecycle(oneBlockedOfTwo(), 'pre-start');
+
+      expect(verdict.codeAttribution).toEqual([{ code: 'bar_snapshot_projection_stale', barKeys: ['R-1'] }]);
+      expect(verdict.contractCodes).toEqual([]);
+    });
+
+    it('CONTROL: a code no BAR owns is reported as contract-level, not attributed to one', () => {
+      // Falsifiability. If attribution swept every code onto some BAR, `contractCodes`
+      // would always be empty and the rule above would pass while saying nothing.
+      const input = fixture(1);
+      input.rubrics = rows([], ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
+
+      const verdict = evaluateAcceptanceBarLifecycle(projectAcceptanceBarContractSnapshot(input), 'pre-start');
+
+      expect(verdict.contractCodes).toContain('bar_snapshot_rubric_unresolved');
+      expect(verdict.codeAttribution.find((entry) => entry.code === 'bar_snapshot_rubric_unresolved')?.barKeys).toEqual(
+        [],
+      );
+      expect(verdict.message).toContain('contract-level:');
+    });
+  });
+
+  describe('R-2 / P-002 — an unresolvable rubric is UNKNOWN, never an author-attributable absence', () => {
+    it('emits the unresolved code and neither absence code when the plan PINS a rubric', () => {
+      const input = fixture(1);
+      // The pin is the whole premise: it is in-band evidence the author DID write one.
+      expect(input.planRows.rows[0]!.rubricSlug).toBe('acceptance-plan-a');
+      input.rubrics = rows([], ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
+
+      const codes = projectAcceptanceBarContractSnapshot(input).readiness.codes;
+
+      expect(codes).toContain('bar_snapshot_rubric_unresolved');
+      expect(codes).not.toContain('bar_snapshot_rubric_missing');
+      expect(codes).not.toContain('bar_snapshot_bar_set_empty');
+    });
+
+    it('carries the pin as evidence, so a reader can re-route instead of blaming the author', () => {
+      const input = fixture(1);
+      input.rubrics = rows([], ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
+
+      const problem = projectAcceptanceBarContractSnapshot(input).completeness.problems.find(
+        (entry) => entry.code === 'bar_snapshot_rubric_unresolved',
+      );
+
+      expect(problem?.detail).toContain('acceptance-plan-a');
+      expect(problem?.detail).toContain('not evidence that none exists');
+    });
+
+    it('reports a failed rubric READ as unresolved even with no pin to appeal to', () => {
+      const input = fixture(1);
+      input.rubrics = rows([], ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
+      input.planRows.rows[0]!.rubricSlug = null;
+      input.readFailures = { rubric: 'connection closed' };
+
+      const codes = projectAcceptanceBarContractSnapshot(input).readiness.codes;
+
+      expect(codes).toContain('bar_snapshot_rubric_unresolved');
+      expect(codes).not.toContain('bar_snapshot_rubric_missing');
+    });
+
+    it('CONTROL: with no pin AND no read failure, the same empty read IS an absence', () => {
+      // The direction that must still fire. Without this, suppressing the absence
+      // codes unconditionally would pass every assertion above.
+      const input = fixture(1);
+      input.rubrics = rows([], ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT);
+      input.planRows.rows[0]!.rubricSlug = null;
+
+      const codes = projectAcceptanceBarContractSnapshot(input).readiness.codes;
+
+      expect(codes).toContain('bar_snapshot_rubric_missing');
+      expect(codes).toContain('bar_snapshot_bar_set_empty');
+      expect(codes).not.toContain('bar_snapshot_rubric_unresolved');
+    });
+  });
+
+  describe('R-3 / P-003 — a meaning-preserving revision does not invalidate grading or vetting', () => {
+    /**
+     * Two inputs differing ONLY in the rubric revision counter: same criteria, same
+     * `barHash` for every BAR. The recorded cards stay pinned at revision 2.
+     */
+    const bumpedTo3 = (meaningRevision: number | null) => {
+      const input = fixture(1);
+      const rubric = input.rubrics.rows[0]!;
+      const hashesBefore = rubric.criteria.map((entry) => entry.barHash);
+
+      (rubric as unknown as { revision: number }).revision = 3;
+      input.planRows.rows[0]!.rubricRevision = 3;
+      if (meaningRevision != null) {
+        (rubric.barContract as unknown as Record<string, unknown>).meaningRevision = meaningRevision;
+      }
+
+      // The premise the clause names: BAR identity is byte-identical either way.
+      expect(rubric.criteria.map((entry) => entry.barHash)).toEqual(hashesBefore);
+      return projectAcceptanceBarContractSnapshot(input);
+    };
+
+    it('keeps an already-recorded grading card and the vetting attestation current', () => {
+      // Meaning last changed at revision 2; the cards were recorded at 2.
+      const snapshot = bumpedTo3(2);
+
+      expect(snapshot.bars[0]!.grading.state).toBe('pass');
+      expect(snapshot.grading.vetting.state).toBe('current');
+    });
+
+    it('CONTROL: a revision that DID change BAR meaning invalidates both', () => {
+      // Meaning changed at revision 3; a card recorded at 2 now predates it.
+      const snapshot = bumpedTo3(3);
+
+      expect(snapshot.bars[0]!.grading.state).toBe('stale');
+      expect(snapshot.grading.vetting.state).toBe('stale');
+    });
+
+    it('CONTROL: with NO meaning epoch recorded, currentness falls back to strict equality', () => {
+      // A rubric written before the field existed. "Meaning history unknown" must not
+      // be read as "meaning unchanged" — that would bless a card graded before an
+      // untracked meaning change, the very failure the epoch exists to prevent.
+      const snapshot = bumpedTo3(null);
+
+      expect(snapshot.bars[0]!.grading.state).toBe('stale');
+      expect(snapshot.grading.vetting.state).toBe('stale');
+    });
+  });
+
+  describe('R-4 / P-004 — the accepted judgment is recordable apart from the delivered fact', () => {
+    const withAuthorVerdict = (verdict: string) => {
+      const input = fixture(1);
+      const author = input.scorecards.rows.find((card) => card.issueId === 'SC-AUTHOR')!;
+      (author as unknown as { acceptance: unknown }).acceptance = {
+        verdict,
+        reasoning: 'Every reachable criterion is proved; the delivery plane is not this author to reach.',
+      };
+      return projectAcceptanceBarContractSnapshot(input);
+    };
+
+    it('persists a verdict distinguishable from both accept and reject, and reads it back', () => {
+      const snapshot = withAuthorVerdict('accept-pending-delivery');
+
+      expect(snapshot.grading.authorVerdict.state).toBe('accepted-pending-delivery');
+      expect(snapshot.grading.authorVerdict.verdict).toBe('accept-pending-delivery');
+      expect(snapshot.grading.authorVerdict.reasoning).toContain('not this author to reach');
+      // Distinguishable from the two verdicts it exists to avoid: `accept` would
+      // overclaim delivery and `reject` would be false.
+      expect(snapshot.grading.authorVerdict.state).not.toBe('accepted');
+      expect(snapshot.grading.authorVerdict.state).not.toBe('rejected');
+    });
+
+    it('surfaces it through the readiness projection as its own code', () => {
+      const codes = withAuthorVerdict('accept-pending-delivery').readiness.codes;
+
+      expect(codes).toContain('bar_snapshot_author_accepted_pending_delivery');
+      // The author's own obligation IS met — the disclosure must not masquerade as
+      // a missing or rejected verdict, which is what forces the ceremony to stall.
+      expect(codes).not.toContain('bar_snapshot_author_verdict_missing');
+      expect(codes).not.toContain('bar_snapshot_author_rejected');
+    });
+
+    it('CONTROL: accept and reject keep their own distinct states and codes', () => {
+      const accepted = withAuthorVerdict('accept');
+      expect(accepted.grading.authorVerdict.state).toBe('accepted');
+      expect(accepted.readiness.codes).not.toContain('bar_snapshot_author_accepted_pending_delivery');
+
+      const rejected = withAuthorVerdict('reject');
+      expect(rejected.grading.authorVerdict.state).toBe('rejected');
+      expect(rejected.readiness.codes).toContain('bar_snapshot_author_rejected');
+      expect(rejected.readiness.codes).not.toContain('bar_snapshot_author_accepted_pending_delivery');
+    });
+
+    it('CONTROL: an unrecognized verdict does not fall through into the new state', () => {
+      // The new branch is a strict equality on one literal, not a catch-all — an
+      // unparseable verdict must still read as "no verdict recorded".
+      const snapshot = withAuthorVerdict('probably-fine');
+
+      expect(snapshot.grading.authorVerdict.state).toBe('missing');
+      expect(snapshot.readiness.codes).not.toContain('bar_snapshot_author_accepted_pending_delivery');
+    });
+  });
+});
