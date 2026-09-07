@@ -820,6 +820,13 @@ LOG="$WORK/tauri.log"
 # lifetime after this process hands the rig to the caller.
 OPERATOR_SOURCE_ROOT=""
 OPERATOR_SOURCE_WORK=""
+OPERATOR_HOST_BUNDLE=""
+# EI-22619354383507163: the verifier now boots a private plain-node bundle,
+# while older still-live verifier rigs can carry the source entry. Every
+# process-discovery/reaper path must recognize both command shapes; hard-coding
+# only bin/hono-host.ts makes isolation verification fail after a healthy boot
+# and can leave bundled replacement sidecars behind at teardown.
+OPERATOR_HOST_PROCESS_RE='bin/hono-host\.ts|dist-verify/hono-host\.mjs'
 VERIFIER_DISK_RESERVATIONS=()
 release_verifier_disk_reservations() {
   local reservation
@@ -834,6 +841,7 @@ cleanup_operator_source_snapshot() {
     rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null || true
     OPERATOR_SOURCE_WORK=""
     OPERATOR_SOURCE_ROOT=""
+    OPERATOR_HOST_BUNDLE=""
   fi
 }
 # Set before the first EXIT trap so the generated stop script can safely expand
@@ -981,6 +989,43 @@ snapshot_operator_source() {
   log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
 }
 snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
+
+# EI-22616267024724225: never boot the frozen operator through tsx's runtime
+# loader. bundle-host.sh documents the failure mechanism: every module
+# resolution becomes a synchronous Atomics.wait RPC, and its measured tail has
+# reached 119s. A verifier snapshot has a unique path every run, so it also
+# defeats tsx's warm-path advantage. Under concurrent verifier boots that left
+# server.listen() called but its callback/request handling starved until the
+# verifier's owned-origin deadline tore the process down.
+#
+# Reuse the maintained production host-bundle recipe against the already-frozen
+# source/dependency tree. Bundling happens BEFORE Tauri starts, outside both its
+# dev-server wait and the verifier's owned-origin deadline. The resulting plain
+# Node entry is private to this run and is deleted with the source snapshot.
+build_verifier_operator_host() {
+  local bundle_script="$OPERATOR_SOURCE_ROOT/apps/operator/bin/bundle-host.sh"
+  OPERATOR_HOST_BUNDLE="$OPERATOR_SOURCE_ROOT/apps/operator/dist-verify/hono-host.mjs"
+  [ -x "$bundle_script" ] || {
+    echo "FATAL: frozen verifier snapshot is missing executable host bundler: $bundle_script" >&2
+    return 1
+  }
+  log "building frozen plain-node operator host (tsx runtime loader excluded)"
+  # The dependency graph is a private immutable hardlink snapshot that was
+  # completed under npm-install-safe's donor mutex immediately above. Re-entering
+  # that shared writer lock cannot make these private bytes safer; mark the
+  # already-frozen graph so bundle-host runs only its read/build path.
+  PAPERCUSP_INSTALL_MUTEX_HELD=1 bash "$bundle_script" \
+    bin/hono-host.ts "$OPERATOR_HOST_BUNDLE" || {
+      echo "FATAL: could not build the frozen verifier operator host bundle" >&2
+      return 1
+    }
+  [ -s "$OPERATOR_HOST_BUNDLE" ] || {
+    echo "FATAL: verifier operator host bundler returned without a non-empty bundle: $OPERATOR_HOST_BUNDLE" >&2
+    return 1
+  }
+  log "frozen plain-node operator host ready at $OPERATOR_HOST_BUNDLE"
+}
+build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 
 ASSERTION_INPUT_MANIFEST=""
 ASSERTION_INPUT_COUNT=0
@@ -1131,7 +1176,7 @@ find_pid_by_display_env() {
   return 1
 }
 
-# True (0) when a live papercusp-desktop app or bin/hono-host.ts sidecar is
+# True (0) when a live papercusp-desktop app or verifier operator sidecar is
 # ACTUALLY attached to display number "$1" right now — i.e. genuinely in use.
 # Deliberately does NOT count openbox: openbox is started unconditionally the
 # instant Xvfb comes up (line ~330 below), before the app boots, so a display
@@ -1140,7 +1185,7 @@ find_pid_by_display_env() {
 display_has_owning_app() {
   local want=":$1"
   find_pid_by_display_env "debug/papercusp-desktop" "$want" >/dev/null 2>&1 && return 0
-  find_pid_by_display_env "bin/hono-host.ts" "$want" >/dev/null 2>&1 && return 0
+  find_pid_by_display_env "$OPERATOR_HOST_PROCESS_RE" "$want" >/dev/null 2>&1 && return 0
   return 1
 }
 
@@ -1812,18 +1857,18 @@ fi
 # nonzero-exit supervisor can have already spawned replacement sidecars that
 # escaped that group (observed: the run's original hono-host plus five
 # restart attempts, all bound to the SAME \$DEV_PORT, only one of them under
-# \$TAURI_PID). Reap by PORT, not by tracked pid: every bin/hono-host.ts
-# process whose real /proc/<pid>/environ carries OUR OPERATOR_DEV_PORT is
+# \$TAURI_PID). Reap by PORT, not by tracked pid: every recognized verifier
+# operator process whose real /proc/<pid>/environ carries OUR OPERATOR_DEV_PORT is
 # unambiguously ours to kill (mirrors the pid-by-environ idiom this script
 # already uses for isolation verification, above). Best-effort — a missing
 # /proc entry or a transient pgrep race never fails teardown.
-for _p in \$(pgrep -f "bin/hono-host.ts" 2>/dev/null); do
+for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
   kill -TERM "\$_p" 2>/dev/null
 done
 sleep 1
-for _p in \$(pgrep -f "bin/hono-host.ts" 2>/dev/null); do
+for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
   kill -9 "\$_p" 2>/dev/null
@@ -2300,7 +2345,7 @@ fi
 # disappears when no snapshot was frozen.
 SPA_ENV_LINE=""
 [ -n "$SPA_DIST" ] && SPA_ENV_LINE="PAPERCUSP_SPA_DIST=\"$SPA_DIST\""
-OPERATOR_SOURCE_ENV_LINE="PAPERCUSP_DEV_SOURCE_ROOT=\"$OPERATOR_SOURCE_ROOT\" PATH=\"$OPERATOR_SOURCE_ROOT/apps/operator/node_modules/.bin:$OPERATOR_SOURCE_ROOT/node_modules/.bin:$PATH\""
+OPERATOR_SOURCE_ENV_LINE="PAPERCUSP_DEV_SOURCE_ROOT=\"$OPERATOR_SOURCE_ROOT\" PAPERCUSP_DEV_HOST_ENTRY=\"$OPERATOR_HOST_BUNDLE\" PATH=\"$OPERATOR_SOURCE_ROOT/apps/operator/node_modules/.bin:$OPERATOR_SOURCE_ROOT/node_modules/.bin:$PATH\""
 # write_and_launch_tauri — (re)generate launch.sh for the CURRENT $DEV_PORT /
 # $PTY_PORT / $LOG and exec it, setting $TAURI_PID. Factored out so the
 # bind-time retry below (EI-18734124566158657) can call it again against a
@@ -2662,7 +2707,7 @@ done
 if [ "$ISOLATED_DB" = "1" ]; then
   SIDECAR_PID=""
   for _ in $(seq 1 10); do
-    SIDECAR_PID="$(pgrep -f "bin/hono-host.ts" 2>/dev/null | while read -r p; do
+    SIDECAR_PID="$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null | while read -r p; do
       env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
       grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" && echo "$p"
     done | head -1)"
@@ -2670,7 +2715,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
     sleep 1
   done
   [ -n "$SIDECAR_PID" ] || {
-    echo "FATAL: VERIFY_TAURI_ISOLATED_DB=1 but no bin/hono-host.ts process carries OPERATOR_DEV_PORT=$DEV_PORT — cannot verify isolation took effect. Refusing to proceed under a false isolated banner." >&2
+    echo "FATAL: VERIFY_TAURI_ISOLATED_DB=1 but no recognized verifier operator process carries OPERATOR_DEV_PORT=$DEV_PORT — cannot verify isolation took effect. Refusing to proceed under a false isolated banner." >&2
     exit 1
   }
   SIDECAR_ENVIRON="$(tr '\0' '\n' < "/proc/$SIDECAR_PID/environ" 2>/dev/null)"
