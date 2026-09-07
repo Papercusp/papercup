@@ -5250,9 +5250,28 @@ async fn send_su_turn_with_client(
                 && ack["commandId"] == pending.command_id
                 && ack["session"] == serde_json::to_value(&identity).unwrap_or_default()
             {
+                let replay_snapshot = if response["replayed"] == true {
+                    match tokio::time::timeout(
+                        Duration::from_secs(30),
+                        client.su_session_snapshot(harness, chat_id),
+                    )
+                    .await
+                    {
+                        Ok(Ok(snapshot)) if snapshot.descriptor.identity == identity => {
+                            Some(Box::new(snapshot))
+                        }
+                        _ => {
+                            fail("Saved acknowledgement found, but the current session could not be reconciled. Draft retained; Enter checks again.".into(), true);
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let _ = tx.send(Event::SuTurnAcknowledged {
                     command_id: pending.command_id,
                     session: identity,
+                    replay_snapshot,
                 });
             } else {
                 fail("No matching acceptance acknowledgement. Draft retained; Enter checks the same turn.".into(), true);
