@@ -1076,6 +1076,43 @@ function normalizedStringArray(value: unknown): string[] {
     : [];
 }
 
+/**
+ * The admission promoter predates the typed relation writer, so its merge path
+ * historically recorded only the reciprocal `see_also` receipt.  Keep the
+ * authoritative duplicate edge in the same transaction as the merge.  Issue
+ * refs are globally shaped ids; feature refs must carry their harness to avoid
+ * cross-harness collisions in coord_links.
+ */
+function admissionObjectRef(snapshot: Pick<AdmissionMergeSnapshot, 'kind' | 'harnessSlug' | 'id'>): {
+  kind: 'issue' | 'feature';
+  ref: string;
+} {
+  const issue = snapshot.kind === 'bug' || snapshot.kind === 'change' || snapshot.kind === 'task';
+  return issue
+    ? { kind: 'issue', ref: snapshot.id }
+    : { kind: 'feature', ref: `${snapshot.harnessSlug}#${snapshot.id}` };
+}
+
+async function persistAdmissionDuplicateLink(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    actor: string;
+    nowMs: number;
+    loser: AdmissionMergeSnapshot;
+    canonical: AdmissionMergeSnapshot;
+  },
+): Promise<void> {
+  const src = admissionObjectRef(input.loser);
+  const dst = admissionObjectRef(input.canonical);
+  await sql`
+    INSERT INTO harness_shared.coord_links
+      (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at)
+    VALUES (${input.workspaceId}, ${src.kind}, ${src.ref}, ${dst.kind}, ${dst.ref}, 'duplicates',
+            ${input.actor}, to_timestamp(${input.nowMs} / 1000.0))
+    ON CONFLICT (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel) DO NOTHING`;
+}
+
 function nullableFiniteMs(value: string | number | null | undefined): number | null {
   if (value == null) return null;
   const n = Number(value);
