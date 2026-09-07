@@ -236,6 +236,17 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(h.llm).toHaveBeenCalled();
   });
 
+  it('does not count a pair fallback as a structured-triple experiment', async () => {
+    const h = harness();
+    await pilot(h);
+    h.input.pilot!.arm = 'structured-triple';
+    h.input.sampler = { mode: 'structured', arity: 3 };
+    const result = await runDreamCycle(h.input, h.d);
+    expect(result.runs[0]?.status).toBe('error');
+    expect(h.row('cycle-1:dream:1').error).toContain('role-labeled C');
+    expect(h.llm).not.toHaveBeenCalled();
+  });
+
   it('derives stable attempt identities and refuses invalid ones', () => {
     expect(dreamRunId('cycle', 2)).toBe('cycle:dream:3');
     expect(() => dreamRunId('', 0)).toThrow();

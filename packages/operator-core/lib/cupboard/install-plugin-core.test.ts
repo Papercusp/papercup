@@ -572,12 +572,14 @@ status: draft
       version: '1.0.0',
       dependencies: { events: [{ family: 'upstream:settled' }] },
     });
-    const validateDependencies = vi.fn(async () => ({
+    const validateDependencies = vi.fn(
+      async (_deps: Parameters<NonNullable<InstallPluginCoreDeps['validateDependencies']>>[0]) => ({
       ok: true,
       missing: { tools: [], packs: [], plugins: [], events: [] },
       installable: { tools: [], packs: [], plugins: [], events: [] },
       messages: [],
-    }));
+      }),
+    );
     const res = await installPluginFromCupboardCore(
       { githubUrl: 'https://github.com/acme/reactor' },
       makeDeps({ validateDependencies }),

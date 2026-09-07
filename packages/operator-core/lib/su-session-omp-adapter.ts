@@ -53,8 +53,6 @@ export type OmpPuiSuSessionInput =
 export interface OmpSuRuntimeBinding {
   nativeSession: OmpNativeSessionHandle & {
     ompThreadId: string;
-    exactResumeSupported: true;
-    missingReason: null;
   };
   /** Null before OMP writes its first session record. */
   transcriptPath: string | null;
@@ -87,6 +85,8 @@ export interface OmpSuSessionDescriptorOptions {
 
 export interface CreateOmpSuSessionAdapterOptions extends OmpSuSessionDescriptorOptions {
   controls?: Partial<OmpSuSessionControls>;
+  ready?: boolean;
+  runtimeReady?: () => boolean;
   register?: boolean;
 }
 
@@ -364,6 +364,7 @@ export class OmpSuSessionAdapter {
     this.host = new SuSessionHost({
       descriptor: descriptorFor(binding, runtime, options),
       executeCommand: (command, context) => this.execute(command, context),
+      runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor) => { await persistSuSessionDescriptor(binding.advSessionId, descriptor); },
     });
     void bindSuSessionToAdvSession({
@@ -373,10 +374,15 @@ export class OmpSuSessionAdapter {
       workspaceId: binding.workspaceId ?? undefined,
     }).catch(() => undefined);
     this.unregister = options.register === false ? null : registerSuSessionHost(this.host);
-    this.host.transition('ready', 'OMP native runtime attached');
+    if (options.ready !== false) this.host.transition('ready', 'OMP native runtime attached');
   }
 
   get runtime(): OmpSuRuntimeBinding { return this.runtimeValue; }
+
+  materializeRuntime(runtime: OmpSuRuntimeBinding): void {
+    this.host.materializeNativeSessionId(runtime.nativeSession.ompThreadId);
+    this.runtimeValue = runtime;
+  }
 
   private nextTurnId(hint?: string | null): string {
     this.turnSerial += 1;

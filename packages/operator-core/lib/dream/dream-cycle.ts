@@ -423,6 +423,8 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           result.reason = 'no-pair';
           break;
         }
+        if (pilot?.arm === 'structured-triple' && !sampling.selection.c)
+          throw new Error('Dream pilot triple arm requires a role-labeled C; pair fallback is not a triple observation');
         const dreamed = await (deps.dream ?? runCapabilityDreamPass)({
           selection: sampling.selection,
           llmCall: llmFor('generation'),

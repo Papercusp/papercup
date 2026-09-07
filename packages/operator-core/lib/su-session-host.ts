@@ -271,6 +271,22 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     return jsonClone(this.descriptorValue);
   }
 
+  /** Codex/OMP assign their native id during the structured handshake. An
+   * empty id represents initialization, never a resumable or writable session.
+   * Only that initial empty slot can be filled; later identity changes remain
+   * forbidden, including after a runtime replacement. */
+  materializeNativeSessionId(nativeSessionId: string): void {
+    if (this.disposed || this.descriptorValue.lifecycle !== 'starting'
+      || this.descriptorValue.identity.nativeSessionId || !nativeSessionId.trim()) {
+      throw new SuSessionHostError('identity_conflict', 'native identity can only be bound once during initialization', 409);
+    }
+    this.descriptorValue = {
+      ...this.descriptorValue,
+      identity: { ...this.descriptorValue.identity, nativeSessionId },
+    } as SuSessionDescriptor<B>;
+    this.emit({ type: 'session', descriptor: this.descriptorValue } as SuSessionEventInput<B>);
+  }
+
   snapshot(): SuSessionHostSnapshot<B> {
     const recent = this.channel.recent;
     const lastSequence = recent.at(-1)?.id ?? 0;
@@ -279,8 +295,8 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       floorSequence: recent[0]?.id ?? lastSequence,
       lastSequence,
       terminal: TERMINAL_STATES.has(this.descriptorValue.lifecycle),
-      executorAttached: Boolean(this.executeCommand) && !this.disposed && this.runtimeReady(),
-      streamReady: !this.disposed && this.runtimeReady(),
+      executorAttached: Boolean(this.descriptorValue.identity.nativeSessionId) && Boolean(this.executeCommand) && !this.disposed && this.runtimeReady(),
+      streamReady: Boolean(this.descriptorValue.identity.nativeSessionId) && !this.disposed && this.runtimeReady(),
       runtimeReconciliation: this.runtimeReconciliation,
     };
   }

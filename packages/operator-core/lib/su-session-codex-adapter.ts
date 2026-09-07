@@ -87,6 +87,8 @@ export interface CodexSuSessionDescriptorOptions {
 
 export interface CreateCodexSuSessionAdapterOptions extends CodexSuSessionDescriptorOptions {
   controls?: Partial<CodexSuSessionControls>;
+  ready?: boolean;
+  runtimeReady?: () => boolean;
   /** Registration exposes the host through the existing agent-chat SU-session
    * routes. Tests may disable it when exercising an isolated host. */
   register?: boolean;
@@ -415,6 +417,7 @@ export class CodexSuSessionAdapter {
     this.host = new SuSessionHost({
       descriptor: descriptorFor(binding, runtime, options),
       executeCommand: (command, context) => this.execute(command, context),
+      runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor) => {
         await persistSuSessionDescriptor(binding.advSessionId, descriptor);
       },
@@ -429,11 +432,16 @@ export class CodexSuSessionAdapter {
       workspaceId: binding.workspaceId ?? undefined,
     }).catch(() => undefined);
     this.unregister = options.register === false ? null : registerSuSessionHost(this.host);
-    this.host.transition('ready', 'Codex native runtime attached');
+    if (options.ready !== false) this.host.transition('ready', 'Codex native runtime attached');
   }
 
   get runtime(): CodexSuRuntimeBinding {
     return this.runtimeValue;
+  }
+
+  materializeRuntime(runtime: CodexSuRuntimeBinding): void {
+    this.host.materializeNativeSessionId(runtime.nativeSession.rolloutId);
+    this.runtimeValue = runtime;
   }
 
   private nextTurnId(hint?: string | null): string {

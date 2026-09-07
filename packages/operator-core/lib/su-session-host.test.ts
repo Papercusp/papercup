@@ -92,6 +92,35 @@ function eventTypes(host: SuSessionHost<'claude'>): string[] {
   return host.recent.map(({ event }) => event.type);
 }
 
+describe('runtime-assigned native identity', () => {
+  it('keeps initialization unready and binds only the first native id', () => {
+    const initial = descriptor();
+    initial.identity.nativeSessionId = '';
+    const host = new SuSessionHost({ descriptor: initial, executeCommand: async () => ({ status: 'completed' }) });
+    try {
+      expect(host.snapshot()).toMatchObject({ executorAttached: false, streamReady: false });
+      host.materializeNativeSessionId('native-from-protocol');
+      expect(host.descriptor().identity).toEqual({ ...initial.identity, nativeSessionId: 'native-from-protocol' });
+      expect(host.recent.at(-1)?.event).toMatchObject({
+        type: 'session', session: { nativeSessionId: 'native-from-protocol' },
+        descriptor: { identity: { nativeSessionId: 'native-from-protocol' } },
+      });
+      expect(() => host.materializeNativeSessionId('another-thread')).toThrow('only be bound once');
+    } finally { host.dispose(); }
+  });
+
+  it('refuses native identity changes after initialization and through ordinary session events', () => {
+    const host = new SuSessionHost({ descriptor: descriptor() });
+    try {
+      expect(() => host.emit({ type: 'session', descriptor: {
+        ...descriptor(), identity: { ...descriptor().identity, nativeSessionId: 'wrong-thread' },
+      } })).toThrow('cannot replace');
+      host.transition('ready');
+      expect(() => host.materializeNativeSessionId('wrong-thread')).toThrow('only be bound once');
+    } finally { host.dispose(); }
+  });
+});
+
 describe('durable SU owner-turn acceptance', () => {
   const hosts: SuSessionHost<'claude'>[] = [];
   afterEach(() => { for (const host of hosts.splice(0)) host.dispose(); });

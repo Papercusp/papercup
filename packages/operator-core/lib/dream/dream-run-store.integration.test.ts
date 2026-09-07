@@ -91,11 +91,12 @@ describe('migration 862 + dream run accounting (real PG)', () => {
   });
 
   it('persists the frozen evaluation pin and refuses a different pin on the same attempt identity', async () => {
-    const fixture = await createDreamCapabilityFixture(WS, POT);
+    const pilotWorkspace = WS + '-pilot';
+    const fixture = await createDreamCapabilityFixture(pilotWorkspace, POT);
     try {
       const evaluation = { protocolPin: 'a'.repeat(64), arm: 'structured-pair' as const };
       const input = {
-        workspaceId: WS,
+        workspaceId: pilotWorkspace,
         potSlug: POT,
         mode: 'manual' as const,
         runId: 'protocol-pg:dream:1',
@@ -103,7 +104,7 @@ describe('migration 862 + dream run accounting (real PG)', () => {
         capability: { ...fixture.header, evaluation },
       };
       await beginDreamRun(db.adminSql, input);
-      const stored = await getDreamRun(db.adminSql, { workspaceId: WS, runId: input.runId });
+      const stored = await getDreamRun(db.adminSql, { workspaceId: pilotWorkspace, runId: input.runId });
       expect(dreamCapabilityRun(stored!)?.evaluation).toEqual(evaluation);
       await expect(beginDreamRun(db.adminSql, input)).resolves.toMatchObject({ created: false });
       await expect(
