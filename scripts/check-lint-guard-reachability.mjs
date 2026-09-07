@@ -454,15 +454,19 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  * size so the set can only shrink. GRADUATIONS SINCE SEEDING (each dropped the
  * watermark by one, which is the only way it may move):
  *   · `_tmp-fire-git-sync.ts` — deleted 2026-08-26; a committed scratch file, 21 → 20.
- *   · 2026-08-27 (WI-71582), 20 → 11: NINE entries graduated at once because the guard
- *     itself reported them "STALE acknowledged-unreachable — now wired or deleted", i.e.
- *     the fixpoint no longer finds them dead. All nine files still EXIST on disk, so they
- *     were WIRED, not retired. Removed: prompt-divergence, gitignored-asset-coverage,
- *     external-prerequisite-ports, external-prerequisites (family ROOT),
- *     external-prerequisite-probe-runner, record-release-cli (publication ROOT),
- *     release-completeness, changelog-generate, runtime-workspace-build-coverage.
- *     Both family group-comments above were rewritten rather than left describing
- *     members that are no longer in the set — a stale rationale is how this list rots.
+ *   · 2026-08-27 (WI-71582), 20 → 11: nine entries were removed after the guard
+ *     reported them "STALE acknowledged-unreachable — now wired or deleted". That
+ *     verdict was later PARTLY FALSIFIED: passive JSON/YAML evidence manifests had
+ *     been counted as execution. Four of the nine remained genuinely dead:
+ *     prompt-divergence plus the external-prerequisite contract/runner/ports roots.
+ *   · 2026-08-28, 11 → 10 in the actual set: retrofit-hive-to-gate was retired, but
+ *     the watermark was not lowered, leaving one slot of accidental slack.
+ *   · 2026-09-07 (WI-2145418), 10 → 8: the corrected graph drove the honest
+ *     wire-or-retire decision. The tautological prompt-divergence CLI and the wholly
+ *     unwired external-prerequisite subsystem were retired under
+ *     green-main-fast D-052 and typed-external-prerequisite-attestations D-006.
+ *     Removing the subsystem's two acknowledged adapter leaves plus restoring the
+ *     missed retrofit ratchet lowers the watermark by three, 11 → 8.
  *
  * ⚠ SHRINK-ONLY, same doctrine as ACKNOWLEDGED_UNREACHABLE above and for the same
  * reason: the correct way to clear an entry is to WIRE the module or DELETE it, never
@@ -474,28 +478,6 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  * enforcing nothing, so they read as diligence in a review.
  */
 export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
-  // ── The external-prerequisite family: a ports-and-adapters detector stack whose
-  // members import only each other — the exact shape a per-file "is it imported?"
-  // check (knip) reports as fully used. The ROOT and the probe-runner have since
-  // been wired and graduated out; only the two leaf adapters remain unreachable,
-  // and they are now reachable-or-retirable INDEPENDENTLY of the family decision.
-  [
-    'packages/operator-core/lib/release/external-prerequisite-apple-adapter.ts',
-    {
-      kind: 'dead',
-      action: 'wire-or-delete',
-      reason: 'family member, 1 test, only dead siblings import it',
-    },
-  ],
-  [
-    'packages/operator-core/lib/release/external-prerequisite-stripe-adapter.ts',
-    {
-      kind: 'dead',
-      action: 'wire-or-delete',
-      reason: 'family member, 1 test, only dead siblings import it',
-    },
-  ],
-
   // ── The release-publication family: same transitive shape. The CLI root
   // (record-release-cli), release-completeness and changelog-generate have since
   // been wired and graduated out; these three are what is left of the family.
@@ -569,7 +551,7 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
  * ⚠ SHRINK-ONLY. Pinned to the seeded population size so a NEWLY orphaned detector
  * module fails the build on the commit that orphans it, exactly as the script axis does.
  */
-export const UNREACHABLE_MODULES_HIGH_WATERMARK = 11;
+export const UNREACHABLE_MODULES_HIGH_WATERMARK = 8;
 
 export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wide']);
 
@@ -1316,7 +1298,11 @@ function discoverWorkspaceDirs(pkg, files) {
  * measurable, this returns an EMPTY finding set and says so out loud.
  */
 function runModuleReachability({ files, workspaceDirByName }) {
-  const population = selectDetectorModules(files);
+  // `git ls-files` keeps an index-known deletion until the next commit. Read the
+  // CURRENT tree here: otherwise the guard's own "DELETE it" remedy stays red after
+  // the file is physically gone and cannot be verified until git-sync happens to run.
+  const currentFiles = files.filter((f) => existsSync(resolve(ROOT, f)));
+  const population = selectDetectorModules(currentFiles);
   // Returns RAW text: buildImportGraph applies the comment-strip itself, AFTER its
   // prefilter, so the expensive parse runs on the few hundred files that could possibly
   // reach a lib/release module rather than on all ~31k. Deliberately NOT memoized —
@@ -1337,7 +1323,12 @@ function runModuleReachability({ files, workspaceDirByName }) {
 
   // Comment-stripped inside the graph, so a commented-out import cannot read as usage.
   // That direction matters: it is a false NEGATIVE — a dead module reported alive.
-  const graph = buildImportGraph({ files, readFile, stripComments, workspaceDirByName });
+  const graph = buildImportGraph({
+    files: currentFiles,
+    readFile,
+    stripComments,
+    workspaceDirByName,
+  });
   const result = findUnreachableModules({
     population,
     importers: graph.importers,

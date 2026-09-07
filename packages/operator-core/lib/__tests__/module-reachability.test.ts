@@ -53,6 +53,19 @@ describe('selectDetectorModules', () => {
       'packages/operator-core/lib/release/external-prerequisites.ts',
     ]);
   });
+
+  it('excludes an index-known module deleted from the current working tree', () => {
+    // EI-22573056324485508: `git ls-files` still returns a deleted path until commit.
+    // The enforcing guard must honor the physical tree immediately, or its prescribed
+    // DELETE remedy cannot produce a local green before git-sync runs.
+    const present = new Set(['apps/operator/lib/release/still-here.ts']);
+    expect(
+      selectDetectorModules(
+        [DETECTOR, 'apps/operator/lib/release/still-here.ts'],
+        (file) => present.has(file),
+      ),
+    ).toEqual(['apps/operator/lib/release/still-here.ts']);
+  });
 });
 
 describe('parseImportSpecifiers', () => {
