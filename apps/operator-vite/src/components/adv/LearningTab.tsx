@@ -1585,7 +1585,21 @@ function ImprovementsView({
     staleTime: 30_000,
     enabled: hiveReady,
   });
-  const digest = sync.data?.[0];
+  const digestCandidate = sync.data?.[0];
+  // A resolved sync read can contain unavailable provenance or snapshot metadata
+  // without a digest. Keep those rows on the existing retry path; treating one
+  // as queue data crashes on window.byState before the error UI can render.
+  const incompleteDigest = Boolean(
+    digestCandidate &&
+      (!digestCandidate.window?.byState ||
+        !Number.isFinite(digestCandidate.window?.open)),
+  );
+  const improveFault = snapshotFault(
+    sync.error ?? (incompleteDigest ? "Incomplete Improve snapshot" : null),
+    digestCandidate,
+    "Improve",
+  );
+  const digest = improveFault.failed ? undefined : digestCandidate;
   const summarySync = useSyncQuery<CompanionListSummary>({
     queryName: "learning.improvements.summary",
     args: serverArgs,
@@ -2153,7 +2167,7 @@ function ImprovementsView({
   // — owner 2026-07-27]. Retiring the queue's remaining vocabulary is P-004.
   useEffect(() => {
     onStatus?.(
-      sync.error ||
+      improveFault.failed ||
         scoutSync.error ||
         (serverPredicateActive && summarySync.error)
         ? "bad"
@@ -2172,7 +2186,7 @@ function ImprovementsView({
     scoutSync.error,
     serverPredicateActive,
     summarySync.error,
-    sync.error,
+    improveFault.failed,
   ]);
 
   return (
@@ -2610,13 +2624,13 @@ function ImprovementsView({
         </p>
       ) : null}
 
-      {sync.loading && !digest ? (
-        <p className="pc-learning__empty">Loading what the loop produced…</p>
-      ) : sync.error ? (
+      {improveFault.failed ? (
         <LearningVisualError
           title="Improve unavailable"
           onRetry={() => sync.invalidate()}
         />
+      ) : sync.loading && !digest ? (
+        <p className="pc-learning__empty">Loading what the loop produced…</p>
       ) : (showDashboard ? visibleRows : sparseRows).length === 0 ? (
         <LearningVisualEmpty
           icon={CheckCircle2}
