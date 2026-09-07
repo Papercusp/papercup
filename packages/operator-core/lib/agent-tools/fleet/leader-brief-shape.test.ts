@@ -225,6 +225,17 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     );
   });
 
+  it('declares both runtime membersTruncated representations in the result contract', () => {
+    const resultSchema = (leaderBriefTool as {
+      result: { safeParse: (value: unknown) => { success: boolean } };
+    }).result;
+    const shaped = shapeLeaderBrief(largeBrief(), 'trimmed') as Record<string, unknown>;
+
+    expect(shaped.membersTruncated).toMatchObject({ total: 53 });
+    expect(resultSchema.safeParse(shaped).success).toBe(true);
+    expect(resultSchema.safeParse({ ok: true, membersTruncated: true }).success).toBe(true);
+  });
+
   it('P-009: keeps the member recovery block through shaping instead of silently dropping it', () => {
     // The shaper is an ALLOWLIST, and its flat leg carries scalars only. A nested object
     // added upstream reaches this point and disappears with no error anywhere — the field

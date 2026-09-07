@@ -56,6 +56,26 @@ beforeAll(async () => {
   db = await createFreshPgDb('acceptance-bar-migration');
   h.sql = db.sql;
   await db.sql.unsafe(`
+    -- The canonical seed writer reconciles already-promoted work items in the
+    -- same transaction. This suite does not seed work items, but the empty
+    -- read path still needs the production relation and its provenance legs.
+    CREATE TABLE harness_shared.work_items (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      feature_id text NOT NULL,
+      source_plan_slug text,
+      source_plan_item_ids text[],
+      payload jsonb,
+      PRIMARY KEY (workspace_id, harness_slug, feature_id)
+    );
+    CREATE TABLE harness_shared.coord_links (
+      workspace_id text NOT NULL,
+      src_kind text NOT NULL,
+      src_ref text NOT NULL,
+      dst_kind text NOT NULL,
+      dst_ref text NOT NULL,
+      rel text NOT NULL
+    );
     CREATE TABLE harness_shared.harness_plans (
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,

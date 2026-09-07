@@ -196,11 +196,21 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     // exactly where a fabricated `false` would be read as a measurement.
     expect(['pending', 'ok', 'failed']).toContain(health.probe);
     if (health.probe === 'ok') {
-      expect(typeof health.gpuBundled).toBe('boolean');
-      expect(Array.isArray(health.backends)).toBe(true);
+      expect(Array.isArray(health.defaultBundledBackends)).toBe(true);
+      // Availability comes from the provider libraries ON DISK. Measured
+      // 2026-09-07: listSupportedBackends() reports cuda:{bundled:false} even in
+      // a tree where libonnxruntime_providers_cuda.so is installed and CUDA
+      // sessions construct, so `bundled` is packaging metadata and must never be
+      // serialized as capability.
+      if (health.providerLibraries !== null) {
+        expect(typeof health.gpuProviderAvailable).toBe('boolean');
+      } else {
+        expect(health.gpuProviderAvailable).toBeNull();
+      }
     } else {
-      expect(health.gpuBundled).toBeNull();
-      expect(health.backends).toBeNull();
+      expect(health.gpuProviderAvailable).toBeNull();
+      expect(health.providerLibraries).toBeNull();
+      expect(health.defaultBundledBackends).toBeNull();
     }
     // The CPU thread caps govern forward-pass latency directly, so they belong
     // in the same report as the device that makes them load-bearing.

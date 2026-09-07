@@ -1152,6 +1152,7 @@ export const memberLaunchCommand = sharedMemberLaunchCommand;
 export const MEMBER_BASELINE_RULES = sharedMemberBaselineRules;
 export const renderMemberBaseline = sharedRenderMemberBaseline;
 export const composeMemberLaunchContext = sharedComposeMemberLaunchContext;
+export { IMMUTABLE_MEMBER_LAUNCH_LINEAGE_GUARD } from '../../agent-launch-core';
 
 /**
  * The fleet LEADER's standing-job checklist, rendered (auto-numbered) into the launch-result
