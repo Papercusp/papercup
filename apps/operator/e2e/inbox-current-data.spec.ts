@@ -11,8 +11,8 @@
  *
  *   INBOX_P005_REAL_DATA=1 \
  *   INBOX_P005_CAPTURE_DIR=<empty-dir> \
- *   OPERATOR_E2E_REUSE_SERVER=1 \
- *   OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170 \
+ *   OPERATOR_E2E_PORT=3955 \
+ *   PAPERCUSP_API_TARGET=http://127.0.0.1:3170 \
  *   npx playwright test e2e/inbox-current-data.spec.ts
  *
  * Only feature flags are pinned. This file never installs a rest-query route;
@@ -103,12 +103,25 @@ for (const viewport of VIEWPORTS) {
 
       const attention = await attentionResponse;
       expect(attention.status()).toBe(200);
-      const payload = (await attention.json()) as { rows?: unknown[] };
+      const payload = (await attention.json()) as {
+        rows?: Array<{
+          items?: Array<{ id?: string; actions?: unknown[] }>;
+        }>;
+      };
       expect(Array.isArray(payload.rows)).toBe(true);
       expect(payload.rows?.length ?? 0).toBeGreaterThan(0);
 
       const row = page.locator('[data-testid^="inbox-row-"]').first();
       await expect(row).toBeVisible({ timeout: 30_000 });
+      const selectedTestId = await row.getAttribute("data-testid");
+      expect(selectedTestId).toMatch(/^inbox-row-.+/);
+      const selectedId = selectedTestId!.slice("inbox-row-".length);
+      const selectedFeedItem = payload.rows
+        ?.flatMap((group) => group.items ?? [])
+        .find((item) => item.id === selectedId);
+      expect(selectedFeedItem).toBeTruthy();
+      expect(selectedFeedItem?.actions).toHaveLength(4);
+
       await installPaneTimingProbe(page);
       await row.evaluate((element) => {
         element.addEventListener(
