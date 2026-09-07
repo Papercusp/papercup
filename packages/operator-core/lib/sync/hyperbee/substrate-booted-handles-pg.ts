@@ -68,6 +68,9 @@ interface PgLastKnownHarnessAnnounceDeviceRecord {
 interface PgBootedHandlesPayload {
   handles: BootedHandleSummary[];
   sentAt: number;
+  /** Stable for one live publisher process. A replacement owner gets a new id
+   * and therefore invalidates every predecessor capability immediately. */
+  publisherId?: string;
   publicationId?: string;
   /** Owner-issued per-repository leases. Omission is an old/unknown owner. */
   gitServing?: GitServingAdvertisement[];
@@ -263,6 +266,7 @@ export function startBootedHandlesPgPublisher(opts: {
 }): BootedHandlesPgPublisherHandle {
   const intervalMs = opts.intervalMs ?? 10_000;
   const now = opts.now ?? (() => Date.now());
+  const publisherId = randomUUID();
   let publishing: Promise<void> | null = null;
   let stopped = false;
   const beat = (): void | Promise<void> => {
@@ -273,6 +277,7 @@ export function startBootedHandlesPgPublisher(opts: {
     const payload: PgBootedHandlesPayload = {
       handles,
       sentAt,
+      publisherId,
       publicationId: randomUUID(),
       // EI-20575137548097507: publish what a reader needs to ASSESS these
       // handles, not just enumerate them.
@@ -296,17 +301,26 @@ export function startBootedHandlesPgPublisher(opts: {
     // observability gap that prolonged EI-20952729544817284. The managed timer
     // records/logs a rejection and still retries next interval.
     if (publishing) return publishing;
-    // Publish liveness/omission immediately, invalidating the preceding owner
-    // before any slow Git/PG work. Never renew old capabilities while collecting.
+    // Publish liveness/omission immediately, invalidating a PRECEDING owner
+    // before any slow Git/PG work. A refresh by this SAME live publisher keeps
+    // its prior capabilities available while replacements are collected. Their
+    // issuedAt/expiresAt remain byte-identical, so this never renews authority:
+    // getPgGitServingCapability still rejects each one at its original 30s
+    // expiry. Without this distinction, every 10s heartbeat erased discovery
+    // for the whole (currently ~20s) collection pass, making protected Git
+    // publication fail more often than it could succeed.
     publishing = updateOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload, (current) => ({
       ...payload,
+      ...(current.publisherId === publisherId && Array.isArray(current.gitServing)
+        ? { gitServing: current.gitServing }
+        : {}),
       lastKnownAnnounceDevices: mergeLastKnownAnnounceDevices(current, handles, sentAt),
     })).then(async () => {
       const gitServing = await (opts.collectGitServing ?? listGitServingCapabilities)();
       if (stopped || !(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
       await updateOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload, (current) => {
         // A newer owner/beat won during issuance: never overwrite its verdict.
-        if (current.publicationId !== payload.publicationId) return current;
+        if (current.publisherId !== publisherId || current.publicationId !== payload.publicationId) return current;
         return { ...current, gitServing };
       });
     }).finally(() => { publishing = null; });
