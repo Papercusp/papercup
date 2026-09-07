@@ -1405,6 +1405,11 @@ import './substrate/revoke-contributor';
 import './blueprint/validate';
 import './blueprint/create';
 import './blueprint/extend';
+// identities-v1 P-004 — source identity views on the same blueprint substrate.
+import './identities/create';
+import './identities/list';
+import './identities/get';
+import './identities/validate';
 // domain-generic-hive-architecture-2026-06-18 P-016 — blueprint:publish, the
 // publish entry point (mirror of knowledge_packs:publish): promote a local/private
 // blueprint to the published/installed tier via the shared Cupboard core.
