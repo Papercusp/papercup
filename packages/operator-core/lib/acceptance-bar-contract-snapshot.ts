@@ -60,6 +60,13 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_plan_ambiguous'
   | 'bar_snapshot_cohort_incomplete'
   | 'bar_snapshot_rubric_missing'
+  /**
+   * P-002 / D-002: the subject plan PINS an acceptance rubric that this read did not
+   * return. That is a failed resolve, not an absence — the pin is in-band evidence
+   * the author did write one — so it must never surface as `rubric_missing`, which
+   * asserts a fact about the author. Mirrors `state:read`'s resolver-failed vs absent.
+   */
+  | 'bar_snapshot_rubric_unresolved'
   | 'bar_snapshot_rubric_ambiguous'
   | 'bar_snapshot_rubric_revision_mismatch'
   | 'bar_snapshot_bar_set_empty'
@@ -455,6 +462,9 @@ export function nextRepair(
     'bar_snapshot_plan_missing',
     'bar_snapshot_plan_ambiguous',
     'bar_snapshot_cohort_incomplete',
+    // P-002: unresolved outranks missing — a read that could not see the rubric must
+    // never hand the caller a repair that presumes the author omitted one.
+    'bar_snapshot_rubric_unresolved',
     'bar_snapshot_rubric_missing',
     'bar_snapshot_rubric_ambiguous',
     'bar_snapshot_rubric_revision_mismatch',
@@ -494,6 +504,10 @@ export function nextRepair(
     bar_snapshot_plan_missing: 'Restore or identify the canonical subject plan row.',
     bar_snapshot_plan_ambiguous: 'Resolve the duplicate subject-plan identity before evaluating a contract.',
     bar_snapshot_cohort_incomplete: 'Repair the server-owned adoption epoch/cohort seed on the subject plan.',
+    bar_snapshot_rubric_unresolved:
+      'Retry the acceptance-rubric read, or re-route to a process that can see it — the subject PINS a rubric this read '
+      + 'could not resolve, so its absence here is UNMEASURED, not established. Do NOT amend or re-seed the rubric on this '
+      + 'evidence: as far as this read knows it is intact, and amending it would destroy any in-flight grading card.',
     bar_snapshot_rubric_missing: "Seed or restore the plan's canonical acceptance rubric.",
     bar_snapshot_rubric_ambiguous: 'Retire the competing active acceptance rubric before continuing.',
     bar_snapshot_rubric_revision_mismatch: 'Re-seed or amend atomically so subject and rubric revision pins agree.',
@@ -618,12 +632,32 @@ export function projectAcceptanceBarContractSnapshot(
     });
   }
 
-  if (input.rubrics.rows.length === 0 && applicable) {
+  // P-002 / D-002. Two different facts used to collapse into one accusatory code.
+  // `rubric_missing` says the author never wrote a rubric; the resolver only ever
+  // knows that its read produced nothing. When the plan itself PINS a rubric slug,
+  // or the rubric read failed outright, the honest report is UNRESOLVED — carrying
+  // the pin so the reader can re-route instead of blaming the author.
+  const rubricPin = plan?.rubricSlug?.trim() ? plan.rubricSlug.trim() : null;
+  const rubricReadFailed = Boolean(input.readFailures?.rubric);
+  const rubricUnresolved = applicable && input.rubrics.rows.length === 0 && (Boolean(rubricPin) || rubricReadFailed);
+  if (rubricUnresolved) {
+    addProblem(problems, {
+      code: 'bar_snapshot_rubric_unresolved',
+      source: 'rubric',
+      severity: 'error',
+      detail: rubricPin
+        ? `subject plan pins acceptance rubric '${rubricPin}'` +
+          `${plan?.rubricRevision == null ? '' : `@${plan.rubricRevision}`}` +
+          ' but this read returned no rubric rows — the rubric could not be RESOLVED here, ' +
+          'which is not evidence that none exists'
+        : 'the acceptance-rubric read failed, so whether a rubric exists is UNKNOWN, not absent',
+    });
+  } else if (input.rubrics.rows.length === 0 && applicable) {
     addProblem(problems, {
       code: 'bar_snapshot_rubric_missing',
       source: 'rubric',
       severity: 'error',
-      detail: 'post-epoch subject plan has no active acceptance rubric',
+      detail: 'post-epoch subject plan has no active acceptance rubric and pins none',
     });
   }
   if (input.rubrics.rows.length > 1 || input.rubrics.truncated) {
@@ -653,7 +687,11 @@ export function projectAcceptanceBarContractSnapshot(
 
   const rawCriteria = rubric?.criteria ?? [];
   const barCriteria = rawCriteria.filter((criterion) => criterion.barKey || criterion.barHash);
-  if (applicable && barCriteria.length === 0) {
+  // P-002: an unresolved rubric has an UNKNOWN bar set, not an empty one. Emitting
+  // `bar_set_empty` here is the second half of the same false accusation — measured
+  // together as `bar_set_empty, rubric_missing` against a rubric that was active
+  // with six criteria at the time.
+  if (applicable && barCriteria.length === 0 && !rubricUnresolved) {
     addProblem(problems, {
       code: 'bar_snapshot_bar_set_empty',
       source: 'rubric',

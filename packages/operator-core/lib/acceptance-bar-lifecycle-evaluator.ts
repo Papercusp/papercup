@@ -24,6 +24,15 @@ export interface AcceptanceBarLifecycleVerdict {
   satisfied: boolean;
   codes: AcceptanceBarSnapshotCode[];
   blockingBars: Array<{ barKey: string; codes: AcceptanceBarSnapshotCode[] }>;
+  /**
+   * P-001: the half of `codes` that no BAR owns — source/completeness failures and
+   * whole-contract obligations (bar set, vetting, author verdict). `blockingBars`
+   * already carried the other half; without this the two were indistinguishable in
+   * the flat `codes` list, so one blocked BAR read as a whole-contract regression.
+   */
+  contractCodes: AcceptanceBarSnapshotCode[];
+  /** Every blocking code with the BAR keys that produced it; empty keys mean contract-level. */
+  codeAttribution: Array<{ code: AcceptanceBarSnapshotCode; barKeys: string[] }>;
   nextRepair: AcceptanceBarContractSnapshot['readiness']['nextRepair'];
   message: string | null;
   /** Same snapshot's exact current operational proof, shared with the activation join. */
@@ -64,6 +73,62 @@ function token(value: string): string {
 
 function addCode(codes: AcceptanceBarSnapshotCode[], code: AcceptanceBarSnapshotCode): void {
   if (!codes.includes(code)) codes.push(code);
+}
+
+/**
+ * P-001: attribute every blocking code to the BAR(s) that produced it.
+ *
+ * A code reaches the verdict from two independent places — a BAR's own readiness
+ * (directly, or re-derived per phase into `blockingBars`) and the whole-contract
+ * completeness/lifecycle checks. The flat `codes` union erases which, so a plan
+ * whose R-1..R-5 carry zero codes and whose R-6 owns six of them reported the same
+ * string as a plan whose whole contract had regressed. That misreading has an
+ * expensive wrong next action (`rubrics:amend`, which destroys an in-flight grading
+ * card), so the attribution is computed here rather than left to the caller.
+ */
+function attributeCodes(
+  snapshot: AcceptanceBarContractSnapshot,
+  codes: readonly AcceptanceBarSnapshotCode[],
+  blockingBars: AcceptanceBarLifecycleVerdict['blockingBars'],
+): { contractCodes: AcceptanceBarSnapshotCode[]; codeAttribution: AcceptanceBarLifecycleVerdict['codeAttribution'] } {
+  const barKeysByCode = new Map<AcceptanceBarSnapshotCode, string[]>();
+  const own = (code: AcceptanceBarSnapshotCode, barKey: string) => {
+    const keys = barKeysByCode.get(code);
+    if (!keys) barKeysByCode.set(code, [barKey]);
+    else if (!keys.includes(barKey)) keys.push(barKey);
+  };
+  // A BAR's raw readiness codes count as owned even when the phase re-derived a
+  // different set for `blockingBars` — otherwise a deferred execution code that
+  // only reaches `codes` through the snapshot fold would read as contract-level.
+  for (const bar of snapshot.bars) for (const code of bar.readiness.codes) own(code, bar.barKey);
+  for (const bar of blockingBars) for (const code of bar.codes) own(code, bar.barKey);
+
+  const codeAttribution = codes.map((code) => ({ code, barKeys: barKeysByCode.get(code) ?? [] }));
+  return {
+    contractCodes: codeAttribution.filter((entry) => entry.barKeys.length === 0).map((entry) => entry.code),
+    codeAttribution,
+  };
+}
+
+/**
+ * Render the attributed verdict. Contract-level codes are labelled as such, and the
+ * clean-BAR count is stated explicitly so "one BAR is blocked" cannot be read as
+ * "the contract has regressed".
+ */
+function attributedMessage(
+  snapshot: AcceptanceBarContractSnapshot,
+  phaseLabel: string,
+  blockingBars: AcceptanceBarLifecycleVerdict['blockingBars'],
+  contractCodes: readonly AcceptanceBarSnapshotCode[],
+): string {
+  const segments = blockingBars.map((bar) => `${bar.barKey}: ${bar.codes.join(', ')}`);
+  if (contractCodes.length > 0) segments.push(`contract-level: ${contractCodes.join(', ')}`);
+  const total = snapshot.bars.length;
+  const scope =
+    total === 0
+      ? 'no BARs declared'
+      : `${blockingBars.length} of ${total} BAR(s) blocking, ${total - blockingBars.length} clean`;
+  return `acceptance BAR contract is not ready for ${phaseLabel} — ${scope}: ${segments.join('; ')}`;
 }
 
 function allSnapshotCodes(snapshot: AcceptanceBarContractSnapshot): AcceptanceBarSnapshotCode[] {
@@ -204,6 +269,8 @@ export function evaluateAcceptanceBarLifecycle(
       satisfied: true,
       codes: [],
       blockingBars: [],
+      contractCodes: [],
+      codeAttribution: [],
       nextRepair: null,
       message: null,
     };
@@ -224,7 +291,13 @@ export function evaluateAcceptanceBarLifecycle(
   }
 
   const pureInvestigation = snapshot.rubric?.classRef === 'plan-class-investigation' && snapshot.bars.length === 0;
-  if (snapshot.bars.length === 0 && !pureInvestigation) addCode(codes, 'bar_snapshot_bar_set_empty');
+  // P-002: when the snapshot could not RESOLVE the rubric, its bar set is unknown,
+  // not empty. Asserting bar_set_empty here would re-introduce the accusatory half
+  // of the pair the projection just stopped emitting.
+  const rubricUnresolved = codes.includes('bar_snapshot_rubric_unresolved');
+  if (snapshot.bars.length === 0 && !pureInvestigation && !rubricUnresolved) {
+    addCode(codes, 'bar_snapshot_bar_set_empty');
+  }
   if (phase === 'pre-grading' || phase === 'ship') {
     const hasCriteria = snapshot.bars.length > 0;
     if (hasCriteria && snapshot.grading.vetting.state !== 'current') {
@@ -258,14 +331,17 @@ export function evaluateAcceptanceBarLifecycle(
         : phase === 'pre-grading'
           ? 'grading'
           : 'ship';
+  const { contractCodes, codeAttribution } = attributeCodes(snapshot, codes, blockingBars);
   return {
     phase,
     applicable: true,
     satisfied: codes.length === 0,
     codes,
     blockingBars,
+    contractCodes,
+    codeAttribution,
     nextRepair,
-    message: codes.length === 0 ? null : `acceptance BAR contract is not ready for ${phaseLabel}: ${codes.join(', ')}`,
+    message: codes.length === 0 ? null : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes),
   };
 }
 
@@ -290,6 +366,8 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
       satisfied: true,
       codes: [],
       blockingBars: [],
+      contractCodes: [],
+      codeAttribution: [],
       nextRepair: null,
       message: null,
     };

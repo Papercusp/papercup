@@ -162,7 +162,7 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 beforeEach(() => {
   vi.resetAllMocks();
   mockBarLifecycle.mockResolvedValue({ phase: 'ship', applicable: false, satisfied: true,
-    codes: [], blockingBars: [], nextRepair: null, message: null });
+    codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, message: null });
   mockRubrics.mockImplementation(async (planSlug) => {
     const one = await mockRubric(planSlug);
     return one ? [one] : [];
@@ -356,7 +356,8 @@ describe('evaluatePlanAcceptanceGate', () => {
     const verdict = (phase: AcceptanceBarLifecycleVerdict['phase'],
       codes: AcceptanceBarLifecycleVerdict['codes']): AcceptanceBarLifecycleVerdict => ({
       phase, applicable: true, satisfied: codes.length === 0, codes,
-      blockingBars: [], nextRepair: null, message: codes.length ? 'BAR proof or grading is incomplete' : null,
+      blockingBars: [], contractCodes: codes, codeAttribution: codes.map((code) => ({ code, barKeys: [] })),
+      nextRepair: null, message: codes.length ? 'BAR proof or grading is incomplete' : null,
     });
 
     it('requires original contract adoption for legacy Requirements even with an as-built rubric and force', async () => {
