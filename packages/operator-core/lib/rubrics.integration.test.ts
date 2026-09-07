@@ -1458,8 +1458,18 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const before = (await listSpecClauses(scope))[0]!;
     const rubricBefore = await rubrics.getRubric(seeded.rubricSlug);
     if (change === 'class') {
-      await insertRubricPlan('atomic-preservation-standard-class');
-      await rubrics.amendRubric({ rubricId: seeded.rubricSlug, classRef: 'atomic-preservation-standard-class' });
+      // Re-affirm the SEEDED class, do not swap to a different one. amendRubric
+      // deliberately refuses to REPLACE an existing acceptance class (rubrics.ts
+      // — "an existing acceptance class cannot be replaced through this
+      // amendment"): the class defines the bar-set the rubric inherits, so
+      // swapping it mid-flight would invalidate the BAR contract. That guard
+      // landed 2026-09-06 and this fixture predates it, which is why it began
+      // refusing. A class-only revision is legal as an initial assignment or a
+      // re-affirmation, and the re-affirmation still writes a full revision
+      // (only an all-fields-undefined patch is "nothing to amend"), so this
+      // keeps exercising what the test is named for: authored atomic clauses
+      // surviving a rubric revision whose ONLY input is classRef.
+      await rubrics.amendRubric({ rubricId: seeded.rubricSlug, classRef: 'plan-class-feature-ship' });
     } else {
       await rubrics.amendRubric({ rubricId: seeded.rubricSlug, criterion: {
         key: rubricBefore!.criteria[0]!.key, field: 'method', mode: 'append', text: 'Inspect the restart evidence.',
@@ -1508,13 +1518,26 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(projections.map((row) => Number(row.source_rubric_revision))).toEqual([after!.revision, after!.revision]);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
-    expect(history.n).toBe(4);
+    // 6, not 4: seedBarContract({ authorMethods: true }) now performs the
+    // authoring write a real caller performs (2 seed + 2 author + 2 amend).
+    // The assertion still pins that the amendment advanced BOTH clause pins.
+    expect(history.n).toBe(6);
 
     // Append a divergent projection in this isolated database to trigger a
     // refusal AFTER the rubric UPDATE, preserving the immutable prior rows.
     const { setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    // DERIVE the CAS baseline rather than hardcoding it. This was `2`, which was
+    // correct only while seeding wrote exactly one clause revision; once
+    // seedBarContract({ authorMethods: true }) added the authoring write a real
+    // caller performs, the clause sits at 3 (seed + author + amend) and the
+    // hardcoded baseline failed as a CAS 'conflict' — a stale fixture, not a
+    // defect in the store. Reading it keeps the next fixture change from
+    // re-stranding this the same way.
+    const [clauseRow] = await db.adminSql`SELECT current_revision FROM harness_shared.plan_spec_clauses
+      WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+        AND plan_slug=${subject} AND spec_id='AUTO-BAR-R-1-P-001'`;
     const divergent = await db.adminSql.begin((tx) => setSpecClause({
-      planSlug: subject, specId: 'AUTO-BAR-R-1-P-001', expectedRevision: 2,
+      planSlug: subject, specId: 'AUTO-BAR-R-1-P-001', expectedRevision: Number(clauseRow!.current_revision),
       planItemId: 'P-001', behavior: after!.criteria[0]!.model,
       behaviorClass: 'happy-path', lifecycleStatus: 'draft', actorId: 'fixture',
       sourceBar: { barKey: 'R-999', barHash: after!.criteria[0]!.barHash!,
@@ -1584,7 +1607,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(subjectAfterFailure).toEqual(subjectBeforeFailure);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
-    expect(history.n).toBe(4);
+    // 6, not 4: seedBarContract({ authorMethods: true }) now performs the
+    // authoring write a real caller performs (2 seed + 2 author + 2 amend).
+    // The assertion still pins that the amendment advanced BOTH clause pins.
+    expect(history.n).toBe(6);
   });
 
   it('adds a declared BAR with structured checks through the existing atomic amendment path', async () => {
@@ -1813,7 +1839,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(preview!.changedBars).toEqual(['R-1']);
     expect(preview!.projectionCount).toBe(2);
     expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning', 'evidence-plane'] }));
-    expect(preview!.revisionMovement).toMatchObject({ rubric: { from: 1, to: 2 }, subject: { from: 1, to: 2 } });
+    // rubric starts at 2, not 1: seeding now authors METHOD/check first.
+    expect(preview!.revisionMovement).toMatchObject({ rubric: { from: 2, to: 3 }, subject: { from: 1, to: 2 } });
     expect(preview!.approval.bars[0]!.priorBarHash).toBe(before!.criteria[0]!.barHash);
     expect(preview!.approval.bars[0]!.nextBarHash).not.toBe(before!.criteria[0]!.barHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
@@ -1850,7 +1877,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
-    expect(history.n).toBe(4);
+    // 6, not 4: seedBarContract({ authorMethods: true }) now performs the
+    // authoring write a real caller performs (2 seed + 2 author + 2 amend).
+    // The assertion still pins that the amendment advanced BOTH clause pins.
+    expect(history.n).toBe(6);
   });
 
   /** Read the rubric's stored template_data straight off the row, so a resubmission is
