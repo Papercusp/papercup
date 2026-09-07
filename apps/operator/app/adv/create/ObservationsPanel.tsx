@@ -17,12 +17,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Table2, Layers, Search } from "lucide-react";
+import { RefreshCw, Table2, Layers, Search, XCircle } from "lucide-react";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import type { CompanionListSummary } from "@papercusp/facets";
 import {
   VirtualGrid,
+  usePersistedColumnWidths,
   type ColumnDef,
   type FilterableColumn,
 } from "@papercusp/grid-core";
@@ -159,7 +160,16 @@ export default function ObservationsPanel({
 } = {}) {
   const [itemPlans] = useItemPlanFilter();
   const [signalFilter, setSignalFilter] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The selected row is user-meaningful state, so it rides in the URL exactly
+  // the way the Retained ledger's `?rsel` does (CLAUDE.md: user-meaningful
+  // state → nuqs). That is what lets an agent reading `ui:get_state` see the
+  // row the person is actually looking at, and a shared link reopen it.
+  const [selectedId, setSelectedId] = useQueryState("obssel", parseAsString);
+  // P-003 parity with Retain: the same persisted, resizable widths its ledger
+  // has, under this pane's own key so the two tables never fight over one.
+  const [colWidths, setColWidths] = usePersistedColumnWidths(
+    "pc-colw:learning:observations",
+  );
   // #4: shared filter/search libs, mirroring the Working → Work Queue pane.
   // A global quick-search (`obsq`) sits beside the shared ColumnFilterBar
   // (scope / role / confidence enums, `obsf` param via useColumnFilters).
@@ -322,9 +332,13 @@ export default function ObservationsPanel({
   }, [summary, pairedFetching, signalCounts, signalFilter]);
   useEffect(() => {
     if (selectedId && !rows.some((row) => row.id === selectedId)) {
-      setSelectedId(null);
+      void setSelectedId(null);
     }
-  }, [rows, selectedId]);
+  }, [rows, selectedId, setSelectedId]);
+  const selectedRow = useMemo(
+    () => (selectedId ? (rows.find((row) => row.id === selectedId) ?? null) : null),
+    [rows, selectedId],
+  );
 
   // Staleness tone: based on the newest observation's age
   const newestCreatedAt = allRows[0]?.createdAt ?? null;
@@ -378,34 +392,29 @@ export default function ObservationsPanel({
           ]
             .filter(Boolean)
             .join("\n"),
+        // The row is now an INDEX ENTRY, not an accordion: body, context and
+        // refs live in the detail aside beside the grid (Retain's
+        // RetainDetailAside pattern). That is what lets the row settle at
+        // Retain's 30px and drop `measureVariableHeight` — a fixed-height slot
+        // cannot clip a body it no longer renders, which is the whole class of
+        // defect WI-5419 chased through the virtualizer.
         render: ({ row }) => {
           const selected = selectedId === row.id;
-          const context = [
-            row.sourceRole,
-            row.scope,
-            row.confidence,
-            ...row.refs,
-          ]
-            .filter(Boolean)
-            .join(" · ");
           const signal = row.kind
             ? (KIND_LABEL[row.kind] ?? row.kind)
             : "Other";
-          // Expanded + the body subsumes the truncated title ⇒ re-split the BODY
-          // at a sentence boundary (headline + rest) instead of repeating the
-          // title's text; otherwise keep title as headline and body as-is.
-          const subsumed =
-            selected && row.body ? bodySubsumesTitle(row.title, row.body) : false;
-          const split = subsumed ? splitBodyHeadline(row.body ?? "") : null;
-          const headline = split ? split.headline : row.title;
-          const bodyTail = selected ? (split ? split.rest || null : row.body) : null;
           return (
             <button
               type="button"
               className={`pc-observations__entry${selected ? " is-selected" : ""}`}
               aria-label={`${selected ? "Collapse" : "Expand"} observation ${row.title}`}
               aria-expanded={selected}
-              onClick={() => setSelectedId(selected ? null : row.id)}
+              // The grid's own onRowClick selects too; without this the click
+              // would toggle twice and land back where it started.
+              onClick={(e) => {
+                e.stopPropagation();
+                void setSelectedId(selected ? null : row.id);
+              }}
             >
               <span
                 className="pc-observations__signalmark"
@@ -423,13 +432,7 @@ export default function ObservationsPanel({
                 <span className="pc-observations__sr-only">{signal}</span>
               </span>
               <span className="pc-observations__copy">
-                <strong>{headline}</strong>
-                {selected && bodyTail ? (
-                  <span className="pc-observations__body">{bodyTail}</span>
-                ) : null}
-                {selected && context ? (
-                  <em className="pc-observations__context">{context}</em>
-                ) : null}
+                <strong>{row.title}</strong>
               </span>
             </button>
           );
@@ -461,16 +464,14 @@ export default function ObservationsPanel({
   );
 
   return (
-    <div
-      style={{
-        height: "100%",
-        minHeight: 0,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-      }}
-    >
-      <div className="pc-observations__toolbar">
+    // The Retained ledger's card (pc-learning__retained): one bordered, rounded
+    // surface whose head strip is the toolbar and whose body is the grid, so
+    // the two tables read as one component rather than two house styles.
+    <section className="pc-observations" aria-label="Observations">
+      {/* The Retained ledger's own toolbar chrome. `--wrap` because this bar
+          carries status chips (the signal distribution), which the shared
+          stylesheet says should wrap to a second line rather than crush. */}
+      <div className="pc-advpanel__bar pc-advpanel__bar--wrap">
         <label className="pc-observations__search">
           <Search size={12} aria-hidden />
           <input
@@ -619,22 +620,51 @@ export default function ObservationsPanel({
             : "No observations yet — they appear as agents reflect at the end of their turns."}
         </div>
       ) : obsView === "stacks" ? (
-        <ObservationStacks rows={rows} selectedId={selectedId} onSelect={setSelectedId} />
-      ) : (
-        <VirtualGrid<ObservationRow>
-          columns={columns}
+        <ObservationStacks
           rows={rows}
-          getRowId={(row) => row.id}
-          rowMinHeight={44}
-          headerHeight={30}
-          // An expanded row grows past rowMinHeight; without measurement the
-          // virtualizer keeps the 44px slot and clips the body mid-line.
-          measureVariableHeight
-          onEndReached={hasMore ? loadMore : undefined}
+          selectedId={selectedId}
+          onSelect={(id) => void setSelectedId(id)}
         />
+      ) : (
+        // Retain's index + detail split (pc-learning__retainlayout): the grid
+        // narrows when a row is selected and the detail takes the other track,
+        // instead of the row growing inside the virtualizer.
+        <div
+          className={`pc-observations__layout${selectedRow ? " has-detail" : ""}`}
+        >
+          <div className="pc-observations__index">
+            <VirtualGrid<ObservationRow>
+              columns={columns}
+              rows={rows}
+              resizableColumns
+              columnWidths={colWidths}
+              onColumnWidthsChange={setColWidths}
+              getRowId={(row) => row.id}
+              onRowClick={(row) =>
+                void setSelectedId((current) =>
+                  current === row.id ? null : row.id,
+                )
+              }
+              getRowBg={(row) =>
+                row.id === selectedId
+                  ? "color-mix(in oklab, var(--accent), transparent 80%)"
+                  : undefined
+              }
+              rowMinHeight={30}
+              headerHeight={30}
+              scrollStyle={{ maxHeight: 340 }}
+              onEndReached={hasMore ? loadMore : undefined}
+            />
+          </div>
+          {selectedRow ? (
+            <ObservationDetailAside
+              row={selectedRow}
+              onClose={() => void setSelectedId(null)}
+            />
+          ) : null}
+        </div>
       )}
       <style>{`
-        .pc-observations__toolbar { min-height: 30px; display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
         .pc-observations__search { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2); color: var(--fg-mute); }
         .pc-observations__search:focus-within { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); color: var(--fg); }
         .pc-observations__search input { border: 0; background: none; outline: none; color: var(--fg); font: inherit; font-size: 11px; width: 150px; }
@@ -645,7 +675,7 @@ export default function ObservationsPanel({
         .pc-observations__viewtoggle button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 22px; min-height: 22px; border: 0; border-radius: 6px; background: none; color: var(--fg-mute); cursor: pointer; }
         .pc-observations__viewtoggle button:hover { color: var(--fg); }
         .pc-observations__viewtoggle button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); color: var(--fg); }
-        .pc-observations__stacks { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-content: start; padding: 2px; }
+        .pc-observations__stacks { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-content: start; padding: 8px; }
         /* The kind label + count render as CardStack's on-card header badge. */
         .pc-observations__stackgroup { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
         .pc-observations__kinddot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -672,7 +702,9 @@ export default function ObservationsPanel({
         .pc-observations__distribution button.is-other { margin-left: 4px; border-style: dashed; opacity: .82; }
         .pc-observations__distribution button > i { width: 6px; height: 6px; flex: none; border-radius: 50%; }
         .pc-observations__distribution button > strong { color: var(--fg); font-size: 9.5px; font-variant-numeric: tabular-nums; }
-        .pc-observations__entry { width: 100%; min-width: 0; display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: start; gap: 7px; padding: 1px 0; border: 0; border-radius: 5px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+        /* Centred and full-height, because the row is a fixed 30px slot now
+           rather than a box that grows with an expanded body. */
+        .pc-observations__entry { width: 100%; height: 100%; min-width: 0; display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: center; gap: 7px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
         .pc-observations__entry:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
         .pc-observations__entry.is-selected .pc-observations__copy > strong { color: var(--accent); }
         .pc-observations__signalmark { display: grid; place-items: center; width: 10px; height: 20px; }
@@ -680,15 +712,123 @@ export default function ObservationsPanel({
         .pc-observations__copy { display: grid; gap: 2px; min-width: 0; }
         .pc-observations__copy > strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .pc-observations__copy > strong { font-size: 12px; font-weight: 620; }
-        /* An expanded row shows the FULL head — wrap instead of ellipsizing. */
-        .pc-observations__entry.is-selected .pc-observations__copy > strong { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+        /* The row no longer expands, so the head stays a single ellipsized
+           line at every selection state — the full text is in the aside. */
         .pc-observations__body, .pc-observations__context { display: block; color: var(--fg-mute); font-size: 10.5px; line-height: 1.4; }
         .pc-observations__body { overflow-wrap: anywhere; white-space: normal; }
         .pc-observations__context { overflow-wrap: anywhere; font-style: normal; white-space: normal; }
         .pc-observations__time { display: block; overflow: hidden; color: var(--fg-mute); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
         .pc-observations__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+        /* ── Retain parity: the card, the index/detail split, the aside ───── */
+        /* Mirrors .pc-learning__retained — one bordered rounded surface whose
+           head strip is the toolbar (pc-advpanel__bar brings its own
+           border-bottom) and whose body is the grid. */
+        .pc-observations {
+          display: flex; flex-direction: column; height: 100%; min-height: 0;
+          border: 1px solid var(--border); border-radius: 10px;
+          background: var(--bg-2); overflow: hidden;
+        }
+        /* Mirrors .pc-learning__retainlayout, including its column ratio: the
+           index gives way to the detail rather than the detail overlaying it. */
+        .pc-observations__layout {
+          display: grid; grid-template-columns: minmax(0, 1fr);
+          gap: 8px; align-items: start; padding: 8px; min-height: 0;
+        }
+        .pc-observations__layout.has-detail { grid-template-columns: minmax(320px, .9fr) minmax(360px, 1.1fr); }
+        .pc-observations__index { min-width: 0; }
+        /* Mirrors .pc-learning__retaindetail. */
+        .pc-observations__detail {
+          min-width: 0; padding: 10px; border-radius: 9px;
+          border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+          background: var(--bg-1);
+        }
+        .pc-observations__detail > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+        .pc-observations__detail > header button { all: unset; cursor: pointer; display: inline-flex; color: var(--fg-mute); }
+        .pc-observations__detail > header button:hover { color: var(--fg); }
+        .pc-observations__detail > header button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+        /* Tracking would be the obvious way to set a small uppercase label
+           apart; it is not an approved primitive (lint:design-primitives), so
+           the separation comes from case + size + weight — the same move
+           chat-controls.css and .pc-learning__loopseclabel make. */
+        .pc-observations__detailkind { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--fg-mute); }
+        .pc-observations__detailkind i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+        .pc-observations__detailtitle { display: block; font-size: 12.5px; font-weight: 620; color: var(--fg); overflow-wrap: anywhere; }
+        .pc-observations__detailmeta { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+        .pc-observations__detailmeta span { font-size: 10px; color: var(--fg-mute); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
       `}</style>
-    </div>
+    </section>
+  );
+}
+
+/**
+ * The selected observation's detail, beside the index — Retain's
+ * RetainDetailAside, in this pane's vocabulary (owner ask: "side panel like
+ * Retain"). It carries what the row used to grow to show: the full body, the
+ * refs, and the role / scope / confidence context.
+ *
+ * The headline split survives the move and matters MORE here, not less: agents
+ * file `title` as a hard character truncation of the body, so rendering title
+ * then body repeats the same words with the first copy cut mid-token. When the
+ * body subsumes the title we re-split the BODY at a sentence boundary instead.
+ */
+function ObservationDetailAside({
+  row,
+  onClose,
+}: {
+  row: ObservationRow;
+  onClose: () => void;
+}) {
+  const signal = row.kind ? (KIND_LABEL[row.kind] ?? row.kind) : "Other";
+  const context = [row.sourceRole, row.scope, row.confidence].filter(Boolean);
+  const subsumed = row.body ? bodySubsumesTitle(row.title, row.body) : false;
+  const split = subsumed ? splitBodyHeadline(row.body ?? "") : null;
+  const headline = split ? split.headline : row.title;
+  const bodyTail = split ? split.rest || null : (row.body ?? null);
+  return (
+    <aside className="pc-observations__detail" aria-label="Observation detail">
+      <header>
+        <span className="pc-observations__detailkind">
+          <i
+            aria-hidden
+            style={{
+              background:
+                OBSERVATION_KIND_COLOR[row.kind ?? ""] ?? "var(--fg-mute)",
+            }}
+          />
+          {signal}
+        </span>
+        <button type="button" aria-label="Close detail" onClick={onClose}>
+          <XCircle size={14} aria-hidden />
+        </button>
+      </header>
+      <strong className="pc-observations__detailtitle">{headline}</strong>
+      <div className="pc-observations__detailmeta">
+        <span>
+          {new Date(row.createdAt).toLocaleString(undefined, {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            second: "2-digit",
+          })}
+        </span>
+        {context.map((value) => (
+          <span key={value}>{value}</span>
+        ))}
+      </div>
+      {bodyTail ? (
+        <span className="pc-observations__body">{bodyTail}</span>
+      ) : null}
+      {/* The refs stay in the same single joined string the row used to show,
+          so the copy text and this panel keep saying the same thing. */}
+      {context.length > 0 || row.refs.length > 0 ? (
+        <em className="pc-observations__context">
+          {[...context, ...row.refs].join(" · ")}
+        </em>
+      ) : null}
+    </aside>
   );
 }
 
