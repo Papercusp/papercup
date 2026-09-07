@@ -804,6 +804,7 @@
 .op-inbox--split .op-inbox__chat-button {
   width: 16px;
   height: 16px;
+  min-height: 16px;
 }
 .op-inbox--split .op-inbox__row-icon {
   left: 10px;
