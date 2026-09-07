@@ -11,6 +11,25 @@
  * one carrying four actions, records the click-to-action time and any observed
  * plans.attentionItem request round-trip, then proves the strip stays one row
  * inside the body measure at 1280×720 and 1600×1020.
+ *
+ * ⚠ THE BACKEND IS NOT THE FRONTEND — pin it, or this script measures a MIXED
+ * STACK and reports it as a source verdict (EI-22623261701738498).
+ *
+ * A `vite --port 3955` host serves the SPA from the WORKING TREE, but its
+ * `/api` proxy defaults to **:3070, the GREEN DEPLOYMENT** (see
+ * apps/operator-vite/vite.config.ts — `PAPERCUSP_API_TARGET` exists precisely
+ * to repoint it). `plans.attention` is a SERVER read, so an unpinned run pairs
+ * current-source UI with a released feed. Measured 2026-09-07: :3070 returned
+ * 0/20 attention rows carrying `actions` while :3170 returned 20/20 — and since
+ * `actionsReady = Array.isArray(item.actions)`, that alone forces the pane to
+ * wait for the detail round-trip and fails R-3 with `loadingAtPaint: true`.
+ * The same probe against :3170 passes. The defect was the rig, not the source.
+ *
+ * So: to measure SOURCE behaviour, boot the host with
+ *   PAPERCUSP_API_TARGET=http://127.0.0.1:3170 npx vite --port 3955
+ * The preflight below refuses to emit a verdict when the backend it is actually
+ * talking to does not carry list-level actions, because a silent confound here
+ * is indistinguishable from a real regression.
  */
 import { performance } from "node:perf_hooks";
 import { chromium } from "@playwright/test";
@@ -25,6 +44,56 @@ const viewports = [
   { width: 1600, height: 1020 },
 ];
 
+/**
+ * Identify the BACKEND actually serving this host, and refuse to produce a
+ * source verdict against one that predates the P-003 list-action retention.
+ * Returns the recorded identity so it rides in the output next to the numbers.
+ */
+async function preflightBackend() {
+  const url =
+    `${baseURL}/api/zero-harness/rest-query?name=plans.attention` +
+    `&args=${encodeURIComponent(JSON.stringify({ limit: 20 }))}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`backend preflight failed at ${baseURL}: HTTP ${res.status}`);
+  }
+  const rows = [];
+  const walk = (node) => {
+    if (Array.isArray(node)) return void node.forEach(walk);
+    if (!node || typeof node !== "object") return;
+    if (typeof node.id === "string" && "tier" in node) rows.push(node);
+    Object.values(node).forEach(walk);
+  };
+  walk(await res.json());
+
+  const withActions = rows.filter((r) => Array.isArray(r.actions)).length;
+  let servedSha = null;
+  try {
+    const health = await fetch(`${baseURL}/api/health`);
+    if (health.ok) {
+      const h = await health.json();
+      servedSha = h?.sha ?? h?.commit ?? h?.version ?? null;
+    }
+  } catch {
+    /* health is a nicety — the actions census is the load-bearing signal */
+  }
+
+  const backend = { rows: rows.length, rowsWithActions: withActions, servedSha };
+  if (rows.length > 0 && withActions === 0) {
+    throw new Error(
+      "BACKEND PREDATES P-003 — this run would measure a MIXED STACK, not the source. " +
+        `${baseURL} served ${rows.length} attention rows and 0 carried a list-level ` +
+        "`actions` array, so every pane must wait for the detail fetch and R-3 fails " +
+        "for a reason that has nothing to do with the tree. This is almost certainly " +
+        "Vite's /api proxy pointing at :3070 (the green deployment) — its default. " +
+        "Reboot the host with PAPERCUSP_API_TARGET=http://127.0.0.1:3170 to measure " +
+        `source behaviour, or target the deployed plane deliberately. ${JSON.stringify(backend)}`,
+    );
+  }
+  return backend;
+}
+
+const backend = await preflightBackend();
 const browser = await chromium.launch({ headless: process.env.HEADED !== "1" });
 const measurements = [];
 
@@ -147,4 +216,4 @@ try {
   await browser.close();
 }
 
-console.log(JSON.stringify({ baseURL, measurements }, null, 2));
+console.log(JSON.stringify({ baseURL, backend, measurements }, null, 2));
