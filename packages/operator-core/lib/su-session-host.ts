@@ -553,7 +553,14 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
           emit: (event) => this.emit(event),
           transition: (state, reason, runtimeGeneration) => this.transition(state, reason, runtimeGeneration),
         });
-        if (persistOutcome) await persistOutcome(outcome);
+        if (persistOutcome) {
+          try {
+            await persistOutcome(outcome);
+          } catch (error) {
+            throw new SuSessionHostError('command_delivery_unknown',
+              `The engine returned but its receipt could not be settled: ${error instanceof Error ? error.message : String(error)}. Reconcile delivery before retrying.`);
+          }
+        }
         const result = this.emit(
           outcome.status === 'completed'
             ? ({
@@ -580,10 +587,11 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
         return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const code = error instanceof SuSessionHostError ? error.code : 'runtime_command_failed';
         this.emit({
           type: 'error',
           scope: 'command',
-          code: 'runtime_command_failed',
+          code,
           message,
           recoverable: true,
           commandId: command.commandId,
@@ -595,9 +603,9 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
           commandType: command.type,
           status: 'refused',
           refusal: {
-            code: 'runtime_command_failed',
+            code,
             message,
-            retryable: true,
+            retryable: code !== 'command_delivery_unknown',
           },
         } as SuSessionEventInput<B>) as CommandResult<B>;
       } finally {
