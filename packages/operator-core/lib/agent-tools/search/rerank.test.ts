@@ -475,6 +475,18 @@ describe('rerankPageHead — candidate budget, not page size', () => {
  * passes a page-sized `limit` and never observes the outcome callback.
  */
 describe('rerankRows — the generic core', () => {
+  it('local-only callers cannot dispatch hosted reranking even with a configured key', async () => {
+    process.env.ZEROENTROPY_API_KEY = 'ze_test';
+    vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) => docs.map((d) => d.row));
+    await rerankRows('q', HITS, {
+      engine: 'local', limit: 3, id: (r) => r.source_id, text: (r) => r.excerpt, rerankTimeoutMs: 1000,
+    });
+    expect(readCredentials).not.toHaveBeenCalled();
+    expect(rankWithReranker).toHaveBeenCalledWith('q', expect.any(Array),
+      expect.objectContaining({ engine: 'local', scorer }));
+    expect(vi.mocked(rankWithReranker).mock.calls[0]![2]).not.toHaveProperty('rerankApiKey');
+  });
   type Row = { id: string; text: string; q: number };
   const rows: Row[] = [
     { id: 'r1', text: 't1', q: 0.9 },

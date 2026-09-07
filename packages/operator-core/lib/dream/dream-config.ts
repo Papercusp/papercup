@@ -37,7 +37,7 @@ export interface DreamReviewConfig {
 export interface DreamCycleConfig {
   /** Maximum persisted dream attempts in one cycle. */
   maxDreamsPerCycle: number;
-  /** Admission cap for the sum of dreamer + reviewer calls in one cycle. */
+  /** Admission cap across packet, retrieval, generation and all review phases. */
   maxCostUsd: number;
   /** Workspace-wide rolling ceiling over every `dream:*` governor registrant. */
   rolling24hCostUsd: number;
@@ -76,8 +76,8 @@ export const DEFAULT_DREAM_REVIEW_CONFIG: Readonly<DreamReviewConfig> = Object.f
 /**
  * Conservative ship defaults.  Manual cycles still use these spend limits;
  * automatic cycles add the separate default-OFF routine switch plus the idle
- * gate.  `maxCostUsd` is an admission ceiling (checked before each bounded
- * dream); the just-admitted model response is recorded even if its measured
+ * gate.  `maxCostUsd` is an admission ceiling (reserved before every phase);
+ * the just-admitted model response is recorded even if its measured
  * cost crosses the remaining pennies, matching Scout's existing accounting
  * semantics while preventing any subsequent call in the cycle.
  */
@@ -163,6 +163,8 @@ export function resolveDreamCycleConfig(override: Partial<DreamCycleConfig> = {}
   const config = { ...DEFAULT_DREAM_CYCLE_CONFIG, ...override };
 
   requirePositiveInteger('maxDreamsPerCycle', config.maxDreamsPerCycle);
+  if (config.maxDreamsPerCycle > DEFAULT_DREAM_CYCLE_CONFIG.maxDreamsPerCycle)
+    throw new RangeError('maxDreamsPerCycle exceeds the approved Dream ceiling');
   requirePositiveInteger('timeoutMs', config.timeoutMs);
   requireProbability('autoIdleRatioFloor', config.autoIdleRatioFloor);
   for (const [name, value] of [
@@ -172,6 +174,8 @@ export function resolveDreamCycleConfig(override: Partial<DreamCycleConfig> = {}
     if (!Number.isFinite(value) || value < 0) {
       throw new RangeError(`${name} must be a non-negative finite number`);
     }
+    if (value > DEFAULT_DREAM_CYCLE_CONFIG[name])
+      throw new RangeError(name + ' exceeds the approved Dream ceiling');
   }
 
   return config;

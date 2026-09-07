@@ -6315,19 +6315,22 @@ export function hostThroughPty(o) {
           // path has proved the successor's native turn start. A later retry then
           // sees completed dedup state, while wake-executor independently waits
           // for the same owner's first productive tool invocation.
-          if (msg.mode === 'recycle' && msg.quotaRecovery) {
-            appendHostEvent(ownerId, 'quota-recovery-started', {
+          if (msg.mode === "recycle" && msg.quotaRecovery) {
+            appendHostEvent(ownerId, "quota-recovery-started", {
               operationId: msg.quotaRecovery.operationId,
               recoveryOwnerId: msg.quotaRecovery.ownerId,
               startedAtMs: msg.quotaRecovery.startedAtMs,
-              accountRoutingMode: 'auto',
+              accountRoutingMode: "auto",
             });
             const recovery = await recycleChild(msg.data, {
               quotaRecovery: msg.quotaRecovery,
             });
             return recovery?.delivered
-              ? { ok: true, reason: 'quota-recovery-delivered' }
-              : { ok: false, reason: `quota-recovery-${recovery?.reason ?? 'failed'}` };
+              ? { ok: true, reason: "quota-recovery-delivered" }
+              : {
+                  ok: false,
+                  reason: `quota-recovery-${recovery?.reason ?? "failed"}`,
+                };
           }
           // EI-18679050054551625 / WI-5872 follow-up: recycleChild() is a
           // multi-second operation by construction (kill the current child,
@@ -6350,15 +6353,15 @@ export function hostThroughPty(o) {
           const releaseAfterRecycle = releaseInject;
           void recycleChild(msg.data, {
             systemPromptAddendum:
-              msg.mode === 'carry-respawn' ? msg.systemPromptAddendum : '',
-            drillId: msg.mode === 'carry-respawn' ? msg.drillId : '',
-            sessionClass: msg.mode === 'carry-respawn' ? msg.sessionClass : '',
+              msg.mode === "carry-respawn" ? msg.systemPromptAddendum : "",
+            drillId: msg.mode === "carry-respawn" ? msg.drillId : "",
+            sessionClass: msg.mode === "carry-respawn" ? msg.sessionClass : "",
           })
             .catch(() => {})
             .finally(() => {
               if (releaseAfterRecycle) releaseAfterRecycle();
             });
-          return { ok: true, reason: 'delivered' };
+          return { ok: true, reason: "delivered" };
         }
         // COMPACT — RETIRED (P-022, 2026-07-18): native compaction is removed
         // fleet-wide; carry-respawn above is the only context cut, and every
@@ -6569,10 +6572,14 @@ export function hostThroughPty(o) {
           if (!msg.deliveryId) return;
           if (
             deliveryOutcome?.ok === true &&
-            (deliveryOutcome.reason === 'delivered' || deliveryOutcome.reason === 'quota-recovery-delivered')
+            (deliveryOutcome.reason === "delivered" ||
+              deliveryOutcome.reason === "quota-recovery-delivered")
           ) {
             deliveryDedup.markCompleted(msg.deliveryId);
-          } else if (msg.mode === 'carry-respawn' && deliveryOutcome?.reason === 'deferred-busy-gate') {
+          } else if (
+            msg.mode === "carry-respawn" &&
+            deliveryOutcome?.reason === "deferred-busy-gate"
+          ) {
             // carryRearm.schedule() owns a live retry outside this promise; keep
             // the id pending so a client retry cannot race that re-arm.
             deliveryDedup.markPending(msg.deliveryId);

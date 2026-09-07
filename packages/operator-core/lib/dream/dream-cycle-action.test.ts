@@ -31,17 +31,23 @@ describe('parseDreamCycleActionConfig', () => {
       parseDreamCycleActionConfig({
         mode: 'auto',
         cycle: { maxDreamsPerCycle: 1 },
-        sampler: { randomPartnerRate: 0 },
+        sampler: { arity: 2 },
       }),
     ).toEqual({
       mode: 'auto',
       cycle: { maxDreamsPerCycle: 1 },
-      sampler: { randomPartnerRate: 0 },
+      sampler: { arity: 2 },
     });
   });
 
   it('rejects an unknown mode instead of silently turning it into automatic spend', () => {
     expect(() => parseDreamCycleActionConfig({ mode: 'background' })).toThrow('unsupported dream-cycle mode');
+  });
+  it('rejects legacy sampler knobs and ceilings above the approved spend', () => {
+    expect(() => parseDreamCycleActionConfig({ sampler: { randomPartnerRate: 1 } })).toThrow('Unsupported');
+    expect(() => parseDreamCycleActionConfig({ cycle: { maxCostUsd: 2 } })).toThrow('ceiling');
+    expect(() => parseDreamCycleActionConfig({ cycle: { rolling24hCostUsd: 6 } })).toThrow('ceiling');
+    expect(() => parseDreamCycleActionConfig({ cycle: { maxDreamsPerCycle: 4 } })).toThrow('ceiling');
   });
 });
 
