@@ -1191,6 +1191,30 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.queryByLabelText("Filed by")).toBeNull();
   });
 
+  it.each([
+    { unavailable: true, unavailableKind: "read-failed", unavailableReason: "Snapshot read failed" },
+    { _meta: { derivedRead: { missing: true } } },
+    { ...improvementsDigest, window: undefined },
+  ])("keeps an unavailable Improve snapshot retryable and recovers when data arrives (%j)", (snapshot) => {
+    improvementsResult = {
+      data: [snapshot],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    const { rerender } = render(<LearningTab />);
+    expect(screen.getByText("Improve unavailable")).toBeTruthy();
+    expect(screen.queryByText("The loop has not produced anything here yet")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    expect(improvementsResult.invalidate).toHaveBeenCalled();
+
+    improvementsResult = { ...improvementsResult, data: [improvementsDigest] };
+    rerender(<LearningTab />);
+    expect(screen.queryByText("Improve unavailable")).toBeNull();
+    expect(screen.getByLabelText("Search ideas and work")).toBeTruthy();
+  });
+
   it("filters the backlog through the quick-search box, Work-Queue style (owner ask 2026-07-19)", () => {
     nuqsState.impq = "massacre";
     render(<LearningTab />);
