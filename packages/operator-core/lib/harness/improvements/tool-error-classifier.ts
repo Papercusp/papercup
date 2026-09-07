@@ -430,6 +430,12 @@ export interface NormalizedToolFailure {
   class: ToolErrorClass;
   /** Exact key emitted by the repeated-tool-error watchdog. */
   watchdogKey: string;
+  /** Stable lifecycle identity, deliberately independent of reporter message shape. */
+  classKey: string;
+  /** Schema/field contract identity used by the class lifecycle. */
+  contractFingerprint: string;
+  /** Deployed/runtime revision that emitted the report. */
+  deployedRevision: string;
   /** Full client/schema-aware correlation identity retained in the payload. */
   correlationFingerprint: string;
   messageFingerprint: string | null;
@@ -448,6 +454,46 @@ function correlationSegment(value: string | null | undefined, fallback: string):
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
   return normalized || fallback;
+}
+
+/**
+ * The stable identity for one tool-failure defect class.
+ *
+ * `watchdogKey` remains the invocation/report identity and intentionally includes
+ * the message fingerprint. This key does not: differently-worded reports for the
+ * same tool/class/contract/revision must share one lifecycle item, while a schema
+ * or deployed revision change must start a new class. Unknown dimensions remain
+ * explicit so missing metadata cannot collapse unrelated reports together.
+ */
+export interface ToolFailureClassIdentity {
+  classKey: string;
+  contractFingerprint: string;
+  deployedRevision: string;
+}
+
+export function toolFailureClassIdentity(
+  input: Pick<SuspectedToolFailure, 'toolName' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,
+  failureFamily: ToolErrorClass,
+): ToolFailureClassIdentity {
+  const tool = correlationSegment(input.toolName, 'unknown-tool');
+  const contractFingerprint = [
+    correlationSegment(input.schemaRevision, 'schema-unknown'),
+    correlationSegment(input.fieldPath, 'field-unknown'),
+  ].join('~');
+  const deployedRevision = correlationSegment(input.runtimeVersion, 'runtime-unknown');
+  return {
+    classKey: `repeated-tool-error-class:${tool}:${failureFamily}:${contractFingerprint}:${deployedRevision}`,
+    contractFingerprint,
+    deployedRevision,
+  };
+}
+
+/** Convenience key builder used by callers that already know the failure family. */
+export function toolFailureClassKey(
+  input: Pick<SuspectedToolFailure, 'toolName' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>,
+  failureFamily: ToolErrorClass,
+): string {
+  return toolFailureClassIdentity(input, failureFamily).classKey;
 }
 
 /**
@@ -480,6 +526,7 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
   const klass = classifyToolError(input.errorCode, input.status, input.message);
   const messageFingerprint = toolErrorFingerprint(input.message);
   const signalKey = toolErrorSignalKey(input.toolName.trim(), klass, messageFingerprint);
+  const classIdentity = toolFailureClassIdentity(input, klass);
   const correlationFingerprint = [
     correlationSegment(input.toolName, 'unknown-tool'),
     correlationSegment(input.errorCode, klass),
@@ -496,6 +543,9 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
   return {
     class: klass,
     watchdogKey: `repeated-tool-error:${signalKey}`,
+    classKey: classIdentity.classKey,
+    contractFingerprint: classIdentity.contractFingerprint,
+    deployedRevision: classIdentity.deployedRevision,
     correlationFingerprint,
     messageFingerprint,
     // A documented external class never bypasses probation, however the
