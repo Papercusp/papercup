@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION,
   WorkspaceHostAgentHomeConsumer,
+  assertWorkspaceHostAgentHomeBundleAdmissionEligible,
+  assertWorkspaceHostCodexAccessTokenProjection,
   encodeWorkspaceHostAgentHomeState,
   encodeWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostAgentHomeBundle,
@@ -188,6 +191,93 @@ describe("workspace-host sealed agent-home bundle", () => {
       codex: `${HOME}/.codex/auth.json`,
       omp: `${HOME}/.omp/agent/auth.json`,
     });
+  });
+
+  it("projects a canonical Codex OAuth cache to access-only bytes", () => {
+    const material = encodeWorkspaceHostAgentHomeBundle({
+      ...files,
+      codex: Buffer.from(
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: {
+            access_token: "codex-access",
+            refresh_token: "rotating-single-writer-secret",
+            account_id: "account-1",
+            id_token: "identity-1",
+          },
+          last_refresh: "2026-09-07T15:00:00.000Z",
+        }),
+      ),
+    });
+    const bundle = parseWorkspaceHostAgentHomeBundle(material);
+    const codex = JSON.parse(bundle.files.codex.toString("utf8"));
+
+    expect(codex).toEqual({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "codex-access",
+        account_id: "account-1",
+        id_token: "identity-1",
+      },
+      last_refresh: "2026-09-07T15:00:00.000Z",
+    });
+    expect(() =>
+      assertWorkspaceHostCodexAccessTokenProjection(bundle.files.codex),
+    ).not.toThrow();
+    expect(() =>
+      assertWorkspaceHostAgentHomeBundleAdmissionEligible(bundle),
+    ).not.toThrow();
+  });
+
+  it("keeps v2 mutable-cache bundles readable but admission-ineligible", () => {
+    const material = Buffer.from(
+      JSON.stringify({
+        contractVersion: WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION,
+        files: {
+          claude: files.claude.toString("base64"),
+          codex: Buffer.from(
+            JSON.stringify({
+              auth_mode: "chatgpt",
+              tokens: {
+                access_token: "codex-access",
+                refresh_token: "legacy-refresh",
+              },
+            }),
+          ).toString("base64"),
+          omp: null,
+        },
+      }),
+    );
+    const bundle = parseWorkspaceHostAgentHomeBundle(material);
+
+    expect(bundle.contractVersion).toBe(
+      WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION,
+    );
+    expect(bundle.files.omp).toBeNull();
+    expect(() =>
+      assertWorkspaceHostAgentHomeBundleAdmissionEligible(bundle),
+    ).toThrow(/read\/revoke-only/);
+  });
+
+  it("rejects a v3 Codex member containing refresh material", () => {
+    const encoded = JSON.parse(
+      encodeWorkspaceHostAgentHomeBundle(files).toString("utf8"),
+    );
+    encoded.files.codex = Buffer.from(
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          access_token: "codex-access",
+          refresh_token: "must-not-cross",
+        },
+      }),
+    ).toString("base64");
+
+    expect(() =>
+      parseWorkspaceHostAgentHomeBundle(
+        Buffer.from(JSON.stringify(encoded)),
+      ),
+    ).toThrow(/must not contain a refresh token/);
   });
 
   it("reads legacy three-file bundles without weakening their required OMP member", () => {

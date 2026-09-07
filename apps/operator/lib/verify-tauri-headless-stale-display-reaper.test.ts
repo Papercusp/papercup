@@ -13,7 +13,7 @@
  * misattributed to whoever draws the short straw next, not to the leak.
  *
  * The fix: a conservative two-signal reaper. A candidate display is reclaimed
- * ONLY when BOTH hold: (a) no live papercusp-desktop app or bin/hono-host.ts
+ * ONLY when BOTH hold: (a) no live papercusp-desktop app or verifier operator
  * sidecar is actually attached to that DISPLAY right now (display_has_owning_app
  * — openbox deliberately does NOT count, since it comes up before the app does,
  * so counting it would treat a still-booting OR crashed-before-app-launch
@@ -85,7 +85,10 @@ describe('EI-18738872670541790 — verify-tauri-headless reclaims an abandoned (
     const fn = src.match(/display_has_owning_app\(\)\s*\{[\s\S]*?\n\}/)?.[0];
     expect(fn).toBeTruthy();
     expect(fn).toContain('debug/papercusp-desktop');
-    expect(fn).toContain('bin/hono-host.ts');
+    expect(fn).toContain('$OPERATOR_HOST_PROCESS_RE');
+    expect(src).toContain(
+      "OPERATOR_HOST_PROCESS_RE='bin/hono-host\\.ts|dist-verify/hono-host\\.mjs'",
+    );
     expect(fn).not.toContain('openbox');
   });
 

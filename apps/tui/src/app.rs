@@ -8229,6 +8229,17 @@ impl App {
                 self.resolve_approval(&call_id);
                 Action::Render
             }
+            Event::SuSessionAsync {
+                harness,
+                load_token,
+                event,
+            } => {
+                if harness == self.harness && load_token == self.chat_load_token {
+                    self.update(*event)
+                } else {
+                    Action::None
+                }
+            }
             Event::SuSessionOpened(binding) => {
                 self.set_su_session_binding(binding);
                 Action::Render
@@ -12605,6 +12616,48 @@ mod tests {
             app.su_session.as_ref().unwrap().error.as_deref(),
             Some("current stream closed")
         );
+    }
+
+    #[test]
+    fn old_su_connection_and_receipts_cannot_replace_a_new_selection() {
+        let mut app = App::new();
+        let old_token = app.next_agent_chat_load_token();
+        let harness = app.harness.clone();
+        app.reset_agent_chat_binding();
+        app.agent_chat_id = Some("new-chat".into());
+        app.chat_input = "new unsent draft".into();
+        app.chat_streaming = true;
+        for event in [
+            Event::AgentChatBound("old-chat".into()),
+            Event::SuSessionOpened(su_binding()),
+            Event::SuSessionError("old startup failed".into()),
+            Event::SuSessionCommandResult("accepted".into()),
+        ] {
+            // The request finished after the owner changed their selection.
+            app.update(Event::SuSessionAsync {
+                harness: harness.clone(),
+                load_token: old_token,
+                event: Box::new(event),
+            });
+        }
+        assert_eq!(app.agent_chat_id.as_deref(), Some("new-chat"));
+        assert!(app.su_session.is_none());
+        assert_eq!(app.chat_input, "new unsent draft");
+        assert!(app.chat_streaming);
+        assert!(app.last_error.is_none());
+
+        app.update(Event::SuSessionAsync {
+            harness,
+            load_token: app.chat_load_token,
+            event: Box::new(Event::SuSessionError("current startup failed".into())),
+        });
+        assert!(!app.chat_streaming);
+        assert!(app
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("current startup failed"));
+        assert_eq!(app.chat_input, "new unsent draft");
     }
 
     #[test]

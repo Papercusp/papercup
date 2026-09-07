@@ -2,6 +2,8 @@ import { access, readFile } from 'node:fs/promises';
 
 import {
   WorkspaceHostCredentialMaterial,
+  WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION,
   buildWorkspaceHostCredentialReference,
   encodeWorkspaceHostAgentHomeBundle,
   workspaceHostAgentHomePaths,
@@ -55,7 +57,24 @@ const PROBES = {
 } satisfies Record<'claude' | 'codex' | 'omp', readonly WorkspaceHostAgentVerificationProbeSpec[]>;
 
 function bundle(codex: 'healthy' | 'revoked'): Buffer {
-  const file = (agent: string, status: string) => Buffer.from(JSON.stringify({ agent, status }), 'utf8');
+  const file = (agent: string, status: string) =>
+    Buffer.from(
+      JSON.stringify(
+        agent === 'codex'
+          ? {
+              agent,
+              status,
+              auth_mode: 'chatgpt',
+              tokens: {
+                access_token: `codex-${status}-access`,
+                refresh_token: 'canonical-writer-only',
+                account_id: 'account-1',
+              },
+            }
+          : { agent, status },
+      ),
+      'utf8',
+    );
   return encodeWorkspaceHostAgentHomeBundle({
     claude: file('claude', 'healthy'),
     codex: file('codex', codex),
@@ -86,6 +105,7 @@ function source(material: Buffer, seen: WorkspaceHostCredentialMaterialRequest[]
 class BundleAwareRunner implements WorkspaceHostAgentProbeRunner {
   readonly homes: string[] = [];
   readonly observed: Record<string, string> = {};
+  readonly observedBodies: Record<string, Record<string, unknown>> = {};
   readonly environments: Readonly<Record<string, string>>[] = [];
 
   async run(invocation: WorkspaceHostAgentProbeInvocation): Promise<WorkspaceHostAgentProbeOutcome> {
@@ -97,8 +117,10 @@ class BundleAwareRunner implements WorkspaceHostAgentProbeRunner {
     expect(invocation.cwd).toBe(home);
     const body = JSON.parse((await readFile(workspaceHostAgentHomePaths(home)[agent], 'utf8'))) as {
       status: string;
+      tokens?: Record<string, unknown>;
     };
     this.observed[agent] = body.status;
+    this.observedBodies[agent] = body;
     return body.status === 'healthy'
       ? { exitCode: 0, stdout: 'READY\n' }
       : { exitCode: 1, stdout: '', failureHint: 'credential-revoked' };
@@ -144,9 +166,56 @@ describe('workspace-host exact-generation agent credential admission', () => {
       verification: { allReady: true, credentialFreeAgents: [] },
     });
     expect(runner.observed).toEqual({ claude: 'healthy', codex: 'healthy', omp: 'healthy' });
+    expect(runner.observedBodies.codex?.tokens).toMatchObject({
+      access_token: 'codex-healthy-access',
+      account_id: 'account-1',
+    });
+    expect(runner.observedBodies.codex?.tokens).not.toHaveProperty('refresh_token');
     expect(runner.environments.every((env) => !('OPENAI_API_KEY' in env))).toBe(true);
     expect(JSON.stringify(evidence)).not.toContain('ambient-must-not-cross');
     await expect(access(runner.homes[0]!)).rejects.toThrow();
+  });
+
+  it('rejects legacy mutable-cache bundles before creating a probe home or invoking a runner', async () => {
+    const runner = new BundleAwareRunner();
+    const encoded = JSON.parse(bundle('healthy').toString('utf8'));
+    encoded.contractVersion = WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION;
+    const codex = JSON.parse(Buffer.from(encoded.files.codex, 'base64').toString('utf8'));
+    codex.tokens.refresh_token = 'legacy-refresh';
+    encoded.files.codex = Buffer.from(JSON.stringify(codex)).toString('base64');
+
+    await expect(
+      verifyWorkspaceHostAgentCredentialAdmission(
+        {
+          credentialRef: { kind: 'agent', ref: AGENT_REF },
+          delivery: DELIVERY,
+          materialSource: source(Buffer.from(JSON.stringify(encoded)), []),
+        },
+        { runner, probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+      ),
+    ).rejects.toThrow(/legacy mutable-cache bundles are read\/revoke-only/);
+    expect(runner.homes).toEqual([]);
+  });
+
+  it('rejects a v3 refresh token before creating a probe home or invoking a runner', async () => {
+    const runner = new BundleAwareRunner();
+    const encoded = JSON.parse(bundle('healthy').toString('utf8'));
+    encoded.contractVersion = WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION;
+    const codex = JSON.parse(Buffer.from(encoded.files.codex, 'base64').toString('utf8'));
+    codex.tokens.refresh_token = 'must-not-cross';
+    encoded.files.codex = Buffer.from(JSON.stringify(codex)).toString('base64');
+
+    await expect(
+      verifyWorkspaceHostAgentCredentialAdmission(
+        {
+          credentialRef: { kind: 'agent', ref: AGENT_REF },
+          delivery: DELIVERY,
+          materialSource: source(Buffer.from(JSON.stringify(encoded)), []),
+        },
+        { runner, probes: PROBES, now: NOW, environment: { PATH: '/usr/bin:/bin' } },
+      ),
+    ).rejects.toThrow(/must not contain a refresh token/);
+    expect(runner.homes).toEqual([]);
   });
 
   it('fails closed on revoked stored Codex even when an ambient default is healthy', async () => {
@@ -244,7 +313,10 @@ describe('workspace-host exact-generation agent credential admission', () => {
     const runner = new BundleAwareRunner();
     const material = encodeWorkspaceHostAgentHomeBundle({
       claude: Buffer.from('{"agent":"claude","status":"healthy"}', 'utf8'),
-      codex: Buffer.from('{"agent":"codex","status":"healthy"}', 'utf8'),
+      codex: Buffer.from(
+        '{"agent":"codex","status":"healthy","auth_mode":"chatgpt","tokens":{"access_token":"codex-healthy-access","refresh_token":"canonical-writer-only"}}',
+        'utf8',
+      ),
       omp: null,
     });
     const evidence = await verifyWorkspaceHostAgentCredentialAdmission(

@@ -797,6 +797,19 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toContain('timeout_sec?:integer(>0-604800)');
   });
 
+  it('keeps the required progress_lease remedy visible in bounded events:await discovery', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('events:await'));
+
+    // progress_lease has optional fields before its required remedy. The
+    // bounded nested projection must not hide the only field that tells a
+    // caller how to recover after repeated cadence misses.
+    expect(compact).toContain('progress_lease?:object{');
+    expect(compact).toContain('remedy:object{kind:enum(spec-widen)');
+    expect(compact).toContain('instructions:string');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+  });
+
   it('renders a JSON-schema const as a singleton enum in nested discovery output', () => {
     const compact = compactSchemaForResult({
       type: 'object',

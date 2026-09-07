@@ -18,6 +18,7 @@ import {
   WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
   WORKSPACE_HOST_CREDENTIAL_FAMILY_SPECS,
+  assertWorkspaceHostAgentHomeBundleAdmissionEligible,
   assertWorkspaceHostSecretIsolation,
   parseWorkspaceHostAgentHomeBundle,
   parseWorkspaceHostCredentialReference,
@@ -242,8 +243,7 @@ function probeEnvironment(
   return { ...environment, HOME: home, USER: username, LOGNAME: username };
 }
 
-async function installTemporaryAgentHome(home: string, material: Buffer): Promise<WorkspaceHostAgentHomeBundle> {
-  const bundle = parseWorkspaceHostAgentHomeBundle(material);
+async function installTemporaryAgentHome(home: string, bundle: WorkspaceHostAgentHomeBundle): Promise<void> {
   for (const directory of workspaceHostAgentHomeDirectories(home)) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await chmod(directory, 0o700);
@@ -262,7 +262,6 @@ async function installTemporaryAgentHome(home: string, material: Buffer): Promis
       mode: 0o600,
     });
   }
-  return bundle;
 }
 
 /** Authenticate one exact stored agent generation and emit only closed, public evidence. */
@@ -285,9 +284,11 @@ export async function verifyWorkspaceHostAgentCredentialAdmission(
   let temporary: string | undefined;
   let bundle: WorkspaceHostAgentHomeBundle | undefined;
   try {
+    bundle = parseWorkspaceHostAgentHomeBundle(materialBytes);
+    assertWorkspaceHostAgentHomeBundleAdmissionEligible(bundle);
     temporary = await mkdtemp(join(dependencies.temporaryParent ?? tmpdir(), 'papercusp-agent-admission-'));
     await chmod(temporary, 0o700);
-    bundle = await installTemporaryAgentHome(temporary, materialBytes);
+    await installTemporaryAgentHome(temporary, bundle);
     const now = dependencies.now ?? (() => new Date());
     const runner = dependencies.runner ?? new NodeWorkspaceHostAgentProbeRunner();
     const environment = probeEnvironment(temporary, dependencies.environment);

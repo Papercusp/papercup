@@ -584,6 +584,7 @@ export type {
 } from "./workspace-host-agent-home";
 export {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_FILES,
   WORKSPACE_HOST_AGENT_HOME_OMP_MODELS_RELATIVE_PATH,
@@ -596,6 +597,9 @@ export {
   WorkspaceHostAgentHomeConsumer,
   parseWorkspaceHostAgentHomeBundle,
   encodeWorkspaceHostAgentHomeBundle,
+  projectWorkspaceHostCodexAccessToken,
+  assertWorkspaceHostCodexAccessTokenProjection,
+  assertWorkspaceHostAgentHomeBundleAdmissionEligible,
   workspaceHostAgentHomePaths,
   workspaceHostAgentHomeOmpModelsPath,
   workspaceHostAgentHomeDirectories,

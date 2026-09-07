@@ -47,11 +47,7 @@ import { acquireWithContentionRetry } from '../../agent-tools/locks/contention-r
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import {
-  classifyObservationFold,
-  type FoldCandidate,
-  type FoldClassification,
-} from './observation-fold';
+import { classifyObservationFold, type FoldCandidate, type FoldClassification } from './observation-fold';
 import { trackDetached } from '../../detached-imports';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC, issueToCandidate } from './read-items';
@@ -202,6 +198,8 @@ export interface CaptureImprovementInput {
    * a genuinely novel/one-off observation, which still always re-files.
    */
   watchdogKey?: string;
+  /** A caller-owned durable reservation (e.g. dream_runs) fixes artifact identity across terminal replay. */
+  artifactId?: string;
   /**
    * Newest evidence timestamp (ISO) backing this capture (watchdog-audit
    * P-005 / D-002). Under `dedupScope:'open'`, a RESOLVED duplicate normally
@@ -590,9 +588,7 @@ export interface CaptureDeps {
   untagIssue?: (id: string, topic: string) => Promise<void>;
   /** P-004 append-only evidence seam. Optional so pure callers can inject a
    * recorder; the production default writes through issue-occurrence-ledger. */
-  recordIssueOccurrence?: (
-    input: RecordIssueOccurrenceInput,
-  ) => Promise<RecordedIssueOccurrence | null>;
+  recordIssueOccurrence?: (input: RecordIssueOccurrenceInput) => Promise<RecordedIssueOccurrence | null>;
   /** P-013 (D-042) SOFT-fold seam: write a `relates` edge between the row just
    *  minted and the similar open observation the classifier declined to fold
    *  onto. Optional — the production default lazy-loads `linkWorkItem` so
@@ -916,7 +912,8 @@ export async function validateScoutEvidenceCitations(
         continue;
       }
       result.resolvedIds.push(id);
-      const payload = cited.payload && typeof cited.payload === 'object' ? (cited.payload as Record<string, unknown>) : {};
+      const payload =
+        cited.payload && typeof cited.payload === 'object' ? (cited.payload as Record<string, unknown>) : {};
       if (payload.sourceRole === 'Scout') result.circularIds.push(id);
     } catch {
       // A resolver outage is recorded for observability but remains fail-open.
@@ -942,7 +939,9 @@ interface ToolFailureProbationPayload {
   [key: string]: unknown;
 }
 
-function toolFailureProbationOf(payload: Record<string, unknown> | null | undefined): ToolFailureProbationPayload | null {
+function toolFailureProbationOf(
+  payload: Record<string, unknown> | null | undefined,
+): ToolFailureProbationPayload | null {
   const candidate = payload?.toolFailureProbation;
   return candidate && typeof candidate === 'object' && !Array.isArray(candidate)
     ? (candidate as ToolFailureProbationPayload)
@@ -1014,9 +1013,7 @@ async function reconcileToolFailurePromotionCollision(
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
   const possibleCandidates =
     candidates ??
-    (await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)(uniqueKeys).catch(
-      () => [] as EngineerIssue[],
-    ));
+    (await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)(uniqueKeys).catch(() => [] as EngineerIssue[]));
   const canonical = possibleCandidates.find((candidate) => {
     if (candidate.id === prior.id || !isWatchdogNonTerminal(candidate)) return false;
     const payload = (candidate.payload as Record<string, unknown> | null) ?? {};
@@ -1033,12 +1030,14 @@ async function reconcileToolFailurePromotionCollision(
   const canonicalPayload = (canonical.payload as Record<string, unknown> | null) ?? {};
   const canonicalProbation = toolFailureProbationOf(canonicalPayload) ?? {};
   const reporters = [
-    ...new Set([
-      ...(Array.isArray(canonicalProbation.reporters) ? canonicalProbation.reporters : []),
-      ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
-      ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
-      ...(input.createdBy ? [input.createdBy] : []),
-    ].filter(Boolean)),
+    ...new Set(
+      [
+        ...(Array.isArray(canonicalProbation.reporters) ? canonicalProbation.reporters : []),
+        ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
+        ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+        ...(input.createdBy ? [input.createdBy] : []),
+      ].filter(Boolean),
+    ),
   ];
   const kind = incomingProbation.intendedKind ?? priorProbation.intendedKind ?? storageKindOf(input.kind);
   const reconciledAt = new Date().toISOString();
@@ -1101,11 +1100,15 @@ async function promoteToolFailureProbation(
   const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
-  const reporters = [...new Set([
-    ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
-    ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
-    ...(input.createdBy ? [input.createdBy] : []),
-  ].filter(Boolean))];
+  const reporters = [
+    ...new Set(
+      [
+        ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
+        ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+        ...(input.createdBy ? [input.createdBy] : []),
+      ].filter(Boolean),
+    ),
+  ];
   const kind = incomingProbation.intendedKind ?? storageKindOf(input.kind);
 
   // Change the visible content first while the row is still safely parked. The
@@ -1215,10 +1218,10 @@ function buildCoalesceEffect(args: {
       ? `exact titleKey match — system filer \`${input.foundDuring ?? 'system:?'}\`, no conditionKey supplied`
       : identity === 'class-key'
         ? `stable tool-failure class identity carried by \`${input.watchdogKey}\``
-      : fold
-        ? `derived identity — ${fold.rule}` +
-          (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
-        : `conditionKey \`${input.watchdogKey}\``;
+        : fold
+          ? `derived identity — ${fold.rule}` +
+            (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
+          : `conditionKey \`${input.watchdogKey}\``;
   return {
     id: finalIssue.id,
     repeatCount,
@@ -1353,18 +1356,31 @@ async function coalesceWatchdogWinner(args: {
   queueAdmission?: IssueAdmissionPressure;
   identityRoute?: CoalesceEffect['identity'];
 }): Promise<CaptureImprovementResult> {
-  const { prior, input, deps, identity, possibleDuplicates, dedupCoverage, topics, alreadyDecided, queueAdmission } = args;
+  const { prior, input, deps, identity, possibleDuplicates, dedupCoverage, topics, alreadyDecided, queueAdmission } =
+    args;
+  if (input.artifactId) {
+    if (prior.id !== input.artifactId) throw new Error('Reserved capture cannot coalesce into another artifact');
+    return { ok: true, created: false, issue: prior, possibleDuplicates: [] };
+  }
   const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
   const priorProbation = toolFailureProbationOf(priorPayload);
   const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
   const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
   const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
-  const reporters = [...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+  const reporters = [
+    ...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])]),
+  ];
   const independentReporter = reporters.some((reporter) => !priorReporters.includes(reporter));
 
   // Preserve the probation→promoted transition if two observation captures
   // raced before either could observe the other's newly-created row.
-  if (issueWatchdogLane(prior) === 'observation' && priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
+  if (
+    issueWatchdogLane(prior) === 'observation' &&
+    priorProbation?.state === 'probation' &&
+    incomingProbation &&
+    priorReporters.length > 0 &&
+    independentReporter
+  ) {
     const promoted = await promoteToolFailureProbation(prior, input, deps);
     if (promoted) {
       await appendCaptureOccurrence(
@@ -1459,6 +1475,19 @@ export async function captureImprovement(
   input: CaptureImprovementInput,
   deps: CaptureDeps = defaultDeps,
 ): Promise<CaptureImprovementResult> {
+  const readReservedArtifact = async (): Promise<CaptureImprovementResult | null> => {
+    if (!input.artifactId) return null;
+    if (!/^(EI|WI)-\d+$/.test(input.artifactId) || !input.watchdogKey)
+      throw new Error('A reserved capture requires a canonical artifact id and stable watchdog key');
+    const existing = await (deps.getIssue ?? getIssue)(input.artifactId);
+    if (!existing) return null;
+    const payload = (existing.payload ?? {}) as Record<string, unknown>;
+    if (existing.scope !== input.scope || payload.watchdogKey !== input.watchdogKey)
+      throw new Error('Reserved capture id belongs to another identity');
+    return { ok: true, created: false, issue: existing, possibleDuplicates: [] };
+  };
+  const reserved = await readReservedArtifact();
+  if (reserved) return reserved;
   // Dedup search (D-001/P-002): full-text search, then a title-similarity pass.
   // Origin-scoped (frontier P-002/D-002): only candidates with the SAME effective
   // origin participate in dedup + decided-recall — a drill row deduping against an
@@ -1545,9 +1574,9 @@ export async function captureImprovement(
   let classKeyLookupFailed = false;
   let classKeyIssues: EngineerIssue[] = [];
   if (!isObservation && incomingProbation?.classKey) {
-    classKeyIssues = await (
-      deps.findIssuesByToolFailureClassKeys ?? findIssuesByToolFailureClassKeys
-    )([incomingProbation.classKey]).catch(() => {
+    classKeyIssues = await (deps.findIssuesByToolFailureClassKeys ?? findIssuesByToolFailureClassKeys)([
+      incomingProbation.classKey,
+    ]).catch(() => {
       classKeyLookupFailed = true;
       return [] as EngineerIssue[];
     });
@@ -1606,6 +1635,12 @@ export async function captureImprovement(
         return [] as EngineerIssue[];
       },
     );
+    if (input.artifactId) {
+      const winner = await readReservedArtifact();
+      if (winner) return winner;
+      if (exactKeyIssues.some((i) => sameWatchdogIdentity(i, input, origin)))
+        throw new Error('Reserved capture key already belongs to another artifact');
+    }
     // The database lookup is intentionally broad (it spans legacy workspace
     // homes for read-side recovery).  The one deliberate cross-lane exception
     // is probation promotion: the invocation-ledger watchdog promotes an
@@ -1981,10 +2016,7 @@ export async function captureImprovement(
     lexical: lexicalLeg,
     semantic: semanticLeg,
     degraded:
-      lexicalLeg === 'unavailable' ||
-      semanticLeg === 'unavailable' ||
-      exactKeyLookupFailed ||
-      classKeyLookupFailed,
+      lexicalLeg === 'unavailable' || semanticLeg === 'unavailable' || exactKeyLookupFailed || classKeyLookupFailed,
   };
 
   // "Already decided" recall (P-003): signature-match this capture against the
@@ -2610,6 +2642,7 @@ export async function captureImprovement(
   }
 
   const createInput: CreateIssueInput = {
+    ...(input.artifactId ? { id: input.artifactId } : {}),
     title: input.title,
     kind: isObservation ? 'change' : storageKindOf(input.kind),
     body: input.body,
@@ -2639,6 +2672,10 @@ export async function captureImprovement(
       backoffsMs: CAPTURE_CONTENTION_BACKOFFS_MS,
     });
   } catch (error) {
+    if (input.artifactId) {
+      const winner = await readReservedArtifact();
+      if (winner) return winner;
+    }
     // The SELECT-before-INSERT exact-key path above is advisory.  Migration 865
     // is the authority under a race: recover ONLY its unique-index violation,
     // then re-read and require the complete identity before coalescing.  A

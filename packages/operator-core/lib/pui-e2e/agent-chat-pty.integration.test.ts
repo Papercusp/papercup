@@ -6,15 +6,14 @@
  *   installed/built `pui` -> real PTY -> production Hono operator app ->
  *   real owned loop -> real migrated Postgres
  *
- * The only fake is the external model-provider port. Keeping that seam
- * deterministic lets the gate prove success, HITL, provider failure and a
- * stalled/cancelled stream without spending credentials or depending on a
- * third-party service. The loop, capability projection/dispatch, PG approval
- * store, chat/session persistence, HTTP/SSE transport and Ratatui UI are real.
+ * The scripted peer replaces only the external structured engine protocol.
+ * SU bootstrap, engine translation, command execution, chat/session persistence,
+ * HTTP/SSE transport and Ratatui UI stay real. Explicit transport faults exercise
+ * acknowledgement loss and retry without spending provider credentials.
  */
 import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
-import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -22,83 +21,71 @@ import type { AddressInfo } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import type { ModelRequest, ModelStreamEvent } from '../agent-loop/model-port';
+import { PassThrough } from 'node:stream';
+import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
+import type { SuSessionCommand } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
 
-const scriptedProvider = vi.hoisted(() => ({
-  mode: 'success' as 'success' | 'hitl' | 'failure' | 'stall',
-  successText: 'PUI provider fixture replied',
-  requests: [] as Array<{ messages: unknown[]; tools: string[] }>,
+const scriptedEngine = vi.hoisted(() => ({
+  mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit',
+  successText: 'PUI structured engine replied',
+  requests: [] as string[],
+  engines: [] as ClaudeSuEngine[],
 }));
 
-// Provider-only fake: everything above ModelPort stays production-real.
-vi.mock('../agent-loop/provider-router', () => ({
-  createRoutedModelPort: () => ({
-    async *stream(req: ModelRequest): AsyncIterable<ModelStreamEvent> {
-      scriptedProvider.requests.push({
-        messages: req.messages,
-        tools: (req.tools ?? []).map((tool) => tool.name),
-      });
-      if (scriptedProvider.mode === 'failure') {
-        yield { type: 'error', message: 'PUI-E2E provider stream failed visibly' };
-        return;
-      }
-      if (scriptedProvider.mode === 'stall') {
-        await new Promise<void>((resolve) => {
-          if (req.signal?.aborted) return resolve();
-          const timer = setTimeout(resolve, 15_000);
-          timer.unref?.();
-          req.signal?.addEventListener(
-            'abort',
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true },
-          );
-        });
-        yield req.signal?.aborted
-          ? { type: 'stop', reason: 'aborted' }
-          : { type: 'error', message: 'PUI-E2E stalled provider safety deadline fired' };
-        return;
-      }
-      if (scriptedProvider.mode === 'hitl') {
-        const hasResult = req.messages.some((message) => message.content.some((part) => part.type === 'tool_result'));
-        if (!hasResult) {
-          yield {
-            type: 'tool_call',
-            id: 'pui-e2e-call-1',
-            name: 'capability:bash',
-            input: {
-              command: "printf 'PUI-E2E-HITL-OK'",
-              description: 'prove real HITL capability round trip',
-            },
-          };
-          yield {
-            type: 'stop',
-            reason: 'tool_use',
-            usage: { inputTokens: 4, outputTokens: 2 },
-          };
-          return;
-        }
-        yield { type: 'text_delta', text: 'PUI HITL round-trip complete' };
-        yield {
-          type: 'stop',
-          reason: 'end_turn',
-          usage: { inputTokens: 8, outputTokens: 4 },
+vi.mock('../su-session-claude-engine', async (original) => {
+  const actual = await original<typeof import('../su-session-claude-engine')>();
+  return {
+    ...actual,
+    startClaudeSuEngine(...args: Parameters<typeof actual.startClaudeSuEngine>) {
+      const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options }) => {
+        const output = new PassThrough({ objectMode: true });
+        let nativeId = '';
+        const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+        void (async () => {
+          for await (const message of prompt) {
+            nativeId = message.session_id;
+            if (message.shouldQuery === false) {
+              if (scriptedEngine.mode === 'startup-exit') { output.end(); return; }
+              output.write({ type: 'system', subtype: 'init', session_id: nativeId, cwd: options.cwd });
+              result();
+              continue;
+            }
+            scriptedEngine.requests.push(String(message.message.content));
+            output.write(message); // The engine's exact native receipt.
+            if (scriptedEngine.mode === 'stall') continue;
+            if (scriptedEngine.mode === 'failure') {
+              output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId,
+                is_error: true, errors: ['PUI-E2E engine failed visibly'] });
+              continue;
+            }
+            output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+              { type: 'tool_use', id: 'pui-e2e-tool', name: 'Read', input: { file_path: 'README.md' } },
+            ] } });
+            output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+              { type: 'tool_result', tool_use_id: 'pui-e2e-tool', content: 'scripted engine tool result' },
+            ] } });
+            output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+              { type: 'text', text: scriptedEngine.successText },
+            ] } });
+            result();
+          }
+        })().catch((error: Error) => output.destroy(error));
+        return {
+          [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
+          initializationResult: async () => ({ commands: [], agents: [], models: [], account: {}, output_style: 'default', available_output_styles: [] }),
+          mcpServerStatus: async () => [{ name: 'papercusp-su', status: 'connected' as const }],
+          interrupt: async () => { result(); },
+          close: () => output.end(),
         };
-        return;
-      }
-      yield { type: 'text_delta', text: scriptedProvider.successText };
-      yield {
-        type: 'stop',
-        reason: 'end_turn',
-        usage: { inputTokens: 6, outputTokens: 3 },
       };
+      const engine = actual.startClaudeSuEngine(args[0], args[1], args[2], { ...args[3], query });
+      scriptedEngine.engines.push(engine);
+      return engine;
     },
-  }),
-}));
+  };
+});
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
@@ -120,12 +107,11 @@ function cargoTargetDir(): string | null {
   }
 }
 
-/** Prefer the P-021 supported installed artifact, then current cargo output. */
+/** PUI_BIN explicitly selects an installed artifact; otherwise use this build. */
 function resolvePuiBinary(): string | null {
   const target = cargoTargetDir();
   const candidates = [
     process.env.PUI_BIN,
-    path.join(process.env.HOME ?? '', '.cargo', 'bin', 'pui'),
     target ? path.join(target, 'debug', 'pui') : null,
     target ? path.join(target, 'release', 'pui') : null,
     path.join(TUI_DIR, 'target', 'debug', 'pui'),
@@ -135,8 +121,10 @@ function resolvePuiBinary(): string | null {
 }
 
 function ensurePuiBinary(): string {
-  const existing = resolvePuiBinary();
-  if (existing) return existing;
+  if (process.env.PUI_BIN) {
+    if (!existsSync(process.env.PUI_BIN)) throw new Error('The explicit PUI_BIN artifact does not exist');
+    return process.env.PUI_BIN;
+  }
   const built = spawnSync('cargo', ['build', '--locked', '--bin', 'pui'], {
     cwd: TUI_DIR,
     encoding: 'utf8',
@@ -283,7 +271,7 @@ async function putViewState(tab: string): Promise<void> {
 type PersistedChat = {
   id: string;
   role: string;
-  transcript: Array<{ role: string; content: string; error?: boolean }>;
+  transcript: Array<{ role: string; content: string; error?: boolean; su_command?: { command: SuSessionCommand; outcome?: unknown } }>;
 };
 
 async function persistedChats(db: OrgTestDb): Promise<PersistedChat[]> {
@@ -319,6 +307,54 @@ let operatorServer: ServerType;
 let operatorPort: number;
 let previousEnv: Record<string, string | undefined>;
 let sessionTraffic: Array<Record<string, unknown>> = [];
+type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack';
+let transportFault: TransportFault = 'none';
+let commandPosts: SuSessionCommand[] = [];
+let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
+
+// Drop command frames only for deliberate acknowledgement-loss cases. All other
+// production SSE events still traverse the real HTTP connection to the PTY.
+function withoutCommandReceipts(response: Response): Response {
+  if (!response.body) throw new Error('production event stream has no body');
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let pending = '';
+  return new Response(response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true });
+      let end: number;
+      while ((end = pending.indexOf('\n\n')) >= 0) {
+        const frame = pending.slice(0, end);
+        pending = pending.slice(end + 2);
+        const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
+        if (data && JSON.parse(data).type === 'command') continue;
+        controller.enqueue(encoder.encode(frame + '\n\n'));
+      }
+    },
+    flush(controller) { if (pending) controller.enqueue(encoder.encode(pending)); },
+  })), { status: response.status, headers: response.headers });
+}
+
+async function openComposer(pane: PuiPane): Promise<void> {
+  await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+  pane.write('o');
+  await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
+  pane.escape();
+  await pane.waitFor('i type · v speak');
+  pane.write('i');
+}
+
+async function waitForSavedTurn(content: string): Promise<PersistedChat> {
+  return waitForPersistedChat(db, (chat) => chat.transcript.some((turn) => turn.role === 'user' && turn.content === content));
+}
+
+async function stopEngines(): Promise<void> {
+  for (const engine of scriptedEngine.engines.splice(0)) {
+    await engine.close();
+    engine.adapter.dispose();
+  }
+}
+
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -380,7 +416,32 @@ beforeAll(async () => {
       const pathname = new URL(request.url).pathname;
       const isLaunch = pathname === '/api/adv/sessions/launch-su';
       const launchInput = isLaunch ? await request.clone().json() : null;
-      const response = await app.fetch(request, env);
+      const isCommand = request.method === 'POST' && pathname.endsWith('/su-session/commands');
+      if (isCommand) commandPosts.push(await request.clone().json() as SuSessionCommand);
+      if (isLaunch && transportFault === 'startup-disconnect') {
+        transportFault = 'none';
+        return Response.json({ error: 'PUI-E2E startup connection interrupted' }, { status: 503 });
+      }
+      const host = scriptedEngine.engines.at(-1)?.adapter.host;
+      if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
+      let response = await app.fetch(request, env);
+      if (isCommand) {
+        const body = await response.clone().json();
+        commandReplies.push({ status: response.status, replayed: body.replayed });
+        if (transportFault === 'refuse') {
+          host?.transition('ready', 'readiness restored');
+          transportFault = 'none';
+        } else if (transportFault === 'lost-ack') {
+          response = new Response('PUI-E2E acknowledgement connection lost', { status: 502 });
+        } else if (transportFault === 'wrong-command-ack') {
+          response = Response.json({ ...body, accepted: { ...body.accepted, commandId: 'unrelated-command' } }, { status: response.status });
+        } else if (transportFault === 'wrong-session-ack') {
+          response = Response.json({ ...body, accepted: { ...body.accepted, session: { ...body.accepted.session, nativeSessionId: 'unrelated-native-session' } } }, { status: response.status });
+        }
+      }
+      if (pathname.endsWith('/su-session/events') && transportFault.endsWith('-ack')) {
+        response = withoutCommandReceipts(response);
+      }
       if (isLaunch || pathname.includes('/su-session')) {
         const result = isLaunch ? await response.clone().json() : null;
         // Keep an allowlisted trace of the production boundary. Never capture
@@ -393,6 +454,8 @@ beforeAll(async () => {
           ...(isLaunch ? {
             agent: launchInput?.agent,
             deferSpawn: launchInput?.defer_spawn,
+            attachedEngine: launchInput?.attached_engine === true,
+            transport: result?.transport,
             headless: launchInput?.headless === true,
             deferred: result?.deferred === true,
             advSessionId: result?.advSessionId,
@@ -421,6 +484,7 @@ beforeAll(async () => {
 }, 900_000);
 
 afterAll(async () => {
+  await stopEngines();
   await close(operatorServer);
   const { stopInvalidationListener } = await import('../sync-sse');
   await stopInvalidationListener();
@@ -434,11 +498,16 @@ afterAll(async () => {
   rmSync(home, { recursive: true, force: true });
 }, 120_000);
 
+afterEach(stopEngines);
+
 beforeEach(async () => {
   sessionTraffic = [];
-  scriptedProvider.mode = 'success';
-  scriptedProvider.successText = 'PUI provider fixture replied';
-  scriptedProvider.requests = [];
+  commandPosts = [];
+  commandReplies = [];
+  transportFault = 'none';
+  scriptedEngine.mode = 'success';
+  scriptedEngine.successText = 'PUI structured engine replied';
+  scriptedEngine.requests = [];
   await db.adminSql`
     TRUNCATE harness_shared.agent_chat_locks,
       harness_shared.agent_loop_approvals,
@@ -448,174 +517,130 @@ beforeEach(async () => {
   await putViewState('Plans');
 });
 
-describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/operator/PG)', () => {
-  // Investigation evidence only. This intentionally describes the pre-fix
-  // product and is never a passing release journey or a provider substitute.
-  test.runIf(process.env.PUI_CAPTURE_BASELINE === '1')('captures the pre-fix first-message counterexample', async () => {
-    const prompt = `PUI-BASELINE-${Date.now()}`;
+describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+  test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
+    const prompt = '  PUI exact Unicode draft λ 雪  ';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
-      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      pane.write('o');
-      await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
-      pane.escape();
-      await pane.waitFor('i type · v speak');
-      pane.write('i');
+      await openComposer(pane);
       pane.write(prompt);
       pane.enter();
-      await pane.waitFor('su-session/events -> 404', { timeoutMs: 30_000 });
-      expect(pane.screen()).toContain(prompt);
-      expect(pane.screen()).toContain('Running — input locked');
-      expect(sessionTraffic).toEqual(expect.arrayContaining([
-        expect.objectContaining({ method: 'POST', path: '/api/adv/sessions/launch-su', status: 200,
-          deferSpawn: true, headless: false, deferred: true, nativeSessionPresent: false }),
-        expect.objectContaining({ method: 'GET', status: 404 }),
-      ]));
-      expect(scriptedProvider.requests).toHaveLength(0);
-      console.info('PUI_BASELINE_COUNTEREXAMPLE', JSON.stringify({
-        binary: bin, binarySha256, prompt, traffic: sessionTraffic, screen: pane.screen(),
-      }));
-    } finally {
-      await pane.stop().catch(() => {});
-    }
-  });
-
-  test('restored non-chat -> visible Agent Chat -> real role -> streamed done -> persisted reopen', async () => {
-    const prompt = `PUI-E2E-${Date.now()}-success`;
-    scriptedProvider.successText = `streamed reply for ${prompt}`;
-    const pane = new PuiPane(bin, operatorPort, home);
-    try {
-      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      pane.write('o');
-      await pane.waitFor('Agent Chat');
-      await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
-
-      // The first composer submission owns session creation. `s` is global
-      // Sessions navigation; it no longer opens an agent-chat session picker.
-      pane.escape();
-      await pane.waitFor('i type · v speak');
-
-      pane.write('i');
-      pane.write(prompt);
-      pane.enter();
-      await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       await pane.waitFor('Message — Enter send');
-
-      const chat = await waitForPersistedChat(db, (candidate) =>
-        candidate.transcript.some((turn) => turn.role === 'assistant' && turn.content === scriptedProvider.successText),
-      );
-      expect(chat?.role).toBe('operator');
-      expect(chat?.transcript).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ role: 'user', content: prompt }),
-          expect.objectContaining({ role: 'assistant', content: scriptedProvider.successText }),
-        ]),
-      );
-      expect(chat?.transcript.some((turn) => turn.role === 'assistant' && !turn.content.trim())).toBe(false);
-      expect(scriptedProvider.requests.length).toBeGreaterThanOrEqual(1);
-
+      expect(pane.screen()).toContain('Read');
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      const chat = await waitForSavedTurn(prompt);
+      expect(chat.role).toBe('operator');
+      expect(chat.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      expect(commandPosts).toHaveLength(1);
+      expect(commandPosts[0]).toMatchObject({ type: 'owner_turn', content: prompt });
+      expect(commandReplies).toEqual([{ status: 202, replayed: false }]);
+      expect(sessionTraffic).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: '/api/adv/sessions/launch-su', status: 200,
+          attachedEngine: true, transport: 'structured', nativeSessionPresent: true }),
+      ]));
+      // The test peer never opens a native terminal. PUI requested only the
+      // attached-engine path and the protocol peer received the exact draft.
+      expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toHaveLength(1);
+      expect(pane.screen()).not.toContain(`> ${prompt}`);
       await pane.stop();
       await putViewState('Plans');
       const reopened = new PuiPane(bin, operatorPort, home);
       try {
         await reopened.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
         reopened.write('o');
-        await reopened.waitFor(prompt, { timeoutMs: 30_000 });
-        await reopened.waitFor(scriptedProvider.successText);
-      } finally {
-        await reopened.stop();
-      }
-    } finally {
-      await pane.stop().catch(() => {});
-    }
+        await reopened.waitFor(prompt.trim(), { timeoutMs: 30_000 });
+        await reopened.waitFor(scriptedEngine.successText);
+      } finally { await reopened.stop(); }
+      console.info('PUI_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256,
+        chatId: chat.id, exactText: scriptedEngine.requests[0], traffic: sessionTraffic }));
+    } finally { await pane.stop().catch(() => {}); }
   });
 
-  test('real PG-backed HITL blocks on the exact call id, approves, executes, and resumes', async () => {
-    scriptedProvider.mode = 'hitl';
+  test('interrupted startup retains the draft and retries without creating another chat', async () => {
+    transportFault = 'startup-disconnect';
+    const prompt = '  PUI startup retry λ  ';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
-      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      pane.write('o');
-      pane.write('PUI-E2E request a gated capability');
+      await openComposer(pane);
+      pane.write(prompt);
       pane.enter();
-      await pane.waitFor('pui-e2e-call-1', { timeoutMs: 30_000 });
-      await pane.waitFor('capability:bash');
-      pane.write('\x19'); // Ctrl+Y — approve the exact pending call
-      await pane.waitFor('PUI HITL round-trip complete', { timeoutMs: 30_000 });
-      await pane.waitFor('Message — Enter send');
-
-      const chat = await waitForPersistedChat(
-        db,
-        (candidate) =>
-          candidate.transcript.at(-1)?.role === 'assistant' &&
-          candidate.transcript.at(-1)?.content === 'PUI HITL round-trip complete',
-      );
-      expect(chat?.transcript.at(-1)).toMatchObject({
-        role: 'assistant',
-        content: 'PUI HITL round-trip complete',
-      });
-      expect(scriptedProvider.requests).toHaveLength(2);
-      expect(scriptedProvider.requests[0]?.tools).toContain('capability:bash');
-    } finally {
-      await pane.stop();
-    }
+      await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain(`> ${prompt}`);
+      expect(commandPosts).toHaveLength(0);
+      const chats = await persistedChats(db);
+      expect(chats).toHaveLength(1);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect((await waitForSavedTurn(prompt)).id).toBe(chats[0].id);
+      expect(await persistedChats(db)).toHaveLength(1);
+      expect(scriptedEngine.requests).toEqual([prompt]);
+    } finally { await pane.stop(); }
   });
 
-  test('provider/stream failure is visible, persisted as failure, and leaves the composer retryable', async () => {
-    scriptedProvider.mode = 'failure';
+  test('engine startup exit releases input while preserving the exact unsent draft', async () => {
+    scriptedEngine.mode = 'startup-exit';
+    const prompt = 'PUI failed engine startup';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
-      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      pane.write('o');
-      pane.write('PUI-E2E provider failure');
+      await openComposer(pane);
+      pane.write(prompt);
       pane.enter();
-      await pane.waitFor('PUI-E2E provider stream failed visibly', { timeoutMs: 30_000 });
-      await pane.waitFor('Message — Enter send');
-      const chat = await waitForPersistedChat(
-        db,
-        (candidate) => candidate.transcript.at(-1)?.role === 'assistant' && candidate.transcript.at(-1)?.error === true,
-      );
-      expect(chat?.transcript.at(-1)).toMatchObject({
-        role: 'assistant',
-        error: true,
-      });
-      expect(chat?.transcript.at(-1)?.content).toContain('provider stream failed visibly');
-    } finally {
-      await pane.stop();
-    }
+      await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain(`> ${prompt}`);
+      expect(pane.screen()).not.toContain('Sending — awaiting acceptance');
+      expect(scriptedEngine.requests).toHaveLength(0);
+      expect(commandPosts).toHaveLength(0);
+      expect((await persistedChats(db))[0].transcript).toHaveLength(0);
+    } finally { await pane.stop(); }
   });
 
-  test('stalled turn is visibly cancellable and a retry succeeds without an empty persisted assistant row', async () => {
-    scriptedProvider.mode = 'stall';
+  test('host refusal retains an editable draft and a ready retry commits it once', async () => {
+    transportFault = 'refuse';
+    const prompt = '  PUI refused exact draft  ';
     const pane = new PuiPane(bin, operatorPort, home);
     try {
-      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      pane.write('o');
-      pane.write('PUI-E2E stalled turn');
+      await openComposer(pane);
+      pane.write(prompt);
       pane.enter();
-      await pane.waitFor('Ctrl+X cancel');
-      pane.write('\x18');
-      await pane.waitFor('cancelled — ready to retry', { timeoutMs: 10_000 });
-      await pane.waitFor('Message — Enter send');
-
-      scriptedProvider.mode = 'success';
-      scriptedProvider.successText = 'PUI retry recovered';
-      pane.write('PUI-E2E retry after cancel');
+      await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain(`> ${prompt}`);
+      expect(commandReplies[0].status).toBe(409);
+      expect(scriptedEngine.requests).toHaveLength(0);
+      expect((await persistedChats(db))[0].transcript).toHaveLength(0);
       pane.enter();
-      await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
-
-      const chat = await waitForPersistedChat(
-        db,
-        (candidate) =>
-          candidate.transcript.at(-1)?.role === 'assistant' &&
-          candidate.transcript.at(-1)?.content === scriptedProvider.successText,
-      );
-      expect(chat?.transcript.some((turn) => turn.role === 'assistant' && !turn.content.trim())).toBe(false);
-      expect(chat?.transcript.at(-1)).toMatchObject({ role: 'assistant', content: scriptedProvider.successText });
-    } finally {
-      await pane.stop();
-    }
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 30_000 });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+    } finally { await pane.stop(); }
   });
+
+  test.each(['lost-ack', 'wrong-command-ack', 'wrong-session-ack'] as const)(
+    '%s keeps the draft and retries the exact persisted command without a second execution', async (fault) => {
+      transportFault = fault;
+      const prompt = `  PUI ${fault} λ  `;
+      const pane = new PuiPane(bin, operatorPort, home);
+      try {
+        await openComposer(pane);
+        pane.write(prompt);
+        pane.enter();
+        await pane.waitFor('Delivery uncertain', { timeoutMs: 60_000 });
+        expect(pane.screen()).toContain(`> ${prompt}`);
+        await vi.waitFor(() => expect(scriptedEngine.requests).toEqual([prompt]));
+        const chat = await waitForSavedTurn(prompt);
+        expect(chat.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+        transportFault = 'none';
+        pane.enter();
+        await pane.waitFor('Message — Enter send');
+        expect(pane.screen()).not.toContain(`> ${prompt}`);
+        expect(commandPosts).toHaveLength(2);
+        expect(commandPosts[1]).toEqual(commandPosts[0]);
+        expect(commandReplies[1]).toEqual({ status: 202, replayed: true });
+        expect(scriptedEngine.requests).toEqual([prompt]);
+        expect((await persistedChats(db))[0].transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      } finally { await pane.stop(); }
+    },
+  );
 
   test('canonical-identity mismatch fails quickly with an actionable visible error', async () => {
     const proxy = createServer(async (req, res) => {

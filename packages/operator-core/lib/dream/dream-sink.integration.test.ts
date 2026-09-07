@@ -10,6 +10,19 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { OrgTestDb } from '../../test/_org-test-db';
+import { rm } from 'node:fs/promises';
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
+import {
+  beginDreamRun,
+  beginDreamRunCall,
+  settleDreamRunCall,
+  recordDreamRunSelection,
+  recordDreamRunReview,
+  getDreamRun,
+  finalizeDreamRun,
+} from './dream-run-store';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -21,7 +34,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 const { sinkDreamInsight } = await import('./dream-sink');
-const { gradeRoutedIdea, readRoutedIdeas, refreshScoutOutcomes } = await import('../scout/routed-ledger');
+const { gradeRoutedIdea, readRoutedIdeas, refreshScoutOutcomes, recordRoutedIdea } =
+  await import('../scout/routed-ledger');
+const { captureImprovement } = await import('../harness/improvements/capture-core');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-dream-sink';
@@ -36,6 +51,10 @@ describe('accepted dream sink (real PG — P-004)', () => {
     h.sql = db.adminSql;
     workspaceBefore = process.env.PAPERCUSP_WORKSPACE_ID;
     process.env.PAPERCUSP_WORKSPACE_ID = WS;
+    const migration = fileURLToPath(
+      new URL('../../../../libs/papercusp/libs/db/sql/862-dream-runs-ledger.sql', import.meta.url),
+    );
+    await db.adminSql.unsafe(readFileSync(existsSync(migration) ? migration : migration + '.DRAFT', 'utf8'));
   }, 180_000);
 
   afterAll(async () => {
@@ -165,5 +184,78 @@ describe('accepted dream sink (real PG — P-004)', () => {
       human_grade: 4,
       outcome: 'won',
     });
+  });
+
+  it('replays concurrent and crash-after-capture capability attempts even after the captured idea becomes terminal', async () => {
+    const f = await createDreamCapabilityFixture(WS, HARNESS);
+    try {
+      const key = { workspaceId: WS, runId: 'DR-CAPABILITY-PG' };
+      await beginDreamRun(db.adminSql, {
+        ...key,
+        cycleId: 'capability-pg-cycle',
+        potSlug: HARNESS,
+        mode: 'manual',
+        capability: f.header,
+      });
+      await recordDreamRunSelection(db.adminSql, { ...key, capability: f.sampling });
+      for (const call of f.provenance.calls) {
+        await beginDreamRunCall(db.adminSql, {
+          ...key,
+          call: { callId: call.callId, phase: call.phase, model: call.model, reservedUsd: call.reservedUsd },
+        });
+        await settleDreamRunCall(db.adminSql, { ...key, callId: call.callId, usage: call.usage });
+      }
+      await recordDreamRunReview(db.adminSql, {
+        ...key,
+        outcome: { verdict: 'insight', insight: f.insight },
+        review: { ...f.review },
+      });
+      const input = {
+        kind: 'capability' as const,
+        sql: db.adminSql,
+        workspaceId: WS,
+        dreamRunId: key.runId,
+        rootPath: f.root,
+        manifest: f.manifest,
+        sources: f.sources,
+      };
+      const capture = vi.fn(captureImprovement);
+      const route = vi.fn(recordRoutedIdea).mockRejectedValueOnce(new Error('crash after capture'));
+      const deps = { capture, recordRoutedIdea: route, now: Date.now };
+      await expect(sinkDreamInsight(input, deps)).rejects.toThrow('crash after capture');
+      expect((await getDreamRun(db.adminSql, key))?.routedRef).toBeNull();
+      const [original] = await db.adminSql`SELECT issue_id, payload FROM harness_shared.engineer_issues
+        WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = 'dream:DR-CAPABILITY-PG'`;
+      expect(original).toBeDefined();
+      await db.adminSql`UPDATE harness_shared.engineer_issues SET state = 'resolved', terminal_owner = 'dream-test',
+        terminal_completion_ref = 'terminal identity replay fixture', updated_at = now() WHERE issue_id = ${original!.issue_id}`;
+      const replay = await Promise.all([sinkDreamInsight(input, deps), sinkDreamInsight(input, deps)]);
+      for (const value of replay)
+        expect(value).toMatchObject({ sunk: true, workItemId: original!.issue_id, created: false });
+      expect(capture).toHaveBeenCalledTimes(1);
+      await finalizeDreamRun(db.adminSql, {
+        ...key,
+        status: 'accepted',
+        dreamUsage: f.provenance.calls[0]!.usage,
+        reviewUsage: f.review.usage,
+      });
+      expect(await sinkDreamInsight(input, deps)).toMatchObject({
+        sunk: true,
+        workItemId: original!.issue_id,
+        created: false,
+      });
+      const artifacts = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
+        WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = 'dream:DR-CAPABILITY-PG'`;
+      expect(artifacts).toHaveLength(1);
+      expect(artifacts[0]!.payload).toEqual(original!.payload);
+      const rows = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'dream' });
+      const routed = rows.filter((r) => r.ideaId === 'dream:DR-CAPABILITY-PG');
+      expect(routed).toHaveLength(1);
+      expect(routed[0]!.addressesPatternRefs).toEqual(
+        [f.selection.a, f.selection.b].map((e) => e.packet.unit.id + '@' + e.contentVersion),
+      );
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
   });
 });

@@ -146,17 +146,49 @@ export function resetMcpAdmissionForTests(): void {
  * cap on them, so a listed tool is bounded only by the global `maxInFlight`. Do not add anything
  * here whose per-call cost you have not read. `tools:find` is the bounded catalog-discovery door
  * used to locate recovery tools and already has a proxy-side control-plane reservation; direct
- * ptool/staging calls need the same inner exemption. `work_items:get` is admitted only for one
- * item with the default shallow read; bulk, detail, and thread reads remain shed under critical
- * pressure.
+ * ptool/staging calls need the same inner exemption. `capability:read` is admitted only for a
+ * single byte page from an authorized scratch spill, so result-door recovery can proceed while
+ * pressure is critical without opening the broad file-read surface. `work_items:get` is admitted
+ * only for one item with the default shallow read; bulk, detail, and thread reads remain shed
+ * under critical pressure.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
-  ['dev:service_health', 'dev:pg_query', 'dev:dogfood_substrate_status', 'tools:find', 'work_items:get'].map(
-    normalizeMcpName,
-  ),
+  [
+    'dev:service_health',
+    'dev:pg_query',
+    'dev:dogfood_substrate_status',
+    'tools:find',
+    'work_items:get',
+  ].map(normalizeMcpName),
 );
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const CAPABILITY_READ_NAME = normalizeMcpName('capability:read');
+const CRITICAL_CAPABILITY_READ_MAX_BYTES = 4_096;
+
+function isBoundedScratchCapabilityReadArgs(args: unknown): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const paths = [record.uri, record.file_path].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  if (paths.length !== 1) return false;
+  const path = paths[0];
+  const scratchSpill =
+    path.startsWith('papercusp://scratch/') ||
+    /(?:^|[/\\])\.papercusp[/\\]scratch[/\\].+\.spill$/.test(path);
+  if (!scratchSpill) return false;
+  if (!Number.isInteger(record.byte_offset) || (record.byte_offset as number) < 0) return false;
+  if (
+    !Number.isInteger(record.byte_limit) ||
+    (record.byte_limit as number) < 1 ||
+    (record.byte_limit as number) > CRITICAL_CAPABILITY_READ_MAX_BYTES
+  ) return false;
+  for (const field of ['offset', 'limit', 'tail', 'raw', 'content_indexes', 'evidence_class']) {
+    if (record[field] !== undefined) return false;
+  }
+  return true;
+}
 
 function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
@@ -180,6 +212,7 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
 function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown): boolean {
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
+  if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;
   return normalized !== WORK_ITEMS_GET_NAME || isBoundedWorkItemsGetArgs(args);
 }

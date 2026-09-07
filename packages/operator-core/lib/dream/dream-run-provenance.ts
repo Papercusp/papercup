@@ -8,43 +8,65 @@ import { CAPABILITY_SAMPLING_VERSION, type CapabilitySamplingResult } from './ca
 export const DREAM_CAPABILITY_RUN_VERSION = 'dream-capability-run-v1';
 const name = z.string().trim().min(1).max(200);
 const usd = z.number().finite().nonnegative();
-export const DreamCallUsageSchema = z.object({
-  model: name,
-  costUsd: usd,
-  inputTokens: z.number().int().nonnegative(),
-  outputTokens: z.number().int().nonnegative(),
-}).strict();
-export const DREAM_CALL_PHASES = ['packet', 'retrieval', 'rerank', 'generation', 'control-a', 'control-b', 'review', 'experiment'] as const;
-const CallSchema = z.object({
-  callId: name,
-  phase: z.enum(DREAM_CALL_PHASES),
-  model: name,
-  reservedUsd: usd,
-  status: z.enum(['reserved', 'settled', 'unknown']),
-  usage: DreamCallUsageSchema.nullable(),
-  error: z.string().max(4_000).nullable(),
-}).strict().superRefine((call, ctx) => {
-  if ((call.status === 'settled') !== (call.usage !== null) || (call.usage && call.usage.model !== call.model))
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Call status/model does not match usage' });
-});
+export const DreamCallUsageSchema = z
+  .object({
+    model: name,
+    costUsd: usd,
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+  })
+  .strict();
+export const DREAM_CALL_PHASES = [
+  'packet',
+  'retrieval',
+  'rerank',
+  'generation',
+  'control-a',
+  'control-b',
+  'review',
+  'experiment',
+] as const;
+const CallSchema = z
+  .object({
+    callId: name,
+    phase: z.enum(DREAM_CALL_PHASES),
+    model: name,
+    reservedUsd: usd,
+    status: z.enum(['reserved', 'settled', 'unknown']),
+    usage: DreamCallUsageSchema.nullable(),
+    error: z.string().max(4_000).nullable(),
+  })
+  .strict()
+  .superRefine((call, ctx) => {
+    if ((call.status === 'settled') !== (call.usage !== null) || (call.usage && call.usage.model !== call.model))
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Call status/model does not match usage' });
+  });
 export type DreamRunCall = z.infer<typeof CallSchema>;
-const HeaderSchema = z.object({
-  manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
-  manifestRevision: name,
-  dreamerModel: name,
-  reviewerModel: name,
-  dreamPromptVersion: name,
-  reviewPromptVersion: name,
-}).strict();
+const HeaderSchema = z
+  .object({
+    manifestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    manifestRevision: name,
+    dreamerModel: name,
+    reviewerModel: name,
+    dreamPromptVersion: name,
+    reviewPromptVersion: name,
+  })
+  .strict();
 const EnvelopeSchema = HeaderSchema.extend({
   schemaVersion: z.literal(DREAM_CAPABILITY_RUN_VERSION),
   sampling: z.unknown().nullable(),
   calls: z.array(CallSchema).max(64),
+  artifactId: z
+    .string()
+    .regex(/^EI-\d+$/)
+    .nullable()
+    .default(null),
 }).strict();
 export interface DreamCapabilityRun extends z.infer<typeof HeaderSchema> {
   schemaVersion: typeof DREAM_CAPABILITY_RUN_VERSION;
   sampling: CapabilitySamplingResult | null;
   calls: DreamRunCall[];
+  artifactId: string | null;
 }
 export interface BeginCapabilityRunInput {
   manifest: CapabilityManifest;
@@ -57,18 +79,32 @@ export interface BeginCapabilityRunInput {
 export function newDreamCapabilityRun(input: BeginCapabilityRunInput): DreamCapabilityRun {
   const { manifest, ...versions } = input;
   const parsed = CapabilityManifestSchema.parse(manifest);
-  const header = HeaderSchema.parse({ ...versions, manifestHash: capabilityHash(JSON.stringify(parsed)), manifestRevision: parsed.revision });
-  if (header.dreamerModel === header.reviewerModel) throw new Error('Dream reviewer must use a different model');
-  return { ...header, schemaVersion: DREAM_CAPABILITY_RUN_VERSION, sampling: null, calls: [] };
+  const header = HeaderSchema.parse({
+    ...versions,
+    manifestHash: capabilityHash(JSON.stringify(parsed)),
+    manifestRevision: parsed.revision,
+  });
+  if (header.dreamerModel.toLowerCase() === header.reviewerModel.toLowerCase())
+    throw new Error('Dream reviewer must use a different model');
+  return { ...header, schemaVersion: DREAM_CAPABILITY_RUN_VERSION, sampling: null, calls: [], artifactId: null };
 }
 
 export function validateDreamSampling(value: CapabilitySamplingResult): void {
   if (!value || !['selected', 'no-pair'].includes(value.status)) throw new Error('Invalid persisted sampling result');
   const log = value.log;
-  if (!log || log.version !== CAPABILITY_SAMPLING_VERSION || !log.seed?.trim() || !log.promptVersion?.trim() ||
-      !/^[a-f0-9]{64}$/.test(log.snapshotFingerprint) || !/^[a-f0-9]{64}$/.test(log.inputFingerprint) ||
-      !Number.isFinite(log.pathProbability) || log.pathProbability < 0 || log.pathProbability > 1 ||
-      !Array.isArray(log.draws) || log.draws.some((d) => !Number.isFinite(d.probability) || d.probability <= 0 || d.probability > 1))
+  if (
+    !log ||
+    log.version !== CAPABILITY_SAMPLING_VERSION ||
+    !log.seed?.trim() ||
+    !log.promptVersion?.trim() ||
+    !/^[a-f0-9]{64}$/.test(log.snapshotFingerprint) ||
+    !/^[a-f0-9]{64}$/.test(log.inputFingerprint) ||
+    !Number.isFinite(log.pathProbability) ||
+    log.pathProbability < 0 ||
+    log.pathProbability > 1 ||
+    !Array.isArray(log.draws) ||
+    log.draws.some((d) => !Number.isFinite(d.probability) || d.probability <= 0 || d.probability > 1)
+  )
     throw new Error('Invalid persisted sampling provenance');
   if (value.status === 'selected') validateCapabilityDreamSelection(value.selection);
   else if (!['insufficient-units', 'no-eligible-pair', 'no-third-candidate'].includes(value.reason))
@@ -79,7 +115,8 @@ export function validateDreamSampling(value: CapabilitySamplingResult): void {
 export function dreamCapabilityRun(run: { outcome: Record<string, unknown> | null }): DreamCapabilityRun | null {
   if (!run.outcome || !Object.hasOwn(run.outcome, 'capabilityRun')) return null;
   const value = EnvelopeSchema.parse(run.outcome.capabilityRun);
-  if (new Set(value.calls.map((c) => c.callId)).size !== value.calls.length) throw new Error('Duplicate paid call identity');
+  if (new Set(value.calls.map((c) => c.callId)).size !== value.calls.length)
+    throw new Error('Duplicate paid call identity');
   if (value.sampling !== null) validateDreamSampling(value.sampling as CapabilitySamplingResult);
   return value as DreamCapabilityRun;
 }
@@ -95,9 +132,11 @@ export function dreamCallTotals(calls: readonly DreamRunCall[]) {
     outputTokens: calls.reduce((n, c) => n + (c.usage?.outputTokens ?? 0), 0),
     // A crashed/unknown call is not free. Preserve its admitted upper bound.
     costUsd: calls.reduce((n, c) => n + (c.usage?.costUsd ?? c.reservedUsd), 0),
-    costBasis: calls.every((c) => c.status === 'settled') ? 'actual' as const : 'conservative-bound' as const,
+    costBasis: calls.every((c) => c.status === 'settled') ? ('actual' as const) : ('conservative-bound' as const),
     unknownCallIds: calls.filter((c) => c.status !== 'settled').map((c) => c.callId),
   };
 }
 
-export function validateDreamRunCall(value: DreamRunCall): DreamRunCall { return CallSchema.parse(value); }
+export function validateDreamRunCall(value: DreamRunCall): DreamRunCall {
+  return CallSchema.parse(value);
+}

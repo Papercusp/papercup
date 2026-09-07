@@ -15,10 +15,7 @@ import type { SemanticDupeResult } from '../../agent-tools/work_items/semantic-d
 import { titleSimilarity, titleContainment } from './digest';
 import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import type { CreateIssueInput, EngineerIssue } from '../../issues-engineer';
-import {
-  assessIssueAdmissionPressure,
-  type RecordIssueOccurrenceInput,
-} from '../../issue-occurrence-ledger';
+import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
@@ -80,6 +77,59 @@ describe('storageKindOf — the native column mapping (close-loop D-002)', () =>
     expect(storageKindOf('bug')).toBe('bug');
     expect(storageKindOf('change')).toBe('change');
     expect(storageKindOf('feature')).toBe('change');
+  });
+});
+
+describe('captureImprovement — durable artifact reservation', () => {
+  const input = {
+    artifactId: 'EI-321',
+    watchdogKey: 'dream:reserved-run',
+    title: 'Frozen reviewed proposal',
+    kind: 'feature' as const,
+    scope: 'harness:papercusp',
+  };
+  it('reuses a terminal reserved artifact without rewriting its original body or provenance', async () => {
+    const d = deps();
+    const original = existing({
+      id: 'EI-321',
+      title: 'Original title',
+      scope: input.scope,
+      state: 'resolved',
+      body: 'Original body',
+      payload: { watchdogKey: input.watchdogKey, dream: { candidateHash: 'original' } },
+    });
+    d.getIssue = async () => original;
+    const result = await captureImprovement(
+      { ...input, body: 'A later replay', payloadExtra: { dream: { candidateHash: 'changed' } } },
+      d,
+    );
+    expect(result).toMatchObject({ created: false, issue: original });
+    expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toHaveLength(0);
+  });
+  it('passes the reserved id to the existing create writer and recovers a concurrent primary-key winner', async () => {
+    const d = deps();
+    let winner: EngineerIssue | null = null;
+    d.getIssue = async () => winner;
+    d.findIssuesByWatchdogKeys = async () => [];
+    d.createIssue = async (value) => {
+      expect(value.id).toBe(input.artifactId);
+      winner = existing({ id: value.id!, title: value.title, scope: input.scope, payload: value.payload });
+      throw Object.assign(new Error('concurrent primary-key insert'), { code: '23505' });
+    };
+    expect(await captureImprovement(input, d)).toMatchObject({ created: false, issue: { id: input.artifactId } });
+  });
+  it('counterexample: a reserved id owned by another run cannot be reused', async () => {
+    const d = deps();
+    d.getIssue = async () =>
+      existing({
+        id: input.artifactId,
+        title: input.title,
+        scope: input.scope,
+        payload: { watchdogKey: 'dream:someone-else' },
+      });
+    await expect(captureImprovement(input, d)).rejects.toThrow('another identity');
+    expect(d.created).toHaveLength(0);
   });
 });
 
@@ -304,9 +354,7 @@ describe('Scout evidence citations (EI-19450720466036446)', () => {
   it('records unresolved and same-role citations at capture time', async () => {
     const d = deps();
     d.getIssue = async (id) =>
-      id === 'EI-200'
-        ? existing({ id, title: 'Scout sibling', payload: { sourceRole: 'Scout' } })
-        : null;
+      id === 'EI-200' ? existing({ id, title: 'Scout sibling', payload: { sourceRole: 'Scout' } }) : null;
 
     await captureImprovement(
       {
@@ -512,8 +560,12 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         for (const key of opts?.unset ?? []) delete payload[key];
         return existing({ ...prior, kind: 'change', severity: 'minor', payload });
       },
-      tagIssue: async (_id, topic) => { tags.push(topic); },
-      untagIssue: async (_id, topic) => { untags.push(topic); },
+      tagIssue: async (_id, topic) => {
+        tags.push(topic);
+      },
+      untagIssue: async (_id, topic) => {
+        untags.push(topic);
+      },
     };
     const res = await captureImprovement(
       {
@@ -610,8 +662,12 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         loser.terminalOwner = by ?? null;
         return loser;
       },
-      tagIssue: async (id) => { tags.push(id); },
-      untagIssue: async (id) => { untags.push(id); },
+      tagIssue: async (id) => {
+        tags.push(id);
+      },
+      untagIssue: async (id) => {
+        untags.push(id);
+      },
     };
 
     const res = await captureImprovement(
@@ -633,11 +689,13 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       promotionReconciledFrom: loser.id,
     });
     expect(loser.state).toBe('resolved');
-    expect(collisionMerges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: loser.id, opts: { unset: ['lane'] } }),
-      expect.objectContaining({ id: canonical.id }),
-      expect.objectContaining({ id: loser.id, opts: undefined }),
-    ]));
+    expect(collisionMerges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: loser.id, opts: { unset: ['lane'] } }),
+        expect.objectContaining({ id: canonical.id }),
+        expect.objectContaining({ id: loser.id, opts: undefined }),
+      ]),
+    );
     expect(stateCalls).toEqual([
       expect.objectContaining({
         id: loser.id,
@@ -667,7 +725,8 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       ...deps(),
       findIssuesByWatchdogKeys: async () => [prior],
       updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
-      mergeIssuePayload: async (_id, patch) => existing({ ...prior, kind: 'change', payload: { ...(prior.payload as object), ...patch } }),
+      mergeIssuePayload: async (_id, patch) =>
+        existing({ ...prior, kind: 'change', payload: { ...(prior.payload as object), ...patch } }),
       tagIssue: async () => {},
       untagIssue: async () => {},
     };
@@ -815,10 +874,7 @@ describe('captureImprovement — auto-ratify-on-first-scorecard hook (WI-5415)',
         return null;
       },
     };
-    await captureImprovement(
-      { title: 'x', kind: 'change', lane: 'observation', createdBy: 'cup-1' },
-      d,
-    );
+    await captureImprovement({ title: 'x', kind: 'change', lane: 'observation', createdBy: 'cup-1' }, d);
     expect(calls).toHaveLength(0);
   });
 
@@ -911,7 +967,11 @@ describe('captureImprovement — native kind + paths (close-loop D-002)', () => 
   });
 
   it('keeps the capture successful when checkpoint seeding fails', async () => {
-    const d = deps({ setCheckpoint: async () => { throw new Error('checkpoint store unavailable'); } });
+    const d = deps({
+      setCheckpoint: async () => {
+        throw new Error('checkpoint store unavailable');
+      },
+    });
 
     const result = await captureImprovement(
       { title: 'claimed capture survives checkpoint outage', kind: 'bug', assignee: 'su-a', createdBy: 'su-a' },
@@ -954,7 +1014,10 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
 
   it('checkDuplicatesOnly never creates', async () => {
     const d = deps({ found: [dup] });
-    const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', checkDuplicatesOnly: true }, d);
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', checkDuplicatesOnly: true },
+      d,
+    );
     expect(res.created).toBe(false);
     expect(d.created).toHaveLength(0);
     expect(res.hint).toContain('title-only pre-check');
@@ -991,7 +1054,10 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
 
   it("dedupScope:'open' — an OPEN duplicate still carries the verdict (files under P-002)", async () => {
     const d = deps({ found: [dup] });
-    const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', dedupScope: 'open' }, d);
+    const res = await captureImprovement(
+      { title: 'presence list dumps stale rows', kind: 'bug', dedupScope: 'open' },
+      d,
+    );
     expect(res.created).toBe(true);
     expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
@@ -1062,10 +1128,7 @@ describe('captureImprovement — "already decided" recall (self-learning P-003)'
   it('does NOT recall when the only prior same-signature item is OPEN', async () => {
     const open = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'open' });
     const d = deps({ found: [open] });
-    const res = await captureImprovement(
-      { title: 'stale rows dumps presence list', kind: 'bug', force: true },
-      d,
-    );
+    const res = await captureImprovement({ title: 'stale rows dumps presence list', kind: 'bug', force: true }, d);
     expect(res.created).toBe(true);
     expect(res.alreadyDecided).toBeUndefined();
   });
@@ -1098,12 +1161,15 @@ describe('captureImprovement — P-010 source-tag and per-Hive scope', () => {
 
   it('respects per-Hive scope (harness:<slug>) alongside sourceRole (P-010)', async () => {
     const d = deps();
-    const res = await captureImprovement({
-      title: 'harness-specific bug',
-      kind: 'bug',
-      scope: 'harness:sheets',
-      sourceRole: 'cup',
-    }, d);
+    const res = await captureImprovement(
+      {
+        title: 'harness-specific bug',
+        kind: 'bug',
+        scope: 'harness:sheets',
+        sourceRole: 'cup',
+      },
+      d,
+    );
     expect(res.created).toBe(true);
     expect(d.created[0].scope).toBe('harness:sheets');
     expect((d.created[0].payload as Record<string, unknown> | undefined)?.sourceRole).toBe('cup');
@@ -1159,10 +1225,20 @@ describe('captureImprovement — watchdogKey-aware dedup (watchdog-audit P-004 /
   });
 
   it('a candidate WITHOUT a key stays in the net (legacy items still classify — verdict rides the row)', async () => {
-    const legacy = existing({ id: 'EI-9', title: 'Test failing repeatedly: lib/a.test.ts', state: 'open', payload: null });
+    const legacy = existing({
+      id: 'EI-9',
+      title: 'Test failing repeatedly: lib/a.test.ts',
+      state: 'open',
+      payload: null,
+    });
     const d = deps({ found: [legacy] });
     const res = await captureImprovement(
-      { title: 'Test failing repeatedly: lib/a.test.ts', kind: 'bug', dedupScope: 'open', watchdogKey: 'red-test:lib/a.test.ts' },
+      {
+        title: 'Test failing repeatedly: lib/a.test.ts',
+        kind: 'bug',
+        dedupScope: 'open',
+        watchdogKey: 'red-test:lib/a.test.ts',
+      },
       d,
     );
     expect(res.created).toBe(true);
@@ -1222,10 +1298,20 @@ describe('captureImprovement — resolved-dup evidence gate (watchdog-audit P-00
   });
 
   it('an unparseable resolution timestamp fails open (re-file beats suppressing a regression)', async () => {
-    const weird = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'resolved', updatedAt: 'not-a-date' });
+    const weird = existing({
+      id: 'EI-7',
+      title: 'presence list dumps stale rows',
+      state: 'resolved',
+      updatedAt: 'not-a-date',
+    });
     const d = deps({ found: [weird] });
     const res = await captureImprovement(
-      { title: 'presence list dumps stale rows', kind: 'bug', dedupScope: 'open', evidenceAt: '2026-06-08T00:00:00.000Z' },
+      {
+        title: 'presence list dumps stale rows',
+        kind: 'bug',
+        dedupScope: 'open',
+        evidenceAt: '2026-06-08T00:00:00.000Z',
+      },
       d,
     );
     expect(res.created).toBe(true);
@@ -1250,10 +1336,7 @@ describe('captureImprovement — signal provenance (frontier P-002 / D-002)', ()
   it('an OPEN organic duplicate never declines a drill capture (the drill must file)', async () => {
     const organicDup = existing({ id: 'EI-7', title: 'presence list dumps stale rows', state: 'open' });
     const d = deps({ found: [organicDup] });
-    const res = await captureImprovement(
-      { title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' },
-      d,
-    );
+    const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' }, d);
     expect(res.created).toBe(true);
     expect(res.possibleDuplicates).toHaveLength(0); // cross-origin rows are not even surfaced
   });
@@ -1278,10 +1361,7 @@ describe('captureImprovement — signal provenance (frontier P-002 / D-002)', ()
       signalOrigin: 'drill',
     });
     const d = deps({ found: [drillDup] });
-    const res = await captureImprovement(
-      { title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' },
-      d,
-    );
+    const res = await captureImprovement({ title: 'presence list dumps stale rows', kind: 'bug', origin: 'drill' }, d);
     expect(res.created).toBe(true);
     expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
@@ -1307,7 +1387,10 @@ describe('captureImprovement — signal provenance (frontier P-002 / D-002)', ()
 describe('captureImprovement — P-011 semantic candidate widening (shared-embedding-sidecar-and-enrichment-2026-07-10)', () => {
   const semDeps = (
     d: ReturnType<typeof deps>,
-    verdict: { hard: Array<{ id: string; similarity: number }>; soft: Array<{ id: string; similarity: number }> } | null,
+    verdict: {
+      hard: Array<{ id: string; similarity: number }>;
+      soft: Array<{ id: string; similarity: number }>;
+    } | null,
     issues: EngineerIssue[],
   ): CaptureDeps & { created: CreateIssueInput[] } => ({
     ...d,
@@ -1345,13 +1428,14 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     const worded = existing({ id: 'EI-57', title: 'similar queue admission failure' });
     const base = deps({ found: [] });
     const d = semDeps(base, { hard: [], soft: [{ id: 'EI-57', similarity: 0.91 }] }, [worded]);
-    d.readIssueAdmissionPressure = async () => assessIssueAdmissionPressure({
-      rawOccurrences: 455,
-      duplicateOccurrences: 455,
-      canonicalStock: 2_494,
-      canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
-      emitterCounts: [430, 5, 5, 5, 5, 5],
-    });
+    d.readIssueAdmissionPressure = async () =>
+      assessIssueAdmissionPressure({
+        rawOccurrences: 455,
+        duplicateOccurrences: 455,
+        canonicalStock: 2_494,
+        canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+        emitterCounts: [430, 5, 5, 5, 5, 5],
+      });
 
     const res = await captureImprovement({ title: 'differently worded queue admission failure', kind: 'bug' }, d);
     expect(res).toMatchObject({
@@ -1456,11 +1540,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
 
   it('a lexically-caught candidate keeps its lexical score and gains no semantic flag', async () => {
     const same = existing({ id: 'EI-53', title: 'docs search returns stale results' });
-    const d = semDeps(
-      deps({ found: [same] }),
-      { hard: [{ id: 'EI-53', similarity: 0.96 }], soft: [] },
-      [same],
-    );
+    const d = semDeps(deps({ found: [same] }), { hard: [{ id: 'EI-53', similarity: 0.96 }], soft: [] }, [same]);
     const res = await captureImprovement({ title: 'docs search returns stale results', kind: 'bug' }, d);
     expect(res.created).toBe(true);
     expect(res.possibleDuplicates[0].semantic).toBeUndefined();
@@ -1565,7 +1645,12 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
   it('2 calls with the SAME watchdogKey + lane:observation → 1 row, repeatCount:2, reason:coalesced', async () => {
     const d = coalesceDeps();
     const first = await captureImprovement(
-      { title: 'escalation-aging holding flat at 312', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:escalation-aging' },
+      {
+        title: 'escalation-aging holding flat at 312',
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: 'overwatch:escalation-aging',
+      },
       d,
     );
     expect(first.created).toBe(true);
@@ -1573,7 +1658,12 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     expect((d.store[0].payload as Record<string, unknown>).watchdogKey).toBe('overwatch:escalation-aging');
 
     const second = await captureImprovement(
-      { title: 'escalation-aging holding flat at 318', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:escalation-aging' },
+      {
+        title: 'escalation-aging holding flat at 318',
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: 'overwatch:escalation-aging',
+      },
       d,
     );
     expect(second.created).toBe(false);
@@ -1678,14 +1768,8 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
 
   it('a 3rd call with the same key bumps repeatCount to 3 (running count, not a flip-flag)', async () => {
     const d = coalesceDeps();
-    await captureImprovement(
-      { title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' },
-      d,
-    );
-    await captureImprovement(
-      { title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' },
-      d,
-    );
+    await captureImprovement({ title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' }, d);
+    await captureImprovement({ title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' }, d);
     const third = await captureImprovement(
       { title: 'x', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:x' },
       d,
@@ -1703,7 +1787,7 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     expect(d.created).toHaveLength(2); // no coalescing — 2 distinct rows
   });
 
-  it('a DIFFERENT watchdogKey never coalesces onto another key\'s open row', async () => {
+  it("a DIFFERENT watchdogKey never coalesces onto another key's open row", async () => {
     const d = coalesceDeps();
     await captureImprovement(
       { title: 'condition A', kind: 'change', lane: 'observation', watchdogKey: 'overwatch:a' },
@@ -1873,14 +1957,23 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     // measured the cost of not saying so: an agent read a bare [] as "no duplicates",
     // filed, and retracted minutes later against an open major item from ~12h earlier.
     const d = { ...deps(), findSemanticDupes: async () => null };
-    const res = await captureImprovement({ title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true }, d);
+    const res = await captureImprovement(
+      { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
+      d,
+    );
     expect(res.possibleDuplicates).toEqual([]);
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
   });
 
   it('reports semantic OK + not degraded when the embedding leg DOES answer — so [] is a real all-clear', async () => {
-    const d = { ...deps(), findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) };
-    const res = await captureImprovement({ title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true }, d);
+    const d = {
+      ...deps(),
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }),
+    };
+    const res = await captureImprovement(
+      { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
+      d,
+    );
     expect(res.possibleDuplicates).toEqual([]);
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
   });
@@ -1917,7 +2010,10 @@ describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just 
     // find the rows admitted without a differently-worded-duplicate check. Measured
     // pre-fix: 0 of 6,179 rows in 7 days carried it.
     const d = deps();
-    await captureImprovement({ title: 'a brand new finding', kind: 'bug' }, { ...d, findSemanticDupes: async () => null });
+    await captureImprovement(
+      { title: 'a brand new finding', kind: 'bug' },
+      { ...d, findSemanticDupes: async () => null },
+    );
     expect(coverageOf(d)).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
   });
 
@@ -1935,7 +2031,10 @@ describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just 
 
   it('CONTROL: the two persisted rows are DISTINGUISHABLE — a stamp that never varies is not evidence', async () => {
     const down = deps();
-    await captureImprovement({ title: 'a brand new finding', kind: 'bug' }, { ...down, findSemanticDupes: async () => null });
+    await captureImprovement(
+      { title: 'a brand new finding', kind: 'bug' },
+      { ...down, findSemanticDupes: async () => null },
+    );
     const up = deps();
     await captureImprovement(
       { title: 'a brand new finding', kind: 'bug' },
@@ -1958,8 +2057,7 @@ describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just 
 });
 
 describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
-  const payloadOf = (d: ReturnType<typeof deps>) =>
-    d.created[0].payload as Record<string, unknown> | undefined;
+  const payloadOf = (d: ReturnType<typeof deps>) => d.created[0].payload as Record<string, unknown> | undefined;
 
   it('persists the server-authored normalized title identity and stronger signal key', async () => {
     const d = deps();
@@ -1983,7 +2081,9 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
         { title: 'novel direct drain blocker', kind: 'bug', checkDuplicatesOnly: true },
         {
           ...d,
-          searchIssues: async () => { throw new Error('search unavailable'); },
+          searchIssues: async () => {
+            throw new Error('search unavailable');
+          },
           findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
         },
       );
@@ -2076,7 +2176,8 @@ describe('exact watchdogKey is a first-class blocking dedup source (EI-204844303
         },
         findSemanticDupes: noSemantic,
         findIssuesByWatchdogKeys: async () => [prior],
-        mergeIssuePayload: async (_id, patch) => existing({ ...prior, payload: { ...(prior.payload as object), ...patch } }),
+        mergeIssuePayload: async (_id, patch) =>
+          existing({ ...prior, payload: { ...(prior.payload as object), ...patch } }),
         updateIssuePatch: async (_id, patch) => existing({ ...prior, title: patch.title ?? prior.title }),
       },
     );
@@ -2095,7 +2196,8 @@ describe('exact watchdogKey is a first-class blocking dedup source (EI-204844303
         ...d,
         findSemanticDupes: noSemantic,
         findIssuesByWatchdogKeys: async () => [prior],
-        mergeIssuePayload: async (_id, patch) => existing({ ...prior, payload: { ...(prior.payload as object), ...patch } }),
+        mergeIssuePayload: async (_id, patch) =>
+          existing({ ...prior, payload: { ...(prior.payload as object), ...patch } }),
         updateIssuePatch: async (_id, patch) => existing({ ...prior, title: patch.title ?? prior.title }),
       },
     );
@@ -2301,12 +2403,22 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
   it('CONTROL: a RESOLVED prior with the same key never coalesces — under dedupScope:open a recurrence re-files fresh', async () => {
     const d = keyDeps();
     await captureImprovement(
-      { title: 'live-federation-gate RED: content-matrix failed (t1)', kind: 'bug', dedupScope: 'open', watchdogKey: 'live-federation-gate-red:papercusp' },
+      {
+        title: 'live-federation-gate RED: content-matrix failed (t1)',
+        kind: 'bug',
+        dedupScope: 'open',
+        watchdogKey: 'live-federation-gate-red:papercusp',
+      },
       d,
     );
     d.store[0].state = 'resolved';
     const second = await captureImprovement(
-      { title: 'live-federation-gate RED: content-matrix failed (t2)', kind: 'bug', dedupScope: 'open', watchdogKey: 'live-federation-gate-red:papercusp' },
+      {
+        title: 'live-federation-gate RED: content-matrix failed (t2)',
+        kind: 'bug',
+        dedupScope: 'open',
+        watchdogKey: 'live-federation-gate-red:papercusp',
+      },
       d,
     );
     expect(second.created).toBe(true);
@@ -2413,48 +2525,54 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
 
   it.each([
     ['origin', { signalOrigin: 'drill', scope: 'harness:papercusp', payload: { watchdogKey: 'k' } }],
-    ['lane', { signalOrigin: 'organic', scope: 'harness:papercusp', payload: { watchdogKey: 'k', lane: 'observation' } }],
+    [
+      'lane',
+      { signalOrigin: 'organic', scope: 'harness:papercusp', payload: { watchdogKey: 'k', lane: 'observation' } },
+    ],
     ['scope', { signalOrigin: 'organic', scope: 'harness:other-pot', payload: { watchdogKey: 'k' } }],
-  ] as const)('does not coalesce a unique-conflict winner with a mismatched %s identity component', async (_dimension, mismatch) => {
-    let lookupCount = 0;
-    const winner = existing({
-      id: `EI-MISMATCH-${_dimension}`,
-      title: 'winner from another identity partition',
-      signalOrigin: mismatch.signalOrigin,
-      scope: mismatch.scope,
-      payload: mismatch.payload,
-    });
-    const d: CaptureDeps = {
-      searchIssues: async () => [],
-      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
-      findIssuesByWatchdogKeys: async () => {
-        lookupCount += 1;
-        return lookupCount === 1 ? [] : [winner];
-      },
-      createIssue: async () => {
-        throw {
-          code: '23505',
-          constraint_name: 'work_items_watchdog_identity_uq',
-          message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
-        };
-      },
-      mergeIssuePayload: async () => {
-        throw new Error('must not merge a mismatched identity winner');
-      },
-    };
-
-    await expect(
-      captureImprovement(
-        {
-          title: 'same key from the requested partition',
-          kind: 'bug',
-          watchdogKey: 'k',
-          scope: 'harness:papercusp',
+  ] as const)(
+    'does not coalesce a unique-conflict winner with a mismatched %s identity component',
+    async (_dimension, mismatch) => {
+      let lookupCount = 0;
+      const winner = existing({
+        id: `EI-MISMATCH-${_dimension}`,
+        title: 'winner from another identity partition',
+        signalOrigin: mismatch.signalOrigin,
+        scope: mismatch.scope,
+        payload: mismatch.payload,
+      });
+      const d: CaptureDeps = {
+        searchIssues: async () => [],
+        findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+        findIssuesByWatchdogKeys: async () => {
+          lookupCount += 1;
+          return lookupCount === 1 ? [] : [winner];
         },
-        d,
-      ),
-    ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_watchdog_identity_uq' });
-  });
+        createIssue: async () => {
+          throw {
+            code: '23505',
+            constraint_name: 'work_items_watchdog_identity_uq',
+            message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+          };
+        },
+        mergeIssuePayload: async () => {
+          throw new Error('must not merge a mismatched identity winner');
+        },
+      };
+
+      await expect(
+        captureImprovement(
+          {
+            title: 'same key from the requested partition',
+            kind: 'bug',
+            watchdogKey: 'k',
+            scope: 'harness:papercusp',
+          },
+          d,
+        ),
+      ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_watchdog_identity_uq' });
+    },
+  );
 
   it('does not swallow a different unique violation as a watchdog race', async () => {
     const d = deps();
@@ -2604,7 +2722,7 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
       });
     });
 
-    it("reports the fold as DERIVED identity and append-only text — not a keyed fold, not a write loss", async () => {
+    it('reports the fold as DERIVED identity and append-only text — not a keyed fold, not a write loss', async () => {
       setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
       const d = foldDeps({});
 
@@ -2788,10 +2906,7 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
       setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
       const d = foldDeps({});
 
-      const res = await captureImprovement(
-        { ...repeatFiling, watchdogKey: 'condition:explicitly-keyed' },
-        d,
-      );
+      const res = await captureImprovement({ ...repeatFiling, watchdogKey: 'condition:explicitly-keyed' }, d);
 
       // No keyed row exists to coalesce onto here, so it mints — the point is
       // that the DERIVED branch never ran (no merge, no link) for a keyed filing.
@@ -2811,10 +2926,7 @@ describe('P-001 dedupCandidates payload stamp (silent-intake-central-resolution-
   it('a force-created capture persists its lexical twins as payload.dedupCandidates', async () => {
     const twin = existing({ id: 'EI-twin', title: 'exact same friction title' });
     const d = deps({ found: [twin] });
-    const res = await captureImprovement(
-      { title: 'exact same friction title', kind: 'bug', force: true },
-      d,
-    );
+    const res = await captureImprovement({ title: 'exact same friction title', kind: 'bug', force: true }, d);
     expect(res).toMatchObject({ ok: true, created: true });
     const payload = d.created[0].payload as Record<string, unknown>;
     expect(payload.dedupCandidates).toEqual([{ id: 'EI-twin', similarity: 1, method: 'lexical' }]);
@@ -2855,15 +2967,10 @@ describe('P-001 dedupCandidates payload stamp (silent-intake-central-resolution-
       soft: [{ id: prior.id, title: prior.title, state: prior.state, harness: null, similarity: 0.87 }],
       thresholds: { hard: 0.93, soft: 0.8 },
     });
-    const res = await captureImprovement(
-      { title: 'my freshly worded filing about a recurring thing', kind: 'bug' },
-      d,
-    );
+    const res = await captureImprovement({ title: 'my freshly worded filing about a recurring thing', kind: 'bug' }, d);
     expect(res).toMatchObject({ ok: true, created: true });
     const payload = d.created[0].payload as Record<string, unknown>;
-    expect(payload.dedupCandidates).toEqual([
-      { id: 'EI-sem', similarity: 0.87, method: 'semantic-soft' },
-    ]);
+    expect(payload.dedupCandidates).toEqual([{ id: 'EI-sem', similarity: 0.87, method: 'semantic-soft' }]);
   });
 
   it('no candidates ⇒ no dedupCandidates key — dedupCoverage alone says "checked clean"', async () => {
@@ -2974,10 +3081,7 @@ describe('captureImprovement — exact-key recurrence REOPENS a watchdog-auto-re
 
   it('recurrence with fresh evidence REOPENS the canonical row — no sibling minted (EI-22065259669472144)', async () => {
     const d = recurrenceDeps([autoResolvedRow()]);
-    const res = await captureImprovement(
-      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
-      d,
-    );
+    const res = await captureImprovement({ title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY }, d);
     expect(res.created).toBe(false);
     expect(res.reason).toBe('coalesced');
     expect(res.coalescedOnto?.reopened).toBe(true);
@@ -3012,10 +3116,7 @@ describe('captureImprovement — exact-key recurrence REOPENS a watchdog-auto-re
 
   it('CONTROL: an agent-resolved row (terminalOwner ≠ watchdog-auto-close) is NOT reopened — regression re-file mints', async () => {
     const d = recurrenceDeps([autoResolvedRow({ terminalOwner: 'su-a-real-agent' })]);
-    const res = await captureImprovement(
-      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
-      d,
-    );
+    const res = await captureImprovement({ title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY }, d);
     expect(res.created).toBe(true);
     expect(d.stateWrites).toHaveLength(0);
     expect(d.store[0].state).toBe('resolved');
@@ -3026,10 +3127,7 @@ describe('captureImprovement — exact-key recurrence REOPENS a watchdog-auto-re
     d.setWorkItemStateWithAliasInfo = async () => {
       throw new Error('pg down');
     };
-    const res = await captureImprovement(
-      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
-      d,
-    );
+    const res = await captureImprovement({ title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY }, d);
     expect(res.ok).toBe(true);
     expect(res.created).toBe(true);
     expect(d.store[0].state).toBe('resolved');
@@ -3038,10 +3136,7 @@ describe('captureImprovement — exact-key recurrence REOPENS a watchdog-auto-re
   it('an OPEN keyed row still wins over the resolved one — WI-39594 coalesce, no reopen call', async () => {
     const open = existing({ id: 'EI-801', title: TITLE, state: 'open', payload: { watchdogKey: KEY } });
     const d = recurrenceDeps([autoResolvedRow(), open]);
-    const res = await captureImprovement(
-      { title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY },
-      d,
-    );
+    const res = await captureImprovement({ title: TITLE, kind: 'bug', dedupScope: 'open', watchdogKey: KEY }, d);
     expect(res.created).toBe(false);
     expect(res.reason).toBe('coalesced');
     expect(res.issue?.id).toBe('EI-801');
@@ -3144,10 +3239,7 @@ describe('captureImprovement — keyless SYSTEM-filer bug folds onto its open ex
  */
 describe('captureImprovement — goal provenance stamp (WI-2140701 (b))', () => {
   type StampCall = { item: { id: string; harness?: string | null }; workspaceId: string; ownerId: string };
-  function stamping(
-    impl: (call: StampCall) => Promise<string | null>,
-    opts: Parameters<typeof deps>[0] = {},
-  ) {
+  function stamping(impl: (call: StampCall) => Promise<string | null>, opts: Parameters<typeof deps>[0] = {}) {
     const calls: StampCall[] = [];
     const d = deps(opts);
     d.stampGoalProvenance = async (item, workspaceId, ownerId) => {

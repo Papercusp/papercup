@@ -271,7 +271,8 @@ export function buildCapabilityReviewSources(
       if (!sameScope(p.scope, scope)) return null;
       const locator = locators.get(p.ref) ?? p.locator;
       if (!locator) return null;
-      const located = (value: CapabilityReviewPrior | null) => value?.ref === p.ref ? { ...value, ...(p.locator ? { locator: p.locator } : {}) } : null;
+      const located = (value: CapabilityReviewPrior | null) =>
+        value?.ref === p.ref ? { ...value, ...(p.locator ? { locator: p.locator } : {}) } : null;
       if (locator.kind === 'code') {
         const packet = packets.get(locator.id)!;
         await fresh(packet);

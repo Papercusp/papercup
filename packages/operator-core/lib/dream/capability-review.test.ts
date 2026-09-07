@@ -698,6 +698,22 @@ describe('production capability and Blender source adapter', () => {
     a.setPlan('Changed authoritative plan');
     expect((await a.sources.readCurrent(citedPlan))!.sourceHash).not.toBe(citedPlan.sourceHash);
   });
+  it('resolves persisted source locators after restart without relying on the original search cache', async () => {
+    const a = await adapterFixture();
+    const saved = JSON.parse(JSON.stringify((await a.sources.search(a.request)).matches)) as CapabilityReviewPrior[];
+    const restarted = buildCapabilityReviewSources(
+      {
+        sql: {} as Sql,
+        scope,
+        rootPath: a.f.root,
+        manifest: a.f.options.manifest,
+        packets: [a.f.options.selection.a.packet, a.f.options.selection.b.packet],
+      },
+      a.deps,
+    );
+    for (const prior of saved) expect(await restarted.readCurrent(prior)).toEqual(prior);
+    expect(await restarted.readCurrent({ ...saved[0]!, ref: 'plan:not-the-saved-source' })).toBeNull();
+  });
   it('binds the whole prior source even when its displayed text is capped', async () => {
     const a = await adapterFixture();
     a.setPlan('snapshot '.repeat(1_500) + 'old constraint');

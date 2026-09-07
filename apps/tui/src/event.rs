@@ -412,6 +412,13 @@ pub enum Event {
     /// binding carries the stable advSessionId and backend identity used by
     /// every subsequent snapshot/stream/control call.
     SuSessionOpened(crate::su_session::SuSessionBinding),
+    /// Async session work belongs to the selection which started it. The
+    /// generation covers create, attach, stream and command replies together.
+    SuSessionAsync {
+        harness: String,
+        load_token: u64,
+        event: Box<Event>,
+    },
     /// Initial canonical SU-session descriptor snapshot after attach/restart.
     SuSessionSnapshot(crate::su_session::SuSessionSnapshot),
     /// One typed lifecycle/transcript/tool/card/refusal event from the shared

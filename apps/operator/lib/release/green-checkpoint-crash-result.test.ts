@@ -19,6 +19,51 @@ import {
 } from '@papercusp/operator-core/lib/release/gate-abort-status';
 
 describe('EI-21462448110688084: process-level fatal errors await terminal finalization', () => {
+  it('records a terminal disposition before its marker and wake are observable', async () => {
+    const order: string[] = [];
+    const markers: string[] = [];
+    const result = buildTerminalFailureCheckpointResult({
+      candidate: '6e94004367c8',
+      error: new Error(
+        'dependency-generation.sh exited 74: no prewarmed dependency generation for input fingerprint fixture',
+      ),
+      runId: 'run-prelock',
+    });
+
+    await emitTerminalCheckpointResult(result, {
+      record: async (terminal) => {
+        order.push('record');
+        expect(terminal.recorded).toBeUndefined();
+        return true;
+      },
+      writeHuman: (terminal) => {
+        order.push('human');
+        expect(terminal.recorded).toBe(true);
+      },
+      writeMarker: (line) => {
+        order.push('marker');
+        markers.push(line);
+      },
+      emitInconclusive: async (terminal) => {
+        order.push('wake');
+        expect(terminal.recorded).toBe(true);
+      },
+      retire: async (terminal) => {
+        order.push('retire');
+        expect(terminal.recorded).toBe(true);
+      },
+    });
+
+    expect(order).toEqual(['record', 'human', 'marker', 'wake', 'retire']);
+    const marker = JSON.parse(markers[0]!.slice(markers[0]!.indexOf('{')));
+    expect(marker).toMatchObject({
+      candidate: '6e94004367c8',
+      green: null,
+      reason: 'dependency-prewarm-missing',
+      recorded: true,
+    });
+  });
+
   it('does not exit until the typed-result finalizer completes', async () => {
     let finish!: (owned: boolean) => void;
     const finalize = vi.fn(

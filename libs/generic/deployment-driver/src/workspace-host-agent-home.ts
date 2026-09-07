@@ -4,6 +4,10 @@ import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from "./workspace-host-agent-authentic
 
 /** The sealed material format installed into one workspace user's native agent homes. */
 export const WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION =
+  "papercusp-workspace-host-agent-home-bundle-v3";
+
+/** Read compatibility for the mutable Codex OAuth-cache format superseded by D-311. */
+export const WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION =
   "papercusp-workspace-host-agent-home-bundle-v2";
 
 /** Read compatibility for material sealed before local-inference OMP was supported (D-230). */
@@ -80,6 +84,7 @@ export interface WorkspaceHostAgentHomeBundleFiles {
 export interface WorkspaceHostAgentHomeBundle {
   readonly contractVersion:
     | typeof WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION
+    | typeof WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION
     | typeof WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION;
   readonly files: WorkspaceHostAgentHomeBundleFiles;
 }
@@ -189,6 +194,80 @@ function decodeJsonFile(
   return bytes;
 }
 
+function parseJsonObjectBytes(
+  bytes: Buffer,
+  label: string,
+): Readonly<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new WorkspaceHostAgentHomeBundleError(`${label} must be valid JSON`);
+  }
+  return record(parsed, label);
+}
+
+function hasRefreshTokenKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasRefreshTokenKey);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(
+    ([key, nested]) =>
+      key.replace(/[_-]/g, "").toLowerCase() === "refreshtoken" ||
+      hasRefreshTokenKey(nested),
+  );
+}
+
+/** Validate the immutable Codex member without ever returning or naming a token value. */
+export function assertWorkspaceHostCodexAccessTokenProjection(
+  codex: Buffer,
+): void {
+  const body = parseJsonObjectBytes(codex, "files.codex JSON");
+  const tokens = record(body.tokens, "files.codex JSON.tokens");
+  if (
+    typeof tokens.access_token !== "string" ||
+    tokens.access_token.length === 0
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.codex must contain a non-empty access token",
+    );
+  }
+  if (hasRefreshTokenKey(body)) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.codex access-token projection must not contain a refresh token",
+    );
+  }
+}
+
+/**
+ * Project one canonical Codex OAuth home into immutable, access-token-only generation bytes.
+ *
+ * The caller remains responsible for resolving/refreshing the canonical home first. This pure
+ * boundary removes the rotating single-use refresh credential while retaining the access token
+ * and all account/id metadata Codex needs for direct guest-to-provider inference (D-311).
+ */
+export function projectWorkspaceHostCodexAccessToken(
+  codex: Buffer,
+): Buffer {
+  const body = parseJsonObjectBytes(codex, "files.codex JSON");
+  const tokens = record(body.tokens, "files.codex JSON.tokens");
+  if (
+    typeof tokens.access_token !== "string" ||
+    tokens.access_token.length === 0
+  ) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      "files.codex must contain a non-empty access token",
+    );
+  }
+  const projectedTokens: Record<string, unknown> = { ...tokens };
+  delete projectedTokens.refresh_token;
+  const projected = Buffer.from(
+    JSON.stringify({ ...body, tokens: projectedTokens }),
+    "utf8",
+  );
+  assertWorkspaceHostCodexAccessTokenProjection(projected);
+  return projected;
+}
+
 /** Parse without ever echoing a decoded byte into an error or receipt. */
 export function parseWorkspaceHostAgentHomeBundle(
   material: Buffer,
@@ -205,10 +284,12 @@ export function parseWorkspaceHostAgentHomeBundle(
   exactKeys(body, ["contractVersion", "files"], "agent-home material");
   if (
     body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION &&
+    body.contractVersion !==
+      WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION &&
     body.contractVersion !== WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION
   ) {
     throw new WorkspaceHostAgentHomeBundleError(
-      `agent-home material must use ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION} or ${WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION}`,
+      `agent-home material must use ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}, ${WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION}, or ${WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION}`,
     );
   }
   const files = record(body.files, "agent-home material.files");
@@ -217,13 +298,21 @@ export function parseWorkspaceHostAgentHomeBundle(
     Object.keys(WORKSPACE_HOST_AGENT_HOME_FILES),
     "agent-home material.files",
   );
+  const contractVersion = body.contractVersion as
+    | typeof WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION
+    | typeof WORKSPACE_HOST_AGENT_HOME_MUTABLE_CACHE_BUNDLE_VERSION
+    | typeof WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION;
+  const codex = decodeJsonFile(files.codex, "codex");
+  if (contractVersion === WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION) {
+    assertWorkspaceHostCodexAccessTokenProjection(codex);
+  }
   return {
-    contractVersion: body.contractVersion,
+    contractVersion,
     files: {
       claude: decodeJsonFile(files.claude, "claude"),
-      codex: decodeJsonFile(files.codex, "codex"),
+      codex,
       omp:
-        body.contractVersion === WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION &&
+        contractVersion !== WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION &&
         files.omp === null
           ? null
           : decodeJsonFile(files.omp, "omp"),
@@ -235,10 +324,8 @@ export function parseWorkspaceHostAgentHomeBundle(
 export function encodeWorkspaceHostAgentHomeBundle(
   files: WorkspaceHostAgentHomeBundleFiles,
 ): Buffer {
-  for (const label of ["claude", "codex"] as const) {
-    const bytes = files[label];
-    decodeJsonFile(bytes.toString("base64"), label);
-  }
+  decodeJsonFile(files.claude.toString("base64"), "claude");
+  const codex = projectWorkspaceHostCodexAccessToken(files.codex);
   if (files.omp !== null) {
     decodeJsonFile(files.omp.toString("base64"), "omp");
   }
@@ -247,12 +334,24 @@ export function encodeWorkspaceHostAgentHomeBundle(
       contractVersion: WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
       files: {
         claude: files.claude.toString("base64"),
-        codex: files.codex.toString("base64"),
+        codex: codex.toString("base64"),
         omp: files.omp?.toString("base64") ?? null,
       },
     }),
     "utf8",
   );
+}
+
+/** New paid operations may consume only the immutable v3 projection (D-311). */
+export function assertWorkspaceHostAgentHomeBundleAdmissionEligible(
+  bundle: WorkspaceHostAgentHomeBundle,
+): void {
+  if (bundle.contractVersion !== WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION) {
+    throw new WorkspaceHostAgentHomeBundleError(
+      `agent-home authentication admission requires ${WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION}; legacy mutable-cache bundles are read/revoke-only`,
+    );
+  }
+  assertWorkspaceHostCodexAccessTokenProjection(bundle.files.codex);
 }
 
 export function workspaceHostAgentHomePaths(

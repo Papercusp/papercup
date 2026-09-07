@@ -119,6 +119,41 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
+  it.each([
+    ['uri', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
+    ['file_path', { file_path: '/home/marsh-office/.papercusp/scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4096 }],
+  ])('recognizes bounded scratch capability:read through tools:invoke (%s)', (_shape, args) => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 14,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__capability_read', args },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(classifyMcpRequest(body)).toBe('diagnostic');
+  });
+
+  it.each([
+    ['non-scratch path', { file_path: '/tmp/result.spill', byte_offset: 0, byte_limit: 4096 }],
+    ['line window', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', tail: 25 }],
+    ['oversized page', { uri: 'papercusp://scratch/papercusp-workspace/result.spill', byte_offset: 0, byte_limit: 4097 }],
+  ])('still sheds unsafe capability:read recovery shapes through tools:invoke (%s)', (_shape, args) => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 15,
+      method: 'tools/call',
+      params: {
+        name: 'tools:invoke',
+        arguments: { name: 'mcp__papercusp_su__capability_read', args },
+      },
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: true, id: 15 });
+    expect(classifyMcpRequest(body)).toBe('ordinary');
+  });
+
   // The CONTROL for the case above: the exemption must stay an allowlist, not a prefix rule.
   // `dev:` is not a licence — a neighbouring dev tool with unread per-call cost must still shed,
   // or the narrow list quietly becomes "anything named dev:*".
@@ -350,6 +385,28 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
         params: {
           name: 'tools:invoke',
           arguments: { name: 'mcp__papercusp_su__tools_find', args: { query: 'grading integrity scorecard tools' } },
+        },
+      }),
+    );
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    expect(JSON.parse(await req.text()).params.name).toBe('tools:invoke');
+  });
+  it('admits bounded scratch capability:read through tools:invoke under critical pressure', async () => {
+    const req = post(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 14,
+        method: 'tools/call',
+        params: {
+          name: 'tools:invoke',
+          arguments: {
+            name: 'mcp__papercusp_su__capability_read',
+            args: {
+              uri: 'papercusp://scratch/papercusp-workspace/result.spill',
+              byte_offset: 0,
+              byte_limit: 4096,
+            },
+          },
         },
       }),
     );
