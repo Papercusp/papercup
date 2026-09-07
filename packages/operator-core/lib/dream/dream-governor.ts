@@ -203,27 +203,25 @@ export async function admitDreamRunCall(
   const config = resolveDreamCycleConfig(input.config);
   if (!Number.isFinite(input.call.reservedUsd) || input.call.reservedUsd < 0)
     throw new RangeError('Invalid Dream call reservation');
-  return await sql.begin(async (transaction) => {
+  return (await sql.begin(async (transaction) => {
     const tx = transaction as unknown as Sql;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'dream-admission:' + input.workspaceId}, 0))`;
     const run = await getDreamRun(tx, input);
     if (!run || run.potSlug !== input.potSlug) throw new Error('Dream admission crosses run scope');
-    if (dreamCapabilityRun(run)?.calls.some((c) => c.callId === input.call.callId))
-      return beginDreamRunCall(tx, input);
+    if (dreamCapabilityRun(run)?.calls.some((c) => c.callId === input.call.callId)) return beginDreamRunCall(tx, input);
     const verdict = await preflightDreamCycle(tx, input, deps);
-    if (!verdict.allow) throw new DreamAdmissionError(
-      verdict.reason === 'rolling-cap-exceeded' ? 'rolling-cost-cap' : 'governor-refused',
-    );
+    if (!verdict.allow)
+      throw new DreamAdmissionError(
+        verdict.reason === 'rolling-cap-exceeded' ? 'rolling-cost-cap' : 'governor-refused',
+      );
     const rows = await tx<Array<{ total: number }>>`
       SELECT COALESCE(SUM(cost_usd), 0)::float8 AS total FROM harness_shared.dream_runs
        WHERE workspace_id = ${input.workspaceId} AND cycle_id = ${run.cycleId}`;
     const remaining = Math.min(config.maxCostUsd, verdict.cycleRemainingUsd) - Number(rows[0]?.total ?? 0);
-    if (remaining <= 0 || input.call.reservedUsd > remaining + 1e-9)
-      throw new DreamAdmissionError('cycle-cost-cap');
-    if (input.call.reservedUsd > verdict.rollingRemainingUsd + 1e-9)
-      throw new DreamAdmissionError('rolling-cost-cap');
+    if (remaining <= 0 || input.call.reservedUsd > remaining + 1e-9) throw new DreamAdmissionError('cycle-cost-cap');
+    if (input.call.reservedUsd > verdict.rollingRemainingUsd + 1e-9) throw new DreamAdmissionError('rolling-cost-cap');
     return beginDreamRunCall(tx, input);
-  }) as Awaited<ReturnType<typeof beginDreamRunCall>>;
+  })) as Awaited<ReturnType<typeof beginDreamRunCall>>;
 }
 
 /**
@@ -235,7 +233,9 @@ export async function recordDreamRunSpend(
   input: { workspaceId: string; runId: string; potSlug: string },
 ): Promise<RecordDreamSpendResult> {
   return sql.begin(async (tx) => {
-    const rows = await tx<Array<{ pot_slug: string; status: string; cost_usd: number; spend_recorded_at: Date | null }>>`
+    const rows = await tx<
+      Array<{ pot_slug: string; status: string; cost_usd: number; spend_recorded_at: Date | null }>
+    >`
       SELECT pot_slug, status, cost_usd, spend_recorded_at
         FROM harness_shared.dream_runs
        WHERE workspace_id = ${input.workspaceId} AND run_id = ${input.runId}

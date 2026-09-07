@@ -27,8 +27,12 @@ export function parseDreamCycleActionConfig(payload: Record<string, unknown> | n
   if (mode !== 'manual' && mode !== 'auto') throw new RangeError(`unsupported dream-cycle mode ${String(mode)}`);
   resolveDreamCycleConfig(object(root.cycle) ?? {});
   const sampler = object(root.sampler);
-  if (sampler && Object.keys(sampler).some((key) =>
-    !['mode', 'arity', 'allowSubsystem', 'policy', 'relations', 'thirdRoles'].includes(key)))
+  if (
+    sampler &&
+    Object.keys(sampler).some(
+      (key) => !['mode', 'arity', 'allowSubsystem', 'policy', 'relations', 'thirdRoles'].includes(key),
+    )
+  )
     throw new RangeError('Unsupported capability sampler setting');
   return {
     mode,
@@ -98,9 +102,14 @@ export async function productionDreamCycle(
     }
   }
   const [{ getOrgPg }, llm, governor, store, registry, catalog, packets, reviewSources, sink] = await Promise.all([
-    import('@papercusp/db-org'), import('../llm-testing/llm-client'),
-    import('./dream-governor'), import('./dream-run-store'), import('../harness-registry'),
-    import('./capability-catalog'), import('./capability-packets'), import('./capability-review-sources'),
+    import('@papercusp/db-org'),
+    import('../llm-testing/llm-client'),
+    import('./dream-governor'),
+    import('./dream-run-store'),
+    import('../harness-registry'),
+    import('./capability-catalog'),
+    import('./capability-packets'),
+    import('./capability-review-sources'),
     import('./dream-sink'),
   ]);
   const { sql } = getOrgPg();
@@ -110,15 +119,24 @@ export async function productionDreamCycle(
   const manifest = catalog.getPilotCapabilityManifest();
   const scope = { workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, repositoryId: ctx.installSlug };
   const cycleId = stableCycleId(ctx);
-  const llmCall: ScoutLlmCall = (input) =>
-    llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });
+  const llmCall: ScoutLlmCall = (input) => llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });
   const sources = (values: import('./capability-contracts').CapabilityPacket[]) =>
     reviewSources.buildCapabilityReviewSources({ sql, scope, rootPath, manifest, packets: values });
   return runDreamCycle(
-    { ...scope, rootPath, manifest, mode: config.mode, cycleId,
-      cycle: config.cycle, sampler: config.sampler, pass: config.pass, review: config.review },
+    {
+      ...scope,
+      rootPath,
+      manifest,
+      mode: config.mode,
+      cycleId,
+      cycle: config.cycle,
+      sampler: config.sampler,
+      pass: config.pass,
+      review: config.review,
+    },
     {
       llmCall,
+      exclusiveReplay: Boolean(DBOS.workflowID?.trim()),
       preflight: () => governor.preflightDreamCycle(sql, { ...scope, config: config.cycle }),
       canContinue: async () => {
         if (!(await getFlag(FLAGS.DREAM_CYCLE, 'dream-cycle'))) return false;
@@ -133,28 +151,48 @@ export async function productionDreamCycle(
         const result: import('./capability-contracts').CapabilityPacket[] = [];
         for (const unit of manifest.units) {
           signal.throwIfAborted();
-          const built = await packets.buildCapabilityPacket({ rootPath, scope, unit, manifestRevision: manifest.revision });
+          const built = await packets.buildCapabilityPacket({
+            rootPath,
+            scope,
+            unit,
+            manifestRevision: manifest.revision,
+          });
           if (built.status === 'ready') result.push(built.packet);
         }
         return result;
       },
       loadHistory: () => store.listDreamRuns(sql, { ...scope, limit: 500 }),
       reviewSources: sources,
-      beginRun: ({ runId, capability }) => store.beginDreamRun(sql, {
-        ...scope, runId, cycleId, mode: config.mode, capability,
-      }),
+      beginRun: ({ runId, capability }) =>
+        store.beginDreamRun(sql, {
+          ...scope,
+          runId,
+          cycleId,
+          mode: config.mode,
+          capability,
+        }),
       recordSelection: (input) => store.recordDreamRunSelection(sql, { ...input, workspaceId: ctx.workspaceId }),
       beginCall: (input) => governor.admitDreamRunCall(sql, { ...input, ...scope, config: config.cycle }),
       settleCall: (input) => store.settleDreamRunCall(sql, { ...input, workspaceId: ctx.workspaceId }),
       recordReview: (input) => store.recordDreamRunReview(sql, { ...input, workspaceId: ctx.workspaceId }),
       finalizeRun: (input) => store.finalizeDreamRun(sql, { ...input, workspaceId: ctx.workspaceId }),
-      recordSpend: (run) => governor.recordDreamRunSpend(sql, {
-        workspaceId: ctx.workspaceId, runId: run.runId, potSlug: ctx.installSlug,
-      }),
-      sink: (runId, values) => sink.sinkDreamInsight({
-        kind: 'capability', sql, workspaceId: ctx.workspaceId, dreamRunId: runId,
-        rootPath, manifest, sources: sources(values), createdBy: 'system:dream-cycle',
-      }),
+      recordSpend: (run) =>
+        governor.recordDreamRunSpend(sql, {
+          workspaceId: ctx.workspaceId,
+          runId: run.runId,
+          potSlug: ctx.installSlug,
+        }),
+      sink: (runId, values) =>
+        sink.sinkDreamInsight({
+          kind: 'capability',
+          sql,
+          workspaceId: ctx.workspaceId,
+          dreamRunId: runId,
+          rootPath,
+          manifest,
+          sources: sources(values),
+          createdBy: 'system:dream-cycle',
+        }),
     },
   );
 }
