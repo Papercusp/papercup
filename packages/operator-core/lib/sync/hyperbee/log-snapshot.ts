@@ -553,6 +553,14 @@ export interface SnapshotFoldStall extends SnapshotFoldProgress {
 export type SnapshotFoldProgressCallback = (progress: SnapshotFoldProgress) => void;
 export type SnapshotFoldStallCallback = (stall: SnapshotFoldStall) => void;
 
+export function formatSnapshotFoldStall(stall: SnapshotFoldStall): string {
+  const phase = stall.phase.slice(0, 64).replace(/[^a-zA-Z0-9_.:-]/g, '_');
+  const core = stall.coreKey?.slice(0, 64).replace(/[^a-zA-Z0-9_.:-]/g, '_') || 'unknown';
+  return `phase=${phase} core=${core} sourceStart=${stall.sourceStart} sourceEnd=${stall.sourceEnd} ` +
+    `cursor=${stall.processed}/${stall.total} decodedOps=${stall.decodedOps} ` +
+    `decodedBytes=${stall.decodedBytes} stalledForMs=${stall.stalledForMs}`;
+}
+
 /**
  * A single read window may legitimately be slow, so this is only an
  * observability threshold. It is never a total scan timeout and the watchdog
@@ -945,8 +953,13 @@ export async function produceLogSnapshot(
       phase: 'own-compaction',
       coreKey: ownLog.keyHex,
       onProgress: opts.onProgress,
-      onStall: opts.onStall,
-      stallMs: opts.stallMs,
+      onStall: opts.onStall ?? ((stall) => {
+        console.error(
+          `[snapshot] own compaction stalled in ${formatSnapshotFoldStall(stall)}; ` +
+            `the scan remains live and will not be aborted by this diagnostic`,
+        );
+      }),
+      stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
     });
 
   await foldRange(foldedUpTo, coversUpTo);
@@ -1100,8 +1113,7 @@ export async function produceFilteredSnapshotIntoLog(
     opts.onStall ??
     ((stall: SnapshotFoldStall) => {
       console.error(
-        `[snapshot] filtered source scan stalled in phase=${stall.phase}: ` +
-          `cursor=${stall.processed}/${stall.total} unchanged for ${stall.stalledForMs}ms; ` +
+        `[snapshot] filtered source scan stalled in ${formatSnapshotFoldStall(stall)}; ` +
           `the scan remains live and will not be aborted by this diagnostic`,
       );
     });
