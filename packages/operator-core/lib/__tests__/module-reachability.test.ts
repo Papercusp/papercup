@@ -23,6 +23,7 @@ import {
   findInaccurateAcknowledgements,
   findUnreachableModules,
   findUnclassifiedShipmentModules,
+  isExecutionPathMentionSource,
   isTestFile,
   NEW_MODULE_GRACE_DAYS,
   parseImportSpecifiers,
@@ -389,6 +390,44 @@ describe('buildImportGraph', () => {
     const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
 
     expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual(['apps/operator/package.json']);
+  });
+
+  it('does NOT treat a passive JSON/YAML inventory as execution evidence', () => {
+    // WI-2145418: a file-set SHA manifest named two acknowledged-dead modules and the
+    // checker called both WIRED, even though the manifest is never executed. Baselines,
+    // corpora and evidence matrices have the same shape: a path is data, not a caller.
+    const files = [
+      DETECTOR,
+      'scratchpad/file-set-manifest.json',
+      'reports/release-evidence.yaml',
+    ];
+    const bodies: Record<string, string> = {
+      [DETECTOR]: 'export const x = 1;',
+      'scratchpad/file-set-manifest.json': JSON.stringify({
+        entries: [{ path: DETECTOR, sha256: 'abc' }],
+      }),
+      'reports/release-evidence.yaml': `subject: ${DETECTOR}`,
+    };
+    const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
+
+    expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual([]);
+    expect(isExecutionPathMentionSource('scratchpad/file-set-manifest.json')).toBe(false);
+    expect(isExecutionPathMentionSource('reports/release-evidence.yaml')).toBe(false);
+  });
+
+  it('DOES treat an actual workflow command as execution evidence', () => {
+    // Positive control: narrowing passive data must not blind the entrypoint path the
+    // mention scan exists to see.
+    const workflow = '.github/workflows/release.yml';
+    const files = [DETECTOR, workflow];
+    const bodies: Record<string, string> = {
+      [DETECTOR]: 'export const x = 1;',
+      [workflow]: `steps:\n  - run: npx tsx ${DETECTOR}`,
+    };
+    const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
+
+    expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual([workflow]);
+    expect(isExecutionPathMentionSource(workflow)).toBe(true);
   });
 
   // The lookbehind that keeps the fix above from inventing an edge: the TAIL of a

@@ -72,6 +72,18 @@ export function parseReleasePathMentions(text: string): string[];
  */
 export function parseWorkspaceRelativeMentions(text: string): string[];
 /**
+ * Files whose literal detector paths can be execution evidence.
+ *
+ * Source files can import/spawn a detector. Package manifests and GitHub workflow /
+ * composite-action manifests can execute one by command. Other JSON/YAML files are
+ * passive data: baselines, corpora, evidence matrices and file-set hash manifests name
+ * code without calling it. Counting those as reachers false-greens dead modules.
+ *
+ * @param {string} file repo-relative path
+ * @returns {boolean}
+ */
+export function isExecutionPathMentionSource(file: string): boolean;
+/**
  * Resolve one specifier to a repo-relative file, or null when it points outside the
  * repo (a node_modules package, a node: builtin).
  *

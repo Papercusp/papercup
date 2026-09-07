@@ -74,6 +74,8 @@ import { fileURLToPath } from 'node:url';
 const TEST_RE = /\.test\.tsx?$/;
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const SOURCE_RE = /\.(?:tsx?|[cm]?js|[cm]ts)$/;
+const EXECUTION_MANIFEST_RE =
+  /(?:^|\/)package\.json$|^\.github\/(?:workflows|actions)\/.*\.ya?ml$/;
 
 /** Repo-relative paths under a `lib/release/` directory — the gate's own detector domain. */
 const DETECTOR_DIR_RE = /(?:^|\/)lib\/release\//;
@@ -202,6 +204,22 @@ export function parseWorkspaceRelativeMentions(text) {
   return [...new Set(String(text).match(WORKSPACE_RELATIVE_MENTION_RE) ?? [])];
 }
 
+/**
+ * Files whose literal detector paths can be execution evidence.
+ *
+ * Source files can import/spawn a detector. Package manifests and GitHub workflow /
+ * composite-action manifests can execute one by command. Other JSON/YAML files are
+ * passive data: baselines, corpora, evidence matrices and file-set hash manifests name
+ * code without calling it. Counting those as reachers false-greens dead modules.
+ *
+ * @param {string} file repo-relative path
+ * @returns {boolean}
+ */
+export function isExecutionPathMentionSource(file) {
+  const path = String(file);
+  return SOURCE_RE.test(path) || EXECUTION_MANIFEST_RE.test(path);
+}
+
 /** Normalize a POSIX-ish path, resolving `.` and `..` segments. */
 function normalizePath(p) {
   const out = [];
@@ -318,7 +336,7 @@ export function buildImportGraph({
   };
 
   for (const file of files) {
-    if (!SOURCE_RE.test(file) && !/\.(?:json|ya?ml)$/.test(file)) continue;
+    if (!isExecutionPathMentionSource(file)) continue;
     const raw = readFile(file);
     if (!raw) continue;
 
