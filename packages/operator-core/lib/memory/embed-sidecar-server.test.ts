@@ -171,8 +171,9 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       embedExecution: { device: string; dtype: string | null; why: string };
       embedExecutionHealth: {
         requested: { device: string | null; dtype: string | null };
-        gpuBundled: boolean | null;
-        backends: { name: string; bundled: boolean }[] | null;
+        gpuProviderAvailable: boolean | null;
+        providerLibraries: string[] | null;
+        defaultBundledBackends: { name: string; bundled: boolean }[] | null;
         probe: string;
         probeError: string | null;
         sessionOptions: { intraOpNumThreads: number; interOpNumThreads: number };

@@ -1273,10 +1273,17 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // meant reading /proc/<pid>/maps of this very process. These two fields
         // are so the fifteenth filing does not have to.
         //
-        // `gpuBundled: null` means the async backend probe has not resolved, so
-        // the question is UNKNOWN. It is deliberately not `false`: a detector
+        // `gpuProviderAvailable: null` means the async probe has not resolved,
+        // so the question is UNKNOWN. It is deliberately not `false`: a detector
         // that answers from a measurement it never took is the failure this
         // replaces. Read `embedExecutionHealth.probe` before quoting the rest.
+        //
+        // ⚠ Read `providerLibraries` (what is on disk), NOT
+        // `defaultBundledBackends[].bundled`, to judge whether a GPU is
+        // reachable. Measured 2026-09-07: installing onnxruntime-node with
+        // ONNXRUNTIME_NODE_INSTALL_CUDA=v12 makes CUDA sessions construct while
+        // listSupportedBackends() still reports cuda:{bundled:false} — that flag
+        // is publish-time packaging metadata, not a capability probe.
         embedExecution: embedExecutionTarget(),
         embedExecutionHealth: embedExecutionHealth(),
         // WI-37696: the two worker-thread crash-breakers THIS process owns.
