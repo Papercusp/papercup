@@ -283,6 +283,37 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
 }
 
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it.each([{ floor: [] }, { floor: ['integration'] }])('keeps a stricter clause current above the BAR test floor $floor', ({ floor }) => {
+    const input = floor.length ? provedFixture(1) : fixture(1);
+    input.clauses.rows[0]!.requiredTestLayers = [...floor, 'e2e'];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_projection_stale');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'start').codes).not.toContain('bar_snapshot_projection_stale');
+  });
+
+  it('rejects a clause that omits a required BAR test layer', () => {
+    const input = provedFixture(1);
+    input.clauses.rows[0]!.requiredTestLayers = ['e2e'];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_projection_stale');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'start').satisfied).toBe(false);
+  });
+
+  it('requires proof of additional clause layers before shipping', () => {
+    const input = provedFixture(1);
+    input.clauses.rows[0]!.requiredTestLayers = ['integration', 'e2e'];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_projection_stale');
+    expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('correct-layer');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+  });
+
   it('projects unified sections with shared validation links and preserves absent legacy intent', () => {
     const input = provedFixture(2);
     const rubric = input.rubrics.rows[0]!;
