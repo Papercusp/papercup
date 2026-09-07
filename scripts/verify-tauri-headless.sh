@@ -2087,10 +2087,16 @@ fi
 # checks only exist in a development one — `apps/operator-vite/src/query-health-gate.ts`
 # gates @papercusp/sync's query-health warnings on `import.meta.env.MODE !==
 # 'production'`, so they are statically compiled OUT of the shared dist and can
-# never fire here. Build the bundle you want somewhere harmless and point at it:
-#   PAPERCUSP_VITE_OUT_DIR=/tmp/spa-dev PAPERCUSP_VITE_FINAL_OUT_DIR=/tmp/spa-dev \
-#     npx vite build --mode development          # (in apps/operator-vite; swaps nothing)
-#   PAPERCUSP_SHARED_SPA_DIST=/tmp/spa-dev bash scripts/verify-tauri-headless.sh
+# never fire here. Build the bundle you want somewhere harmless through the
+# maintained singleflight + memory contract (EI-22614955223428270), under the
+# host-wide heavy-command admission wrapper, then point the verifier at it:
+#   WORK="$(mktemp -d)"
+#   PAPERCUSP_VITE_OUT_DIR="$WORK/spa-dev" \
+#   PAPERCUSP_VITE_FINAL_OUT_DIR="$WORK/spa-dev" \
+#   VITE_BUILD_LOG="$WORK/spa-build.log" \
+#   VITE_BUILD_CMD='npx vite build --mode development' \
+#     bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run build
+#   PAPERCUSP_SHARED_SPA_DIST="$WORK/spa-dev" bash scripts/verify-tauri-headless.sh
 # Still frozen into $WORK/spa exactly as below, so the isolation property holds
 # whichever source it came from.
 SHARED_SPA_DIST="${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}"
@@ -3560,6 +3566,23 @@ elif [ -f "$VERIFY_TAURI_FRESHNESS_CHECK" ] && ! bash "$VERIFY_TAURI_FRESHNESS_C
 fi
 
 verify_assertion_input_integrity || exit $?
+
+# EI-22622028658305763: assertion commands are part of the isolated verifier
+# boundary too. The generated Tauri launcher already receives this exact
+# disposable identity, but the parent shell previously retained its ambient
+# database/workspace values. A write-safe assertion that inspected or seeded
+# its own fixture therefore either saw no URL or could reach live state under
+# an "isolated" banner. Override only in explicit isolated mode and export the
+# same already-verified per-run values before handing control to the caller.
+if [ "$ISOLATED_DB" = "1" ]; then
+  export PAPERCUSP_HOME="$ISOLATED_HOME"
+  export PAPERCUSP_WORKSPACE="$ISOLATED_WORKSPACE"
+  export HARNESS_ADMIN_DATABASE_URL="$ISOLATED_ADMIN_URL"
+  export HARNESS_DATABASE_URL="$ISOLATED_APP_URL"
+  export PAPERCUSP_PG_PORT="$ISOLATED_PG_PORT"
+  export PAPERCUSP_SKIP_PG_DISCOVERY=1
+  export PAPERCUSP_VERIFY_TAURI_ISOLATED=1
+fi
 
 log "running assertion command: $*"
 "$@"
