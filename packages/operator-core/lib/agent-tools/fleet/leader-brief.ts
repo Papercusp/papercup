@@ -3342,7 +3342,21 @@ export default defineTool({
       benchSuggestions: z.unknown().optional(),
       intentAttention: z.unknown().optional(),
       members: z.array(z.unknown()).optional(),
-      membersTruncated: z.boolean().optional(),
+      // The bounded shaper emits truncation metadata (`{ total, shown }`),
+      // while the emergency fallback emits the compact boolean `true`.
+      // Keep both representations in the registered result contract so the
+      // MCP output validator agrees with the runtime's two paths.
+      membersTruncated: z
+        .union([
+          z.boolean(),
+          z
+            .object({
+              total: z.number().int().nonnegative(),
+              shown: z.number().int().nonnegative(),
+            })
+            .passthrough(),
+        ])
+        .optional(),
       membersReturned: z.number().int().nonnegative().optional(),
       membersHint: z.string().optional(),
       unownedCriticals: z.array(z.unknown()).optional(),
