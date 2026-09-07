@@ -60,13 +60,10 @@ vi.mock('../su-session-claude-engine', async (original) => {
         const result = () => output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
         void (async () => {
           for await (const message of prompt) {
+            if (!message.session_id) throw new Error('The PUI engine must stamp a native session ID on every input');
             nativeId = message.session_id;
-            if (message.shouldQuery === false) {
-              if (scriptedEngine.mode === 'startup-exit') { output.end(); return; }
-              output.write({ ...message, isReplay: true });
-              continue;
-            }
             scriptedEngine.requests.push(String(message.message.content));
+            output.write({ type: 'system', subtype: 'init', session_id: nativeId, cwd: args[0].cwd });
             output.write(message); // The engine's exact native receipt.
             if (scriptedEngine.mode === 'stall') continue;
             if (scriptedEngine.mode === 'failure') {
@@ -88,7 +85,13 @@ vi.mock('../su-session-claude-engine', async (original) => {
         })().catch((error: Error) => output.destroy(error));
         return {
           [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
-          initializationResult: async () => ({ commands: [], agents: [], models: [], account: {}, output_style: 'default', available_output_styles: [] }),
+          initializationResult: async () => {
+            if (scriptedEngine.mode === 'startup-exit') {
+              output.end();
+              throw new Error('PUI-E2E engine exited during initialization');
+            }
+            return { commands: [], agents: [], models: [], account: {}, output_style: 'default', available_output_styles: [] };
+          },
           mcpServerStatus: async () => [{ name: 'papercusp-su', status: 'connected' as const }],
           interrupt: async () => { result(); },
           close: () => output.end(),
