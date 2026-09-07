@@ -172,7 +172,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     // streams.ts), so entries do NOT trickle — they arrive as a BURST once a second.
     // Appending them one setState at a time made each burst K separate renders, and
     // every one of those re-parses the live message's markdown (its content grows per
-    // entry, so ChatMessageContent's memo cannot hold — see ChatConversation.tsx).
+    // entry, so the shared chat markdown memo cannot hold — see PapercupChat.tsx).
     // That is the dense series of 20-65ms tasks that keystrokes were queueing behind.
     // Buffer the burst and commit it in ONE update at the next frame instead.
     //

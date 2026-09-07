@@ -5,7 +5,7 @@
  * renders it (goals-tab-improvement-2026-08-09 D-011).
  *
  * WHY THIS MODULE EXISTS. `SessionChatModal` grew all of this inline, so the
- * *renderer* (`LiveSessionChat` → `OperatorChat` → `ChatConversation`) was
+ * *renderer* (`LiveSessionChat` → `OperatorChat` → `PapercupChat`) was
  * reusable but the wiring around it was not: resolving the owner's session,
  * building the SSE `streamUrl`, and the send state machine. The goal popup now
  * embeds the same conversation (D-011), and copying that wiring would have

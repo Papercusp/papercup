@@ -110,7 +110,8 @@ import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import { useAgentLeaderBrief } from '../../adv/sessions/use-agent-leader-brief';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import { Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
-import { AGENT_MARKS, type ChatMessage } from './ChatConversation';
+import { AGENT_MARKS } from './chat-agent-marks';
+import type { ChatMessage } from './chat-types';
 import {
   contextPct,
   deriveBadges,
@@ -1129,7 +1130,7 @@ export function LiveSessionChat({
      turns and drops tool_result/status entirely. `messageIndexForEntryIndex`
      is that translation, done at the seam that does the collapsing.
 
-     This is the exact path; ChatConversation still takes `focusAnchor` as the
+     This is the exact path; PapercupChat still takes `focusAnchor` as the
      text fallback for when the server had no anchor to give (an anchor-less
      deep-link, or a match outside the window it returned). */
   const focusIndex = useMemo(() => {
@@ -1184,7 +1185,11 @@ export function LiveSessionChat({
   // So this early return is load-bearing, not just an optimisation.
   const renderAvatar = useCallback(
     (m: ChatMessage): ReactNode | null => {
-      if (m.role !== 'assistant' || !rosterEntry) return null;
+      // An explicit agent kind selects the pane mark below (Papercup or the
+      // neutral terminal fallback). Only an entry without a kind gets the
+      // roster identity chip; otherwise this override would mask the icon and
+      // make the kind-to-mark contract unreachable.
+      if (m.role !== 'assistant' || !rosterEntry || rosterEntry.agent !== undefined) return null;
       return (
         <span
           className="oracle-msg-avatar oracle-msg-avatar--identity"
