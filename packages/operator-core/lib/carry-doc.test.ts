@@ -84,6 +84,31 @@ function automaticRecovery(complete = true): AutomaticCompactionRecovery {
             budget: { estimatedTokens: 100, maxTokens: 384 },
           }
         : null,
+      planAuthority: complete
+        ? {
+            resolution: 'current',
+            controlGeneration: 17,
+            workspaceId: 'ws-1',
+            harness: 'papercusp',
+            planSlug: 'fleet-deltas-leader-primitives-2026-07-10',
+            version: 31,
+            contentHash: 'current-plan-hash',
+            planStatus: 'ready',
+            decisions: [{
+              id: 'D-009',
+              title: 'current authority wins',
+              body: 'Use the current plan before any carried checkpoint.',
+              truncated: false,
+            }],
+            items: [{ id: 'P-017', status: 'wip', text: 'current item', missing: false }],
+            specs: [{
+              specId: 'SPEC-P-017',
+              revision: 4,
+              contentHash: 'current-spec-hash',
+              planItemId: 'P-017',
+            }],
+          }
+        : null,
       checkpoints: [
         {
           id: 'WI-41558',
@@ -97,6 +122,7 @@ function automaticRecovery(complete = true): AutomaticCompactionRecovery {
         selfSession: true,
         control: complete,
         heldItems: true,
+        planAuthority: complete,
         staleness: null,
       },
     },
@@ -603,6 +629,35 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('coord:declare-intent { intent, current_plan_slug, items }');
     expect(text).not.toContain('planItems');
     expect(text).toContain('control generation 17');
+    expect(text).toContain('current plan authority (PRECEDES carried summaries)');
+    expect(text).toContain('version=31 contentHash=current-plan-hash');
+    expect(text).toContain('D-009 current authority wins');
+    expect(text).toContain('P-017=wip');
+    expect(text).toContain('SPEC-P-017@4#current-spec-hash');
+    expect(text.indexOf('current plan authority (PRECEDES carried summaries)')).toBeLessThan(
+      text.indexOf('## Standing carry'),
+    );
+  });
+
+  it('renders an unavailable plan authority as an incomplete recovery instruction', () => {
+    const recovery = automaticRecovery(false);
+    recovery.marker.controlGeneration = 17;
+    recovery.recovery.control = automaticRecovery(true).recovery.control;
+    recovery.recovery.planAuthority = {
+      resolution: 'unavailable',
+      controlGeneration: 17,
+      workspaceId: 'ws-1',
+      harness: 'wrong-harness',
+      planSlug: 'fleet-deltas-leader-primitives-2026-07-10',
+      reason: 'not-found-in-control-harness',
+    };
+    recovery.recovery.coverage.control = true;
+    recovery.recovery.coverage.planAuthority = false;
+
+    const text = renderCarryDoc(doc({ automaticRecovery: recovery }), NOW);
+    expect(text).toContain('current plan authority: UNAVAILABLE');
+    expect(text).toContain('reason=not-found-in-control-harness');
+    expect(text).toContain('recovery marker is incomplete');
   });
 
   it('renders judge recovery without engineering or transcript-recall directives', () => {
