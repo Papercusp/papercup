@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
+import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
   composeLaunchModelSpec,
   MIN_COMPACTION_LIMIT_TOKENS,
@@ -1735,7 +1736,6 @@ export async function probeFreshLaunchSessions({
         successful_scheduler_calls: string | number;
         ms_since_last_signal: string | number | null;
         has_presence: boolean;
-        wake_source: string | null;
         scheduler_disposition: unknown;
         claimed_work_item_id: string | null;
         launch_spec: unknown;
@@ -1771,11 +1771,6 @@ export async function probeFreshLaunchSessions({
              EXISTS (SELECT 1 FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${workspaceId}
                         AND p.owner_id = s.coord_owner_id) AS has_presence,
-             (SELECT b.control_state->>'wakeSource'
-                FROM harness_shared.session_briefs b
-               WHERE b.workspace_id = ${workspaceId}
-                 AND b.owner_id = s.coord_owner_id
-               LIMIT 1) AS wake_source,
              (SELECT t.metadata_json->'schedulerDisposition'
                 FROM harness_shared.tool_invocations t
                WHERE t.workspace_id = ${workspaceId}
@@ -1804,6 +1799,20 @@ export async function probeFreshLaunchSessions({
          AND s.launch_argv::text LIKE ${`%--launched-by=${launcherOwnerId}%`}
        ORDER BY s.first_seen_at ASC
        LIMIT 50`;
+    // session_briefs.control_state is a launch-time snapshot, not the live
+    // wake contract. It can remain `none` after loop:arm has installed an
+    // active loop (the EI-225344 false-pruning incident). Reuse the shared
+    // self-wake oracle, which reads the authoritative routines/event_awaits
+    // writers, for every owner in this probe cohort. If that oracle fails,
+    // propagate the error to the caller's unverified/fail-closed path; never
+    // turn an instrumentation failure into `selfWake:'none'` and prune a live
+    // worker.
+    const ownerIds = [...new Set(
+      rows
+        .map((row) => row.coord_owner_id)
+        .filter((ownerId): ownerId is string => typeof ownerId === 'string' && ownerId.length > 0),
+    )];
+    const selfWakeByOwner = await fetchSelfWake(ownerIds);
     const wanted = expectedOwnerIds?.length ? new Set(expectedOwnerIds) : null;
     const expectedByOwner = new Map((expectedAttestations ?? []).map((item) => [item.ownerId, item]));
     return rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map((r) => {
@@ -1829,6 +1838,9 @@ export async function probeFreshLaunchSessions({
         }
       }
       const successfulCalls = Number(r.successful_calls ?? 0);
+      const wakeSource = r.coord_owner_id
+        ? selfWakeByOwner.get(r.coord_owner_id)?.selfWake ?? null
+        : null;
       const host = r.coord_owner_id ? findLiveHost(r.coord_owner_id) : null;
       const quotaBlocked =
         host && typeof host.quotaBlocked === 'boolean' ? host.quotaBlocked : null;
@@ -1849,7 +1861,7 @@ export async function probeFreshLaunchSessions({
         workerAttestation: deriveFreshLaunchWorkerAttestation({
           ownerId: r.coord_owner_id,
           successfulCalls,
-          wakeSource: r.wake_source,
+          wakeSource,
           schedulerCalls: Number(r.scheduler_calls ?? 0),
           successfulSchedulerCalls: Number(r.successful_scheduler_calls ?? 0),
           schedulerDisposition: r.scheduler_disposition,
