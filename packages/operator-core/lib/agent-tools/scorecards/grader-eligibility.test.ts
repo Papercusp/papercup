@@ -250,3 +250,87 @@ describe('grader_in_implementer_lineage remedy text (EI-22268985547402093)', () 
     expect(error).toMatch(/Do NOT file it unassigned/);
   });
 });
+
+/**
+ * R-5 / P-005 of plan `bar-reporting-layer-repairs-2026-09-07`.
+ *
+ * `grader_is_sole_vetting_critic` and `bar_snapshot_vetting_stale` read as a
+ * two-party deadlock: vet first and you are the sole critic, grade first and
+ * there is no attestation. It is NOT a deadlock — the axis is independence,
+ * not ordering — but the escape (a second INDEPENDENT critic at the current
+ * revision, recorded on the OTHER vetting channel) lived only in
+ * `resolveAggregatedVettingCritics` and in no document.
+ *
+ * That mattered because of WHEN this refusal lands: at the END of the ceremony,
+ * after implementation, audit and rubric authoring are all paid for. So the
+ * clause's falsifier is satisfied only if the route is in BOTH places — this
+ * block covers the refusal payload; the documentation half is pinned in
+ * `doc-claims/acceptance-vetting-escape-route.test.ts`.
+ */
+describe('grader_is_sole_vetting_critic carries the escape route (R-5 / P-005)', () => {
+  const soleCriticRefusal = async () => {
+    listScorecards.mockResolvedValue([
+      vettingCard({ vetting: { consultId: 'conv-1', rubricRevision: 7, critics: ['su-reviewer-a'] } }),
+    ]);
+    const result = await resolveAcceptanceGraderEligibility({
+      rubric: RUBRIC,
+      callerId: 'su-reviewer-a',
+      workspaceId: 'ws-test',
+    });
+    expect(result.refusal?.code).toBe('grader_is_sole_vetting_critic');
+    return result.refusal!;
+  };
+
+  it('states the second-independent-critic route as a structured remedy', async () => {
+    const { remedy } = await soleCriticRefusal();
+
+    expect(remedy?.summary).toMatch(/SECOND vetting critic/i);
+    expect(remedy?.summary).toMatch(/independent/i);
+    // The refusal must say the SAME grader becomes eligible — otherwise the honest
+    // reading stays "hand this plan to someone else", which is the expensive one.
+    expect(remedy?.summary).toMatch(/this same grader becomes eligible/i);
+  });
+
+  it('gives executable steps naming the other channel and the current revision', async () => {
+    const steps = (await soleCriticRefusal()).remedy?.steps ?? [];
+
+    expect(steps.length).toBeGreaterThan(0);
+    const joined = steps.join('\n');
+    expect(joined).toContain('coord:presence');
+    expect(joined).toMatch(/vettingConsult \/ vettingWorkItem/);
+    expect(joined).toMatch(/CURRENT revision/i);
+    expect(joined).toContain('meta-acceptance-rubric');
+  });
+
+  it('names the three routes that LOOK like the escape and are not', async () => {
+    const doesNotWork = (await soleCriticRefusal()).remedy?.doesNotWork ?? [];
+    const joined = doesNotWork.join('\n');
+
+    // Each of these is a plausible next move that costs a full cycle to disprove.
+    expect(joined).toMatch(/lineage/i); // a second critic who is really the same party
+    expect(joined).toMatch(/bar_snapshot_vetting_(missing|stale)/); // grading first to change the order
+    expect(joined).toMatch(/newer revision/i); // re-vetting yourself
+  });
+
+  it('points at the agent-facing runbook rather than at the source file', async () => {
+    const { remedy } = await soleCriticRefusal();
+
+    expect(remedy?.docRef).toBe('agent-insights/acceptance-rubric-vetting');
+  });
+
+  it('CONTROL: the sibling implementer-lineage refusal does NOT carry this remedy', async () => {
+    // Falsifiability. If a remedy were attached to every refusal, or defaulted onto
+    // the type, every assertion above would pass while proving nothing about THIS
+    // code path. `grader_in_implementer_lineage` carries its route in `error` prose
+    // (asserted in the block above) and no structured `remedy`.
+    lineageRelated.mockResolvedValue(true);
+    const result = await resolveAcceptanceGraderEligibility({
+      rubric: RUBRIC,
+      callerId: 'su-launched-by-author',
+      workspaceId: 'ws-test',
+    });
+
+    expect(result.refusal?.code).toBe('grader_in_implementer_lineage');
+    expect(result.refusal?.remedy).toBeUndefined();
+  });
+});
