@@ -166,22 +166,26 @@ export async function readSuccessfulActionInvocations(
       scope: 'spawn' | 'owner',
     ): Promise<Array<{ tool_name: string | null; args_json: unknown }>> => {
       if (scope === 'spawn') {
-        return sql<Array<{ tool_name: string | null; args_json: unknown }>>`
+        const scopedSpawnId = spawnId;
+        if (!scopedSpawnId) return [];
+        return await sql<Array<{ tool_name: string | null; args_json: unknown }>>`
           SELECT tool_name, args_json
             FROM harness_shared.tool_invocations
            WHERE workspace_id = ${workspaceId}
-             AND spawn_id = ${spawnId}
+             AND spawn_id = ${scopedSpawnId}
              AND status = 'ok'
              AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
            ORDER BY invoked_at DESC
            LIMIT ${limit}
         `;
       }
-      return sql<Array<{ tool_name: string | null; args_json: unknown }>>`
+      const scopedOwnerId = coordOwnerId;
+      if (!scopedOwnerId) return [];
+      return await sql<Array<{ tool_name: string | null; args_json: unknown }>>`
         SELECT tool_name, args_json
           FROM harness_shared.tool_invocations
          WHERE workspace_id = ${workspaceId}
-           AND coord_owner_id = ${coordOwnerId}
+           AND coord_owner_id = ${scopedOwnerId}
            AND status = 'ok'
            AND tool_name = ANY(${[...ACTION_PROOF_TOOL_NAMES]})
          ORDER BY invoked_at DESC
