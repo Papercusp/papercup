@@ -27,7 +27,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
-  Monitor,
   MoreHorizontal,
   Play,
   RefreshCw,
@@ -35,10 +34,8 @@ import {
   Square,
 } from "lucide-react";
 import { Button } from "@/app/harness/Button";
-import {
-  HostedDesktopViewer,
-  type HostedDesktopViewerState,
-} from "./HostedDesktopViewer";
+import type { HostedDesktopViewerState } from "./HostedDesktopViewer";
+import { HostedDesktopWorkspace } from "./HostedDesktopWorkspace";
 import {
   HostedWorkspaceSession,
   type HostedDesktopQueryState,
@@ -659,7 +656,7 @@ function HostRow({
             {activeTab === "logs" ? <LogsTab workspace={workspace} /> : null}
             {activeTab === "cost" ? <CostTab workspace={workspace} /> : null}
             {activeTab === "desktops" ? (
-              <DesktopSurface
+              <HostedDesktopWorkspace
                 hostName={workspace.name}
                 workspaceId={hostedWorkspaceId}
                 hostId={workspace.id}
@@ -703,224 +700,6 @@ function HostRow({
         </div>
       ) : null}
     </li>
-  );
-}
-
-type DesktopSelection = {
-  desktopSessionId: string;
-  mode: HostedDesktopViewerMode;
-};
-
-function desktopDisplayLabel(entry: HostedDesktopRosterEntry): string {
-  return entry.displayNumber !== undefined
-    ? `Display ${entry.displayNumber}`
-    : entry.desktopSessionId;
-}
-
-function DesktopSurface({
-  hostName,
-  workspaceId,
-  hostId,
-  routeLabel,
-  bridge,
-  roster,
-  rosterState,
-  rosterError,
-  thumbnails,
-  selectedDesktop,
-  viewerState,
-  onSelectDesktop,
-  onViewerStateChange,
-}: {
-  hostName: string;
-  workspaceId: string | null;
-  hostId: string;
-  routeLabel: string | null;
-  bridge: HostedWorkspaceDesktopBridge | null;
-  roster: readonly HostedDesktopRosterEntry[];
-  rosterState: HostedDesktopQueryState;
-  rosterError: string | null;
-  thumbnails: Readonly<Record<string, HostedDesktopThumbnailResult>>;
-  selectedDesktop: DesktopSelection | null;
-  viewerState: HostedDesktopViewerState | null;
-  onSelectDesktop: (selection: DesktopSelection | null) => void;
-  onViewerStateChange: (state: HostedDesktopViewerState) => void;
-}) {
-  const selectedEntry = selectedDesktop
-    ? roster.find(
-        (entry) => entry.desktopSessionId === selectedDesktop.desktopSessionId,
-      )
-    : null;
-  const canOpenViewer = Boolean(workspaceId && routeLabel && bridge);
-
-  return (
-    <section
-      className={styles.desktopSurface}
-      aria-label={`Desktop picker for ${hostName}`}
-      data-roster-state={rosterState}
-    >
-      <div className={styles.desktopSurfaceHeader}>
-        <div>
-          <strong>
-            <Monitor size={14} aria-hidden="true" /> Desktops
-          </strong>
-          <small>
-            {routeLabel
-              ? "Roster and thumbnails use the authenticated PTY control channel."
-              : "This host has not advertised a browser desktop connector."}
-          </small>
-        </div>
-        <span>
-          {roster.length} {roster.length === 1 ? "desktop" : "desktops"}
-        </span>
-      </div>
-
-      <div className={styles.desktopRosterToolbar}>
-        <span aria-live="polite">
-          {rosterState === "loading"
-            ? "Refreshing desktop roster…"
-            : rosterState === "error"
-              ? "Desktop roster unavailable"
-              : bridge
-                ? "Control channel ready"
-                : "Connect the workspace session to discover desktops"}
-        </span>
-        <button
-          type="button"
-          onClick={() => bridge?.requestRoster()}
-          disabled={!bridge || rosterState === "loading"}
-          aria-label="Refresh desktop roster"
-        >
-          <RefreshCw size={12} aria-hidden="true" /> Refresh roster
-        </button>
-      </div>
-
-      {rosterError ? (
-        <p className={styles.desktopRosterError} role="alert">
-          Desktop roster failed: {rosterError}
-        </p>
-      ) : null}
-
-      {!routeLabel ? (
-        <p className={styles.desktopRosterEmpty}>
-          Browser streaming is unavailable until this host publishes a WebSocket
-          connector capability.
-        </p>
-      ) : !bridge ? (
-        <p className={styles.desktopRosterEmpty}>
-          Connect the Browser workspace session below to load the host-scoped
-          desktop roster. PTY and desktop streams reconnect independently.
-        </p>
-      ) : roster.length === 0 && rosterState === "loading" ? (
-        <p className={styles.desktopRosterEmpty}>Loading desktops…</p>
-      ) : roster.length === 0 ? (
-        <p className={styles.desktopRosterEmpty}>
-          No active desktops are advertised by this host.
-        </p>
-      ) : (
-        <ul className={styles.desktopRoster} aria-label="Available desktops">
-          {roster.map((entry) => {
-            const thumbnail = thumbnails[entry.desktopSessionId];
-            const label = desktopDisplayLabel(entry);
-            const selected =
-              selectedDesktop?.desktopSessionId === entry.desktopSessionId;
-            return (
-              <li
-                className={styles.desktopRosterCard}
-                key={entry.desktopSessionId}
-                data-selected={selected ? "true" : "false"}
-              >
-                <div className={styles.desktopThumbnail} aria-hidden="true">
-                  {thumbnail?.data ? (
-                    <img
-                      src={`data:image/jpeg;base64,${thumbnail.data}`}
-                      alt=""
-                      loading="lazy"
-                    />
-                  ) : (
-                    <span>
-                      {thumbnail ? "No recent frame" : "Preview loading…"}
-                    </span>
-                  )}
-                </div>
-                <div className={styles.desktopRosterInfo}>
-                  <strong>{label}</strong>
-                  <span className={styles.desktopRosterMeta}>
-                    {entry.state}
-                    {entry.geometry ? ` · ${entry.geometry}` : ""}
-                    {entry.lastActiveAt
-                      ? ` · active ${entry.lastActiveAt}`
-                      : ""}
-                  </span>
-                  <div className={styles.desktopRosterActions}>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onSelectDesktop({
-                          desktopSessionId: entry.desktopSessionId,
-                          mode: "watch",
-                        })
-                      }
-                      disabled={!canOpenViewer}
-                      aria-label={`Watch ${label}`}
-                    >
-                      Watch
-                    </button>
-                    <button
-                      type="button"
-                      data-destructive="true"
-                      onClick={() =>
-                        onSelectDesktop({
-                          desktopSessionId: entry.desktopSessionId,
-                          mode: "takeover",
-                        })
-                      }
-                      disabled={!canOpenViewer}
-                      aria-label={`Take over ${label}`}
-                    >
-                      Take over
-                    </button>
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {selectedDesktop && selectedEntry && workspaceId && routeLabel ? (
-        <div className={styles.desktopViewerMount}>
-          <div className={styles.desktopRosterToolbar}>
-            <span>
-              {desktopDisplayLabel(selectedEntry)} ·{" "}
-              {selectedDesktop.mode === "takeover" ? "takeover" : "watch"}
-              {viewerState ? ` · ${viewerState}` : ""}
-            </span>
-            <button
-              type="button"
-              onClick={() => onSelectDesktop(null)}
-              aria-label="Close desktop viewer"
-            >
-              Close viewer
-            </button>
-          </div>
-          <HostedDesktopViewer
-            key={`${selectedDesktop.desktopSessionId}:${selectedDesktop.mode}`}
-            workspaceId={workspaceId}
-            hostId={hostId}
-            routeLabel={routeLabel}
-            desktopSessionId={selectedDesktop.desktopSessionId}
-            desktopLabel={desktopDisplayLabel(selectedEntry)}
-            mode={selectedDesktop.mode}
-            onStateChange={onViewerStateChange}
-          />
-        </div>
-      ) : selectedDesktop ? (
-        <p className={styles.desktopRosterError} role="alert">
-          The selected desktop is no longer in the authenticated roster.
-        </p>
-      ) : null}
-    </section>
   );
 }
 

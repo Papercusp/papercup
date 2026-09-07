@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Expand, Minimize2, Monitor, RefreshCw } from "lucide-react";
+import {
+  Expand,
+  Eye,
+  Minimize2,
+  Monitor,
+  MousePointer2,
+  RefreshCw,
+} from "lucide-react";
 import { Button } from "@/app/harness/Button";
 import {
   buildHostedDesktopSocketUrl,
@@ -47,6 +54,8 @@ export interface HostedDesktopViewerProps {
   desktopLabel?: string;
   mode?: HostedDesktopViewerMode;
   onStateChange?: (state: HostedDesktopViewerState) => void;
+  onModeChange?: (mode: HostedDesktopViewerMode) => void;
+  canTakeControl?: boolean;
 }
 
 export function HostedDesktopViewer({
@@ -57,6 +66,8 @@ export function HostedDesktopViewer({
   desktopLabel,
   mode = "watch",
   onStateChange,
+  onModeChange,
+  canTakeControl = true,
 }: HostedDesktopViewerProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -64,6 +75,7 @@ export function HostedDesktopViewer({
   const rfbRef = useRef<import("@novnc/novnc").default | null>(null);
   const epochRef = useRef(0);
   const readyRejectedRef = useRef(false);
+  const controlButtonRef = useRef<HTMLButtonElement | null>(null);
   const [state, setState] = useState<HostedDesktopViewerState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [inputAllowed, setInputAllowed] = useState(false);
@@ -221,6 +233,32 @@ export function HostedDesktopViewer({
     return () => disconnect();
   }, [connect, disconnect]);
 
+  const changeMode = useCallback(
+    (next: HostedDesktopViewerMode) => {
+      if (!onModeChange) return;
+      // Stop input immediately; the next mode must obtain a fresh scoped ticket.
+      if (rfbRef.current) rfbRef.current.viewOnly = true;
+      disconnect();
+      updateState("idle");
+      onModeChange(next);
+      controlButtonRef.current?.focus();
+    },
+    [disconnect, onModeChange, updateState],
+  );
+
+  useEffect(() => {
+    if (mode !== "takeover" || !onModeChange) return;
+    const releaseOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      changeMode("watch");
+    };
+    // Capture before noVNC can forward Escape to the remote desktop.
+    window.addEventListener("keydown", releaseOnEscape, true);
+    return () => window.removeEventListener("keydown", releaseOnEscape, true);
+  }, [changeMode, mode, onModeChange]);
+
   useEffect(() => {
     const onFullscreenChange = () => {
       setFullscreen(
@@ -263,22 +301,45 @@ export function HostedDesktopViewer({
       className={styles.desktopPanel}
       aria-label={`Desktop viewer${desktopLabel ? ` for ${desktopLabel}` : ""}`}
       data-state={state}
+      data-mode={mode}
       data-input-allowed={inputAllowed ? "true" : "false"}
     >
       <div className={styles.desktopHeader}>
         <div>
           <strong>
-            <Monitor size={13} aria-hidden="true" /> Desktop stream
+            <Monitor size={15} aria-hidden="true" />{" "}
+            {desktopLabel ?? "Desktop stream"}
           </strong>
-          <span>
-            {desktopLabel ?? desktopSessionId} ·{" "}
-            {mode === "takeover" ? "takeover requested" : "watch requested"}
-          </span>
+          <span>{mode === "takeover" ? "Control requested" : "Watching"}</span>
         </div>
         <div className={styles.desktopActions}>
           <span className={styles.desktopStatus} aria-live="polite">
             {statusLabel}
           </span>
+          {onModeChange ? (
+            <Button
+              ref={controlButtonRef}
+              variant={mode === "takeover" ? "neutral" : "primary"}
+              onClick={() =>
+                changeMode(mode === "takeover" ? "watch" : "takeover")
+              }
+              disabled={
+                mode === "watch" && (!canTakeControl || state !== "connected")
+              }
+              title={
+                mode === "takeover"
+                  ? "Release control (Escape)"
+                  : "Use this desktop with your mouse and keyboard"
+              }
+            >
+              {mode === "takeover" ? (
+                <Eye size={14} aria-hidden="true" />
+              ) : (
+                <MousePointer2 size={14} aria-hidden="true" />
+              )}
+              {mode === "takeover" ? "Release control" : "Take control"}
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
@@ -315,17 +376,17 @@ export function HostedDesktopViewer({
             {state === "error"
               ? `Desktop stream failed${error ? `: ${error}` : "."}`
               : state === "closed"
-                ? "Desktop stream ended. Reconnect to resume it."
-                : "Opening the generation-bound desktop stream…"}
+                ? "Connection lost. Your workspace may still be running. Reconnect to resume watching."
+                : "Opening your desktop…"}
           </div>
         ) : null}
       </div>
       <div className={styles.desktopFooter}>
         <span>
           {inputAllowed
-            ? "Input is enabled by the takeover credential."
+            ? "You have control. Release control or press Escape to return to watching."
             : mode === "takeover"
-              ? "Takeover was requested, but the host did not grant input."
+              ? "Control was requested, but the workspace has not enabled input."
               : "Watch-only mode keeps keyboard and pointer input disabled."}
         </span>
         <div

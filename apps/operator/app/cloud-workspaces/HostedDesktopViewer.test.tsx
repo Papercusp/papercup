@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { HostedDesktopViewerMode } from "./hosted-desktop-viewer-protocol";
 
 const H = vi.hoisted(() => {
   class FakeSocket {
@@ -123,6 +132,96 @@ async function renderViewer(
 }
 
 describe("<HostedDesktopViewer>", () => {
+  function ControlledViewer({
+    initialMode = "watch",
+  }: {
+    initialMode?: HostedDesktopViewerMode;
+  }) {
+    const [mode, setMode] = useState(initialMode);
+    return (
+      <HostedDesktopViewer
+        workspaceId="customer-workspace-1"
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        desktopSessionId="desktop-1"
+        mode={mode}
+        onModeChange={setMode}
+      />
+    );
+  }
+
+  function acceptConnection(index: number, mode: HostedDesktopViewerMode) {
+    act(() => {
+      H.sockets[index].emit("message", {
+        data: JSON.stringify({
+          type: "desktop.ready",
+          action: mode,
+          inputAllowed: mode === "takeover",
+        }),
+      });
+      H.FakeRFB.instances[index].emit("connect");
+    });
+  }
+
+  it("takes and releases control with fresh scoped connections while preserving the viewer element", async () => {
+    render(<ControlledViewer />);
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(1));
+    const panel = screen.getByRole("region", { name: "Desktop viewer" });
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Take control",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    acceptConnection(0, "watch");
+    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(2));
+    expect(H.sockets[0].close).toHaveBeenCalledWith(1000, "viewer_detached");
+    expect(H.sockets[1].url).toContain("desktopMode=takeover");
+    expect(screen.getByRole("region", { name: "Desktop viewer" })).toBe(panel);
+    acceptConnection(1, "takeover");
+    expect(panel.getAttribute("data-input-allowed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Release control" }));
+    expect(H.FakeRFB.instances[1].viewOnly).toBe(true);
+    expect(H.sockets[1].close).toHaveBeenCalledWith(1000, "viewer_detached");
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(3));
+    expect(H.sockets[2].url).toContain("desktopMode=watch");
+    expect(H.FakeRFB.instances[2].viewOnly).toBe(true);
+    expect(H.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("captures Escape before remote input, releases immediately, and restores focus to the control button", async () => {
+    render(<ControlledViewer initialMode="takeover" />);
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(1));
+    acceptConnection(0, "takeover");
+    const remoteKey = vi.fn();
+    const panel = screen.getByRole("region", { name: "Desktop viewer" });
+    panel.addEventListener("keydown", remoteKey);
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(remoteKey).not.toHaveBeenCalled();
+    expect(H.FakeRFB.instances[0].viewOnly).toBe(true);
+    expect(H.sockets[0].close).toHaveBeenCalledWith(1000, "viewer_detached");
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(2));
+    expect(H.sockets[1].url).toContain("desktopMode=watch");
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Take control" }),
+    );
+  });
+
+  it("allows release after a disconnected control stream and explains the connection loss", async () => {
+    render(<ControlledViewer initialMode="takeover" />);
+    await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(1));
+    acceptConnection(0, "takeover");
+    act(() => H.sockets[0].emit("close", { code: 1006, reason: "" }));
+    expect(
+      screen.getByText(/Connection lost. Your workspace may still be running/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Release control" }));
+    await waitFor(() => expect(H.sockets).toHaveLength(2));
+    expect(H.sockets[1].url).toContain("desktopMode=watch");
+  });
+
   it("opens a separate desktop socket, honors desktop.ready input policy, and connects noVNC", async () => {
     const { socket, rfb } = await renderViewer({ mode: "takeover" });
     expect(socket.url).toBe(
