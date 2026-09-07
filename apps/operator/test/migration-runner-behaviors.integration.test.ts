@@ -157,6 +157,39 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(await recorded()).toEqual([{ filename: '001-widgets.sql', sha256: sha256(raw) }]);
   });
 
+  it('flushes bulk migration WAL without a cluster checkpoint, including a failed final file', async () => {
+    const files: Record<string, string> = {};
+    for (let i = 1; i <= 19; i += 1) files[`${String(i).padStart(3, '0')}-bulk.sql`] = 'SELECT 1;';
+    files['020-broken.sql'] = 'SELECT * FROM mrb_missing_bulk_tail;';
+    const dir = await makeSqlDir(files);
+    let beforeBarrierLsn: string | undefined;
+    let barrierSeen = false;
+    const client = {
+      unsafe: async (query: string) => {
+        // Reject the old implementation before it can stall a shared cluster.
+        if (query.trim() === 'CHECKPOINT') throw new Error('cluster checkpoint is forbidden in this probe');
+        if (query.startsWith('UPDATE harness_shared.schema_migrations SET sha256')) {
+          const [{ value }] = await sql.unsafe("SELECT current_setting('synchronous_commit') AS value");
+          expect(value).toBe('on');
+          const [{ lsn }] = await sql.unsafe('SELECT pg_current_wal_insert_lsn()::text AS lsn');
+          beforeBarrierLsn = lsn;
+          barrierSeen = true;
+        }
+        return sql.unsafe(query);
+      },
+    };
+
+    const result = await applyPendingMigrations({ client, sqlDir: dir, continueOnError: true });
+
+    expect(result.appliedCount).toBe(19);
+    expect(result.failed.map((failure) => failure.file)).toEqual(['020-broken.sql']);
+    expect(barrierSeen).toBe(true);
+    const [{ durable }] = await sql.unsafe('SELECT pg_current_wal_flush_lsn() >= $1::pg_lsn AS durable', [beforeBarrierLsn!]);
+    expect(durable).toBe(true);
+    // The barrier may add a row version, but may not alter the ledger's meaning.
+    expect(await recorded()).toEqual(Object.keys(files).slice(0, 19).map(filename => ({ filename, sha256: sha256(files[filename]!) })));
+  });
+
   it('second run skips already-recorded files (non-idempotent DDL is NOT re-executed)', async () => {
     // Deliberately no IF NOT EXISTS — if the runner re-executed this, the second
     // run would throw 42P07 (duplicate_table) instead of cleanly skipping.

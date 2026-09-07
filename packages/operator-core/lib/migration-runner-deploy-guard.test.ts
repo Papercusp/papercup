@@ -69,4 +69,23 @@ describe('migration runner beforeApply guard', () => {
     expect(result).toMatchObject({ appliedCount: 0, totalKnown: 1, failed: [] });
     expect(beforeApply).not.toHaveBeenCalled();
   });
+
+  it.each(['restore', 'flush', 'missing-row'] as const)('refuses bulk completion when the durability barrier fails: %s', async (failure) => {
+    const dir = fixtureDir();
+    for (let i = 2; i <= 20; i += 1) writeFileSync(join(dir, `${String(i).padStart(3, '0')}-bulk.sql`), 'SELECT 1;');
+    const client = {
+      unsafe: vi.fn(async (query: string) => {
+        if (query.includes('SELECT filename')) return [];
+        if (query === 'SET synchronous_commit = on' && failure === 'restore') throw new Error('restore failed');
+        if (query.startsWith('UPDATE harness_shared.schema_migrations SET sha256')) {
+          if (failure === 'flush') throw new Error('flush failed');
+          return [];
+        }
+        return undefined;
+      }),
+    };
+    await expect(applyPendingMigrations({ client, sqlDir: dir })).rejects.toThrow(
+      failure === 'missing-row' ? /durability barrier.*recorded file/ : `${failure} failed`,
+    );
+  });
 });
