@@ -336,12 +336,16 @@ export function withGovernedAdmissionContext(env, context) {
  * PG contention codes `pg-bounded-txn.ts` raises as `OrgTxnTimeoutError`, whose own
  * message ends "— retry shortly".  55P03 = lock_timeout waiting on a row/advisory lock,
  * 57014 = statement_timeout.  Both mean "the database was busy", never "your work is
- * wrong", and until now nothing acted on that advice at this seam: the rejection was
- * flattened into `GOVERNED_ADMISSION_FAILED` and rendered as `could not launch Vitest`,
- * so a database lock was reported as a Vitest launch failure — two misattributions
- * stacked on a run that measured nothing.
+ * wrong".  postgres.js can also reject the admission client with a transport lifecycle
+ * code (`CONNECTION_ENDED` or `CONNECTION_DESTROYED`) while PgBouncer is replacing a
+ * dead connection; that is the same transient pre-launch condition and is safe to retry.
+ * Until these cases are handled at this seam, the rejection is flattened into
+ * `GOVERNED_ADMISSION_FAILED` and rendered as `could not launch Vitest`, so a transient
+ * database condition is reported as a Vitest launch failure over a run that measured
+ * nothing.
  */
 const RETRYABLE_ADMISSION_PG_CODES = new Set(['55P03', '57014']);
+const RETRYABLE_ADMISSION_CONNECTION_CODES = new Set(['CONNECTION_ENDED', 'CONNECTION_DESTROYED']);
 const DEFAULT_ADMISSION_RETRY_ATTEMPTS = 3;
 const DEFAULT_ADMISSION_RETRY_BASE_MS = 250;
 /** Emitted on every retry so fleet-wide DB contention stays VISIBLE. */
@@ -362,8 +366,7 @@ export const GOVERNED_ADMISSION_RETRY_MARKER = 'GOVERNED_ADMISSION_RETRY';
  */
 export function isRetryableAdmissionFailure(error, maxDepth = 4) {
   for (let node = error, depth = 0; node && typeof node === 'object' && depth <= maxDepth; depth++) {
-    const pgCode = node.pgCode;
-    if (typeof pgCode === 'string' && RETRYABLE_ADMISSION_PG_CODES.has(pgCode)) return true;
+    if (admissionFailurePgCode(node)) return true;
     node = node.cause;
   }
   return false;
@@ -457,6 +460,11 @@ export async function runGovernedTestProcess(options, run) {
 function admissionFailurePgCode(error, maxDepth = 4) {
   for (let node = error, depth = 0; node && typeof node === 'object' && depth <= maxDepth; depth++) {
     if (typeof node.pgCode === 'string' && RETRYABLE_ADMISSION_PG_CODES.has(node.pgCode)) return node.pgCode;
+    if (typeof node.code === 'string' && RETRYABLE_ADMISSION_CONNECTION_CODES.has(node.code)) return node.code;
+    if (typeof node.message === 'string') {
+      const match = /\b(CONNECTION_ENDED|CONNECTION_DESTROYED)\b/.exec(node.message);
+      if (match) return match[1];
+    }
     node = node.cause;
   }
   return null;

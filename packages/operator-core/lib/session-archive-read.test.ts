@@ -94,4 +94,57 @@ describe('readArchivedSessionTurns', () => {
   it('returns null when nothing is archived under any kind', async () => {
     expect(await readArchivedSessionTurns('no-such-session', undefined, new MiniStore())).toBeNull();
   });
+
+  it('skips a corrupt Codex archive file, keeps healthy files, and reports the path/error', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-read-codex-'));
+    const first = join(tmp, 'sessions', '2026', '07', '10');
+    const second = join(tmp, 'sessions', '2026', '07', '11');
+    await mkdir(first, { recursive: true });
+    await mkdir(second, { recursive: true });
+    const healthyRelpath = join(
+      'sessions',
+      '2026',
+      '07',
+      '10',
+      `rollout-2026-07-10T01-00-00-${SID}.jsonl`,
+    );
+    const corruptRelpath = join(
+      'sessions',
+      '2026',
+      '07',
+      '11',
+      `rollout-2026-07-11T01-00-00-${SID}.jsonl`,
+    );
+    const codexLine = JSON.stringify({
+      timestamp: '2026-07-10T01:00:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'healthy Codex archive turn' }],
+      },
+    });
+    await writeFile(join(tmp, healthyRelpath), `${codexLine}\n`);
+    await writeFile(join(tmp, corruptRelpath), `${codexLine}\n`);
+
+    const store = new MiniStore();
+    const archived = await archiveAndDeleteSession(
+      { sourceKind: 'codex', sessionId: SID, sessionRoot: tmp, owner: 'owner-a' },
+      store,
+    );
+    expect(archived.archive.ok).toBe(true);
+    const corrupt = store.files.find((row) => row.relpath === corruptRelpath);
+    expect(corrupt).toBeDefined();
+    corrupt!.blob = Buffer.from('not-a-zstd-frame');
+
+    const result = await readArchivedSessionTurns(SID, 'codex', store);
+    expect(result).toMatchObject({
+      sourceKind: 'codex',
+      owner: 'owner-a',
+      turns: [expect.objectContaining({ text: 'healthy Codex archive turn' })],
+      errors: [{ path: corruptRelpath }],
+    });
+    expect(result!.turns).toHaveLength(1);
+    expect(result!.errors[0]!.error).toBeTruthy();
+  });
 });

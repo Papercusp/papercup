@@ -36,6 +36,11 @@ export interface ArchivedTurn {
   text: string;
 }
 
+export interface ArchivedFileError {
+  path: string;
+  error: string;
+}
+
 const PARSERS: Record<ArchiveSourceKind, (line: string) => { speaker: string; text: string; ts?: Date | null } | null> = {
   claude: parseClaudeLine,
   omp: parseOmpLine,
@@ -49,7 +54,12 @@ export async function readArchivedSessionTurns(
   sessionId: string,
   sourceKind?: ArchiveSourceKind,
   store: SessionArchiveStore = pgSessionArchiveStore(),
-): Promise<{ sourceKind: ArchiveSourceKind; owner: string | null; turns: ArchivedTurn[] } | null> {
+): Promise<{
+  sourceKind: ArchiveSourceKind;
+  owner: string | null;
+  turns: ArchivedTurn[];
+  errors: ArchivedFileError[];
+} | null> {
   const kinds: ArchiveSourceKind[] = sourceKind ? [sourceKind] : ['claude', 'codex', 'omp'];
   for (const kind of kinds) {
     const stamp = await store.readStamp(kind, sessionId);
@@ -58,30 +68,38 @@ export async function readArchivedSessionTurns(
       .filter((r) => r.relpath.endsWith('.jsonl'))
       .sort((a, b) => (a.relpath < b.relpath ? -1 : 1));
     const turns: ArchivedTurn[] = [];
+    const errors: ArchivedFileError[] = [];
     for (const row of rows) {
-      const raw = await decompressArchiveBlob(row);
-      for (const line of raw.toString('utf8').split('\n')) {
-        if (!line.trim()) continue;
-        let parsed: ReturnType<(typeof PARSERS)['claude']> = null;
-        try {
-          parsed = PARSERS[kind](line);
-        } catch {
-          continue; // one malformed line never kills the read
+      try {
+        const raw = await decompressArchiveBlob(row);
+        for (const line of raw.toString('utf8').split('\n')) {
+          if (!line.trim()) continue;
+          let parsed: ReturnType<(typeof PARSERS)['claude']> = null;
+          try {
+            parsed = PARSERS[kind](line);
+          } catch {
+            continue; // one malformed line never kills the read
+          }
+          if (!parsed) continue;
+          const text = cleanTurnText(parsed.text);
+          if (!text) continue;
+          turns.push({
+            source_kind: kind,
+            turn_idx: turns.length,
+            speaker: parsed.speaker,
+            owner: stamp.owner,
+            ts: parsed.ts ? parsed.ts.toISOString() : null,
+            text,
+          });
         }
-        if (!parsed) continue;
-        const text = cleanTurnText(parsed.text);
-        if (!text) continue;
-        turns.push({
-          source_kind: kind,
-          turn_idx: turns.length,
-          speaker: parsed.speaker,
-          owner: stamp.owner,
-          ts: parsed.ts ? parsed.ts.toISOString() : null,
-          text,
+      } catch (error) {
+        errors.push({
+          path: row.relpath,
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
-    return { sourceKind: kind, owner: stamp.owner, turns };
+    return { sourceKind: kind, owner: stamp.owner, turns, errors };
   }
   return null;
 }

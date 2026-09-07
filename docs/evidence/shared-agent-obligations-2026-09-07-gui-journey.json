@@ -1,0 +1,1087 @@
+{
+  "schemaVersion": 1,
+  "testedSha": "ddb59a866e",
+  "verifier": {
+    "pid": 3924823,
+    "display": ":91",
+    "port": 33710
+  },
+  "url": "http://127.0.0.1:33710/adv?tab=hud&hudtab=goals&ws=papercusp-workspace&hudgoal=work-on-everything-070565",
+  "checks": {
+    "status": true,
+    "generation": true,
+    "time": true,
+    "actions": true,
+    "omissions": true,
+    "recovery": true,
+    "noFalseAllClear": true
+  },
+  "journey": {
+    "openedFromCard": true,
+    "closeRemovedHudgoal": true,
+    "reopenedFromCard": true,
+    "goalRemainedKilled": true
+  },
+  "payload": {
+    "schemaVersion": "agent-goal-mode-state-v1",
+    "status": "degraded",
+    "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+    "observedAt": "2026-09-07T09:13:46.539Z",
+    "portfolio": null,
+    "obligations": {
+      "schemaVersion": "agent-obligations-v1",
+      "evaluatedAt": "2026-09-07T09:13:46.539Z",
+      "sourceGeneration": "9fdb18df0f498e361ca3",
+      "evaluations": [
+        {
+          "ruleId": "goal-owner-report",
+          "ruleRevision": "goal-owner-report-v1",
+          "family": "owner-report",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "goalId": "work-on-everything-070565"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "system-health/goal-owner-report-watchdog",
+            "revision": "goal-owner-report-v1"
+          },
+          "priority": "high",
+          "causalRank": 1,
+          "sourceGeneration": "74234e98afe7498fb5da",
+          "clearsWhen": {
+            "id": "canonical-owner-report-delivery",
+            "summary": "a complete report is delivered on one of the canonical owner-facing rails",
+            "evidenceKind": "delivery",
+            "sourceRef": "makeReadGoalModeOwners:three-source-report-union"
+          },
+          "boundary": {
+            "boundary": "goal-owner-report",
+            "refusalCode": "goal-owner-report-incomplete",
+            "enforcement": "required",
+            "unknown": "allow-with-warning"
+          },
+          "title": "No active goal reporting contract applies",
+          "episode": "none:74234e98afe7498fb5da",
+          "status": "not-applicable",
+          "reason": "the canonical reader found no active goal-mode holder row",
+          "applicableDemand": 0,
+          "evidence": [
+            {
+              "ref": "goal:work-on-everything-070565",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "74234e98afe7498fb5da",
+              "note": "no applicable owner row"
+            }
+          ],
+          "id": "obl:goal-owner-report:c66d7d4e6229dffdb2af"
+        },
+        {
+          "ruleId": "goal-plan-placement",
+          "ruleRevision": "goal-plan-placement-v2",
+          "family": "plan-placement",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "goalId": "work-on-everything-070565"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "goal-launch-settings+system-health/goal-drain-fleet-watchdog",
+            "revision": "goal-plan-placement-v2"
+          },
+          "priority": "high",
+          "sourceGeneration": "d55f6fb80a522538622e",
+          "clearsWhen": {
+            "id": "goal-plan-placement-consistent-and-launch-admissible",
+            "summary": "every non-terminal goal worklist plan has a consistent independently led placement and its launch boundary is admissible",
+            "evidenceKind": "state",
+            "sourceRef": "GoalPortfolioBrief.worklist[].placement+resolveGoalLaunch+classifyGoalPlanFleetCoverage"
+          },
+          "changeSignal": {
+            "event": "goal:plan-placement:work-on-everything-070565",
+            "cancellationRef": "goal:work-on-everything-070565"
+          },
+          "boundary": {
+            "boundary": "fleet:launch-on-plan",
+            "refusalCode": "goal-plan-placement-prerequisite",
+            "enforcement": "required",
+            "unknown": "allow-with-warning"
+          },
+          "title": "Plan placement evidence is unavailable",
+          "episode": "unknown:d55f6fb80a522538622e",
+          "status": "unknown",
+          "reason": "goal portfolio timeout after 1446ms",
+          "causalRank": 0,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "refresh the portfolio, plan-fleet cohort, and exact launch resolution together",
+            "targetRef": "readGoalPlanFleetCohort"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-placement-read-failed",
+            "detail": "goal portfolio timeout after 1446ms",
+            "retry": "refresh the portfolio, plan-fleet cohort, and exact launch resolution together"
+          },
+          "id": "obl:goal-plan-placement:a026d5729a7c290db647"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "fleet-friction-remediation-2026-08-21"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "45c3595839bba2cfad9e",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:fleet-friction-remediation-2026-08-21",
+            "cancellationRef": "plan:fleet-friction-remediation-2026-08-21"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:45c3595839bba2cfad9e",
+          "status": "unknown",
+          "reason": "plan acceptance fleet-friction-remediation-2026-08-21 timeout after 1444ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for fleet-friction-remediation-2026-08-21",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance fleet-friction-remediation-2026-08-21 timeout after 1444ms",
+            "retry": "retry evaluatePlanAcceptanceGate for fleet-friction-remediation-2026-08-21"
+          },
+          "id": "obl:plan-independent-verification:1d64bf6476ff629882fa"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "silent-wrong-answers-2026-08-01"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "15cd1a829ef41c7be65d",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:silent-wrong-answers-2026-08-01",
+            "cancellationRef": "plan:silent-wrong-answers-2026-08-01"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:15cd1a829ef41c7be65d",
+          "status": "unknown",
+          "reason": "plan acceptance silent-wrong-answers-2026-08-01 timeout after 1444ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for silent-wrong-answers-2026-08-01",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance silent-wrong-answers-2026-08-01 timeout after 1444ms",
+            "retry": "retry evaluatePlanAcceptanceGate for silent-wrong-answers-2026-08-01"
+          },
+          "id": "obl:plan-independent-verification:8dd14d33c6bb1edd0005"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "drain-admission-integrity-remediation-2026-08-13"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "df3aaeeb347d3f3ad2de",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:drain-admission-integrity-remediation-2026-08-13",
+            "cancellationRef": "plan:drain-admission-integrity-remediation-2026-08-13"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan drain-admission-integrity-remediation-2026-08-13 cannot yet be independently certified",
+          "episode": "acceptance_bar_contract_not_ready:no-rubric:df3aaeeb347d3f3ad2de",
+          "status": "blocked",
+          "reason": "acceptance BAR contract is not ready for ship: bar_snapshot_bar_set_empty, bar_snapshot_author_verdict_missing",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:drain-admission-integrity-remediation-2026-08-13:df3aaeeb347d3f3ad2de",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "df3aaeeb347d3f3ad2de",
+              "note": "acceptance_bar_contract_not_ready"
+            }
+          ],
+          "action": {
+            "kind": "repair",
+            "summary": "repair acceptance_bar_contract_not_ready before requesting a grader",
+            "targetRef": "drain-admission-integrity-remediation-2026-08-13",
+            "continuesCurrentWork": false
+          },
+          "id": "obl:plan-independent-verification:a03cfd7b9c617d5fd0ed"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "4a50ac5229f5c9e3759b",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27",
+            "cancellationRef": "plan:causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27 cannot yet be independently certified",
+          "episode": "acceptance_bar_contract_not_ready:no-rubric:4a50ac5229f5c9e3759b",
+          "status": "blocked",
+          "reason": "acceptance BAR contract is not ready for ship: bar_snapshot_bar_set_empty, bar_snapshot_author_verdict_missing",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27:4a50ac5229f5c9e3759b",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "4a50ac5229f5c9e3759b",
+              "note": "acceptance_bar_contract_not_ready"
+            }
+          ],
+          "action": {
+            "kind": "repair",
+            "summary": "repair acceptance_bar_contract_not_ready before requesting a grader",
+            "targetRef": "causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27",
+            "continuesCurrentWork": false
+          },
+          "id": "obl:plan-independent-verification:b22ba6fd5cbed3953a70"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "spend-attribution-is-missing-for-89-of-workspace-cost-the-po-2026-09-04"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "50eeaafab40e3925ff37",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:spend-attribution-is-missing-for-89-of-workspace-cost-the-po-2026-09-04",
+            "cancellationRef": "plan:spend-attribution-is-missing-for-89-of-workspace-cost-the-po-2026-09-04"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan spend-attribution-is-missing-for-89-of-workspace-cost-the-po-2026-09-04 has independent acceptance",
+          "episode": "accepted:spend-attribution-2026-09-04-acceptance:50eeaafab40e3925ff37",
+          "status": "satisfied",
+          "reason": "the canonical ship gate is satisfied",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:spend-attribution-is-missing-for-89-of-workspace-cost-the-po-2026-09-04:50eeaafab40e3925ff37",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "50eeaafab40e3925ff37",
+              "note": "accepted by canonical gate",
+              "effect": "current admissible independent acceptance verdict observed"
+            }
+          ],
+          "id": "obl:plan-independent-verification:c124cce18d6a6566f6c5"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "sidestage-auction-chat-public-release-2026-08-14"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "76dfc4d3a4348ab36947",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:sidestage-auction-chat-public-release-2026-08-14",
+            "cancellationRef": "plan:sidestage-auction-chat-public-release-2026-08-14"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:76dfc4d3a4348ab36947",
+          "status": "unknown",
+          "reason": "plan acceptance sidestage-auction-chat-public-release-2026-08-14 timeout after 1445ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for sidestage-auction-chat-public-release-2026-08-14",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance sidestage-auction-chat-public-release-2026-08-14 timeout after 1445ms",
+            "retry": "retry evaluatePlanAcceptanceGate for sidestage-auction-chat-public-release-2026-08-14"
+          },
+          "id": "obl:plan-independent-verification:d338a3f5ddb65412e3a2"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "sidestage-demo-user-isolation-2026-08-14"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "3cedbc785a9d1e5de056",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:sidestage-demo-user-isolation-2026-08-14",
+            "cancellationRef": "plan:sidestage-demo-user-isolation-2026-08-14"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:3cedbc785a9d1e5de056",
+          "status": "unknown",
+          "reason": "plan acceptance sidestage-demo-user-isolation-2026-08-14 timeout after 1444ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for sidestage-demo-user-isolation-2026-08-14",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance sidestage-demo-user-isolation-2026-08-14 timeout after 1444ms",
+            "retry": "retry evaluatePlanAcceptanceGate for sidestage-demo-user-isolation-2026-08-14"
+          },
+          "id": "obl:plan-independent-verification:df45bd85eacff792400a"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "resource-governor-admission-ledger-2026-09-01"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "01dc622f86a0d4fffb08",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:resource-governor-admission-ledger-2026-09-01",
+            "cancellationRef": "plan:resource-governor-admission-ledger-2026-09-01"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan resource-governor-admission-ledger-2026-09-01 cannot yet be independently certified",
+          "episode": "acceptance_bar_contract_not_ready:no-rubric:01dc622f86a0d4fffb08",
+          "status": "blocked",
+          "reason": "acceptance BAR contract is not ready for ship: bar_snapshot_bar_set_empty, bar_snapshot_author_verdict_missing",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:resource-governor-admission-ledger-2026-09-01:01dc622f86a0d4fffb08",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "01dc622f86a0d4fffb08",
+              "note": "acceptance_bar_contract_not_ready"
+            }
+          ],
+          "action": {
+            "kind": "repair",
+            "summary": "repair acceptance_bar_contract_not_ready before requesting a grader",
+            "targetRef": "resource-governor-admission-ledger-2026-09-01",
+            "continuesCurrentWork": false
+          },
+          "id": "obl:plan-independent-verification:ed99fd8c33500b25cfc2"
+        }
+      ],
+      "primary": [
+        {
+          "ruleId": "goal-plan-placement",
+          "ruleRevision": "goal-plan-placement-v2",
+          "family": "plan-placement",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "goalId": "work-on-everything-070565"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "goal-launch-settings+system-health/goal-drain-fleet-watchdog",
+            "revision": "goal-plan-placement-v2"
+          },
+          "priority": "high",
+          "sourceGeneration": "d55f6fb80a522538622e",
+          "clearsWhen": {
+            "id": "goal-plan-placement-consistent-and-launch-admissible",
+            "summary": "every non-terminal goal worklist plan has a consistent independently led placement and its launch boundary is admissible",
+            "evidenceKind": "state",
+            "sourceRef": "GoalPortfolioBrief.worklist[].placement+resolveGoalLaunch+classifyGoalPlanFleetCoverage"
+          },
+          "changeSignal": {
+            "event": "goal:plan-placement:work-on-everything-070565",
+            "cancellationRef": "goal:work-on-everything-070565"
+          },
+          "boundary": {
+            "boundary": "fleet:launch-on-plan",
+            "refusalCode": "goal-plan-placement-prerequisite",
+            "enforcement": "required",
+            "unknown": "allow-with-warning"
+          },
+          "title": "Plan placement evidence is unavailable",
+          "episode": "unknown:d55f6fb80a522538622e",
+          "status": "unknown",
+          "reason": "goal portfolio timeout after 1446ms",
+          "causalRank": 0,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "refresh the portfolio, plan-fleet cohort, and exact launch resolution together",
+            "targetRef": "readGoalPlanFleetCohort"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-placement-read-failed",
+            "detail": "goal portfolio timeout after 1446ms",
+            "retry": "refresh the portfolio, plan-fleet cohort, and exact launch resolution together"
+          },
+          "id": "obl:goal-plan-placement:a026d5729a7c290db647"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "drain-admission-integrity-remediation-2026-08-13"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "df3aaeeb347d3f3ad2de",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:drain-admission-integrity-remediation-2026-08-13",
+            "cancellationRef": "plan:drain-admission-integrity-remediation-2026-08-13"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan drain-admission-integrity-remediation-2026-08-13 cannot yet be independently certified",
+          "episode": "acceptance_bar_contract_not_ready:no-rubric:df3aaeeb347d3f3ad2de",
+          "status": "blocked",
+          "reason": "acceptance BAR contract is not ready for ship: bar_snapshot_bar_set_empty, bar_snapshot_author_verdict_missing",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:drain-admission-integrity-remediation-2026-08-13:df3aaeeb347d3f3ad2de",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "df3aaeeb347d3f3ad2de",
+              "note": "acceptance_bar_contract_not_ready"
+            }
+          ],
+          "action": {
+            "kind": "repair",
+            "summary": "repair acceptance_bar_contract_not_ready before requesting a grader",
+            "targetRef": "drain-admission-integrity-remediation-2026-08-13",
+            "continuesCurrentWork": false
+          },
+          "id": "obl:plan-independent-verification:a03cfd7b9c617d5fd0ed"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "4a50ac5229f5c9e3759b",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27",
+            "cancellationRef": "plan:causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27 cannot yet be independently certified",
+          "episode": "acceptance_bar_contract_not_ready:no-rubric:4a50ac5229f5c9e3759b",
+          "status": "blocked",
+          "reason": "acceptance BAR contract is not ready for ship: bar_snapshot_bar_set_empty, bar_snapshot_author_verdict_missing",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27:4a50ac5229f5c9e3759b",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "4a50ac5229f5c9e3759b",
+              "note": "acceptance_bar_contract_not_ready"
+            }
+          ],
+          "action": {
+            "kind": "repair",
+            "summary": "repair acceptance_bar_contract_not_ready before requesting a grader",
+            "targetRef": "causal-settlement-receipts-for-code-work-items-proposed-comp-2026-08-27",
+            "continuesCurrentWork": false
+          },
+          "id": "obl:plan-independent-verification:b22ba6fd5cbed3953a70"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "resource-governor-admission-ledger-2026-09-01"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "01dc622f86a0d4fffb08",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:resource-governor-admission-ledger-2026-09-01",
+            "cancellationRef": "plan:resource-governor-admission-ledger-2026-09-01"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Plan resource-governor-admission-ledger-2026-09-01 cannot yet be independently certified",
+          "episode": "acceptance_bar_contract_not_ready:no-rubric:01dc622f86a0d4fffb08",
+          "status": "blocked",
+          "reason": "acceptance BAR contract is not ready for ship: bar_snapshot_bar_set_empty, bar_snapshot_author_verdict_missing",
+          "causalRank": 2,
+          "applicableDemand": 1,
+          "evidence": [
+            {
+              "ref": "plan-acceptance:resource-governor-admission-ledger-2026-09-01:01dc622f86a0d4fffb08",
+              "observedAt": "2026-09-07T09:13:46.539Z",
+              "freshness": "current",
+              "sourceRevision": "01dc622f86a0d4fffb08",
+              "note": "acceptance_bar_contract_not_ready"
+            }
+          ],
+          "action": {
+            "kind": "repair",
+            "summary": "repair acceptance_bar_contract_not_ready before requesting a grader",
+            "targetRef": "resource-governor-admission-ledger-2026-09-01",
+            "continuesCurrentWork": false
+          },
+          "id": "obl:plan-independent-verification:ed99fd8c33500b25cfc2"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "fleet-friction-remediation-2026-08-21"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "45c3595839bba2cfad9e",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:fleet-friction-remediation-2026-08-21",
+            "cancellationRef": "plan:fleet-friction-remediation-2026-08-21"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:45c3595839bba2cfad9e",
+          "status": "unknown",
+          "reason": "plan acceptance fleet-friction-remediation-2026-08-21 timeout after 1444ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for fleet-friction-remediation-2026-08-21",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance fleet-friction-remediation-2026-08-21 timeout after 1444ms",
+            "retry": "retry evaluatePlanAcceptanceGate for fleet-friction-remediation-2026-08-21"
+          },
+          "id": "obl:plan-independent-verification:1d64bf6476ff629882fa"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "silent-wrong-answers-2026-08-01"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "15cd1a829ef41c7be65d",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:silent-wrong-answers-2026-08-01",
+            "cancellationRef": "plan:silent-wrong-answers-2026-08-01"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:15cd1a829ef41c7be65d",
+          "status": "unknown",
+          "reason": "plan acceptance silent-wrong-answers-2026-08-01 timeout after 1444ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for silent-wrong-answers-2026-08-01",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance silent-wrong-answers-2026-08-01 timeout after 1444ms",
+            "retry": "retry evaluatePlanAcceptanceGate for silent-wrong-answers-2026-08-01"
+          },
+          "id": "obl:plan-independent-verification:8dd14d33c6bb1edd0005"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "sidestage-auction-chat-public-release-2026-08-14"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "76dfc4d3a4348ab36947",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:sidestage-auction-chat-public-release-2026-08-14",
+            "cancellationRef": "plan:sidestage-auction-chat-public-release-2026-08-14"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:76dfc4d3a4348ab36947",
+          "status": "unknown",
+          "reason": "plan acceptance sidestage-auction-chat-public-release-2026-08-14 timeout after 1445ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for sidestage-auction-chat-public-release-2026-08-14",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance sidestage-auction-chat-public-release-2026-08-14 timeout after 1445ms",
+            "retry": "retry evaluatePlanAcceptanceGate for sidestage-auction-chat-public-release-2026-08-14"
+          },
+          "id": "obl:plan-independent-verification:d338a3f5ddb65412e3a2"
+        },
+        {
+          "ruleId": "plan-independent-verification",
+          "ruleRevision": "plan-independent-verification-v1",
+          "family": "independent-verification",
+          "scope": {
+            "workspaceId": "papercusp-workspace",
+            "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "planSlug": "sidestage-demo-user-isolation-2026-08-14"
+          },
+          "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+          "authority": {
+            "kind": "policy",
+            "sourceRef": "plan-acceptance-gate",
+            "revision": "plan-independent-verification-v1"
+          },
+          "priority": "high",
+          "sourceGeneration": "3cedbc785a9d1e5de056",
+          "clearsWhen": {
+            "id": "admissible-independent-acceptance",
+            "summary": "the current plan/rubric revision has an admissible independent grade and author verdict",
+            "evidenceKind": "verdict",
+            "sourceRef": "evaluatePlanAcceptanceGate"
+          },
+          "changeSignal": {
+            "event": "plan:acceptance:sidestage-demo-user-isolation-2026-08-14",
+            "cancellationRef": "plan:sidestage-demo-user-isolation-2026-08-14"
+          },
+          "boundary": {
+            "boundary": "plans:ship",
+            "refusalCode": "plan-independent-verification-required",
+            "enforcement": "required",
+            "unknown": "refuse"
+          },
+          "title": "Independent-verification state is unavailable",
+          "episode": "unknown:3cedbc785a9d1e5de056",
+          "status": "unknown",
+          "reason": "plan acceptance sidestage-demo-user-isolation-2026-08-14 timeout after 1444ms",
+          "causalRank": 2,
+          "applicableDemand": 0,
+          "evidence": [],
+          "action": {
+            "kind": "inspect",
+            "summary": "retry evaluatePlanAcceptanceGate for sidestage-demo-user-isolation-2026-08-14",
+            "targetRef": "evaluatePlanAcceptanceGate"
+          },
+          "measurementFailure": {
+            "code": "canonical-plan-acceptance-read-failed",
+            "detail": "plan acceptance sidestage-demo-user-isolation-2026-08-14 timeout after 1444ms",
+            "retry": "retry evaluatePlanAcceptanceGate for sidestage-demo-user-isolation-2026-08-14"
+          },
+          "id": "obl:plan-independent-verification:df45bd85eacff792400a"
+        }
+      ],
+      "projection": {
+        "text": "- [UNKNOWN] Plan placement evidence is unavailable — refresh the portfolio, plan-fleet cohort, and exact launch resolution together; why: goal portfolio timeout after 1446ms; authority: policy (goal-launch-settings+system-health/goal-drain-fleet-watchdog)",
+        "entries": [
+          {
+            "ruleId": "goal-plan-placement",
+            "ruleRevision": "goal-plan-placement-v2",
+            "family": "plan-placement",
+            "scope": {
+              "workspaceId": "papercusp-workspace",
+              "ownerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+              "goalId": "work-on-everything-070565"
+            },
+            "responsibleOwnerId": "su-b7de5076-ff0e-48d6-85c1-a762a02c54b2",
+            "authority": {
+              "kind": "policy",
+              "sourceRef": "goal-launch-settings+system-health/goal-drain-fleet-watchdog",
+              "revision": "goal-plan-placement-v2"
+            },
+            "priority": "high",
+            "sourceGeneration": "d55f6fb80a522538622e",
+            "clearsWhen": {
+              "id": "goal-plan-placement-consistent-and-launch-admissible",
+              "summary": "every non-terminal goal worklist plan has a consistent independently led placement and its launch boundary is admissible",
+              "evidenceKind": "state",
+              "sourceRef": "GoalPortfolioBrief.worklist[].placement+resolveGoalLaunch+classifyGoalPlanFleetCoverage"
+            },
+            "changeSignal": {
+              "event": "goal:plan-placement:work-on-everything-070565",
+              "cancellationRef": "goal:work-on-everything-070565"
+            },
+            "boundary": {
+              "boundary": "fleet:launch-on-plan",
+              "refusalCode": "goal-plan-placement-prerequisite",
+              "enforcement": "required",
+              "unknown": "allow-with-warning"
+            },
+            "title": "Plan placement evidence is unavailable",
+            "episode": "unknown:d55f6fb80a522538622e",
+            "status": "unknown",
+            "reason": "goal portfolio timeout after 1446ms",
+            "causalRank": 0,
+            "applicableDemand": 0,
+            "evidence": [],
+            "action": {
+              "kind": "inspect",
+              "summary": "refresh the portfolio, plan-fleet cohort, and exact launch resolution together",
+              "targetRef": "readGoalPlanFleetCohort"
+            },
+            "measurementFailure": {
+              "code": "canonical-plan-placement-read-failed",
+              "detail": "goal portfolio timeout after 1446ms",
+              "retry": "refresh the portfolio, plan-fleet cohort, and exact launch resolution together"
+            },
+            "id": "obl:goal-plan-placement:a026d5729a7c290db647"
+          }
+        ],
+        "receipt": {
+          "sink": "turn-start",
+          "mode": "truncate",
+          "entriesAvailable": 8,
+          "entriesDelivered": 1,
+          "entriesOmitted": 7,
+          "bodyDeliveredChars": 255,
+          "estimatedTokens": 64,
+          "bodyTruncated": true,
+          "refused": false,
+          "reason": "character-cap"
+        }
+      },
+      "detailRef": "coord:orient for the complete obligation agenda"
+    },
+    "degradedReasons": [
+      "goal portfolio timeout after 1446ms",
+      "plan acceptance sidestage-auction-chat-public-release-2026-08-14 timeout after 1445ms",
+      "plan acceptance silent-wrong-answers-2026-08-01 timeout after 1444ms",
+      "plan acceptance sidestage-demo-user-isolation-2026-08-14 timeout after 1444ms",
+      "plan acceptance fleet-friction-remediation-2026-08-21 timeout after 1444ms",
+      "canonical goal portfolio was unavailable"
+    ]
+  },
+  "rendered": {
+    "status": "degraded",
+    "text": "GOAL-MODE STATE\n— what the agent sees\nGoal-mode state is degraded. goal portfolio timeout after 1446ms · plan acceptance sidestage-auction-chat-public-release-2026-08-14 timeout after 1445ms · plan acceptance silent-wrong-answers-2026-08-01 timeout after 1444ms · plan acceptance sidestage-demo-user-isolation-2026-08-14 timeout after 1444ms · plan acceptance fleet-friction-remediation-2026-08-21 timeout after 1444ms · canonical goal portfolio was unavailable\nagent su-b7de5076-ff0e-48d6-85c1-a762a02c54b2\nunknown\nPlan placement evidence is unavailable\nNext: refresh the portfolio, plan-fleet cohort, and exact launch resolution together\nWhy: goal portfolio timeout after 1446ms\ndemand 0 · source d55f6fb80a522538622e\ncanonical-plan-placement-read-failed. goal portfolio timeout after 1446ms Recovery: refresh the portfolio, plan-fleet cohort, and exact launch resolution together\nShowing 1 of 8 primary obligations; 7 omitted (character-cap).\nagenda 9fdb18df0f498e361ca3 · observed 2026-09-07T09:13:46.539Z\n\nDetail path: coord:orient for the complete obligation agenda\n",
+    "provenance": "agenda 9fdb18df0f498e361ca3 · observed 2026-09-07T09:13:46.539Z",
+    "omissions": "Showing 1 of 8 primary obligations; 7 omitted (character-cap).",
+    "actions": [
+      "Next: refresh the portfolio, plan-fleet cohort, and exact launch resolution together"
+    ]
+  },
+  "screenshot": {
+    "path": "docs/evidence/shared-agent-obligations-2026-09-07-goal-mode-state.png",
+    "sourceGeneration": "6f9c85c1cfaf49675789",
+    "observedAt": "2026-09-07T09:15:11.225Z",
+    "note": "Separate later live refresh from the exact payload/render parity sample above."
+  }
+}

@@ -622,7 +622,7 @@ export default defineTool({
           .max(160)
           .optional()
           .describe(
-            `EI-15448, lane:'observation' ONLY. ${CONDITION_KEY_RULE} Concretely: a still-OPEN prior observation carrying the SAME conditionKey has its repeatCount bumped and its title/body refreshed to this call's latest reading, instead of a fresh row every call — this is what fixed the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Where a key is ALREADY published — an OverwatchBrief anomaly line's \`[conditionKey: overwatch:escalation-aging]\` — copy that one verbatim rather than minting a variant that cannot join it. Omit for a genuinely novel/one-off reading, which always re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to \`scorecard:<rubricRef>:<sourceHive>\` when you omit this (EI-19325151590626958) — pass it explicitly to override. Ignored outside lane:'observation'.`,
+            `Stable recurring identity. ${CONDITION_KEY_RULE} For an observation, a still-OPEN prior observation carrying the SAME conditionKey has its repeatCount bumped and its title/body refreshed instead of minting a fresh row. For an ordinary improvement/bug capture, the key feeds the exact-key coalescer so repeated filings refresh one open row even when lexical or semantic search is unavailable. Where a key is ALREADY published — an OverwatchBrief anomaly line's \`[conditionKey: overwatch:escalation-aging]\` — copy it verbatim rather than minting a variant that cannot join it. Omit for a genuinely novel/one-off reading, which re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to \`scorecard:<rubricRef>:<sourceHive>\` when you omit this (EI-19325151590626958) — pass it explicitly to override.`,
           ),
         toolFailure: suspectedToolFailureSchema
           .optional()
@@ -1067,9 +1067,7 @@ export default defineTool({
       (effectiveKind === 'change' || effectiveKind === 'feature');
     const captureWatchdogKey = normalizedToolFailure
       ? normalizedToolFailure.watchdogKey
-      : effectiveLane === 'observation'
-        ? (args.conditionKey ?? defaultScorecardConditionKey(observation))
-        : undefined;
+      : (args.conditionKey ?? (effectiveLane === 'observation' ? defaultScorecardConditionKey(observation) : undefined));
     // work-queue-admission-and-bulk-dedup P-008: a successful unkeyed
     // observation filing is DONE from the caller's perspective. Whether the
     // server minted a row, HARD-folded onto a survivor, or SOFT-linked a fresh

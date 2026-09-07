@@ -366,6 +366,10 @@ describe('governed admission retry (WI-1410919)', () => {
       name: 'OrgTxnTimeoutError',
       pgCode,
     });
+  const connectionDestroyed = (shape: 'code' | 'message' = 'code') =>
+    shape === 'code'
+      ? Object.assign(new Error('write CONNECTION_DESTROYED 127.0.0.1:6432'), { code: 'CONNECTION_DESTROYED' })
+      : new Error('write CONNECTION_DESTROYED 127.0.0.1:6432');
 
   const api = (runGovernedOperation: unknown) => ({
     admissionContextFromEnvironment: vi.fn(() => undefined),
@@ -404,6 +408,23 @@ describe('governed admission retry (WI-1410919)', () => {
     expect(logged[0]).toContain('GOVERNED_ADMISSION_RETRY');
     expect(logged[0]).toContain('attempt=2/3');
     expect(logged[0]).toContain('pgCode=55P03');
+  });
+
+  it('retries a postgres.js CONNECTION_DESTROYED admission failure before launching the child', async () => {
+    let calls = 0;
+    const runGovernedOperation = vi.fn(async (_input: unknown, run: (ctx: typeof context) => Promise<unknown>) => {
+      calls += 1;
+      if (calls === 1) throw connectionDestroyed();
+      return run(context);
+    });
+
+    const result = await runGovernedTestProcess(
+      baseOptions({ executionApi: api(runGovernedOperation), log: () => {} }),
+      async () => 'child ran',
+    );
+
+    expect(result).toBe('child ran');
+    expect(calls).toBe(2);
   });
 
   it('NEVER retries once the child has started, even for a retryable error', async () => {
@@ -470,6 +491,9 @@ describe('governed admission retry (WI-1410919)', () => {
     // direction that looks exactly like "not retryable", i.e. like the bug being unfixed.
     expect(isRetryableAdmissionFailure(contention('55P03'))).toBe(true);
     expect(isRetryableAdmissionFailure(contention('57014'))).toBe(true);
+    expect(isRetryableAdmissionFailure(connectionDestroyed())).toBe(true);
+    expect(isRetryableAdmissionFailure(connectionDestroyed('message'))).toBe(true);
+    expect(isRetryableAdmissionFailure({ code: 'CONNECTION_ENDED' })).toBe(true);
     expect(isRetryableAdmissionFailure({ pgCode: '55P03' })).toBe(true);
     expect(
       isRetryableAdmissionFailure(Object.assign(new Error('wrapped'), { cause: contention('55P03') })),
@@ -478,6 +502,7 @@ describe('governed admission retry (WI-1410919)', () => {
 
     expect(isRetryableAdmissionFailure(new Error('plain'))).toBe(false);
     expect(isRetryableAdmissionFailure({ pgCode: '42P01' })).toBe(false);
+    expect(isRetryableAdmissionFailure({ code: 'ECONNRESET' })).toBe(false);
     expect(isRetryableAdmissionFailure(null)).toBe(false);
     expect(isRetryableAdmissionFailure(undefined)).toBe(false);
     // A name alone is not evidence: the contention CODE is what carries the meaning.

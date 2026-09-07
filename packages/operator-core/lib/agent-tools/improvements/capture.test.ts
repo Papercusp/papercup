@@ -799,9 +799,11 @@ describe('improvements:capture — conditionKey threads to watchdogKey (EI-15448
     );
   });
 
-  it("conditionKey is IGNORED (never threaded to watchdogKey) outside lane:'observation'", async () => {
+  it('conditionKey is also threaded to watchdogKey for ordinary improvement/bug captures', async () => {
     await callTool({ title: 'a real bug', kind: 'bug', conditionKey: 'overwatch:not-an-observation' });
-    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ watchdogKey: undefined }));
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ watchdogKey: 'overwatch:not-an-observation' }),
+    );
   });
 
   it('omitting conditionKey on an observation leaves watchdogKey undefined (always re-files, per contract)', async () => {
