@@ -85,7 +85,7 @@ Working with the SU agents provides the perfect blend of autonomy and direction 
 
 #### Modes
 
-- **AUTO** — They'll put themselves on a Papercusp loop, and run continuously without asking you any questions. They will end their session once they get close to their soft limit (by default, for fleet leaders it's 400k, 200k for fleet members).
+- **AUTO** — They'll put themselves on a Papercusp loop, and run continuously without asking you any questions. They will end their session once they get close to their soft limit (by default, for fleet leaders it's 400k, 250k for fleet members).
 - **COLD AUTO** — Same as above, but instead of restarting their session at a token limit, each turn is an entirely fresh session (with carried information, so they should continue where they left off — but regular AUTO mode has gotten way more testing than COLD AUTO).
 - **IDEATE** — Tell them to ideate on something and they will try to think of novel improvements. Powerful when combined with AUTO mode.
 - **DRAIN** — Tell them to drain all bugs with a fleet of 10 ChatGPTs and they'll pull bugs off of the work queue in AUTO mode until there are none left.

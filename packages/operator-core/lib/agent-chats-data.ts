@@ -62,7 +62,7 @@ export interface TranscriptTurn {
   /** Stable idempotency key for a server-to-server external turn (P-010). */
   source_id?: string;
   /** Origin of a server-to-server turn; never accepted from browser chat routes. */
-  source?: 'phone-livekit';
+  source?: 'phone-livekit' | 'su-session';
 }
 
 /**

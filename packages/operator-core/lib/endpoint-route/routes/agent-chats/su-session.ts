@@ -77,7 +77,7 @@ const commandRoute = defineTool({
       return Response.json({ error: 'invalid JSON command body', code: 'invalid_command' }, { status: 400 });
     }
     try {
-      const dispatch = host.startCommand(body);
+      const dispatch = await host.acceptCommand(body);
       if (!dispatch.accepted) {
         return Response.json(
           {

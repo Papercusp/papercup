@@ -3,7 +3,7 @@
  * setter (per-member-declarative-launch-specs). Presence / fleet-store / model-spec seams are
  * mocked; the REAL `classifyFleetControlInvoker` (pure) and REAL `agent-config-constants`
  * (clamp / role-cap) run, so leader/queen/owner authorization AND the target-role-derived
- * ceiling (the 200k fleet-member cap vs the 825k self-set ceiling a leader/solo target
+ * ceiling (the 250k fleet-member cap vs the 825k self-set ceiling a leader/solo target
  * gets on [1m]) are exercised for real. Runtime requests above those ceilings are
  * rejected before the write rather than silently persisted at a different value.
  *
@@ -11,7 +11,7 @@
  * `selfSetCeilingForSpec` (825k on [1m]) rather than the SEEDED default
  * (`COMPACTION_LIMIT_DEFAULT_1M_CAP`, 400k) — those were one constant until 2026-08-08,
  * which made "raise it for wide-context work" unreachable. Fleet MEMBERS are deliberately
- * unchanged at 200k, so a member cannot self-raise past the cap its leader governs.
+ * unchanged at the role cap, so a member cannot self-raise past the cap its leader governs.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP } from '../../agent-config-constants';
@@ -105,7 +105,7 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     getPresence.mockImplementation(async (id: string) =>
       id === 'su-mem' ? { compactionLimit: 150_000 } : { agentRole: 'mug' },
     );
-    // 150k is below the fleet-member cap (200k) → applied verbatim, not clamped.
+    // 150k is below the fleet-member cap → applied verbatim, not clamped.
     const out = await setCompactionLimitForOwner({ workspaceId: WS } as never, 'su-mem', 150_000);
     expect(setCompactionLimit).toHaveBeenCalledWith('su-mem', 150_000, { explicit: true }); // within cap → verbatim
     expect(out).toMatchObject({ ok: true, invokedAs: 'queen', compactionLimit: 150_000 });
@@ -134,7 +134,7 @@ describe('setCompactionLimitForOwner (P-006 cross-session limit setter)', () => 
     expect(out).toMatchObject({
       ok: true,
       invokedAs: 'owner',
-      cap: SELF_SET_1M_CEILING, // the leader/solo ceiling, not the 200k member cap
+      cap: SELF_SET_1M_CEILING, // the leader/solo ceiling, not the 250k member cap
       targetRole: 'leader',
     });
     expect(out.clamped).toBeUndefined();

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 870,
+  "count": 874,
   "tools": [
     {
       "name": "ablation:report",
@@ -4062,6 +4062,205 @@
         "when": "You want a scoped-superuser session to be DENIED a crossWorkspace tool the baked allowlist permits (narrow its cross-workspace reach) — live, no deploy. Requires papercusp-auth-config-overrides ON. op:get to read the active remove-set.",
         "notWhen": "You cannot ADD tools to the allowlist with this dial (tighten-only by design). To grant capabilities use the capability tools.",
         "chaining": "config:list-overrides shows the active auth-config-overrides; config:reset-overrides reverts (restores the full baked allowlist)."
+      }
+    },
+    {
+      "name": "classes:define",
+      "http": {
+        "path": "/api/agent-tools/classes/define",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Define one immutable version of a platform capability class — a fine-grained, job-scoped interface contract such as crm.email@1.0.0. Platform-only in v1. The class is stored in the existing registry model; providers prove conformance separately with classes:validate.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "guidance": {
+        "when": "When the platform needs a new reusable capability contract before providers can bind to it. Define job-scoped verbs, not a vendor-shaped bundle; a changed contract gets a new semantic version.",
+        "notWhen": "To claim a provider implements a class — use classes:validate, which derives schemas from the live projected-tool registry. To distribute a proposed third-party class — that follows the Cupboard review path.",
+        "chaining": "classes:define → classes:get → classes:validate { providerPackage, verbBindings } → classes:get (derived bindings)."
+      }
+    },
+    {
+      "name": "classes:get",
+      "http": {
+        "path": "/api/agent-tools/classes/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fetch one or many exact capability class@version contracts with provider bindings whose conformance status is derived from immutable validation runs.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "After classes:list, before adding a class to an identity or selecting a provider.",
+        "notWhen": "To browse/search classes — use classes:list. To validate a provider implementation — use classes:validate.",
+        "chaining": "classes:list → classes:get { ref } → classes:validate or the P-017 provider picker."
+      }
+    },
+    {
+      "name": "classes:list",
+      "http": {
+        "path": "/api/agent-tools/classes/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Discover versioned capability classes in this workspace. Query search fuses the registry title_tsv and stored embedding; tag filtering and version-history controls are explicit.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Before defining or granting a capability class, to reuse the existing fine-grained contract and exact version.",
+        "notWhen": "To inspect full schemas/provider attestations — use classes:get. To define a class — classes:define is platform-only.",
+        "chaining": "classes:list { query } → classes:get { ref } → classes:validate for a provider implementation."
+      }
+    },
+    {
+      "name": "classes:validate",
+      "http": {
+        "path": "/api/agent-tools/classes/validate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Validate one provider package against an exact capability class@version by deriving every bound tool schema from the live projected-tool registry. Every attempt records an immutable conformance run; only a passing run creates the provider binding. No caller-set conformance status exists.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "After a provider package registers its tools and the class contract exists. Map each logical class verb to its real MCP tool name.",
+        "notWhen": "To define the class itself (classes:define) or to claim behavior-suite success; P-016 only proves structural schemas and reports a behavioral hook as not-run.",
+        "chaining": "classes:get { ref } → classes:validate { classRef, providerPackage, providerVersion, verbBindings } → classes:get (attested provider appears)."
       }
     },
     {

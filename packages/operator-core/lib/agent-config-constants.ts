@@ -288,7 +288,7 @@ export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
  * configured window even when an installed registry still reports 872,000.
  *
  * It exists mainly to clear the role cap: `defaultCompactionLimitForWindow(1_000_000)`
- * derives 825,000, which the 400k su/leader and 200k fleet-member caps then bind.
+ * derives 825,000, which the 400k su/leader and 250k fleet-member caps then bind.
  * So the exact value below never reaches a session — the ROLE CAP does, which is
  * the whole point of D-001 (papercusp's soft limits are unchanged; codex sessions
  * simply become able to reach them instead of being pinned at 158,000 by a
@@ -1147,32 +1147,16 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
  * per-turn cache spend. LEADERS keep the full COMPACTION_LIMIT_DEFAULT_1M_CAP:
  * long-lived supervision state is expensive to re-derive after compaction.
  *
- * 200k (owner directive 2026-07-19): a fleet-throughput audit found members
- * recycle their window ~every 22–33 min and complete ≈1 bug per 200k window with
- * a tight per-member spread — 200k is empirically enough for the drain loop, and
- * the smaller window keeps per-turn cache spend down. This SUPERSEDES the earlier
- * 300k default (owner directive 2026-07-03); members had already been launched at
- * 200k via `--compaction-limit`, and this makes 200k the seeded default so the
- * launch flag is no longer load-bearing and the watchdog never seeds 300k.
+ * The current 250k member policy is owner-directed, reversible headroom
+ * (2026-09-02, WI-2142006) and was retained after the matched context-policy
+ * comparison (measured-agent-productivity-2026-09-06 D-009). Keep historical
+ * rationale in those decisions; this source comment describes only the policy
+ * the constant enforces now. Previous derived values that the watchdog must
+ * recognize remain encoded in SUPERSEDED_1M_FLEET_MEMBER_CAPS.
  *
  * This shapes the seeded DEFAULT (and, as the fleet-member ceiling in
  * clampCompactionLimit, caps a member's self-set) — a promotion to LEADER re-seeds
  * to COMPACTION_LIMIT_DEFAULT_1M_CAP (reseedLeaderCompactionLimit / P-009).
- *
- * 250k (owner directive 2026-09-02, WI-2142006): deliberate HEADROOM taken
- * alongside the claim-time brief budget going 14k→50k chars in
- * prior-attempt-context.ts, and explicitly framed as reversible — "we can always
- * restrict it again later after testing".
- *
- * ⚠ This raise is NOT what the measured rule would have produced, and that is on
- * purpose — do not "correct" it back by re-running the helper. WI-40078 measured
- * live claim overhead at avg 2,922 / P95 3,482 tokens (1.46% / 1.74% of the 200k
- * cap) and `recommendCapChange` in prior-attempt-measurement.ts returns `keep`
- * until the AVERAGE reaches max(10_000, limit × 0.05). Restoring the records the
- * 14k budget was cutting (16 of 20 sampled briefs truncated, avg 7.5 detail
- * records omitted each) adds only ≈1.3k tokens to a truncated brief, so the
- * measured average stays far under that bar. The headroom is an owner bet on the
- * effort-scoped-continuity work landing, not a measurement.
  *
  * SECOND-ORDER EFFECT, deliberate: the role cap only binds when it is LOWER than
  * the window derivation, so raising it un-pins backends whose real window derives
@@ -1184,7 +1168,7 @@ export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 250_000;
 /** Derive the maximum safe limit for a DELIBERATE runtime override from a
  * measured effective model window. Unlike the seeded default, this deliberately
  * does not impose the 400k leader/solo role cap: a self-set may use the wider
- * measured runway, while fleet members remain bounded by their 200k role cap. */
+ * measured runway, while fleet members remain bounded by their current role cap. */
 /**
  * The purely WINDOW-DERIVED limit, before any role cap or floor:
  * `floor((window − margin) / overshoot)`, floored to 1k for stable display.
@@ -1213,8 +1197,8 @@ export function selfSetCeilingForWindow(window: number, opts?: { fleetMember?: b
 /** Derive a safe seeded soft limit from a LIVE effective model window. This is
  * the backend-neutral twin of the spec-based resolver below and is load-bearing
  * for Codex, whose rollout reports 258400 after applying the CLI's 95% effective
- * window to the installed 272k model record. The role cap still wins: fleet
- * members stay at 200k even when the model window could safely allow more. */
+ * window to the installed 272k model record. The role cap still wins when it is
+ * lower than the window-derived limit. */
 export function defaultCompactionLimitForWindow(window: number, opts?: { fleetMember?: boolean }): number {
   const roleCap = opts?.fleetMember ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP : COMPACTION_LIMIT_DEFAULT_1M_CAP;
   const derived = windowDerivedCompactionLimit(window);
@@ -1256,9 +1240,8 @@ export function compactionCapBindingForWindow(
  * `floor((window − margin) / 1.2)`, floored to 1k for stable display.
  * 200k window → 158,000. EXCEPTION: a `[1m]`-carrying spec is capped at
  * {@link COMPACTION_LIMIT_DEFAULT_1M_CAP} — {@link COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP}
- * when `opts.fleetMember` (owner directive 2026-07-19, superseding the 300,000 of
- * 2026-07-03; the fleet-member cap has since moved again — read the constant, and
- * see SUPERSEDED_1M_FLEET_MEMBER_CAPS for the values live sessions may still carry) —
+ * when `opts.fleetMember` (read the constants for current policy and
+ * SUPERSEDED_1M_FLEET_MEMBER_CAPS for values live sessions may still carry) —
  * so it compacts preemptively despite the 1M window. Keyed on the `[1m]`
  * MARKER, not the family name: a bare `sonnet` / `opus` launch that skipped
  * normalization really runs a 200k auto-compact window in CC (live-verified
@@ -1268,7 +1251,8 @@ export function compactionCapBindingForWindow(
  * presence row) shapes only the [1m] leg — role never changes a real-window
  * derivation.
  *
- * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (400k, 200k member),
+ * UNRESOLVABLE spec (null / empty) → the SAME [1m] default (400k leader/solo,
+ * the current fleet-member cap),
  * NOT the conservative 200k → 158k (owner directive 2026-07-08, WI-3383). On
  * this fleet the default model is opus[1m], and a genuine small-window model is
  * ALWAYS explicitly specced (so it resolves to a real spec and derives its 158k
@@ -1416,7 +1400,7 @@ export function supersededDerivedCompactionLimits(spec?: string | null, opts?: {
  * trade for a long single-threaded research/audit session; it is the wrong
  * trade for a drain loop.
  *
- * FLEET MEMBERS ARE UNCHANGED and keep the 200k ceiling: a member's limit is
+ * FLEET MEMBERS keep the current role ceiling: a member's limit is
  * governed by its leader by design (see
  * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP), so a member self-raising past
  * its role cap would route around that.
@@ -1435,7 +1419,7 @@ export function selfSetCeilingForSpec(spec?: string | null, opts?: { fleetMember
  * `selfSetCeilingForSpec(spec, opts)` when `opts.selfSet` marks a deliberate
  * per-session request (see that function for why the two differ).
  *
- * `opts.fleetMember` applies the leaner fleet-member ceiling (200k vs a leader's
+ * `opts.fleetMember` applies the leaner fleet-member ceiling (250k vs a leader's
  * 400k) — pass it wherever the requester's fleet role is known, so an explicit
  * request cannot exceed the cap its role is governed by
  * (per-member-declarative-launch-specs P-005). Omitted ⇒ the leader/solo ceiling,

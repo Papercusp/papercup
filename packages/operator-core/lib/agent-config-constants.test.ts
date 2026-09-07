@@ -28,8 +28,8 @@ import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
-// papercusp compacts [1m] sessions preemptively at 400k, fleet MEMBERS at 300k
-// (owner directive 2026-07-03, revised from the 500k of 2026-07-02).
+// papercusp compacts [1m] sessions preemptively at 400k, fleet MEMBERS at 250k
+// (the current role policy, retained by measured-agent-productivity D-009).
 // Window/limit MATH keys on the [1m] MARKER only, never the bare
 // family name: live-verified via /context on CC 2.1.198 (2026-07-02), a bare
 // `sonnet` session runs a 200k AUTO-COMPACT window (auto-fires ~167k — killed
@@ -261,7 +261,7 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec('sonnet[1m]:medium')).toBe(400_000);
     expect(defaultCompactionLimitForSpec('haiku[1m]')).toBe(400_000);
   });
-  it('[1m] fleet MEMBERS default to the leaner 250k (owner 2026-09-02, up from 200k); role never touches a real-window derivation', () => {
+  it('[1m] fleet MEMBERS default to the current leaner 250k; role never touches a real-window derivation', () => {
     expect(COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP).toBe(250_000);
     expect(defaultCompactionLimitForSpec('sonnet[1m]:high', { fleetMember: true })).toBe(250_000);
     expect(defaultCompactionLimitForSpec('opus[1m]', { fleetMember: true })).toBe(250_000);
@@ -282,7 +282,7 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
   });
   it('an UNRESOLVABLE spec (null / empty) seeds the [1m] policy default, NOT 158k (WI-3383, owner 2026-07-08)', () => {
     // On this opus[1m]-default fleet a truly-unknown spec is an opus[1m] session:
-    // seed 400k (200k member), never the haiku-sized 158k that mis-seeded a
+    // seed 400k (250k member), never the haiku-sized 158k that mis-seeded a
     // manually-launched su session. Only null/empty lifts — a NON-null bare
     // `opus`/`sonnet` still derives 158k (asserted above).
     expect(defaultCompactionLimitForSpec(null)).toBe(400_000);

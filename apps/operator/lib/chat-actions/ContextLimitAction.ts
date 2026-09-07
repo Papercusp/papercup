@@ -26,7 +26,7 @@
  * REAL ceiling; ChatActionBar renders a thrown message in its error slot.
  *
  * The ceiling is deliberately NOT predicted client-side. It varies by model spec
- * AND fleet role (a fleet member's [1m] cap is 200k where a leader's self-set
+ * AND fleet role (a fleet member's [1m] cap is 250k where a leader's self-set
  * ceiling is 825k), and EI-19932842496005122 observed 400k where the constants
  * said 825k. Rather than hardcode a number that is wrong for some sessions and
  * silently drifts for the rest, the menu offers the full ladder and lets the

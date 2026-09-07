@@ -714,6 +714,11 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(INSTRUCTIONS_MD).not.toMatch(/\/home\/[A-Za-z0-9._-]+/);
     expect(INSTRUCTIONS_MD).not.toMatch(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/);
   });
+
+  it('states the current role-shaped soft-limit defaults', () => {
+    expect(INSTRUCTIONS_MD).toContain("fleet leaders it's 400k, 250k for fleet members");
+    expect(INSTRUCTIONS_MD).not.toContain("fleet leaders it's 400k, 200k for fleet members");
+  });
 });
 
 describe('plan page', () => {

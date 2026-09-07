@@ -323,29 +323,29 @@
       {
         "evidenceKind": "test",
         "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-003-additional-checks-e9f641f0a5",
-        "sourceFingerprint": "dbdfc73bf8c3e0a33a534376094d3a82d57a21110baea4a071544fed6f31ab78",
-        "testFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
-        "fixtureFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "sourceFingerprint": "be65f361b7321a0f4738cc711a41188cda4a3f10c151c41c8cda71da94494eb1",
+        "testFingerprint": "a726478c4a7c62613a0a74d1b371f7c30087b62521e8a2864f646727bc2d8253",
+        "fixtureFingerprint": "a726478c4a7c62613a0a74d1b371f7c30087b62521e8a2864f646727bc2d8253",
         "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
-        "environmentFingerprint": "vitest4.1.8-linux-node-unit-5f95dea7aa"
+        "environmentFingerprint": "vitest4.1.8-linux-node-local-52db2dd1e9-model-fixtures"
       },
       {
         "evidenceKind": "test",
         "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-006-additional-checks-e9f641f0a5",
-        "sourceFingerprint": "dbdfc73bf8c3e0a33a534376094d3a82d57a21110baea4a071544fed6f31ab78",
-        "testFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
-        "fixtureFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "sourceFingerprint": "be65f361b7321a0f4738cc711a41188cda4a3f10c151c41c8cda71da94494eb1",
+        "testFingerprint": "a726478c4a7c62613a0a74d1b371f7c30087b62521e8a2864f646727bc2d8253",
+        "fixtureFingerprint": "a726478c4a7c62613a0a74d1b371f7c30087b62521e8a2864f646727bc2d8253",
         "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
-        "environmentFingerprint": "vitest4.1.8-linux-node-unit-5f95dea7aa"
+        "environmentFingerprint": "vitest4.1.8-linux-node-local-52db2dd1e9-model-fixtures"
       },
       {
         "evidenceKind": "test",
         "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-007-additional-checks-e9f641f0a5",
-        "sourceFingerprint": "dbdfc73bf8c3e0a33a534376094d3a82d57a21110baea4a071544fed6f31ab78",
-        "testFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
-        "fixtureFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "sourceFingerprint": "be65f361b7321a0f4738cc711a41188cda4a3f10c151c41c8cda71da94494eb1",
+        "testFingerprint": "a726478c4a7c62613a0a74d1b371f7c30087b62521e8a2864f646727bc2d8253",
+        "fixtureFingerprint": "a726478c4a7c62613a0a74d1b371f7c30087b62521e8a2864f646727bc2d8253",
         "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
-        "environmentFingerprint": "vitest4.1.8-linux-node-unit-5f95dea7aa"
+        "environmentFingerprint": "vitest4.1.8-linux-node-local-52db2dd1e9-model-fixtures"
       },
       {
         "evidenceKind": "test",

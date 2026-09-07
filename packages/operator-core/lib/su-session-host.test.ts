@@ -15,6 +15,7 @@ import {
   registerSuSessionHost,
   type SuSessionCommandExecutor,
 } from './su-session-host';
+import type { SuSessionCommandStore } from './su-session-commands';
 
 const supported = { state: 'supported', implementation: 'native' } as const;
 const hostSupported = { state: 'supported', implementation: 'host' } as const;
@@ -90,6 +91,91 @@ function command(type: SuSessionCommand<'claude'>['type'], commandId = `command-
 function eventTypes(host: SuSessionHost<'claude'>): string[] {
   return host.recent.map(({ event }) => event.type);
 }
+
+describe('durable SU owner-turn acceptance', () => {
+  const hosts: SuSessionHost<'claude'>[] = [];
+  afterEach(() => { for (const host of hosts.splice(0)) host.dispose(); });
+  function readyHost(execute = vi.fn(async () => ({ status: 'completed' as const }))) {
+    const host = new SuSessionHost({ descriptor: { ...descriptor(), lifecycle: 'ready' }, executeCommand: execute });
+    hosts.push(host);
+    return host;
+  }
+
+  it('publishes no acceptance and invokes no engine before the reservation commits', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = readyHost(execute);
+    let commit!: () => void;
+    const committed = new Promise<void>((resolve) => { commit = resolve; });
+    const store: SuSessionCommandStore = {
+      reserve: async (input, fingerprint) => {
+        await committed;
+        return { created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt } };
+      },
+      finish: vi.fn(async () => {}),
+    };
+    const pending = host.acceptCommand(command('owner_turn'), store);
+    await Promise.resolve();
+    expect(execute).not.toHaveBeenCalled();
+    expect(host.recent.some(({ event }) => event.type === 'command_result')).toBe(false);
+    commit();
+    const accepted = await pending;
+    expect(accepted.accepted?.status).toBe('accepted');
+    expect((await accepted.terminal).status).toBe('completed');
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.finish).toHaveBeenCalledWith(expect.anything(), expect.any(String), { status: 'completed' });
+  });
+
+  it('fails closed on persistence failure and permits a safe retry before acceptance', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = readyHost(execute);
+    const store: SuSessionCommandStore = {
+      reserve: vi.fn().mockRejectedValueOnce(new Error('database unavailable')).mockImplementation(async (input, fingerprint) => ({
+        created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt },
+      })),
+      finish: vi.fn(async () => {}),
+    };
+    await expect(host.acceptCommand(command('owner_turn'), store)).rejects.toThrow('database unavailable');
+    expect(execute).not.toHaveBeenCalled();
+    expect(host.recent.some(({ event }) => event.type === 'command_result')).toBe(false);
+    const retried = await host.acceptCommand(command('owner_turn'), store);
+    expect((await retried.terminal).status).toBe('completed');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports uncertain prior delivery without executing the saved turn a second time', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = readyHost(execute);
+    const store: SuSessionCommandStore = {
+      reserve: async (input, fingerprint) => ({
+        created: false, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt },
+      }),
+      finish: vi.fn(async () => {}),
+    };
+    const replay = await host.acceptCommand(command('owner_turn'), store);
+    expect(replay.replayed).toBe(true);
+    expect(replay.accepted?.status).toBe('accepted');
+    expect(await replay.terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'command_delivery_unknown', retryable: false },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(store.finish).not.toHaveBeenCalled();
+  });
+
+  it('requires the executor as well as a stream and checks identity before reserving', async () => {
+    const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
+    const host = new SuSessionHost({ descriptor: { ...descriptor(), lifecycle: 'ready' } });
+    hosts.push(host);
+    expect(host.snapshot()).toMatchObject({ executorAttached: false, streamReady: true });
+    const refused = await host.acceptCommand(command('owner_turn'), store);
+    expect(await refused.terminal).toMatchObject({ refusal: { code: 'session_not_ready' } });
+    const wrong = command('owner_turn', 'wrong-target');
+    wrong.target = { ...wrong.target, workspaceId: 'another-workspace' };
+    expect(await (await readyHost().acceptCommand(wrong, store)).terminal).toMatchObject({
+      refusal: { code: 'target_mismatch' },
+    });
+    expect(store.reserve).not.toHaveBeenCalled();
+  });
+});
 
 afterEach(() => {
   _resetSuSessionHostsForTest();

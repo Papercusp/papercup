@@ -309,7 +309,7 @@ export const CODEX_MAX_CONFIGURED_WINDOW: 1000000;
 /**
  * Codex's own auto-compact fires at this fraction of the declared window. It is
  * a pure BACKSTOP and is meant never to run: papercusp's carry-respawn cuts at
- * the role soft limit (400k su/leader, 200k fleet member) far below it. Its only
+ * the role soft limit (400k su/leader, 250k fleet member) far below it. Its only
  * job is to sit high enough that the native summarizer cannot pre-empt ours —
  * the exact failure the 272k default causes today, where Codex's effective
  * 258,400 window compacts BEFORE a leader's 400k limit is ever reached.
