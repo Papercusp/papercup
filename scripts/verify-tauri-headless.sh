@@ -175,10 +175,9 @@
 #                                Default 0 (today's shared-live-DB behavior).
 #   VERIFY_TAURI_ISOLATED_PG_TIMEOUT
 #                               seconds to wait for the isolated Postgres to
-#                                come up (default 300 — a from-scratch initdb +
-#                                full migration replay can exceed 90s on a busy
-#                                shared host; a pre-built seed extract is ~1s).
-#                                Only used with
+#                                come up (default 90 — a from-scratch initdb +
+#                                full migration replay is ~10-30s; a pre-built
+#                                seed extract is ~1s). Only used with
 #                                VERIFY_TAURI_ISOLATED_DB=1.
 #   VERIFY_TAURI_ISOLATED_SEED  which app STATE the isolated run starts from
 #                                (EI-20191599988350937). Default `fresh` — a
@@ -2122,7 +2121,7 @@ ISOLATED_DB="${VERIFY_TAURI_ISOLATED_DB:-0}"
 ISOLATED_ENV_LINE=""
 ISOLATED_HOME=""
 if [ "$ISOLATED_DB" = "1" ]; then
-  ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-300}"
+  ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
   ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"
   ISOLATED_PG_LOG="$WORK/isolated-pg.log"
   ISOLATED_HOME="$WORK/papercusp-home"

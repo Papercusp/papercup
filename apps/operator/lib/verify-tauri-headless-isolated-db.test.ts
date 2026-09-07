@@ -64,11 +64,6 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/ISOLATED_PG_DATA_DIR="\$WORK\/isolated-pgdata"/);
   });
 
-  it('budgets a full migration replay without a false 90-second readiness failure', () => {
-    expect(src).toMatch(/ISOLATED_PG_TIMEOUT="\$\{VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-300\}"/);
-    expect(src).toContain('isolated-db postgres did not come up within ${ISOLATED_PG_TIMEOUT}s');
-  });
-
   it('scopes PAPERCUSP_HOME/PAPERCUSP_WORKSPACE to the run when isolated', () => {
     expect(src).toMatch(/ISOLATED_HOME="\$WORK\/papercusp-home"/);
     expect(src).toMatch(/ISOLATED_WORKSPACE="verify-tauri-isolated-\$DISPLAY_NUM"/);
