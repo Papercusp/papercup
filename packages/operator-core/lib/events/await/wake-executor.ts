@@ -2965,7 +2965,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         contextCriticalCheck.currentPressure !== null && contextCriticalCheck.currentPressure !== 'critical'
           ? `currently '${contextCriticalCheck.currentPressure}', not 'critical'`
           : null,
-        parsedContextCritical?.contextEpoch !== null && contextCriticalCheck.currentEpoch !== null
+        parsedContextCritical?.contextEpoch != null && contextCriticalCheck.currentEpoch !== null
           ? `context generation ${contextCriticalCheck.currentEpoch} superseded emitted generation ${parsedContextCritical.contextEpoch}`
           : null,
       ].filter((reason): reason is string => reason !== null);
