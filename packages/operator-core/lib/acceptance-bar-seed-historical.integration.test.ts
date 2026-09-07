@@ -146,8 +146,10 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
     `).resolves.toEqual([{ status: 'superseded', archived: false, version: 1 }]);
   });
 
-  it('preserves additive plan-specific clauses pinned to a BAR during re-audit', async () => {
-    const planSlug = 'additive-pinned-clause-reaudit';
+  it.each(['PUI-TASK-ADD', 'AUTO-BAR-R-1-P-001-REFUSAL-ATOMICITY'])(
+    'preserves additive plan-specific clause %s pinned to a BAR during re-audit',
+    async (customSpecId) => {
+    const planSlug = `additive-pinned-clause-reaudit-${customSpecId.toLowerCase()}`;
     const planContent = contentFor(planSlug);
     await insertSubject(planSlug, planContent);
 
@@ -210,7 +212,7 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
 
     const custom = await db.adminSql.begin((tx) => setSpecClause({
       planSlug,
-      specId: 'PUI-TASK-ADD',
+      specId: customSpecId,
       expectedRevision: 0,
       planItemId: 'P-001',
       behavior: 'The task editor adds one owner-authored task to the canonical store.',
@@ -268,7 +270,7 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
        WHERE c.workspace_id = ${WORKSPACE}
          AND c.harness_slug = ${HARNESS}
          AND c.plan_slug = ${planSlug}
-         AND c.spec_id = ANY(${['AUTO-BAR-R-1-P-001', 'PUI-TASK-ADD']}::text[])
+         AND c.spec_id = ANY(${['AUTO-BAR-R-1-P-001', customSpecId]}::text[])
        ORDER BY c.spec_id
     `).resolves.toEqual([{
       current_revision: 3,
@@ -285,6 +287,56 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       required_test_layers: ['integration'],
       behavior: 'The task editor adds one owner-authored task to the canonical store.',
     }]);
+  });
+
+  it('still refuses an exact generated projection outside the map without partial writes', async () => {
+    const planSlug = 'off-map-generated-projection-reaudit';
+    const planContent = contentFor(planSlug);
+    await insertSubject(planSlug, planContent);
+    const first = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, planContent, 'su-seeder'),
+      executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(first.ok).toBe(true);
+
+    // The old generated R-1/P-001 identity really is outside this new map.
+    // Unlike an additive atomic clause, it must remain a hard refusal.
+    const changedContent = planContent.replace('| R-1 | P-001 | tree |', '| R-1 | P-002 | tree |');
+    expect(changedContent).not.toBe(planContent);
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${changedContent}, content_hash = ${hashPlanContent(changedContent)}, version = 2
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND plan_slug = ${planSlug}`;
+    const snapshot = async () => ({
+      plans: await db.adminSql`
+        SELECT plan_slug, content, version, template_data, acceptance_bar_set_hash,
+               acceptance_bar_rubric_slug, acceptance_bar_rubric_revision
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND plan_slug = ANY(${[planSlug, `acceptance-${planSlug}`]}::text[])
+         ORDER BY plan_slug`,
+      revisions: await db.adminSql`
+        SELECT plan_slug, seq, content_hash, content_snapshot
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND plan_slug = ANY(${[planSlug, `acceptance-${planSlug}`]}::text[])
+         ORDER BY plan_slug, seq`,
+      specs: await db.adminSql`
+        SELECT spec_id, revision, content_hash, behavior, lifecycle_status
+          FROM harness_shared.plan_spec_clause_revisions
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND plan_slug = ${planSlug}
+         ORDER BY spec_id, revision`,
+    });
+    const before = await snapshot();
+    await expect(db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
+      ...seedInput(planSlug, changedContent, 'su-reauditor'),
+      planVersion: 2,
+      executor: tx as unknown as SpecClauseSql,
+    }))).rejects.toThrow(/stored BAR projection.*AUTO-BAR-R-1-P-001/);
+    expect(await snapshot()).toEqual(before);
   });
 
   it('still refuses a deterministic slug occupied by a non-rubric plan', async () => {

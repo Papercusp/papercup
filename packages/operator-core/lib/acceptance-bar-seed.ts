@@ -873,11 +873,15 @@ export async function seedAcceptanceBarsInTransaction(
      WHERE c.workspace_id = ${input.workspaceId}
        AND c.harness_slug = ${input.harnessSlug}
        AND c.plan_slug = ${input.planSlug}
-       -- The seeder owns only its deterministic AUTO-BAR namespace. Reviewed
-       -- plan-specific clauses may carry the same sourceBar pin so their proof
+       -- The seeder owns only the COMPLETE deterministic ID grammar emitted by
+       -- buildAcceptanceBarSeed (R-N from parseRequirementBars, P-NNN+ items).
+       -- A suffixed atomic clause is additive even if it starts with AUTO-BAR-.
+       -- A prefix census mistakes that authored clause for a removed map edge.
+       -- Keep exact generated identities in the census even when out of map.
+       -- Reviewed plan-specific clauses may carry the same sourceBar pin so their proof
        -- stays tied to the governing requirement; they are additive contracts,
        -- not stale seed projections to replace or reject on a re-audit.
-       AND c.spec_id LIKE 'AUTO-BAR-%'
+       AND c.spec_id ~ '^AUTO-BAR-R-[0-9]+-P-[0-9]{3,}$'
      ORDER BY c.spec_id
      LIMIT ${MAX_BAR_PROJECTION_EDGES + 1}`;
   if (identities.length > MAX_BAR_PROJECTION_EDGES) {
