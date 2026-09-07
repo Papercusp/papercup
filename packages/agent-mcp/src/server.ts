@@ -16,6 +16,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFileSync, statSync } from 'node:fs';
 import {
   CallToolRequestSchema,
   GetPromptRequestSchema,
@@ -46,6 +47,17 @@ import {
   matchResource,
 } from '@papercusp/tooldef';
 import { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
+import {
+  authorizeScratchReference,
+  parseScratchReference,
+  ScratchReferenceError,
+} from '@papercusp/operator-core/lib/scratch-reference';
+import {
+  parseScratchUri,
+  safeScratchFilesystemPath,
+  SCRATCH_SCHEME,
+  ScratchUriError,
+} from '@papercusp/operator-core/lib/scratch-uri';
 import type {
   Principal,
   PromptContext,
@@ -335,6 +347,130 @@ export interface ReadResourceResult {
   error?: { code: string; message: string };
 }
 
+function isScratchResourceUri(uri: string): boolean {
+  return uri.startsWith(`${SCRATCH_SCHEME}/`);
+}
+
+function scratchMimeType(basename: string): string {
+  const extension = basename.split('.').pop()?.toLowerCase() ?? '';
+  switch (extension) {
+    case 'json': return 'application/json';
+    case 'csv': return 'text/csv';
+    case 'txt':
+    case 'log':
+    case 'md':
+    case 'html': return 'text/plain';
+    case 'png': return 'image/png';
+    case 'jpg':
+    case 'jpeg': return 'image/jpeg';
+    case 'gif': return 'image/gif';
+    case 'webp': return 'image/webp';
+    case 'pdf': return 'application/pdf';
+    case 'zip': return 'application/zip';
+    case 'gz': return 'application/gzip';
+    default: return 'application/octet-stream';
+  }
+}
+
+/**
+ * Read a result-door scratch reference through MCP's authenticated resource
+ * surface. Scratch URIs are not catalog resources: the URI itself identifies
+ * a bounded file under the caller's workspace, and a self-describing file may
+ * further restrict access to the owner that produced it.
+ */
+async function readScratchResource(
+  uri: string,
+  principal: Principal,
+): Promise<ReadResourceResult> {
+  let parts;
+  try {
+    parts = parseScratchUri(uri);
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_resource',
+        message: err instanceof ScratchUriError ? err.message : String(err),
+      },
+    };
+  }
+
+  if (parts.workspaceId !== principal.workspaceId) {
+    return {
+      ok: false,
+      error: {
+        code: 'workspace_mismatch',
+        message: `scratch URI references workspace "${parts.workspaceId}"; principal is scoped to "${principal.workspaceId}"`,
+      },
+    };
+  }
+
+  let filePath: string;
+  try {
+    filePath = safeScratchFilesystemPath(uri);
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_resource',
+        message: err instanceof ScratchUriError ? err.message : String(err),
+      },
+    };
+  }
+
+  let bytes: Buffer;
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile()) {
+      return {
+        ok: false,
+        error: { code: 'not_a_file', message: 'scratch path is not a regular file' },
+      };
+    }
+    bytes = readFileSync(filePath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    return {
+      ok: false,
+      error: {
+        code: code === 'ENOENT' ? 'not_found' : 'read_error',
+        message: code === 'ENOENT'
+          ? 'scratch file does not exist'
+          : err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
+
+  let mimeType = scratchMimeType(parts.basename);
+  try {
+    const reference = parseScratchReference(bytes);
+    if (reference) {
+      authorizeScratchReference(reference.manifest, {
+        workspaceId: principal.workspaceId,
+        // The bearer principal is the only caller identity available at this
+        // transport seam; result-door owner references use that same stable
+        // principal slug when they are produced outside a request context.
+        ownerId: principal.slug,
+      });
+      bytes = reference.payload;
+      mimeType = reference.manifest.mediaType;
+    }
+  } catch (err) {
+    if (err instanceof ScratchReferenceError) {
+      return { ok: false, error: { code: err.code, message: err.message } };
+    }
+    return {
+      ok: false,
+      error: { code: 'invalid_reference', message: err instanceof Error ? err.message : String(err) },
+    };
+  }
+
+  return {
+    ok: true,
+    contents: { uri, mimeType, text: bytes.toString('utf8') },
+  };
+}
+
 /**
  * Enumerate every resource the bearer is allowed to see. Templated
  * resources expand via their `list` callback (one URI per harness, etc.);
@@ -403,6 +539,14 @@ export async function listResources(bearer: string): Promise<ListResourcesResult
  * `read` callback inside a workspace-bound transaction.
  */
 export async function readResource(opts: ReadResourceOptions): Promise<ReadResourceResult> {
+  if (isScratchResourceUri(opts.uri)) {
+    const principal = await resolveBearer(opts.bearer);
+    if (!principal) {
+      return { ok: false, error: { code: 'invalid_bearer', message: 'Bearer did not resolve to a principal' } };
+    }
+    return readScratchResource(opts.uri, principal);
+  }
+
   const matched = matchResource(opts.uri);
   if (!matched) {
     return { ok: false, error: { code: 'unknown_resource', message: `No resource matches URI "${opts.uri}"` } };

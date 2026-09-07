@@ -2021,6 +2021,7 @@ export default defineTool({
           summary?: string | null;
           sourcePlanSlug?: string | null;
           sourcePlanItemIds?: string[] | null;
+          family?: 'feature' | 'issue' | null;
         };
         [
           [planDecisions, planDecisionsNote],
@@ -2160,6 +2161,11 @@ export default defineTool({
                 .then(async (m) => {
                   const hint = await m.getClaimTimeSourceCitation({
                     workItemId: wi.id as string,
+                    workspaceId: ident.workspaceId ?? undefined,
+                    harness: wi.harness ?? args.harness,
+                    family:
+                      wi.family ??
+                      (wi.kind === 'bug' || wi.kind === 'change' || wi.kind === 'task' ? 'issue' : 'feature'),
                   });
                   const warning = m.sourceCitationWarning(hint, wi.id as string);
                   return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;

@@ -63,11 +63,76 @@ import {
   type CodeSearchDeps,
 } from './scout/code-existence-probe';
 import { createGitGrepDeps } from './scout/code-search-deps';
+import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordination/capabilities';
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from './workspace-registry';
+
+export type ClaimTimeSourceCitationFamily = 'issue' | 'feature';
+
+/** Identity context required to traverse canonical duplicate relations safely. */
+export interface ClaimTimeSourceCitationRef {
+  workItemId: string;
+  workspaceId?: string | null;
+  harness?: string | null;
+  family?: ClaimTimeSourceCitationFamily | null;
+}
+
+/** Injectable duplicate-equivalence seam; production uses the workspace-scoped coord store. */
+export type DuplicateEquivalentIdResolver = (
+  ref: ClaimTimeSourceCitationRef,
+) => Promise<readonly string[]>;
+
+const MAX_DUPLICATE_EQUIVALENTS = 8;
+const MAX_CITATIONS = 12;
+
+function objectRefFor(ref: ClaimTimeSourceCitationRef): ObjectRef | null {
+  const id = ref.workItemId.trim();
+  if (!id || !ref.family) return null;
+  if (ref.family === 'issue') return { kind: 'issue', ref: id };
+  const harness = ref.harness?.trim();
+  return harness ? { kind: 'feature', ref: `${harness}#${id}` } : null;
+}
+
+function idFromEquivalentRef(candidate: ObjectRef, source: ObjectRef, harness: string | null): string | null {
+  if (candidate.kind !== source.kind) return null;
+  if (source.kind === 'issue') return candidate.ref;
+  const prefix = harness ? `${harness}#` : null;
+  if (!prefix || !candidate.ref.startsWith(prefix)) return null;
+  return candidate.ref.slice(prefix.length) || null;
+}
+
+/**
+ * Read one bounded, bidirectional hop of the canonical `duplicates` relation.
+ * Admission writes loser→canonical, so both directions are required: a claimant
+ * may be looking at either endpoint. Missing family/harness context intentionally
+ * yields no equivalents; the direct-id citation probe still runs.
+ */
+export async function resolveDuplicateEquivalentIds(ref: ClaimTimeSourceCitationRef): Promise<string[]> {
+  const source = objectRefFor(ref);
+  if (!source) return [];
+  const store = new PgLinkStore({
+    getSql: () => getOrgPg().sql,
+    ensureSchema: async () => {},
+    getWorkspaceId: () => ref.workspaceId?.trim() || activeWorkspaceId(),
+  });
+  const [outgoing, incoming] = await Promise.all([
+    store.listOut(source, { rel: 'duplicates' }),
+    store.listIn(source, { rel: 'duplicates' }),
+  ]);
+  const equivalents = [
+    ...outgoing.map((row: LinkRow) => idFromEquivalentRef(row.dst, source, ref.harness?.trim() ?? null)),
+    ...incoming.map((row: LinkRow) => idFromEquivalentRef(row.src, source, ref.harness?.trim() ?? null)),
+  ]
+    .filter((id): id is string => Boolean(id) && id !== ref.workItemId.trim());
+  return [...new Set(equivalents)].slice(0, MAX_DUPLICATE_EQUIVALENTS - 1);
+}
 
 /** Evidence that the tree already names this work-item's id. */
 export interface ClaimTimeSourceCitationHint {
   /** The id that was probed. */
   workItemId: string;
+  /** IDs whose canonical duplicate relation was also probed and matched. */
+  matchedWorkItemIds?: string[];
   /** Evidence paths citing it, capped by the probe's own `maxExamples`. */
   citations: string[];
   /**
@@ -102,17 +167,52 @@ export async function getClaimTimeSourceCitation(ref: {
   cwd?: string;
   /** Injected searcher (tests). Defaults to a `git grep`-backed one. */
   deps?: CodeSearchDeps;
+  workspaceId?: string | null;
+  harness?: string | null;
+  family?: ClaimTimeSourceCitationFamily | null;
+  /** Injected relation reader (tests); production defaults to coord_links. */
+  resolveEquivalentIds?: DuplicateEquivalentIdResolver;
 }): Promise<ClaimTimeSourceCitationHint | null> {
   const workItemId = ref.workItemId?.trim();
   if (!workItemId) return null;
 
   try {
     const deps = ref.deps ?? createGitGrepDeps({ cwd: ref.cwd ?? defaultCwd() });
+    const identity: ClaimTimeSourceCitationRef = {
+      workItemId,
+      workspaceId: ref.workspaceId,
+      harness: ref.harness,
+      family: ref.family,
+    };
+    let equivalentIds: string[] = [workItemId];
+    try {
+      const resolved = await (ref.resolveEquivalentIds ?? resolveDuplicateEquivalentIds)(identity);
+      equivalentIds = [...new Set([workItemId, ...resolved.map((id) => id.trim()).filter(Boolean)])].slice(
+        0,
+        MAX_DUPLICATE_EQUIVALENTS,
+      );
+    } catch {
+      // Relation reads are advisory. Preserve the direct-id probe when the coord
+      // store is unavailable or the caller lacks family-specific identity context.
+    }
     // Empty text + maxTerms:0 => the selfId leg ONLY. See the module docblock.
-    const report = await probeCodeExistence('', deps, { selfId: workItemId, maxTerms: 0 });
-    const citations = report.selfIdHits ?? [];
+    const reports = await Promise.all(
+      equivalentIds.map((id) => probeCodeExistence('', deps, { selfId: id, maxTerms: 0 })),
+    );
+    const matches = reports.flatMap((report, index) =>
+      report.selfIdHits && report.selfIdHits.length > 0
+        ? [{ id: equivalentIds[index]!, report }]
+        : [],
+    );
+    const citations = [...new Set(matches.flatMap(({ report }) => report.selfIdHits ?? []))].slice(0, MAX_CITATIONS);
     if (citations.length === 0) return null;
-    return { workItemId, citations, summary: summariseCodeExistence(report) };
+    const matchedWorkItemIds = matches.map(({ id }) => id);
+    const summary =
+      matchedWorkItemIds.length === 1 && matchedWorkItemIds[0] === workItemId
+        ? summariseCodeExistence(matches[0]!.report)
+        : `LIKELY ALREADY IMPLEMENTED — source cites this item or a canonical equivalent ` +
+          `(${matchedWorkItemIds.join(', ')}): ${citations.join(', ')}`;
+    return { workItemId, citations, matchedWorkItemIds, summary };
   } catch {
     // Belt-and-braces: the probe is already fail-open internally, but this leg
     // must never be the reason a claim fails.

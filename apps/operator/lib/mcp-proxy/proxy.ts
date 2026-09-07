@@ -626,6 +626,8 @@ export interface PreparedForward {
   body: Buffer;
   headers: http.IncomingHttpHeaders;
   klass: ForwardClass;
+  /** True when the outer tools/call is code:run (directly or through tools:invoke). */
+  hasCodeRunWrapper: boolean;
   /**
    * Bounded JSON-RPC method names from the parsed batch (`initialize`,
    * `tools/list`, `tools/call`, ...). Payloads and tool names are deliberately
@@ -737,7 +739,7 @@ const READ_ONLY_TOOLS_LOOKUP: ReadonlySet<string> = new Set(
 
 const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 
-function readOnlyToolName(m: unknown): string | null {
+function forwardedToolName(m: unknown): string | null {
   if (!m || typeof m !== "object") return null;
   const params = (m as { params?: unknown }).params;
   if (!params || typeof params !== "object" || Array.isArray(params))
@@ -761,8 +763,14 @@ function readOnlyToolName(m: unknown): string | null {
 }
 
 function isReadOnlyToolCall(m: unknown): boolean {
-  const name = readOnlyToolName(m);
+  const name = forwardedToolName(m);
   return name !== null && READ_ONLY_TOOLS_LOOKUP.has(name);
+}
+
+const CODE_RUN_TOOL_NAME = normalizeMcpName("code:run");
+
+function isCodeRunToolCall(m: unknown): boolean {
+  return forwardedToolName(m) === CODE_RUN_TOOL_NAME;
 }
 /**
  * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`
@@ -787,12 +795,12 @@ export function prepareForward(
   },
 ): PreparedForward {
   if (method !== "POST" || body.length === 0)
-    return { body, headers, klass: "opaque", rpcMethods: [] };
+    return { body, headers, klass: "opaque", hasCodeRunWrapper: false, rpcMethods: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString("utf8"));
   } catch {
-    return { body, headers, klass: "opaque", rpcMethods: [] }; // non-JSON — cannot classify → safe default
+    return { body, headers, klass: "opaque", hasCodeRunWrapper: false, rpcMethods: [] }; // non-JSON — cannot classify → safe default
   }
   const msgs = Array.isArray(parsed) ? parsed : [parsed];
   const rpcMethods = recordedRpcMethods(msgs);
@@ -803,20 +811,21 @@ export function prepareForward(
     typeof m === "object" &&
     (m as { method?: unknown }).method === "tools/call";
   const calls = msgs.filter(isCall);
+  const hasCodeRunWrapper = calls.some(isCodeRunToolCall);
   if (calls.length === 0)
-    return { body, headers, klass: "idempotent", rpcMethods }; // no write → free safe retry
+    return { body, headers, klass: "idempotent", hasCodeRunWrapper, rpcMethods }; // no write → free safe retry
 
   if (!opts.keyingEnabled)
-    return { body, headers, klass: "opaque", rpcMethods }; // kill-switch → refused-only
+    return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods }; // kill-switch → refused-only
   if (body.length > INJECT_MAX_BODY_BYTES)
-    return { body, headers, klass: "opaque", rpcMethods };
+    return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods };
   // EI-21268234394605529: a provably read-only tools/call may be replayed on a post-connect
   // socket error (re-executing a read cannot double-apply). Gated behind BOTH switches: the
   // keying master switch above (PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 = pre-P-005 refused-only)
   // and its own PAPERCUSP_MCP_PROXY_READONLY_RETRY=0. Unknown / oversized / switched-off
   // bodies fall through to the existing keyed/opaque path unchanged.
   if (opts.readonlyRetryEnabled !== false && calls.every(isReadOnlyToolCall)) {
-    return { body, headers, klass: "readonly", rpcMethods }; // body untouched — no key injection needed
+    return { body, headers, klass: "readonly", hasCodeRunWrapper, rpcMethods }; // body untouched — no key injection needed
   }
 
   let mutated = false;
@@ -831,20 +840,20 @@ export function prepareForward(
         : {};
     if (isValidIdemKey(meta.idempotencyKey)) continue; // respect a valid client key
     if (meta.idempotencyKey !== undefined)
-      return { body, headers, klass: "opaque", rpcMethods }; // invalid client key → can't safely retry
+      return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods }; // invalid client key → can't safely retry
     meta.idempotencyKey = opts.genKey();
     params._meta = meta;
     m.params = params;
     mutated = true;
   }
-  if (!mutated) return { body, headers, klass: "keyed", rpcMethods }; // already client-keyed, body unchanged
+  if (!mutated) return { body, headers, klass: "keyed", hasCodeRunWrapper, rpcMethods }; // already client-keyed, body unchanged
   const newBody = Buffer.from(JSON.stringify(parsed), "utf8");
   const newHeaders: http.IncomingHttpHeaders = {
     ...headers,
     "content-length": String(newBody.length),
   };
   delete newHeaders["transfer-encoding"];
-  return { body: newBody, headers: newHeaders, klass: "keyed", rpcMethods };
+  return { body: newBody, headers: newHeaders, klass: "keyed", hasCodeRunWrapper, rpcMethods };
 }
 
 /**
@@ -3746,8 +3755,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                       // proxy-injected idempotencyKey, so IF the caller resends the identical body :3070
                       // dedups server-side instead of double-applying — but the proxy itself does not know
                       // whether the first attempt's write landed, so it surfaces honestly rather than guess.
-                      "upstream errored AFTER connecting — not auto-retried (the write's outcome is unknown; " +
-                        "resending the same call is safe server-side dedup if the caller preserves its idempotency key)"
+                      fwd.hasCodeRunWrapper
+                        ? "upstream errored AFTER connecting — not auto-retried (the outer code:run wrapper's " +
+                          "nested outcome is unknown; its script may have performed reads or writes. " +
+                          "Repeating the same request is safe for writes only when the caller preserves " +
+                          "its idempotency key)"
+                        : "upstream errored AFTER connecting — not auto-retried (the write's outcome is unknown; " +
+                          "resending the same call is safe server-side dedup if the caller preserves its idempotency key)"
                     : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
             }),
           );

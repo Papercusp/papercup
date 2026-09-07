@@ -387,6 +387,7 @@ export default defineTool({
       title?: string;
       summary?: string;
       harness?: string | null;
+      family?: 'feature' | 'issue' | null;
       state?: string | null;
       payload?: unknown;
       sourcePlanSlug?: string | null;
@@ -398,6 +399,7 @@ export default defineTool({
             title?: string;
             summary?: string;
             harness?: string | null;
+            family?: 'feature' | 'issue' | null;
             state?: string | null;
             payload?: unknown;
             sourcePlanSlug?: string | null;
@@ -653,12 +655,17 @@ export default defineTool({
     // agent who never claimed it — the row is then indistinguishable from never-started.
     // Advisory only: a citation can be a reference rather than an implementation.
     const sourceCitationFor = async (
-      wi: { id?: string } | null,
+      wi: { id?: string; harness?: string | null; family?: 'feature' | 'issue' | null } | null,
     ): Promise<{ sourceCitation: unknown; sourceCitationWarning: string } | null> => {
       if (!wi?.id) return null;
       try {
         const m = await import('../../source-citation-claim-port');
-        const hint = await m.getClaimTimeSourceCitation({ workItemId: wi.id });
+        const hint = await m.getClaimTimeSourceCitation({
+          workItemId: wi.id,
+          workspaceId: ident.workspaceId ?? undefined,
+          harness: wi.harness ?? args.harness,
+          family: wi.family,
+        });
         const warning = m.sourceCitationWarning(hint, wi.id);
         return hint && warning
           ? { sourceCitation: hint, sourceCitationWarning: warning }

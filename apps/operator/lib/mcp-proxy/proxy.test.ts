@@ -382,6 +382,31 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
       "KEY123",
     );
   });
+  it("code:run remains keyed but records that its nested effects are opaque to the proxy", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "code:run",
+          arguments: {
+            script: "return await tools.work_items.get({ id: 'EI-1' });",
+          },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    // code:run can invoke writes, so it must not enter the readonly replay class. The proxy
+    // still records the wrapper shape so a terminal error can avoid calling a read-only script
+    // a write without weakening replay safety.
+    expect(r.klass).toBe("keyed");
+    expect(r.hasCodeRunWrapper).toBe(true);
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe("KEY123");
+  });
   it.each([
     ["underscore alias", "docs_search"],
     ["fully mangled alias", "mcp__papercusp-su__docs_search"],
@@ -1491,6 +1516,47 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       expect(r.status).toBe(502);
       expect(r.body).toContain("mcp_proxy_upstream_error");
       expect(upstream.hits()).toBe(1);
+    }),
+  );
+
+  it(
+    "code:run failure guidance names the nested outcome without asserting that it was a write",
+    withKeyedRetry("1", async () => {
+      const upstream = resetOnceUpstream(
+        '{"result":"should-not-reach"}',
+      ) as http.Server & { hits: () => number };
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 2_000,
+          retryBackoffMs: 40,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+      const r = await request(
+        port(proxy),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "code:run",
+            arguments: {
+              script: "return await tools.work_items.get({ id: 'EI-1' });",
+            },
+          },
+        }),
+      );
+      expect(r.status).toBe(502);
+      const payload = JSON.parse(r.body) as { note?: string };
+      expect(payload.note).toContain("outer code:run wrapper's nested outcome is unknown");
+      expect(payload.note).toContain("may have performed reads or writes");
+      expect(payload.note).not.toContain("the write's outcome is unknown");
+      expect(upstream.hits()).toBe(1); // keyed safety remains unchanged
     }),
   );
 

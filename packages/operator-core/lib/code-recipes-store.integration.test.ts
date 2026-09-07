@@ -27,6 +27,8 @@ import {
   mergeRecipes,
   sweepRecipes,
 } from './code-recipes-store';
+import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
+import { blueprintPackageProvisioners } from './blueprint/compile-packages';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,6 +70,32 @@ describe('code_recipes store (real PG)', () => {
     expect((await getRecipe(db.adminSql, input.id))?.script).toBe('return 1');
     await upsertRecipe(db.adminSql, { ...input, createOnly: false, script: 'return 3' });
     expect((await getRecipe(db.adminSql, input.id))?.script).toBe('return 3');
+  });
+
+  it('P-026 registers a pinned recipe bundle through the existing store and never clobbers it', async () => {
+    const provision = blueprintPackageProvisioners(db.adminSql).recipe;
+    const input = {
+      packageKind: 'recipe' as const,
+      ref: 'p026-bundled-recipe',
+      revision: '1.0.0',
+      files: [{ path: 'recipe.json', bytes: '{"id":"p026-bundled-recipe"}' }],
+      value: {
+        id: 'p026-bundled-recipe', title: 'Bundled recipe', description: 'fixture',
+        script: 'return 26', toolsUsed: ['state:read'], tags: ['identity'],
+      },
+    };
+    const pin = pinPackageInput(input);
+    const scope = { workspaceId: 'p026-workspace', harnessSlug: 'p026-harness' };
+    await provision(pin, scope);
+    await expect(getRecipe(db.adminSql, input.value.id)).resolves.toMatchObject({
+      title: 'Bundled recipe', script: 'return 26', toolsUsed: ['state:read'], tags: ['identity'],
+      authorRole: 'blueprint-bundle', createdBy: `blueprint-package:${pin.contentHash}`,
+    });
+    await expect(provision(pin, scope)).resolves.toBeUndefined();
+
+    const changed = pinPackageInput({ ...input, value: { ...input.value, script: 'return 27' } });
+    await expect(provision(changed, scope)).rejects.toThrow(/explicit migration is required/);
+    expect((await getRecipe(db.adminSql, input.value.id))?.script).toBe('return 26');
   });
 
   it('upserts a recipe and reads it back (getRecipe + listRecipes)', async () => {

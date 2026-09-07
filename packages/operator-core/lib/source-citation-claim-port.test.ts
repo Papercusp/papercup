@@ -46,6 +46,52 @@ describe('getClaimTimeSourceCitation', () => {
     expect(hint?.summary).toContain('cites this item');
   });
 
+  it('probes a bounded canonical duplicate equivalent while retaining the direct id', async () => {
+    const deps = { search: vi.fn(async (term: string) => (term === 'WI-canonical' ? ['canonical.ts'] : [])) };
+    const resolveEquivalentIds = vi.fn(async (ref: { workItemId: string; workspaceId?: string | null; harness?: string | null; family?: string | null }) => {
+      expect(ref).toMatchObject({
+        workItemId: 'WI-loser',
+        workspaceId: 'papercusp-workspace',
+        harness: 'papercusp',
+        family: 'issue',
+      });
+      return ['WI-canonical'];
+    });
+
+    const hint = await getClaimTimeSourceCitation({
+      workItemId: 'WI-loser',
+      workspaceId: 'papercusp-workspace',
+      harness: 'papercusp',
+      family: 'issue',
+      deps,
+      resolveEquivalentIds,
+    });
+
+    expect(resolveEquivalentIds).toHaveBeenCalledTimes(1);
+    expect(deps.search).toHaveBeenCalledWith('WI-loser');
+    expect(deps.search).toHaveBeenCalledWith('WI-canonical');
+    expect(hint?.matchedWorkItemIds).toEqual(['WI-canonical']);
+    expect(hint?.citations).toEqual(['canonical.ts']);
+    expect(hint?.summary).toContain('cites this item or a canonical equivalent');
+  });
+
+  it('fails open to the direct-id probe when duplicate relation lookup fails', async () => {
+    const deps = searcher(['direct.ts']);
+
+    const hint = await getClaimTimeSourceCitation({
+      workItemId: 'WI-loser',
+      family: 'issue',
+      deps,
+      resolveEquivalentIds: vi.fn(async () => {
+        throw new Error('coord_links unavailable');
+      }),
+    });
+
+    expect(hint?.workItemId).toBe('WI-loser');
+    expect(hint?.citations).toEqual(['direct.ts']);
+    expect(deps.search).toHaveBeenCalledWith('WI-loser');
+  });
+
   it('spends exactly ONE search — the affordability claim that makes it viable on a claim', async () => {
     const deps = searcher(['a.ts']);
 

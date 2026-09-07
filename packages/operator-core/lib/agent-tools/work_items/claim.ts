@@ -757,7 +757,12 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       import('../../source-citation-claim-port')
         .then(async (m) => {
           const id = workItem.id ?? it.id;
-          const hint = await m.getClaimTimeSourceCitation({ workItemId: id });
+          const hint = await m.getClaimTimeSourceCitation({
+            workItemId: id,
+            workspaceId: identity.workspaceId ?? undefined,
+            harness: workItem.harness ?? it.harness ?? null,
+            family: workItem.family,
+          });
           const warning = m.sourceCitationWarning(hint, id);
           return hint && warning
             ? { sourceCitation: hint, sourceCitationWarning: warning }

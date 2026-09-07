@@ -98,6 +98,7 @@ export type ClaimTimeEnrichmentLeg = (typeof CLAIM_TIME_ENRICHMENT_LEGS)[number]
  */
 export interface ClaimTimeEnrichmentSubject {
   id?: string | null;
+  family?: 'feature' | 'issue' | null;
   payload?: unknown;
   harness?: string | null;
   title?: string | null;
@@ -262,6 +263,7 @@ export interface ClaimTimeEnrichmentOpts {
   planItemId?: string | null;
   harness?: string | null;
   workspaceId?: string | null;
+  family?: 'feature' | 'issue' | null;
 }
 
 /**
@@ -276,6 +278,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
   const wi = opts.workItem ?? null;
   const harness = wi?.harness ?? opts.harness ?? null;
   const workspaceId = opts.workspaceId ?? undefined;
+  const family = wi?.family ?? opts.family ?? null;
   const workItemId = wi?.id ?? null;
   // The behavior-contract resolver needs an id to read explicit edges. Keep the
   // partial-subject contract for the other legs, but only expose an identified
@@ -496,7 +499,7 @@ export async function buildClaimTimeEnrichment(opts: ClaimTimeEnrichmentOpts): P
       // by the searcher it reuses, and fail-open to silence.
       runLeg('sourceCitation', workItemId, async (workItemId) => {
         const m = await import('./source-citation-claim-port');
-        const hint = await m.getClaimTimeSourceCitation({ workItemId });
+        const hint = await m.getClaimTimeSourceCitation({ workItemId, workspaceId, harness, family });
         const warning = m.sourceCitationWarning(hint, workItemId);
         return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
       }),
