@@ -35,6 +35,15 @@ const buildLaunchSpecMock = vi.fn(async (_input: any) => ({
   promptFile: '/prompts/papercusp-su-engineer.tools.md',
   mcpUrl: 'http://localhost:3070/api/mcp?superuser=1&workspace=default',
   mcpJsonContents: '{}',
+  stack: _input.stack ?? [],
+}));
+const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
+  promptText: input.promptText,
+  stack: input.stack ?? [],
+  specificationArtifact: {},
+  specificationRevision: 'a'.repeat(64),
+  stateRevision: input.stateRevision ?? 'b'.repeat(64),
+  compositionSource: 'compatibility' as const,
 }));
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}`,
@@ -161,6 +170,8 @@ vi.mock('../../modes/store', () => ({
 }));
 vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
+  compileLaunchSpecificationArtifact: (...args: unknown[]) =>
+    compileLaunchSpecificationArtifactMock(...(args as [any])),
 }));
 vi.mock('../../agent-launch-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-launch-core')>()),
@@ -494,6 +505,15 @@ describe('bootstrap-su', () => {
     expect(json.envelopeEnv.PAPERCUSP_AGENT).toBe('claude');
     expect(json.envelopeEnv.PAPERCUSP_SID).toMatch(/^su-/);
     expect(json.envelopeEnv.PAPERCUSP_ADV_SESSION_ID).toBe('42');
+    expect(json.specificationRevision).toBe('a'.repeat(64));
+    expect(json.envelopeEnv.PAPERCUSP_SPECIFICATION_REVISION).toBe(json.specificationRevision);
+    expect(json.envelopeEnv.PAPERCUSP_STATE_REVISION).toBe(json.stateRevision);
+    expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
+        role: 'su',
+      }),
+    );
     expect(json.envelopeEnv.CODEX_HOME).toBeUndefined();
     // coord extension resolved for omp's -e (present in this test env).
     expect(json.coordExtPath).toBe(COORD_EXT);

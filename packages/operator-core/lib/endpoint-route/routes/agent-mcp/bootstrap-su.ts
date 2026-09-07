@@ -64,10 +64,11 @@ import {
 import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
-import { buildLaunchSpec } from '../../../role-launch-spec';
+import { buildLaunchSpec, compileLaunchSpecificationArtifact } from '../../../role-launch-spec';
 import { SU_TIER_ROLES, isSuTierRole, resolveSuRoleAddendum } from '../../../su-role-addendum';
 import {
   blockingInstructionConflicts,
+  buildInstructionPrecedenceTrace,
   lintInstructionText,
   type InstructionLintReport,
   type InstructionRuntimeContext,
@@ -192,6 +193,10 @@ export interface BootstrapSuResult {
   /** Bounded lint of the compiled instructions. Conflicts/stale rules are
    * visible to launchers and diagnostics instead of silently reaching agents. */
   instructionLint?: InstructionLintReport;
+  /** Exact P-038 artifact/state revisions materialized for this launch. */
+  specificationRevision: string;
+  stateRevision: string;
+  compositionSource: 'blueprint' | 'compatibility';
   /**
    * Per-session CODEX_HOME for a codex su session (AGENTS.md = playbook,
    * config.toml = superuser MCP, settings.json = lock hooks, auth symlink).
@@ -1250,10 +1255,13 @@ export function reconstructPsuLaunchArgv(o: {
    *  `profile` at the call site. Omitted ⇒ byte-identical to the pre-WI-1347
    *  plain-SU/engineer reconstruction below. */
   role?: string | null;
+  /** Repeatable launch-time identity bindings. */
+  stack?: readonly string[] | null;
 }): string[] {
   const argv = ['psu', '--no-picker', `--agent=${o.agent}`];
   if (o.headless) argv.push('--headless');
   if (o.role) argv.push(`--role=${o.role}`);
+  for (const ref of o.stack ?? []) if (ref) argv.push(`--stack=${ref}`);
   if (o.harnessSlug) argv.push(`--harness=${o.harnessSlug}`);
   argv.push(o.planSlug ? `--plan=${o.planSlug}` : '--no-plan');
   if (!o.role && o.profile && o.profile !== 'engineer') argv.push(`--profile=${o.profile}`);
@@ -2548,6 +2556,33 @@ const post = defineTool({
       );
     }
 
+    // P-008/D-028/D-030: compile the ACTUAL final bytes (after every launch
+    // overlay) through the immutable P-038 boundary. The precedence watermark is
+    // the separately versioned mutable state revision; both ids are carried by
+    // every client in the response/env beside the exact prompt it consumes.
+    const precedence = buildInstructionPrecedenceTrace(instructionRuntime);
+    let launchArtifact;
+    try {
+      launchArtifact = await compileLaunchSpecificationArtifact({
+        promptText,
+        promptFile: spec.promptFile,
+        cwd,
+        harnessSlug,
+        role: suRoleRaw ?? 'su',
+        stack: spec.stack,
+        stateRevision: precedence.watermark,
+        state: {
+          schemaVersion: 1,
+          principal: { kind: 'su', role: suRoleRaw ?? 'su', profile },
+          policy: { mcp: 'superuser', contextSize, personaTier: spec.personaTier ?? null },
+          instructionPrecedence: precedence,
+        },
+      });
+      promptText = launchArtifact.promptText;
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: `compile su launch artifact: ${e?.message ?? e}` }, 500);
+    }
+
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
     // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
     // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
@@ -2858,6 +2893,9 @@ const post = defineTool({
         drainMode,
         loopArmed,
         fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
+        stack: spec.stack,
+        specificationRevision: launchArtifact.specificationRevision,
+        stateRevision: launchArtifact.stateRevision,
       };
       void recordSuLaunchSpec(sessionId, sid, launchSpecRecord).catch(() => false);
     }
@@ -2875,6 +2913,8 @@ const post = defineTool({
       // header — without this export, --profile=power changed only the
       // playbook text while the MCP dispatcher kept gating as engineer.
       PAPERCUSP_PROFILE: profile,
+      PAPERCUSP_SPECIFICATION_REVISION: launchArtifact.specificationRevision,
+      PAPERCUSP_STATE_REVISION: launchArtifact.stateRevision,
       ...(codexHome ? { CODEX_HOME: codexHome } : {}),
       ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
@@ -2934,6 +2974,9 @@ const post = defineTool({
       planSlug,
       promptFile,
       instructionLint,
+      specificationRevision: launchArtifact.specificationRevision,
+      stateRevision: launchArtifact.stateRevision,
+      compositionSource: launchArtifact.compositionSource,
       codexHome,
       coordExtPath,
       envelopeEnv,

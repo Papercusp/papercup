@@ -1,0 +1,401 @@
+{
+  "name": "plans:evaluate-spec-test-adequacy",
+  "args": {
+    "slug": "shared-agent-obligations-and-briefs-2026-09-05",
+    "harness": "papercusp",
+    "classRef": "plan-class-feature-ship",
+    "current": [
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-002-unit-ddb59a866e",
+        "sourceFingerprint": "9e18e684e634275e1ef3605ff028665db707411e6d601397087b8416c99cbff1",
+        "testFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "fixtureFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-002-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-003-unit-ddb59a866e",
+        "sourceFingerprint": "9e18e684e634275e1ef3605ff028665db707411e6d601397087b8416c99cbff1",
+        "testFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "fixtureFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-003-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-004-unit-ddb59a866e",
+        "sourceFingerprint": "9e18e684e634275e1ef3605ff028665db707411e6d601397087b8416c99cbff1",
+        "testFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "fixtureFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-004-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-007-unit-ddb59a866e",
+        "sourceFingerprint": "9e18e684e634275e1ef3605ff028665db707411e6d601397087b8416c99cbff1",
+        "testFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "fixtureFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-007-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-009-unit-ddb59a866e",
+        "sourceFingerprint": "9e18e684e634275e1ef3605ff028665db707411e6d601397087b8416c99cbff1",
+        "testFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "fixtureFingerprint": "38deb5e0e6574d8d8f03aa5b4ccb0887406850a354b917840ebeb57aa8d798d5",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-1-P-009-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-003-unit-ddb59a866e",
+        "sourceFingerprint": "c170fc7b11fbc10b5294b9eb00146b057225b8884eb3227c74cddfe4f5fcea70",
+        "testFingerprint": "1d7c54132604975108a3e024e8217d93b31f7f723a61fa9bcceb2863768ab335",
+        "fixtureFingerprint": "1d7c54132604975108a3e024e8217d93b31f7f723a61fa9bcceb2863768ab335",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-006-unit-ddb59a866e",
+        "sourceFingerprint": "c170fc7b11fbc10b5294b9eb00146b057225b8884eb3227c74cddfe4f5fcea70",
+        "testFingerprint": "1d7c54132604975108a3e024e8217d93b31f7f723a61fa9bcceb2863768ab335",
+        "fixtureFingerprint": "1d7c54132604975108a3e024e8217d93b31f7f723a61fa9bcceb2863768ab335",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-007-unit-ddb59a866e",
+        "sourceFingerprint": "c170fc7b11fbc10b5294b9eb00146b057225b8884eb3227c74cddfe4f5fcea70",
+        "testFingerprint": "1d7c54132604975108a3e024e8217d93b31f7f723a61fa9bcceb2863768ab335",
+        "fixtureFingerprint": "1d7c54132604975108a3e024e8217d93b31f7f723a61fa9bcceb2863768ab335",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-3-P-003-unit-ddb59a866e",
+        "sourceFingerprint": "b45bd9b91481cb398ea919f52d1a33dcee7bce11714c821c80efa09fc5ff2de2",
+        "testFingerprint": "8a7a7e5fb412787263aeac8985373edf68bc856746b6c8d62660ad1009705d69",
+        "fixtureFingerprint": "8a7a7e5fb412787263aeac8985373edf68bc856746b6c8d62660ad1009705d69",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-3-P-003-integration-ddb59a866e",
+        "sourceFingerprint": "519b9b36813bc1d1ad84e4ebacf183168343d54f1bd1f5a7af29852a093b0bc4",
+        "testFingerprint": "6b830ee5c0b8d0bf2534f2774746e685ea88068bfe9a753b2916c2e0e549a7a8",
+        "fixtureFingerprint": "6b830ee5c0b8d0bf2534f2774746e685ea88068bfe9a753b2916c2e0e549a7a8",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-3-P-006-unit-ddb59a866e",
+        "sourceFingerprint": "b45bd9b91481cb398ea919f52d1a33dcee7bce11714c821c80efa09fc5ff2de2",
+        "testFingerprint": "8a7a7e5fb412787263aeac8985373edf68bc856746b6c8d62660ad1009705d69",
+        "fixtureFingerprint": "8a7a7e5fb412787263aeac8985373edf68bc856746b6c8d62660ad1009705d69",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-3-P-006-integration-ddb59a866e",
+        "sourceFingerprint": "519b9b36813bc1d1ad84e4ebacf183168343d54f1bd1f5a7af29852a093b0bc4",
+        "testFingerprint": "6b830ee5c0b8d0bf2534f2774746e685ea88068bfe9a753b2916c2e0e549a7a8",
+        "fixtureFingerprint": "6b830ee5c0b8d0bf2534f2774746e685ea88068bfe9a753b2916c2e0e549a7a8",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-3-P-007-unit-ddb59a866e",
+        "sourceFingerprint": "b45bd9b91481cb398ea919f52d1a33dcee7bce11714c821c80efa09fc5ff2de2",
+        "testFingerprint": "8a7a7e5fb412787263aeac8985373edf68bc856746b6c8d62660ad1009705d69",
+        "fixtureFingerprint": "8a7a7e5fb412787263aeac8985373edf68bc856746b6c8d62660ad1009705d69",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-3-P-007-integration-ddb59a866e",
+        "sourceFingerprint": "519b9b36813bc1d1ad84e4ebacf183168343d54f1bd1f5a7af29852a093b0bc4",
+        "testFingerprint": "6b830ee5c0b8d0bf2534f2774746e685ea88068bfe9a753b2916c2e0e549a7a8",
+        "fixtureFingerprint": "6b830ee5c0b8d0bf2534f2774746e685ea88068bfe9a753b2916c2e0e549a7a8",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-4-P-005-unit-ddb59a866e",
+        "sourceFingerprint": "eddbeb9e1c126c269191729498f50afa86c5d2b77b1745c47c39e9c1525402ba",
+        "testFingerprint": "71a1aac336888672622ca0f8a45e60d617fccf40aaa25409c31df7736c3d7f33",
+        "fixtureFingerprint": "71a1aac336888672622ca0f8a45e60d617fccf40aaa25409c31df7736c3d7f33",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-4-P-007-unit-ddb59a866e",
+        "sourceFingerprint": "eddbeb9e1c126c269191729498f50afa86c5d2b77b1745c47c39e9c1525402ba",
+        "testFingerprint": "71a1aac336888672622ca0f8a45e60d617fccf40aaa25409c31df7736c3d7f33",
+        "fixtureFingerprint": "71a1aac336888672622ca0f8a45e60d617fccf40aaa25409c31df7736c3d7f33",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-5-P-004-unit-ddb59a866e",
+        "sourceFingerprint": "13bf3716db7a53542a7836bad4aef091dcc00889d7d121aa75b16f4ae326e82f",
+        "testFingerprint": "d6d9f3fa68d7fe696b5126d7e7f0c9556df7c0a1d4c70e4846844bce30233500",
+        "fixtureFingerprint": "d6d9f3fa68d7fe696b5126d7e7f0c9556df7c0a1d4c70e4846844bce30233500",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-5-P-007-unit-ddb59a866e",
+        "sourceFingerprint": "13bf3716db7a53542a7836bad4aef091dcc00889d7d121aa75b16f4ae326e82f",
+        "testFingerprint": "d6d9f3fa68d7fe696b5126d7e7f0c9556df7c0a1d4c70e4846844bce30233500",
+        "fixtureFingerprint": "d6d9f3fa68d7fe696b5126d7e7f0c9556df7c0a1d4c70e4846844bce30233500",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-6-P-008-unit-ddb59a866e",
+        "sourceFingerprint": "9d7e2e4b2fa04d358fa506424359a2e44f2a05a99f7ebacc001abfd886c09d8a",
+        "testFingerprint": "d44148999af14a2bb7e0e9d453074a8525f3ec3dd4aa9431c818ff8fa87a71ff",
+        "fixtureFingerprint": "d44148999af14a2bb7e0e9d453074a8525f3ec3dd4aa9431c818ff8fa87a71ff",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-7-P-007-unit-ddb59a866e",
+        "sourceFingerprint": "4f3d7b3fb91dbf39525d56fbdfd1be9603af172705b3ef41424f99db1abc8c30",
+        "testFingerprint": "02daf6f01a6d25cd1d435010e154f740294f531b9fcf236cb10041b7c7b410c6",
+        "fixtureFingerprint": "02daf6f01a6d25cd1d435010e154f740294f531b9fcf236cb10041b7c7b410c6",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-7-P-007-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-7-P-008-unit-ddb59a866e",
+        "sourceFingerprint": "4f3d7b3fb91dbf39525d56fbdfd1be9603af172705b3ef41424f99db1abc8c30",
+        "testFingerprint": "02daf6f01a6d25cd1d435010e154f740294f531b9fcf236cb10041b7c7b410c6",
+        "fixtureFingerprint": "02daf6f01a6d25cd1d435010e154f740294f531b9fcf236cb10041b7c7b410c6",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-7-P-008-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-7-P-009-unit-ddb59a866e",
+        "sourceFingerprint": "4f3d7b3fb91dbf39525d56fbdfd1be9603af172705b3ef41424f99db1abc8c30",
+        "testFingerprint": "02daf6f01a6d25cd1d435010e154f740294f531b9fcf236cb10041b7c7b410c6",
+        "fixtureFingerprint": "02daf6f01a6d25cd1d435010e154f740294f531b9fcf236cb10041b7c7b410c6",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-7-P-009-integration-ddb59a866e",
+        "sourceFingerprint": "60efe8ffd1f0da25a3d81c475efb942fe00f6afdc0a71166b12ab5e5d92ef124",
+        "testFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "fixtureFingerprint": "50aba69130ed3c5a3b30ccf146e0ac8ecb36f99027d0acf40d836aeb5d749503",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-integration-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-4-P-005-integration-ddb59a866e",
+        "sourceFingerprint": "b33ae097047b82dd58ce959db86986bb75f585d80b78688f32cd8c1a7a817258",
+        "testFingerprint": "4fea77f50b8293ad35450ec75a15c958db6a29a9b8ffef6314892694b4e400f4",
+        "fixtureFingerprint": "4fea77f50b8293ad35450ec75a15c958db6a29a9b8ffef6314892694b4e400f4",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-real-postgres-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-4-P-007-integration-ddb59a866e",
+        "sourceFingerprint": "b33ae097047b82dd58ce959db86986bb75f585d80b78688f32cd8c1a7a817258",
+        "testFingerprint": "4fea77f50b8293ad35450ec75a15c958db6a29a9b8ffef6314892694b4e400f4",
+        "fixtureFingerprint": "4fea77f50b8293ad35450ec75a15c958db6a29a9b8ffef6314892694b4e400f4",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-real-postgres-ddb59a866e"
+      },
+      {
+        "evidenceKind": "operational",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-gui-journey.json",
+        "sourceFingerprint": "1d6af62ce64b2b6fbf555514b1048477f9a86774ea6a78770b23e53a38404795",
+        "testFingerprint": null,
+        "fixtureFingerprint": "7b26aed09b8161bae446cd0c4c7de3f50218312bef9c2a0e1989320d67318ae7",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "tauri-pid3924823-display91-port33710-ddb59a866e"
+      },
+      {
+        "evidenceKind": "operational",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-gui-journey.json",
+        "sourceFingerprint": "1d6af62ce64b2b6fbf555514b1048477f9a86774ea6a78770b23e53a38404795",
+        "testFingerprint": null,
+        "fixtureFingerprint": "7b26aed09b8161bae446cd0c4c7de3f50218312bef9c2a0e1989320d67318ae7",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "tauri-pid3924823-display91-port33710-ddb59a866e"
+      },
+      {
+        "evidenceKind": "operational",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-gui-journey.json",
+        "sourceFingerprint": "1d6af62ce64b2b6fbf555514b1048477f9a86774ea6a78770b23e53a38404795",
+        "testFingerprint": null,
+        "fixtureFingerprint": "7b26aed09b8161bae446cd0c4c7de3f50218312bef9c2a0e1989320d67318ae7",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "tauri-pid3924823-display91-port33710-ddb59a866e"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-003-additional-checks-e9f641f0a5",
+        "sourceFingerprint": "dbdfc73bf8c3e0a33a534376094d3a82d57a21110baea4a071544fed6f31ab78",
+        "testFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "fixtureFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-5f95dea7aa"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-006-additional-checks-e9f641f0a5",
+        "sourceFingerprint": "dbdfc73bf8c3e0a33a534376094d3a82d57a21110baea4a071544fed6f31ab78",
+        "testFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "fixtureFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-5f95dea7aa"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-2-P-007-additional-checks-e9f641f0a5",
+        "sourceFingerprint": "dbdfc73bf8c3e0a33a534376094d3a82d57a21110baea4a071544fed6f31ab78",
+        "testFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "fixtureFingerprint": "8135b2c263458f1f73a28dcaff7c877c086e1f422abbd473913b08b762c4966b",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-node-unit-5f95dea7aa"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-5-P-004-additional-checks-e9f641f0a5",
+        "sourceFingerprint": "011893c9187a2d025b956590c8f98b3cc94fe1296674d67cb0fc4bfcb16268a6",
+        "testFingerprint": "299474fe38e382da62234952ed0c9e6860c246816f7945ab3b4ef0cbc6df146d",
+        "fixtureFingerprint": "299474fe38e382da62234952ed0c9e6860c246816f7945ab3b4ef0cbc6df146d",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-unit-e9f641f0a5"
+      },
+      {
+        "evidenceKind": "test",
+        "evidenceRef": "docs/evidence/shared-agent-obligations-2026-09-07-acceptance.md#R-5-P-007-additional-checks-e9f641f0a5",
+        "sourceFingerprint": "011893c9187a2d025b956590c8f98b3cc94fe1296674d67cb0fc4bfcb16268a6",
+        "testFingerprint": "299474fe38e382da62234952ed0c9e6860c246816f7945ab3b4ef0cbc6df146d",
+        "fixtureFingerprint": "299474fe38e382da62234952ed0c9e6860c246816f7945ab3b4ef0cbc6df146d",
+        "rubricFingerprint": "ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f",
+        "environmentFingerprint": "vitest4.1.8-linux-unit-e9f641f0a5"
+      }
+    ],
+    "includeDraft": true,
+    "specIds": [
+      "AUTO-BAR-R-1-P-002",
+      "AUTO-BAR-R-1-P-003",
+      "AUTO-BAR-R-1-P-004",
+      "AUTO-BAR-R-1-P-007",
+      "AUTO-BAR-R-1-P-009",
+      "AUTO-BAR-R-2-P-003",
+      "AUTO-BAR-R-2-P-006",
+      "AUTO-BAR-R-2-P-007",
+      "AUTO-BAR-R-3-P-003",
+      "AUTO-BAR-R-3-P-006",
+      "AUTO-BAR-R-3-P-007",
+      "AUTO-BAR-R-4-P-005",
+      "AUTO-BAR-R-4-P-007",
+      "AUTO-BAR-R-5-P-004",
+      "AUTO-BAR-R-5-P-007",
+      "AUTO-BAR-R-6-P-008",
+      "AUTO-BAR-R-7-P-007",
+      "AUTO-BAR-R-7-P-008",
+      "AUTO-BAR-R-7-P-009"
+    ],
+    "projection": {
+      "pick": [
+        "ok",
+        "count",
+        "verdicts",
+        "wouldBlock",
+        "error"
+      ]
+    }
+  }
+}

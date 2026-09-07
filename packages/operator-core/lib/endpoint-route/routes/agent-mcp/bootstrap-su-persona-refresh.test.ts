@@ -39,6 +39,16 @@ const buildLaunchSpecMock = vi.hoisted(() =>
     personaTier: 'full' as const,
   })),
 );
+const compileLaunchSpecificationArtifactMock = vi.hoisted(() =>
+  vi.fn(async (input: any) => ({
+    promptText: input.promptText,
+    stack: input.stack ?? [],
+    specificationArtifact: {},
+    specificationRevision: 'a'.repeat(64),
+    stateRevision: input.stateRevision ?? 'b'.repeat(64),
+    compositionSource: 'compatibility' as const,
+  })),
+);
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -57,7 +67,10 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
 }));
-vi.mock('../../../role-launch-spec', () => ({ buildLaunchSpec: buildLaunchSpecMock }));
+vi.mock('../../../role-launch-spec', () => ({
+  buildLaunchSpec: buildLaunchSpecMock,
+  compileLaunchSpecificationArtifact: compileLaunchSpecificationArtifactMock,
+}));
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
 }));
@@ -118,13 +131,15 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
     readLaunchSpecMock.mockResolvedValue(spec());
     const res = await refresh({ coordOwnerId: OWNER });
     expect(res.status).toBe(200);
-    const j = (await res.json()) as { ok: boolean; promptFile: string };
+    const j = (await res.json()) as { ok: boolean; promptFile: string; specificationRevision: string; stateRevision: string };
     expect(j.ok).toBe(true);
     // The caller's fallback is the file it already has, so the refresh must land
     // somewhere else — see suPersonaRefreshPathFor.
     expect(j.promptFile).toBe(join(dir, `session-refresh-${OWNER}.md`));
     expect(existsSync(j.promptFile)).toBe(true);
     expect(readFileSync(j.promptFile, 'utf8')).toContain('# FRESHLY RENDERED PLAYBOOK');
+    expect(j.specificationRevision).toBe('a'.repeat(64));
+    expect(j.stateRevision).toHaveLength(24);
     // Rendered from CURRENT sources, which is the entire point.
     expect(buildLaunchSpecMock).toHaveBeenCalledTimes(1);
   });

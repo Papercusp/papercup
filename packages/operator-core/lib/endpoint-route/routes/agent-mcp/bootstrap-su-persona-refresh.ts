@@ -33,8 +33,8 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { readSuLaunchSpecByOwner } from '../../../adv-sessions';
-import { blockingInstructionConflicts } from '../../../instruction-lint';
-import { buildLaunchSpec } from '../../../role-launch-spec';
+import { blockingInstructionConflicts, buildInstructionPrecedenceTrace } from '../../../instruction-lint';
+import { buildLaunchSpec, compileLaunchSpecificationArtifact } from '../../../role-launch-spec';
 import { isSuAgent } from '../../../su-agents';
 import { launchContextDir } from '../../../su-launch-context';
 import {
@@ -103,6 +103,7 @@ const personaRefresh = defineTool({
         personaTier: record.personaTier,
         model: record.model,
         planSlug: record.planSlug,
+        stack: record.stack,
         planTitle: plan.planTitle,
         planNow: plan.planNow,
       });
@@ -117,7 +118,7 @@ const personaRefresh = defineTool({
         planSlug: record.planSlug,
       });
 
-      const { promptText, instructionLint } = await applySuPromptOverlays({
+      const overlaid = await applySuPromptOverlays({
         basePromptText: spec.promptText,
         agent: record.agent,
         // codex-only overlay; a claude launch keeps its `--launch-context` brief in
@@ -132,6 +133,8 @@ const personaRefresh = defineTool({
         }),
         instructionRuntime,
       });
+      let promptText = overlaid.promptText;
+      const instructionLint = overlaid.instructionLint;
 
       // The launch path REFUSES a boot whose compiled instructions contradict each
       // other on file-lock mode. Apply the same bar here rather than shipping a
@@ -141,6 +144,24 @@ const personaRefresh = defineTool({
       if (blocking.length > 0) {
         return jsonRes({ ok: false, reason: 'instruction-conflict', instructionLint });
       }
+
+      const precedence = buildInstructionPrecedenceTrace(instructionRuntime);
+      const artifact = await compileLaunchSpecificationArtifact({
+        promptText,
+        promptFile: spec.promptFile,
+        cwd: spec.cwd,
+        harnessSlug: record.harnessSlug,
+        role: 'su',
+        stack: spec.stack,
+        stateRevision: precedence.watermark,
+        state: {
+          schemaVersion: 1,
+          principal: { kind: 'su', role: 'su', profile: record.profile },
+          policy: { mcp: 'superuser', contextSize: record.contextSize, personaTier: spec.personaTier ?? null },
+          instructionPrecedence: precedence,
+        },
+      });
+      promptText = artifact.promptText;
 
       // Write atomically to a path that is NOT the inherited one. The caller's
       // fallback is the file it already has, so that file must stay intact and
@@ -159,6 +180,9 @@ const personaRefresh = defineTool({
         bytes: Buffer.byteLength(promptText, 'utf8'),
         personaTier: spec.personaTier ?? null,
         promptSource: spec.promptFile,
+        specificationRevision: artifact.specificationRevision,
+        stateRevision: artifact.stateRevision,
+        compositionSource: artifact.compositionSource,
       });
     } catch (err) {
       return jsonRes({

@@ -42,7 +42,7 @@
  *
  * Server-only.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
@@ -176,6 +176,7 @@ import { lintInstructionText, type InstructionLintReport } from './instruction-l
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
+import type { CompiledAgentSpecification, LoadedBlueprint, StackDocument } from '@papercusp/orchestrator/blueprint';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -210,6 +211,8 @@ export interface BuildRoleLaunchSpecInput {
   extras?: readonly string[];
   /** Signed-URL TTL; defaults to the signer's 24h. */
   ttlSec?: number;
+  /** Explicit launch-time identity bindings. Omitted selects this role's `roles[].stack` default. */
+  stack?: readonly string[] | null;
   /**
    * Initial MCP tool-surface size. There is only ONE effective value —
    * 'trimmed' — for EVERY role (trimmed-only-agent-context-launch-2026-08-27
@@ -248,6 +251,14 @@ export interface RoleLaunchSpec {
   cwd: string;
   /** Full role prompt (persona + tools + runtime context), chat-mode. */
   promptText: string;
+  /** Canonical launch-time identity binding that produced the prompt. */
+  stack: string[];
+  /** Immutable P-038 artifact and the two revision receipts the launched host consumes. */
+  specificationArtifact: CompiledAgentSpecification;
+  specificationRevision: string;
+  stateRevision: string;
+  /** `compatibility` is the temporary harness-less/pre-blueprint adapter described below. */
+  compositionSource: 'blueprint' | 'compatibility';
   /** Which prompt file resolved (diagnostics). */
   promptFile: string;
   /** Signed, role-scoped MCP URL (role-allowlist enforced at dispatch). */
@@ -293,6 +304,157 @@ export interface RoleLaunchSpec {
    *  guard that a legacy alias never becomes a launch mode. Diagnostic + lets a
    *  caller surface it (mirrors `LaunchSpec.personaTier` on the su path). */
   contextSize: 'trimmed';
+}
+
+export interface LaunchArtifactInput {
+  promptText: string;
+  promptFile?: string | null;
+  cwd: string;
+  harnessSlug?: string | null;
+  role: string;
+  /** null/omitted selects `roles[].stack`; [] explicitly selects no optional layers. */
+  stack?: readonly string[] | null;
+  /** Versioned mutable mode/policy/principal state kept distinct from source configuration. */
+  state: Record<string, unknown>;
+  /** A caller-owned state watermark (for SU, the instruction-precedence watermark). */
+  stateRevision?: string | null;
+  /** Role prompts need their bound identity documents rendered above the sealed kernel. */
+  renderStack?: boolean;
+}
+
+export interface LaunchArtifactResult {
+  promptText: string;
+  stack: string[];
+  specificationArtifact: CompiledAgentSpecification;
+  specificationRevision: string;
+  stateRevision: string;
+  compositionSource: 'blueprint' | 'compatibility';
+}
+
+function stableLaunchState(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableLaunchState);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => [key, stableLaunchState(child)]),
+    );
+  }
+  return value;
+}
+
+function launchStateRevision(state: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(stableLaunchState(state)), 'utf8').digest('hex');
+}
+
+function compatibilityLaunchSource(role: string): Record<string, unknown> {
+  // TEMPORARY COMPATIBILITY ADAPTER: workspace-level sessions and legacy registered
+  // harnesses can predate `.papercusp/blueprint.yaml`. Remove this source as soon as
+  // every launchable scope is guaranteed to materialize a runnable blueprint; a
+  // PRESENT but invalid blueprint never falls back here and remains a loud failure.
+  return {
+    id: 'launch-adapter-compatibility',
+    kind: 'harness',
+    version: '1.0.0',
+    description: 'Compatibility source for a launch scope with no materialized blueprint.',
+    workItem: { kind: 'session', idPrefix: 'S' },
+    roles: [{ id: role, description: 'Role selected by the launch adapter.' }],
+    spine: { decider: role, claimModel: 'self-claim-priority', default: { to: 'idle' } },
+  };
+}
+
+async function launchCompositionSource(input: Pick<LaunchArtifactInput, 'cwd' | 'harnessSlug' | 'role'>): Promise<{
+  loaded?: LoadedBlueprint;
+  source: LoadedBlueprint | Record<string, unknown>;
+  compositionSource: 'blueprint' | 'compatibility';
+}> {
+  const sourcePath = path.join(input.cwd, '.papercusp', 'blueprint.yaml');
+  if (input.harnessSlug && fsSync.existsSync(sourcePath)) {
+    const [{ loadBlueprintFromFile }, { operatorResolveExtends }] = await Promise.all([
+      import('@papercusp/orchestrator/blueprint'),
+      import('./blueprint/installed-blueprints'),
+    ]);
+    const loaded = loadBlueprintFromFile(
+      sourcePath,
+      operatorResolveExtends({ localDirs: [path.join(input.cwd, '.papercusp', 'blueprints')] }),
+    );
+    return { loaded, source: loaded, compositionSource: 'blueprint' };
+  }
+  return { source: compatibilityLaunchSource(input.role), compositionSource: 'compatibility' };
+}
+
+async function roleStackDocuments(input: {
+  cwd: string;
+  role: string;
+  promptText: string;
+  promptFile?: string | null;
+  stack: readonly string[];
+}): Promise<StackDocument[]> {
+  const [{ stackBindingFromRefs, slotSpec }, { getIdentitySource }] = await Promise.all([
+    import('@papercusp/orchestrator/blueprint'),
+    import('./agent-identities/source'),
+  ]);
+  const binding = stackBindingFromRefs(input.stack);
+  const documents: StackDocument[] = [];
+  for (const layer of binding.layers) {
+    const identity = await getIdentitySource(layer.id, { repoDir: input.cwd });
+    if (!identity.ok) {
+      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} could not be resolved: ${identity.error}`);
+    }
+    if (!identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
+      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} does not declare slot ${JSON.stringify(layer.slot)}`);
+    }
+    const spec = slotSpec(layer.slot);
+    if (!spec || !identity.sourcePath) {
+      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} has no resolvable ${layer.slot} document source`);
+    }
+    const documentPath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
+    if (!fsSync.existsSync(documentPath)) {
+      throw new Error(`launch stack identity ${JSON.stringify(layer.id)} is missing ${documentPath}`);
+    }
+    documents.push({
+      id: layer.id,
+      layer: spec.layer,
+      slot: layer.slot,
+      text: fsSync.readFileSync(documentPath, 'utf8'),
+      sourcePath: documentPath,
+    });
+  }
+  documents.push({
+    id: `role:${input.role}`,
+    layer: 'kernel',
+    text: input.promptText,
+    sourcePath: input.promptFile ?? null,
+  });
+  return documents;
+}
+
+/** Compile the exact final launch bytes through the one P-038 artifact boundary. */
+export async function compileLaunchSpecificationArtifact(input: LaunchArtifactInput): Promise<LaunchArtifactResult> {
+  const source = await launchCompositionSource(input);
+  const stack = input.stack == null
+    ? [...(source.loaded?.blueprint.roles.find((entry) => entry.id === input.role)?.stack ?? [])]
+    : [...input.stack];
+  const state = { ...input.state, stack };
+  const stateRevision = input.stateRevision?.trim() || launchStateRevision(state);
+  const { compileAgentSpecification, specificationPrompt } = await import('@papercusp/orchestrator/blueprint');
+  const prompt = input.renderStack && stack.length > 0
+    ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
+    : { role: input.role, text: input.promptText };
+  const specificationArtifact = compileAgentSpecification({
+    source: source.source,
+    prompt,
+    mutableState: { ref: 'launch-state-v1', revision: stateRevision, value: state },
+  });
+  return {
+    promptText: specificationPrompt(specificationArtifact),
+    stack,
+    specificationArtifact,
+    specificationRevision: specificationArtifact.specificationRevision,
+    stateRevision,
+    compositionSource: source.compositionSource,
+  };
 }
 
 /**
@@ -434,6 +596,22 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // fail-soft by contract; the envelope still prevents a clean prompt from
   // falling through to the owner-interactive residual at ingest.
   promptText = tagTurnForInjection({ sid, origin: 'role-prompt', text: promptText }).taggedText;
+  const compiled = await compileLaunchSpecificationArtifact({
+    promptText,
+    promptFile,
+    cwd,
+    harnessSlug,
+    role: input.role,
+    stack: input.stack,
+    renderStack: true,
+    state: {
+      schemaVersion: 1,
+      principal: { kind: 'role', role: input.role },
+      scope: { workspace: input.workspaceId, harness: harnessSlug, feature: featureId },
+      policy: { mcp: 'role-scoped', contextSize },
+    },
+  });
+  promptText = compiled.promptText;
 
   // 3. Signed role-scoped MCP URL — same param set + signing key the
   //    orchestrator's writeSignedSpawnMcp uses, so the MCP handler's
@@ -474,6 +652,11 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     featureId,
     cwd,
     promptText,
+    stack: compiled.stack,
+    specificationArtifact: compiled.specificationArtifact,
+    specificationRevision: compiled.specificationRevision,
+    stateRevision: compiled.stateRevision,
+    compositionSource: compiled.compositionSource,
     promptFile,
     mcpUrl,
     mcpJsonContents,
@@ -683,7 +866,7 @@ export interface LaunchSpec {
 export async function buildLaunchSpec(input: BuildLaunchSpecInput): Promise<LaunchSpec> {
   if (input.kind === 'role') {
     const spec = await buildRoleLaunchSpec(input);
-    return { kind: 'role', stack: [], ...spec };
+    return { kind: 'role', ...spec };
   }
   return buildSuLaunchSpec(input);
 }

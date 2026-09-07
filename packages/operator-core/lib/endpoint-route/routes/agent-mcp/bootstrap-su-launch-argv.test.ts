@@ -84,6 +84,16 @@ describe('reconstructPsuLaunchArgv — role param (WI-1347, extended to bootstra
     ).toEqual(['psu', '--no-picker', '--agent=claude', '--role=engineer', '--harness=h1', '--plan=p1']);
   });
 
+  it('retains repeatable stack bindings in the fallback argv', () => {
+    expect(
+      reconstructPsuLaunchArgv({
+        agent: 'claude',
+        role: 'reviewer',
+        stack: ['domain:papercusp-engineer', 'practice:careful-review'],
+      }),
+    ).toEqual(expect.arrayContaining(['--stack=domain:papercusp-engineer', '--stack=practice:careful-review']));
+  });
+
   it('role and profile are mutually exclusive — role wins, profile is never emitted', () => {
     const argv = reconstructPsuLaunchArgv({ agent: 'claude', role: 'reviewer', profile: 'power' });
     expect(argv).toContain('--role=reviewer');

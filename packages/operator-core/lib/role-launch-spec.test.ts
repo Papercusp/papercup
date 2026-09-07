@@ -75,16 +75,18 @@ vi.mock('./superuser-token', () => ({
 }));
 // Workspace-scoped root resolver: echo the workspace id so the test asserts
 // cwd is derived from the SELECTED workspace, not a global value.
-vi.mock('./papercusp-root', () => ({
+vi.mock('./papercusp-root', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./papercusp-root')>()),
   papercuspPathForWorkspace: vi.fn((ws: string) => `/ws-root/${ws}`),
 }));
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildRoleLaunchSpec,
   buildLaunchSpec,
+  compileLaunchSpecificationArtifact,
   SU_EXTRA_MCP_TOOL_NAMES,
   stewardSeedToolNames,
 } from './role-launch-spec';
@@ -137,6 +139,11 @@ describe('buildRoleLaunchSpec', () => {
       featureId: 'F-001',
     });
 
+    expect(spec.specificationRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(spec.specificationArtifact.specificationRevision).toBe(spec.specificationRevision);
+    expect(spec.stateRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(spec.compositionSource).toBe('compatibility');
+
     // prompt comes from the shared assembler, in chat mode, WITH the
     // in-process workspace-aware projectDir (so the assembler skips its
     // workspace-blind lookupProjectDir / curl-to-:3055 fallback).
@@ -187,6 +194,82 @@ describe('buildRoleLaunchSpec', () => {
     // and resume can't drift because they call the same function.
     expect(spec.claudeConfigDir).toBe(sessionClaudeConfigDir(spec.sid));
     expect(spec.sessionMcpDir).toBe(sessionMcpDir(spec.sid));
+  });
+
+  it('loads a real blueprint roles[].stack default and lets an explicit stack override it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'role-launch-blueprint-'));
+    const identityDir = join(dir, '.papercusp', 'blueprints', 'fixture-domain');
+    mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+    mkdirSync(join(dir, '.papercusp'), { recursive: true });
+    writeFileSync(
+      join(identityDir, 'blueprint.yaml'),
+      [
+        'id: fixture-domain',
+        'version: 1.0.0',
+        'description: Fixture domain identity.',
+        'slots:',
+        '  - slot: domain',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'FIXTURE DOMAIN IDENTITY\n');
+    writeFileSync(
+      join(dir, '.papercusp', 'blueprint.yaml'),
+      [
+        'id: fixture-pot',
+        'extends: fixture-domain',
+        'kind: pot',
+        'version: 1.0.0',
+        'description: Runnable fixture pot.',
+        'workItem:',
+        '  kind: feature',
+        '  idPrefix: WI',
+        'spine:',
+        '  decider: worker',
+        '  claimModel: self-claim-priority',
+        '  default: { to: idle }',
+        'roles:',
+        '  - id: worker',
+        '    description: Fixture worker.',
+        '    stack:',
+        '      - domain:fixture-domain',
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      const fromDefault = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL',
+        cwd: dir,
+        harnessSlug: 'fixture',
+        role: 'worker',
+        state: { schemaVersion: 1 },
+        renderStack: true,
+      });
+      expect(fromDefault.compositionSource).toBe('blueprint');
+      expect(fromDefault.stack).toEqual(['domain:fixture-domain']);
+      expect(fromDefault.promptText.indexOf('FIXTURE DOMAIN IDENTITY')).toBeLessThan(
+        fromDefault.promptText.indexOf('ROLE KERNEL'),
+      );
+      expect(fromDefault.specificationArtifact.configuration.roles[0]?.stack).toEqual([
+        'domain:fixture-domain',
+      ]);
+
+      const explicitEmpty = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL',
+        cwd: dir,
+        harnessSlug: 'fixture',
+        role: 'worker',
+        stack: [],
+        state: { schemaVersion: 1 },
+        renderStack: true,
+      });
+      expect(explicitEmpty.compositionSource).toBe('blueprint');
+      expect(explicitEmpty.stack).toEqual([]);
+      expect(explicitEmpty.promptText).toBe('ROLE KERNEL');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('omits the feature param for a no-feature role', async () => {

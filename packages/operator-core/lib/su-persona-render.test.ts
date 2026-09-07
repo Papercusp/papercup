@@ -216,6 +216,7 @@ describe('parseSuLaunchSpecRecord', () => {
     drainMode: false,
     loopArmed: true,
     fleet: { slug: 'ops', role: 'member' },
+    stack: [],
   };
 
   it('round-trips a well-formed record through JSON (how it actually arrives)', () => {

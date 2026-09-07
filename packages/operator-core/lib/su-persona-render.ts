@@ -254,6 +254,10 @@ export interface SuLaunchSpecRecord {
    *  which AUTO activation the mode section carries. Never assume true. */
   loopArmed: boolean;
   fleet: { slug: string | null; role: string | null } | null;
+  /** Resolved launch binding and the last artifact/state receipts (P-008). */
+  stack?: string[];
+  specificationRevision?: string;
+  stateRevision?: string;
 }
 
 /** Narrow an `adv_sessions.launch_spec` jsonb blob to a usable record, or null. */
@@ -292,6 +296,11 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
             role: str((r.fleet as Record<string, unknown>).role),
           }
         : null,
+    stack: Array.isArray(r.stack)
+      ? r.stack.filter((value): value is string => typeof value === 'string' && value.length > 0).slice(0, 40)
+      : [],
+    ...(str(r.specificationRevision) ? { specificationRevision: str(r.specificationRevision)! } : {}),
+    ...(str(r.stateRevision) ? { stateRevision: str(r.stateRevision)! } : {}),
   };
 }
 

@@ -48,6 +48,10 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log
+!docs/evidence/shared-agent-obligations-2026-09-07-acceptance-tests.log
+!docs/evidence/shared-agent-obligations-2026-09-07-recovery-tests.log
+!docs/evidence/shared-agent-obligations-2026-09-07-launch-injection-tests.log
+!docs/evidence/shared-agent-obligations-2026-09-07-launch-current-tests.log
 
 # Vitest coverage output (published as CI artifacts, never committed — spec §1.13)
 # coverage-*/ variants (EI-22195215129102176): a non-default --coverage.reportsDirectory

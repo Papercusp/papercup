@@ -132,6 +132,10 @@ export interface BootstrapRoleResult {
    *  (trimmed for mug/kettle, full otherwise). Mirrors bootstrap-su surfacing
    *  its resolved `personaTier`. */
   contextSize: 'full' | 'trimmed';
+  /** Exact P-038 artifact/state revisions materialized for this launch. */
+  specificationRevision: string;
+  stateRevision: string;
+  compositionSource: 'blueprint' | 'compatibility';
   /** Non-secret env the launcher exports into the child. */
   envelopeEnv: Record<string, string>;
 }
@@ -182,6 +186,8 @@ const post = defineTool({
        *  too, not just `su`). Omitted → buildRoleLaunchSpec auto-selects per role
        *  (trimmed for mug/kettle, full otherwise). */
       context_size?: string | null;
+      /** Explicit launch-time identity bindings; omitted selects roles[].stack. */
+      stack?: string[] | null;
     } = {};
     try {
       const text = await req.text();
@@ -254,6 +260,14 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: normalizedContextSize.error }, 400);
     }
     const contextSize = normalizedContextSize.contextSize;
+    if (
+      body.stack != null &&
+      (!Array.isArray(body.stack) ||
+        body.stack.length > 40 ||
+        body.stack.some((ref) => typeof ref !== 'string' || !ref.trim()))
+    ) {
+      return jsonRes({ status: 'error', error: 'stack must be an array of 1-40 non-empty slot:id refs' }, 400);
+    }
     if (body.headless != null && typeof body.headless !== 'boolean') {
       return jsonRes({ status: 'error', error: 'headless must be a boolean' }, 400);
     }
@@ -346,6 +360,7 @@ const post = defineTool({
         operatorBaseUrl: new URL(req.url).origin,
         featureId: feature,
         contextSize,
+        stack: body.stack?.map((ref) => ref.trim()) ?? null,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
@@ -443,6 +458,7 @@ const post = defineTool({
       modelSource,
       headless,
       role,
+      stack: spec.stack,
       harnessSlug,
       planSlug: planContext ? plan : null,
       account: body.account?.trim() || null,
@@ -635,10 +651,15 @@ const post = defineTool({
       fleetSlug: fleetPin.fleetSlug,
       fleetRole: fleetPin.fleetRole,
       contextSize: spec.contextSize,
+      specificationRevision: spec.specificationRevision,
+      stateRevision: spec.stateRevision,
+      compositionSource: spec.compositionSource,
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         ...(modelSource ? { PAPERCUSP_MODEL_SOURCE: modelSource } : {}),
         PAPERCUSP_ROLE: role,
+        PAPERCUSP_SPECIFICATION_REVISION: spec.specificationRevision,
+        PAPERCUSP_STATE_REVISION: spec.stateRevision,
         // P-022: per-session coord/lock owner. The lock hooks (claude
         // user-level; codex in the role home's settings.json) read this, so a
         // session's calls + hooks share one owner and concurrent sessions
