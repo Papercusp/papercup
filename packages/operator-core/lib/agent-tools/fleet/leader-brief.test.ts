@@ -26,6 +26,7 @@ import {
   compactLaunchWorkerAttestation,
   compactLeaderBriefBenchSuggestions,
   compactLeaderBriefIntentAttention,
+  compactLeaderBriefRepeatedRecovery,
   compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
   exactPositiveSinglePlanSlugFromFilter,
@@ -1447,6 +1448,34 @@ describe('projectMember recovery annotation (P-009)', () => {
   it('does not synthesize a recovery block when the leg was simply not read', () => {
     const m = projectMember(baseAgent({}), NOW);
     expect(m.recovery).toBeUndefined();
+  });
+});
+
+describe('projectMember repeated-recovery diagnostic (D-007)', () => {
+  const repeatedRecovery = {
+    consecutiveRecoveryOnlyCycles: 2,
+    action: 'diagnose' as const,
+    takeoverAuthorized: false as const,
+    guidance: 'Inspect the real blocker; no takeover is authorized.',
+  };
+
+  it('carries the diagnostic-only authority and builds a complete compact identity index', () => {
+    const member = projectMember(baseAgent({}), NOW, null, null, null, null, null, null, null, repeatedRecovery);
+    expect(member.repeatedRecovery).toEqual(repeatedRecovery);
+    expect(compactLeaderBriefRepeatedRecovery([member])).toEqual([
+      {
+        agentId: member.agentId,
+        consecutiveRecoveryOnlyCycles: 2,
+        action: 'diagnose',
+        takeoverAuthorized: false,
+      },
+    ]);
+  });
+
+  it('omits the exception when no threshold state was measured', () => {
+    const member = projectMember(baseAgent({}), NOW);
+    expect(member.repeatedRecovery).toBeUndefined();
+    expect(compactLeaderBriefRepeatedRecovery([member])).toEqual([]);
   });
 });
 

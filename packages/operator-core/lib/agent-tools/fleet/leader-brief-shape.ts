@@ -379,6 +379,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'dormant',
     'spinning',
     'throttled',
+    'repeated_recovery',
     'darkFleetAlert',
     'fleetExecutionCollapseAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
@@ -582,6 +583,14 @@ function compactMember(value: unknown): unknown {
   if (source.recovery && typeof source.recovery === 'object') {
     out.recovery = pick(source.recovery, ['disposition', 'reason', 'taskId', 'strandedAt'], 240) ?? source.recovery;
   }
+  if (source.repeatedRecovery && typeof source.repeatedRecovery === 'object') {
+    out.repeatedRecovery =
+      pick(
+        source.repeatedRecovery,
+        ['consecutiveRecoveryOnlyCycles', 'action', 'takeoverAuthorized', 'guidance'],
+        220,
+      ) ?? source.repeatedRecovery;
+  }
   if (Array.isArray(source.parkedOn) && source.parkedOn.length > 0) {
     out.parkedOn = source.parkedOn.slice(0, 3).map((entry) => clip(entry, 140) ?? entry);
   }
@@ -611,6 +620,13 @@ function compactBenchSuggestion(value: unknown): unknown {
  * bench-target index while retaining the resolving action, not just the signal. */
 function compactIntentAttention(value: unknown): unknown {
   return pick(value, ['agentId', 'kind', 'action'], 120) ?? {};
+}
+
+/** D-007: compact, complete repeated-recovery identity + authority row. */
+function compactRepeatedRecovery(value: unknown): unknown {
+  return (
+    pick(value, ['agentId', 'consecutiveRecoveryOnlyCycles', 'action', 'takeoverAuthorized'], 120) ?? {}
+  );
 }
 
 function compactVerdict(value: unknown): unknown {
@@ -852,6 +868,9 @@ function buildProjection(
   if (Array.isArray(data.intentAttention)) {
     out.intentAttention = data.intentAttention.map(compactIntentAttention);
   }
+  if (Array.isArray(data.repeatedRecovery)) {
+    out.repeatedRecovery = data.repeatedRecovery.map(compactRepeatedRecovery);
+  }
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
   if ('campaign' in data) out.campaign = compactCampaign(data.campaign, campaignRecentRows);
@@ -912,6 +931,9 @@ function buildProjection(
     tier,
     memberVerdicts: Array.isArray(data.memberVerdicts)
       ? { shown: data.memberVerdicts.length, total: data.memberVerdicts.length, complete: true }
+      : undefined,
+    repeatedRecovery: Array.isArray(data.repeatedRecovery)
+      ? { shown: data.repeatedRecovery.length, total: data.repeatedRecovery.length, complete: true }
       : undefined,
     members: Array.isArray(data.members)
       ? { shown: Math.min(caps.members, data.members.length), total: data.members.length }
@@ -1020,6 +1042,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   if (Array.isArray(source.intentAttention)) {
     emergency.intentAttention = source.intentAttention.map(compactIntentAttention);
   }
+  if (Array.isArray(source.repeatedRecovery)) {
+    emergency.repeatedRecovery = source.repeatedRecovery.map(compactRepeatedRecovery);
+  }
   // Emergency is a byte-pressure tier, not permission to turn bounded arrays
   // into unexplained omissions. Keep the complete member identity index and
   // retain truthful zero-shown pointers for every dropped family. Verdict detail
@@ -1042,6 +1067,13 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       total: source.memberVerdicts.length,
       complete: true,
       identityOnly: true,
+    };
+  }
+  if (Array.isArray(source.repeatedRecovery)) {
+    emergencyProjection.repeatedRecovery = {
+      shown: source.repeatedRecovery.length,
+      total: source.repeatedRecovery.length,
+      complete: true,
     };
   }
   addCappedArray(emergency, source, 'members', hasAdmissionBlocks ? 0 : 1, compactMember);

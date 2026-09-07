@@ -107,6 +107,7 @@ import type { CoordDeafState } from '../coordination/inbox-read-freshness';
 import type { SessionState } from '../coordination/presence-wakeability';
 import type { WakeMode } from '../coordination/wake-mode';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
+import type { RepeatedRecoveryAlert } from '../../fleet-repeated-recovery';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
 import type { DirectiveActuationSummary } from '../coordination/directive-effect';
 import {
@@ -730,6 +731,10 @@ export interface LeaderBriefMember {
     taskId: string;
     strandedAt: string | null;
   };
+  /** D-007: two or more fully observed recovery-only cycles. Diagnostic only;
+   * the nested authority bit prevents this signal from being read as permission
+   * to kill, reclaim, duplicate, or widen a member's work. */
+  repeatedRecovery?: RepeatedRecoveryAlert;
   isSelf?: true;
 }
 
@@ -821,6 +826,13 @@ export interface LeaderBriefBenchSuggestion {
   agentId: string;
   /** Keep the branch visible so idle-with-claimable is not mistaken for a bench remedy. */
   kind: LeaderBriefBenchSuggestionKind;
+}
+
+export interface LeaderBriefRepeatedRecovery {
+  agentId: string;
+  consecutiveRecoveryOnlyCycles: number;
+  action: 'diagnose';
+  takeoverAuthorized: false;
 }
 
 export type LeaderBriefIntentAttentionKind = 'intent-stale' | 'intent-divergent';
@@ -917,6 +929,24 @@ export function compactLeaderBriefBenchSuggestions(
   );
 }
 
+/** Complete exceptional identity index for the repeated-recovery diagnostic. */
+export function compactLeaderBriefRepeatedRecovery(
+  members: ReadonlyArray<Pick<LeaderBriefMember, 'agentId' | 'repeatedRecovery'>>,
+): LeaderBriefRepeatedRecovery[] {
+  return members.flatMap(({ agentId, repeatedRecovery }) =>
+    repeatedRecovery == null
+      ? []
+      : [
+          {
+            agentId,
+            consecutiveRecoveryOnlyCycles: repeatedRecovery.consecutiveRecoveryOnlyCycles,
+            action: repeatedRecovery.action,
+            takeoverAuthorized: repeatedRecovery.takeoverAuthorized,
+          },
+        ],
+  );
+}
+
 /** Keep flagged rows at the head of the bounded detail sample without changing
  * the relative order within the flagged and unflagged groups. */
 export function prioritizeBenchSuggestedMembers<T extends { benchSuggestion?: unknown }>(members: readonly T[]): T[] {
@@ -929,12 +959,18 @@ export function prioritizeBenchSuggestedMembers<T extends { benchSuggestion?: un
 /** Put every actionable member first in the bounded detail sample. The compact
  * identity indexes remain complete; this only makes their richer reasons likely
  * to survive the common payload tier. */
-export function prioritizeActionableMembers<T extends { benchSuggestion?: unknown; intentAttention?: unknown }>(
+export function prioritizeActionableMembers<
+  T extends { benchSuggestion?: unknown; intentAttention?: unknown; repeatedRecovery?: unknown },
+>(
   members: readonly T[],
 ): T[] {
   return [
-    ...members.filter((member) => member.benchSuggestion != null || member.intentAttention != null),
-    ...members.filter((member) => member.benchSuggestion == null && member.intentAttention == null),
+    ...members.filter(
+      (member) => member.benchSuggestion != null || member.intentAttention != null || member.repeatedRecovery != null,
+    ),
+    ...members.filter(
+      (member) => member.benchSuggestion == null && member.intentAttention == null && member.repeatedRecovery == null,
+    ),
   ];
 }
 
@@ -3113,6 +3149,8 @@ export function projectMember(
    *  read on this call (or never stranded) — which, like every other optional leg here,
    *  suppresses nothing and must not be read as "recovery succeeded". */
   recovery?: LeaderBriefMember['recovery'] | null,
+  /** D-007: exception-only repeated-recovery state from the shared reader. */
+  repeatedRecovery?: RepeatedRecoveryAlert | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
@@ -3201,6 +3239,7 @@ export function projectMember(
       ? { spinning: true }
       : {}),
     ...(recovery ? { recovery } : {}),
+    ...(repeatedRecovery ? { repeatedRecovery } : {}),
   };
 }
 
@@ -4032,23 +4071,47 @@ export async function buildLeaderBrief(
   // recovery annotation, never the brief that carries it. An empty map is therefore
   // "nothing surfaced", NOT "no member is stranded" — which is why the field's own doc
   // says absence is not a verdict.
-  const recoveryByOwner = await boundedLeaderBriefRead(
-    'member-recovery',
-    async () => {
-      const rows = await listLatestStrandedByCoordOwners(
-        grouped.map((a) => a.agentId),
-        { workspaceId },
-      );
-      return new Map(
-        rows.map((r) => [
-          r.coordOwnerId,
-          { disposition: 'stranded' as const, reason: r.reason, taskId: r.taskId, strandedAt: r.endedAt },
-        ]),
-      );
-    },
-    new Map<string, NonNullable<LeaderBriefMember['recovery']>>(),
-    LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
-  );
+  const [recoveryByOwner, repeatedRecoveryByOwner] = await Promise.all([
+    boundedLeaderBriefRead(
+      'member-recovery',
+      async () => {
+        const rows = await listLatestStrandedByCoordOwners(
+          grouped.map((a) => a.agentId),
+          { workspaceId },
+        );
+        return new Map(
+          rows.map((r) => [
+            r.coordOwnerId,
+            { disposition: 'stranded' as const, reason: r.reason, taskId: r.taskId, strandedAt: r.endedAt },
+          ]),
+        );
+      },
+      new Map<string, NonNullable<LeaderBriefMember['recovery']>>(),
+      LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+    ),
+    boundedLeaderBriefRead(
+      'repeated-recovery',
+      async () => {
+        const { readFleetRepeatedRecoveryStates, repeatedRecoveryAlert } = await import('../../fleet-repeated-recovery');
+        const states = await readFleetRepeatedRecoveryStates(
+          grouped.map((member) => ({
+            ownerId: member.agentId,
+            isRegisteredLeader: member.fleetRole === 'leader',
+            hasProgressingClaim: member.claims.some((claim) => claim.activity === 'progressing'),
+          })),
+          { workspaceId },
+        );
+        return new Map(
+          [...states].flatMap(([ownerId, state]) => {
+            const alert = repeatedRecoveryAlert(state);
+            return alert ? [[ownerId, alert] as const] : [];
+          }),
+        );
+      },
+      new Map<string, RepeatedRecoveryAlert>(),
+      LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+    ),
+  ]);
   const members = grouped.map((a) =>
     projectMember(
       a,
@@ -4060,6 +4123,7 @@ export async function buildLeaderBrief(
       poolCapacity,
       longCallByOwner.get(a.agentId) ?? null,
       recoveryByOwner.get(a.agentId) ?? null,
+      repeatedRecoveryByOwner.get(a.agentId) ?? null,
     ),
   );
   // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
@@ -4188,6 +4252,9 @@ export async function buildLeaderBrief(
     // `throttled.until`, not lost; do not relaunch/reclaim solely on this, but do NOT read
     // the fleet as fully healthy either — see each member's `throttled` field for when.
     throttled: members.filter((m) => m.throttled != null).length,
+    // D-007: members above the two-cycle threshold. The complete identity
+    // index below makes every positive count actionable under shaping.
+    repeated_recovery: members.filter((m) => m.repeatedRecovery != null).length,
     // P-002 / D-004: the count and the exact population that gives it meaning
     // are one wire value. A caller cannot retain the numeral while silently
     // dropping its fleet/spec/harness, and null carries an in-band reason.
@@ -4547,6 +4614,7 @@ export async function buildLeaderBrief(
   const memberVerdicts = compactLeaderBriefMemberVerdicts(membersWithVerdict);
   const benchSuggestions = compactLeaderBriefBenchSuggestions(membersWithVerdict);
   const intentAttention = compactLeaderBriefIntentAttention(membersWithVerdict);
+  const repeatedRecovery = compactLeaderBriefRepeatedRecovery(membersWithVerdict);
   const boundedMembers = trimToByteBudget(
     prioritizeActionableMembers(membersWithVerdict),
     LEADER_BRIEF_MEMBER_DETAIL_BUDGET,
@@ -4715,6 +4783,7 @@ export async function buildLeaderBrief(
       // P-012: same complete exceptional-index contract for intent actionability.
       // A leader must never see intent_attention:N without every target + action.
       intentAttention,
+      repeatedRecovery,
       members: boundedMembers.kept,
       ...(boundedMembers.truncated
         ? {

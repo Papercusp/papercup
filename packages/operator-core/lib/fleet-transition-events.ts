@@ -15,6 +15,7 @@
  *   events:await { event: "fleet:context-critical:<my-fleet>" } // a member is about to compact
  *   events:await { event: "fleet:member-stalled:<my-fleet>" }  // a held claim stopped advancing
  *   events:await { event: "fleet:admission-blocked:<my-fleet>" } // the fleet spec refused work
+ *   events:await { event: "fleet:repeated-recovery:<my-fleet>" } // a member repeated recovery-only cycles
  *   events:await { event: "fleet:claim-released:<my-fleet>" }   // work came back to the pool
  *   events:await { event: "fleet:item-completed:<my-fleet>" }   // a member finished something
  *

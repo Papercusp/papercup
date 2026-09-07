@@ -869,6 +869,46 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect((out.members as Array<{ agentId: string }>).some((member) => member.agentId === 'bench-a')).toBe(false);
   });
 
+  it('keeps every repeated-recovery target and diagnostic-only authority when member rows are truncated', () => {
+    const members = Array.from({ length: 25 }, (_, index) => ({
+      agentId: `member-${index}`,
+      verdict: 'monitoring',
+      ...(index >= 20
+        ? {
+            repeatedRecovery: {
+              consecutiveRecoveryOnlyCycles: index - 18,
+              action: 'diagnose',
+              takeoverAuthorized: false,
+              guidance: 'inspect the actual blocker',
+            },
+          }
+        : {}),
+    }));
+    const repeatedRecovery = members.slice(20).map((member) => ({
+      agentId: member.agentId,
+      consecutiveRecoveryOnlyCycles: member.repeatedRecovery!.consecutiveRecoveryOnlyCycles,
+      action: 'diagnose',
+      takeoverAuthorized: false,
+    }));
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'recovery-fleet', members: members.length, repeated_recovery: 5 },
+        memberVerdicts: members.map(({ agentId, verdict }) => ({ agentId, verdict, idleCause: 'genuinely-idle' })),
+        members,
+        repeatedRecovery,
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    expect(out.repeatedRecovery).toEqual(repeatedRecovery);
+    expect(out.summary).toMatchObject({ repeated_recovery: 5 });
+    expect(out.leaderBriefProjection).toMatchObject({
+      repeatedRecovery: { shown: 5, total: 5, complete: true },
+    });
+    expect((out.members as unknown[]).length).toBeLessThan(members.length);
+  });
+
   it('keeps every intent target and resolving action when verbose member rows are truncated', () => {
     const members = [
       ...Array.from({ length: 20 }, (_, index) => ({ agentId: `ordinary-${index}`, verdict: 'monitoring' })),
