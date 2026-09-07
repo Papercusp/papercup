@@ -150,6 +150,7 @@ export function classifyProjectionBody(
 interface BodyTruncationMarker {
   path: string;
   detail: string;
+  kind?: 'read-window';
 }
 
 const MAX_BODY_TRUNCATION_MARKERS = 8;
@@ -166,6 +167,10 @@ const TRUNCATED_BY_KEY_REGEX = /^truncatedBy[A-Z]/;
 // keyed to the stable prefix.
 const INLINE_TRUNCATION_MARKER_REGEX =
   /(?:…)?\[(?:TRUNCATED\b[^\]\n]*|omitted:\s*[^\]\n]*\brecover:\s*[^\]\n]*|payload preview omitted:[^\]\n]*)\]/gi;
+// capability:read's ordinary line view carries this marker when its default
+// 2000-line window did not reach EOF. A projection grep can remove the marker
+// itself, so detect it before running any pipe stages (EI-22600297478962145).
+const READ_WINDOW_MARKER_REGEX = /(?:…)?\[\d[\d,]*\s+more lines\s+—\s+re-read with offset=\d+\]/gi;
 
 function truncationPath(path: string, key: string): string {
   return path === '$' ? `$.${key}` : `${path}.${key}`;
@@ -190,10 +195,11 @@ function addBodyTruncationMarker(
   markers: BodyTruncationMarker[],
   path: string,
   detail: string,
+  kind?: BodyTruncationMarker['kind'],
 ): void {
   if (markers.length >= MAX_BODY_TRUNCATION_MARKERS) return;
   if (markers.some((marker) => marker.path === path)) return;
-  markers.push({ path, detail });
+  markers.push({ path, detail, ...(kind ? { kind } : {}) });
 }
 
 /** Find the marker-shaped truncation contracts in a parsed result body. */
@@ -204,11 +210,15 @@ function detectBodyTruncationMarkers(...sources: Array<{ value: unknown; text?: 
   const visit = (value: unknown, path: string): void => {
     if (markers.length >= MAX_BODY_TRUNCATION_MARKERS || value == null) return;
     if (typeof value === 'string') {
-      INLINE_TRUNCATION_MARKER_REGEX.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = INLINE_TRUNCATION_MARKER_REGEX.exec(value)) && markers.length < MAX_BODY_TRUNCATION_MARKERS) {
-        addBodyTruncationMarker(markers, `${path} (inline)`, match[0].slice(0, 140));
-      }
+      const scanInlineMarkers = (regex: RegExp, kind?: BodyTruncationMarker['kind']): void => {
+        regex.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(value)) && markers.length < MAX_BODY_TRUNCATION_MARKERS) {
+          addBodyTruncationMarker(markers, `${path} (inline)`, match[0].slice(0, 140), kind);
+        }
+      };
+      scanInlineMarkers(INLINE_TRUNCATION_MARKER_REGEX);
+      scanInlineMarkers(READ_WINDOW_MARKER_REGEX, 'read-window');
       return;
     }
     if (typeof value !== 'object') return;
@@ -640,18 +650,29 @@ export function applyResultProjection<T extends ProjectableResult>(
           ...(result.structuredContent !== undefined ? [{ value: result.structuredContent }] : []),
         );
     if (bodyTruncationMarkers.length > 0) {
-      const recovery = opts.toolName
-        ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
-        : `re-call the tool with payloadTier:'full' (or narrower args)`;
-      note(
-        `the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ` +
-          `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection can inspect only the ` +
-          `retained subset/window — if the source is rank-ordered, this is the HEAD of a ranking, not a ` +
-          `representative slice; any filter/count is a floor over that retained data and may be systematically ` +
-          `skewed toward whatever the ordering favors. The pick may also have dropped the marker itself. omitted ` +
-          `fields/items were never serialized, so any filter/count is not a complete population finding. ${recovery} ` +
-          `before concluding a value is absent.`,
-      );
+      const hasReadWindowMarker = bodyTruncationMarkers.some((marker) => marker.kind === 'read-window');
+      if (hasReadWindowMarker) {
+        note(
+          `capability:read returned a bounded line window before this projection ` +
+            `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection searched only the retained ` +
+            `lines; omitted lines were never searched, so a zero or partial result is NOT evidence of absence. ` +
+            `Re-read with capability:read using the next offset named by the marker (and an appropriate limit), ` +
+            `or use capability:bash with rg for an exhaustive search before concluding a value is absent.`,
+        );
+      } else {
+        const recovery = opts.toolName
+          ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
+          : `re-call the tool with payloadTier:'full' (or narrower args)`;
+        note(
+          `the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ` +
+            `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection can inspect only the ` +
+            `retained subset/window — if the source is rank-ordered, this is the HEAD of a ranking, not a ` +
+            `representative slice; any filter/count is a floor over that retained data and may be systematically ` +
+            `skewed toward whatever the ordering favors. The pick may also have dropped the marker itself. omitted ` +
+            `fields/items were never serialized, so any filter/count is not a complete population finding. ${recovery} ` +
+            `before concluding a value is absent.`,
+        );
+      }
     }
 
     if (spec.pick) {

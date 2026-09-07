@@ -224,11 +224,30 @@ export function parseSse(raw, requestId = 1) {
     if (d.id !== requestId) continue;
     if (d.error) return { error: d.error };
     if (!('result' in d)) continue;
-    const text = d?.result?.content?.[0]?.text;
-    if (text !== undefined) {
-      try { return { result: JSON.parse(text) }; } catch { return { result: text }; }
+    const result = d.result;
+    // A projected result places trust-degrading warnings in a leading text
+    // item and keeps the retained JSON body in a following item. Selecting
+    // only content[0] turns a valid partial projection into a warning-only
+    // response, silently discarding the data the caller asked for.
+    const textItems = Array.isArray(result?.content)
+      ? result.content.filter((item) => item?.type === 'text' && typeof item.text === 'string')
+      : [];
+    for (const item of textItems) {
+      try {
+        return { result: JSON.parse(item.text) };
+      } catch {
+        // Advisory text and other human-readable blocks are expected; keep
+        // looking for the JSON payload before falling back to plain text.
+      }
     }
-    return { result: d.result };
+    if (Object.prototype.hasOwnProperty.call(result ?? {}, 'structuredContent')) {
+      return { result: result.structuredContent };
+    }
+    const firstText = textItems[0]?.text;
+    if (firstText !== undefined) {
+      return { result: firstText };
+    }
+    return { result };
   }
   return {
     error: sawFrame

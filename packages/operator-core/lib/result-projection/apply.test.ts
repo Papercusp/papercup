@@ -586,6 +586,39 @@ describe('applyResultProjection — upstream truncation is disclosed (EI-1936177
   });
 });
 
+describe('applyResultProjection — capability:read bounded windows are disclosed (EI-22600297478962145)', () => {
+  it('warns when a projection searches only capability:read’s retained line window', () => {
+    const boundedRead = [
+      '/repo/long-file.ts (2556 lines, showing 1–2000)',
+      '     1\tfirst line',
+      '  2000\tlast retained line',
+      '… [556 more lines — re-read with offset=2001]',
+    ].join('\n');
+    const out = applyResultProjection(
+      textResult(boundedRead),
+      spec({ pipe: [{ op: 'grep', pattern: 'judgeCanary' }] }),
+      { toolName: 'capability:read' },
+    );
+
+    const footer = footerOf(out);
+    expect(footer).toContain('bounded line window');
+    expect(footer).toContain('NOT evidence of absence');
+    expect(footer).toContain('offset named by the marker');
+    expect(reportOf(out).notes.join(' ')).toContain('omitted lines were never searched');
+  });
+
+  it('does not warn for a complete line result without the read-window marker', () => {
+    const out = applyResultProjection(
+      textResult('/repo/short-file.ts (2 lines)\n     1\talpha\n     2\tbeta'),
+      spec({ pipe: [{ op: 'grep', pattern: 'judgeCanary' }] }),
+      { toolName: 'capability:read' },
+    );
+
+    expect(footerOf(out)).not.toContain('bounded line window');
+    expect(reportOf(out).notes).toEqual([]);
+  });
+});
+
 /**
  * P-015 — the footer's ORDER, not its numbers.
  *

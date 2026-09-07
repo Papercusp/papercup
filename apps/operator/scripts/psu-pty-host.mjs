@@ -6308,6 +6308,27 @@ export function hostThroughPty(o) {
           msg.mode === 'carry-respawn' ||
           (msg.mode === 'reset' && coldResetModeForAgent(env.PAPERCUSP_AGENT) === 'recycle');
         if (hardReset) {
+          // measured-agent-productivity P-004: a quota recovery is a durable
+          // operation, not a fire-and-forget lifecycle request. The outer socket
+          // already ACKed `accepted`, so waiting here does not hold the caller;
+          // it only keeps this delivery id PENDING until the existing recycle
+          // path has proved the successor's native turn start. A later retry then
+          // sees completed dedup state, while wake-executor independently waits
+          // for the same owner's first productive tool invocation.
+          if (msg.mode === 'recycle' && msg.quotaRecovery) {
+            appendHostEvent(ownerId, 'quota-recovery-started', {
+              operationId: msg.quotaRecovery.operationId,
+              recoveryOwnerId: msg.quotaRecovery.ownerId,
+              startedAtMs: msg.quotaRecovery.startedAtMs,
+              accountRoutingMode: 'auto',
+            });
+            const recovery = await recycleChild(msg.data, {
+              quotaRecovery: msg.quotaRecovery,
+            });
+            return recovery?.delivered
+              ? { ok: true, reason: 'quota-recovery-delivered' }
+              : { ok: false, reason: `quota-recovery-${recovery?.reason ?? 'failed'}` };
+          }
           // EI-18679050054551625 / WI-5872 follow-up: recycleChild() is a
           // multi-second operation by construction (kill the current child,
           // wait for it to die, respawn, wait for the fresh child's own
@@ -6546,7 +6567,10 @@ export function hostThroughPty(o) {
       void runGatedDelivery()
         .then((deliveryOutcome) => {
           if (!msg.deliveryId) return;
-          if (deliveryOutcome?.ok === true && deliveryOutcome.reason === 'delivered') {
+          if (
+            deliveryOutcome?.ok === true &&
+            (deliveryOutcome.reason === 'delivered' || deliveryOutcome.reason === 'quota-recovery-delivered')
+          ) {
             deliveryDedup.markCompleted(msg.deliveryId);
           } else if (msg.mode === 'carry-respawn' && deliveryOutcome?.reason === 'deferred-busy-gate') {
             // carryRearm.schedule() owns a live retry outside this promise; keep

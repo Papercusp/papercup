@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildMcpSessionQuery,
   isInvokedDirectly,
+  parseSse,
   parseArgs,
   jsonSourceKind,
   readJsonArgs,
@@ -128,6 +129,35 @@ describe('mcp-call argument parsing', () => {
 });
 
 describe('mcp-call result-format contract', () => {
+  it('keeps the retained JSON body when a projection warning leads content', () => {
+    const warning =
+      '⚠ pick path(s) matched nothing: terminal — those field(s) are ABSENT from the body below.';
+    const body = { rows: [{ id: 'WI-1' }], retained: true };
+    const raw = `data: ${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        content: [
+          { type: 'text', text: warning },
+          { type: 'text', text: JSON.stringify(body) },
+        ],
+      },
+    })}\n\n`;
+
+    expect(parseSse(raw)).toEqual({ result: body });
+  });
+
+  it('falls back to the first plain-text block when no JSON body exists', () => {
+    const text = 'invalid_input: bad request';
+    const raw = `data: ${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { content: [{ type: 'text', text }, { type: 'text', text: 'See also: help' }] },
+    })}\n\n`;
+
+    expect(parseSse(raw)).toEqual({ result: text });
+  });
+
   it('pins JSON so the maintained vmcall driver can validate successful output', () => {
     const query = buildMcpSessionQuery({
       client: 'vm-rig-probe',

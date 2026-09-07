@@ -239,7 +239,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
         dreamUsage: f.provenance.calls[0]!.usage,
         reviewUsage: f.review.usage,
       });
-      expect(await sinkDreamInsight(input, deps)).toMatchObject({
+      expect(await sinkDreamInsight({ ...input, createdBy: 'later-replay-actor' }, deps)).toMatchObject({
         sunk: true,
         workItemId: original!.issue_id,
         created: false,
@@ -251,6 +251,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
       const rows = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'dream' });
       const routed = rows.filter((r) => r.ideaId === 'dream:DR-CAPABILITY-PG');
       expect(routed).toHaveLength(1);
+      expect(routed[0]!.createdBy).not.toBe('later-replay-actor');
       expect(routed[0]!.addressesPatternRefs).toEqual(
         [f.selection.a, f.selection.b].map((e) => e.packet.unit.id + '@' + e.contentVersion),
       );
