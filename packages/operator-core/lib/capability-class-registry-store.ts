@@ -364,13 +364,16 @@ type BindingDbRow = {
 };
 
 function mapBinding(row: BindingDbRow): ProviderBindingRow {
+  if (!row.structural_passed) {
+    throw new Error(`provider binding ${row.conformance_run_id} does not reference a passing conformance run`);
+  }
   return {
     classRef: `${row.class_id}@${row.class_version}`,
     providerPackage: row.provider_package,
     providerVersion: row.provider_version,
     verbBindings: jsonObject(row.verb_bindings) as Record<string, string>,
     conformanceRunId: row.conformance_run_id,
-    conformanceStatus: row.structural_passed ? 'passed' : 'passed',
+    conformanceStatus: 'passed',
     behavioralStatus: row.behavioral_status,
     behavioralRunRef: row.behavioral_run_ref,
     registryRevision: row.registry_revision,
@@ -381,7 +384,7 @@ function mapBinding(row: BindingDbRow): ProviderBindingRow {
 
 const BINDING_SELECT = (sql: postgres.Sql | postgres.TransactionSql) => sql`
   b.class_id, b.class_version, b.provider_package, b.provider_version,
-  b.verb_bindings, b.conformance_run_id, r.structural_passed,
+  r.verb_bindings, b.conformance_run_id, r.structural_passed,
   r.behavioral_status, r.behavioral_run_ref, r.registry_revision,
   b.status, b.updated_at
 `;
@@ -400,6 +403,17 @@ export async function recordProviderConformance(
     performedBy?: string | null;
   },
 ): Promise<{ runId: string; binding: ProviderBindingRow | null }> {
+  const expectedClassRef = `${input.classId}@${input.classVersion}`;
+  if (
+    input.report.classRef !== expectedClassRef ||
+    input.report.providerPackage !== input.providerPackage ||
+    input.report.providerVersion !== input.providerVersion
+  ) {
+    throw new Error('conformance report identity does not match the class/provider tuple being recorded');
+  }
+  if (input.report.ok !== input.report.checks.every((check) => check.ok)) {
+    throw new Error('conformance report verdict does not match its per-verb checks');
+  }
   const runId = randomUUID();
   return sql.begin(async (tx) => {
     await tx`
@@ -416,28 +430,31 @@ export async function recordProviderConformance(
       )`;
     if (!input.report.ok) return { runId, binding: null };
     const rows = await tx<BindingDbRow[]>`
-      INSERT INTO harness_shared.capability_class_provider_bindings AS b
+      WITH upserted AS (
+      INSERT INTO harness_shared.capability_class_provider_bindings
         (workspace_id, class_id, class_version, provider_package, provider_version,
-         verb_bindings, conformance_run_id)
+         conformance_run_id)
       VALUES (
         ${input.workspaceId}, ${input.classId}, ${input.classVersion},
-        ${input.providerPackage}, ${input.providerVersion},
-        ${JSON.stringify(input.verbBindings)}::text::jsonb, ${runId}
+        ${input.providerPackage}, ${input.providerVersion}, ${runId}
       )
       ON CONFLICT (workspace_id, class_id, class_version, provider_package, provider_version)
       DO UPDATE SET
-        verb_bindings = EXCLUDED.verb_bindings,
         conformance_run_id = EXCLUDED.conformance_run_id,
         status = 'active',
         updated_at = now()
       RETURNING
-        b.class_id, b.class_version, b.provider_package, b.provider_version,
-        b.verb_bindings, b.conformance_run_id,
-        true AS structural_passed,
-        ${input.report.behavioral.status}::text AS behavioral_status,
-        NULL::text AS behavioral_run_ref,
-        ${input.report.registryRevision}::text AS registry_revision,
-        b.status, b.updated_at`;
+        class_id, class_version, provider_package, provider_version,
+        conformance_run_id, status, updated_at
+      )
+      SELECT
+        u.class_id, u.class_version, u.provider_package, u.provider_version,
+        r.verb_bindings, u.conformance_run_id, r.structural_passed,
+        r.behavioral_status, r.behavioral_run_ref, r.registry_revision,
+        u.status, u.updated_at
+      FROM upserted u
+      JOIN harness_shared.capability_class_conformance_runs r
+        ON r.id = u.conformance_run_id`;
     return { runId, binding: mapBinding(rows[0]!) };
   });
 }
@@ -489,4 +506,3 @@ export async function bindCapabilityProviderToPot(
       bound_by = EXCLUDED.bound_by,
       updated_at = now()`;
 }
-

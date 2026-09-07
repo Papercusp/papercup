@@ -687,7 +687,7 @@ export function sessionOwnersRoot(home?: string): string;
  *  costs the old minted-SID behavior, so no launch is ever blocked on it. */
 export function recordSessionOwner(nativeSessionId: any, coordOwnerId: any, { home, advSessionId }?: {
     home?: string | undefined;
-    advSessionId?: null | undefined;
+    advSessionId?: string | number | null | undefined;
 }): boolean;
 /**
  * Tee this launcher's OWN stderr into the launch's boot log — WI-37841.
@@ -2314,19 +2314,37 @@ export function shouldSilenceClaudeTitle({ agent, ownsTty, env, home, readFile, 
  * and a minimum uptime — and RESETS the streak on any non-terminal or failed beat. Every
  * degraded path keeps psu alive: the failure mode is a zombie that lingers, never a live
  * agent that is killed.
+ * @param {string|null} ownerId
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @param {number} [options.intervalMs]
+ * @param {string} [options.operatorUrl]
+ * @param {string|null} [options.token]
+ * @param {(callback:()=>void, ms:number)=>{unref?:()=>void}} [options.setIntervalImpl]
+ * @param {string|null} [options.tty]
+ * @param {number} [options.pid]
+ * @param {number} [options.beatsToExit]
+ * @param {number} [options.minUptimeMs]
+ * @param {()=>number} [options.uptimeMsFn]
+ * @param {()=>void} [options.onTerminalSession]
  */
-export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, operatorUrl, token, setIntervalImpl, tty, beatsToExit, minUptimeMs, uptimeMsFn, onTerminalSession, }?: {
+export function startSupervisorBeat(ownerId: string | null, { fetchImpl, intervalMs, operatorUrl, token, setIntervalImpl, tty, pid, beatsToExit, minUptimeMs, uptimeMsFn, onTerminalSession, }?: {
     fetchImpl?: typeof fetch | undefined;
     intervalMs?: number | undefined;
-    operatorUrl?: any;
-    token?: null | undefined;
-    setIntervalImpl?: typeof setInterval | undefined;
-    tty?: null | undefined;
+    operatorUrl?: string | undefined;
+    token?: string | null | undefined;
+    setIntervalImpl?: ((callback: () => void, ms: number) => {
+        unref?: () => void;
+    }) | undefined;
+    tty?: string | null | undefined;
+    pid?: number | undefined;
     beatsToExit?: number | undefined;
     minUptimeMs?: number | undefined;
     uptimeMsFn?: (() => number) | undefined;
-    onTerminalSession?: (() => never) | undefined;
-}): NodeJS.Timeout | null;
+    onTerminalSession?: (() => void) | undefined;
+}): {
+    unref?: () => void;
+} | null;
 /**
  * Acknowledged "my child exited" report: stamps the tracked adv row's
  * ended_at/exit_code (bootstrap-su/session-ended), so the resume picker and
@@ -3583,11 +3601,11 @@ export const SU_BASELINE_NON_PERSONA_TOKENS: Readonly<{
  * Claude Code / the gateway enable the 1M-context window — treats them as 1M.
  * Idempotent; a no-op for a spec already carrying `[1m]` or outside the
  * default-1M families. `[1m]` is inserted before a recognized `:effort`
- * suffix, else appended. Papercusp then caps their compaction at 400k —
- * named-fleet MEMBERS at 200k (owner directive 2026-07-19, superseding the
- * 300k of 2026-07-03; agent-config-constants
+ * suffix, else appended. Papercusp then caps their compaction at 400k and
+ * named-fleet MEMBERS at the current 250k role cap (retained by
+ * measured-agent-productivity-2026-09-06 D-009; agent-config-constants
  * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP / defaultCompactionLimitForSpec)
- * — to bound token spend. The same two caps now bind extended-window CODEX
+ * to bound token spend. The same two caps now bind extended-window CODEX
  * sessions (plan codex-1m-context-window-2026-08-17 D-001), which previously
  * seeded 158k because the window resolver only recognized this `[1m]` marker.
  * sonnet-5 REQUIRES the marker too — REVERSAL of the earlier P-031 note

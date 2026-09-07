@@ -53,6 +53,7 @@ failures=0
 passes=0
 skips=0
 passed_labels=""
+CURRENT_NONCE=0
 pass() {
   passes=$((passes + 1))
   passed_labels="${passed_labels}${passed_labels:+$'\n'}$*"
@@ -71,6 +72,7 @@ ev() { "$TAT" eval --pid "$P" "$1" 2>&1; }
 # assertion lands on a half-torn-down page (EI-18812301452864060).
 nav() {
   local nonce="$1" extra="${2:-}" qs
+  CURRENT_NONCE="$nonce"
   qs="vnonce=${nonce}"
   [ -n "$extra" ] && qs="${extra}&${qs}"
   "$TAT" eval --pid "$P" \
@@ -240,6 +242,22 @@ if [ "$HOSTS" -gt 0 ]; then
        && !!document.querySelector('section[aria-label^=\"Drift and connectivity\"]')" \
       "R9 ?tab=overview selects Overview and renders drift/connectivity"
     shot 04-operate-overview
+
+    nav 9 "step=operate&host=${HOST_ID}&tab=desktops"
+    settle 9 '[aria-label="Workspace desktops and activity"]' 1 \
+      "(function(){ \
+        var sidebar=document.querySelector('[aria-label=\"Workspace desktops and activity\"]'); \
+        var layout=sidebar.parentElement, main=sidebar.previousElementSibling; \
+        var s=sidebar.getBoundingClientRect(), m=main.getBoundingClientRect(); \
+        return (document.querySelector('${TABLIST} [role=\"tab\"][aria-selected=\"true\"]').id||'').endsWith('-tab-desktops') \
+          && !!sidebar.querySelector('[aria-label=\"Available desktops\"]') \
+          && !!sidebar.querySelector('[aria-label=\"Recent desktop activity\"]') \
+          && m.width>200 && m.height>200 \
+          && layout.scrollWidth<=layout.clientWidth+1 \
+          && (layout.clientWidth>860 ? s.left>=m.right : s.top>=m.bottom); \
+      })()" \
+      "D-062 desktop viewer and adjacent roster/activity adapt without horizontal overflow"
+    shot 05-operate-desktops
   else
     fail "could not resolve a host id to expand from the first row's aria-controls"
   fi
@@ -250,7 +268,7 @@ fi
 # ── Nothing raw leaked into the rendered page ────────────────────────────────
 # Guarded by the rail, which an empty document does not have: an unguarded
 # absence check is trivially true before any data arrives.
-settle 8 "$RAIL" 1 \
+settle "$CURRENT_NONCE" "$RAIL" 1 \
   "!/undefined|\\[object Object\\]|NaN/.test((document.querySelector('main')||document.body).innerText)" \
   "no undefined / NaN / [object Object] leaked into the rendered page"
 
@@ -268,6 +286,8 @@ grep_pass "$passed_labels" "R9 ?tab=resources selects Resources; the host tablis
   && EXERCISED="${EXERCISED}expanded-host-tabs,"
 grep_pass "$passed_labels" "R4 a diverging host renders ONE chip in the 'observed → desired' form" \
   && EXERCISED="${EXERCISED}drift-divergent-form,"
+grep_pass "$passed_labels" "D-062 desktop viewer and adjacent roster/activity adapt without horizontal overflow" \
+  && EXERCISED="${EXERCISED}desktop-workspace-layout,"
 EXERCISED="${EXERCISED%,}"
 printf 'CW_RAIL_RESULT passed=%d failed=%d skipped=%d hosts=%d drifting=%d exercised=%s\n' \
   "$passes" "$failures" "$skips" "$HOSTS" "$DRIFTING" "${EXERCISED:-none}"

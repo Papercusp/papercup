@@ -40,6 +40,8 @@ const spawnHeadlessMock = vi.fn(
     error: '' as string,
   }),
 );
+const attachedMock = vi.fn(async (_request: Request, _input: unknown) => Response.json({ status: 'ok', transport: 'structured' }));
+vi.mock('../../../su-session-attached-launch', () => ({ launchAttachedSuSession: (request: Request, input: unknown) => attachedMock(request, input) }));
 
 // `shellEscape` stays REAL (importOriginal): the oneliner we assert on is then
 // byte-for-byte the command the spawn helper would have run.
@@ -165,6 +167,21 @@ beforeEach(() => {
 });
 
 describe('launch-su — headless routes to spawnHeadless, headed to spawnInTerminal (WI-6505)', () => {
+  it('starts PUI through the structured SU branch without either native launcher', async () => {
+    const result = await launch({ attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', account: 'default', carry: 'warm' });
+    expect(result).toMatchObject({ status: 200, json: { transport: 'structured' } });
+    expect(attachedMock).toHaveBeenCalledWith(expect.any(Request), expect.objectContaining({ agent: 'claude', agent_chat_id: 'chat', harness_slug: 'papercusp', account: 'default', carry: 'warm' }));
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([{ defer_spawn: true }, { headless: true }, { resume_session_id: 'native-id' }])('rejects conflicting attached/native launch modes %j', async (conflict) => {
+    expect((await launch({ attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', ...conflict })).status).toBe(400);
+    expect(attachedMock).not.toHaveBeenCalled();
+    expect(spawnInTerminalMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('headless:true spawns HEADLESS and never opens a terminal', async () => {
     const { status, json } = await launch({ headless: true });
     expect(status).toBe(200);

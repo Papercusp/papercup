@@ -20,10 +20,12 @@ const dir = mkdtempSync(join(tmpdir(), 'pui-engine-test-'));
 const promptFile = join(dir, 'su.md');
 writeFileSync(promptFile, 'SU persona and workspace scope.\n'.repeat(400));
 const boot = {
+  status: 'ok', specificationRevision: 'fixture-spec', stateRevision: 'fixture-state', compositionSource: 'blueprint',
+  codexHome: null, coordExtPath: null,
   agent: 'claude', sessionId: 61, nativeSessionId: nativeId, workspaceId: 'workspace',
   harnessSlug: 'project', planSlug: null, cwd: dir, promptFile,
   envelopeEnv: { PAPERCUSP_SID: 'su-test', PAPERCUSP_WORKSPACE: 'workspace', PAPERCUSP_HARNESS_SLUG: 'project', CLAUDE_CONFIG_DIR: dir },
-} as BootstrapSuResult;
+} satisfies BootstrapSuResult;
 const binding = {
   operation: 'created' as const, backend: 'claude' as const, advSessionId: 61,
   ownerId: 'su-test', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null, nativeSession: null,
@@ -37,7 +39,7 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; noAck?: boolean } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -54,6 +56,7 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
           output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
         } else if (!config.noAck) {
           output.write(message);
+          if (config.holdResult) continue;
           output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'Correlated reply' }] } });
           output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
         }
@@ -104,6 +107,19 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
       type: 'transcript', role: 'assistant', turnId: 'owner-turn-1', content: 'Correlated reply',
     }));
+  });
+
+  it('keeps overlapping accepted turns queued until the current reply completes', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const second = engine.adapter.host.startCommand({ ...command(engine), commandId: 'second-command', turnId: 'second-turn', content: 'second' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(p.prompts.filter((message) => message.shouldQuery !== false)).toHaveLength(1);
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'first reply' }] } });
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    expect((await second.terminal).status).toBe('completed');
+    expect(p.prompts.at(-1)?.message.content).toBe('second');
+    expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({ type: 'transcript', turnId: 'owner-turn-1', content: 'first reply' }));
   });
 
   it.each([{ identity: 'other-session' }, { cwd: '/another-project' }, { connected: false }])('cleans up a failed readiness check: %j', async (config) => {

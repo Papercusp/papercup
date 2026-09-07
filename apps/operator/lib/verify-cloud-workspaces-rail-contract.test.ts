@@ -70,6 +70,7 @@ describe('verify-cloud-workspaces-rail.sh — live-verification contract', () =>
       'landing-operate',
       'expanded-host-tabs',
       'drift-divergent-form',
+      'desktop-workspace-layout',
     ]) {
       expect(code).toContain(token);
     }
@@ -104,6 +105,15 @@ describe('verify-cloud-workspaces-rail.sh — live-verification contract', () =>
     /* An absence assertion on a half-loaded document is vacuously true. The
        rubric names this as a drift marker and asks the grader to grep for it. */
     expect(src).not.toContain('allow-unguarded-negative');
+  });
+
+  it('measures desktop layout on the selected tab and keeps the final assertion on the last navigation', () => {
+    expect(code).toContain('tab=desktops');
+    expect(code).toContain('[aria-label="Workspace desktops and activity"]');
+    expect(code).toContain('layout.scrollWidth<=layout.clientWidth+1');
+    expect(code).toContain('layout.clientWidth>860 ? s.left>=m.right : s.top>=m.bottom');
+    expect(code).toContain('CURRENT_NONCE="$nonce"');
+    expect(code).toContain('settle "$CURRENT_NONCE" "$RAIL"');
   });
 
   it('fuses the navigation nonce and a presence guard into one evaluation', () => {

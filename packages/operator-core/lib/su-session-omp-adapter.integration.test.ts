@@ -90,7 +90,7 @@ describe('OMP SU-session backend — PUI entry and native session translation', 
     if (!opened.ok) throw new Error(opened.error);
     const adapter = opened.adapter;
     try {
-      expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toMatchObject({ agent: 'omp', defer_spawn: true, carry: 'warm' });
+      expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toMatchObject({ agent: 'omp', defer_spawn: false, attached_engine: true, carry: 'warm' });
       const dispatch = adapter.host.startCommand(command(adapter, { type: 'owner_turn', commandId: 'owner-1', turnId: 'pui-turn-1', content: 'inspect the tree' }));
       await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
       expect(ownerTurn).toHaveBeenCalledWith({ ownerId: 'su-omp-pui', turnId: 'pui-turn-1', content: 'inspect the tree' });

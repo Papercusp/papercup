@@ -173,7 +173,7 @@ describe('Claude SU-session backend — PUI entry and native transcript translat
     const adapter = opened.adapter;
     try {
       const launchBody = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)) as Record<string, unknown>;
-      expect(launchBody).toMatchObject({ agent: 'claude', defer_spawn: true, carry: 'warm', harness_slug: 'papercusp' });
+      expect(launchBody).toMatchObject({ agent: 'claude', defer_spawn: false, attached_engine: true, carry: 'warm', harness_slug: 'papercusp' });
 
       const ownerDispatch = adapter.host.startCommand(command(adapter, {
         type: 'owner_turn', commandId: 'owner-command-1', turnId: 'pui-turn-1', content: 'inspect the tree',

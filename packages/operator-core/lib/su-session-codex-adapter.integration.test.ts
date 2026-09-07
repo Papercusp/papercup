@@ -254,7 +254,8 @@ describe('Codex SU-session backend — real PUI entry and native rollout transla
       >;
       expect(launchBody).toMatchObject({
         agent: 'codex',
-        defer_spawn: true,
+        defer_spawn: false,
+        attached_engine: true,
         carry: 'warm',
         harness_slug: 'papercusp',
         plan_slug: 'pui-plan',

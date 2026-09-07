@@ -2457,7 +2457,7 @@ export function sessionOwnersRoot(home = homedir()) {
 export function recordSessionOwner(
   nativeSessionId,
   coordOwnerId,
-  { home = homedir(), advSessionId = null } = {},
+  { home = homedir(), advSessionId = /** @type {number|string|null} */ (null) } = {},
 ) {
   if (!nativeSessionId || !coordOwnerId) return false;
   const file = join(sessionOwnersRoot(home), String(nativeSessionId));
@@ -6453,11 +6453,11 @@ export function assertLaunchPersona(promptFile) {
  * Claude Code / the gateway enable the 1M-context window — treats them as 1M.
  * Idempotent; a no-op for a spec already carrying `[1m]` or outside the
  * default-1M families. `[1m]` is inserted before a recognized `:effort`
- * suffix, else appended. Papercusp then caps their compaction at 400k —
- * named-fleet MEMBERS at 200k (owner directive 2026-07-19, superseding the
- * 300k of 2026-07-03; agent-config-constants
+ * suffix, else appended. Papercusp then caps their compaction at 400k and
+ * named-fleet MEMBERS at the current 250k role cap (retained by
+ * measured-agent-productivity-2026-09-06 D-009; agent-config-constants
  * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP / defaultCompactionLimitForSpec)
- * — to bound token spend. The same two caps now bind extended-window CODEX
+ * to bound token spend. The same two caps now bind extended-window CODEX
  * sessions (plan codex-1m-context-window-2026-08-17 D-001), which previously
  * seeded 158k because the window resolver only recognized this `[1m]` marker.
  * sonnet-5 REQUIRES the marker too — REVERSAL of the earlier P-031 note
@@ -7997,6 +7997,19 @@ export const MIN_UPTIME_BEFORE_SELF_EXIT_MS = 5 * 60_000;
  * and a minimum uptime — and RESETS the streak on any non-terminal or failed beat. Every
  * degraded path keeps psu alive: the failure mode is a zombie that lingers, never a live
  * agent that is killed.
+ * @param {string|null} ownerId
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @param {number} [options.intervalMs]
+ * @param {string} [options.operatorUrl]
+ * @param {string|null} [options.token]
+ * @param {(callback:()=>void, ms:number)=>{unref?:()=>void}} [options.setIntervalImpl]
+ * @param {string|null} [options.tty]
+ * @param {number} [options.pid]
+ * @param {number} [options.beatsToExit]
+ * @param {number} [options.minUptimeMs]
+ * @param {()=>number} [options.uptimeMsFn]
+ * @param {()=>void} [options.onTerminalSession]
  */
 export function startSupervisorBeat(
   ownerId,
@@ -8010,6 +8023,9 @@ export function startSupervisorBeat(
     // resolveOwnedTtyPath() at spawn time — see the call site), reported on
     // every beat exactly like pid/host below. null for a headless launch.
     tty = null,
+    // Attached engines run inside an operator host: report the CHILD, never
+    // the host process, as the supervised session's liveness identity.
+    pid = process.pid,
     // Injectables for tests; defaults are the real process behaviour.
     beatsToExit = TERMINAL_BEATS_TO_EXIT,
     minUptimeMs = MIN_UPTIME_BEFORE_SELF_EXIT_MS,
@@ -8039,7 +8055,7 @@ export function startSupervisorBeat(
           },
           body: JSON.stringify({
             ownerId,
-            pid: process.pid,
+            pid,
             host: hostname(),
             ...(tty ? { tty } : {}),
           }),

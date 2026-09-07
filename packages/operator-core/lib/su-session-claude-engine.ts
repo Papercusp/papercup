@@ -4,17 +4,19 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { assertLaunchPersona, sanitizeInheritedEnv, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, applyGithubTokenEnv, assertLaunchPersona, enforceDefaultClaudeAccount, persistDefaultClaudeAuthSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { splitModelSpec } from './agent-config-constants';
+import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import { createClaudeSuSessionAdapter, type ClaudeNativeCommandVerdict, type ClaudeSuSessionAdapter, type ClaudeSuSessionDescriptorOptions, type ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from './task-manager/enroll-sync';
 import { probeScopeSupport } from './task-manager/managed-spawn';
+import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>;
@@ -24,6 +26,8 @@ export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   /** Inject the protocol peer in tests, not the host or its event translation. */
   query?: (input: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => ClaudeEngineQuery;
   register?: boolean;
+  /** Join the authoritative session-end write before reporting closed. */
+  onExit?: () => Promise<void>;
 }
 export interface ClaudeSuEngine {
   adapter: ClaudeSuSessionAdapter;
@@ -64,23 +68,38 @@ export function startClaudeSuEngine(
   let ready = false;
   let closed = false;
   let processId: number | null = null;
+  let processTaskId: string | null = null;
+  let processRegistration: Promise<void> | null = null;
+  let processExit: Promise<void> = Promise.resolve();
+  let heartbeat: ManagedHandle | undefined;
   let sdk: ClaudeEngineQuery;
+  let inputTail = Promise.resolve();
+  let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
   const unavailable = (message: string): ClaudeNativeCommandVerdict => ({
     ok: false, code: 'engine_delivery_unknown', message, retryable: false,
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
-    ...options, ready: false,
+    ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport',
     controls: {
-      async ownerTurn({ content }) {
+      async ownerTurn({ content, turnId }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
         pending.set(uuid, receipt);
-        const timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
-        try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        inputTail = inputTail.then(async () => {
+          if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return; }
+          const finished = deferred<void>();
+          finishActiveTurn = () => finished.resolve();
+          adapter.correlateOwnerTurn(turnId);
+          timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
           input.write({ type: 'user', uuid, session_id: nativeId, parent_tool_use_id: null, message: { role: 'user', content } } satisfies SDKUserMessage);
+          await finished.promise;
+          finishActiveTurn = undefined;
+        }).catch((error: unknown) => receipt.resolve(unavailable(String(error))));
+        try {
           return await receipt.promise;
         } finally { clearTimeout(timer); pending.delete(uuid); }
       },
@@ -92,13 +111,27 @@ export function startClaudeSuEngine(
   });
   const model = splitModelSpec(options.model);
   const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
+  const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
+  delete env.PAPERCUSP_TTY;
+  env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1';
+  env.DISABLE_AUTOUPDATER = '1';
+  env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();
+  enforceDefaultClaudeAccount('claude', env);
+  applyDefaultClaudeOAuthToken('claude', env);
+  const authSettings = applyDefaultClaudeAuthSettingsArgs('claude', [], env);
+  // The on-disk per-session settings are also used on native exact resume.
+  if (!options.query) {
+    persistDefaultClaudeAuthSettings({ wrapperBin: 'claude', env });
+    applyGithubTokenEnv(env);
+    recordSessionOwner(nativeId, binding.ownerId, { advSessionId: binding.advSessionId });
+  }
   // Reuse the launcher's deny policy as well as its environment sanitizer.
   const disallowedTools = launch.args.filter((a: string) => a.startsWith('--disallowedTools=')).flatMap((a: string) => a.slice('--disallowedTools='.length).split(','));
   const sdkOptions: Options = {
     cwd: boot.cwd,
-    env: { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv },
+    env,
+    ...(authSettings[0] === '--settings' ? { settings: JSON.parse(authSettings[1]) } : {}),
     sessionId: nativeId,
-    systemPrompt: readFileSync(boot.promptFile, 'utf8'),
     settingSources: ['user', 'project', 'local'],
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
@@ -106,38 +139,70 @@ export function startClaudeSuEngine(
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort as Options['effort'] } : {}),
     abortController,
-    extraArgs: { 'exclude-dynamic-system-prompt-sections': null, 'replay-user-messages': null },
+    extraArgs: { 'system-prompt-file': boot.promptFile, 'exclude-dynamic-system-prompt-sections': null, 'replay-user-messages': null },
     spawnClaudeCodeProcess(spawnOptions) {
       const spec: TaskSpec = {
         class: 'agent-session', title: 'PUI Claude structured engine', launchedBy: 'pui-su-session',
-        sessionId: binding.ownerId, harnessSlug: binding.harnessSlug, planSlug: binding.planSlug,
+        sessionId: nativeId, harnessSlug: binding.harnessSlug, planSlug: binding.planSlug,
+        detail: { coordOwnerId: binding.ownerId, advSessionId: binding.advSessionId, transport: 'structured' },
         argv: [spawnOptions.command, ...spawnOptions.args], cwd: boot.cwd,
       };
       const enrollment = beginSyncEnrolment(spec);
+      processTaskId = enrollment.taskId;
       const wrapped = enrollment.wrap(spawnOptions.command, spawnOptions.args, spawnOptions.env, boot.cwd);
       const child = spawn(wrapped.binary, wrapped.argv, {
         cwd: boot.cwd, env: spawnOptions.env, stdio: ['pipe', 'pipe', 'pipe'], signal: spawnOptions.signal,
       });
       processId = child.pid ?? null;
       completeSyncEnrolment(enrollment, spec, processId, { workspaceId: boot.workspaceId });
+      processRegistration = enrollment.registrationReady;
+      const exited = deferred<void>();
+      processExit = exited.promise;
+      if (processId) startSupervisorBeat(binding.ownerId, {
+        pid: processId, operatorUrl: env.PAPERCUSP_OPERATOR_URL,
+        onTerminalSession: () => { void close().catch((error) => console.warn('[su-session] terminal engine cleanup failed', error)); },
+        setIntervalImpl: (callback: () => void, ms: number) => {
+          heartbeat = managedSetInterval('su-session-engine-heartbeat', ms, callback, { category: 'liveness', instanced: true });
+          return {};
+        },
+      });
       // Consume stderr so a noisy child cannot deadlock its protocol pipes.
       // SDK result/error messages carry the user-facing reason, never raw env.
       child.stderr.on('data', () => undefined);
       child.once('close', (exitCode, signal) => {
+        heartbeat?.stop();
         wrapped.release?.();
         finishSyncEnrolment(enrollment, { state: signal ? 'killed' : 'exited', exitCode, exitReason: signal });
+        exited.resolve();
       });
       return child;
     },
   };
   let done: Promise<void> = Promise.resolve();
+  async function waitForExit(ms: number): Promise<boolean> {
+    let timeout: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([processExit.then(() => true), new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), ms); })]);
+    } finally { clearTimeout(timeout!); }
+  }
+  async function stopChild(): Promise<void> {
+    if (await waitForExit(5_000)) return;
+    await processRegistration;
+    if (!processTaskId) throw new Error('Claude child did not close and has no tracked teardown handle');
+    const result = await killTask(processTaskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
+    if (!result.ok && result.error !== 'already_gone') throw new Error(`Claude tracked teardown failed: ${result.error}`);
+    if (!(await waitForExit(5_000))) throw new Error('Claude child did not exit after tracked teardown');
+  }
   async function close(): Promise<void> {
     if (!closed) {
       closed = true; ready = false;
+      heartbeat?.stop();
       for (const receipt of pending.values()) receipt.resolve(unavailable('Claude connection closed before acknowledgement'));
+      finishActiveTurn?.();
       input.end(); sdk?.close(); abortController.abort();
     }
     await done;
+    await stopChild();
   }
   const startup = (async () => {
     if (!options.query) await probeScopeSupport();
@@ -163,6 +228,7 @@ export function startClaudeSuEngine(
           }
           if (event.type === 'user' && event.uuid) pending.get(event.uuid)?.resolve({ ok: true });
           adapter.ingestNativeLine(JSON.stringify(event));
+          if (event.type === 'result') finishActiveTurn?.();
         }
         if (!closed) throw new Error('Claude event stream closed unexpectedly');
       } catch (error) {
@@ -175,7 +241,12 @@ export function startClaudeSuEngine(
         }
       } finally {
         for (const receipt of pending.values()) receipt.resolve(unavailable('Claude stream ended before acknowledgement'));
+        finishActiveTurn?.();
         if (closed && !adapter.host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: true });
+        if (closed) {
+          await stopChild();
+          await options.onExit?.();
+        }
       }
     })();
     await sdk.initializationResult();

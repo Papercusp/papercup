@@ -93,6 +93,8 @@ export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDesc
   register?: boolean;
   /** Structured transports set this false until their identity handshake completes. */
   ready?: boolean;
+  runtimeReady?: () => boolean;
+  ownerTurnCorrelation?: 'command' | 'transport';
 }
 
 export interface OpenClaudeSuSessionOptions extends CreateClaudeSuSessionAdapterOptions {
@@ -378,6 +380,7 @@ export class ClaudeSuSessionAdapter {
   private readonly controls: ClaudeSuSessionControls;
   private readonly unregister: (() => void) | null;
   private lastErrorKey: string | null = null;
+  private readonly transportCorrelatesTurns: boolean;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'claude' },
@@ -385,10 +388,12 @@ export class ClaudeSuSessionAdapter {
     options: CreateClaudeSuSessionAdapterOptions,
   ) {
     this.runtimeValue = runtime;
+    this.transportCorrelatesTurns = options.ownerTurnCorrelation === 'transport';
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     this.host = new SuSessionHost({
       descriptor: descriptorFor(binding, runtime, options),
       executeCommand: (command, context) => this.execute(command, context),
+      runtimeReady: options.runtimeReady,
       persistDescriptor: async (descriptor) => {
         await persistSuSessionDescriptor(binding.advSessionId, descriptor);
       },
@@ -405,6 +410,11 @@ export class ClaudeSuSessionAdapter {
 
   get runtime(): ClaudeSuRuntimeBinding {
     return this.runtimeValue;
+  }
+
+  /** The structured transport calls this when a queued owner turn is sent. */
+  correlateOwnerTurn(turnId: string): void {
+    this.currentTurnId = turnId;
   }
 
   private nextTurnId(hint?: string | null): string {
@@ -598,7 +608,7 @@ export class ClaudeSuSessionAdapter {
     let verdict: ClaudeNativeCommandVerdict;
     switch (command.type) {
       case 'owner_turn':
-        this.currentTurnId = command.turnId;
+        if (!this.transportCorrelatesTurns) this.currentTurnId = command.turnId;
         context.transition('running', 'owner turn accepted');
         verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);

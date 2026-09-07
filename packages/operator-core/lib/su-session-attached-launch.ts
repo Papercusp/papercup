@@ -53,6 +53,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
     const chat = await getChat({ slug: input.harness_slug, chatId: input.agent_chat_id });
     if (!chat.ok) throw new Error(chat.error);
     if (chat.data.archived_at) throw new Error('This conversation is archived; restore it before connecting');
+    if (chat.data.su_runtime_class !== 'su-session') throw new Error('This conversation is not classified as an SU session; its existing history was preserved');
     const previous = await readDurableSuSession({ workspaceId, agentChatId: input.agent_chat_id });
     if (previous) {
       if (previous.backend !== input.agent || previous.harnessSlug !== input.harness_slug) throw new Error('The conversation is already bound to a different engine or project');
@@ -102,15 +103,15 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       engine = startClaudeSuEngine(result, binding, { nativeSession, transcriptPath: null }, {
         agentChatId: input.agent_chat_id, model: input.model, accountRoute: input.account,
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
+        onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
       });
       state.engines.set(key, engine);
       await engine.ready;
       await setAdvSessionPid(result.sessionId, engine.pid(), 'pui-structured-claude');
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());
       const active = engine;
-      void engine.done.then(async () => {
+      void engine.done.then(() => {
         if (state.engines.get(key) === active) state.engines.delete(key);
-        await markAdvSessionEnded(result.sessionId!, null, 'cleanup');
       }).catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error));
       return { status: 'ok', transport: 'structured', agent: 'claude', advSessionId: binding.advSessionId,
         ownerId: binding.ownerId, workspaceId: binding.workspaceId, harnessSlug: binding.harnessSlug,

@@ -14,5 +14,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export default defineVitestConfig({
   layer: 'integration',
   globalSetup: [BASELINE_SCHEMA_GLOBAL_SETUP_PATH],
-  setupFiles: [resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts')],
+  setupFiles: [
+    resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
+    // Integration routes also start tracked lazy imports (e.g. session end).
+    // Join them before teardown, using the same registry as the unit lane.
+    resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),
+  ],
 });
