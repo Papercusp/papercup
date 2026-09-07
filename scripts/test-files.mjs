@@ -1192,16 +1192,34 @@ export function callerChoseReporting(vitestArgs) {
  * `Tests  4 passed | 1 skipped (5)` row on stdout AND writes the machine report to `<p>`. Passing
  * `--reporter=json` alone would replace stdout with JSON and silently break every human caller.
  *
+ * CLI reporters REPLACE the configured list, rather than extending it. Retain the first-party
+ * evidence reporters as testing:run does; otherwise a green direct run silently loses its ledger
+ * receipt (EI-22627645585922385). Respect the config's opt-out and source-map arming gates.
+ * The workspace config still supplies the source-map importDurations settings. Missing reporter
+ * files in a partial/foreign checkout must not turn this diagnostic injection into a load error.
+ *
  * Returns the args unchanged when the caller already chose reporting, so this can be applied
  * unconditionally at the call site.
  *
+ * @param {string[]} vitestArgs
+ * @param {string | null} reportPath
+ * @param {{ repoRoot?: string, env?: NodeJS.ProcessEnv }} [options]
  * @returns {{ args: string[], injectedReportPath: string | null }}
  */
-export function withInjectedJsonReport(vitestArgs, reportPath) {
+export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO_ROOT, env = process.env } = {}) {
   const args = vitestArgs ?? [];
   if (!reportPath || callerChoseReporting(args)) return { args, injectedReportPath: null };
+  const evidenceReporters = [];
+  const adminReporter = join(repoRoot, 'libs/test-config/src/admin-test-runs-reporter.ts');
+  if (env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER !== '1' && existsSync(adminReporter)) {
+    evidenceReporters.push(`--reporter=${adminReporter}`);
+  }
+  const sourceMapReporter = join(repoRoot, 'libs/test-config/src/executed-source-map-reporter.ts');
+  if (env.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim() && existsSync(sourceMapReporter)) {
+    evidenceReporters.push(`--reporter=${sourceMapReporter}`);
+  }
   return {
-    args: [...args, '--reporter=default', '--reporter=json', `--outputFile=${reportPath}`],
+    args: [...args, '--reporter=default', '--reporter=json', ...evidenceReporters, `--outputFile=${reportPath}`],
     injectedReportPath: reportPath,
   };
 }
