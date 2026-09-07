@@ -25,6 +25,11 @@ function result(overrides: Partial<DreamCycleResult> = {}): DreamCycleResult {
 }
 
 describe('parseDreamCycleActionConfig', () => {
+  it('refuses a declared pilot without its frozen protocol rather than treating it as an ordinary manual cycle', () => {
+    expect(() => parseDreamCycleActionConfig({ mode: 'manual', pilot: null })).toThrow();
+    expect(() => parseDreamCycleActionConfig({ mode: 'manual', pilot: { arm: 'structured-pair' } })).toThrow();
+  });
+
   it('defaults the Start/Pause routine to manual mode and preserves bounded overrides', () => {
     expect(parseDreamCycleActionConfig(null)).toEqual({ mode: 'manual' });
     expect(

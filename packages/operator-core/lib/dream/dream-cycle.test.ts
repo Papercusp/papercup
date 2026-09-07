@@ -174,10 +174,20 @@ function harness() {
 
 describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
   async function pilot(h: ReturnType<typeof harness>) {
-    const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: f.root, scope: f.scope, manifest: f.manifest, packets: f.packets });
-    const bound = freezeDreamEvaluationProtocol({ sourceSnapshot: snapshot.fingerprint,
-      benchmarkHash: 'a'.repeat(64), oracleHash: 'b'.repeat(64), independentLabelsRef: 'fixture:independent-labels',
-      seed: 'frozen-seed', models: { generator: 'dreamer', reviewer: 'reviewer' } });
+    const snapshot = await buildCapabilitySamplingSnapshot({
+      rootPath: f.root,
+      scope: f.scope,
+      manifest: f.manifest,
+      packets: f.packets,
+    });
+    const bound = freezeDreamEvaluationProtocol({
+      sourceSnapshot: snapshot.fingerprint,
+      benchmarkHash: 'a'.repeat(64),
+      oracleHash: 'b'.repeat(64),
+      independentLabelsRef: 'fixture:independent-labels',
+      seed: 'frozen-seed',
+      models: { generator: 'dreamer', reviewer: 'reviewer' },
+    });
     h.input.pilot = { ...bound, arm: 'structured-pair' };
     return bound;
   }
@@ -198,7 +208,10 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
   it('rechecks the actual source snapshot before generation, preserving a rejected run', async () => {
     const h = harness();
     const valid = await pilot(h);
-    h.input.pilot = { ...freezeDreamEvaluationProtocol({ ...valid.protocol, sourceSnapshot: 'c'.repeat(64) }), arm: 'structured-pair' };
+    h.input.pilot = {
+      ...freezeDreamEvaluationProtocol({ ...valid.protocol, sourceSnapshot: 'c'.repeat(64) }),
+      arm: 'structured-pair',
+    };
     const result = await runDreamCycle(h.input, h.d);
     expect(result.runs[0]?.status).toBe('error');
     expect(h.row('cycle-1:dream:1').error).toContain('snapshot changed');
@@ -212,8 +225,14 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     const result = await runDreamCycle(h.input, h.d);
     expect(result.accepted).toBe(1);
     expect(h.d.preflight).toHaveBeenCalledOnce();
-    expect(h.d.sample).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ seed: 'frozen-seed:structured-pair:cycle-1:dream:1' }));
-    expect(dreamCapabilityRun(h.row('cycle-1:dream:1'))?.evaluation).toEqual({ protocolPin: valid.pin, arm: 'structured-pair' });
+    expect(h.d.sample).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ seed: 'frozen-seed:structured-pair:cycle-1:dream:1' }),
+    );
+    expect(dreamCapabilityRun(h.row('cycle-1:dream:1'))?.evaluation).toEqual({
+      protocolPin: valid.pin,
+      arm: 'structured-pair',
+    });
     expect(h.llm).toHaveBeenCalled();
   });
 

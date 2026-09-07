@@ -50,7 +50,13 @@ const HeaderSchema = z
     reviewerModel: name,
     dreamPromptVersion: name,
     reviewPromptVersion: name,
-    evaluation: z.object({ protocolPin: z.string().regex(/^[a-f0-9]{64}$/), arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']) }).strict().optional(),
+    evaluation: z
+      .object({
+        protocolPin: z.string().regex(/^[a-f0-9]{64}$/),
+        arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 const EnvelopeSchema = HeaderSchema.extend({
@@ -108,13 +114,21 @@ export function validateDreamSampling(value: CapabilitySamplingResult): void {
     log.draws.some((d) => !Number.isFinite(d.probability) || d.probability <= 0 || d.probability > 1)
   )
     throw new Error('Invalid persisted sampling provenance');
-  if (log.eligibleUnitIds !== undefined && (!Array.isArray(log.eligibleUnitIds) ||
-      log.eligibleUnitIds.length > 200 || new Set(log.eligibleUnitIds).size !== log.eligibleUnitIds.length ||
-      log.eligibleUnitIds.some(id => typeof id !== 'string' || !id.trim())))
+  if (
+    log.eligibleUnitIds !== undefined &&
+    (!Array.isArray(log.eligibleUnitIds) ||
+      log.eligibleUnitIds.length > 200 ||
+      new Set(log.eligibleUnitIds).size !== log.eligibleUnitIds.length ||
+      log.eligibleUnitIds.some((id) => typeof id !== 'string' || !id.trim()))
+  )
     throw new Error('Invalid persisted sampling population');
-  if (value.status === 'selected' && log.eligibleUnitIds !== undefined &&
-      [value.selection.a, value.selection.b, ...(value.selection.c ? [value.selection.c.entry] : [])]
-        .some(e => !log.eligibleUnitIds!.includes(e.packet.unit.id)))
+  if (
+    value.status === 'selected' &&
+    log.eligibleUnitIds !== undefined &&
+    [value.selection.a, value.selection.b, ...(value.selection.c ? [value.selection.c.entry] : [])].some(
+      (e) => !log.eligibleUnitIds!.includes(e.packet.unit.id),
+    )
+  )
     throw new Error('Selected unit is outside recorded sampling population');
   if (value.status === 'selected') validateCapabilityDreamSelection(value.selection);
   else if (!['insufficient-units', 'no-eligible-pair', 'no-third-candidate'].includes(value.reason))
@@ -153,20 +167,22 @@ export function validateDreamRunCall(value: DreamRunCall): DreamRunCall {
 
 /** Post-run judgments are evidence, not inferred from a proposal's wording or a pass rate. */
 const assessmentFinding = z.enum(['supported', 'disproven', 'unknown']);
-export const DreamRunAssessmentSchema = z.object({
-  schemaVersion: z.literal('dream-run-assessment-v1'),
-  id: name,
-  assessor: name,
-  recordedAt: z.string().datetime(),
-  candidateHash: z.string().regex(/^[a-f0-9]{64}$/),
-  evidenceHash: z.string().regex(/^[a-f0-9]{64}$/),
-  familyId: name.nullable(),
-  novelty: assessmentFinding,
-  usefulness: assessmentFinding,
-  maintainability: assessmentFinding,
-  evidenceRefs: z.array(z.string().trim().min(1).max(2_000)).min(1).max(20),
-  experimentBatteryIds: z.array(name).max(20),
-}).strict();
+export const DreamRunAssessmentSchema = z
+  .object({
+    schemaVersion: z.literal('dream-run-assessment-v1'),
+    id: name,
+    assessor: name,
+    recordedAt: z.string().datetime(),
+    candidateHash: z.string().regex(/^[a-f0-9]{64}$/),
+    evidenceHash: z.string().regex(/^[a-f0-9]{64}$/),
+    familyId: name.nullable(),
+    novelty: assessmentFinding,
+    usefulness: assessmentFinding,
+    maintainability: assessmentFinding,
+    evidenceRefs: z.array(z.string().trim().min(1).max(2_000)).min(1).max(20),
+    experimentBatteryIds: z.array(name).max(20),
+  })
+  .strict();
 export type DreamRunAssessment = z.infer<typeof DreamRunAssessmentSchema>;
 
 export function dreamRunAssessments(run: { outcome: Record<string, unknown> | null }): DreamRunAssessment[] {

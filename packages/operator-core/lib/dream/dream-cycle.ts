@@ -156,10 +156,15 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
   const pass = resolveDreamPassConfig({ maxOutputTokens: 4096, ...input.pass });
   const reviewConfig = resolveDreamReviewConfig({ maxOutputTokens: 4096, ...input.review });
   const pilot = input.pilot === undefined ? null : DreamPilotPinSchema.parse(input.pilot);
-  const pilotConfig = pilot ? {
-    generator: pass.model, reviewer: reviewConfig.model, mode: input.mode,
-    samplerMode: input.sampler?.mode ?? 'structured', arity: input.sampler?.arity ?? 2,
-  } : null;
+  const pilotConfig = pilot
+    ? {
+        generator: pass.model,
+        reviewer: reviewConfig.model,
+        mode: input.mode,
+        samplerMode: input.sampler?.mode ?? 'structured',
+        arity: input.sampler?.arity ?? 2,
+      }
+    : null;
   // Validate the protocol pin and policy before any adapter can perform work.
   // The real on-disk population is independently compared below, before generation.
   if (pilot) requireDreamPilotProtocol(pilot, { ...pilotConfig!, sourceSnapshot: pilot.protocol.sourceSnapshot });
@@ -246,7 +251,14 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           reviewerModel: reviewConfig.model,
           dreamPromptVersion: CAPABILITY_DREAM_PROMPT_VERSION,
           reviewPromptVersion: CAPABILITY_REVIEW_VERSION,
-          ...(pilot ? { evaluation: { protocolPin: pilot.pin, arm: pilot.arm as 'uniform-pair' | 'structured-pair' | 'structured-triple' } } : {}),
+          ...(pilot
+            ? {
+                evaluation: {
+                  protocolPin: pilot.pin,
+                  arm: pilot.arm as 'uniform-pair' | 'structured-pair' | 'structured-triple',
+                },
+              }
+            : {}),
         },
       });
       if (begun.run.status !== 'running') {

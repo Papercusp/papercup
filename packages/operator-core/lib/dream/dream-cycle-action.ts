@@ -174,24 +174,31 @@ export async function productionDreamCycle(
       loadHistory: () => store.listDreamRuns(sql, { ...scope, limit: 500 }),
       reviewSources: sources,
       beginRun: ({ runId, capability }) =>
-        changing(() => store.beginDreamRun(sql, {
-          ...scope,
-          runId,
-          cycleId,
-          mode: config.mode,
-          capability,
-        })),
-      recordSelection: (input) => changing(() => store.recordDreamRunSelection(sql, { ...input, workspaceId: ctx.workspaceId })),
-      beginCall: (input) => changing(() => governor.admitDreamRunCall(sql, { ...input, ...scope, config: config.cycle })),
+        changing(() =>
+          store.beginDreamRun(sql, {
+            ...scope,
+            runId,
+            cycleId,
+            mode: config.mode,
+            capability,
+          }),
+        ),
+      recordSelection: (input) =>
+        changing(() => store.recordDreamRunSelection(sql, { ...input, workspaceId: ctx.workspaceId })),
+      beginCall: (input) =>
+        changing(() => governor.admitDreamRunCall(sql, { ...input, ...scope, config: config.cycle })),
       settleCall: (input) => changing(() => store.settleDreamRunCall(sql, { ...input, workspaceId: ctx.workspaceId })),
-      recordReview: (input) => changing(() => store.recordDreamRunReview(sql, { ...input, workspaceId: ctx.workspaceId })),
+      recordReview: (input) =>
+        changing(() => store.recordDreamRunReview(sql, { ...input, workspaceId: ctx.workspaceId })),
       finalizeRun: (input) => changing(() => store.finalizeDreamRun(sql, { ...input, workspaceId: ctx.workspaceId })),
       recordSpend: (run) =>
-        changing(() => governor.recordDreamRunSpend(sql, {
-          workspaceId: ctx.workspaceId,
-          runId: run.runId,
-          potSlug: ctx.installSlug,
-        })),
+        changing(() =>
+          governor.recordDreamRunSpend(sql, {
+            workspaceId: ctx.workspaceId,
+            runId: run.runId,
+            potSlug: ctx.installSlug,
+          }),
+        ),
       sink: (runId, values) =>
         sink.sinkDreamInsight({
           kind: 'capability',
@@ -208,9 +215,14 @@ export async function productionDreamCycle(
   // A refused/empty cycle may have no run row. Preserve its actual outcome in
   // the existing routine metadata so the control never calls that "no run yet".
   const summary = {
-    cycleId: result.cycleId, mode: config.mode, attempts: result.attempts,
-    accepted: result.accepted, running: 0, costUsd: result.costUsd,
-    reason: result.reason, updatedAt: new Date().toISOString(),
+    cycleId: result.cycleId,
+    mode: config.mode,
+    attempts: result.attempts,
+    accepted: result.accepted,
+    running: 0,
+    costUsd: result.costUsd,
+    reason: result.reason,
+    updatedAt: new Date().toISOString(),
   };
   await sql`
     UPDATE harness_shared.routines

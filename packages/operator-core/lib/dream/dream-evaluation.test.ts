@@ -6,21 +6,40 @@ import { DREAM_BENCHMARK_LABELS } from '../../test/dream-benchmark-labels';
 import independentReview from '../../test/dream-benchmark-review.fixture.json';
 import { capabilityHash } from './capability-contracts';
 import {
-  DREAM_EVALUATION_ARMS, DREAM_EVALUATION_COSTS, DREAM_UTILITY_CONTRACT,
-  dreamEvaluationProtocolHash, dreamReviewerConfusion, freezeDreamEvaluationProtocol,
-  requireDreamPilotProtocol, summarizeDreamEvaluationCosts, type DreamEvaluationCost,
+  DREAM_EVALUATION_ARMS,
+  DREAM_EVALUATION_COSTS,
+  DREAM_UTILITY_CONTRACT,
+  dreamEvaluationProtocolHash,
+  dreamReviewerConfusion,
+  freezeDreamEvaluationProtocol,
+  requireDreamPilotProtocol,
+  summarizeDreamEvaluationCosts,
+  type DreamEvaluationCost,
 } from './dream-evaluation';
 
-const frozen = () => freezeDreamEvaluationProtocol({
-  sourceSnapshot: 'a'.repeat(64), benchmarkHash: capabilityHash(JSON.stringify(DREAM_BENCHMARK_CASES)),
-  oracleHash: capabilityHash(JSON.stringify(DREAM_BENCHMARK_LABELS)),
-  independentLabelsRef: 'work-item:WI-10000489#independent-blinded-review',
-  seed: 'dream-2026-09-07-v1', models: { generator: 'generator', reviewer: 'reviewer' },
-});
-const current = { sourceSnapshot: 'a'.repeat(64), generator: 'generator', reviewer: 'reviewer', mode: 'manual', samplerMode: 'structured', arity: 2 };
+const frozen = () =>
+  freezeDreamEvaluationProtocol({
+    sourceSnapshot: 'a'.repeat(64),
+    benchmarkHash: capabilityHash(JSON.stringify(DREAM_BENCHMARK_CASES)),
+    oracleHash: capabilityHash(JSON.stringify(DREAM_BENCHMARK_LABELS)),
+    independentLabelsRef: 'work-item:WI-10000489#independent-blinded-review',
+    seed: 'dream-2026-09-07-v1',
+    models: { generator: 'generator', reviewer: 'reviewer' },
+  });
+const current = {
+  sourceSnapshot: 'a'.repeat(64),
+  generator: 'generator',
+  reviewer: 'reviewer',
+  mode: 'manual',
+  samplerMode: 'structured',
+  arity: 2,
+};
 const costs = (arm: DreamEvaluationCost['arm']): DreamEvaluationCost => ({
-  arm, phases: { indexing: 0.1, retrieval: 0.1, generation: 0.2, review: 0.2, verification: 0.4, experiment: 1 },
-  qualifiedFamilies: ['family-a'], verifiedBeneficialExperiments: 1, engineerMinutes: 12,
+  arm,
+  phases: { indexing: 0.1, retrieval: 0.1, generation: 0.2, review: 0.2, verification: 0.4, experiment: 1 },
+  qualifiedFamilies: ['family-a'],
+  verifiedBeneficialExperiments: 1,
+  engineerMinutes: 12,
 });
 
 describe('frozen Dream evaluation protocol — P017', () => {
@@ -30,8 +49,18 @@ describe('frozen Dream evaluation protocol — P017', () => {
     expect(protocol.arms).toEqual(DREAM_EVALUATION_ARMS);
     expect(protocol.costPhases).toEqual(DREAM_EVALUATION_COSTS);
     expect(protocol.utilityHash).toBe(capabilityHash(JSON.stringify(DREAM_UTILITY_CONTRACT)));
-    expect(protocol.limits).toEqual({ attempts: 200, attemptsPerArm: 50, discoveryUsd: 20, discoveryUsdPerArm: 5,
-      cycleAttempts: 3, cycleUsd: 1, rollingDayUsd: 5, experimentMinutes: 60, experimentCount: 12, experimentComputeUsd: 0 });
+    expect(protocol.limits).toEqual({
+      attempts: 200,
+      attemptsPerArm: 50,
+      discoveryUsd: 20,
+      discoveryUsdPerArm: 5,
+      cycleAttempts: 3,
+      cycleUsd: 1,
+      rollingDayUsd: 5,
+      experimentMinutes: 60,
+      experimentCount: 12,
+      experimentComputeUsd: 0,
+    });
     expect(protocol.analysis.ablations).toContain('calibration disjoint from held-out');
     expect(requireDreamPilotProtocol({ protocol, pin, arm: 'structured-pair' }, current)).toEqual(protocol);
   });
@@ -40,28 +69,53 @@ describe('frozen Dream evaluation protocol — P017', () => {
     const { protocol, pin } = frozen();
     const bound = { protocol, pin, arm: 'structured-pair' as const };
     expect(() => requireDreamPilotProtocol({ ...bound, protocol: null }, current)).toThrow();
-    expect(() => requireDreamPilotProtocol({ ...bound, protocol: { ...protocol, seed: 'changed' } }, current)).toThrow('changed');
-    expect(() => requireDreamPilotProtocol(bound, { ...current, sourceSnapshot: 'b'.repeat(64) })).toThrow('snapshot changed');
+    expect(() => requireDreamPilotProtocol({ ...bound, protocol: { ...protocol, seed: 'changed' } }, current)).toThrow(
+      'changed',
+    );
+    expect(() => requireDreamPilotProtocol(bound, { ...current, sourceSnapshot: 'b'.repeat(64) })).toThrow(
+      'snapshot changed',
+    );
     expect(() => requireDreamPilotProtocol(bound, { ...current, reviewer: 'other' })).toThrow('configuration changed');
     expect(() => requireDreamPilotProtocol(bound, { ...current, mode: 'auto' })).toThrow('manual');
     expect(() => requireDreamPilotProtocol(bound, { ...current, arity: 'mixed' })).toThrow('arm');
     expect(() => requireDreamPilotProtocol({ ...bound, arm: 'blender' }, current)).toThrow('ordinary Blender');
-    expect(requireDreamPilotProtocol({ ...bound, arm: 'uniform-pair' }, { ...current, samplerMode: 'random-control' })).toEqual(protocol);
-    expect(requireDreamPilotProtocol({ ...bound, arm: 'structured-triple' }, { ...current, arity: 3 })).toEqual(protocol);
+    expect(
+      requireDreamPilotProtocol({ ...bound, arm: 'uniform-pair' }, { ...current, samplerMode: 'random-control' }),
+    ).toEqual(protocol);
+    expect(requireDreamPilotProtocol({ ...bound, arm: 'structured-triple' }, { ...current, arity: 3 })).toEqual(
+      protocol,
+    );
   });
 
   it('reconciles all arms using the same unique-family numerator and cold-start/full-cost denominator', () => {
     const result = summarizeDreamEvaluationCosts(DREAM_EVALUATION_ARMS.flatMap((arm) => [costs(arm), costs(arm)]));
-    for (const arm of result) expect(arm).toMatchObject({ attempts: 2, uniqueQualifiedFamilies: 1, discoveryUsd: 2,
-      experimentUsd: 2, qualifiedPerUsd: 0.5, verifiedBeneficialExperiments: 2, beneficialPerTotalUsd: 0.5,
-      engineerMinutes: 24, verdict: 'inconclusive' });
+    for (const arm of result)
+      expect(arm).toMatchObject({
+        attempts: 2,
+        uniqueQualifiedFamilies: 1,
+        discoveryUsd: 2,
+        experimentUsd: 2,
+        qualifiedPerUsd: 0.5,
+        verifiedBeneficialExperiments: 2,
+        beneficialPerTotalUsd: 0.5,
+        engineerMinutes: 24,
+        verdict: 'inconclusive',
+      });
   });
 
   it('keeps unknown, omitted, negative and empty accounting distinct from zero cost', () => {
     const row = costs('blender');
     row.phases.indexing = null;
-    expect(summarizeDreamEvaluationCosts([row])[0]).toMatchObject({ discoveryUsd: null, qualifiedPerUsd: null, beneficialPerTotalUsd: null });
-    expect(summarizeDreamEvaluationCosts([])[0]).toMatchObject({ attempts: 0, discoveryUsd: null, qualifiedPerUsd: null });
+    expect(summarizeDreamEvaluationCosts([row])[0]).toMatchObject({
+      discoveryUsd: null,
+      qualifiedPerUsd: null,
+      beneficialPerTotalUsd: null,
+    });
+    expect(summarizeDreamEvaluationCosts([])[0]).toMatchObject({
+      attempts: 0,
+      discoveryUsd: null,
+      qualifiedPerUsd: null,
+    });
     row.phases.indexing = -1;
     expect(() => summarizeDreamEvaluationCosts([row])).toThrow('Invalid');
     delete (row.phases as Partial<typeof row.phases>).indexing;
@@ -71,10 +125,23 @@ describe('frozen Dream evaluation protocol — P017', () => {
 
 describe('source-grounded benchmark validity and honest confusion denominators', () => {
   it('freezes disjoint calibration/held-out cases with every required negative control', () => {
-    expect(DREAM_BENCHMARK_LABELS.map((l) => [l.id, l.split])).toEqual(DREAM_BENCHMARK_CASES.map((c) => [c.id, c.split]));
+    expect(DREAM_BENCHMARK_LABELS.map((l) => [l.id, l.split])).toEqual(
+      DREAM_BENCHMARK_CASES.map((c) => [c.id, c.split]),
+    );
     expect(new Set(DREAM_BENCHMARK_CASES.map((c) => c.id)).size).toBe(DREAM_BENCHMARK_CASES.length);
     const classes = new Set(DREAM_BENCHMARK_LABELS.map((l) => l.class));
-    for (const name of ['positive-transfer','existing-integration','impossible-composition','lexical-only','a-only','b-only','irrelevant-c','stale-source','missing-source','absent-benefit'])
+    for (const name of [
+      'positive-transfer',
+      'existing-integration',
+      'impossible-composition',
+      'lexical-only',
+      'a-only',
+      'b-only',
+      'irrelevant-c',
+      'stale-source',
+      'missing-source',
+      'absent-benefit',
+    ])
       expect(classes.has(name), name).toBe(true);
     // The input supplied to an independent reviewer contains no answer key.
     expect(JSON.stringify(DREAM_BENCHMARK_CASES)).not.toContain('"expected":');
@@ -92,18 +159,25 @@ describe('source-grounded benchmark validity and honest confusion denominators',
     expect(evaluate('H05', 'B(A(rows,100))===A(rows,100)', { rows })).toBe(true);
     expect(evaluate('H06', 'B(A(rows),100)===B(rows,100)', { rows })).toBe(true);
     expect(evaluate('H07', 'B(A(rows),100)', { rows })).toBe(true);
-    expect(evaluate('H10', '[B(A(rows),C({dailyCapCents:100})),B(A(rows),C({dailyCapCents:120}))]', { rows })).toEqual([true, false]);
+    expect(evaluate('H10', '[B(A(rows),C({dailyCapCents:100})),B(A(rows),C({dailyCapCents:120}))]', { rows })).toEqual([
+      true,
+      false,
+    ]);
     expect(evaluate('H12', 'B(A(keys))', { keys: [' One ', 'one', 'TWO'] })).toEqual(['one', 'two']);
     expect(evaluate('H12', 'A(keys)', { keys: [' One ', 'one', 'TWO'] })).toEqual(['one', 'one', 'two']);
     expect(evaluate('H12', 'B(keys)', { keys: [' One ', 'one', 'TWO'] })).toHaveLength(3);
   });
 
   it('preserves missing and unresolved positives and every known-negative denominator', () => {
-    const report = dreamReviewerConfusion(DREAM_BENCHMARK_LABELS, [
-      { id: 'H01', verdict: 'reject', evidence: 'Deliberately overstrict control.' },
-      { id: 'H02', verdict: 'accept', evidence: 'Deliberate duplicate false accept.' },
-      { id: 'H10', verdict: 'unverified', evidence: 'Unresolved positive.' },
-    ], 'held-out');
+    const report = dreamReviewerConfusion(
+      DREAM_BENCHMARK_LABELS,
+      [
+        { id: 'H01', verdict: 'reject', evidence: 'Deliberately overstrict control.' },
+        { id: 'H02', verdict: 'accept', evidence: 'Deliberate duplicate false accept.' },
+        { id: 'H10', verdict: 'unverified', evidence: 'Unresolved positive.' },
+      ],
+      'held-out',
+    );
     expect(report.total).toBe(12);
     expect(report.missing).toBe(9);
     expect(report.falseAccept).toMatchObject({ numerator: 1, denominator: 9, value: 1 / 9 });
@@ -116,16 +190,29 @@ describe('source-grounded benchmark validity and honest confusion denominators',
   it('rejects duplicate/unknown judgments and duplicate labels rather than silently shrinking the sample', () => {
     const row = { id: 'H01', verdict: 'accept' as const, evidence: 'source' };
     expect(() => dreamReviewerConfusion(DREAM_BENCHMARK_LABELS, [row, row], 'held-out')).toThrow('duplicated');
-    expect(() => dreamReviewerConfusion(DREAM_BENCHMARK_LABELS, [{ ...row, id: 'absent' }], 'held-out')).toThrow('Unknown');
-    expect(() => dreamReviewerConfusion([...DREAM_BENCHMARK_LABELS, DREAM_BENCHMARK_LABELS[0]!], [], 'held-out')).toThrow('Duplicate');
+    expect(() => dreamReviewerConfusion(DREAM_BENCHMARK_LABELS, [{ ...row, id: 'absent' }], 'held-out')).toThrow(
+      'Unknown',
+    );
+    expect(() =>
+      dreamReviewerConfusion([...DREAM_BENCHMARK_LABELS, DREAM_BENCHMARK_LABELS[0]!], [], 'held-out'),
+    ).toThrow('Duplicate');
   });
 
   it('replays the actual independently recorded held-out judgments on the exact reviewed source bytes', () => {
-    expect(capabilityHash(readFileSync(new URL('../../test/dream-benchmark-cases.ts', import.meta.url), 'utf8'))).toBe(independentReview.sourceFileSha256);
+    expect(capabilityHash(readFileSync(new URL('../../test/dream-benchmark-cases.ts', import.meta.url), 'utf8'))).toBe(
+      independentReview.sourceFileSha256,
+    );
     expect(independentReview.sourceRef).toBe('work-item:WI-10000489#comment-200846');
     expect(independentReview.reviewer).not.toBe('su-a6afb33c-aacd-45a3-a376-3ece53264f94');
-    const report = dreamReviewerConfusion(DREAM_BENCHMARK_LABELS,
-      independentReview.judgments as Array<{ id: string; verdict: 'accept' | 'reject' | 'unverified'; evidence: string }>, 'held-out');
+    const report = dreamReviewerConfusion(
+      DREAM_BENCHMARK_LABELS,
+      independentReview.judgments as Array<{
+        id: string;
+        verdict: 'accept' | 'reject' | 'unverified';
+        evidence: string;
+      }>,
+      'held-out',
+    );
     expect(report.total).toBe(12);
     expect(report.missing).toBe(0);
     expect(report.unverified).toBe(2);

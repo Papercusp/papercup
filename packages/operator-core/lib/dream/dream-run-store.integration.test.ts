@@ -90,6 +90,33 @@ describe('migration 862 + dream run accounting (real PG)', () => {
     ).rejects.toThrow(/dream_runs_status_check/);
   });
 
+  it('persists the frozen evaluation pin and refuses a different pin on the same attempt identity', async () => {
+    const fixture = await createDreamCapabilityFixture(WS, POT);
+    try {
+      const evaluation = { protocolPin: 'a'.repeat(64), arm: 'structured-pair' as const };
+      const input = {
+        workspaceId: WS,
+        potSlug: POT,
+        mode: 'manual' as const,
+        runId: 'protocol-pg:dream:1',
+        cycleId: 'protocol-pg',
+        capability: { ...fixture.header, evaluation },
+      };
+      await beginDreamRun(db.adminSql, input);
+      const stored = await getDreamRun(db.adminSql, { workspaceId: WS, runId: input.runId });
+      expect(dreamCapabilityRun(stored!)?.evaluation).toEqual(evaluation);
+      await expect(beginDreamRun(db.adminSql, input)).resolves.toMatchObject({ created: false });
+      await expect(
+        beginDreamRun(db.adminSql, {
+          ...input,
+          capability: { ...input.capability, evaluation: { ...evaluation, protocolPin: 'b'.repeat(64) } },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('persists selection/finalization and makes replayed spend accounting exactly once', async () => {
     await registerLearningLoop(db.adminSql, dreamRegistrationInput({ workspaceId: WS, potSlug: POT }));
 
