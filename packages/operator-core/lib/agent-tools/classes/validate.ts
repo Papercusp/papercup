@@ -43,6 +43,17 @@ export const validateCapabilityProviderTool = defineTool({
       .refine((value) => Object.keys(value).length > 0, { message: 'at least one verb binding is required' })
       .describe('Logical class verb → actual MCP tool name.'),
   }),
+  result: z
+    .object({
+      ok: z.boolean(),
+      reason: z.string().optional(),
+      classRef: z.string().optional(),
+      runId: z.string().optional(),
+      conformance: z.object({}).passthrough().optional(),
+      binding: z.object({}).passthrough().optional(),
+      note: z.string().optional(),
+    })
+    .passthrough(),
   async handler(args, ctx) {
     const reply = (data: unknown) => ({ data });
     const workspaceId = ctx.workspaceId;
