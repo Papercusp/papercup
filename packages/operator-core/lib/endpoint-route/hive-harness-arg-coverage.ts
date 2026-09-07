@@ -63,6 +63,8 @@ export const HIVE_CLAMP_LITERAL_ARGS: readonly string[] = ['harness', 'harness_s
 export const HIVE_CLAMP_ARG_EXEMPTIONS: Readonly<Record<string, string>> = {
   harnessOutputText:
     "gym:signals — the harness's PRODUCED OUTPUT (verdicts, filed issues) being graded, not a selector; it names no harness to route to",
+  harnessRoot:
+    'design-phase.get_design_spec — an absolute filesystem root for reading DESIGN_SPEC.md, not a harness selector; never pass it to potHomeSlugForHarness',
   // The `*Slug` suspicion net necessarily catches every OTHER slug family. Each
   // of these names a non-harness entity, so none can move a call between hives.
   // ⚠ `slug`/`slugs` are exempt only as a NAME: on pot:* / harness:* / hive:*

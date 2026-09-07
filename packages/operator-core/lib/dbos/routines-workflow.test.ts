@@ -90,8 +90,10 @@ import {
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
   FLEET_CONTROL_ACTIONS,
+  HEAVY_ROUTINE_ACTIONS,
   ROUTINES_CRITICAL_QUEUE,
   ROUTINES_FLEET_CONTROL_QUEUE,
+  ROUTINES_HEAVY_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_QUEUE,
   TRIGGER_POLL_ACTIONS,
@@ -273,6 +275,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     // onto it is never consumed (WI-41662 added routines-triggers).
     expect(ROUTINE_FIRE_QUEUES).toEqual([
       'routines',
+      'routines-heavy',
       'routines-critical',
       'routines-fleet-control',
       'routines-loop',
@@ -292,6 +295,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       LOOP_WAKE_TARGET_ROLE,
       ...[...CRITICAL_ROUTINE_ACTIONS].map((a) => `system:${a}`),
       ...[...FLEET_CONTROL_ACTIONS].map((a) => `system:${a}`),
+      ...[...HEAVY_ROUTINE_ACTIONS].map((a) => `system:${a}`),
       ...[...TRIGGER_POLL_ACTIONS].map((a) => `system:${a}`),
       'system:green-checkpoint',
       'mug',
@@ -300,6 +304,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     for (const target of routableTargets) {
       expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine(target));
     }
+    expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
     expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug()));
   });
 

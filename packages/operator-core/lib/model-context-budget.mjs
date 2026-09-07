@@ -50,6 +50,16 @@ export const CODEX_SAFE_DEFAULT_MODEL = 'gpt-5.6-sol:xhigh';
 // Alias retained for callers that describe this as the launch default.
 export const CODEX_DEFAULT_MODEL = CODEX_SAFE_DEFAULT_MODEL;
 export const CODEX_DENIED_MODEL_IDS = Object.freeze(['gpt-5.3-codex-spark']);
+export const CODEX_MODEL_SOURCES = Object.freeze(['explicit', 'inherited', 'configured-default']);
+
+/** Stable policy error consumed by launch/request boundaries. */
+export class CodexModelPolicyError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'CodexModelPolicyError';
+    this.code = code;
+  }
+}
 
 /** True when a model spec resolves to the retired/forbidden Spark model. */
 export function isCodexModelDenied(model) {
@@ -58,29 +68,53 @@ export function isCodexModelDenied(model) {
 }
 
 /**
- * Resolve a managed Codex model to a safe explicit id, or throw on the deny
- * list.  Empty/omitted input is intentionally resolved here (rather than at a
- * caller's CLI default) so a fresh CODEX_HOME cannot fall through models_cache.
- * Reasoning suffixes are preserved for callers that split them into config.
- * @param {string | null | undefined} [model] optional model spec; omission uses
- * the managed safe default.
+ * Resolve a supplied managed Codex model to a safe explicit id. Empty input is
+ * a policy error: callers that deliberately choose the configured default must
+ * say so through resolveCodexModelSelection instead of disguising absence as a
+ * choice. Reasoning suffixes are preserved for callers that split them into
+ * config.
  */
 export function resolveCodexModel(model) {
   const raw = String(model ?? '').trim();
-  const resolved = raw
-    ? (() => {
-        const slash = raw.indexOf('/');
-        const bare = slash > 0 ? raw.slice(slash + 1) : raw;
-        return normalizeCodexCliModel(bare);
-      })()
-    : CODEX_SAFE_DEFAULT_MODEL;
+  if (!raw) {
+    throw new CodexModelPolicyError(
+      'missing_model',
+      `Codex model is required. Supply an explicit/inherited model, or deliberately select the configured default '${CODEX_SAFE_DEFAULT_MODEL}'.`,
+    );
+  }
+  const slash = raw.indexOf('/');
+  const bare = slash > 0 ? raw.slice(slash + 1) : raw;
+  const resolved = normalizeCodexCliModel(bare);
   if (isCodexModelDenied(resolved)) {
-    throw new Error(
+    throw new CodexModelPolicyError(
+      'denied_model',
       `Codex model '${raw || resolved}' is denied by Papercusp policy (gpt-5.3-codex-spark is retired). ` +
         `Use the approved default '${CODEX_SAFE_DEFAULT_MODEL}' or another supported Codex model.`,
     );
   }
   return resolved;
+}
+
+/**
+ * Resolve a model together with the authority that selected it.  The
+ * configured-default branch is the ONLY branch allowed to turn absence into a
+ * model, making that policy choice visible to launch ledgers and callers.
+ */
+export function resolveCodexModelSelection(model, { source = 'explicit' } = {}) {
+  if (!CODEX_MODEL_SOURCES.includes(source)) {
+    throw new CodexModelPolicyError('invalid_model_source', `Unknown Codex model source '${String(source)}'.`);
+  }
+  const raw = String(model ?? '').trim();
+  if (source === 'configured-default') {
+    if (raw && resolveCodexModel(raw) !== CODEX_SAFE_DEFAULT_MODEL) {
+      throw new CodexModelPolicyError(
+        'invalid_model_source',
+        `Configured-default selection must resolve to '${CODEX_SAFE_DEFAULT_MODEL}', not '${raw}'.`,
+      );
+    }
+    return { model: CODEX_SAFE_DEFAULT_MODEL, source };
+  }
+  return { model: resolveCodexModel(raw), source };
 }
 
 /** Alias with an assertion-oriented name for request-boundary callers. */

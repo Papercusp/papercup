@@ -6,10 +6,12 @@ import {
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
+  ROUTINES_HEAVY_QUEUE,
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
   FLEET_CONTROL_ACTIONS,
   TRIGGER_POLL_ACTIONS,
+  HEAVY_ROUTINE_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
@@ -108,6 +110,24 @@ describe('queueForRoutine — operator-home release-finalizer lane (EI-214466371
 
   it('keeps an unscoped green-checkpoint on the shared lane (fail closed)', () => {
     expect(queueForRoutine('system:green-checkpoint')).toBe(ROUTINES_QUEUE);
+  });
+});
+
+describe('queueForRoutine — bounded heavy/background lane (EI-22469496587311452)', () => {
+  it('routes the exact gitnexus reindex action to the serial heavy lane', () => {
+    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex']);
+    expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
+  });
+
+  it('keeps near-miss and non-system targets on the shared queue (exact match)', () => {
+    expect(queueForRoutine('system:gitnexus-reindex-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-gitnexus-reindex')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('gitnexus-reindex')).toBe(ROUTINES_QUEUE);
+  });
+
+  it('does not widen the critical pool-pressure floor', () => {
+    expect(shouldFireUnderPoolShed('system:gitnexus-reindex')).toBe(false);
+    expect(CRITICAL_ROUTINE_ACTIONS.has('gitnexus-reindex')).toBe(false);
   });
 });
 

@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-07T05:15:55.630Z",
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "Jk8vf6oxYwqHmspJA7Mim",
+    "release": "Jk8vf6oxYwqHmspJA7Mim-20260907051125119-3083707-5c175f77",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T05:11:25.119Z",
+    "sourceRootDigest": "0c82479b990e3575c577a4179613d477d6caf6ba9fcce3ba4418e4e660c5cbe1"
+  },
+  "process": [
+    {
+      "theme": "light",
+      "plane": "live",
+      "openedAt": "2026-09-07T05:15:56.553Z",
+      "initialText": "Loading Process manager…",
+      "settledAt": "2026-09-07T05:16:09.859Z",
+      "observed": {
+        "headings": [
+          "MEMORY\n19.6 GB\nCPU\n…",
+          "ENROLLED\n124\nSCANNED\n728\nSTRANDED\n0\nUNACCOUNTED\n3"
+        ],
+        "status": "Ledger + kernel scan agree\nOpen full Task Manager →",
+        "degraded": null,
+        "units": "Enrolled counts tasks; Scanned counts processes. One task holds many processes — these are different units, not a coverage ratio.",
+        "loading": false,
+        "width": 758,
+        "contained": true,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "theme": "light"
+      },
+      "capturePath": "preference-fixed-process-settled-light.png",
+      "captureSha256": "0c4508af6615e2df5dfd0e25c98caa5f8eceaee0949b4af91cdfdaf2cfff489b",
+      "result": "settled"
+    },
+    {
+      "theme": "dark",
+      "plane": "live",
+      "openedAt": "2026-09-07T05:16:10.141Z",
+      "initialText": "Loading Process manager…",
+      "settledAt": "2026-09-07T05:16:16.785Z",
+      "observed": {
+        "headings": [
+          "MEMORY\n19.6 GB\nCPU\n…",
+          "ENROLLED\n124\nSCANNED\n726\nSTRANDED\n0\nUNACCOUNTED\n3"
+        ],
+        "status": "Ledger + kernel scan agree\nOpen full Task Manager →",
+        "degraded": null,
+        "units": "Enrolled counts tasks; Scanned counts processes. One task holds many processes — these are different units, not a coverage ratio.",
+        "loading": false,
+        "width": 758,
+        "contained": true,
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "theme": "dark"
+      },
+      "capturePath": "preference-fixed-process-settled-dark.png",
+      "captureSha256": "c571f878d57edbbb0c9b6d19f92ebdca9599ef93d107e4e3e1c7b5972bb08de4",
+      "result": "settled"
+    }
+  ],
+  "reads": [
+    {
+      "at": "2026-09-07T05:15:59.762Z",
+      "path": "/api/operator-sync/sse",
+      "status": 200,
+      "method": "GET",
+      "inventory": null,
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T05:16:09.609Z",
+      "path": "/api/operator-sync/rest-query",
+      "status": 200,
+      "method": "GET",
+      "inventory": {
+        "ledgerTotal": 124,
+        "rows": 124,
+        "scanned": 728,
+        "degraded": false,
+        "degradedReason": null,
+        "scan": {
+          "ownedRootExists": true,
+          "ownedTruncated": false,
+          "foreignTruncated": false,
+          "processes": 728,
+          "userManagerRoot": "/user.slice/user-1000.slice/user@1000.service"
+        },
+        "timestamp": null
+      },
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T05:16:09.988Z",
+      "path": "/api/operator-sync/sse",
+      "status": 200,
+      "method": "GET",
+      "inventory": null,
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T05:16:15.235Z",
+      "path": "/api/operator-sync/sse",
+      "status": 200,
+      "method": "GET",
+      "inventory": null,
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T05:16:16.641Z",
+      "path": "/api/operator-sync/rest-query",
+      "status": 200,
+      "method": "GET",
+      "inventory": {
+        "ledgerTotal": 124,
+        "rows": 124,
+        "scanned": 726,
+        "degraded": false,
+        "degradedReason": null,
+        "scan": {
+          "ownedRootExists": true,
+          "ownedTruncated": false,
+          "foreignTruncated": false,
+          "processes": 726,
+          "userManagerRoot": "/user.slice/user-1000.slice/user@1000.service"
+        },
+        "timestamp": null
+      },
+      "inventoryRequest": false
+    },
+    {
+      "at": "2026-09-07T05:16:16.899Z",
+      "path": "/api/operator-sync/sse",
+      "status": 200,
+      "method": "GET",
+      "inventory": null,
+      "inventoryRequest": false
+    }
+  ],
+  "phone": {
+    "result": "unexercised",
+    "reason": "The live idle and scheduled views have no disabled control. Source disables mute while a call connects, hangup while ending, incoming/screening actions while writes are pending, and Create invite while saving. Acceptance forbids calling, sending, launching and other decision actions. No such action or injected phone state was used.",
+    "source": "phone-app/packages/ui/src/index.tsx",
+    "sourceSha256": "1af135da8facdfbf439f3505ebf0daabc5b71b33827dc4f22f1a698713703513"
+  },
+  "initial": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "light",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "final": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "light",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "preferencesRestored": true,
+  "releaseStable": true,
+  "completedAt": "2026-09-07T05:16:17.220Z"
+}

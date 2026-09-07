@@ -48,8 +48,16 @@ export const DEFAULT_ARCHIVE_FLOOR = Math.max(DEFAULT_SIM_FLOOR, 0.8);
  * sweep and may recalibrate). */
 export const PROCEED_EXPIRY_MS = 4 * 3_600_000; // 4h
 export const HARD_BLOCKED_EXPIRY_MS = 30 * 60_000; // 30m
-/** sessionStates a v1 consult never wakes (D-008 §5 liveness gate). */
+/** Definitively dead session states used by retrieval/revival paths. */
 export const DEAD_RESPONDER_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
+/** Liveness readings that cannot safely be selected for a wake. `unknown`
+ * means the oracle had no presence signal, not that the owner is dead; keep
+ * it separate from DEAD_RESPONDER_STATES so the revival path never tries to
+ * respawn an unresolvable identity. */
+export const UNSELECTABLE_RESPONDER_STATES: ReadonlySet<string> = new Set([
+  ...DEAD_RESPONDER_STATES,
+  'unknown',
+]);
 /** WI-39852 revival cap [owner 2026-08-18]: at most ONE carry-respawn per
  * consult — revival is a cost lever, not a fleet-resurrection loop. Enforced
  * by revivalBudgetSpent (EI-20864690354207496): the budget is READ from the
@@ -982,7 +990,7 @@ export async function getFeedbackCore(
     // the minimum-fill slot ahead of a live cascade candidate. Fresh parked
     // responders remain selectable.
     isSelectable: (c) =>
-      !DEAD_RESPONDER_STATES.has(c.liveness) && !(c.liveness === 'parked' && c.warmIdle === true),
+      !UNSELECTABLE_RESPONDER_STATES.has(c.liveness) && !(c.liveness === 'parked' && c.warmIdle === true),
   });
   route.snapshot.selection = selectionSnapshot(minResponders, maxResponders, selected);
   const chosenSel = selected[0] ?? null;

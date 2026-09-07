@@ -31,7 +31,7 @@ export const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. Two distinct response shapes: on evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock } where rows is legitimately [] when no clause is eligible (no lifecycleStatus active/accepted match, or the specIds/workItemIds/planItemIds filter matched nothing). Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict. Explicit selections never succeed vacuously: when specIds/workItemIds/planItemIds are supplied but no eligible clause matches, the reply is { ok:false, error:"selection_empty", ... } rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is { ok:false, error, count, limit, remedy } with NO rows field at all; otherwise it is { ok:true, rows, count, verdicts, wouldBlock }. Always check ok and rows.length before indexing rows[0] — do not assume rows[0].scorecardDraft exists.',
   guidance: {
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
@@ -68,6 +68,30 @@ export default defineTool({
         },
       };
     }
+    const explicitSelection =
+      args.specIds !== undefined || args.workItemIds !== undefined || args.planItemIds !== undefined;
+    if (args.workItemIds !== undefined && allEvidence.length === 0) {
+      return {
+        data: {
+          ok: false,
+          error: 'selection_empty',
+          slug: args.slug,
+          harnessSlug,
+          classRef: args.classRef,
+          count: 0,
+          selectedEvidenceCount: 0,
+          matchedClauseCount: 0,
+          eligibleClauseCount: 0,
+          selection: {
+            specIds: args.specIds ?? null,
+            workItemIds: args.workItemIds,
+            planItemIds: args.planItemIds ?? null,
+          },
+          remedy:
+            'No exact evidence edge exists for the selected work item(s); pass specIds to evaluate intended uncovered clauses.',
+        },
+      };
+    }
     const evidenceSpecIds = new Set(allEvidence.map((row) => row.specId));
     const requestedSpecIds = args.specIds ?? (args.workItemIds ? [...evidenceSpecIds] : undefined);
     const clauses = await listSpecClauses({
@@ -79,6 +103,35 @@ export default defineTool({
     const eligible = clauses.filter(
       (clause) => args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted',
     );
+    if (explicitSelection && eligible.length === 0) {
+      return {
+        data: {
+          ok: false,
+          error: 'selection_empty',
+          slug: args.slug,
+          harnessSlug,
+          classRef: args.classRef,
+          count: 0,
+          selectedEvidenceCount: allEvidence.length,
+          matchedClauseCount: clauses.length,
+          eligibleClauseCount: 0,
+          selection: {
+            specIds: args.specIds ?? null,
+            workItemIds: args.workItemIds ?? null,
+            planItemIds: args.planItemIds ?? null,
+          },
+          excludedClauses: clauses.map((clause) => ({
+            specId: clause.specId,
+            revision: clause.revision,
+            lifecycleStatus: clause.lifecycleStatus,
+          })),
+          remedy:
+            clauses.length > 0 && args.includeDraft !== true
+              ? 'The selection matched only draft clauses; pass includeDraft:true to evaluate draft clauses or select active/accepted clauses.'
+              : 'Verify the exact slug and specIds/workItemIds/planItemIds selection; no eligible clause matched.',
+        },
+      };
+    }
     const now = args.now ? new Date(args.now) : new Date();
     const rows = eligible.map((clause) =>
       evaluateSpecTestAdequacy({ clause, evidence: allEvidence, classRef: args.classRef, current: args.current, now }),

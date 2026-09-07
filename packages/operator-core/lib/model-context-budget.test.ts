@@ -15,21 +15,44 @@ const {
   normalizeCodexCliModel,
   readLaunchContextText,
   resolveCodexModel,
+  resolveCodexModelSelection,
   resolveModelContextWindow,
 } = modelContextBudget;
 
 describe('managed Codex model policy', () => {
-  it('resolves omitted models to Sol at xhigh', () => {
-    expect(resolveCodexModel()).toBe(CODEX_SAFE_DEFAULT_MODEL);
-    expect(resolveCodexModel('')).toBe(CODEX_SAFE_DEFAULT_MODEL);
-    expect(resolveCodexModel(null)).toBe(CODEX_SAFE_DEFAULT_MODEL);
-    expect(resolveCodexModel('  ')).toBe(CODEX_SAFE_DEFAULT_MODEL);
+  it('rejects unresolved model input with a stable missing_model code', () => {
+    for (const input of [undefined, null, '', '  ']) {
+      try {
+        resolveCodexModel(input);
+        throw new Error(`expected ${JSON.stringify(input)} to be rejected`);
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'missing_model' });
+      }
+    }
+  });
+
+  it('resolves Sol xhigh only through an explicit configured-default selection', () => {
     expect(CODEX_SAFE_DEFAULT_MODEL).toBe('gpt-5.6-sol:xhigh');
-    expect(codexModelConfigToml(undefined)).toEqual([
+    expect(resolveCodexModelSelection(undefined, { source: 'configured-default' })).toEqual({
+      model: 'gpt-5.6-sol:xhigh',
+      source: 'configured-default',
+    });
+    expect(codexModelConfigToml(CODEX_SAFE_DEFAULT_MODEL)).toEqual([
       'model = "gpt-5.6-sol"',
       'model_reasoning_effort = "xhigh"',
       '',
     ]);
+  });
+
+  it('preserves explicit and inherited source provenance', () => {
+    expect(resolveCodexModelSelection('terra:high', { source: 'explicit' })).toEqual({
+      model: 'gpt-5.6-terra:high',
+      source: 'explicit',
+    });
+    expect(resolveCodexModelSelection('gpt-5.5:xhigh', { source: 'inherited' })).toEqual({
+      model: 'gpt-5.5:xhigh',
+      source: 'inherited',
+    });
   });
 
   it('denies Spark across provider prefixes, effort suffixes, and case', () => {

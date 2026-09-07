@@ -231,6 +231,25 @@ describe('runFlushGate — cold-successor-no-progress wiring', () => {
     expect(countFn).toHaveBeenCalledWith('su-cold-compaction', NOW - 10 * 60_000, NOW);
   });
 
+  it('does not self-refuse compaction when the first next action is "Compact now"', async () => {
+    const countFn = vi.fn(async () => 0);
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      ownerId: 'su-cold-compact-now',
+      workspaceId: '*',
+      sessionId: 'su-cold-compact-now',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: coldLoopBrief({
+        carryNote: '## Next action\nCompact now.',
+      }),
+      nowMs: NOW,
+      countAgentToolCallsFn: countFn,
+    });
+    expect(out.verdict).toBe('clear');
+    expect(out.tripwires).toEqual([]);
+    expect(countFn).toHaveBeenCalledWith('su-cold-compact-now', NOW - 10 * 60_000, NOW);
+  });
+
   it('clears when the seam reports real progress (>0 tool calls)', async () => {
     const countFn = vi.fn(async () => 2);
     const out = await runFlushGate({

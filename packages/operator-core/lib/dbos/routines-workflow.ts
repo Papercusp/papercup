@@ -31,6 +31,7 @@ import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
   ROUTINES_FLEET_CONTROL_QUEUE,
+  ROUTINES_HEAVY_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_RELEASE_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
@@ -89,6 +90,13 @@ const routinesQueue = idempotentWorkflowQueue(
   ROUTINES_QUEUE,
   () => new WorkflowQueue(ROUTINES_QUEUE, { concurrency: queueConcurrency(4) }),
 );
+// EI-22469496587311452: gitnexus reindex shells out to a CPU/memory-heavy analyze
+// process with a measured multi-hour budget. Keep it isolated from short housekeeping
+// fires and serialize it so overlapping index writers cannot compete for the host.
+const routinesHeavyQueue = idempotentWorkflowQueue(
+  ROUTINES_HEAVY_QUEUE,
+  () => new WorkflowQueue(ROUTINES_HEAVY_QUEUE, { concurrency: queueConcurrency(1) }),
+);
 // Protected lane for critical QUICK routines (git-sync) — a saturated shared `routines` queue (long
 // routines holding every slot) must never starve fleet-wide persistence (the 2026-06-23 7h commit-freeze).
 // Low concurrency: git-sync fires are quick AND serializing them avoids git-index contention across the
@@ -134,6 +142,7 @@ const routinesReleaseQueue = idempotentWorkflowQueue(
 );
 export const ROUTINE_FIRE_QUEUES = [
   routinesQueue.name,
+  routinesHeavyQueue.name,
   routinesCriticalQueue.name,
   routinesFleetControlQueue.name,
   routinesLoopQueue.name,

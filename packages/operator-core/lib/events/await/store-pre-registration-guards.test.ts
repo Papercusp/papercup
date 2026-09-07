@@ -12,7 +12,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: h.rawSql }),
 }));
 
-const { cancelAwaitsForSubscribersOnKeys, findAnnouncementsForKey } = await import('./store');
+const { cancelAwaitsForSubscribersOnKeys, findAnnouncementsForKey, registerAwait } = await import('./store');
 
 const boundedOptions = {
   acquireTimeoutMs: 5_000,
@@ -26,7 +26,21 @@ beforeEach(() => {
   h.tx.array.mockImplementation((values: unknown[]) => values);
   h.tx.mockImplementation(async (strings: TemplateStringsArray) => {
     const query = strings.join('?');
-    return query.includes('SELECT *') ? [] : [{ id: 1 }];
+    if (query.includes('causal_generation')) {
+      return [{ causal_generation: 7, fired_at: null, fired_reason: null, cancelled_at: null, superseded_at: null }];
+    }
+    return query.includes('SELECT *')
+      ? []
+      : [
+          {
+            id: 1,
+            workspace_id: 'ws-test',
+            subscriber_id: 'sub-test',
+            event_key: 'gate:test',
+            policy: 'wake',
+            created_at: '2026-01-01T00:00:00.000Z',
+          },
+        ];
   });
 });
 
@@ -52,6 +66,45 @@ describe('events:await pre-registration store guards', () => {
     // which is what `h.rawSql` below catches. Read the two together — a drop back to
     // 3 here means the settle left the transaction, not that it stopped running.
     expect(h.tx).toHaveBeenCalledTimes(4);
+    expect(h.rawSql).not.toHaveBeenCalled();
+  });
+
+  it('bounds supersede-and-insert registration', async () => {
+    await expect(
+      registerAwait({
+        subscriberId: 'sub-test',
+        eventKey: 'gate:test',
+        note: 'surface: current',
+        supersedePending: { includeNotePrefix: 'surface: ' },
+      }),
+    ).resolves.toMatchObject({ id: 1, supersededPendingCount: 1 });
+
+    expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
+    expect(h.rawSql).not.toHaveBeenCalled();
+  });
+
+  it('bounds generation-pinned registration', async () => {
+    await expect(
+      registerAwait({ subscriberId: 'sub-test', eventKey: 'gate:test', expectedGeneration: 7 }),
+    ).resolves.toMatchObject({ id: 1 });
+
+    expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
+    expect(h.rawSql).not.toHaveBeenCalled();
+  });
+
+  it('bounds ordinary exact one-shot registration', async () => {
+    await expect(registerAwait({ subscriberId: 'sub-test', eventKey: 'gate:test' })).resolves.toMatchObject({ id: 1 });
+
+    expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
+    expect(h.rawSql).not.toHaveBeenCalled();
+  });
+
+  it('bounds the legacy standing-watch insert instead of using raw SQL', async () => {
+    await expect(
+      registerAwait({ subscriberId: 'sub-test', eventKey: 'gate:test', once: false }),
+    ).resolves.toMatchObject({ id: 1 });
+
+    expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
     expect(h.rawSql).not.toHaveBeenCalled();
   });
 });

@@ -44,7 +44,10 @@ export function inspectIdentitySource(raw: Record<string, unknown>, opts: Identi
       sourcePath: opts.sourcePath,
       // Respect the operator's configured installed root as well as the
       // loader's built-in trust classification (including test/temp homes).
-      lint: { requireAttestation: (layer) => layer.trust === 'installed' || inInstalledTier(layer.sourcePath) },
+      lint: {
+        requireAttestation: (layer) => layer.trust === 'installed' ||
+          ('sourcePath' in layer && typeof layer.sourcePath === 'string' && inInstalledTier(layer.sourcePath)),
+      },
     });
     const validation = result.validation;
     const runnable = RunnableBlueprintSchema.safeParse(result.merged).success;

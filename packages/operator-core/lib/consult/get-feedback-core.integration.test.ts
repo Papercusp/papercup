@@ -293,6 +293,36 @@ describe('getFeedbackCore — routed', () => {
     expect(r.responder?.ownerId).toBe('agent-fresh-parked');
     expect(r.responder_via).toBe('floor');
   });
+
+  it('liveness gate: an unknown/no-presence candidate is never persisted or woken', async () => {
+    const unknownTop = cand('agent-no-presence', { score: 0.9, liveness: 'unknown' });
+    const liveFallback = cand('agent-live-fallback-3', {
+      score: 0.2,
+      liveness: 'live',
+      signals: { similarity: 0.2, recency: 0.2, verification: 0, authorship: 0 },
+    });
+    const { deps, opened, reached } = makeDeps(
+      routeOf([unknownTop], { all: [unknownTop, liveFallback] }),
+    );
+
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+
+    expect(r.responder?.ownerId).toBe('agent-live-fallback-3');
+    expect(r.responder_via).toBe('minimum');
+    expect(opened[0].direct_to).toEqual(['agent-live-fallback-3']);
+    expect(reached).toHaveLength(1);
+    expect(reached[0].responder).toBe('agent-live-fallback-3');
+
+    const row = await stateRow(r.conversation_id);
+    expect(row.responder_id).toBe('agent-live-fallback-3');
+    const selection = (row.routing as RoutingSnapshot).selection;
+    expect(selection?.selected[0]).toMatchObject({
+      ownerId: 'agent-live-fallback-3',
+      via: 'minimum',
+      liveness: 'live',
+    });
+    expect(selection?.selected.map((entry) => entry.ownerId)).not.toContain('agent-no-presence');
+  });
 });
 
 describe('getFeedbackCore — honest no_qualified_responder', () => {

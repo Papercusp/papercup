@@ -53,9 +53,35 @@ export const POT_CONTROL_DEFAULTS = {
 // Sync cache so placementConfig() (sync, hot-ish per-sweep) can overlay the override without awaiting.
 let cached: PotControlPolicy = {};
 
+// The policy is written through a control-plane tool and read by every operator
+// process. The writer updates its own cache synchronously, but the other
+// processes need the existing sync_invalidate bus to learn about the change
+// before the 60s safety refresh. Keep this subscription lazy so importing this
+// low-level config module stays side-effect free until a reader actually needs
+// the cache.
+let workScopeInvalidationSubscription: Promise<void> | null = null;
+
+function armWorkScopeInvalidationSubscription(): void {
+  if (workScopeInvalidationSubscription) return;
+  workScopeInvalidationSubscription = import('./sync-sse')
+    .then(async ({ subscribe }) => {
+      await subscribe(
+        () => {
+          void refreshPotControlPolicy();
+        },
+        { filter: (event) => event.name === 'workScope.policy' },
+      );
+    })
+    .catch(() => {
+      // The timer remains the bounded fallback if the LISTEN bus is not ready.
+      workScopeInvalidationSubscription = null;
+    });
+}
+
 /** The current override (sync) — overlaid by placementConfig() over its env defaults. */
 export function placementOverride(): PotControlPolicy {
   armPotControlPolicyRefresh();
+  armWorkScopeInvalidationSubscription();
   return cached;
 }
 

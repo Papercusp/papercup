@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { chromium } from 'playwright';
 
 const out = path.dirname(new URL(import.meta.url).pathname);
+const runTag = process.env.PORTAL_ACCEPTANCE_RUN_TAG ?? '';
 const releaseFile = '/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/current/.papercusp-release.json';
 const release = JSON.parse(fs.readFileSync(releaseFile, 'utf8'));
 const result = { schemaVersion: 1, startedAt: new Date().toISOString(), release, process: [], reads: [], phone: {
@@ -16,7 +17,7 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const pendingReads = new Set();
 let original;
-const save = () => fs.writeFileSync(path.join(out, 'state-proofs.json'), JSON.stringify(result, null, 2) + '\n');
+const save = () => fs.writeFileSync(path.join(out, runTag + 'state-proofs.json'), JSON.stringify(result, null, 2) + '\n');
 const extract = (body, depth = 0) => {
   if (!body || typeof body !== 'object' || depth > 6) return null;
   if (body.summary && Array.isArray(body.rows)) return {
@@ -69,11 +70,11 @@ try {
           width: r.width, contained: r.left >= -1 && r.right <= innerWidth + 1,
           viewport: { width: innerWidth, height: innerHeight }, theme: document.documentElement.dataset.theme };
       });
-      const file = `process-settled-${theme}.png`;
+      const file = `${runTag}process-settled-${theme}.png`;
       await page.screenshot({ path: path.join(out, file) });
       row.capturePath = file;
       row.captureSha256 = crypto.createHash('sha256').update(fs.readFileSync(path.join(out, file))).digest('hex');
-      row.result = row.observed.contained && !row.observed.loading ? 'settled' : 'fail';
+      row.result = row.observed.contained && !row.observed.loading && row.observed.theme === theme ? 'settled' : 'fail';
     } catch (error) {
       row.result = 'unknown'; row.error = error.message;
       row.finalText = await page.getByRole('dialog', { name: 'Process manager', exact: true }).innerText().catch(() => 'dialog absent');

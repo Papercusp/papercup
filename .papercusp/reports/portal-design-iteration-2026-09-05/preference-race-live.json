@@ -1,0 +1,98 @@
+{
+  "startedAt": "2026-09-07T05:17:43.767Z",
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "Jk8vf6oxYwqHmspJA7Mim",
+    "release": "Jk8vf6oxYwqHmspJA7Mim-20260907051125119-3083707-5c175f77",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T05:11:25.119Z",
+    "sourceRootDigest": "0c82479b990e3575c577a4179613d477d6caf6ba9fcce3ba4418e4e660c5cbe1"
+  },
+  "plane": "browser fixture: only a real apps response is delayed; all response bodies unchanged",
+  "cases": [
+    {
+      "target": "light",
+      "startingTheme": "dark",
+      "snapshotTheme": "dark",
+      "before": "light",
+      "after": {
+        "theme": "light",
+        "stored": "light",
+        "events": [
+          {
+            "at": 1788758265284,
+            "theme": "light"
+          }
+        ]
+      },
+      "result": "pass"
+    },
+    {
+      "target": "dark",
+      "startingTheme": "light",
+      "snapshotTheme": "light",
+      "before": "dark",
+      "after": {
+        "theme": "dark",
+        "stored": "dark",
+        "events": [
+          {
+            "at": 1788758266892,
+            "theme": "dark"
+          }
+        ]
+      },
+      "result": "pass"
+    }
+  ],
+  "previousAttempts": [
+    {
+      "startedAt": "2026-09-07T05:15:25.509Z",
+      "completedAt": "2026-09-07T05:15:57.199Z",
+      "cases": [],
+      "preferencesRestored": true,
+      "note": "Initial saved probe waited for retired .rail-app; it recorded no verdict."
+    }
+  ],
+  "initial": {
+    "theme": "light",
+    "voiceMuted": false,
+    "homeApp": "home",
+    "pinnedApps": [
+      "calendar",
+      "phone",
+      "desktops",
+      "plans",
+      "inbox",
+      "workspaces",
+      "overview",
+      "hud",
+      "work",
+      "learning",
+      "workflows"
+    ],
+    "dismissed": []
+  },
+  "final": {
+    "theme": "light",
+    "voiceMuted": false,
+    "homeApp": "home",
+    "pinnedApps": [
+      "calendar",
+      "phone",
+      "desktops",
+      "plans",
+      "inbox",
+      "workspaces",
+      "overview",
+      "hud",
+      "work",
+      "learning",
+      "workflows"
+    ],
+    "dismissed": []
+  },
+  "preferencesRestored": true,
+  "releaseStable": true,
+  "completedAt": "2026-09-07T05:17:48.999Z"
+}

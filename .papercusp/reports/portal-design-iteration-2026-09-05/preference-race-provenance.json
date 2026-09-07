@@ -1,0 +1,86 @@
+{
+  "measuredAt": "2026-09-07T05:29:05.478963+00:00",
+  "portalRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+  "portalHead": "88afe6a7cfff43b3e0517583bc0293fcc478cb80",
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "Jk8vf6oxYwqHmspJA7Mim",
+    "release": "Jk8vf6oxYwqHmspJA7Mim-20260907051125119-3083707-5c175f77",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T05:11:25.119Z",
+    "sourceRootDigest": "0c82479b990e3575c577a4179613d477d6caf6ba9fcce3ba4418e4e660c5cbe1"
+  },
+  "immutableEntry": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/Jk8vf6oxYwqHmspJA7Mim-20260907051125119-3083707-5c175f77",
+  "computedRootDigest": "2ce4324ec6f59bf5e05a7d4164d4473aa0b2f604d94419ca7072b32c3fe6241c",
+  "rootDigestMatches": false,
+  "sources": [
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
+      "sha256": "c3868dc72b2021ed9df3b6e48dd2f5a85dff3b6e0c1da9fcb7f26703dad6abdc",
+      "matchesHead": false
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell-model.ts",
+      "sha256": "8d43b0273fec155baa8564ed35d2054ec23a9bdab58fc745705fc8bf22141ba8",
+      "matchesHead": false
+    },
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/tests/preference-refresh.test.ts",
+      "sha256": "a5dd21ae085d3953e2c9040ab01ee779ed1bef4d386039d73e3311873a918654",
+      "matchesHead": false
+    }
+  ],
+  "allChangedSourceCommitted": false,
+  "previousProvenance": "acceptance-corrections-2026-09-07/provenance.json",
+  "changedPriorAdoptedSources": [
+    {
+      "file": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
+      "priorSha256": "7e46466e29927da4b6849068c26915baf00fb9e0209224870bfc907515860da8",
+      "currentSha256": "c3868dc72b2021ed9df3b6e48dd2f5a85dff3b6e0c1da9fcb7f26703dad6abdc"
+    }
+  ],
+  "proofFiles": [
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/preference-race-build.log",
+      "sha256": "b6caba8e882a423acc206b97adbf99bcc64421b312bb808c315b5d2fda9e4ae2"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/preference-race-handoff.log",
+      "sha256": "28bed660da279a840f4b439a778878630c4bdae0f6a10299b1ce199e4b68d14c"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/preference-race-live.json",
+      "sha256": "b5a162c849dd9f7d6d3591fb6ac35aba7ba1892a3d8df310da1e14afaf554e84"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/preference-race-interactions.log",
+      "sha256": "24803f8db54106ffb12daa34a6e86f97c2c071cdfc0ab97fcbe51b67bacf73b3"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/preference-fixed-results.json",
+      "sha256": "95cc565da525de044fd77902b2485377d08e31ac11fc3973c17d22f652ce15c2"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/preference-fixed-state-proofs.json",
+      "sha256": "07ff8fba8b2051b3b213d95cc4b739750e103b44828b49e5f8bdb950cd69b5ac"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/preference-fixed-process-settled-light.png",
+      "sha256": "0c4508af6615e2df5dfd0e25c98caa5f8eceaee0949b4af91cdfdaf2cfff489b"
+    },
+    {
+      "file": ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/preference-fixed-process-settled-dark.png",
+      "sha256": "c571f878d57edbbb0c9b6d19f92ebdca9599ef93d107e4e3e1c7b5972bb08de4"
+    }
+  ],
+  "readiness": [
+    {
+      "url": "http://127.0.0.1:3801/",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:3081/",
+      "status": 200
+    }
+  ]
+}

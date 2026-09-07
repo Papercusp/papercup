@@ -162,7 +162,7 @@ export function armedLoopNeedsCarryNote(
 export function carryNoteStartsWithSelfCompaction(next: string): boolean {
   const action = next.trim().replace(/^[-*]\s+/, '');
   if (!action || /^(?:do not|don't|never|avoid)\b/i.test(action)) return false;
-  return /^(?:(?:call|invoke|request|queue|perform|run|trigger)\s+)?(?:session:request-compaction|carry[- ]respawn|self[- ]compact)\b/i.test(
+  return /^(?:(?:call|invoke|request|queue|perform|run|trigger)\s+)?(?:session:request-compaction|carry[- ]respawn|self[- ]compact|compact\s+now)\b/i.test(
     action,
   );
 }

@@ -7,6 +7,7 @@ import {
   decideFlushGate,
   renderFlushRefusal,
   armedLoopNeedsCarryNote,
+  carryNoteStartsWithSelfCompaction,
 } from './enforcement-gate';
 
 const NOW = 1_800_000_000_000;
@@ -174,6 +175,48 @@ describe('detectFlushTripwires', () => {
     expect(t).toEqual([]);
   });
 
+  it('does NOT self-refuse compaction when the first next action is "Compact now"', () => {
+    const t = detectFlushTripwires(
+      brief({
+        loop: {
+          harness: 'papercusp',
+          active: true,
+          intervalSec: 60,
+          carry: 'cold',
+          goal: null,
+          carryNote: '## Next action\nCompact now.',
+          carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+        },
+      }),
+      NOW,
+      0,
+      'compaction',
+    );
+    expect(t).toEqual([]);
+  });
+
+  it('keeps "Compact now" as a required action on non-compaction boundaries', () => {
+    const t = detectFlushTripwires(
+      brief({
+        loop: {
+          harness: 'papercusp',
+          active: true,
+          intervalSec: 60,
+          carry: 'cold',
+          goal: null,
+          carryNote: '## Next action\nCompact now.',
+          carryNoteUpdatedAtMs: NOW - 10 * 60_000,
+        },
+      }),
+      NOW,
+      0,
+      'handoff',
+    );
+    expect(t).toEqual([
+      expect.objectContaining({ kind: 'cold-successor-no-progress', subject: 'papercusp' }),
+    ]);
+  });
+
   it('does NOT fire cold-successor-no-progress while a deliberate event await is live', () => {
     const loopBrief = coldLoopWithNote();
     const t = detectFlushTripwires(
@@ -185,6 +228,23 @@ describe('detectFlushTripwires', () => {
       0,
     );
     expect(t).toEqual([]);
+  });
+});
+
+describe('carryNoteStartsWithSelfCompaction', () => {
+  it.each(['Compact now', 'self-compact now', 'call session:request-compaction'])(
+    'recognizes %j as a self-compaction action',
+    (next) => {
+      expect(carryNoteStartsWithSelfCompaction(next)).toBe(true);
+    },
+  );
+
+  it('does not treat an unrelated compact action as self-compaction', () => {
+    expect(carryNoteStartsWithSelfCompaction('compact the logs')).toBe(false);
+  });
+
+  it('does not treat a prohibition as the self-compaction action', () => {
+    expect(carryNoteStartsWithSelfCompaction('Do not compact now')).toBe(false);
   });
 });
 
