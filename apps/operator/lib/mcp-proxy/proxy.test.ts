@@ -1685,6 +1685,39 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-22583902856092839: tools:invoke-wrapped coord:whoami retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ownerId":"su-test"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "coord:whoami", args: {} },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"ownerId":"su-test"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-21268234394605529: PAPERCUSP_MCP_PROXY_READONLY_RETRY=0 restores 502 surfacing (kill-switch)", async () => {
     const prev = process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY;
     process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY = "0";
