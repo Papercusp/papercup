@@ -40,18 +40,14 @@ vi.mock('./harness-registry', async (orig) => {
   return {
     ...actual,
     loadHarnessRegistry: async () => ({ projects: [{ slug: 'papercusp', path: h.repoRoot }] }),
-    resolveHarnessContentPath: (
-      registry: { projects: Array<{ slug: string; path: string }> },
-      slug: string,
-    ) => registry.projects.find((project) => project.slug === slug)?.path,
+    resolveHarnessContentPath: (registry: { projects: Array<{ slug: string; path: string }> }, slug: string) =>
+      registry.projects.find((project) => project.slug === slug)?.path,
   };
 });
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
-const { bindSpecEvidence, measureRepoFilesEvidenceAtRoot } = await import(
-  './agent-tools/plans/spec-evidence-store'
-);
+const { bindSpecEvidence, measureRepoFilesEvidenceAtRoot } = await import('./agent-tools/plans/spec-evidence-store');
 const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
 const { readAcceptanceBarContractSnapshot } = await import('./acceptance-bar-contract-snapshot');
 const { createIssue } = await import('./issues-engineer');
@@ -142,10 +138,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await Promise.all([
-    db?.cleanup(),
-    h.repoRoot ? rm(h.repoRoot, { recursive: true, force: true }) : Promise.resolve(),
-  ]);
+  await Promise.all([db?.cleanup(), h.repoRoot ? rm(h.repoRoot, { recursive: true, force: true }) : Promise.resolve()]);
 }, 30_000);
 
 describe('acceptance BAR contract snapshot — real Postgres reuse preflight', () => {
@@ -161,20 +154,22 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
         (workspace_id, harness_slug, plan_slug, item_id, seq, status, item_text)
       VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, ${ITEM}, 1, 'done', 'Prove snapshot reuse')`;
 
-    const seeded = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
-      workspaceId: WORKSPACE,
-      harnessSlug: HARNESS,
-      planSlug: PLAN,
-      planContent,
-      planTitle: 'Acceptance snapshot reuse integration',
-      planStatus: 'active',
-      planVersion: 1,
-      adoptionEpoch: 1,
-      cohort: 'post-epoch',
-      actorId: 'su-author',
-      now: new Date(OBSERVED_AT),
-      executor: tx as unknown as SpecClauseSql,
-    }));
+    const seeded = await db.adminSql.begin((tx) =>
+      seedAcceptanceBarsInTransaction({
+        workspaceId: WORKSPACE,
+        harnessSlug: HARNESS,
+        planSlug: PLAN,
+        planContent,
+        planTitle: 'Acceptance snapshot reuse integration',
+        planStatus: 'active',
+        planVersion: 1,
+        adoptionEpoch: 1,
+        cohort: 'post-epoch',
+        actorId: 'su-author',
+        now: new Date(OBSERVED_AT),
+        executor: tx as unknown as SpecClauseSql,
+      }),
+    );
     expect(seeded).toMatchObject({ ok: true, rubricSlug: RUBRIC, rubricRevision: 1 });
     if (!seeded.ok) throw new Error(seeded.message);
 
@@ -224,22 +219,24 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     expect(created).toMatchObject({ status: 'created', planSlug: PLAN, specId: SPEC, specRevision: 1 });
     expect(reused).toMatchObject({ status: 'unchanged', id: (created as { id: number }).id });
 
-    const grading = await runWithWorkspace(WORKSPACE, () => createIssue({
-      title: 'Independent acceptance snapshot grading',
-      kind: 'change',
-      state: 'done',
-      createdBy: 'su-independent-grader',
-      payload: {
-        observation: {
-          rubricRef: RUBRIC,
-          rubricRevision: seeded.rubricRevision,
-          sourceHive: HARNESS,
-          ratings: {
-            'r-1': { rating: 'healthy', evidence: 'The exact evidence identity and freshness decision are visible.' },
+    const grading = await runWithWorkspace(WORKSPACE, () =>
+      createIssue({
+        title: 'Independent acceptance snapshot grading',
+        kind: 'change',
+        state: 'done',
+        createdBy: 'su-independent-grader',
+        payload: {
+          observation: {
+            rubricRef: RUBRIC,
+            rubricRevision: seeded.rubricRevision,
+            sourceHive: HARNESS,
+            ratings: {
+              'r-1': { rating: 'healthy', evidence: 'The exact evidence identity and freshness decision are visible.' },
+            },
           },
         },
-      },
-    }));
+      }),
+    );
 
     const current = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
     expect(current.bars).toHaveLength(1);
@@ -285,14 +282,16 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       testLayer: 'integration',
     });
     expect(current.bars[0]!.proof.history![0]!.details.adequacy).not.toHaveProperty('coverageRungs');
-    expect(current.bars[0]!.grading.history).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        scorecardId: grading.id,
-        role: 'independent',
-        authoritative: true,
-        currentRevision: true,
-      }),
-    ]));
+    expect(current.bars[0]!.grading.history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          scorecardId: grading.id,
+          role: 'independent',
+          authoritative: true,
+          currentRevision: true,
+        }),
+      ]),
+    );
 
     await writeFile(path.join(h.repoRoot, SOURCE_PATH), 'export const acceptanceSnapshot = false;\n');
     const stale = await runWithWorkspace(WORKSPACE, () => readAcceptanceBarContractSnapshot(PLAN));
