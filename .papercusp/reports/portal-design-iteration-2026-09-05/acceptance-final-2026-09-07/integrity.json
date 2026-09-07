@@ -1,0 +1,1185 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-09-07T03:36:10.812Z",
+  "matrixSha256": "e164687975949246891bd8c1d92b332e61668522ea53a40cb4f9dcc6449885ca",
+  "observationsSha256": "81623da4a66f44d462f7dd008e190b58270b4e2b37bc613ebadda02c335d1cfc",
+  "recordedSlots": 188,
+  "baseExpectedSlots": 164,
+  "missingBaseSlots": [],
+  "additionalSlots": [
+    "home/light/1440x900/docks-expanded",
+    "mail/light/1440x900/docks-expanded",
+    "calendar/light/1440x900/docks-expanded",
+    "phone/light/1440x900/docks-expanded",
+    "workspaces/light/1440x900/docks-expanded",
+    "home/light/1280x800/docks-expanded",
+    "mail/light/1280x800/docks-expanded",
+    "calendar/light/1280x800/docks-expanded",
+    "phone/light/1280x800/docks-expanded",
+    "workspaces/light/1280x800/docks-expanded",
+    "home/light/1280x768/rail-compact",
+    "home/light/390x768/rail-compact",
+    "home/dark/1440x900/docks-expanded",
+    "mail/dark/1440x900/docks-expanded",
+    "calendar/dark/1440x900/docks-expanded",
+    "phone/dark/1440x900/docks-expanded",
+    "workspaces/dark/1440x900/docks-expanded",
+    "home/dark/1280x800/docks-expanded",
+    "mail/dark/1280x800/docks-expanded",
+    "calendar/dark/1280x800/docks-expanded",
+    "phone/dark/1280x800/docks-expanded",
+    "workspaces/dark/1280x800/docks-expanded",
+    "home/dark/1280x768/rail-compact",
+    "home/dark/390x768/rail-compact"
+  ],
+  "duplicateSlotKeys": [],
+  "hashMismatches": [],
+  "dimensionMismatches": [],
+  "duplicateImages": [],
+  "captureFailures": [],
+  "registryMissing": [],
+  "registryExtra": [],
+  "recordedDocumentOverflows": [],
+  "pageErrors": [],
+  "release": {
+    "schemaVersion": 2,
+    "buildId": "8yDtR949AGueJCPe7Q-EU",
+    "release": "8yDtR949AGueJCPe7Q-EU-20260907030928688-3439458-d4ea1813",
+    "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-09-07T03:09:28.688Z",
+    "sourceRootDigest": "747c93d7b8a102f7237152873f4509114433d5598273f1b7132e4b94e8befc78"
+  },
+  "releaseStable": true,
+  "preferencesRestored": true,
+  "resultScope": "Structural capture validation only; visual/state judgment is separate.",
+  "images": [
+    {
+      "slot": "home/light/1440x900",
+      "sha256": "c097928de01d8cebc997a2386daa3e4d2f2ce23e209956cb228fbc3a498d6aae",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "mail/light/1440x900",
+      "sha256": "496c46f7032423fa8376af6fdc8106627a8e0e9f04da9e38027cafc747ad00f1",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "calendar/light/1440x900",
+      "sha256": "4a3d5ff3710704e8e27b115025f175f4aaa3a1e31edb4182bfb80b975b31b9a1",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "phone/light/1440x900",
+      "sha256": "a6825b99e2db2854085063c45520dd69ef6c50bd43481abbf71efe0d66e2d0ab",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "desktops/light/1440x900",
+      "sha256": "373a66bb438f7143667c38a7cf2f4e90750294fc5de983ebf66b8213c42c1acb",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "plans/light/1440x900",
+      "sha256": "196f207da12b5e777f04b287a61ca59dcd77e8470bd9f850dd1abef358a4295f",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "inbox/light/1440x900",
+      "sha256": "a068bdc9a7ceb4d56be09536dd4b590b22a5637812f663a65924193a8c630941",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "workspaces/light/1440x900",
+      "sha256": "b469371115fbac948425c209623e6b5a25a725d5d69ce1615d3b04155c18fd86",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "overview/light/1440x900",
+      "sha256": "90a7112a019b3996fdda3b3afbef6b9830221507d86993aa61ea30a95326f579",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "hud/light/1440x900",
+      "sha256": "65c903dea40928b76d5a50c1a9412ad3b1f59362c95205f95284d4505454d388",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "work/light/1440x900",
+      "sha256": "8315d394d08dff4a2e4723821257bed17846b93e0c0c2885178e15e4de24087b",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "learning/light/1440x900",
+      "sha256": "63d8cce29bde58ecca7897b923dcd12287825c423664ac9bc04866610adbfc40",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "workflows/light/1440x900",
+      "sha256": "38eb2cb52484171d5da095cc3bf376ca31c88800f5a121cde09e1142a59acbbf",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "brainstorm/light/1440x900",
+      "sha256": "e179191d550c7eda9a96254761055be367b503d2028ca57cfe7a03733717d536",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "cloud/light/1440x900",
+      "sha256": "514d7dbb6325cd62d0298e78df7e8957736312ac071fdf96021fbf6e9cdf0d21",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "cupboard/light/1440x900",
+      "sha256": "d91d4491ded233ae688fa2f3b47d2720e7348e7d741f939d41c9791f9d59edd9",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "dev/light/1440x900",
+      "sha256": "db8c6079aa325a5723aadfa04fd1515f5bdb6c13bd74ab307d67a320029e6fbb",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "support/light/1440x900",
+      "sha256": "fb35849b01ddbeaa43ee6799952d5132fe93ccfe284ba9c7fea62c23723da958",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "settings/light/1440x900",
+      "sha256": "6850edb93a5365e8fc1067620a76b9ba9c2509a135b21c9ed4cd59bf5f8a9d4e",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "health/light/1440x900",
+      "sha256": "5280a88b36fc7a2e74ae79283b26fbbc85f975207c066bf2eb13f1822a966ce1",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "prs/light/1440x900",
+      "sha256": "c8c1d917939c94be5e3fb78884cb1d79e52a6525f784daa8fcf43b57c92f87bf",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "insights/light/1440x900",
+      "sha256": "f824001f997976fcea029a9fa0e292de293c873ca33d36051d41def15c3bb66a",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "conversations/light/1440x900",
+      "sha256": "1bc9ad09269a08b1296daf3d08c0acc96dd89363fa3e8cd60e633cc191dc17c6",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "adv-settings/light/1440x900",
+      "sha256": "877f5bdd040e0364c957bdc5d89fa053ac6a1359d423139b108db9ecf6aa4048",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "docs/light/1440x900",
+      "sha256": "1b6ecda3adb8ffb520910ddd82c80c4c51e754ed1b3b161d3876f396937decb0",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "history/light/1440x900",
+      "sha256": "2a363ed49afa534c9e30dbdfa0d0dc2b2fe24455764496862fe771a24c7918d3",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "git/light/1440x900",
+      "sha256": "bca68df1e73719f1fa303faf3f61e03bd6041603d5491a5b3347652d59f8b307",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "stats/light/1440x900",
+      "sha256": "5ce44f408cbda7108551b06bdcd1d5cdfea77237c22bf97e6718ac403423717a",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "testing/light/1440x900",
+      "sha256": "42cddeea37b111f5f5bd72df7ae8004950cd0c2e6ac0964c4ee0266183dcd3f3",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "create/light/1440x900",
+      "sha256": "5674876e2035ed56b00b96316c04a8cbe48f460ce29d430e3b191ee801185574",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "scheduled/light/1440x900",
+      "sha256": "eed163a9cd3427abddc9f0d11d4cac866fb78b86abc692aa45718c3b97a9af65",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "frames/light/1440x900",
+      "sha256": "ae9febd65b3d66eb8b25294290ab86c5eb443b2c94e2d3aea2c8fd66b0dfc7b7",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "evals/light/1440x900",
+      "sha256": "c9b68392c351954d12052304897bb6f71d7db50a8dff2e66a8837d456e38a1f7",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "coord/light/1440x900",
+      "sha256": "c58df1d422c5981724487ff73c6184cac5630246e6639fca0ceab8cf68e36ba8",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "accounts/light/1440x900",
+      "sha256": "da9d9e5efd103cfe502eb465171b2e10119d8e8c903080800373808e9c565766",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "papercup-chat/light/1440x900",
+      "sha256": "d77243bc09c1eafe26b0c8fdd46d50c86dc3c244e668a064a708c1fb71fb7cc7",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "chat-history/light/1440x900",
+      "sha256": "c1d4fb015d62a30abe9424703a83e8ff4077a1117d9ac8d7c39da0138ec3a386",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "notifications/light/1440x900",
+      "sha256": "4dca1f84fb9c3a6b320b82bb481172aeefa208b1ce044563c1d57204957cdc12",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "launcher/light/1440x900",
+      "sha256": "ba9a990081d7372dc6870aa6e01a4017d676e1877f348d0e02b97a985dbaa771",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "agent-roster/light/1440x900",
+      "sha256": "ddb5f9f65c34873044a1360049b4c25721d80579e053fb4b88bd01a4837be58d",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "processes/light/1440x900",
+      "sha256": "5efa04ba81303c09d0af3db5c1e4321bdf1c8e6db114f04c8f9c5916504bc11d",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "home/light/1440x900/docks-expanded",
+      "sha256": "0446da67771cc95fe9d49417fbd28ceb9cefb44bfc6a4db07651257695cf0eec",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "mail/light/1440x900/docks-expanded",
+      "sha256": "eb41a690bbc2d79d99f323c888d372be9dd38e0a533b3bf89a9a571a48c1901d",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "calendar/light/1440x900/docks-expanded",
+      "sha256": "21728ea903255e6be21af18cb502c359778eed460390f9617a1e198705be2b66",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "phone/light/1440x900/docks-expanded",
+      "sha256": "3fc5293120de55f51cd84c4392e0303579da4ac8783c10cec5c06db226c3f0d6",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "workspaces/light/1440x900/docks-expanded",
+      "sha256": "2ec3aa25e6ade2e227595bc80a7aa21a86b088826765073bdf9cfd38a1b33411",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "home/light/1280x800",
+      "sha256": "fc2c67715601df5a9611a9a4351e020fa3517ed06e02f2a8a84b0ac99f9627e7",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "mail/light/1280x800",
+      "sha256": "eaf517064582dd5426ad20343b999ee6635111dfe8b5e57ff80938a6737f9730",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "calendar/light/1280x800",
+      "sha256": "bcd181928b1d1b07bfabc6020646a5ba27d87049f9db2a713a6fff637010e479",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "phone/light/1280x800",
+      "sha256": "c680a5de5527103fe3915fce1192512d3644741b3fe5a6f9c5fddab2fc57cf0c",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "desktops/light/1280x800",
+      "sha256": "d8149691f2e27a7d6a387c502d6f50d9db5a24474fb654d34daa173ad64acba0",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "plans/light/1280x800",
+      "sha256": "470ac86ce48e047f24061713955a778ce74dc1db00da5b964e37317ab1539450",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "inbox/light/1280x800",
+      "sha256": "a9fa1d2ecabbfb12652654b910a58c88f8ecb5cadd2aae6a1b967ddfb209bc1c",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "workspaces/light/1280x800",
+      "sha256": "37e25c6e7ee59330cd6163500ecdf20fc79b38689d3b64a527251f1e6fb4d999",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "overview/light/1280x800",
+      "sha256": "c5e5d7f115d9cbc3d490dc85356929c4887ed9f08bf8b4c186c8f00a8492c200",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "hud/light/1280x800",
+      "sha256": "6d4fa916c2ed3331c90ebf0f790f65c74a29834d8f6967e13ddb490ac1460482",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "work/light/1280x800",
+      "sha256": "692c5de30a5aa2bb5a26cf82114cae293bfc7e9b8683653c7a8175bf83151d59",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "learning/light/1280x800",
+      "sha256": "e49cae99c2d04ff520d5e9c94fb7c216b1d982a6547765a015e9addbce6dc4b0",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "workflows/light/1280x800",
+      "sha256": "30aef5eaf528e2f905d5da0ef0ecf755b487637bee9ae132138dd55a774d3347",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "brainstorm/light/1280x800",
+      "sha256": "efc0415dfadc890c079b551daeded616fb99ac622597a5bbe2ead4bfd526fa0a",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "cloud/light/1280x800",
+      "sha256": "d74f92800729721101c473308709ed5299b90e05d959f23343a0f19c433fc054",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "cupboard/light/1280x800",
+      "sha256": "7c35639ac8c32ec742847cdfa30ab804208a6c4cf8eb81670ee83fc675b960b6",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "dev/light/1280x800",
+      "sha256": "390db636b85c5f3b8d0f2c17de67130430fea832f192cc8f8c5abd73e0d4a681",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "support/light/1280x800",
+      "sha256": "ce78ba308622b0170f2c1e733a046cc8490b9428ab406a64a5820c87ca5a19b2",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "settings/light/1280x800",
+      "sha256": "b58b1983d13327e77d13f3a3f8abb3afb1ff5224a775df4188ad91a42225de08",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "health/light/1280x800",
+      "sha256": "da872b5a2cb98f1fc05225925d0903b927da3d6d71b0ff906c8de0d6a5ff6234",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "prs/light/1280x800",
+      "sha256": "96a420e4ae1559107996e1a0940e9dd59f87209a9dfda414855f9eb4de9c0dc7",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "insights/light/1280x800",
+      "sha256": "9069c78801450627606120ba0c0c50e0b6ab4053d6780e963a17508d5946e431",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "conversations/light/1280x800",
+      "sha256": "41d6d83b594ffea3c6b350fa77cf26fcbccfc54fd533247e55172c4be4d7ecfc",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "adv-settings/light/1280x800",
+      "sha256": "a20d27e31d485270cc557bad48dbcc53be3b17c59821199d8d150eb06b2a171f",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "docs/light/1280x800",
+      "sha256": "050e072543a99dd44bfd5b6e99244d990bd4ad052e5907c09db922430bc7d7d2",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "history/light/1280x800",
+      "sha256": "e6969b5a4c1526d07401bfa955ed3d24c2a91fd9e7eaa702d33e57572d4d9bec",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "git/light/1280x800",
+      "sha256": "dee97843d76dd250c28c4af47e7d8b23301423f7fb725736ec01bdb88fda9ebf",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "stats/light/1280x800",
+      "sha256": "508c84586789c388cf9c3fc20c5088ed7c3e44eda266a962980bd28d56f9c3a8",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "testing/light/1280x800",
+      "sha256": "68d0a8723eea8ae732dc6f41cbee3e28780d0f0e669ff514b82c0272edafa716",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "create/light/1280x800",
+      "sha256": "47cb052314188152cd7385ee1099eff300b412ab16848ccb3f385e46adb1a0d9",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "scheduled/light/1280x800",
+      "sha256": "9858a2f2bc1982998276b1dc21a7281b69b54b64fecf0a6ae0c7fc9dc6df288a",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "frames/light/1280x800",
+      "sha256": "942fc54a332261ba2d8ce820d2e9329bf0b535de973d9da6299bf65f47eb323b",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "evals/light/1280x800",
+      "sha256": "e36a1114ec791f4709db07c656465e4fbb0b20e5333a30841a4c56a38633b666",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "coord/light/1280x800",
+      "sha256": "9cdf7982225ae29a3e998f2684a00ae063a80548c3b7d0bf584eead4881c9e2a",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "accounts/light/1280x800",
+      "sha256": "b836674bccc6db9e9e85497576db75fc4b1bb0df56de88592a79a4e7f0d9b9aa",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "papercup-chat/light/1280x800",
+      "sha256": "3d2a20e8c0082e2764eb6c56838be8b5398598f5ac3ecb9fbf7074a2a5c50635",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "chat-history/light/1280x800",
+      "sha256": "be0ed4a9d1bc4a9e9e7b942f710f20b843937e14f072797a5591cffbc1c4dbb1",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "notifications/light/1280x800",
+      "sha256": "ecd5fb5e35563e5c528a554d46e52840239284310872188d3f1bac80a51baf29",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "launcher/light/1280x800",
+      "sha256": "f682529116e5f6552b0ba0babc53e7331ca44f087e6f8795762915718b382d72",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "agent-roster/light/1280x800",
+      "sha256": "d2d31eda9f8ce12909f2b85480360cbedee7040f2090d7999e9d26ffd81d6704",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "processes/light/1280x800",
+      "sha256": "5d29dfc9e60bb7715045ae9da56283d1d314606de6d811f7e76918bde5b6be55",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "home/light/1280x800/docks-expanded",
+      "sha256": "557899f63f7d550dac028c000fe394373a5278f6ebf845f6fe9453e43ecf8aeb",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "mail/light/1280x800/docks-expanded",
+      "sha256": "6948c6fd3782b72055ad06d400ca06ed1ce058ea2c24a0583a453b668ec087f6",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "calendar/light/1280x800/docks-expanded",
+      "sha256": "f23bcaff5c5fb5d0f8f44275241afbfcea50a71ec0b74d1db2acfa541e2308a0",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "phone/light/1280x800/docks-expanded",
+      "sha256": "10486bd184c924c0a5f92cad436502365443565df124400518d263a6eac81130",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "workspaces/light/1280x800/docks-expanded",
+      "sha256": "99bce44178a7563bc1acefa5163f211dc399a2f8d78f98a3f6eec8de313dc9b6",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "home/light/1280x768/rail-compact",
+      "sha256": "c983e4e5756ef9080c041068c361cc1ed60a23681a4221e3c8eb0313acd06868",
+      "width": 1280,
+      "height": 768
+    },
+    {
+      "slot": "home/light/390x768/rail-compact",
+      "sha256": "567a6bfed04a1bc2c11650e19b81fee2e3a398f4d9e32a33d1dcc9404f4089f6",
+      "width": 390,
+      "height": 768
+    },
+    {
+      "slot": "home/dark/1440x900",
+      "sha256": "6bf5494f6b49bb79b5d67891b6b61b6bb1a35c6b91f27314f8c2928db5d281b1",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "mail/dark/1440x900",
+      "sha256": "57a7303097fdb0a6d9bcda4dbcc688b2fa29b4f6d48263e0bbe2968b96d99384",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "calendar/dark/1440x900",
+      "sha256": "efe385ab5e7ca66a77ae812113ac77d7cdd6a3c81a17d6dae9d4fd454b41c5aa",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "phone/dark/1440x900",
+      "sha256": "e82462bdec500645b23071d0bdb8b30f74137e2b982517fc61e090351c541f0b",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "desktops/dark/1440x900",
+      "sha256": "3162268fa3d94ed2029f914b320cede74c40a059d832d0a70a1c0a98756d78f3",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "plans/dark/1440x900",
+      "sha256": "3350f1230d5daae2ae5b701c33342d2e4d154b5750515a4093bf6f10878f5f4a",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "inbox/dark/1440x900",
+      "sha256": "46d2f106f88655770605772fffd005e48820b9f19cf6d06d035bfdd1599366a0",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "workspaces/dark/1440x900",
+      "sha256": "c1cbfd09abce23d5d91aea661126ac0eb6915f2cebcaece60f1c2f67803a107f",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "overview/dark/1440x900",
+      "sha256": "9dca57f64622f74ce4e21b5aaf6dc6df7c47d4a223be6e8c541942ef9cea83ba",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "hud/dark/1440x900",
+      "sha256": "bd9c662e26c54a9461c29cca633fd30f02dfa4b9abc85efa38a759bc64332c37",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "work/dark/1440x900",
+      "sha256": "df61bb1214895bd0b68a8093879f6af32bdb14fbf9d60c0ddaf2ddf2d3144ad9",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "learning/dark/1440x900",
+      "sha256": "580efc2131f1305e47ea041eba7b9160efefe637b829dbdaf1f97bfdd76bbbef",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "workflows/dark/1440x900",
+      "sha256": "d7ae1500f1480f1c9e7e6f24b5e3abe3184fc4abda1952b44812498c9835f3ef",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "brainstorm/dark/1440x900",
+      "sha256": "56adf4ba4e6f499d6cd0ab6f88f218f1ffb7eab6e5cbd07d2436a74e5e3af770",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "cloud/dark/1440x900",
+      "sha256": "dec9f596dee8bb41c5045cc8a7787078738b78780fede0b0bc0e42d9bce7ed75",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "cupboard/dark/1440x900",
+      "sha256": "e501a8ced58b669aae87ae93cb2c25ff3db81b4157cca5aa49f40844fd70e112",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "dev/dark/1440x900",
+      "sha256": "101fa8d60c86b4904c928a8fd63bb642ce31d28a5cfe3d463cbeb25b1b059cbe",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "support/dark/1440x900",
+      "sha256": "6b1d90a4c9e89863c80edb74aec0ba762f50144a4f6638d7ebc7076929988611",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "settings/dark/1440x900",
+      "sha256": "2579219f2fdfecaf9619609825765e978aeff482a9c5e4f67e5a56f802d0ca76",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "health/dark/1440x900",
+      "sha256": "fd34a6b0af0200d1e8fca9e770e5a0c2b2d2d97399aa7005dfa7b7c0da4f7f69",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "prs/dark/1440x900",
+      "sha256": "88de1b0f1ec15b1cc40fccd7a92e215cb1f06b133210315f78e90ec602ca2b8a",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "insights/dark/1440x900",
+      "sha256": "59d6b27921f307fe07d031d2f14729b7d12c51e83a5d599d3c027570e68f2540",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "conversations/dark/1440x900",
+      "sha256": "46b5fc999927370ef6f6a750c5ca30d774ea64e4461a69fa3d359bf8d82082ba",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "adv-settings/dark/1440x900",
+      "sha256": "4f5409df885a2811a49c354e5f2f0e281e395166deeeba959aea2d4f07edc533",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "docs/dark/1440x900",
+      "sha256": "5195d71ce10e767a4b0ce590687689c1fca935dfae7a285114d31e9e0f9cb12d",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "history/dark/1440x900",
+      "sha256": "3a35b01817d8cf6085bd6158cc272580cfd7640b77c929f71374a1374e1d81eb",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "git/dark/1440x900",
+      "sha256": "ab94c0b0d2f5b110e443f6e8cb2c1c9ec79c19b2c01aefa70f16d8bd8acd5626",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "stats/dark/1440x900",
+      "sha256": "47619316d0dc95326d4df0c7e1c6a310b4015c13b33c40f363bf321462fd5fe1",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "testing/dark/1440x900",
+      "sha256": "e6aa777dd3c970ef82424422c6d93bc26c637edd5e49c8e07de266991c3dbb12",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "create/dark/1440x900",
+      "sha256": "9b8a092821018d1f327055b2c6cd4f83a03999f6f1a7834ca9dc0f9b39883217",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "scheduled/dark/1440x900",
+      "sha256": "620484a0931df5ae140da3ee8ec745065101db2e7799515f771042ae82869253",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "frames/dark/1440x900",
+      "sha256": "da8b1db7d5957249ecd55c273c61c2f4accafc0ca5c8f3496e64430aa24729a2",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "evals/dark/1440x900",
+      "sha256": "458a0842df824dfc1510afcaa1129963f12dd0457c7ae5afb9e816463bf49570",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "coord/dark/1440x900",
+      "sha256": "66668801fba50348ddc42be85e77e8276271e36b4d03bbb188f90265dee86f2e",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "accounts/dark/1440x900",
+      "sha256": "6ba100d0635091e5d3c15c60be6ff00f77a7efff5486c6d9b0d35c20dd4b2b1b",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "papercup-chat/dark/1440x900",
+      "sha256": "a8b16eee7cc5c85cf6c40630e7084a24325873c02026cbef98b53dc433848182",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "chat-history/dark/1440x900",
+      "sha256": "4a645c59ad3b6c28299b2fa6585ce7a4e82dc4f0792fc115ebe80ea514176275",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "notifications/dark/1440x900",
+      "sha256": "163de34f06e8020063b6f2205f7b3f64f0b218f8687d0ddebb5eec5e200642e2",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "launcher/dark/1440x900",
+      "sha256": "7ab5702aa1ccef82a959b9d81a1468a239cb282ba72b954413afb873726af5d5",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "agent-roster/dark/1440x900",
+      "sha256": "8d76d9ff36c7e20a8b89251ddfa5cb03cca0c17125f8682cc46bd75b0a4fe3a3",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "processes/dark/1440x900",
+      "sha256": "52bd3002c5bc2c1b61fab2718a55fe07dee757cc6d5018d5ede5e694beb53059",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "home/dark/1440x900/docks-expanded",
+      "sha256": "7b2f1a9f37534b92e584dc707012cf41e5387e54432e0c87912e47ae5fefd78c",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "mail/dark/1440x900/docks-expanded",
+      "sha256": "2a7d99f91b9353c5a49ad78ddec00f71bb8b8abfbdfaf010d22a8c1949b27ed1",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "calendar/dark/1440x900/docks-expanded",
+      "sha256": "63c1511d3e49e0e78ca639bf1e28bfe42395fa4524a2fa3a1e704cdb7ae87bee",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "phone/dark/1440x900/docks-expanded",
+      "sha256": "652d83c1e7457994db859009018579cdd670af9e299c584097d40a522eb69dce",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "workspaces/dark/1440x900/docks-expanded",
+      "sha256": "6e19428f99729a301968ed74bb9d14a13b855a39d50e4af49db68b3c4c1fda1e",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "slot": "home/dark/1280x800",
+      "sha256": "52b99a4599ffd651c8cefa1ff0f13a23c75ac1d91c61c3dcecc206dad7469752",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "mail/dark/1280x800",
+      "sha256": "475db9a3622bfa560860ed601a73d1b44205238ed3316cdab6f0382f2e377e60",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "calendar/dark/1280x800",
+      "sha256": "070e106e9cfdfb4a398e2484a801d1992aed706b74d68f9e006ecb1b7b36fe8e",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "phone/dark/1280x800",
+      "sha256": "9431ede39ffe3ac0c0d5df259b575de8aede25d0f7353b2de07da3998f1bde6e",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "desktops/dark/1280x800",
+      "sha256": "8e4c3e011d98bf313cfa695a4834f1c681873d73b0023c48482181a878febfa9",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "plans/dark/1280x800",
+      "sha256": "7b4f06b4135e0325f749ccbb261e3363ecf4d6931e873d86ff87170510a0c976",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "inbox/dark/1280x800",
+      "sha256": "097d9bb5c4118d2f097dcf9e600dfa59a1a5678dea6bb674c377f76a72aaef9f",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "workspaces/dark/1280x800",
+      "sha256": "127ba1c4975b0d96d8486207dc21e9939d1f56b19a1a2f41a9a38d7d27fa77f6",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "overview/dark/1280x800",
+      "sha256": "0f4bb42585aacbb1ae518e0cacb59ed17c7e7b758f3b201bdf444c56b17628b8",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "hud/dark/1280x800",
+      "sha256": "cd594b4ff924c4e771c5d61b4ff761dd0b71fb34ea9ccc380a9182ae97d6b94f",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "work/dark/1280x800",
+      "sha256": "ecfe55e0c9b8a6965689a2f8782bfaa3ec47db32d1145b1ea2f903e54704f00b",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "learning/dark/1280x800",
+      "sha256": "5490f94fe6a841337eda7e21ac3f9fdc4a43810e83190f457661aabf5dd75da5",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "workflows/dark/1280x800",
+      "sha256": "f142dd968fb777c4afefa10ca627e542b752275f22f1e6f6f69afce5f2effb61",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "brainstorm/dark/1280x800",
+      "sha256": "714f9ccefece656a0fe3bb09d515ba93dcaa72c16ac6d80fc7debdd72da0982c",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "cloud/dark/1280x800",
+      "sha256": "fc4184945cf363dfae0b3640edd7741c46c738e53b4b67423ae2366c0c2cdabc",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "cupboard/dark/1280x800",
+      "sha256": "cc0709a6fecb62eed35944c3dc91587ec7cdf0f697f837f7789ac4c145331f6e",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "dev/dark/1280x800",
+      "sha256": "808bcbeec4de7d019966a572882b2db54018b5a304aa0cc26c3351fe47da61dc",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "support/dark/1280x800",
+      "sha256": "2bb9b3d53d7b3425601cd76dc65df8b3816601279333e535df712a4ae2774e4c",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "settings/dark/1280x800",
+      "sha256": "be923b136ca9ad166893f51c59297110f8a4c4005a884b51c0ec42a379630de1",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "health/dark/1280x800",
+      "sha256": "16893dca11598a2af65eb9d2fe42dc6e0f69c4a9f815d8c5d513614b3c245145",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "prs/dark/1280x800",
+      "sha256": "5deb18c426ced240fff61de6b1d66db8aeb6c60de8abed5369439646a59f0aec",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "insights/dark/1280x800",
+      "sha256": "14d92559466e488de11bee914ba055a36a99c4d0d9539d7f8076dd9671e0e4eb",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "conversations/dark/1280x800",
+      "sha256": "a1b78e5492c034ee18c8a59231d0f56b693c111598d1d67358e65dddbd6b33b6",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "adv-settings/dark/1280x800",
+      "sha256": "5c0a33e690ca2d644ab05d02f90e5178106b35f3fcc4d762b18e60e15d72e202",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "docs/dark/1280x800",
+      "sha256": "a3df384d354afccc8d5faa8aa42d5edd65afd77b7544a1b6adf86676bfc449ff",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "history/dark/1280x800",
+      "sha256": "75ec4ee68e8a38b3337a28807fcf1ce5cd4c983757bb84667a92231787826755",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "git/dark/1280x800",
+      "sha256": "00c3f767acb1b306f4bb826515bd462afdf63594af6405b08445bb6e86769799",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "stats/dark/1280x800",
+      "sha256": "2177abf1359e4cac05c1adfaf6a9b9846f64ef3dc6db6e70e76653ab2cf0dc33",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "testing/dark/1280x800",
+      "sha256": "e09b0c9a032e4282abb05f468197ed26990049d8f1a79f823914302e425397cd",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "create/dark/1280x800",
+      "sha256": "2dfeb04dda8af1597bccb4efd44507eb25b0a2e334ea65f375a720efa5bad853",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "scheduled/dark/1280x800",
+      "sha256": "dc2664828f6aedf457caf23e9c6e9cf7af4145ec20f669288b33c5db3db4d555",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "frames/dark/1280x800",
+      "sha256": "53833d337b5e35403ac5a5aaf6e3a799405c6fd83096347bdee329bb8e3d0eb9",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "evals/dark/1280x800",
+      "sha256": "6295638387ccd13658864a08c861ca96ba559af5b2558ed508bbb6c5d6f438fc",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "coord/dark/1280x800",
+      "sha256": "f86301bca5f3ef9f1be3af6e6d703da0e1fbc45c6e52ffc6377ed8255f43be7a",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "accounts/dark/1280x800",
+      "sha256": "a483f6e6050bf24cb56d51a2afa658d24ddc6257d586f2d29fcbf284e22926af",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "papercup-chat/dark/1280x800",
+      "sha256": "de86fcd71496cb7915a1f41bb878fa06895a7fd3d644541077e5459235773b40",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "chat-history/dark/1280x800",
+      "sha256": "50dc46f2088c4f69893927fa74d11b9c541bb5fd5e552c2728a8752f6dbe0292",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "notifications/dark/1280x800",
+      "sha256": "ea60d1b9dad0f152a6c86ceab22461802a633f16bd6f9487a96a99e4b087dd8b",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "launcher/dark/1280x800",
+      "sha256": "ca12a9b0f96bf8e080f8e119cd24094989b0b9f19758cceff9dd735cfeef91ad",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "agent-roster/dark/1280x800",
+      "sha256": "1addbace0faf5ca94b3d3900ca9fd276c2fdb0ab49824eb3ac68a8f7fc4a85b6",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "processes/dark/1280x800",
+      "sha256": "5795c320d9f3c9f7ddc21cd080692b71c5911ca97224a6983c1701b39307d1b5",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "home/dark/1280x800/docks-expanded",
+      "sha256": "86930b1e98a910b991811c23e19eae60b5ad8fe24de51801930f822cfee7849b",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "mail/dark/1280x800/docks-expanded",
+      "sha256": "33b3a5885d5f8b1c7592b642431dc6f520823d15f56030b3b1f20b0103221dc3",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "calendar/dark/1280x800/docks-expanded",
+      "sha256": "c4325490c739e471f840d9ca06cc3c65c89f7cca71f527e98e63066f2dcf4922",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "phone/dark/1280x800/docks-expanded",
+      "sha256": "f8ed924e8f6e99cf3797167a464ea886d6b289d5288298bf60b544089e6e99da",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "workspaces/dark/1280x800/docks-expanded",
+      "sha256": "9fe261089be7b1d34fe6d98fa94bddbb500425ef216e32dfabf80abfeedfaba4",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "slot": "home/dark/1280x768/rail-compact",
+      "sha256": "b69239e5bc23bdb1dea92bafe62e2e3512875940a9c833df1729448b14bfb0ba",
+      "width": 1280,
+      "height": 768
+    },
+    {
+      "slot": "home/dark/390x768/rail-compact",
+      "sha256": "0860a764cb78ed43761170658d1e92603aa70376e313c3d731f30246945d4cb2",
+      "width": 390,
+      "height": 768
+    }
+  ]
+}
