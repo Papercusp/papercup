@@ -22149,7 +22149,7 @@ body:has(.operator-panel) {
 
    These .oracle-* / .op-chat-* / body.has-op-chat rules were deleted when the
    legacy web chats were retired (design-simplification-2026-07-09 P-010,
-   commit 0ae13cd836). The OperatorChatSidebar/OperatorChat/ChatConversation/
+   commit 0ae13cd836). The OperatorChatSidebar/OperatorChat/PapercupChat/
    PendingCardsBar/LocalCardHost components were revived from
    _retired/legacy-web-chats/, so their CSS returns with them — restored
    verbatim from 0ae13cd836^ except:
