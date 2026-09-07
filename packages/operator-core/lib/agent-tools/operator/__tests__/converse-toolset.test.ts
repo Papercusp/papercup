@@ -70,7 +70,7 @@ describe('buildConverseMcpMount', () => {
     expect(m).not.toBeNull();
     expect(m!.url).not.toContain('superuser');
     expect(m!.url).toBe(
-      'http://localhost:3070/api/mcp?workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
+      'http://localhost:3070/api/mcp?principal=pi&workspace=ws%20with%20space&tools=harness%3Astatus%2Cchat%3Aask_choice&client=abcdef0123456789',
     );
     expect(m!.bearer).toBe('user-bearer');
     // Fail-closed: no boundary bearer ⇒ no mount, even though a superuser token exists.

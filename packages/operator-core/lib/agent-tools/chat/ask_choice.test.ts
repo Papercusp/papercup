@@ -55,6 +55,11 @@ function firstSpec(askUser: { mock: { calls: unknown[][] } }): Record<string, un
 }
 
 describe('chat:ask_choice handler', () => {
+  it('admits the public Papercup role while retaining the chat:write capability gate', () => {
+    expect((askChoiceTool as any).agentRoles).toContain('papercup');
+    expect((askChoiceTool as any).capability).toBe('chat:write');
+  });
+
   beforeEach(() => {
     _resetCardCorrelatorForTests();
     _resetStateChannelForTests();

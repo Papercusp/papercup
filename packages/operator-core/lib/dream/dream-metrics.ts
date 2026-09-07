@@ -54,7 +54,7 @@ class DreamMetricsFold {
   private readonly seen = new Set<string>();
   private readonly families = new Map<string, number>();
   private readonly qualified = new Set<string>();
-  private readonly packets = new Map<string, { costUsd: number; durationMs: number }>();
+  private readonly packets = new Map<string, { costUsd: number | null; durationMs: number }>();
   private readonly units = new Set<string>();
   private readonly mechanisms = new Set<string>();
   private readonly routedRefs = new Set<string>();
@@ -94,6 +94,7 @@ class DreamMetricsFold {
   private knownUsd = 0;
   private boundUsd = 0;
   private coldPacketUsd = 0;
+  private unknownPacketUses = 0;
   private packetUses = 0;
   private incompletePackets = 0;
   private routed = 0;
@@ -194,7 +195,8 @@ class DreamMetricsFold {
         const prior = this.packets.get(key);
         if (prior && prior.costUsd !== value.costUsd) this.errors.push(`${run.runId}: packet cost identity conflicts`);
         this.packets.set(key, value);
-        this.coldPacketUsd += value.costUsd;
+        if (value.costUsd === null) this.unknownPacketUses++;
+        else this.coldPacketUsd += value.costUsd;
         this.packetUses++;
         if (packet.coverage.truncated || packet.coverage.unresolved.length) this.incompletePackets++;
       }
@@ -249,14 +251,16 @@ class DreamMetricsFold {
       this.experiments.set(e.batteryId, e);
     }
     this.curve.push({ runId: run.runId, at: run.startedAt, knownCallUsd: this.knownUsd,
-      qualifiedFamilies: this.qualified.size, costIncomplete: this.missingUsage > 0 || this.legacy > 0 || this.errors.length > 0 });
+      qualifiedFamilies: this.qualified.size, costIncomplete: this.missingUsage > 0 || this.legacy > 0 ||
+        this.errors.length > 0 || this.unknownPacketUses > 0 || this.coldPacketUsd > 0 });
     if (this.curve.length > 256) this.curve.shift();
   }
 
   finish() {
     for (const b of [...Object.values(this.phases), ...Object.values(this.models)])
       b.actualUsd = b.unknownCalls ? null : b.knownUsd;
-    const packetUsd = [...this.packets.values()].reduce((n, p) => n + p.costUsd, 0);
+    const packetUsd = [...this.packets.values()].reduce((n, p) => n + (p.costUsd ?? 0), 0);
+    const unknownPackets = [...this.packets.values()].filter(p => p.costUsd === null).length;
     const fullyAttributedUsd = this.missingUsage || this.legacy || this.errors.length ? null : this.knownUsd;
     const familyCounts = [...this.families.values()];
     const identified = familyCounts.reduce((a, b) => a + b, 0);
@@ -299,15 +303,18 @@ class DreamMetricsFold {
       cost: {
         knownCallUsd: this.knownUsd, unresolvedBoundUsd: this.boundUsd, unknownUsageCount: this.missingUsage,
         fullyAttributedCallUsd: fullyAttributedUsd, phases: this.phases, models: this.models,
-        packetColdStartUsd: this.coldPacketUsd, distinctPacketHistoricalUsd: packetUsd,
-        packetAmortizedUsdPerUse: this.packetUses ? packetUsd / this.packetUses : null,
+        packetColdStartUsd: this.unknownPacketUses ? null : this.coldPacketUsd,
+        packetColdStartKnownUsd: this.coldPacketUsd,
+        distinctPacketHistoricalUsd: unknownPackets ? null : packetUsd,
+        distinctPacketKnownUsd: packetUsd, unknownPacketUses: this.unknownPacketUses, unknownPackets,
+        packetAmortizedUsdPerUse: this.packetUses && !unknownPackets ? packetUsd / this.packetUses : null,
         packetLocalDurationMs: [...this.packets.values()].reduce((n, p) => n + p.durationMs, 0),
         // Packet history is not a receipt that the build was charged in this reporting window.
-        fullyAttributedDiscoveryUsd: fullyAttributedUsd !== null && packetUsd === 0 ? fullyAttributedUsd : null,
+        fullyAttributedDiscoveryUsd: fullyAttributedUsd !== null && packetUsd === 0 && !unknownPackets ? fullyAttributedUsd : null,
         reconciliationErrors: this.errors,
       },
       leading: {
-        qualifiedFamiliesPerUsd: fullyAttributedUsd !== null && fullyAttributedUsd > 0 && packetUsd === 0 &&
+        qualifiedFamiliesPerUsd: fullyAttributedUsd !== null && fullyAttributedUsd > 0 && packetUsd === 0 && !unknownPackets &&
           this.qualificationUnknown === 0 ? this.qualified.size / fullyAttributedUsd : null,
       },
       downstream: { routes: this.routes, grades: this.grades, outcomes: this.outcomes },

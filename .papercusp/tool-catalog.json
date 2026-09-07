@@ -3929,7 +3929,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "papercup"
       ],
       "guidance": {
         "when": "You need a yes/no, accept/reject, or pick-one-of decision from the user before continuing. If your reply would name 2 or more options and ask which one the user wants, CALL this tool — never enumerate the options in prose. Renders clickable buttons in the chat; the tool returns the choice as its result. You can keep working in the same turn after the result lands. Keep question ≤500 chars, labels ≤80, and hints ≤120 so schema validation succeeds.",

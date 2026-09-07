@@ -39,7 +39,7 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; pendingMcp?: boolean; noAck?: boolean; holdResult?: boolean; streamOnly?: boolean; streamParent?: string } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -55,6 +55,13 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
           // A real CLI's turn metadata arrives only after a querying input.
           // No transcript-only startup traffic is fabricated by this peer.
           output.write({ type: 'system', subtype: 'init', session_id: config.identity ?? nativeId, cwd: config.cwd ?? dir });
+          if (config.streamOnly) {
+            if (options.includePartialMessages) output.write({
+              type: 'stream_event', session_id: nativeId, parent_tool_use_id: config.streamParent ?? null,
+              event: { type: 'message_start', message: { id: 'native-long-reply', role: 'assistant', content: [] } },
+            });
+            continue;
+          }
           output.write(message);
           if (config.holdResult) continue;
           output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'Correlated reply' }] } });
@@ -127,6 +134,35 @@ describe('structured Claude SU engine', () => {
     expect((await second.terminal).status).toBe('completed');
     expect(p.prompts.at(-1)?.message.content).toBe('second');
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({ type: 'transcript', turnId: 'owner-turn-1', content: 'first reply' }));
+  });
+
+  it('acknowledges a long native response before input replay or result completion', async () => {
+    const p = peer({ streamOnly: true });
+    const engine = open(p, { deliveryTimeoutMs: 100 });
+    await engine.ready;
+    expect((await engine.adapter.host.startCommand(command(engine)).terminal).status).toBe('completed');
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+    expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript' && event.role === 'assistant')).toBe(false);
+    p.output.write({ type: 'stream_event', session_id: nativeId, parent_tool_use_id: null,
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'long reply finished' } } });
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'long reply finished' }] } });
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', role: 'assistant', turnId: 'owner-turn-1', content: 'long reply finished',
+    }));
+    expect(engine.adapter.host.recent.map(({ event }) => event)
+      .filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.phase === 'completed'))
+      .toHaveLength(1);
+  });
+
+  it('does not acknowledge owner input from a nested agent stream', async () => {
+    const p = peer({ streamOnly: true, streamParent: 'other-agent-call' });
+    const engine = open(p, { deliveryTimeoutMs: 20 });
+    await engine.ready;
+    expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({
+      status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false },
+    });
   });
 
   it('cleans up a disconnected SU tool connection before ready', async () => {

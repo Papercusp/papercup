@@ -148,6 +148,23 @@ describe('Dream metrics reconcile evidence rather than wording, retries or missi
     expect(computeDreamMetrics([row('old-census')], scope).coverage.snapshotsWithUnknownPopulation).toBe(1);
   });
 
+  it('never coerces an unknown packet acquisition cost to zero or a fully attributed dollar rate', () => {
+    const r = row('unknown-packet');
+    const p = dreamCapabilityRun(r.run)!;
+    if (p.sampling?.status !== 'selected') throw new Error('Fixture selection missing');
+    p.sampling.selection.a.packet.extraction.costUsd = null;
+    r.run.outcome!.capabilityRun = p;
+    assess(r, 'f');
+    const report = computeDreamMetrics([r], scope);
+    expect(report.cost.unknownPackets).toBe(1);
+    expect(report.cost.packetColdStartUsd).toBeNull();
+    expect(report.cost.distinctPacketHistoricalUsd).toBeNull();
+    expect(report.cost.packetAmortizedUsdPerUse).toBeNull();
+    expect(report.cost.fullyAttributedDiscoveryUsd).toBeNull();
+    expect(report.leading.qualifiedFamiliesPerUsd).toBeNull();
+    expect(report.discoveryCurve.points[0]?.costIncomplete).toBe(true);
+  });
+
   it('joins downstream grades and real experiments without calling an unexecuted proposal a win', () => {
     const r = row('outcomes'); r.run.routedRef = 'wi:EI-1';
     r.routed = { rail: 'improvement', humanGrade: 4, outcome: 'pending' };

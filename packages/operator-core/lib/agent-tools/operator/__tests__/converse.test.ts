@@ -16,6 +16,31 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const principalMocks = vi.hoisted(() => ({
+  resolveBearer: vi.fn(async () => ({
+    kind: 'pi' as const,
+    slug: 'pi:portal-test',
+    workspaceId: 'ws-real',
+    capabilities: new Set(['chat:write', 'operator:read']),
+    authMethod: 'bearer-token' as const,
+    trust: 'trusted' as const,
+  })),
+}));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    resolveBearer: principalMocks.resolveBearer,
+    lookupByMcpName: (name: string) => ({
+      capabilities: name === 'chat:ask_choice'
+        ? ['chat:write']
+        : name === 'voice:delegate_deep'
+          ? ['operator:read']
+          : ['not-granted'],
+    }),
+  };
+});
+
 vi.mock('../../../agent-chat-stream', () => ({
   runAgentChat: vi.fn(),
   // The real resolver honours an explicit per-call backend first (P-005: the
@@ -519,11 +544,10 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig; allowedTools?: string[] };
     const url = mcpUrlOf(call.mcpConfig)!;
     expect(url).not.toContain('superuser');
-    // workspace= LEADS the query on the public mount (nothing precedes it).
-    expect(url).toContain('/api/mcp?workspace=ws-real');
+    expect(url).toContain('/api/mcp?principal=pi&workspace=ws-real');
     expect(call.mcpConfig?.mcpServers.agentmcp.headers.Authorization).toBe('Bearer portal-user-bearer');
     const tools = new URL(url).searchParams.get('tools') ?? '';
-    expect(tools.split(',')).toEqual(['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep']);
+    expect(tools.split(',')).toEqual(['chat:ask_choice', 'voice:delegate_deep']);
     expect(call.allowedTools).not.toContain('tasks:read'); // the owner working set never crosses
   });
 

@@ -4,7 +4,7 @@
  * CupboardDetailPage — direct-execution actions.
  *
  * blueprint "Fork" (official-blueprints-cupboard-publish-2026-06-05 P-004):
- * POSTs /api/cupboard/install-blueprint {listingId} — clone + validate +
+ * POSTs /api/cupboard/install-blueprint {listingId,potSlug} — clone + validate +
  * dep-check into ~/.papercusp/blueprints/<id>/ — WITHOUT installPlugins (the
  * consent for plugin deps stays explicit; the toast lists installables).
  *
@@ -29,6 +29,9 @@ const h = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn(), toastSuccess: vi.fn(
 vi.mock('@/lib/router-compat/navigation', () => ({
   useRouter: () => ({ push: h.push, back: h.back }),
   useParams: () => ({ id: 'bp-listing-1' }),
+}));
+vi.mock('@/app/adv/create/use-create-data', () => ({
+  useResolvedHarnessSlug: () => 'sales-hive',
 }));
 vi.mock('sonner', () => ({ toast: { success: h.toastSuccess, error: h.toastError } }));
 
@@ -125,7 +128,7 @@ function mockFetch(listing: HarnessListing, action: { status: number; body: unkn
 }
 
 describe('CupboardDetailPage — blueprint Fork (install into the local installed tier)', () => {
-  it('Fork POSTs install-blueprint with the listing id (no installPlugins) and toasts installable plugin deps', async () => {
+  it('Fork POSTs install-blueprint with the listing id + active pot (no installPlugins) and toasts installable plugin deps', async () => {
     const fetchMock = mockFetch(blueprintListing(), {
       status: 200,
       body: {
@@ -146,7 +149,10 @@ describe('CupboardDetailPage — blueprint Fork (install into the local installe
       const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/cupboard/install-blueprint'));
       expect(call).toBeTruthy();
       // Consent stays explicit: the button must NOT auto-install plugin deps.
-      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ listingId: 'bp-listing-1' });
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        listingId: 'bp-listing-1',
+        potSlug: 'sales-hive',
+      });
     });
     await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
     const msg = String(h.toastSuccess.mock.calls[0][0]);
@@ -171,6 +177,205 @@ describe('CupboardDetailPage — blueprint Fork (install into the local installe
     expect(msg).toContain('dependencies unresolvable');
     expect(msg).toContain('needs plugin "ghost"');
     expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it('renders provider evidence, publisher default, optional gaps and the full transitive review before consent', async () => {
+    const candidate = {
+      classRef: 'crm.email@1.0.0',
+      providerPackage: 'mail-pro',
+      providerVersion: '2.1.0',
+      verbBindings: { send: 'mail.send' },
+      conformanceRunId: 'run-1',
+      conformanceStatus: 'passed',
+      behavioralStatus: 'passed',
+      behavioralRunRef: 'suite-1',
+      registryRevision: 'registry-1',
+      status: 'active',
+      updatedAt: '2026-09-07T00:00:00Z',
+      price: null,
+      activePotBindings: 17,
+      passingStructuralRuns: 4,
+      totalStructuralRuns: 4,
+    };
+    const capabilityGrants = {
+      ok: true,
+      requirements: [
+        {
+          classRef: 'crm.email@1.0.0',
+          optional: false,
+          state: 'choosable',
+          candidates: [candidate],
+          selection: {
+            classRef: 'crm.email@1.0.0',
+            providerPackage: 'mail-pro',
+            providerVersion: '2.1.0',
+            reason: 'publisher-suggestion',
+            disclosureRequired: false,
+          },
+        },
+        {
+          classRef: 'crm.calendar@1.0.0',
+          optional: true,
+          state: 'absent',
+          candidates: [],
+          absentReason: 'no-conformant-provider',
+        },
+      ],
+      satisfied: [],
+      selected: [{
+        classRef: 'crm.email@1.0.0',
+        providerPackage: 'mail-pro',
+        providerVersion: '2.1.0',
+        reason: 'publisher-suggestion',
+        disclosureRequired: false,
+      }],
+      missingRequired: [],
+      requiresChoice: [],
+      missingOptional: ['crm.calendar@1.0.0'],
+      disclosures: [],
+    };
+    const capabilityProviderReview = {
+      ok: true,
+      roots: [{
+        providerPackage: 'mail-pro',
+        providerVersion: '2.1.0',
+        classRefs: ['crm.email@1.0.0'],
+        kind: 'plugin',
+        status: 'installable',
+        listingId: 'listing-mail-pro',
+      }],
+      units: [
+        {
+          name: 'mail-pro',
+          version: '2.1.0',
+          kind: 'plugin',
+          listingId: 'listing-mail-pro',
+          review: {
+            name: 'mail-pro',
+            version: '2.1.0',
+            kind: 'plugin',
+            capabilities: ['net:fetch', 'secrets:read'],
+            dependencies: {
+              tools: ['http.request'],
+              packs: ['mail-codecs'],
+              plugins: [],
+              events: [{ family: 'mail:sent' }],
+            },
+          },
+        },
+        {
+          name: 'mail-codecs',
+          version: '1.4.0',
+          kind: 'pack',
+          listingId: 'listing-mail-codecs',
+          review: {
+            name: 'mail-codecs',
+            version: '1.4.0',
+            kind: 'pack',
+            capabilities: [],
+            dependencies: { tools: [], packs: [], plugins: [], events: [] },
+          },
+        },
+      ],
+      stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+      advisory: [],
+      rounds: 2,
+    };
+    let installCalls = 0;
+    const installBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/api/cupboard/listings/')) {
+        return new Response(JSON.stringify({ listing: blueprintListing() }), { status: 200 });
+      }
+      if (u.includes('/api/cupboard/install-blueprint')) {
+        installCalls += 1;
+        installBodies.push(JSON.parse(String(_init?.body ?? '{}')));
+        if (installCalls === 1) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: 'capability_provider_install_consent_required',
+            data: { capabilityGrants, capabilityProviderReview },
+          }), { status: 409 });
+        }
+        return new Response(JSON.stringify({
+          ok: true,
+          id: 'review',
+          version: '0.2.0',
+          depCheck: { installable: { plugins: [] } },
+          capabilityGrants,
+          capabilityProviderReview,
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    render(<CupboardDetailPage />);
+
+    fireEvent.click(await screen.findByTestId('cupboard-detail-action'));
+
+    const panel = await screen.findByTestId('cupboard-capability-review');
+    expect(panel.getAttribute('data-stage')).toBe('consent');
+    expect(screen.getByTestId('cupboard-capability-target-pot').textContent).toContain('sales-hive');
+    const candidateRow = screen.getByTestId('cupboard-capability-candidate');
+    expect(candidateRow.getAttribute('data-default')).toBe('publisher');
+    expect(candidateRow.textContent).toContain('conformance passed');
+    expect(candidateRow.textContent).toContain('structural 4/4');
+    expect(candidateRow.textContent).toContain('adoption 17');
+    expect(candidateRow.textContent).toContain('price unknown');
+    expect(screen.getByTestId('cupboard-capability-gap').textContent).toContain('Optional gap');
+    const packages = screen.getAllByTestId('cupboard-capability-provider-package');
+    expect(packages).toHaveLength(2);
+    expect(packages[0]?.textContent).toContain('net:fetch');
+    expect(packages[0]?.textContent).toContain('pack:mail-codecs');
+    expect(packages[1]?.textContent).toContain('mail-codecs@1.4.0');
+
+    const consent = screen.getByTestId('cupboard-detail-action');
+    expect(consent.textContent).toContain('Install reviewed set');
+    fireEvent.click(consent);
+
+    await waitFor(() => expect(installCalls).toBe(2));
+    expect(installBodies[1]).toEqual({
+      listingId: 'bp-listing-1',
+      potSlug: 'sales-hive',
+      capabilityProviderSelections: { 'crm.email@1.0.0': 'mail-pro@2.1.0' },
+      installPlugins: true,
+    });
+    await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
+  });
+
+  it('renders a required ABSENT class as a blocking gap instead of a generic toast', async () => {
+    mockFetch(blueprintListing(), {
+      status: 409,
+      body: {
+        ok: false,
+        error: 'capability_provider_unavailable',
+        detail: 'no provider',
+        data: {
+          ok: false,
+          requirements: [{
+            classRef: 'crm.email@1.0.0',
+            optional: false,
+            state: 'absent',
+            candidates: [],
+            absentReason: 'no-conformant-provider',
+          }],
+          satisfied: [],
+          selected: [],
+          missingRequired: ['crm.email@1.0.0'],
+          requiresChoice: [],
+          missingOptional: [],
+          disclosures: [],
+        },
+      },
+    });
+    render(<CupboardDetailPage />);
+
+    fireEvent.click(await screen.findByTestId('cupboard-detail-action'));
+    const panel = await screen.findByTestId('cupboard-capability-review');
+    expect(panel.getAttribute('data-stage')).toBe('blocked');
+    expect(screen.getByTestId('cupboard-capability-gap').textContent).toContain('Required gap');
+    expect(h.toastError).not.toHaveBeenCalled();
   });
 });
 

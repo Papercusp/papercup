@@ -16,8 +16,10 @@
  *     dep-check → ~/.papercusp/blueprints/<id>/, the installed tier of the
  *     local→installed→built-in resolution —
  *     official-blueprints-cupboard-publish-2026-06-05 P-004/D-001/D-004).
- *     Declared plugin deps are NOT auto-installed from this button (consent
- *     stays explicit — the toast lists what's installable instead).
+ *     The first pass never auto-installs declared plugin/provider deps. When an
+ *     identity grants capability classes, the same CTA becomes an explicit
+ *     provider choice → full transitive review → consent flow before any
+ *     provider package, binding, or identity bytes are written.
  *   - plugin / pack Install → POST /api/cupboard/install-plugin (clone the
  *     listing's repo into global-plugins — EI-27). The global install only
  *     REGISTERS the unit; the manifest's requested capabilities are surfaced in
@@ -37,6 +39,12 @@ import {
   Download, MonitorDown,
 } from 'lucide-react';
 import type { HarnessListing, ListingAction } from '@papercusp/operator-core/lib/cupboard/types';
+import type {
+  CapabilityGrantResolutionVerdict,
+  CapabilityProviderCandidate,
+  ResolvedCapabilityGrant,
+} from '@papercusp/operator-core/lib/cupboard/capability-grant-resolver';
+import type { CapabilityProviderPackageClosureReview } from '@papercusp/operator-core/lib/cupboard/capability-provider-package-closure';
 import {
   appPlatformFamilies,
   viewerOsFamily,
@@ -63,6 +71,8 @@ import ThemeInstall from './ThemeInstall';
 import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
 import { Button } from '../../harness/Button';
 import { Tooltip } from '../../harness/Tooltip';
+import { Select } from '../../harness/Select';
+import { useResolvedHarnessSlug } from '../../adv/create/use-create-data';
 import { toast } from 'sonner';
 
 interface ProvidedEvent { family: string; keyTemplate: string; describe: string | null }
@@ -89,6 +99,63 @@ interface PublicRubricManifest {
   description: string;
   ratingScale: string[];
   criteria: PublicRubricCriterion[];
+}
+
+interface BlueprintCapabilityFlow {
+  stage: 'choice' | 'consent' | 'blocked' | 'done';
+  message: string;
+  grants: CapabilityGrantResolutionVerdict | null;
+  review: CapabilityProviderPackageClosureReview | null;
+}
+
+interface BlueprintInstallResponse {
+  ok?: boolean;
+  id?: string;
+  version?: string | null;
+  depCheck?: { installable?: { plugins?: string[] } } | null;
+  capabilityGrants?: CapabilityGrantResolutionVerdict | null;
+  capabilityProviderReview?: CapabilityProviderPackageClosureReview | null;
+  error?: string;
+  detail?: string;
+  data?: unknown;
+}
+
+function capabilityPayload(value: unknown): {
+  grants: CapabilityGrantResolutionVerdict | null;
+  review: CapabilityProviderPackageClosureReview | null;
+} {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return { grants: null, review: null };
+  }
+  const record = value as Record<string, unknown>;
+  const nested = record.capabilityGrants;
+  const grants = nested && typeof nested === 'object'
+    ? nested as CapabilityGrantResolutionVerdict
+    : Array.isArray(record.requirements)
+      ? record as unknown as CapabilityGrantResolutionVerdict
+      : null;
+  const review = record.capabilityProviderReview && typeof record.capabilityProviderReview === 'object'
+    ? record.capabilityProviderReview as CapabilityProviderPackageClosureReview
+    : null;
+  return { grants, review };
+}
+
+function providerRef(candidate: Pick<CapabilityProviderCandidate, 'providerPackage' | 'providerVersion'>): string {
+  return `${candidate.providerPackage}@${candidate.providerVersion}`;
+}
+
+function selectedProviders(
+  grants: CapabilityGrantResolutionVerdict | null,
+  previous: Record<string, string>,
+): Record<string, string> {
+  if (!grants) return previous;
+  const next = { ...previous };
+  for (const requirement of grants.requirements) {
+    if (requirement.selection) {
+      next[requirement.classRef] = providerRef(requirement.selection);
+    }
+  }
+  return next;
 }
 
 /**
@@ -136,6 +203,9 @@ export default function CupboardDetailPage() {
   // install) and the claim CTA — render-lifecycle state, not URL state.
   const [busy, setBusy] = useState(false);
   const [claiming, setClaiming] = useState(false);
+  const activeHarnessSlug = useResolvedHarnessSlug();
+  const [capabilityFlow, setCapabilityFlow] = useState<BlueprintCapabilityFlow | null>(null);
+  const [capabilityProviderSelections, setCapabilityProviderSelections] = useState<Record<string, string>>({});
 
   const fetchListing = useCallback(() => {
     if (!id) return;
@@ -206,28 +276,73 @@ export default function CupboardDetailPage() {
     void installPluginFromCupboard();
   };
 
-  const installBlueprintFromCupboard = async () => {
+  const installBlueprintFromCupboard = async (installReviewedProviders = false) => {
     if (!listing || busy) return;
     setBusy(true);
     try {
       const r = await fetch('/api/cupboard/install-blueprint', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        // No installPlugins:true — plugin-capability consent stays an explicit
-        // per-plugin act; the toast lists what's installable instead.
-        body: JSON.stringify({ listingId: listing.id }),
+        body: JSON.stringify({
+          listingId: listing.id,
+          ...(activeHarnessSlug ? { potSlug: activeHarnessSlug } : {}),
+          ...(Object.keys(capabilityProviderSelections).length > 0
+            ? { capabilityProviderSelections }
+            : {}),
+          // This second pass is reachable only after the complete provider
+          // closure has rendered below. The server re-reviews and pins every
+          // package receipt before it writes bindings or identity bytes.
+          ...(installReviewedProviders ? { installPlugins: true } : {}),
+        }),
       });
-      const d = (await r.json().catch(() => ({}))) as {
-        ok?: boolean;
-        id?: string;
-        version?: string | null;
-        depCheck?: { installable?: { plugins?: string[] } } | null;
-        error?: string;
-        detail?: string;
-      };
+      const d = (await r.json().catch(() => ({}))) as BlueprintInstallResponse;
       if (!r.ok || !d.ok) {
+        const payload = capabilityPayload(d.data);
+        if (payload.grants) {
+          setCapabilityProviderSelections((previous) => selectedProviders(payload.grants, previous));
+        }
+        if (d.error === 'capability_provider_choice_required') {
+          setCapabilityFlow({
+            stage: 'choice',
+            message: 'Choose providers for every required capability, then review the exact package closure.',
+            ...payload,
+          });
+          return;
+        }
+        if (d.error === 'capability_provider_install_consent_required') {
+          setCapabilityFlow({
+            stage: 'consent',
+            message: 'Review the complete transitive package and permission set before installing.',
+            ...payload,
+          });
+          return;
+        }
+        if (
+          d.error === 'capability_provider_unavailable' ||
+          d.error === 'capability_provider_package_unavailable' ||
+          d.error === 'capability_grants_need_pot'
+        ) {
+          setCapabilityFlow({
+            stage: 'blocked',
+            message: d.error === 'capability_grants_need_pot'
+              ? 'This identity grants capability classes. Select a pot in the workspace first, then return to install it.'
+              : d.detail ?? 'A required capability provider is unavailable; the identity was not installed.',
+            ...payload,
+          });
+          return;
+        }
         toast.error(`Install failed: ${d.error ?? `HTTP ${r.status}`}${d.detail ? ` — ${d.detail}` : ''}`);
         return;
+      }
+      const installedPayload = capabilityPayload(d);
+      if (installedPayload.grants) {
+        setCapabilityFlow({
+          stage: 'done',
+          message: 'Capability bindings and the reviewed provider packages were installed with this identity.',
+          ...installedPayload,
+        });
+      } else {
+        setCapabilityFlow(null);
       }
       const installable = d.depCheck?.installable?.plugins ?? [];
       toast.success(
@@ -241,6 +356,18 @@ export default function CupboardDetailPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const chooseCapabilityProvider = (classRef: string, value: string) => {
+    setCapabilityProviderSelections((previous) => ({ ...previous, [classRef]: value }));
+    setCapabilityFlow((previous) => previous
+      ? {
+          ...previous,
+          stage: 'choice',
+          review: null,
+          message: 'Provider choice changed. Review the exact package closure before installing.',
+        }
+      : previous);
   };
 
   // Claim (comb-hive-native-sharing P-003, O-1 per D-005): offered on unclaimed
@@ -697,6 +824,15 @@ export default function CupboardDetailPage() {
           <ThemeInstall listing={listing} />
         )}
 
+        {kind === 'blueprint' && capabilityFlow && (
+          <BlueprintCapabilityReview
+            flow={capabilityFlow}
+            selections={capabilityProviderSelections}
+            targetPot={activeHarnessSlug}
+            onSelect={chooseCapabilityProvider}
+          />
+        )}
+
         {/* Per-listing primary CTA — hidden for legacy harness rows (per-harness
             join is retired; nothing to act on), for knowledge packs (the
             KnowledgePackInstall panel owns their Install action), and for an
@@ -707,10 +843,25 @@ export default function CupboardDetailPage() {
           <Button
             size="lg"
             variant="primary"
-            onClick={handleAction}
-            disabled={busy}
+            disabled={busy || (
+              capabilityFlow?.stage === 'choice' &&
+              !!capabilityFlow.grants?.requirements.some(
+                (requirement) =>
+                  !requirement.optional &&
+                  requirement.state === 'choosable' &&
+                  !capabilityProviderSelections[requirement.classRef],
+              )
+            )}
             data-testid="cupboard-detail-action"
             data-action={action}
+            data-capability-stage={capabilityFlow?.stage ?? 'initial'}
+            onClick={() => {
+              if (kind === 'blueprint') {
+                void installBlueprintFromCupboard(capabilityFlow?.stage === 'consent');
+                return;
+              }
+              handleAction();
+            }}
             style={{
               cursor: busy ? 'default' : 'pointer',
               opacity: busy ? 0.7 : 1,
@@ -718,6 +869,10 @@ export default function CupboardDetailPage() {
           >
             {busy ? (
               <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Installing {kind}…</>
+            ) : capabilityFlow?.stage === 'choice' ? (
+              <><ShieldCheck size={14} /> Review provider set</>
+            ) : capabilityFlow?.stage === 'consent' ? (
+              <><ShieldCheck size={14} /> Install reviewed set</>
             ) : (
               <><ActionIcon action={action} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : ''}</>
             )}
@@ -780,6 +935,200 @@ export default function CupboardDetailPage() {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+function BlueprintCapabilityReview({
+  flow,
+  selections,
+  targetPot,
+  onSelect,
+}: {
+  flow: BlueprintCapabilityFlow;
+  selections: Record<string, string>;
+  targetPot: string | null;
+  onSelect: (classRef: string, provider: string) => void;
+}) {
+  const requirements = flow.grants?.requirements ?? [];
+  const stillMissing = flow.review
+    ? [
+        ...flow.review.stillMissing.tools.map((value) => `tool:${value}`),
+        ...flow.review.stillMissing.packs.map((value) => `pack:${value}`),
+        ...flow.review.stillMissing.plugins.map((value) => `plugin:${value}`),
+        ...flow.review.stillMissing.events.map((value) => `event:${value.family}${value.optional ? ' (optional)' : ''}`),
+      ]
+    : [];
+  return (
+    <section
+      data-testid="cupboard-capability-review"
+      data-stage={flow.stage}
+      style={{
+        marginTop: SIZES.md,
+        padding: SIZES.md,
+        border: `1px solid ${flow.stage === 'blocked' ? 'var(--bad)' : COLORS.border}`,
+        borderRadius: RADIUS.lg,
+        background: COLORS.surface,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.text }}>
+        <ShieldCheck size={15} />
+        <strong style={{ fontFamily: FONTS.ui, fontSize: SIZES.sm }}>Capability provider review</strong>
+        {targetPot && <code data-testid="cupboard-capability-target-pot" style={{ fontSize: 11 }}>{targetPot}</code>}
+      </div>
+      <p style={{ margin: '7px 0 0', color: COLORS.textMuted, fontFamily: FONTS.ui, fontSize: 12 }}>
+        {flow.message}
+      </p>
+
+      {requirements.length > 0 && (
+        <div data-testid="cupboard-capability-requirements" style={{ display: 'grid', gap: 9, marginTop: 12 }}>
+          {requirements.map((requirement) => (
+            <CapabilityRequirementRow
+              key={requirement.classRef}
+              requirement={requirement}
+              value={selections[requirement.classRef] ?? ''}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
+
+      {flow.review && (
+        <div data-testid="cupboard-capability-provider-closure" style={{ marginTop: 14 }}>
+          <strong style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.text }}>
+            Full transitive provider set · {flow.review.units.length} package{flow.review.units.length === 1 ? '' : 's'}
+          </strong>
+          {flow.review.roots.map((root) => (
+            <div key={`${root.providerPackage}@${root.providerVersion}`} style={{ marginTop: 6, fontSize: 11.5, color: COLORS.textMuted }}>
+              <code>{root.providerPackage}@{root.providerVersion}</code> provides {root.classRefs.join(', ')} · {root.status}
+            </div>
+          ))}
+          <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+            {flow.review.units.map((unit) => {
+              const deps = unit.review.dependencies;
+              const dependencyLabels = [
+                ...deps.tools.map((value) => `tool:${value}`),
+                ...deps.packs.map((value) => `pack:${value}`),
+                ...deps.plugins.map((value) => `plugin:${value}`),
+                ...deps.events.map((value) => `event:${value.family}${value.optional ? ' (optional)' : ''}`),
+              ];
+              return (
+                <details key={`${unit.name}@${unit.version}`} data-testid="cupboard-capability-provider-package" open>
+                  <summary style={{ cursor: 'pointer', color: COLORS.text, fontFamily: FONTS.mono, fontSize: 11.5 }}>
+                    {unit.name}@{unit.version} · {unit.kind}
+                  </summary>
+                  <div style={{ margin: '5px 0 0 16px', color: COLORS.textMuted, fontSize: 11.5 }}>
+                    <div>Permissions: {unit.review.capabilities.length > 0 ? unit.review.capabilities.join(', ') : 'none declared'}</div>
+                    <div>Dependencies: {dependencyLabels.length > 0 ? dependencyLabels.join(', ') : 'none'}</div>
+                    <div>Trigger pack: {unit.review.triggerPack
+                      ? `${unit.review.triggerPack.targetCount} targets · ${unit.review.triggerPack.bindingCount} bindings · ${unit.review.triggerPack.edgeCount} edges · disarmed`
+                      : 'none'}</div>
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+          {flow.review.advisory.length > 0 && (
+            <ul data-testid="cupboard-capability-review-advisory" style={{ color: 'var(--warn)', fontSize: 11.5 }}>
+              {flow.review.advisory.map((message) => <li key={message}>{message}</li>)}
+            </ul>
+          )}
+          {stillMissing.length > 0 && (
+            <p data-testid="cupboard-capability-review-missing" style={{ color: 'var(--bad)', fontSize: 11.5 }}>
+              Still missing from the reviewed closure: {stillMissing.join(', ')}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CapabilityRequirementRow({
+  requirement,
+  value,
+  onSelect,
+}: {
+  requirement: ResolvedCapabilityGrant;
+  value: string;
+  onSelect: (classRef: string, provider: string) => void;
+}) {
+  const candidates = requirement.candidates ?? [];
+  const hasSelection = value.length > 0 || requirement.selection != null;
+  const visibleGap = requirement.state === 'absent' || (
+    requirement.optional && requirement.state !== 'satisfied' && !hasSelection
+  );
+  return (
+    <div
+      data-testid="cupboard-capability-requirement"
+      data-class-ref={requirement.classRef}
+      data-state={requirement.state}
+      data-optional={requirement.optional ? 'true' : 'false'}
+      style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 8 }}
+    >
+      <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
+        <code style={{ fontSize: 11.5 }}>{requirement.classRef}</code>
+        <span style={requirement.optional ? optionalDepStyle : requiredDepStyle}>
+          {requirement.optional ? 'optional' : 'required'}
+        </span>
+        <span style={{ color: requirement.state === 'absent' ? 'var(--bad)' : COLORS.textMuted, fontSize: 11.5 }}>
+          {requirement.state}
+        </span>
+        {requirement.state === 'satisfied' && requirement.binding && (
+          <span style={{ color: COLORS.textMuted, fontSize: 11.5 }}>
+            {requirement.binding.providerPackage}@{requirement.binding.providerVersion} (existing pot binding)
+          </span>
+        )}
+        {requirement.state === 'choosable' && (
+          <Select
+            value={value}
+            onChange={(provider) => onSelect(requirement.classRef, provider)}
+            options={candidates.map((candidate) => ({
+              value: providerRef(candidate),
+              label: providerRef(candidate),
+            }))}
+            placeholder="Choose provider"
+            ariaLabel={`Provider for ${requirement.classRef}`}
+            testId={`cupboard-capability-select-${requirement.classRef}`}
+          />
+        )}
+      </div>
+      {requirement.selectionProblem && (
+        <div style={{ color: 'var(--warn)', fontSize: 11.5, marginTop: 4 }}>{requirement.selectionProblem}</div>
+      )}
+      {visibleGap && (
+        <div data-testid="cupboard-capability-gap" style={{ color: requirement.optional ? 'var(--warn)' : 'var(--bad)', fontSize: 11.5, marginTop: 4 }}>
+          {requirement.optional
+            ? 'Optional gap: the identity can install, but this capability remains unavailable.'
+            : 'Required gap: installation is blocked until a conformant provider exists.'}
+        </div>
+      )}
+      {candidates.length > 0 && (
+        <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'grid', gap: 4 }}>
+          {candidates.map((candidate) => {
+            const ref = providerRef(candidate);
+            const publisherDefault = requirement.selection?.reason === 'publisher-suggestion' &&
+              providerRef(requirement.selection) === ref;
+            return (
+              <li
+                key={ref}
+                data-testid="cupboard-capability-candidate"
+                data-provider={ref}
+                data-default={publisherDefault ? 'publisher' : undefined}
+                style={{ color: COLORS.textMuted, fontSize: 11.5 }}
+              >
+                <code>{ref}</code>{publisherDefault ? ' · publisher default' : ''} · conformance {candidate.conformanceStatus}
+                {' · '}behavior {candidate.behavioralStatus}
+                {' · '}structural {candidate.passingStructuralRuns}/{candidate.totalStructuralRuns}
+                {' · '}adoption {candidate.activePotBindings == null ? 'unknown' : candidate.activePotBindings}
+                {' · '}price {candidate.price == null
+                  ? 'unknown'
+                  : `${candidate.price.amount} ${candidate.price.currency}/${candidate.price.billingUnit}`}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

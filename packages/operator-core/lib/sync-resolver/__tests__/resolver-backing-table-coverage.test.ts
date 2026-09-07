@@ -203,8 +203,6 @@ const PUSH_EXEMPT: Record<string, string> = {
 
   'learning.dream :: harness_shared.routines':
     'Routine ticks are heartbeat-heavy. Dream control, routines:set/group-set and production cycle completion push learning.dream after committed changes; bridge this table if these producer pushes are removed.',
-  'learning.dream :: harness_shared.dream_runs':
-    'The production Dream adapter pushes learning.dream after every committed run/phase mutation, including reservation and settlement. Add a table bridge if another live writer bypasses that adapter.',
   'learning.dream :: harness_shared.learning_spend_events':
     'The production Dream adapter pushes learning.dream after committed recordDreamRunSpend; only dream:* events affect this query. Bridge if another Dream spend writer is added.',
   'learning.dream :: harness_shared.learning_pot_scope':

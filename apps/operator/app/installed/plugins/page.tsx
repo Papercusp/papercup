@@ -39,6 +39,27 @@ interface RuntimeStatusRow {
   loadedFor: string[];
 }
 
+interface CapabilityUnsatisfiedOutcome {
+  code: 'capability_unsatisfied';
+  potSlug: string;
+  classRef: string;
+  providerPackage: string;
+  providerVersion: string;
+  requiredBy: string[];
+  optionalFor: string[];
+  routes: ['operator-notify', 'suggest-provider', 'needs_human'];
+  detail: string;
+}
+
+interface ProviderUninstallReview {
+  providerPackage: string;
+  providerVersion: string;
+  bindings: Array<{ potSlug: string; classRef: string }>;
+  dependents: Array<{ potSlug: string; identityRef: string; classRef: string; optional: boolean }>;
+  capabilityUnsatisfied: CapabilityUnsatisfiedOutcome[];
+  reviewToken: string;
+}
+
 export default function InstalledPluginsPage() {
   const t = useLexicon();
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
@@ -48,6 +69,7 @@ export default function InstalledPluginsPage() {
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
+  const [uninstallOutcomes, setUninstallOutcomes] = useState<CapabilityUnsatisfiedOutcome[]>([]);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // pluginEnables is in Zero already (pluginEnables.byWorkspace). The
@@ -110,7 +132,7 @@ export default function InstalledPluginsPage() {
       const lines = u.capChange.added.map((c) => `  • ${c}`).join('\n');
       const ok = await askConfirm({
         title: `${slug}: v${u.installed} → v${u.available}`,
-        description: `New capabilities this version requests:\n${lines}`,
+        body: `New capabilities this version requests:\n${lines}`,
         confirmLabel: 'Continue update',
       });
       if (!ok) return;
@@ -128,24 +150,69 @@ export default function InstalledPluginsPage() {
   async function uninstall(slug: string) {
     const ok = await askConfirm({
       title: `Remove ${slug}?`,
-      description: `Plugin will be disabled in every ${t('pot', { lower: true })} it was enabled in.`,
+      body: `Plugin will be disabled in every ${t('pot', { lower: true })} it was enabled in.`,
       confirmLabel: 'Remove',
       destructive: true,
     });
     if (!ok) return;
     setBusy(slug);
     try {
-      const r = await fetch('/api/plugins/uninstall', {
+      let r = await fetch('/api/plugins/uninstall', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ slug }),
       });
-      const d = await r.json();
+      let d = await r.json() as {
+        ok?: boolean;
+        error?: string;
+        detail?: string;
+        review?: ProviderUninstallReview;
+        capabilityUnsatisfied?: CapabilityUnsatisfiedOutcome[];
+      };
+      if (r.status === 409 && d.error === 'provider_has_capability_dependents' && d.review) {
+        const review = d.review;
+        const proceed = await askConfirm({
+          title: `${slug} provides capabilities to ${review.bindings.length} pot binding${review.bindings.length === 1 ? '' : 's'}`,
+          body: (
+            <div data-testid="plugin-uninstall-dependent-review" style={{ display: 'grid', gap: 8 }}>
+              <p style={{ margin: 0 }}>
+                Removing <code>{review.providerPackage}@{review.providerVersion}</code> immediately unbinds these capability classes.
+                Each affected live-agent path is represented as a typed <code>capability_unsatisfied</code> outcome instead of an unnamed missing tool.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                {review.capabilityUnsatisfied.map((outcome) => (
+                  <li key={`${outcome.potSlug}:${outcome.classRef}`}>
+                    <code>{outcome.potSlug}</code> · <code>{outcome.classRef}</code>
+                    {outcome.requiredBy.length > 0 ? ` · required by ${outcome.requiredBy.join(', ')}` : ''}
+                    {outcome.optionalFor.length > 0 ? ` · optional for ${outcome.optionalFor.join(', ')}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ),
+          confirmLabel: 'Unbind and remove',
+          destructive: true,
+        });
+        if (!proceed) return;
+        r = await fetch('/api/plugins/uninstall', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slug, capabilityReviewToken: review.reviewToken }),
+        });
+        d = await r.json() as typeof d;
+      }
       if (!r.ok || !d.ok) {
-        toast.error(d.error ?? 'uninstall failed');
+        toast.error(`${d.error ?? 'uninstall failed'}${d.detail ? ` — ${d.detail}` : ''}`);
         return;
       }
-      toast.success(`${slug} removed`);
+      const outcomes = d.capabilityUnsatisfied ?? [];
+      setUninstallOutcomes(outcomes);
+      toast.success(
+        `${slug} removed` +
+        (outcomes.length > 0
+          ? ` — ${outcomes.length} capability binding${outcomes.length === 1 ? '' : 's'} now report capability_unsatisfied.`
+          : ''),
+      );
       setTimeout(() => setReloadKey((k) => k + 1), 400);
     } finally {
       setBusy(null);
@@ -214,6 +281,22 @@ export default function InstalledPluginsPage() {
           )}
         </div>
       </section>
+      {uninstallOutcomes.length > 0 && (
+        <section className="pc-card" data-testid="plugin-uninstall-capability-outcomes" style={{ padding: 12, marginBottom: 12 }}>
+          <p className="pc-eyebrow" style={{ marginBottom: 8 }}>Capability bindings removed</p>
+          <p style={{ margin: '0 0 8px' }}>
+            The uninstall returned <code>capability_unsatisfied</code> for these classes, with the defined next routes:
+            operator notification, provider suggestion, or <code>needs_human</code>.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            {uninstallOutcomes.map((outcome) => (
+              <li key={`${outcome.potSlug}:${outcome.classRef}`}>
+                <code>{outcome.potSlug}</code> · <code>{outcome.classRef}</code> — {outcome.detail}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {runtimeStatus.length > 0 && (
         <section className="pc-card" style={{ padding: 12, marginBottom: 12 }}>
           <p className="pc-eyebrow" style={{ marginBottom: 8 }}>Plugin runtime status</p>
