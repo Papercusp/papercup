@@ -31,6 +31,7 @@ import {
   releaseIssue,
   searchIssuesForDedup,
   findIssuesByWatchdogKeys,
+  findIssuesByToolFailureClassKeys,
   updateIssue,
   mergeIssuePayload,
   tagIssue,
@@ -404,7 +405,7 @@ export interface CoalesceEffect {
    *  open twin by exact normalized titleKey. Deterministic like a key match
    *  (same normalization both sides), narrower than a derived guess.
    *  A derived fold is a judgement and can be wrong; the other two cannot. */
-  identity: 'condition-key' | 'derived' | 'title-key';
+  identity: 'condition-key' | 'class-key' | 'derived' | 'title-key';
   /** P-004: present when the survivor row had been watchdog-AUTO-RESOLVED and
    *  this exact-key recurrence REOPENED it (resolved → open) before coalescing.
    *  The auto-close was a dedup marker, not a completion — recurrence voids it. */
@@ -557,6 +558,8 @@ export interface CaptureDeps {
    *  issues-engineer.ts implementations; injectable so tests drive the coalesce
    *  path without PG. */
   findIssuesByWatchdogKeys?: (keys: string[]) => Promise<EngineerIssue[]>;
+  /** Stable tool-failure class lookup; unlike watchdog keys this spans message shapes. */
+  findIssuesByToolFailureClassKeys?: (keys: string[]) => Promise<EngineerIssue[]>;
   updateIssuePatch?: (
     id: string,
     patch: {
@@ -640,6 +643,7 @@ const defaultDeps: CaptureDeps = {
   searchIssues: searchIssuesForDedup,
   createIssue,
   getIssue,
+  findIssuesByToolFailureClassKeys,
   releaseIssue,
   setIssueState,
   loadRubric: getRubric,
@@ -751,6 +755,23 @@ function sameWatchdogIdentity(
     payload.watchdogKey === input.watchdogKey &&
     effectiveOrigin(issue.signalOrigin) === origin &&
     issueWatchdogLane(issue) === effectiveWatchdogLane(input) &&
+    issueScopeMatchesCapture(issue, input.scope)
+  );
+}
+
+/** Exact stable class identity check after the broad class-key lookup. */
+function sameToolFailureClassIdentity(
+  issue: EngineerIssue,
+  classKey: string,
+  input: Pick<CaptureImprovementInput, 'origin' | 'scope'>,
+  origin: string,
+): boolean {
+  const payload = (issue.payload as Record<string, unknown> | null) ?? {};
+  const probation = toolFailureProbationOf(payload);
+  return (
+    probation?.classKey === classKey &&
+    isWatchdogNonTerminal(issue) &&
+    effectiveOrigin(issue.signalOrigin) === origin &&
     issueScopeMatchesCapture(issue, input.scope)
   );
 }
@@ -903,6 +924,9 @@ export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
 interface ToolFailureProbationPayload {
   state?: 'probation' | 'promoted';
   reporters?: string[];
+  classKey?: string;
+  contractFingerprint?: string;
+  deployedRevision?: string;
   correlationFingerprint?: string;
   intendedKind?: 'bug' | 'change';
   [key: string]: unknown;
@@ -1179,6 +1203,8 @@ function buildCoalesceEffect(args: {
   const identityClause =
     identity === 'title-key'
       ? `exact titleKey match — system filer \`${input.foundDuring ?? 'system:?'}\`, no conditionKey supplied`
+      : identity === 'class-key'
+        ? `stable tool-failure class identity carried by \`${input.watchdogKey}\``
       : fold
         ? `derived identity — ${fold.rule}` +
           (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
@@ -1315,6 +1341,7 @@ async function coalesceWatchdogWinner(args: {
   topics: string[];
   alreadyDecided?: AlreadyDecidedRecall[];
   queueAdmission?: IssueAdmissionPressure;
+  identityRoute?: CoalesceEffect['identity'];
 }): Promise<CaptureImprovementResult> {
   const { prior, input, deps, identity, possibleDuplicates, dedupCoverage, topics, alreadyDecided, queueAdmission } = args;
   const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
@@ -1399,7 +1426,14 @@ async function coalesceWatchdogWinner(args: {
     ok: true,
     created: false,
     reason: 'coalesced',
-    coalescedOnto: buildCoalesceEffect({ finalIssue, prior, input, repeatCount, bodyPersisted }),
+    coalescedOnto: buildCoalesceEffect({
+      finalIssue,
+      prior,
+      input,
+      repeatCount,
+      bodyPersisted,
+      identityRoute: args.identityRoute,
+    }),
     kind: finalIssue.kind as 'bug' | 'change',
     improvementKind: input.kind,
     issue: finalIssue,
@@ -1495,8 +1529,64 @@ export async function captureImprovement(
   // a sentinel re-filing a standing condition on a stable key created a fresh critical row
   // on every pass the search happened to be down: measured 459 open copies of one
   // red-queen title, ~25% of the whole bug backlog duplicated this way.
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
   let exactKeyIssues: EngineerIssue[] = [];
   let exactKeyLookupFailed = false;
+  let classKeyLookupFailed = false;
+  let classKeyIssues: EngineerIssue[] = [];
+  if (!isObservation && incomingProbation?.classKey) {
+    classKeyIssues = await (
+      deps.findIssuesByToolFailureClassKeys ?? findIssuesByToolFailureClassKeys
+    )([incomingProbation.classKey]).catch(() => {
+      classKeyLookupFailed = true;
+      return [] as EngineerIssue[];
+    });
+    const classPrior = classKeyIssues.find((issue) =>
+      sameToolFailureClassIdentity(issue, incomingProbation.classKey!, input, origin),
+    );
+    if (classPrior && incomingProbation.state === 'promoted') {
+      const priorPayload = (classPrior.payload as Record<string, unknown> | null) ?? {};
+      const priorProbation = toolFailureProbationOf(priorPayload);
+      if (issueWatchdogLane(classPrior) === 'observation' && priorProbation?.state === 'probation') {
+        const promoted = await promoteToolFailureProbation(classPrior, input, deps, classKeyIssues);
+        if (promoted) {
+          await appendCaptureOccurrence(
+            deps,
+            input,
+            identity,
+            'promoted',
+            promoted.id,
+            [],
+            skippedDedupCoverage,
+            harnessFromScope(promoted.scope),
+          );
+          return {
+            ok: true,
+            created: false,
+            reason: 'promoted',
+            kind: promoted.kind as 'bug' | 'change',
+            improvementKind: input.kind,
+            issue: promoted,
+            topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
+            possibleDuplicates: [],
+            dedupCoverage: skippedDedupCoverage,
+          };
+        }
+      }
+    }
+    if (classPrior?.state === 'open') {
+      return coalesceWatchdogWinner({
+        prior: classPrior,
+        input,
+        deps,
+        identity,
+        possibleDuplicates: [],
+        dedupCoverage: skippedDedupCoverage,
+        topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
+        identityRoute: 'class-key',
+      });
+    }
+  }
   if (!isObservation && input.watchdogKey) {
     exactKeyIssues = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
       () => {
@@ -1804,7 +1894,6 @@ export async function captureImprovement(
   // existing probation row in place instead of letting the key-aware dedup net
   // treat the two fingerprints as distinct work. The exact-title + probation
   // + origin/scope rails keep this fallback narrower than ordinary fuzzy dedup.
-  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
   if (!isObservation && incomingProbation?.state === 'promoted') {
     const exactTitleProbation = candidates.find((candidate) => {
       const payload = (candidate.payload as Record<string, unknown> | null) ?? {};
@@ -1881,7 +1970,11 @@ export async function captureImprovement(
   const dedupCoverage: DedupCoverage = {
     lexical: lexicalLeg,
     semantic: semanticLeg,
-    degraded: lexicalLeg === 'unavailable' || semanticLeg === 'unavailable' || exactKeyLookupFailed,
+    degraded:
+      lexicalLeg === 'unavailable' ||
+      semanticLeg === 'unavailable' ||
+      exactKeyLookupFailed ||
+      classKeyLookupFailed,
   };
 
   // "Already decided" recall (P-003): signature-match this capture against the
