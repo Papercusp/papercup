@@ -84,6 +84,7 @@ class DreamMetricsFold {
   private eligible = 0;
   private proposals = 0;
   private reviewed = 0;
+  private reviewPassed = 0;
   private assessed = 0;
   private compared = 0;
   private disagreement = 0;
@@ -118,6 +119,7 @@ class DreamMetricsFold {
     const proposal = run.outcome?.verdict === 'insight';
     if (proposal) this.proposals++;
     if (run.review) this.reviewed++;
+    if (run.review?.verdict === 'accept') this.reviewPassed++;
 
     if (provenance) {
       increment(this.configurations, JSON.stringify([
@@ -274,6 +276,9 @@ class DreamMetricsFold {
       funnel: {
         statuses: this.statuses, terminal: this.attempts - this.statuses.running!, eligibleAttempts: this.eligible,
         proposalAttempts: this.proposals, reviewedAttempts: this.reviewed, assessedAttempts: this.assessed,
+        reviewPassedAttempts: this.reviewPassed,
+        reviewPassRate: ratio(this.reviewPassed, this.reviewed),
+        dedupeSurvival: ratio(this.statuses.accepted!, this.reviewPassed),
         routedAttempts: this.routed, uniqueRoutedArtifacts: this.routedRefs.size, qualifiedFamilies: this.qualified.size,
         proposalsPerEligibleAttempt: ratio(this.proposals, this.eligible),
         qualifiedFamiliesPerEligibleAttempt: ratio(this.qualified.size, this.eligible),

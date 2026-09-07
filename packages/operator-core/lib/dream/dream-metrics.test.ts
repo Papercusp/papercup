@@ -62,6 +62,16 @@ describe('Dream metrics reconcile evidence rather than wording, retries or missi
     expect(report.quality.maintainability).toEqual({ supported: 0, disproven: 0, unknown: 2 });
   });
 
+  it('separates a passing review from a failed sink in the displayed funnel', () => {
+    const accepted = row('accepted'), sinkError = row('sink-error', 'error'), rejected = row('rejected', 'rejected');
+    rejected.run.review = { ...rejected.run.review, verdict: 'reject' };
+    const report = computeDreamMetrics([accepted, sinkError, rejected], scope);
+    expect(report.funnel.reviewPassedAttempts).toBe(2);
+    expect(report.funnel.reviewPassRate).toEqual({ numerator: 2, denominator: 3, value: 2 / 3 });
+    expect(report.funnel.dedupeSurvival).toEqual({ numerator: 1, denominator: 2, value: 0.5 });
+    expect(computeDreamMetrics([], scope).funnel.reviewPassRate.value).toBeNull();
+  });
+
   it('keeps unassessed quality unknown and never infers a family from a text hash', () => {
     const report = computeDreamMetrics([row('one'), row('same-words')], scope);
     expect(report.novelty.identifiedFamilies).toBe(0);
