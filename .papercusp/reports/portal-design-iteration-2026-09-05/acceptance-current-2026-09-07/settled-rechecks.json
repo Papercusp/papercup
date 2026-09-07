@@ -1,0 +1,47 @@
+{
+  "rows": [
+    {
+      "app": "learning",
+      "at": "2026-09-07T02:58:05.153Z",
+      "text": "Learning\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡31 AGENTS RUNNING · 26 THINKING\n723 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nLearning could not be displayed\n\nThis surface failed to load. The rest of the portal is unaffected — switch tabs and come back, or reload the page. The details are in the browser console.",
+      "theme": "dark",
+      "overflow": false,
+      "consoleErrors": [
+        "TypeError: Cannot read properties of undefined (reading 'byState')\n    at rQ (http://127.0.0.1:3081/_next/static/chunks/1639.30bd9a34df6520a9.js:1217:24694)\n    at ax (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js:1:53777)\n    at o4 (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js:1:74249)\n    at ih (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js:1:85938)\n    at sy (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fd",
+        "[operator-surface] crashed: TypeError: Cannot read properties of undefined (reading 'byState')\n    at rQ (http://127.0.0.1:3081/_next/static/chunks/1639.30bd9a34df6520a9.js:1217:24694)\n    at ax (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js:1:53777)\n    at o4 (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js:1:74249)\n    at ih (http://127.0.0.1:3081/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js:1:85938)\n    at sy (http://127.0.0.1:3081/_next/sta"
+      ]
+    },
+    {
+      "app": "settings",
+      "at": "2026-09-07T02:58:12.311Z",
+      "text": "Settings\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡31 AGENTS RUNNING · 24 THINKING\n736 PROCESSES\nStart voice chat\nDownload TUI\n87\nPortal\n\nHow this portal looks on this device, and which agent answers for the workspace. Everything else is the workspace's own Settings, below.\n\nAPPEARANCE\n\nTheme for the portal. System follows your operating system.\n\nAsk Papercup\n\nWhich agent and model answers questions asked from the search bar.\n\nModel\nUse the default (sonnet[1m]:high)\nquick — claude-opus-5:xhigh\nstandard — claude-opus-5:xhigh\nsonnet-high — claude-opus-5:xhigh\ndeep — claude-opus-5:xhigh\nmax — claude-opus-5:xhigh\nox-alpha — openrouter/stealth/ox-alpha:max\nSomething else…\nBackend\nUse the default (claude-code)\nclaude-code\nomp\ncodex\n\nThe operator’s own default backend is claude-code. Ask Papercup does not follow it — it runs on the backend stored here.\n\nThis is a workspace setting, not a personal one — it changes which agent answers for everyone who uses this portal.\n\nSave\nSEARCH\nIDENTITY & DEVICES\nProfile\nUser preferences\nPersonal Vault\nMobile access\nASSISTANTS\nPapercup agent\nPot customization\nTrus",
+      "theme": "dark",
+      "overflow": false,
+      "consoleErrors": []
+    },
+    {
+      "app": "plans",
+      "at": "2026-09-07T02:58:19.493Z",
+      "text": "Plans\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡31 AGENTS RUNNING · 24 THINKING\n734 PROCESSES\nStart voice chat\nDownload TUI\n87\nPLAN WORKSPACE\nPlans\nTrack active work, decisions, and live progress in one place.\n445\nSHOWN\nNext run · Default model · claude · default · warm · safe-high\nClean up 445 shown plans\nReconciles stale statuses, cleared blockers & finished work · you review the rest\nsettle refused: this run recorded no outcomes and never reported a heartbeat, so there is no evidence the resolver ran. \"Nothing to do\" is not distinguishable from \"never started\" here.\nFIND AND FOCUS\n445 shown · active only\nNeeds you\nFinished\nall\none-time\ntriggered\nAll\nUser\nBlender\nREADY\npapercusp\n2d\n—\nBlender evidence-driven learning redesign\n1 decision need you\nUSER\n1\n11/12\nREADY\npapercusp\n13d\n—\niPhone app — public release readiness and delivery\n1 decision need you\nAVIYNW\n1\n4/5\nREADY\npapercusp\n65d\n—\nWindows desktop — PUBLIC-release readiness (beyond alpha)\n1 decision need you\nAVIYNW2\n1\n3/5\nSTALE\nREADY\npapercusp\n10m\n—\nPapercup chat — one shared component + one backend contract for the portal shell (:3081) an",
+      "theme": "dark",
+      "overflow": false,
+      "consoleErrors": []
+    },
+    {
+      "app": "workflows",
+      "at": "2026-09-07T02:58:26.653Z",
+      "text": "Workflow Editor\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡31 AGENTS RUNNING · 25 THINKING\n737 PROCESSES\nStart voice chat\nDownload TUI\n87\nAlso available as a desktop app.\nDownload desktop version\nAUTOMATION CONTROL\nWorkflows\n12 triggered · 4751 routines · 262 system tasks\n\nCreate, monitor, and repair everything that runs without you.\n\nSchedule\n6/10\nContacts\ndisabled\nGcal\n1/3\nGmail\n1/4\nRefresh\nNew workflow\nBuild with the workflow agent\n\nDescribe the trigger and outcome. The agent assembles the workflow for review.\n\nWhat should happen automatically?\nWire it\nWhen an email from a client arrives…\nNeeds you\ngcal is disabled\nReconnect\nGmail is disabled\nReconnect\n43 workflows need attention\nReview\nVIEW\nWorkflows\nActivity\nSTATE\nAll\n5025\nNeeds attention\n43\nRunning\n263\nPaused\n4726\nKIND\nEvery kind\n5025\nTriggered\n12\nRoutines\n4751\nSystem\n262\nFIND\nSORT\nAttention first\nWorkflow\tTrigger → plan → outcome\tLast\tNext\tSpend\tArmed\n\nbg-host-watchdog-poll\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-local-backend-refresh-health\nSYSTEM\n\t\nExternal process\n→\nsystem task\n\t—\t—\t$0\t—\n\ngateway-payload-spool-swee",
+      "theme": "dark",
+      "overflow": false,
+      "consoleErrors": []
+    },
+    {
+      "app": "create",
+      "at": "2026-09-07T02:58:33.792Z",
+      "text": "Create\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡31 AGENTS RUNNING · 22 THINKING\n729 PROCESSES\nStart voice chat\nDownload TUI\n87\nPOT\nAll Pots\nNEW\nPOT\nOwner\nSmart order\nallmineothers'\nallone-timetriggered\ntoday\n7 days\n30 days\nneeds human\nactionable\nscout\nscheduled\nlegacy\narchived\nDraft\n121\nReady\n322\nRunning\n2\nAwaiting acceptance\n209\nShipped\n738\nSuperseded\n375\n\nDrag started plans to set their priority\n\n⠿\nGOAL mode hardening — pot rename, contract rewrite, goal provenance, per-goal launch settings, TEST mode\nPause\nPAPERCUSP\nACTIVE\n9d\nedited by\n⚙\nsu-776ce3cc\n5 blocked\n5 todo\n11 done\nNEXT\nThe plan's WORK is drained; nothing inside it is open. What remains is the SHIP step and one external follow-up. (1) SHIP IS BLOCKED, DELIBERATELY — do not force it. Plan frontmatter is still status:active. This repo now requires a graded acceptance rubric before 'shipped' (aut…\n⠿\nAlign the psu tool seed with the prompt mandates (and stop it drifting again)\nPause\nPAPERCUSP\nREADY\n13d\nedited by\n⚙\nsu-d6ae254f\n1 todo\n4 done\n1 dropped\nPapercup chat — one shared component + one backend contract for the portal shell (:30",
+      "theme": "dark",
+      "overflow": false,
+      "consoleErrors": []
+    }
+  ]
+}
