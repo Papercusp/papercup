@@ -1737,6 +1737,7 @@ function watchdogIdentityKey(identity: AdmissionRecurrenceIdentity): string | nu
 export function selectAdmissionRecurrenceCanonicals(
   plan: PromoterPlan,
   items: ReadonlyMap<string, PromoterItem>,
+  options: { onConflict?: 'throw' | 'hold' } = {},
 ): PromoterPlan {
   const membersByCanonical = new Map<string, Set<string>>();
   for (const adjudication of plan.adjudications) {
@@ -1749,6 +1750,7 @@ export function selectAdmissionRecurrenceCanonicals(
   }
 
   const replacementByCanonical = new Map<string, string>();
+  const heldById = new Map<string, string>();
   const componentByItem = new Map<string, string>();
   for (const [plannedCanonical, memberIds] of membersByCanonical) {
     const members = [...memberIds]
@@ -1772,10 +1774,12 @@ export function selectAdmissionRecurrenceCanonicals(
           ? `watchdog=[${watchdogKeys.map((key) => key.replaceAll('\0', '/')).join(', ')}]`
           : null,
       ].filter(Boolean);
-      throw new Error(
+      const reason =
         `admission recurrence-identity guard blocked component ${plannedCanonical}: ` +
-          `conflicting stable producer identities ${conflicts.join(' ')}`,
-      );
+        `conflicting stable producer identities ${conflicts.join(' ')}`;
+      if (options.onConflict !== 'hold') throw new Error(reason);
+      for (const id of memberIds) heldById.set(id, reason);
+      continue;
     }
     if (conditionKeys.length === 0 && watchdogKeys.length === 0) continue;
 
@@ -1797,9 +1801,13 @@ export function selectAdmissionRecurrenceCanonicals(
     })[0]!;
     if (selected.id !== plannedCanonical) replacementByCanonical.set(plannedCanonical, selected.id);
   }
-  if (replacementByCanonical.size === 0) return plan;
+  if (replacementByCanonical.size === 0 && heldById.size === 0) return plan;
 
   const dispositionsById = new Map(plan.dispositions.map((disposition) => [disposition.itemId, disposition]));
+  for (const [itemId, reason] of heldById) {
+    const current = dispositionsById.get(itemId);
+    if (current && current.action !== 'hold') dispositionsById.set(itemId, { itemId, action: 'hold', reason });
+  }
   for (const [plannedCanonical, replacement] of replacementByCanonical) {
     const memberIds = membersByCanonical.get(plannedCanonical) ?? new Set<string>();
     for (const id of memberIds) {
@@ -1824,10 +1832,18 @@ export function selectAdmissionRecurrenceCanonicals(
   return {
     ...plan,
     dispositions: [...dispositionsById.values()].sort((a, b) => a.itemId.localeCompare(b.itemId)),
-    adjudications: plan.adjudications.map((adjudication) => {
-      const replacement = adjudication.canonical ? replacementByCanonical.get(adjudication.canonical) : undefined;
-      return replacement ? { ...adjudication, canonical: replacement } : adjudication;
-    }),
+    adjudications: plan.adjudications
+      .filter(
+        (adjudication) =>
+          !heldById.has(adjudication.a) &&
+          !heldById.has(adjudication.b) &&
+          (!adjudication.canonical || !heldById.has(adjudication.canonical)),
+      )
+      .map((adjudication) => {
+        const replacement = adjudication.canonical ? replacementByCanonical.get(adjudication.canonical) : undefined;
+        return replacement ? { ...adjudication, canonical: replacement } : adjudication;
+      }),
+    relatedPairs: plan.relatedPairs.filter((related) => !heldById.has(related.a) && !heldById.has(related.b)),
   };
 }
 
@@ -4603,6 +4619,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
     const plan = selectAdmissionRecurrenceCanonicals(
       planPromoterDispositions(pending, pairs, judgements),
       recurrenceItems,
+      { onConflict: 'hold' },
     );
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
@@ -4659,6 +4676,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
           return acc;
         }, {}),
         guardRefusals: persisted.guardRefusals,
+        heldReasons: persisted.held,
         // Only ever non-empty on a genuine writer defect; see writerCoverageGap on the result.
         writerCoverageGap,
       },
