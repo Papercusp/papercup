@@ -382,4 +382,41 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
       }),
     );
   });
+
+  it('P-001 coordination baseline: two retries preserve one known review identity without creating work', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([{
+      id: 'WI-REVIEW-FIXTURE',
+      title: 'Independent metadata fixture review',
+      state: 'open',
+      harness: 'papercusp',
+      similarity: 1,
+      source: 'lexical-fulltext',
+    }]);
+    const request = { kind: 'task', title: 'Independent metadata fixture review' };
+    // Count calls to the REAL create core, not network round trips. The fixed
+    // existing-row oracle models a retry after the caller already knows the
+    // identity; it does not model a concurrent first-create race or screening.
+    const attempts = [
+      await createOneWorkItem(request, ctx),
+      await createOneWorkItem(request, ctx),
+    ];
+    expect(attempts).toHaveLength(2);
+    for (const result of attempts) {
+      expect(result).toMatchObject({
+        ok: false, error: 'duplicate_identity',
+        existing: { id: 'WI-REVIEW-FIXTURE', state: 'open' },
+      });
+    }
+    expect(createM).not.toHaveBeenCalled();
+    expect(occurrenceMocks.record).toHaveBeenCalledTimes(2);
+    for (const position of [1, 2]) {
+      expect(occurrenceMocks.record).toHaveBeenNthCalledWith(position, expect.objectContaining({
+        canonicalId: 'WI-REVIEW-FIXTURE',
+        canonicalHarness: 'papercusp',
+        sourceTool: 'work_items:create',
+        reportKind: 'duplicate',
+      }));
+    }
+  });
 });

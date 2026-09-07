@@ -15,6 +15,7 @@ import { evaluatePlanSpecQuality } from './spec-quality';
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
 import {
   metadataClause, metadataClauseWrite, metadataHarness, metadataInputSchema, metadataPlanSlug,
+  metadataWorkflowTargets,
 } from './coordination-metadata-fixtures';
 import { specClauseContentHash } from './spec-clauses-store';
 import { composePickup } from '../work_items/pickup';
@@ -24,12 +25,14 @@ import type { InnerCall } from '../_compound-dispatch';
 // access fails instead of falling through to the shared workspace database.
 const stores = vi.hoisted(() => ({
   readPlan: vi.fn(),
+  getPlanRow: vi.fn(),
   listClauses: vi.fn(),
   listRubrics: vi.fn(),
 }));
 vi.mock('./source', async (importOriginal) => ({
   ...await importOriginal<typeof import('./source')>(),
   readPlanBySlug: stores.readPlan,
+  getPlanRow: stores.getPlanRow,
 }));
 vi.mock('./spec-clauses-store', async (importOriginal) => ({
   ...await importOriginal<typeof import('./spec-clauses-store')>(),
@@ -41,6 +44,7 @@ vi.mock('../../rubrics', async (importOriginal) => ({
 }));
 
 import evaluateTool from './evaluate-spec-quality';
+import getInputSchemaTool from './get-input-schema';
 
 const context: UnifiedToolContext = {
   harnessSlug: metadataHarness,
@@ -63,19 +67,51 @@ beforeEach(() => {
     parsed: { items: [{ id: 'P-001' }] },
   });
   stores.listClauses.mockResolvedValue([metadataClause()]);
+  stores.getPlanRow.mockImplementation(() => {
+    throw new Error('unexpected plan-row IO: inject the readiness workflow state');
+  });
   stores.listRubrics.mockImplementation(() => {
     throw new Error('unexpected acceptance-rubric IO: inject the test dependency');
   });
 });
 
 describe('P-001 pre-change workflow measurements', () => {
+  it('measures three real input-tool requests separately from the oracle and repair writes', async () => {
+    for (const templateData of [
+      { attempts: 'invalid' },
+      { harness: 'fixture', attempts: 'invalid' },
+      { harness: 'fixture', attempts: 1 },
+    ]) {
+      stores.getPlanRow.mockResolvedValueOnce({
+        planSlug: metadataPlanSlug, ...metadataInputSchema, templateData, version: 1,
+      });
+    }
+    const args = getInputSchemaTool.args.parse({ harness: metadataHarness, slug: metadataPlanSlug });
+    const responses = [
+      await getInputSchemaTool.handler(args, context),
+      await getInputSchemaTool.handler(args, context),
+      await getInputSchemaTool.handler(args, context),
+    ];
+    expect(responses).toHaveLength(metadataWorkflowTargets.readinessToolRequests.before);
+    expect(stores.getPlanRow).toHaveBeenCalledTimes(metadataWorkflowTargets.readinessToolRequests.before);
+    expect(responses[0]).toMatchObject({
+      data: { results: [{ ready: false, code: 'missing_required', missing: ['harness'], issues: [] }] },
+    });
+    expect(responses[1]).toMatchObject({
+      data: { results: [{ ready: false, code: 'invalid_data', missing: [] }] },
+    });
+    expect(responses[2]).toMatchObject({ data: { results: [{ ready: true, missing: [] }] } });
+    // Actual handler request/response pairs, with persisted-state reads injected.
+    // No network transport or caller repair WRITE is counted by this instrument.
+  });
+
   it('needs three readiness oracle calls to discover, repair and confirm two input defects', () => {
     const calls = [
       evaluatePlanStartReadiness(metadataInputSchema, { attempts: 'invalid' }),
       evaluatePlanStartReadiness(metadataInputSchema, { harness: 'fixture', attempts: 'invalid' }),
       evaluatePlanStartReadiness(metadataInputSchema, { harness: 'fixture', attempts: 1 }),
     ];
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(metadataWorkflowTargets.readinessCalls.before);
     expect(calls[0]).toMatchObject({ ready: false, code: 'missing_required', missing: ['harness'], issues: [] });
     expect(calls[1]).toMatchObject({ ready: false, code: 'invalid_data', missing: [] });
     expect(calls[2]).toEqual({ ready: true, source: 'input-schema' });
@@ -94,6 +130,8 @@ describe('P-001 pre-change workflow measurements', () => {
     // Explicitly supplied bookkeeping: one caller-selected class. P-002 target:
     // zero selections when the persisted policy has one unambiguous class.
     expect(Object.hasOwn(args, 'classRef')).toBe(true);
+    expect(Object.keys(args).filter((key) => key === 'classRef'))
+      .toHaveLength(metadataWorkflowTargets.callerClassSelections.before);
   });
 });
 
@@ -135,6 +173,8 @@ describe('P-001 safety fixtures — remain enforced throughout implementation', 
     expect(computeSpecSetHash([formatted])).toBe(computeSpecSetHash([original]));
     expect(specClauseContentHash(metadataClauseWrite({ behavior: formatted.behavior })))
       .toBe(specClauseContentHash(metadataClauseWrite()));
+    expect(Number(computeSpecSetHash([formatted]) !== computeSpecSetHash([original])))
+      .toBe(metadataWorkflowTargets.formattingIdentityChanges.before);
   });
 
   it.each([
@@ -209,6 +249,7 @@ describe('P-001 pickup stage baseline', () => {
       ok: true, claimed: true, intentDeclared: true,
     });
     expect(calls).toEqual(['work_items:get', 'work_items:claim', 'coord:declare-intent']);
+    expect(calls).toHaveLength(metadataWorkflowTargets.successfulPickupDispatches.before);
   });
 
   it('stops after a denied claim without retrying, declaring, or creating another item', async () => {
@@ -217,6 +258,7 @@ describe('P-001 pickup stage baseline', () => {
       ok: false, claimed: false, step: 'claim', error: 'fleet_scope_violation',
     });
     expect(calls).toEqual(['work_items:get', 'work_items:claim']);
+    expect(calls).toHaveLength(metadataWorkflowTargets.deniedPickupDispatches.before);
   });
 
   it('currently misreports a failed declaration as success after claiming', async () => {
