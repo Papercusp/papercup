@@ -111,7 +111,11 @@ import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
-import { isEngineeringDocsSentinel, resolveInheritedHarnessScope } from '../../../agent-tools/_harness-scope';
+import {
+  allowStalePlanRecoveryForMcpCall,
+  isEngineeringDocsSentinel,
+  resolveInheritedHarnessScope,
+} from '../../../agent-tools/_harness-scope';
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
 import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { DeltaProxySessionStore } from './delta-proxy-session-store';
@@ -2809,7 +2813,9 @@ const handler = createMcpHandler(
         const spawnRes = await tryBuildSpawnContext(extra, {
           // A stale bound plan can otherwise prevent the recovery bootstrap from
           // reaching the current fleet binding that would scope this request.
-          allowStalePlanRecovery: toolName === 'coord:orient',
+          // Direct declare-intent is admitted only for an explicit self-clear;
+          // all non-clear declarations remain fail-closed on stale bindings.
+          allowStalePlanRecovery: allowStalePlanRecoveryForMcpCall(toolName, args),
         });
 
         // Hard-fail spawn ctx with invalid signature — do NOT fall through
