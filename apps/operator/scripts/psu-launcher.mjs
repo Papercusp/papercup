@@ -70,6 +70,7 @@ import {
   isCodexModelDenied,
   CODEX_DENIED_MODEL_IDS,
   resolveCodexModel,
+  resolveCodexModelSelection,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 // WI-126377: the ONE builder for this picker's rows + the effort intersection
 // rule. Plain .mjs for the same reason as every import below it — see that
@@ -681,6 +682,7 @@ export function parseArgs(argv) {
     plan: null,
     noPlan: false,
     model: null,
+    modelSource: null,
     resumeSession: null,
     launchContext: null,
     launchedBy: null,
@@ -1115,7 +1117,16 @@ export function parseArgs(argv) {
   // Spark before bootstrap/PTY creation.  OMP remains multi-provider, but the
   // retired Spark id is denied globally so an explicit provider prefix cannot
   // bypass the policy through that backend.
-  if (out.agent === "codex" || isCodexModelDenied(out.model)) {
+  if (out.agent === "codex") {
+    // A visible desktop launch has a human in the loop: choosing Codex is the
+    // deliberate configured-default decision when no model was supplied. Only
+    // headless/unattended launches fail closed on unresolved input.
+    const selection = resolveCodexModelSelection(out.model, {
+      source: out.model ? "explicit" : out.headless ? "explicit" : "configured-default",
+    });
+    out.model = selection.model;
+    out.modelSource = selection.source;
+  } else if (isCodexModelDenied(out.model)) {
     out.model = resolveCodexModel(out.model);
   }
   out.model = normalizeModelSpecForAgent(out.agent, out.model);
@@ -11249,10 +11260,19 @@ export function freshSuBootstrapBody(
   { brain = false, bootstrapIdempotencyKey = null } = {},
 ) {
   const launchMode = launchModeFromArgs(args);
-  const effectiveModel =
-    selections.agent === "codex" ? resolveCodexModel(args.model) : args.model;
+  const codexSelection =
+    selections.agent === "codex"
+      ? resolveCodexModelSelection(args.model, {
+          source:
+            args.modelSource ||
+            (args.model ? "explicit" : args.headless ? "explicit" : "configured-default"),
+        })
+      : null;
+  const effectiveModel = codexSelection?.model ?? args.model;
   const effectiveArgs =
-    effectiveModel === args.model ? args : { ...args, model: effectiveModel };
+    effectiveModel === args.model && (!codexSelection || codexSelection.source === args.modelSource)
+      ? args
+      : { ...args, model: effectiveModel, modelSource: codexSelection?.source ?? args.modelSource };
   return {
     agent: selections.agent,
     workspace: selections.workspace,
@@ -11296,6 +11316,7 @@ export function freshSuBootstrapBody(
     // (buildLaunchSpec) can hard-trim a WEAK/local model's catalog for the codex path
     // (omp trims client-side above; claude self-trims). Frontier ⇒ no trim (safe default).
     ...(effectiveModel ? { model: effectiveModel } : {}),
+    ...(codexSelection ? { model_source: codexSelection.source } : {}),
     ...(brain ? { brain: true } : {}),
     ...(args.account ? { account: args.account } : {}),
     // named-su-agent-fleets P-006: `fleet` = the slug to JOIN (member); `fleet_name`
@@ -11343,12 +11364,20 @@ export function roleBootstrapBody({
   plan,
   account,
   model,
+  modelSource,
+  headless = false,
   fleet,
   fleetRole,
   fleetName,
   fleetScheme,
 } = {}) {
-  const effectiveModel = agent === "codex" ? resolveCodexModel(model) : model;
+  const codexSelection =
+    agent === "codex"
+      ? resolveCodexModelSelection(model, {
+          source: modelSource || (model ? "explicit" : headless ? "explicit" : "configured-default"),
+        })
+      : null;
+  const effectiveModel = codexSelection?.model ?? model;
   return {
     role,
     agent,
@@ -11358,6 +11387,7 @@ export function roleBootstrapBody({
     plan,
     ...(account ? { account } : {}),
     ...(effectiveModel ? { model: effectiveModel } : {}),
+    ...(codexSelection ? { model_source: codexSelection.source } : {}),
     ...(fleet ? { fleet } : {}),
     ...(fleetRole ? { fleet_role: fleetRole } : {}),
     ...(fleetName ? { fleet_name: fleetName } : {}),
@@ -12841,6 +12871,8 @@ async function roleFlow(args, role, rolesMeta) {
         plan,
         account,
         model: args.model,
+        modelSource: args.modelSource,
+        headless: args.headless,
         fleet: args.fleet,
         fleetRole: args.fleetRole,
         fleetName: args.fleetName,

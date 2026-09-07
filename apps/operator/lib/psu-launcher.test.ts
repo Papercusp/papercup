@@ -952,6 +952,22 @@ describe("Codex retired-model deny wiring (WI-2140343 — the Spark fall-through
   });
 });
 
+describe("Codex missing-model posture", () => {
+  it("uses the configured default for a visible desktop choice but fails closed headless", () => {
+    const interactive = parseArgs([]);
+    const body = freshSuBootstrapBody(
+      { agent: "codex", workspace: "papercusp-workspace", harness: null, plan: null },
+      interactive,
+    );
+
+    expect(body).toMatchObject({
+      model: "gpt-5.6-sol:xhigh",
+      model_source: "configured-default",
+    });
+    expect(() => parseArgs(["--headless", "--agent=codex"])).toThrow(/Codex model is required/);
+  });
+});
+
 describe("scriptedOmpSetupEnv (headless OMP kickoff reaches the composer)", () => {
   it("skips first-run setup for scripted OMP sessions", () => {
     expect(

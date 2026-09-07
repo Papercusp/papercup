@@ -175,6 +175,7 @@ export function parseArgs(argv: any): {
     plan: null;
     noPlan: boolean;
     model: null;
+    modelSource: null;
     resumeSession: null;
     launchContext: null;
     launchedBy: null;
@@ -3053,6 +3054,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     fleet?: any;
     account?: any;
     brain?: boolean | undefined;
+    model_source?: string | undefined;
     model?: any;
     persona_tier?: any;
     context_size?: any;
@@ -3071,11 +3073,14 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     harness_slug: any;
     plan_slug: any;
 };
-export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model, fleet, fleetRole, fleetName, fleetScheme, }?: {}): {
+export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model, modelSource, headless, fleet, fleetRole, fleetName, fleetScheme, }?: {
+    headless?: boolean | undefined;
+}): {
     fleet_scheme?: any;
     fleet_name?: any;
     fleet_role?: any;
     fleet?: any;
+    model_source?: string | undefined;
     model?: any;
     account?: any;
     role: any;
