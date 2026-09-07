@@ -39,6 +39,25 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../mode/set', () => ({
   wakeSourceLostWarning: vi.fn(() => undefined),
 }));
+vi.mock('../plans/source', () => ({
+  getPlanRow: vi.fn(async (slug: string, opts: { workspaceId?: string; harnessSlug?: string }) => ({
+    workspaceId: opts.workspaceId ?? 'ws-1',
+    harnessSlug: opts.harnessSlug ?? 'h',
+    planSlug: slug,
+    content: `---\ntitle: Current authority\nslug: ${slug}\nstatus: ready\ncreated: 2026-08-25\nupdated: 2026-08-25\n---\n\n## Decisions\n\n### D-001 — newest rule\nDate: 2026-08-25\nCurrent authority wins.\n\n## Phase 1\n\n- **P-017** \`wip\` current task\n`,
+    contentHash: 'plan-hash-17',
+    version: 17,
+    status: 'ready',
+  })),
+}));
+vi.mock('../plans/spec-clauses-store', () => ({
+  listSpecClauses: vi.fn(async () => [{
+    specId: 'SPEC-P-017',
+    revision: 4,
+    contentHash: 'spec-hash-4',
+    planItemId: 'P-017',
+  }]),
+}));
 
 const CONTROL: ControlAnchor = {
   schemaVersion: 'ctrl-v1',
@@ -255,6 +274,68 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       harness: 'h',
       checkpoint: 'P-017 in progress',
     });
+    expect(delivery.recovery.coverage.planAuthority).toBe(true);
+    expect(delivery.recovery.planAuthority).toMatchObject({
+      resolution: 'current',
+      controlGeneration: 17,
+      workspaceId: 'ws-1',
+      harness: 'h',
+      planSlug: 'fleet-deltas-leader-primitives-2026-07-10',
+      version: 17,
+      contentHash: 'plan-hash-17',
+      items: [{ id: 'P-017', status: 'wip', missing: false }],
+      specs: [{ specId: 'SPEC-P-017', revision: 4, contentHash: 'spec-hash-4' }],
+    });
+  });
+
+  it('keeps the marker incomplete when the control-scoped plan is absent in that harness', async () => {
+    const [{ getPlanRow }, { buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([
+        import('../plans/source'),
+        import('./control-anchor'),
+        import('./compaction-recovery'),
+      ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce({
+      ...CONTROL,
+      state: { ...CONTROL.state, scope: { ...CONTROL.state.scope, harness: 'wrong-harness' } },
+    });
+    vi.mocked(getPlanRow).mockResolvedValueOnce(null);
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(getPlanRow).toHaveBeenCalledWith(CONTROL.state.scope.plan, {
+      workspaceId: 'ws-1',
+      harnessSlug: 'wrong-harness',
+    });
+    expect(delivery.marker.complete).toBe(false);
+    expect(delivery.recovery.coverage.planAuthority).toBe(false);
+    expect(delivery.recovery.planAuthority).toMatchObject({
+      resolution: 'unavailable',
+      reason: 'not-found-in-control-harness',
+      harness: 'wrong-harness',
+      controlGeneration: 17,
+    });
+  });
+
+  it('keeps the marker incomplete when current spec authority is unreadable', async () => {
+    const [{ listSpecClauses }, { buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([
+        import('../plans/spec-clauses-store'),
+        import('./control-anchor'),
+        import('./compaction-recovery'),
+      ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(CONTROL);
+    vi.mocked(listSpecClauses).mockRejectedValueOnce(new Error('spec store unavailable'));
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(delivery.marker.complete).toBe(false);
+    expect(delivery.recovery.coverage.planAuthority).toBe(false);
+    expect(delivery.recovery.planAuthority).toMatchObject({
+      resolution: 'unavailable',
+      reason: 'spec-read-failed',
+      detail: 'spec store unavailable',
+    });
   });
 
   it('keeps the marker incomplete when the authoritative control read fails', async () => {
@@ -269,7 +350,11 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
     expect(delivery.marker.complete).toBe(false);
     expect(delivery.marker.memoryEpoch).toBe(23);
     expect(delivery.marker.controlGeneration).toBeNull();
-    expect(delivery.recovery.coverage).toMatchObject({ control: false, heldItems: true });
+    expect(delivery.recovery.coverage).toMatchObject({
+      control: false,
+      heldItems: true,
+      planAuthority: null,
+    });
     expect(delivery.marker.fallback.when).toEqual([
       'marker-absent',
       'marker-incomplete',

@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   valueAtPath,
   comparePredicate,
+  predicateShaShapeMismatch,
+  predicateShaShapeMismatchMessage,
   extractToolPayload,
   INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT,
   configurePredicateDispatch,
@@ -165,6 +167,30 @@ describe('comparePredicate', () => {
     expect(comparePredicate(null, 'eq', null)).toBe(true); // "is it UNKNOWN?" — yes
     expect(comparePredicate(false, 'eq', null)).toBe(false); // a known false is not unknown
     expect(comparePredicate(undefined, 'eq', null)).toBe(false); // a missing path is not a reported unknown
+  });
+});
+
+describe('predicate SHA operand shape guard', () => {
+  const full = 'e66be3c4ff7b00d91d44334d7299464af47b7aeb';
+  const short = full.slice(0, 10);
+
+  it('identifies a strict short/full SHA prefix and reports both widths', () => {
+    const mismatch = predicateShaShapeMismatch(full, short);
+    expect(mismatch).toEqual({ observedWidth: 40, operandWidth: 10 });
+    expect(predicateShaShapeMismatchMessage(mismatch!)).toContain('40 characters');
+    expect(predicateShaShapeMismatchMessage(mismatch!)).toContain('10 characters');
+    expect(predicateShaShapeMismatchMessage(mismatch!)).toContain('predicate_shape_mismatch');
+  });
+
+  it('does not classify equal-width, unrelated, or non-SHA strings as a shape mismatch', () => {
+    expect(predicateShaShapeMismatch(full, full)).toBeNull();
+    expect(predicateShaShapeMismatch(full, '0123456789abcdef0123456789abcdef01234567')).toBeNull();
+    expect(predicateShaShapeMismatch('not-a-sha-value', short)).toBeNull();
+  });
+
+  it('prevents a short/full prefix from manufacturing a true `ne` result', () => {
+    expect(comparePredicate(full, 'ne', short)).toBe(false);
+    expect(comparePredicate(full, 'ne', '0123456789')).toBe(true);
   });
 });
 

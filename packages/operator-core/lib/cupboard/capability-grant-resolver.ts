@@ -246,7 +246,10 @@ export async function resolveCapabilityGrants(
       choice = select(classRef, candidates, suggestion, 'publisher-suggestion', options.mode);
       if (!choice) selectionProblem = 'suggested provider ' + suggestion + ' is not an active conformant candidate';
     }
-    if (!choice && options.mode === 'agent') {
+    // An explicit but invalid choice is never replaced behind the caller's
+    // back. A stale publisher hint, however, may fall through to the documented
+    // agent policy while the warning remains visible in selectionProblem.
+    if (!choice && !explicit && options.mode === 'agent') {
       choice = select(classRef, candidates, providerRef(candidates[0]!), 'evidence-policy', options.mode);
     }
 

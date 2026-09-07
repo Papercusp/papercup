@@ -170,7 +170,7 @@ export interface CompactionRecovery {
     heldItems: boolean;
     /** null means the compact control scope names no active plan. False makes
      *  the boundary marker incomplete and preserves the one-shot orient fallback. */
-    planAuthority: boolean | null;
+    planAuthority?: boolean | null;
     /** null means no compact-boundary timestamp was available, not a failure. */
     staleness: boolean | null;
   };
@@ -315,16 +315,15 @@ export async function buildCompactionRecovery(
         if (!row) {
           unavailable('not-found-in-control-harness');
         } else {
-          let parsed: ReturnType<(typeof import('../plans/parser'))['parsePlan']>;
+          let parsed: ReturnType<(typeof import('../plans/parser'))['parsePlan']> | null = null;
           try {
             const { parsePlan } = await import('../plans/parser');
             parsed = parsePlan(row.content, { filePath: `${scopedPlan}.md` });
           } catch (err: unknown) {
             unavailable('plan-parse-failed', err instanceof Error ? err.message : String(err));
-            parsed = null as never;
           }
-          if (recovery.coverage.planAuthority !== false) {
-            let specRows: Awaited<ReturnType<(typeof import('../plans/spec-clauses-store'))['listSpecClauses']>>;
+          if (parsed) {
+            let specRows: Awaited<ReturnType<(typeof import('../plans/spec-clauses-store'))['listSpecClauses']>> | null = null;
             try {
               const { listSpecClauses } = await import('../plans/spec-clauses-store');
               specRows = control.state.scope.items.length > 0
@@ -337,9 +336,8 @@ export async function buildCompactionRecovery(
                 : [];
             } catch (err: unknown) {
               unavailable('spec-read-failed', err instanceof Error ? err.message : String(err));
-              specRows = [];
             }
-            if (recovery.coverage.planAuthority !== false) {
+            if (specRows) {
               const allDecisions = parsed.decisions;
               const decisions = allDecisions.slice(-MAX_PLAN_AUTHORITY_DECISIONS).map((decision) => ({
                 id: decision.id,

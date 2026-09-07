@@ -22,7 +22,13 @@ export const argsSchema = z.object({
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
-  current: z.array(evidenceCurrentInputSchema).max(500).optional(),
+  current: z
+    .array(evidenceCurrentInputSchema)
+    .max(500)
+    .optional()
+    .describe(
+      'Caller-supplied fingerprints are labeled attested-current; matching stored values remain unknown for freshness and cannot produce freshness:pass without an internal server-measured comparison.',
+    ),
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
   limit: z.number().int().min(1).max(1000).optional(),

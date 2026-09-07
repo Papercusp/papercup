@@ -180,6 +180,34 @@ function deepEq(a: unknown, b: unknown): boolean {
   }
 }
 
+/** A Git SHA may be abbreviated, but comparing a short prefix to a full SHA as
+ * though they were unrelated values turns `ne` into an instant false-positive.
+ * Keep this guard deliberately narrow: both values must look like hexadecimal
+ * SHA tokens, and one must be a strict prefix of the other. */
+const HEX_SHA_TOKEN = /^[0-9a-f]{7,64}$/i;
+
+export interface PredicateShaShapeMismatch {
+  observedWidth: number;
+  operandWidth: number;
+}
+
+export function predicateShaShapeMismatch(observed: unknown, operand: unknown): PredicateShaShapeMismatch | null {
+  if (typeof observed !== 'string' || typeof operand !== 'string') return null;
+  const observedSha = observed.trim();
+  const operandSha = operand.trim();
+  if (!HEX_SHA_TOKEN.test(observedSha) || !HEX_SHA_TOKEN.test(operandSha)) return null;
+  if (observedSha.length === operandSha.length) return null;
+
+  const short = observedSha.length < operandSha.length ? observedSha : operandSha;
+  const long = observedSha.length < operandSha.length ? operandSha : observedSha;
+  if (!long.toLowerCase().startsWith(short.toLowerCase())) return null;
+  return { observedWidth: observedSha.length, operandWidth: operandSha.length };
+}
+
+export function predicateShaShapeMismatchMessage(mismatch: PredicateShaShapeMismatch): string {
+  return `predicate_shape_mismatch: observed hex SHA is ${mismatch.observedWidth} characters but the operand is ${mismatch.operandWidth} characters; they are strict-prefix forms. Supply the same SHA width before registering this predicate.`;
+}
+
 /** Evaluate `observed <op> value`. Numeric ops coerce both sides via Number()
  *  and are false on non-finite operands (never throw on a shape surprise).
  *
@@ -235,6 +263,11 @@ export function comparePredicate(
   baseline?: PredicateBaseline,
 ): boolean {
   const absent = observed === undefined || observed === null;
+  // A short/full SHA pair is not evidence of inequality. Refuse to manufacture
+  // a true `ne` result here even for callers that use this pure helper directly;
+  // evalPredicateWatch adds the registration-time, width-naming error. `exists`
+  // and `changed` have no operand domain, so they are intentionally exempt.
+  if (op !== 'exists' && op !== 'changed' && predicateShaShapeMismatch(observed, value)) return false;
   switch (op) {
     case 'exists':
       return !absent;
@@ -905,6 +938,9 @@ export async function evalPredicateWatch(
     if (shared && !shared.ok) throw shared.error;
     const payload = shared ? shared.payload : await dispatch(row);
     const observed = valueAtPath(payload, row.path);
+    const shaShapeMismatch =
+      row.op !== 'exists' && row.op !== 'changed' ? predicateShaShapeMismatch(observed, row.value) : null;
+    if (shaShapeMismatch) throw new Error(predicateShaShapeMismatchMessage(shaShapeMismatch));
     // `lastEval !== null` is the ONLY honest "has this row ever been evaluated"
     // signal — `lastValue` is null for both a never-polled row and one that
     // observed null. See PredicateBaseline.

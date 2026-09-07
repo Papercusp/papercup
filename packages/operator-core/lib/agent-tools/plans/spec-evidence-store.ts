@@ -293,6 +293,30 @@ export interface EvidenceCurrentInput extends EvidenceFingerprints {
   evidenceRef: string;
 }
 
+/**
+ * Provenance of the comparison used to classify a binding. Public tool inputs are
+ * necessarily caller-attested: the caller supplies both fingerprints and the
+ * comparison request. Only an internal server-measured path may establish a fresh
+ * verdict.
+ */
+export type EvidenceCurrentnessProvenance = 'server-measured' | 'attested-current' | 'not-supplied';
+
+/** Internal escape hatch for a future server-side measurement implementation. */
+interface CurrentnessClassificationOptions {
+  provenance?: 'server-measured';
+}
+
+/**
+ * A scorecard referenced as proof can still be a provisional working note.
+ * Keep the source card's identity and stamp alongside the boolean flag so an
+ * adequacy reader can audit the dependency without a second work-item lookup.
+ */
+export interface ProvisionalScorecardProof {
+  issueId: string;
+  stampedAt: string;
+  violatableKeys: string[];
+}
+
 export interface EvidenceCurrentness {
   overall: Exclude<FingerprintState, 'not-applicable'>;
   dimensions: {
@@ -317,8 +341,14 @@ export interface EvidenceCurrentness {
    * Consumers which gate on uncertainty must distinguish "asked and got a gap" from
    * "never asked"; without this flag the two are indistinguishable and a gate reading
    * `unknown` as doubt becomes a constant refusal (WI-2146375).
-   */
+  */
   comparisonSupplied: boolean;
+  /**
+   * Caller-supplied matching fingerprints are explicitly attested-current and are
+   * capped at aggregate `unknown`; equality alone is not an independent measurement.
+   */
+  /** Optional only for legacy hand-built/internal fixtures; the classifier always emits it. */
+  provenance?: EvidenceCurrentnessProvenance;
 }
 
 interface CurrentnessRow {
@@ -344,6 +374,7 @@ function compareFingerprint(stored: string | null, current: string | null | unde
 export function classifySpecEvidenceCurrentness(
   row: CurrentnessRow,
   current?: EvidenceCurrentInput,
+  options: CurrentnessClassificationOptions = {},
 ): EvidenceCurrentness {
   const dimensions: EvidenceCurrentness['dimensions'] = {
     spec: row.spec_is_current ? 'current' : 'stale',
@@ -362,12 +393,20 @@ export function classifySpecEvidenceCurrentness(
   const unknownReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'unknown')
     .map(([dimension]) => `${dimension}-current-fingerprint-not-supplied`);
+  const provenance: EvidenceCurrentnessProvenance =
+    current === undefined ? 'not-supplied' : options.provenance ?? 'attested-current';
+  const attestedCurrentGuard =
+    provenance === 'attested-current' && staleReasons.length === 0
+      ? ['current-fingerprints-attested-not-independently-measured']
+      : [];
+  const guardedUnknownReasons = [...unknownReasons, ...attestedCurrentGuard];
   return {
-    overall: staleReasons.length > 0 ? 'stale' : unknownReasons.length > 0 ? 'unknown' : 'current',
+    overall: staleReasons.length > 0 ? 'stale' : guardedUnknownReasons.length > 0 ? 'unknown' : 'current',
     dimensions,
     staleReasons,
-    unknownReasons,
+    unknownReasons: guardedUnknownReasons,
     comparisonSupplied: current != null,
+    provenance,
   };
 }
 
@@ -387,6 +426,23 @@ interface EvidenceRow extends CurrentnessRow {
   binding_fingerprint: string;
   created_by: string;
   created_at: Date | string;
+  provisionalProofBase?: boolean;
+  provisionalScorecard?: ProvisionalScorecardProof;
+}
+
+function scorecardIssueIdFromEvidenceRef(evidenceRef: string): string | null {
+  const match = /^scorecard:([^#\s]+)(?:#.*)?$/.exec(evidenceRef.trim());
+  return match?.[1] ?? null;
+}
+
+function parseProvisionalScorecardProof(issueId: string, value: unknown): ProvisionalScorecardProof | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const violatableKeys = Array.isArray(raw.violatableKeys)
+    ? raw.violatableKeys.filter((key): key is string => typeof key === 'string' && key.trim() !== '')
+    : [];
+  if (violatableKeys.length === 0 || typeof raw.stampedAt !== 'string' || raw.stampedAt.trim() === '') return null;
+  return { issueId, stampedAt: raw.stampedAt, violatableKeys };
 }
 
 export interface ListSpecEvidenceOptions {
@@ -636,7 +692,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const limit = options.limit ?? 200;
   const rows = await withWorkspace(
     scope.workspaceId,
-    async (tx) => tx<EvidenceRow[]>`
+    async (tx) => {
+      const rows = await tx<EvidenceRow[]>`
     SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
            b.spec_revision, c.current_revision, b.spec_fingerprint,
            b.evidence_kind, b.evidence_ref, b.source_fingerprint,
@@ -672,7 +729,36 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        AND (${evidenceKinds.length} = 0 OR b.evidence_kind = ANY(${evidenceKinds}::text[]))
        AND (${evidenceRefs.length} = 0 OR b.evidence_ref = ANY(${evidenceRefs}::text[]))
      ORDER BY b.observed_at DESC, b.id DESC
-     LIMIT ${limit}`,
+      LIMIT ${limit}`;
+      const scorecardIds = [
+        ...new Set(
+          rows
+            .map((row) => scorecardIssueIdFromEvidenceRef(row.evidence_ref))
+            .filter((issueId): issueId is string => issueId !== null),
+        ),
+      ];
+      if (scorecardIds.length === 0) return rows;
+
+      const scorecards = await tx<{ feature_id: string; provisional: unknown }[]>`
+        SELECT feature_id, payload -> 'observation' -> 'provisional' AS provisional
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND feature_id = ANY(${scorecardIds}::text[])
+           AND payload -> 'observation' -> 'provisional' IS NOT NULL`;
+      const provisionalById = new Map<string, ProvisionalScorecardProof>();
+      for (const scorecard of scorecards) {
+        const proof = parseProvisionalScorecardProof(scorecard.feature_id, scorecard.provisional);
+        if (proof) provisionalById.set(scorecard.feature_id, proof);
+      }
+      return rows.map((row) => {
+        const issueId = scorecardIssueIdFromEvidenceRef(row.evidence_ref);
+        const provisionalScorecard = issueId ? provisionalById.get(issueId) : undefined;
+        return provisionalScorecard
+          ? { ...row, provisionalProofBase: true, provisionalScorecard }
+          : row;
+      });
+    },
   );
 
   const currentByRef = new Map((options.current ?? []).map((c) => [`${c.evidenceKind}\0${c.evidenceRef}`, c]));
@@ -698,7 +784,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       },
       coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
-      details: row.details,
+      details: row.provisionalProofBase
+        ? {
+            ...row.details,
+            provisionalProofBase: true,
+            ...(row.provisionalScorecard ? { provisionalScorecard: row.provisionalScorecard } : {}),
+          }
+        : row.details,
+      ...(row.provisionalProofBase ? { provisionalProofBase: true } : {}),
+      ...(row.provisionalScorecard ? { provisionalScorecard: row.provisionalScorecard } : {}),
       observedAt: pgTimestampToIso(row.observed_at),
       bindingFingerprint: row.binding_fingerprint,
       createdBy: row.created_by,

@@ -11,7 +11,10 @@ import {
   bindCapabilityProviderToPot,
   defineCapabilityClass,
   getCapabilityClass,
+  getPotCapabilityProviderBinding,
+  listActiveCapabilityProviderCandidates,
   listCapabilityClasses,
+  listCapabilityProviderDependents,
   listProviderBindings,
   recordProviderConformance,
   type ProviderConformanceReport,
@@ -156,5 +159,76 @@ describe('capability class registry (real PG)', () => {
         FROM harness_shared.pot_capability_class_bindings
        WHERE workspace_id = ${workspaceId} AND pot_slug = 'sales-ops'`;
     expect(rows).toEqual([{ provider_package: 'acme-crm', provider_version: '2.0.0' }]);
+
+    const current = await getPotCapabilityProviderBinding(db.sql, {
+      workspaceId,
+      potSlug: 'sales-ops',
+      classId: 'crm.email',
+      classVersion: '1.0.0',
+    });
+    expect(current).toMatchObject({
+      potSlug: 'sales-ops',
+      classRef: 'crm.email@1.0.0',
+      providerPackage: 'acme-crm',
+      providerVersion: '2.0.0',
+      conformanceRunId: passed.runId,
+    });
+    expect(await getPotCapabilityProviderBinding(db.sql, {
+      workspaceId,
+      potSlug: 'other-pot',
+      classId: 'crm.email',
+      classVersion: '1.0.0',
+    })).toBeNull();
+
+    const candidates = await listActiveCapabilityProviderCandidates(
+      db.sql,
+      workspaceId,
+      'crm.email',
+      '1.0.0',
+    );
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        providerPackage: 'acme-crm',
+        passingStructuralRuns: 1,
+        totalStructuralRuns: 2,
+        activePotBindings: 1,
+      }),
+    ]);
+
+    await db.sql.unsafe(
+      "UPDATE harness_shared.capability_class_provider_bindings SET status = 'retired' " +
+      "WHERE workspace_id = 'ws-binding' AND provider_package = 'acme-crm'",
+    );
+    expect(await getPotCapabilityProviderBinding(db.sql, {
+      workspaceId,
+      potSlug: 'sales-ops',
+      classId: 'crm.email',
+      classVersion: '1.0.0',
+    })).toBeNull();
+    expect(await listActiveCapabilityProviderCandidates(
+      db.sql,
+      workspaceId,
+      'crm.email',
+      '1.0.0',
+    )).toEqual([]);
+
+    const dependents = await listCapabilityProviderDependents(db.sql, {
+      workspaceId,
+      providerPackage: 'acme-crm',
+      providerVersion: '2.0.0',
+    });
+    expect(dependents).toEqual([
+      expect.objectContaining({
+        potSlug: 'sales-ops',
+        classRef: 'crm.email@1.0.0',
+        providerPackage: 'acme-crm',
+        providerVersion: '2.0.0',
+      }),
+    ]);
+    expect(await listCapabilityProviderDependents(db.sql, {
+      workspaceId,
+      providerPackage: 'acme-crm',
+      providerVersion: '9.9.9',
+    })).toEqual([]);
   });
 });

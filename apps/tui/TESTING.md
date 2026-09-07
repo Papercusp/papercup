@@ -32,6 +32,35 @@ should run. The non-audio `#[ignore]`d live smokes require the operator running 
 
 ## SU-session acceptance (real backends)
 
+### Installed first-party composer (Claude)
+
+Install the matched binary and companion using the installer above, then drive
+the installed binary in an isolated PTY with the real structured Claude engine:
+
+```bash
+PUI_REAL_ENGINE=1 \
+PUI_BIN="$HOME/.cargo/bin/pui" \
+PUI_INSTALL_MANIFEST="$HOME/.papercusp/pui-install.json" \
+PAPERCUSP_TEST_FILE_TIMEOUT_MS=900000 \
+PC_HEAVY_KEY_ENV=PUI_REAL_ENGINE,PUI_BIN,PUI_INSTALL_MANIFEST \
+npm run test:file -- packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts
+```
+
+This opt-in spends real provider tokens. It uses the normal configured Claude
+model and default account, a production Hono host with a migrated test database,
+and a separate PUI profile. All owner turns and the interrupt are keystrokes in
+PUI. It checks a unique greeting, an unpredictable fixture file's actual Read
+result, interruption of a running tool, a correlated follow-up in the same
+session, installation hashes, and pipe-based engine processes with no native
+terminal. The `PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE` log preserves the terminal
+frames, command and tool correlations, identities, and process observations.
+
+Without `PUI_REAL_ENGINE=1`, the same file runs the deterministic protocol-peer
+fault cases; those cases do not establish real-provider acceptance. The selected
+live case and the intentionally excluded fault cases must be reported separately.
+
+### Native backend matrix
+
 PUI creates and reattaches Claude, Codex, and OMP sessions through the shared
 SU-session host (`launch-su` plus the typed session stream). It does not fall back
 to the removed PUI owned-loop/ModelPort provider-chat path. The opt-in matrix runs
