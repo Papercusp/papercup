@@ -48,9 +48,11 @@ import {
   resolveIssueWorkspace,
   type IssueOutLink,
 } from './issues-engineer';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
+import type { OrgSql } from './work-items';
 import { pgTimestampToIso } from './pg-timestamp';
 import {
   compareGenerationFreshness,
@@ -652,6 +654,135 @@ export interface ScorecardRetractionResult {
   error?: string;
 }
 
+const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
+
+interface AtomicGradingAuditRetraction {
+  retraction: ScorecardRetraction;
+  subjectReset: boolean;
+}
+
+type RetractGradingAudit = (
+  auditIssueId: string,
+  subjectIssueId: string,
+  retraction: ScorecardRetraction,
+) => Promise<AtomicGradingAuditRetraction | null>;
+
+/** Return the subject observation with a withdrawn audit's settlement cleared. */
+export function resetGradingAuditStampForRetraction(
+  rawSubjectObservation: unknown,
+  auditIssueId: string,
+): Record<string, unknown> | null {
+  const subjectObservation = asStructuredObservation(rawSubjectObservation);
+  if (subjectObservation?.gradingAudit?.auditIssueId !== auditIssueId) return null;
+  if (!rawSubjectObservation || typeof rawSubjectObservation !== 'object' || Array.isArray(rawSubjectObservation)) {
+    return null;
+  }
+  const rawSubject = rawSubjectObservation as Record<string, unknown>;
+  const rawGradingAudit = rawSubject.gradingAudit;
+  if (!rawGradingAudit || typeof rawGradingAudit !== 'object' || Array.isArray(rawGradingAudit)) return null;
+  const pendingGradingAudit: Record<string, unknown> = {
+    ...(rawGradingAudit as Record<string, unknown>),
+    state: 'pending',
+  };
+  delete pendingGradingAudit.auditIssueId;
+  delete pendingGradingAudit.auditor;
+  delete pendingGradingAudit.auditedAt;
+  return { ...rawSubject, gradingAudit: pendingGradingAudit };
+}
+
+/**
+ * Retract a grading-integrity audit and repair the stamp it settled in one
+ * transaction. The subject UPDATE is a compare-and-set on auditIssueId: a
+ * later correction wins the race and must never be returned to pending by an
+ * older audit's retraction.
+ */
+async function retractGradingAuditAtomically(
+  auditIssueId: string,
+  subjectIssueId: string,
+  requestedRetraction: ScorecardRetraction,
+): Promise<AtomicGradingAuditRetraction | null> {
+  const workspaceId = await resolveIssueWorkspace(auditIssueId);
+  const refs = [...new Set([auditIssueId, subjectIssueId])].sort();
+
+  return boundedOrgTxn(async (tx: OrgSql) => {
+    const rows = await tx<{ feature_id: string; payload: unknown }[]>`
+      SELECT feature_id, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND feature_id = ANY(${refs}::text[])
+         AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       ORDER BY feature_id
+       FOR UPDATE`;
+    const auditRow = rows.find((row) => row.feature_id === auditIssueId);
+    if (!auditRow) return null;
+
+    const auditPayload =
+      auditRow.payload && typeof auditRow.payload === 'object' && !Array.isArray(auditRow.payload)
+        ? (auditRow.payload as Record<string, unknown>)
+        : {};
+    const rawAuditObservation = auditPayload.observation;
+    if (!rawAuditObservation || typeof rawAuditObservation !== 'object' || Array.isArray(rawAuditObservation)) {
+      return null;
+    }
+    const auditObservation = asStructuredObservation(rawAuditObservation);
+    if (
+      auditObservation?.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF ||
+      auditObservation.subject?.kind !== 'scorecard' ||
+      auditObservation.subject.ref !== subjectIssueId
+    ) {
+      return null;
+    }
+
+    const retraction = auditObservation.retracted ?? requestedRetraction;
+    if (!auditObservation.retracted) {
+      const updated = await tx<{ feature_id: string }[]>`
+        UPDATE harness_shared.work_items
+           SET payload = jsonb_set(
+                 COALESCE(payload, '{}'::jsonb),
+                 '{observation}',
+                 ${JSON.stringify({ ...(rawAuditObservation as Record<string, unknown>), retracted: retraction })}::jsonb,
+                 true
+               ),
+               origin = 'local',
+               updated_ts = ${Date.now()}
+         WHERE workspace_id = ${workspaceId}
+           AND feature_id = ${auditIssueId}
+           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+        RETURNING feature_id`;
+      if (!updated[0]) return null;
+    }
+
+    const subjectRow = rows.find((row) => row.feature_id === subjectIssueId);
+    const subjectPayload =
+      subjectRow?.payload && typeof subjectRow.payload === 'object' && !Array.isArray(subjectRow.payload)
+        ? (subjectRow.payload as Record<string, unknown>)
+        : {};
+    const rawSubjectObservation = subjectPayload.observation;
+    const resetSubjectObservation = resetGradingAuditStampForRetraction(rawSubjectObservation, auditIssueId);
+    let subjectReset = false;
+    if (resetSubjectObservation) {
+      const updated = await tx<{ feature_id: string }[]>`
+        UPDATE harness_shared.work_items
+           SET payload = jsonb_set(
+                 COALESCE(payload, '{}'::jsonb),
+                 '{observation}',
+                 ${JSON.stringify(resetSubjectObservation)}::jsonb,
+                 true
+               ),
+               origin = 'local',
+               updated_ts = ${Date.now()}
+         WHERE workspace_id = ${workspaceId}
+           AND feature_id = ${subjectIssueId}
+           AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+           AND payload->'observation'->'gradingAudit'->>'auditIssueId' = ${auditIssueId}
+        RETURNING feature_id`;
+      subjectReset = updated.length > 0;
+    }
+
+    return { retraction, subjectReset };
+  });
+}
+
 /**
  * Retract one scorecard without deleting or flattening its evidence payload.
  * `mergeIssuePayload` only merges the payload root, so the nested scorecard
@@ -665,6 +796,7 @@ export async function retractScorecard(
   deps: {
     getIssue?: typeof getIssue;
     mergeIssuePayload?: typeof mergeIssuePayload;
+    retractGradingAudit?: RetractGradingAudit;
   } = {},
 ): Promise<ScorecardRetractionResult> {
   const issue = await (deps.getIssue ?? getIssue)(issueId);
@@ -685,15 +817,40 @@ export async function retractScorecard(
     return { ok: false, issueId, retracted: false, error: `'${issueId}' is not a complete scorecard` };
   }
   const observation = asStructuredObservation(rawObservation);
+  const retraction =
+    observation?.retracted ??
+    ({
+      at: input.at ?? new Date().toISOString(),
+      by: input.by,
+      reason: input.reason.trim(),
+    } satisfies ScorecardRetraction);
+  const gradingAuditSubjectId =
+    observation?.rubricRef === GRADING_INTEGRITY_RUBRIC_REF &&
+    observation.subject?.kind === 'scorecard'
+      ? observation.subject.ref
+      : undefined;
+  if (gradingAuditSubjectId) {
+    const repaired = await (deps.retractGradingAudit ?? retractGradingAuditAtomically)(
+      issueId,
+      gradingAuditSubjectId,
+      retraction,
+    );
+    if (!repaired) {
+      return { ok: false, issueId, retracted: false, error: `failed to retract grading audit '${issueId}'` };
+    }
+    void trackDetached(import('./sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+    return { ok: true, issueId, retracted: true, retraction: repaired.retraction };
+  }
   if (observation?.retracted) {
     return { ok: true, issueId, retracted: true, retraction: observation.retracted };
   }
 
-  const retraction: ScorecardRetraction = {
-    at: input.at ?? new Date().toISOString(),
-    by: input.by,
-    reason: input.reason.trim(),
-  };
   const updated = await (deps.mergeIssuePayload ?? mergeIssuePayload)(issueId, {
     observation: { ...(rawObservation as Record<string, unknown>), retracted: retraction },
   });

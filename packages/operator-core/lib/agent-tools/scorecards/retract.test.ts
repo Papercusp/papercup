@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { retractScorecard } from '../../scorecards';
+import { resetGradingAuditStampForRetraction, retractScorecard } from '../../scorecards';
 
 const RATINGS = { criterion: { rating: 'healthy', evidence: 'verified' } };
 
@@ -83,6 +83,66 @@ describe('retractScorecard', () => {
     );
     expect(result).toEqual({ ok: true, issueId: 'EI-1', retracted: true, retraction: prior });
     expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+
+  it('atomically retracts a grading-integrity audit and repairs its cited subject', async () => {
+    const retraction = { at: '2026-08-14T23:00:00.000Z', by: 'su-1', reason: 'falsified finding' };
+    const getIssue = vi.fn(async () => ({
+      payload: {
+        observation: {
+          rubricRef: 'grading-integrity',
+          ratings: RATINGS,
+          subject: { kind: 'scorecard', ref: 'EI-SUBJECT' },
+        },
+      },
+    }));
+    const retractGradingAudit = vi.fn(async () => ({ retraction, subjectReset: true }));
+    const mergeIssuePayload = vi.fn();
+
+    const result = await retractScorecard(
+      'EI-AUDIT',
+      { by: 'su-1', reason: 'falsified finding', at: retraction.at },
+      {
+        getIssue: getIssue as never,
+        mergeIssuePayload: mergeIssuePayload as never,
+        retractGradingAudit: retractGradingAudit as never,
+      },
+    );
+
+    expect(result).toEqual({ ok: true, issueId: 'EI-AUDIT', retracted: true, retraction });
+    expect(retractGradingAudit).toHaveBeenCalledWith('EI-AUDIT', 'EI-SUBJECT', retraction);
+    expect(mergeIssuePayload).not.toHaveBeenCalled();
+  });
+
+  it('only clears the settlement metadata for the audit currently cited by the subject', () => {
+    const subject = {
+      rubricRef: 'rubric-a',
+      ratings: RATINGS,
+      gradingAudit: {
+        state: 'failed',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-14T22:00:00.000Z',
+        auditIssueId: 'EI-AUDIT',
+        auditor: 'su-1',
+        auditedAt: '2026-08-14T23:00:00.000Z',
+      },
+    };
+
+    expect(resetGradingAuditStampForRetraction(subject, 'EI-AUDIT')).toEqual({
+      rubricRef: 'rubric-a',
+      ratings: RATINGS,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: 'grading-integrity',
+        stampedAt: '2026-08-14T22:00:00.000Z',
+      },
+    });
+    expect(
+      resetGradingAuditStampForRetraction(
+        { ...subject, gradingAudit: { ...subject.gradingAudit, auditIssueId: 'EI-LATER-CORRECTION', state: 'passed' } },
+        'EI-AUDIT',
+      ),
+    ).toBeNull();
   });
 
   it('refuses a non-scorecard issue without mutating it', async () => {
