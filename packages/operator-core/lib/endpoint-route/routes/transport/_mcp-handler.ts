@@ -31,6 +31,7 @@ import {
   getPromptCatalog,
   getResourceCatalog,
   dispatch,
+  resolveBearer,
   getPrompt,
   listResources,
   readResource,
@@ -51,6 +52,7 @@ import {
   parsePayloadTier,
   type PayloadTier,
   type UnifiedToolContext,
+  type Principal,
   type RequestOriginMetadata,
   type DeltaResponse,
 } from '@papercusp/agent-mcp';
@@ -827,6 +829,10 @@ export interface BuiltSpawnContext {
    */
   contextTier?: PayloadTier;
   requestOrigin?: RequestOriginMetadata;
+  /** Verified short-lived PI bearer used by a public Papercup chat mount. */
+  authenticatedPrincipal?: Principal;
+  /** Explicit proof that this MCP mount has a live interactive card responder. */
+  interactiveCardCapability?: true;
 }
 
 type TransportClampTool = {
@@ -1449,6 +1455,45 @@ async function tryBuildSpawnContext(
         // psu into the user-level MCP URL, like `tools=`.
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
         requestOrigin,
+      },
+    };
+  }
+
+  // ── (1a) Public Papercup PI principal ────────────────────────────
+  // `workspace=` used to enter the signed-spawn parser before bearer auth, so
+  // strict mode rejected this mount as an unsigned spawn. Authenticate the
+  // short-lived PI bearer first and derive its workspace; its own capabilities
+  // remain the dispatch gate.
+  if (url.searchParams.get('principal') === 'pi') {
+    const forbidden = ['role', 'spawn', 'harness', 'sig', 'exp', 'superuser', 'power_user']
+      .find((key) => url.searchParams.has(key));
+    if (forbidden) return { kind: 'failed', reason: `pi_principal_forbidden_param:${forbidden}` };
+    const principal = await resolveBearer(bearerFromExtra(extra));
+    if (!principal) return { kind: 'failed', reason: 'pi_principal_invalid_bearer' };
+    if (principal.kind !== 'pi') return { kind: 'failed', reason: 'pi_principal_wrong_kind' };
+    const requestedWorkspace = (url.searchParams.get('workspace') ?? '').trim();
+    if (!requestedWorkspace || requestedWorkspace !== principal.workspaceId) {
+      return { kind: 'failed', reason: 'pi_principal_workspace_mismatch' };
+    }
+    const clientParam = (url.searchParams.get('client') ?? '').trim();
+    return {
+      kind: 'ok',
+      ctx: {
+        workspaceId: principal.workspaceId,
+        ...(dataPlaneDegradedAtMs ? { dataPlaneDegradedAtMs } : {}),
+        harnessSlug: '*',
+        role: 'papercup' as AgentRole,
+        featureId: null,
+        chunkId: null,
+        runId: globalThis.crypto.randomUUID(),
+        spawnId: principal.slug,
+        parentSpawnId: null,
+        uiClientId: clientParam || null,
+        planRunSessionId,
+        profile: 'engineer',
+        requestOrigin,
+        authenticatedPrincipal: principal,
+        interactiveCardCapability: true,
       },
     };
   }
@@ -2345,13 +2390,14 @@ async function buildMcpToolContext(
     planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,
     isPowerUser: spawn.isPowerUser ?? false,
+    ...(spawn.interactiveCardCapability ? { interactiveCardCapability: true as const } : {}),
     gateBypass: papercuspGateBypass({
       isSuperuser: spawn.isSuperuser ?? false,
       isPowerUser: spawn.isPowerUser ?? false,
       // EI-2048: testing-phase full tool access for trusted roles (queen/bee/
       // overwatch/sentinel/scout/operator) — they get the same role+capability
       // bypass as superuser so a missing grant can't masquerade as another bug.
-      role: spawn.role,
+      role: spawn.authenticatedPrincipal ? null : spawn.role,
     }),
     // Tool-list filtering only distinguishes power-vs-not (slashToolVisibleTo:
     // `profile === 'power'`), so the GENERIC profile (domain-generic-hive P-025) maps to
@@ -2601,7 +2647,16 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // power); coerce so the narrow listMcpProjections param need not carry 'generic'.
   const profile = rawProfile === 'generic' ? 'engineer' : rawProfile;
   const bypass = urlFromExtra(extra)?.searchParams.get('manifestBypass') === '1';
-  const result = applyToolManifest(listMcpProjections(role, profile), { bypass });
+  let result = applyToolManifest(listMcpProjections(role, profile), { bypass });
+  if (spawnRes.kind === 'ok' && spawnRes.ctx.authenticatedPrincipal) {
+    const caps = spawnRes.ctx.authenticatedPrincipal.capabilities;
+    result = result.filter((listing) => {
+      const name = (listing as { name?: unknown }).name;
+      if (typeof name !== 'string') return false;
+      const projected = lookupByMcpName(name);
+      return projected !== undefined && projected.capabilities.every((capability) => caps.has(capability));
+    });
+  }
   // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
   // seeded session's surface GROWS at runtime via ctx.activateTools (tools:find)
   // + notifications/tools/list_changed. getSessionSurface returns that live set

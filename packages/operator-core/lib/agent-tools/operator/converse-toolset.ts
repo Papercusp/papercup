@@ -107,5 +107,5 @@ export function buildConverseMcpMount(input: ConverseMcpMountInput): ConverseMcp
   // boundary hands the brain ITS OWN bearer or the brain gets no mount.
   const bearer = input.principalToken?.trim() ?? '';
   if (!bearer) return null;
-  return { url: `${input.baseUrl}/api/mcp?${common}`, bearer };
+  return { url: `${input.baseUrl}/api/mcp?principal=pi&${common}`, bearer };
 }

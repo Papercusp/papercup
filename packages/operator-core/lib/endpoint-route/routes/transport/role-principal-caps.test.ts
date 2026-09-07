@@ -621,6 +621,24 @@ describe('synthesizeDispatchPrincipal — telemetry provenance', () => {
       trust: 'trusted',
     });
   });
+
+  test('verified PI principals pass through without role-derived capability inflation', async () => {
+    const authenticatedPrincipal = {
+      kind: 'pi' as const,
+      slug: 'pi:public-chat',
+      workspaceId: 'ws',
+      authMethod: 'bearer-token' as const,
+      trust: 'trusted' as const,
+      capabilities: new Set(['chat:write']),
+    };
+    const principal = await synthesizeDispatchPrincipal(fakeTx([]), {
+      workspaceId: 'ws',
+      role: 'papercup',
+      authenticatedPrincipal,
+    });
+    expect(principal).toBe(authenticatedPrincipal);
+    expect(principal.capabilities).toEqual(new Set(['chat:write']));
+  });
 });
 
 describe('synthesizeTransportPrincipal — no-tx telemetry provenance', () => {
@@ -658,6 +676,22 @@ describe('synthesizeTransportPrincipal — no-tx telemetry provenance', () => {
 
   test('unscoped transport has no principal', () => {
     expect(synthesizeTransportPrincipal({ workspaceId: '*', role: 'operator', isSuperuser: true })).toBeNull();
+  });
+
+  test('verified PI transport keeps the bearer-derived principal', () => {
+    const authenticatedPrincipal = {
+      kind: 'pi' as const,
+      slug: 'pi:public-chat',
+      workspaceId: 'ws',
+      authMethod: 'bearer-token' as const,
+      trust: 'trusted' as const,
+      capabilities: new Set(['chat:write']),
+    };
+    expect(synthesizeTransportPrincipal({
+      workspaceId: 'ws',
+      role: 'papercup',
+      authenticatedPrincipal,
+    })).toBe(authenticatedPrincipal);
   });
 });
 

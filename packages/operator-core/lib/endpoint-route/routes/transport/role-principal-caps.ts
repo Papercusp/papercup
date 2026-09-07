@@ -455,9 +455,11 @@ export function synthesizeTransportPrincipal(spawnCtx: {
   workspaceId: string;
   role: string;
   isSuperuser?: boolean;
+  authenticatedPrincipal?: Principal;
   /** Explicitly false only for an accepted unsigned legacy spawn URL. */
   sigVerifiedSpawn?: boolean;
 }): Principal | null {
+  if (spawnCtx.authenticatedPrincipal) return spawnCtx.authenticatedPrincipal;
   if (!spawnCtx.workspaceId || spawnCtx.workspaceId === '*') return null;
   const isSuperuser = spawnCtx.isSuperuser === true;
   const unsignedLegacy = !isSuperuser && spawnCtx.sigVerifiedSpawn === false;
@@ -512,10 +514,12 @@ export async function synthesizeDispatchPrincipal(
     workspaceId: string;
     role: string;
     isSuperuser?: boolean;
+    authenticatedPrincipal?: Principal;
     /** Explicitly false only for an accepted unsigned legacy spawn URL. */
     sigVerifiedSpawn?: boolean;
   },
 ): Promise<Principal> {
+  if (spawnCtx.authenticatedPrincipal) return spawnCtx.authenticatedPrincipal;
   const capabilities = spawnCtx.isSuperuser
     ? new Set<string>()
     : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role);

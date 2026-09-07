@@ -151,7 +151,9 @@ export default defineTool({
     notWhen: 'For OPEN-ENDED questions ("describe what you want", "paste the error"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max).',
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // Public Papercup chat runs under a short-lived PI principal rather than the
+  // owner/superuser mount. Capability `chat:write` remains its independent gate.
+  agentRoles: [...SU_ROLES, 'papercup'],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   // EI-288: this tool BLOCKS on a real human clicking a card — it can
   // legitimately take much longer than the framework's generic 60s

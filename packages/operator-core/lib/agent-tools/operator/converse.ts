@@ -39,7 +39,7 @@ import { z } from 'zod';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, lookupByMcpName, resolveBearer } from '@papercusp/agent-mcp';
 import { runAgentChat, resolveBackend } from '../../agent-chat-stream';
 import { readAgentConfig, surfaceBackend, surfaceModel } from '../../agent-config';
 import { FLAGS } from '@papercusp/flags';
@@ -303,14 +303,40 @@ export default defineTool({
     // session reuse below (claude-code only), and the papercup pin carries its
     // backend with it (D-007 §3).
     const { model: operatorModel, backend: operatorBackend } = await resolveConverseBrain(role);
+    const workspaceId =
+      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    const ownerPrincipal = hostTrust === 'owner'
+      ? await readSystemPrincipal('operator', workspaceId)
+      : null;
+    let publicPrincipal: Awaited<ReturnType<typeof resolveBearer>> = null;
+    if (hostTrust === 'public' && input.principalToken?.trim()) {
+      try {
+        publicPrincipal = await resolveBearer(input.principalToken.trim());
+      } catch {
+        // Fail closed to a tool-less public brain; never borrow the owner token.
+      }
+    }
+    const principalOk = hostTrust === 'owner'
+      ? ownerPrincipal !== null && ownerPrincipal.workspaceId === workspaceId
+      : publicPrincipal?.kind === 'pi' && publicPrincipal.workspaceId === workspaceId;
     // The brain's tool surface for this turn — host-TRUST-keyed (D-007 §2), and
     // resolved BEFORE the prompt build so the catalog advertises exactly the set
     // the mount serves (listed == callable on both trusts).
-    const operatorTools: readonly string[] = selectConverseTools({
+    const selectedOperatorTools: readonly string[] = selectConverseTools({
       role,
       hostTrust,
       publicDoorNames: () => capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
     });
+    const operatorTools: readonly string[] = !principalOk
+      ? []
+      : hostTrust === 'public' && publicPrincipal
+        ? selectedOperatorTools.filter((fullName) => {
+            const canonicalName = fullName.replace(/^mcp__agentmcp__/, '');
+            const projected = lookupByMcpName(canonicalName);
+            return projected !== undefined
+              && projected.capabilities.every((capability) => publicPrincipal.capabilities.has(capability));
+          })
+        : selectedOperatorTools;
     const convId =
       typeof input.conversationId === 'string' && input.conversationId.trim()
         ? input.conversationId
@@ -400,15 +426,6 @@ export default defineTool({
     // brain's askUser timed out to a prose fallback (root cause of the S16
     // cardUsage failures; voice-persona-production-readiness P-003, found
     // live 2026-06-07). '*' is the superuser wildcard, not a real workspace.
-    const workspaceId =
-      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
-    // The principal lookup must target the SAME workspace (it defaults to the
-    // ALS-lost activeWorkspaceId() too — leaving it implicit reintroduces the
-    // mismatch as a tool-less brain: principal from the global workspace,
-    // comparison against the request's).
-    const principal = await readSystemPrincipal('operator', workspaceId);
-    const principalOk = principal !== null && principal.workspaceId === workspaceId;
-
     // mcpConfig with agentmcp HTTP via mcp-remote bridge (same pattern
     // as the old route). Reads superuser token from disk.
     // Accept hex/dash UUIDs (the browser tab's client id) AND the
