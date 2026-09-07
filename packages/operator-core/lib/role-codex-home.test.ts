@@ -548,6 +548,51 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).not.toContain('su-stale');
   });
 
+  it('repairs an Astra resume from the session CODEX_HOME registry, not the parent HOME cache', async () => {
+    const { ensureSuCodexHomeConfig, writeRoleCodexHome, writeSuCodexHome } = await loadMod();
+    const previous = process.env.CODEX_HOME;
+    delete process.env.CODEX_HOME;
+    try {
+      const fresh = writeRoleCodexHome({
+        sessionKey: 'astra-context-fresh',
+        mcpUrl: 'http://x/api/mcp?role=worker',
+        promptText: 'P',
+        model: 'gpt-6-astra',
+      });
+      expect(readFileSync(fresh.configPath, 'utf8')).toMatch(
+        /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+      );
+
+      const home = writeSuCodexHome({
+        sessionKey: 'astra-context-home',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'P',
+        sid: 'su-astra-context',
+        model: 'gpt-5.5',
+      });
+      writeFileSync(
+        join(home.codexHome, 'models_cache.json'),
+        JSON.stringify({
+          models: [{ slug: 'gpt-6-astra', context_window: 272_000, max_context_window: 872_000 }],
+        }),
+      );
+
+      const repaired = ensureSuCodexHomeConfig({
+        sessionKey: 'astra-context-home',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        sid: 'su-astra-context',
+        model: 'gpt-6-astra',
+      });
+      expect(repaired.repaired).toBe(true);
+      expect(readFileSync(repaired.configPath, 'utf8')).toMatch(
+        /^model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n/,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+    }
+  });
+
   it.each([
     ['missing context roots', ''],
     ['superseded context roots', 'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n'],
