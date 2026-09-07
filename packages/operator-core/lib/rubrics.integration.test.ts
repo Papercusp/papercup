@@ -1313,7 +1313,11 @@ describe('workspace scope follows activeWorkspaceId (WI-976 regression)', () => 
 // the SAME withPlanLock + evaluateSetTemplateData pair the tool handler uses is the point
 // — asserting on the guard function alone would pass even if nothing called it.
 describe('template_data persistence boundary — the set-template-data door', () => {
-  async function seedBarContract(subject: string) {
+  // `authorMethods` performs the authoring step a real caller performs after
+  // seeding (see the note at the end of this helper). It is OPT-IN because it
+  // writes template_data, which advances clause revisions — cases that assert
+  // exact revision numbers or history counts want the bare seed.
+  async function seedBarContract(subject: string, opts: { authorMethods?: boolean } = {}) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
     const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
     const workspaceId = activeWorkspaceId();
@@ -1327,6 +1331,17 @@ describe('template_data persistence boundary — the set-template-data door', ()
         (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
         VALUES (${workspaceId},'papercusp',${subject},${item},${index},'done',${item})`;
     }
+    // The acceptance rubric this seed writes links to a STANDARD-kind class
+    // rubric, and `assertAcceptanceLinksResolve` refuses a dangling classRef.
+    // Nothing else in this file seeds one, so seed it here (idempotently — the
+    // suite reuses one database across these cases).
+    const [classRubricSeeded] = await db.adminSql`
+      SELECT 1 FROM harness_shared.harness_plans
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+         AND plan_slug='plan-class-feature-ship'`;
+    if (!classRubricSeeded) {
+      await insertRubricPlan('plan-class-feature-ship', { workspaceId, title: 'Plan class — feature ship' });
+    }
     const seeded = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
       executor: tx as never, workspaceId, harnessSlug: 'papercusp', planSlug: subject,
       planContent: content, planTitle: 'METHOD pins', planStatus: 'active', planVersion: 1,
@@ -1335,6 +1350,24 @@ describe('template_data persistence boundary — the set-template-data door', ()
     }));
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) throw new Error(seeded.message);
+    // acceptance-bar-seed deliberately leaves METHOD/checks blank for the author
+    // to fill against as-built work — it seeds the literal placeholder "Fill
+    // METHOD/checks against as-built work before grading". Real callers perform
+    // that authoring step; this fixture did not, so once the pre-amendment
+    // readiness gate landed every amendment path here refused with
+    // bar_snapshot_method_missing / bar_snapshot_check_missing. Author them so
+    // the fixture represents a contract that is actually ready to amend.
+    if (opts.authorMethods) {
+      const seededData = await storedTemplateData(seeded.rubricSlug);
+      await setTemplateDataDoor(seeded.rubricSlug, {
+        ...seededData,
+        criteria: seededData.criteria.map((criterion) => ({
+          ...criterion,
+          method: 'Execute the seeded acceptance fixture.',
+          check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+        })),
+      });
+    }
     return { ...seeded, workspaceId, subject };
   }
 
@@ -1442,7 +1475,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   });
 
   it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
-    const seeded = await seedBarContract('method-pin-subject');
+    const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const data = await storedTemplateData(seeded.rubricSlug);
@@ -1494,7 +1527,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   });
 
   it('advances unchanged BAR projections on a semantic amendment and rolls back both plans on a late failure', async () => {
-    const seeded = await seedBarContract('semantic-pin-subject');
+    const seeded = await seedBarContract('semantic-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const amendment = {
@@ -1555,7 +1588,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   });
 
   it('adds a declared BAR with structured checks through the existing atomic amendment path', async () => {
-    const seeded = await seedBarContract('criteria-set-addition-subject');
+    const seeded = await seedBarContract('criteria-set-addition-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const [subject] = await db.adminSql<{ content: string; version: number }[]>`
       SELECT content, version FROM harness_shared.harness_plans
@@ -1714,7 +1747,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   });
 
   it('amends unified proof depth with approval, preserves BAR identity for methods, and retains projection history', async () => {
-    const seeded = await seedBarContract('unified-amendment-subject');
+    const seeded = await seedBarContract('unified-amendment-subject', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
     const key = before.criteria[0]!.key;
     const amendment = {
@@ -1770,7 +1803,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   });
 
   it('previews structural plane amendments without writes and requires an actual outside-lineage approval', async () => {
-    const seeded = await seedBarContract('plane-approval-subject');
+    const seeded = await seedBarContract('plane-approval-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const amendment = {
       rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: 'Require observed live behavior.',
@@ -1801,7 +1834,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   });
 
   it('serializes competing BAR amendments and refuses the stale CAS without partial writes', async () => {
-    const seeded = await seedBarContract('concurrent-bar-subject');
+    const seeded = await seedBarContract('concurrent-bar-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const inputs = ['live', 'deployed'].map((evidencePlane) => ({
       rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: `Require ${evidencePlane} evidence.`,
