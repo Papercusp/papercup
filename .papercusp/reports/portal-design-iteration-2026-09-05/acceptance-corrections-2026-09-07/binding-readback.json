@@ -1,0 +1,190 @@
+{
+  "evidence": [
+    {
+      "id": 1192,
+      "workItemId": "WI-10000327",
+      "specId": "AUTO-BAR-R-3-P-011",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1191,
+      "workItemId": "WI-10000317",
+      "specId": "AUTO-BAR-R-2-P-010",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1190,
+      "workItemId": "WI-2147225",
+      "specId": "AUTO-BAR-R-2-P-009",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1189,
+      "workItemId": "WI-10000302",
+      "specId": "AUTO-BAR-R-2-P-008",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1188,
+      "workItemId": "WI-10000284",
+      "specId": "AUTO-BAR-R-2-P-007",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1187,
+      "workItemId": "WI-2147610",
+      "specId": "AUTO-BAR-R-2-P-006",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1186,
+      "workItemId": "WI-2147155",
+      "specId": "AUTO-BAR-R-2-P-005",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1185,
+      "workItemId": "WI-2147154",
+      "specId": "AUTO-BAR-R-2-P-004",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1184,
+      "workItemId": "WI-2147062",
+      "specId": "AUTO-BAR-R-2-P-003",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1183,
+      "workItemId": "WI-10000116",
+      "specId": "AUTO-BAR-R-2-P-002",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1182,
+      "workItemId": "WI-10000317",
+      "specId": "AUTO-BAR-R-1-P-010",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1181,
+      "workItemId": "WI-2147225",
+      "specId": "AUTO-BAR-R-1-P-009",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1180,
+      "workItemId": "WI-10000302",
+      "specId": "AUTO-BAR-R-1-P-008",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1179,
+      "workItemId": "WI-10000284",
+      "specId": "AUTO-BAR-R-1-P-007",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1178,
+      "workItemId": "WI-2147610",
+      "specId": "AUTO-BAR-R-1-P-006",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1177,
+      "workItemId": "WI-2147155",
+      "specId": "AUTO-BAR-R-1-P-005",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1176,
+      "workItemId": "WI-2147154",
+      "specId": "AUTO-BAR-R-1-P-004",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1175,
+      "workItemId": "WI-2147062",
+      "specId": "AUTO-BAR-R-1-P-003",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1174,
+      "workItemId": "WI-10000116",
+      "specId": "AUTO-BAR-R-1-P-002",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    },
+    {
+      "id": 1173,
+      "workItemId": "WI-2146962",
+      "specId": "AUTO-BAR-R-1-P-001",
+      "specRevision": 5,
+      "currentness": {
+        "overall": "current"
+      }
+    }
+  ],
+  "count": 20,
+  "currentness": {
+    "current": 20,
+    "stale": 0,
+    "unknown": 0
+  }
+}

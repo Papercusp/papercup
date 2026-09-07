@@ -1019,7 +1019,7 @@ export interface SuCodexConfigInput {
   sid: string;
   /** Absolute per-session directory Codex uses for its plaintext TUI log. */
   logDir?: string | null;
-  /** Launch model. Omit/null resolves the installed Codex default, which keeps
+  /** Launch model. Omit/null resolves the managed Sol xhigh default, which keeps
    *  repair and model-less resume paths aligned with a fresh launch. */
   model?: string | null;
   token?: string | null;

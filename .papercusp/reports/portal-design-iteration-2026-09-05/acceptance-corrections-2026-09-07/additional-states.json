@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-07T04:36:24.067Z",
+  "release": "_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+  "phone": {
+    "theme": "dark",
+    "view": "scheduled",
+    "disabled": [],
+    "form": "Book a call\n\nThe guest joins from their browser — no phone number involved.\n\nTitle\nGuest name\nGuest email (optional)\nWhen\nMinutes\nCreate invite",
+    "capturePath": "phone-disabled.png",
+    "captureSha256": "8fac144988733907b7d46648ab6205a4dfd157c60a12f7d316ff171cdb048098"
+  },
+  "refreshes": [
+    {
+      "at": "2026-09-07T04:36:25.609Z",
+      "status": 200,
+      "url": "http://127.0.0.1:3081/api/workspace-stats",
+      "bodyKeys": [
+        "ok",
+        "stats",
+        "agents",
+        "rosterAgeMs"
+      ],
+      "display": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nMission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡48 AGENTS RUNNING · 33 THINKING\n646 PROCESSES\nLoading Process manager…\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n19d\nMove your AI agents from pilot to production\n19d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n19d\nDhshs\n19d\nUse fast and easy electronic signatures in Google Workspace\n19d\nOpen notification center · 79 more unread"
+    },
+    {
+      "at": "2026-09-07T04:36:25.767Z",
+      "status": 200,
+      "url": "http://127.0.0.1:3081/api/workspace-stats",
+      "bodyKeys": [
+        "ok",
+        "stats",
+        "agents",
+        "rosterAgeMs"
+      ],
+      "display": "Papercup Chat\nChat history\nCalendar\nPhone\nDesktops\nPlans\nInbox\nWorkspaces\nOverview\nHUD\nWork\nLearning\nWorkflow Editor\nMore\nHome\nCloud\nCupboard\nDEV\nSupport\nSettings\nMission Control\nWORKSPACE\nLocal workspace\n⌘K\n⌘J\n⚡48 AGENTS RUNNING · 33 THINKING\n646 PROCESSES\nLoading Process manager…\nStart voice chat\nDownload TUI\n87\nPAPERCUSP IN YOUR TERMINAL\n\nThe Papercusp TUI is the fastest way to drive your workspaces — install it alongside the web portal.\n\nDownload the Papercusp TUI\nINBOX\n87\n\nunread conversations\n\nInbox: 87 unread conversations. Open Inbox.\nTODAY\n0\n\nevents today\n\nToday: 0 events today. Open Today.\nDESKTOPS\n—\n\nactive desktops\n\nDesktops: no active desktops count available. Open Desktops.\nWORKSPACES\n—\n\nrunning workspaces\n\nWorkspaces: no running workspaces count available. Open Workspaces.\nNEXT MEETING\n\nNo upcoming meeting.\n\nOpen Calendar\nNOTIFICATIONS\n[Papercusp/papercup] Run failed: Test - main (7caaed6)\n18d\nAn IPO is just another fundraise\n18d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n18d\nIt's AI security déjà vu all over again\n19d\nMove your AI agents from pilot to production\n19d\n[Papercusp/papercup] Run failed: Test (nightly full) - main (4824a92)\n19d\nDhshs\n19d\nUse fast and easy electronic signatures in Google Workspace\n19d\nOpen notification center · 79 more unread"
+    }
+  ],
+  "processCapture": {
+    "capturePath": "process-refresh.png",
+    "captureSha256": "e8c0c97e4386a18987df1865009598f4e72b0bae9f0687b1b4676210556a3ae6"
+  }
+}

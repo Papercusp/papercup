@@ -1,0 +1,486 @@
+{
+  "slug": "portal-design-iteration-2026-09-05",
+  "harness": "papercusp",
+  "items": [
+    {
+      "workItemId": "WI-2146962",
+      "specId": "AUTO-BAR-R-1-P-001",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-001",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.508Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-001",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000116",
+      "specId": "AUTO-BAR-R-1-P-002",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-002",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-002",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147062",
+      "specId": "AUTO-BAR-R-1-P-003",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-003",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-003",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147154",
+      "specId": "AUTO-BAR-R-1-P-004",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-004",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-004",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147155",
+      "specId": "AUTO-BAR-R-1-P-005",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-005",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-005",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147610",
+      "specId": "AUTO-BAR-R-1-P-006",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-006",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-006",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000284",
+      "specId": "AUTO-BAR-R-1-P-007",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-007",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-007",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000302",
+      "specId": "AUTO-BAR-R-1-P-008",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-008",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-008",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147225",
+      "specId": "AUTO-BAR-R-1-P-009",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-009",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-009",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000317",
+      "specId": "AUTO-BAR-R-1-P-010",
+      "specRevision": 5,
+      "evidenceKind": "coverage-census",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-1-p-010",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-010",
+        "criterion": "R-1",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000116",
+      "specId": "AUTO-BAR-R-2-P-002",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-002",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-002",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147062",
+      "specId": "AUTO-BAR-R-2-P-003",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-003",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-003",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147154",
+      "specId": "AUTO-BAR-R-2-P-004",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-004",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-004",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147155",
+      "specId": "AUTO-BAR-R-2-P-005",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-005",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-005",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147610",
+      "specId": "AUTO-BAR-R-2-P-006",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-006",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-006",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000284",
+      "specId": "AUTO-BAR-R-2-P-007",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-007",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-007",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000302",
+      "specId": "AUTO-BAR-R-2-P-008",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-008",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-008",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-2147225",
+      "specId": "AUTO-BAR-R-2-P-009",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-009",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-009",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000317",
+      "specId": "AUTO-BAR-R-2-P-010",
+      "specRevision": 5,
+      "evidenceKind": "manual",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-2-p-010",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "live",
+        "planItem": "P-010",
+        "criterion": "R-2",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    },
+    {
+      "workItemId": "WI-10000327",
+      "specId": "AUTO-BAR-R-3-P-011",
+      "specRevision": 5,
+      "evidenceKind": "operational",
+      "evidenceRef": "file:.papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/evidence-index.md#r-3-p-011",
+      "sourceFingerprint": "1b379c41511cf062cace5673aa1bd6da82319c288a50a342a7a685c37c36a26c",
+      "rubricFingerprint": "160782a1bcfdae607185847c411dd1e5394891bfa9de8a9c780dceb4cf8f8355",
+      "environmentFingerprint": "accb0e33ccd9c4b62dccaa8aa7159da97717bd63cf3f3cfc46f9a90f4819df83",
+      "observedAt": "2026-09-07T04:40:12.509Z",
+      "details": {
+        "evidencePlane": "deployed",
+        "planItem": "P-011",
+        "criterion": "R-3",
+        "verdict": "observed-awaiting-independent-judgment",
+        "evidenceFiles": [
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/effective-matrix.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/results.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/retakes.json",
+          ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/provenance.json"
+        ],
+        "limitations": "Historical gallery and current retakes are distinguished; source comparison justifies unaffected loaded-surface reuse. Browser fallback is a labeled fixture. Phone disabled state and completed native process-list refresh are not asserted; see index."
+      }
+    }
+  ]
+}

@@ -411,12 +411,12 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
-  it('resolves an omitted launch model from the installed Codex default for model-less resumes', async () => {
+  it('uses Sol xhigh for an omitted model in fresh and repaired homes despite the installed default', async () => {
     mkdirSync(join(fakeHome, '.codex'), { recursive: true });
     writeFileSync(join(fakeHome, '.codex', 'config.toml'), 'model = "gpt-5.6-luna"\n');
     installStaleExtendedWindowRecord('gpt-5.6-luna');
 
-    const { writeSuCodexHome } = await loadMod();
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
     const out = writeSuCodexHome({
       sessionKey: 'context-default-su',
       mcpUrl: 'http://x/api/mcp?superuser=1',
@@ -424,8 +424,20 @@ describe('writeSuCodexHome', () => {
       sid: 'su-context-default',
     });
 
-    expect(readFileSync(out.configPath, 'utf8')).toMatch(
+    const config = readFileSync(out.configPath, 'utf8');
+    expect(config).toContain('model = "gpt-5.6-sol"\nmodel_reasoning_effort = "xhigh"\n');
+    expect(config).toMatch(
       /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
+    writeFileSync(out.configPath, config.replace('model_reasoning_effort = "xhigh"\n', ''));
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'context-default-su',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-context-default',
+    });
+    expect(repaired.repaired).toBe(true);
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain(
+      'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "xhigh"\n',
     );
   });
 

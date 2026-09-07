@@ -161,7 +161,7 @@ describe('normalizeCodexChatGptResponsesBody', () => {
       expect(JSON.parse(result.body.toString('utf8'))).toEqual({
         input: [{ role: 'user', content: [] }],
         model: 'gpt-5.6-sol',
-        reasoning: { effort: 'medium' },
+        reasoning: { effort: 'xhigh' },
         store: false,
       });
     }
@@ -173,7 +173,7 @@ describe('normalizeCodexChatGptResponsesBody', () => {
     expect(normalized.inputNormalized).toBe(false);
     expect(JSON.parse(normalized.body.toString('utf8'))).toMatchObject({
       model: 'gpt-5.6-sol',
-      reasoning: { effort: 'medium' },
+      reasoning: { effort: 'xhigh' },
       input: [{ role: 'user', content: [] }],
       store: false,
     });

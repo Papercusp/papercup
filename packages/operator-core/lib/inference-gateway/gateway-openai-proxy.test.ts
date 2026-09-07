@@ -368,7 +368,7 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(omitted.status).toBe(200);
     expect(JSON.parse(openaiUpstream!.last.body)).toMatchObject({
       model: 'gpt-5.6-sol',
-      reasoning: { effort: 'medium' },
+      reasoning: { effort: 'xhigh' },
       input: 'default me',
     });
   });

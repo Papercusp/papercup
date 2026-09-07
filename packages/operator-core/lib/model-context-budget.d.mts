@@ -255,8 +255,8 @@ export const MAX_LAUNCH_CONTEXT_BYTES: number;
  * rule.  The installed Codex cache is not a policy source: it may advertise a
  * model that the ChatGPT subscription cannot serve (the Spark incident).
  */
-export const CODEX_SAFE_DEFAULT_MODEL: "gpt-5.6-sol";
-export const CODEX_DEFAULT_MODEL: "gpt-5.6-sol";
+export const CODEX_SAFE_DEFAULT_MODEL: "gpt-5.6-sol:xhigh";
+export const CODEX_DEFAULT_MODEL: "gpt-5.6-sol:xhigh";
 export const CODEX_DENIED_MODEL_IDS: readonly string[];
 /**
  * Resolve a managed Codex model to a safe explicit id, or throw on the deny

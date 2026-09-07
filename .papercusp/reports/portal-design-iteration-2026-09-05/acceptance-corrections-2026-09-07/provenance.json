@@ -190,5 +190,35 @@
       "sha256": "7c659e97e089c3b5fbcbb45a17714fef7d8a47da5184ec17e612b4eb5c5ecd77"
     }
   ],
-  "scopeNote": "Root digest excludes linked dependencies. sourceFiles records adopted linked modules separately; whole linked-tree drift during build is recorded in the build log, not claimed absent. Baseline188 is retained on its original release; exact affected-slot retakes and all16 interactions are on the correction release."
+  "scopeNote": "Root digest excludes linked dependencies. sourceFiles records adopted linked modules separately; whole linked-tree drift during build is recorded in the build log, not claimed absent. Baseline188 is retained on its original release; exact affected-slot retakes and all16 interactions are on the correction release.",
+  "baselineComparison": {
+    "baselinePortalHead": "2301512e",
+    "baselineMainHead": "6ce0fe234d0c21e7d3db6b7e6d07de47849fd7e4",
+    "changedLinkedAdopted": [
+      "apps/operator/app/admin/plans/plans.css"
+    ],
+    "equalLinkedAdopted": [
+      "apps/operator-vite/src/components/adv/LearningTab.test.tsx",
+      "apps/operator-vite/src/components/adv/LearningTab.tsx",
+      "apps/operator/app/adv/sessions/AgentOrders.tsx",
+      "apps/operator/app/adv/sessions/AgentDossier.tsx",
+      "apps/operator/app/_components/plans/PlanPopupModal.tsx",
+      "apps/operator/app/_components/plans/PlanPopupModal.test.tsx",
+      "apps/operator/app/_components/inbox/InboxPane.tsx",
+      "apps/operator/app/_components/inbox/InboxPane.test.tsx",
+      "apps/operator/app/_components/chat/SessionChatModal.tsx",
+      "apps/operator/app/admin/plans/PlanDetail.tsx",
+      "apps/operator/app/admin/plans/PlanOtherList.tsx",
+      "apps/operator/app/_components/chat/SessionChatModal.test.tsx",
+      "apps/operator/app/_components/chat/FleetPeersRail.tsx",
+      "apps/operator/app/_components/chat/chat-controls.css",
+      "apps/operator/app/_components/chat/PanelToggleButton.tsx"
+    ],
+    "unresolvableLinkedBaseline": [],
+    "portalRootChangedPaths": [
+      "e2e/portal-mounted-surface.spec.ts",
+      "packages/ui/src/shell.tsx",
+      "tests/shell-ui.test.tsx"
+    ]
+  }
 }

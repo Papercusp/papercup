@@ -19,10 +19,17 @@ const {
 } = modelContextBudget;
 
 describe('managed Codex model policy', () => {
-  it('resolves omitted models to the approved family-suffixed default', () => {
+  it('resolves omitted models to Sol at xhigh', () => {
     expect(resolveCodexModel()).toBe(CODEX_SAFE_DEFAULT_MODEL);
     expect(resolveCodexModel('')).toBe(CODEX_SAFE_DEFAULT_MODEL);
-    expect(CODEX_SAFE_DEFAULT_MODEL).toBe('gpt-5.6-sol');
+    expect(resolveCodexModel(null)).toBe(CODEX_SAFE_DEFAULT_MODEL);
+    expect(resolveCodexModel('  ')).toBe(CODEX_SAFE_DEFAULT_MODEL);
+    expect(CODEX_SAFE_DEFAULT_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(codexModelConfigToml(undefined)).toEqual([
+      'model = "gpt-5.6-sol"',
+      'model_reasoning_effort = "xhigh"',
+      '',
+    ]);
   });
 
   it('denies Spark across provider prefixes, effort suffixes, and case', () => {

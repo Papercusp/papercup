@@ -512,7 +512,7 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
     expect(resolveFleetAgent({ argAgent: 'claude' })).toEqual({ agent: 'claude', model: undefined });
     expect(resolveFleetAgent({ argAgent: 'codex', callerAgent: 'omp', callerModel: 'ollama-cc/x' })).toEqual({
       agent: 'codex',
-      model: 'gpt-5.6-sol',
+      model: 'gpt-5.6-sol:xhigh',
     });
   });
 

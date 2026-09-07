@@ -344,11 +344,11 @@ describe('bootstrap-role', () => {
     const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001', account: 'codex-main' });
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex', undefined, false, 'gpt-5.6-sol');
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex', undefined, false, 'gpt-5.6-sol:xhigh');
     expect(json.accountNotice).toMatch(/pinned to Codex account codex-main/i);
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ codexGatewayAccountId: 'codex-main', codexGatewayPriority: 'worker' }),
+      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh', codexGatewayAccountId: 'codex-main', codexGatewayPriority: 'worker' }),
     );
   });
 
