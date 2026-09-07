@@ -6,7 +6,8 @@
  *   installed/built `pui` -> real PTY -> production Hono operator app ->
  *   real owned loop -> real migrated Postgres
  *
- * The scripted peer replaces only the external structured engine protocol.
+ * By default, the scripted peer replaces only the external engine protocol.
+ * PUI_REAL_ENGINE=1 uses the actual maintained engine and an installed artifact.
  * SU bootstrap, engine translation, command execution, chat/session persistence,
  * HTTP/SSE transport and Ratatui UI stay real. Explicit transport faults exercise
  * acknowledgement loss and retry without spending provider credentials.
@@ -15,7 +16,7 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -23,15 +24,17 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
-import type { SuSessionCommand } from '@papercusp/chat-protocol';
+import type { SuSessionCommand, SuSessionEvent, SuSessionToolEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
 
 const scriptedEngine = vi.hoisted(() => ({
+  real: process.env.PUI_REAL_ENGINE === '1',
   mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit',
   successText: 'PUI structured engine replied',
   requests: [] as string[],
   engines: [] as ClaudeSuEngine[],
+  events: [] as SuSessionEvent[],
 }));
 
 vi.mock('../su-session-claude-engine', async (original) => {
@@ -39,6 +42,18 @@ vi.mock('../su-session-claude-engine', async (original) => {
   return {
     ...actual,
     startClaudeSuEngine(...args: Parameters<typeof actual.startClaudeSuEngine>) {
+      if (scriptedEngine.real) {
+        // Observe the production host; never supply a query, attach an adapter,
+        // or send an owner turn from the fixture in the live-provider journey.
+        const engine = actual.startClaudeSuEngine(...args);
+        scriptedEngine.engines.push(engine);
+        void (async () => {
+          for await (const { event } of engine.adapter.host.subscribe()) {
+            scriptedEngine.events.push(event);
+          }
+        })();
+        return engine;
+      }
       const query: NonNullable<ClaudeEngineOptions['query']> = ({ prompt, options }) => {
         const output = new PassThrough({ objectMode: true });
         let nativeId = '';
@@ -121,6 +136,9 @@ function resolvePuiBinary(): string | null {
 }
 
 function ensurePuiBinary(): string {
+  if (scriptedEngine.real && !process.env.PUI_BIN) {
+    throw new Error('PUI_REAL_ENGINE requires PUI_BIN from the supported install-update.sh installer');
+  }
   if (process.env.PUI_BIN) {
     if (!existsSync(process.env.PUI_BIN)) throw new Error('The explicit PUI_BIN artifact does not exist');
     return process.env.PUI_BIN;
@@ -189,6 +207,10 @@ class PuiPane {
     this.pty.write('\x1b[27u');
   }
 
+  interrupt(): void {
+    this.pty.write('\x1b[120;5u');
+  }
+
   async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const deadline = Date.now() + timeoutMs;
@@ -200,6 +222,15 @@ class PuiPane {
       `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` + this.screen(),
       { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
+  }
+
+  async waitForReply(needle: string): Promise<void> {
+    await vi.waitFor(() => {
+      // One occurrence is the owner's echoed request; the second must render
+      // as the assistant's reply. A matching composer draft alone cannot pass.
+      expect(this.screen().split(needle).length - 1).toBeGreaterThanOrEqual(2);
+    }, { timeout: 120_000, interval: 100 });
+    await this.waitFor('Message — Enter send', { timeoutMs: 120_000 });
   }
 
   async stop(): Promise<void> {
@@ -353,7 +384,9 @@ async function stopEngines(): Promise<void> {
     // The protocol peer has no native CLI lifecycle hook. Remove only its
     // bootstrap presence in this isolated DB before the real close/reaper runs.
     const owner = engine.adapter.host.descriptor().identity.ownerId;
-    await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
+    if (!scriptedEngine.real) {
+      await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
+    }
     await engine.close();
     engine.adapter.dispose();
   }
@@ -380,6 +413,9 @@ beforeAll(async () => {
     'PAPERCUSP_WORKSPACE_ID',
     'PAPERCUSP_WORKSPACES_ROOT',
     'PAPERCUSP_SERVE_UI',
+    'PAPERCUSP_HONO_PORT',
+    'PAPERCUSP_OPERATOR_URL',
+    'PAPERCUSP_MCP_PROXY_BASE',
   ];
   previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -464,6 +500,7 @@ beforeAll(async () => {
             deferred: result?.deferred === true,
             advSessionId: result?.advSessionId,
             nativeSessionPresent: Boolean(result?.nativeSession),
+            ...(result?.error ? { errorCode: result.code, error: String(result.error).slice(0, 500) } : {}),
           } : {}),
         };
         const existing = sessionTraffic.find((entry) =>
@@ -475,6 +512,11 @@ beforeAll(async () => {
     },
   });
   operatorPort = await listen(operatorServer);
+  // Native lifecycle hooks and MCP must rendezvous with this isolated host,
+  // never the developer's inherited live/staging endpoint or shared proxy.
+  process.env.PAPERCUSP_HONO_PORT = String(operatorPort);
+  process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${operatorPort}`;
+  process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${operatorPort}`;
   // Fail at the actual rendezvous boundary instead of spending every PTY
   // timeout on a fixture operator that the installed client cannot identify.
   const identityResponse = await fetch(`http://127.0.0.1:${operatorPort}/api/tui/identity`);
@@ -512,6 +554,7 @@ beforeEach(async () => {
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';
   scriptedEngine.requests = [];
+  scriptedEngine.events = [];
   await db.adminSql`
     TRUNCATE harness_shared.agent_chat_locks,
       harness_shared.agent_loop_approvals,
@@ -521,7 +564,7 @@ beforeEach(async () => {
   await putViewState('Plans');
 });
 
-describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
   test('first exact draft reaches the structured SU engine, streams tools/reply, and reopens', async () => {
     const prompt = '  PUI exact Unicode draft λ 雪  ';
     const pane = new PuiPane(bin, operatorPort, home);
@@ -690,4 +733,111 @@ describe.sequential('pui SU composer (current binary, real PTY/operator/PG)', ()
       await close(proxy);
     }
   });
+});
+
+describe.skipIf(!scriptedEngine.real).sequential('installed PUI with the real Claude engine', () => {
+  test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
+    const manifestPath = process.env.PUI_INSTALL_MANIFEST
+      ?? path.join(process.env.HOME!, '.papercusp', 'pui-install.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    expect(path.resolve(manifest.binaryPath)).toBe(path.resolve(bin));
+    expect(manifest.binarySha256).toBe(binarySha256);
+    expect(createHash('sha256').update(readFileSync(manifest.companionPath)).digest('hex'))
+      .toBe(manifest.companionSha256);
+
+    const nonce = randomUUID();
+    const greetingReply = `PUI-HELLO-${nonce}`;
+    const greeting = `Hi. Reply with exactly ${greetingReply} and no other text.`;
+    // The answer is intentionally absent from the request: only reading this
+    // newly generated file can supply the expected result.
+    const fileResult = `PUI-FILE-${randomUUID()}`;
+    const fixturePath = path.join(home, `read-${nonce}.txt`);
+    writeFileSync(fixturePath, fileResult + '\n');
+    const fileRequest = `Use the Read tool to inspect ${fixturePath}, then reply with its contents. Do not modify any file.`;
+    const cancelledResult = `PUI-CANCELLED-${nonce}`;
+    const longRequest = `Use Bash to run exactly: sleep 30; printf '${cancelledResult}\\n'. This is an interruption test; do not use any other tools.`;
+    const followupReply = `PUI-CONTINUED-${nonce}`;
+    const followup = `Reply with exactly ${followupReply} and no other text. Do not resume the interrupted task.`;
+    const pane = new PuiPane(bin, operatorPort, home);
+    const frames: Record<string, string> = {};
+    try {
+      await openComposer(pane);
+      pane.write(greeting);
+      pane.enter();
+      await pane.waitForReply(greetingReply);
+      const firstChat = await waitForPersistedChat(db, (chat) => chat.transcript.some(
+        (turn) => turn.role === 'assistant' && turn.content.includes(greetingReply)), 120_000);
+      frames.greeting = pane.screen();
+      const engine = scriptedEngine.engines[0];
+      expect(engine?.pid()).toBeGreaterThan(0);
+      const identity = structuredClone(engine.adapter.host.descriptor().identity);
+
+      pane.write(fileRequest);
+      pane.enter();
+      await pane.waitFor(fileResult, { timeoutMs: 120_000 });
+      await pane.waitFor('Message — Enter send', { timeoutMs: 120_000 });
+      expect(pane.screen()).toContain('Read');
+      frames.file = pane.screen();
+      const readStart = scriptedEngine.events.find((event): event is SuSessionToolEvent<'claude'> & { phase: 'started' } => event.type === 'tool'
+        && event.phase === 'started' && event.name === 'Read' && JSON.stringify(event.input).includes(fixturePath));
+      expect(readStart, 'the model must actually request the generated fixture').toBeDefined();
+      const readEnd = scriptedEngine.events.find((event) => event.type === 'tool'
+        && event.phase === 'completed' && event.callId === readStart?.callId
+        && JSON.stringify(event.output).includes(fileResult));
+      expect(readEnd, 'the real tool result must return in the same turn').toMatchObject({ turnId: readStart?.turnId });
+
+      pane.write(longRequest);
+      pane.enter();
+      await vi.waitFor(() => expect(scriptedEngine.events.some((event) => event.type === 'tool'
+        && event.phase === 'started' && event.name === 'Bash' && JSON.stringify(event.input).includes(cancelledResult))).toBe(true),
+      { timeout: 120_000, interval: 100 });
+      await pane.waitFor('Running');
+      frames.running = pane.screen();
+      pane.interrupt();
+      await vi.waitFor(() => expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true),
+        { timeout: 15_000, interval: 100 });
+      await pane.waitFor('Message — Enter send', { timeoutMs: 30_000 });
+      frames.interrupted = pane.screen();
+      pane.write(followup);
+      pane.enter();
+      await pane.waitForReply(followupReply);
+      frames.followup = pane.screen();
+      const finalChat = await waitForPersistedChat(db, (chat) => chat.transcript.some(
+        (turn) => turn.role === 'assistant' && turn.content.includes(followupReply)), 120_000);
+      expect(finalChat.id).toBe(firstChat.id);
+      expect(engine.adapter.host.descriptor().identity).toEqual(identity);
+      expect(scriptedEngine.engines).toHaveLength(1);
+      expect(commandPosts.filter((command) => command.type === 'owner_turn').map((command) => command.content))
+        .toEqual([greeting, fileRequest, longRequest, followup]);
+      expect(commandReplies.every((reply) => reply.status === 202 && !reply.replayed)).toBe(true);
+      expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su'))
+        .toEqual([expect.objectContaining({ count: 1, attachedEngine: true, transport: 'structured', nativeSessionPresent: true })]);
+
+      // Inspect this launch's process family only, without printing argv or
+      // touching an existing human/peer terminal. The real CLI has pipe stdio;
+      // only the PUI process is attached to our allocated terminal.
+      const processes: Array<{ pid: number; tty: string; name: string }> = [];
+      const pending = [engine.pid()!, ...childPids(pane.pty.pid)];
+      const seen = new Set<number>();
+      while (pending.length) {
+        const pid = pending.pop()!;
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        const probe = spawnSync('ps', ['-o', 'tty=,comm=', '-p', String(pid)], { encoding: 'utf8' });
+        if (probe.status === 0) {
+          const [tty, ...name] = probe.stdout.trim().split(/\s+/);
+          processes.push({ pid, tty, name: name.join(' ') });
+        }
+        pending.push(...childPids(pid));
+      }
+      expect(processes.length).toBeGreaterThan(0);
+      expect(processes.every((proc) => proc.tty === '?')).toBe(true);
+      expect(processes.some((proc) => /zellij|tmux|xterm|gnome-terminal|konsole|wezterm|alacritty|kitty/.test(proc.name))).toBe(false);
+      console.info('PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
+        greetingReply, fileResult, followupReply, readStart, readEnd,
+        commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
+      }));
+    } finally { await pane.stop().catch(() => {}); }
+  }, 600_000);
 });
