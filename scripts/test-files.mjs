@@ -179,6 +179,7 @@ const INTEGRATION_CONFIG_RE = /^vitest\.integration\.config\.(?:[cm]?[jt]s)$/;
 // declared by the root manifest are candidates, and a path that exists in more than one
 // workspace is refused instead of being routed arbitrarily.
 const workspaceDirsCache = new Map();
+const nestedRepositoryRootsCache = new Map();
 
 function workspaceDirs(root) {
   const cached = workspaceDirsCache.get(root);
@@ -220,6 +221,44 @@ function workspaceDirs(root) {
   return result;
 }
 
+function hasWorkspaceManifest(dir) {
+  try {
+    const packageJson = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'));
+    const workspaces = packageJson.workspaces;
+    return Array.isArray(workspaces) || Array.isArray(workspaces?.packages);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find checked-out nested repository roots that are also package workspaces.
+ *
+ * Gate/release evidence reports paths relative to the repository that owns a test. The
+ * superproject's package.json declares the nested packages (for example
+ * `libs/papercusp/packages/orchestrator`) as workspaces, but the evidence path is relative
+ * to the nested repository (`packages/orchestrator/...`). Only consider an ancestor that
+ * proves both properties — a .git marker and its own workspaces manifest — so ordinary
+ * package directories never become a broad path-escape fallback.
+ */
+function nestedRepositoryRoots(root) {
+  const cached = nestedRepositoryRootsCache.get(root);
+  if (cached) return cached;
+
+  const roots = new Set();
+  for (const workspace of workspaceDirs(root)) {
+    let candidate = workspace;
+    while (candidate !== root && isWithinRoot(candidate, root)) {
+      if (existsSync(join(candidate, '.git')) && hasWorkspaceManifest(candidate)) roots.add(candidate);
+      candidate = dirname(candidate);
+    }
+  }
+
+  const result = [...roots].sort();
+  nestedRepositoryRootsCache.set(root, result);
+  return result;
+}
+
 function isWithinRoot(candidate, root) {
   const rootRelative = relative(root, candidate);
   return rootRelative !== '..' && !rootRelative.startsWith(`..${sep}`) && !isAbsolute(rootRelative);
@@ -229,7 +268,8 @@ function resolveRequestedTestFile(file, root) {
   const direct = resolve(root, file);
   if (existsSync(direct) || isAbsolute(file) || file.split(/[\\/]/).includes('..')) return direct;
 
-  const candidates = workspaceDirs(root)
+  const candidateRoots = [...new Set([...workspaceDirs(root), ...nestedRepositoryRoots(root)])];
+  const candidates = candidateRoots
     .map((dir) => resolve(dir, file))
     .filter((candidate) => isWithinRoot(candidate, root) && existsSync(candidate))
     .sort();

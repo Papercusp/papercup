@@ -3,7 +3,7 @@ import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'nod
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 // The production entrypoint deliberately stays executable by plain Node.
 import {
@@ -171,6 +171,72 @@ describe('test-files router', () => {
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'packages/operator-core'));
     expect(route.config).toBe('vitest.config.ts');
     expect(route.requested).toBe('lib/__tests__/check-lint-guard-reachability.test.ts');
+  });
+
+  it('resolves paths relative to a nested repository root without weakening containment', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-submodule-'));
+    try {
+      const nested = join(root, 'libs', 'nested');
+      const orchestrator = join(nested, 'packages', 'orchestrator');
+      const db = join(nested, 'libs', 'db');
+      mkdirSync(join(orchestrator, 'src'), { recursive: true });
+      mkdirSync(join(db, 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'package.json'),
+        JSON.stringify({ workspaces: ['libs/nested/packages/*', 'libs/nested/libs/db'] }),
+      );
+      writeFileSync(join(nested, '.git'), 'gitdir: ../.git/modules/nested\n');
+      writeFileSync(join(nested, 'package.json'), JSON.stringify({ workspaces: ['packages/*', 'libs/db'] }));
+      writeFileSync(join(orchestrator, 'package.json'), JSON.stringify({ name: '@fixture/orchestrator' }));
+      writeFileSync(join(orchestrator, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(orchestrator, 'src', 'route.test.ts'), '');
+      writeFileSync(join(db, 'package.json'), JSON.stringify({ name: '@fixture/db' }));
+      writeFileSync(join(db, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(db, 'src', 'connection-cache.test.ts'), '');
+
+      for (const [stalePath, workspace, requested] of [
+        ['packages/orchestrator/src/route.test.ts', orchestrator, 'src/route.test.ts'],
+        ['libs/db/src/connection-cache.test.ts', db, 'src/connection-cache.test.ts'],
+      ]) {
+        const stale = discoverVitestRoute(stalePath, root);
+        expect(stale.absolute).toBe(join(workspace, requested));
+        expect(stale.cwd).toBe(workspace);
+        expect(stale.requested).toBe(requested);
+      }
+
+      const outside = join(root, '..', `${basename(root)}-outside.test.ts`);
+      writeFileSync(outside, '');
+      expect(() => discoverVitestRoute(`../${basename(outside)}`, root)).toThrow(/outside the repository/);
+      rmSync(outside, { force: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an ambiguous path spanning a nested repository and a root workspace', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-nested-ambiguity-'));
+    try {
+      const nested = join(root, 'libs', 'nested');
+      const nestedWorkspace = join(nested, 'packages', 'shared');
+      const rootWorkspace = join(root, 'packages', 'root-owner');
+      mkdirSync(join(nestedWorkspace, 'src'), { recursive: true });
+      writeFileSync(join(nestedWorkspace, 'package.json'), JSON.stringify({ name: nestedWorkspace }));
+      writeFileSync(join(nestedWorkspace, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(nestedWorkspace, 'src', 'same.test.ts'), '');
+      mkdirSync(join(rootWorkspace, 'packages', 'shared', 'src'), { recursive: true });
+      writeFileSync(join(rootWorkspace, 'package.json'), JSON.stringify({ name: rootWorkspace }));
+      writeFileSync(join(rootWorkspace, 'vitest.config.ts'), 'export default {};\n');
+      writeFileSync(join(rootWorkspace, 'packages', 'shared', 'src', 'same.test.ts'), '');
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['packages/*', 'libs/nested/packages/*'] }));
+      writeFileSync(join(nested, '.git'), 'gitdir: ../.git/modules/nested\n');
+      writeFileSync(join(nested, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+
+      expect(() => discoverVitestRoute('packages/shared/src/same.test.ts', root)).toThrow(
+        /ambiguous across workspaces.*libs\/nested\/packages\/shared.*packages\/root-owner\/packages\/shared/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('refuses an ambiguous package-relative path instead of choosing a workspace arbitrarily', () => {
