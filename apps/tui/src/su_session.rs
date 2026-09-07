@@ -480,7 +480,7 @@ pub struct SuSessionCreateRequest {
     pub kickoff: Option<SuSessionKickoff>,
     pub kickoff_prompt: Option<String>,
     pub carry: String,
-    pub defer_spawn: bool,
+    pub attached_engine: bool,
     pub agent_chat_id: String,
 }
 
@@ -1023,7 +1023,7 @@ mod tests {
             }),
             kickoff_prompt: Some("Start the selected plan.".into()),
             carry: "warm".into(),
-            defer_spawn: true,
+            attached_engine: true,
             agent_chat_id: "chat-1".into(),
         })
         .unwrap();
@@ -1038,7 +1038,8 @@ mod tests {
         assert_eq!(create["mode"], "auto");
         assert_eq!(create["kickoff"]["kind"], "new-plan");
         assert_eq!(create["kickoff_prompt"], "Start the selected plan.");
-        assert_eq!(create["defer_spawn"], true);
+        assert_eq!(create["attached_engine"], true);
+        assert!(create.get("defer_spawn").is_none());
         assert_eq!(create["agent_chat_id"], "chat-1");
         assert!(create.get("harnessSlug").is_none());
 

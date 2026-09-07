@@ -128,6 +128,8 @@ const launchSu = defineTool({
       // instead of spawning a terminal — the pui reactively opens the pane that
       // RUNS it (the single launcher). The pane materializes via the roster.
       defer_spawn?: boolean;
+      /** Attach a structured engine to the existing SU host, without a native pane. */
+      attached_engine?: boolean;
       // WI-6505 (owner ask 2026-07-27, the chat popup's fleet-launch row): launch
       // with NO desktop window — a background su session that still registers
       // presence and joins its fleet, logging to a file instead of a terminal.
@@ -161,6 +163,9 @@ const launchSu = defineTool({
     }
     if (attachAdvSessionId != null && body.defer_spawn) {
       return json({ status: 'error', error: 'attach_adv_session_id and defer_spawn are mutually exclusive' }, 400);
+    }
+    if (body.attached_engine && (body.defer_spawn || body.headless || body.resume_session_id)) {
+      return json({ status: 'error', error: 'attached_engine cannot be combined with a deferred, headless or native-resume launch' }, 400);
     }
     const hasExplicitAgent = typeof body.agent === 'string' && body.agent.trim().length > 0;
     if (attachAdvSessionId != null && !hasExplicitAgent) {
@@ -378,6 +383,18 @@ const launchSu = defineTool({
     // launch decision here, not the later pane materialization.
     const floor = await checkInteractiveSafetyFloor();
     if (!floor.ok) return json({ status: 'error', error: floor.reason }, 429);
+
+    if (body.attached_engine) {
+      if (!agentChatId || !harness) return json({ status: 'error', error: 'attached_engine requires an agent chat and project' }, 400);
+      const { launchAttachedSuSession } = await import('../../../su-session-attached-launch');
+      const launchContext = kickoffKind === 'new-plan' ? await buildKickoffPromptFile({ kind: 'new-plan', harnessSlug: harness }) : null;
+      return launchAttachedSuSession(req, {
+        agent, agent_chat_id: agentChatId, harness_slug: harness, plan_slug: plan,
+        account, carry: carry === 'cold' ? 'cold' : 'warm', model, mode: launchMode,
+        context_size: contextSize, compaction_limit: body.compaction_limit,
+        fleet: fleetSlug, seat, launch_context: launchContext,
+      });
+    }
 
     if (process.platform !== 'linux') {
       return json({ status: 'error', error: 'server-side spawn only implemented for Linux' }, 501);
