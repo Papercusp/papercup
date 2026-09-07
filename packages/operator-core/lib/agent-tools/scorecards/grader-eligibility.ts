@@ -40,6 +40,29 @@ export type GraderEligibilityCode =
 export interface GraderEligibilityRefusal {
   code: GraderEligibilityCode;
   error: string;
+  /**
+   * The concrete route by which THIS refusal can be satisfied, structured so a
+   * caller can act on it without parsing prose.
+   *
+   * Present on refusals that are genuinely escapable. `grader_is_sole_vetting
+   * _critic` is the one that most needs it: paired with the vetting gate on the
+   * other side (`bar_snapshot_vetting_stale`), it reads as a two-party
+   * reciprocal deadlock — vet first and you are disqualified from grading, grade
+   * first and the vetting attestation does not yet exist. It is not actually a
+   * deadlock, but the way out lived only in this module's control flow, so an
+   * agent hitting it at the END of the ceremony had no way to learn it existed
+   * short of reading the implementation.
+   */
+  remedy?: {
+    /** One-line statement of what would satisfy the rail. */
+    summary: string;
+    /** Ordered, concrete actions. */
+    steps: string[];
+    /** Routes that LOOK like the escape but do not work, and why. */
+    doesNotWork?: string[];
+    /** Agent-facing doc carrying the long form. */
+    docRef?: string;
+  };
 }
 
 export interface GraderEligibility {
@@ -351,6 +374,35 @@ export async function resolveAcceptanceGraderEligibility(params: {
             `independent grader, or obtain a second genuinely independent critic through the ` +
             `other supported vetting channel (consult or work-item) at the current rubric ` +
             `revision before grading`,
+          remedy: {
+            summary:
+              'Record a SECOND vetting critic who is genuinely independent of this grader, at ' +
+              'the current rubric revision — then this same grader becomes eligible.',
+            steps: [
+              `Recruit a critic unrelated to '${callerId}' by spawn/rebind lineage (coord:presence ` +
+                'for a live session outside your lineage, then coord:dispatch or work_items:create ' +
+                'with assign_to naming them).',
+              `Have that critic vet rubric '${rubric.rubricId}' at its CURRENT revision and record ` +
+                'the attestation with scorecards:emit against meta-acceptance-rubric.',
+              'Use the OTHER vetting channel from the one already recorded: scorecards:emit accepts ' +
+                'exactly one of vettingConsult / vettingWorkItem per attestation, so a second critic ' +
+                'on the same channel cannot be recorded alongside the first.',
+              'Re-attempt the grading emit — the guard unions critics across BOTH channels at the ' +
+                'current revision, so it now sees a critic who is not you.',
+            ],
+            doesNotWork: [
+              'A second critic in your OWN spawn/rebind lineage: critics are collapsed to the ' +
+                'distinct PARTIES they represent, so a longer list of related identities still ' +
+                'resolves to one party and this refusal stands.',
+              'Grading FIRST to escape the ordering: with no attestation yet, the readiness ' +
+                'projection reports bar_snapshot_vetting_missing/stale instead. The pair reads as a ' +
+                'deadlock but is not one — the way out is a second INDEPENDENT critic, not a ' +
+                'different order.',
+              'Re-vetting the rubric yourself at a newer revision: that re-records the same sole ' +
+                'party and changes nothing about independence.',
+            ],
+            docRef: 'agent-insights/acceptance-rubric-vetting',
+          },
         },
       };
     }

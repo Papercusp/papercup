@@ -92,6 +92,20 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_author_verdict_missing'
   | 'bar_snapshot_author_verdict_stale'
   | 'bar_snapshot_author_rejected'
+  /**
+   * The author ACCEPTED the graded work and is holding delivery open: every
+   * reachable obligation is met, and what remains is evidence on a delivery
+   * plane the author cannot reach (a `deployed`/`live` BAR behind a gate or a
+   * deploy someone else owns).
+   *
+   * This is a DISCLOSURE, not a defect. Without it such a plan has no
+   * representable verdict at all — `accept` overclaims delivery that has not
+   * happened and `reject` is simply false — so the honest move was to record
+   * nothing, and the ceremony stalled indefinitely on an action its author was
+   * never able to perform. Recording the split makes the judgment durable and
+   * machine-readable while keeping the delivery fact separately true.
+   */
+  | 'bar_snapshot_author_accepted_pending_delivery'
   // P-003 lifecycle contract checks. These are deliberately separate from the
   // phase evaluator: the snapshot remains an explainable read model while the
   // evaluator decides which of these become blocking at each door.
@@ -310,7 +324,7 @@ export interface AcceptanceBarContractSnapshot {
       rubricRevision: number | null;
     };
     authorVerdict: {
-      state: 'accepted' | 'rejected' | 'stale' | 'missing';
+      state: 'accepted' | 'accepted-pending-delivery' | 'rejected' | 'stale' | 'missing';
       scorecardId: string | null;
       verdict: string | null;
       createdBy?: string | null;
@@ -529,6 +543,10 @@ export function nextRepair(
     'bar_snapshot_author_verdict_missing',
     'bar_snapshot_author_verdict_stale',
     'bar_snapshot_author_rejected',
+    // LAST in the repair order on purpose: it is a disclosure of a held-open
+    // delivery, not a defect the author can repair. Ranking it above a real
+    // blocker would point the reader at the one thing they cannot act on.
+    'bar_snapshot_author_accepted_pending_delivery',
   ];
   const code = order.find((candidate) => codes.includes(candidate));
   if (!code) return null;
@@ -570,6 +588,10 @@ export function nextRepair(
     bar_snapshot_author_verdict_missing: 'Record the author-side verdict after reading the independent grading.',
     bar_snapshot_author_verdict_stale: 'Record a new author verdict for the authoritative grading.',
     bar_snapshot_author_rejected: 'Address the rejected grading before recording a newer verdict.',
+    bar_snapshot_author_accepted_pending_delivery:
+      'No author action: the acceptance judgment is recorded and delivery is held open. ' +
+      'Supply the outstanding delivery-plane evidence (or have its owner do so), then record ' +
+      'the final accept. Do NOT amend the rubric or re-grade on this code.',
     bar_snapshot_falsifier_missing: 'Declare a concrete falsifier/drift marker for the BAR.',
     bar_snapshot_role_invalid: 'Make each BAR an outcome or make a disclosure explicitly cover outcome BARs.',
     bar_snapshot_mandatory_invalid: 'Mark every BAR outcome mandatory; disclosures must not satisfy the ship floor.',
@@ -811,6 +833,11 @@ export function projectAcceptanceBarContractSnapshot(
   const itemStatus = new Map(input.planItems.rows.map((item) => [item.itemId, item.status]));
   const grading = authoritativeGrading(input, rubric);
   const rubricRevision = rubric?.revision ?? null;
+  // The MEANING EPOCH: the revision at which BAR meaning last changed. Grading
+  // and vetting currentness follow this, not the bare revision counter — see
+  // revisionRecordCurrent. Undefined on rubrics written before the field
+  // existed, which falls back to strict revision equality.
+  const barMeaningRevision = rubric?.barContract?.meaningRevision ?? null;
   const bars: AcceptanceBarTrace[] = [];
   for (const criterion of boundedCriteria
     .slice()
@@ -882,7 +909,11 @@ export function projectAcceptanceBarContractSnapshot(
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
-    const gradingCurrent = grading.card?.rubricRevision === rubricRevision;
+    const gradingCurrent = revisionRecordCurrent(
+      grading.card?.rubricRevision,
+      rubricRevision,
+      barMeaningRevision,
+    );
     const gradingState: AcceptanceBarTrace['grading']['state'] = input.scorecards.truncated
       ? 'truncated'
       : !grading.card || !rating
@@ -1044,7 +1075,7 @@ export function projectAcceptanceBarContractSnapshot(
       (card) =>
         completeScorecard(card) &&
         Boolean(card.vetting?.consultId || card.vetting?.workItemId) &&
-        card.vetting?.rubricRevision === rubricRevision &&
+        revisionRecordCurrent(card.vetting?.rubricRevision as number | null | undefined, rubricRevision, barMeaningRevision) &&
         !card.supersededBy,
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
@@ -1067,7 +1098,9 @@ export function projectAcceptanceBarContractSnapshot(
         ? 'rejected'
         : authorAcceptance?.verdict === 'accept'
           ? 'accepted'
-          : 'missing';
+          : authorAcceptance?.verdict === 'accept-pending-delivery'
+            ? 'accepted-pending-delivery'
+            : 'missing';
 
   const allCodes = [
     ...problems.map((problem) => problem.code),
@@ -1085,6 +1118,9 @@ export function projectAcceptanceBarContractSnapshot(
           ...(authorVerdictState === 'missing' ? ['bar_snapshot_author_verdict_missing' as const] : []),
           ...(authorVerdictState === 'stale' ? ['bar_snapshot_author_verdict_stale' as const] : []),
           ...(authorVerdictState === 'rejected' ? ['bar_snapshot_author_rejected' as const] : []),
+          ...(authorVerdictState === 'accepted-pending-delivery'
+            ? ['bar_snapshot_author_accepted_pending_delivery' as const]
+            : []),
         ]
       : []),
   ];
