@@ -4905,7 +4905,7 @@ async fn open_su_session_task(
             kickoff: launch.kickoff,
             kickoff_prompt: launch.kickoff_prompt,
             carry,
-            defer_spawn: true,
+            attached_engine: true,
             agent_chat_id: chat.id.clone(),
         },
     );
