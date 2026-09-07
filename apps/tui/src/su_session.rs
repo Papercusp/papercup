@@ -459,6 +459,10 @@ pub struct SuSessionSnapshot {
     pub floor_sequence: u64,
     pub last_sequence: u64,
     pub terminal: bool,
+    #[serde(default)]
+    pub executor_attached: bool,
+    #[serde(default)]
+    pub stream_ready: bool,
     /// Absent on a host that was never rehydrated; see
     /// [`SuSessionRuntimeReconciliation`].
     #[serde(default)]
