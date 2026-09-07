@@ -7,7 +7,7 @@
  * dream index, so a crash replay reuses the same row and accepted sinks retain
  * their existing `dream:<runId>` idempotency key.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { DreamPassUsage } from './dream-pass';
 import type { DreamReviewUsage } from './dream-review';
 import type { DreamFragmentKind } from './dream-config';
@@ -244,12 +244,14 @@ export async function withLockedDreamRun<T>(
 ): Promise<T> {
   const workspaceId = required(input.workspaceId, 'workspaceId'),
     runId = required(input.runId, 'runId');
-  return (await sql.begin(async (tx) => {
+  const run = async (tx: Sql | TransactionSql) => {
     const rows = await tx`SELECT * FROM harness_shared.dream_runs
       WHERE workspace_id = ${workspaceId} AND run_id = ${runId} FOR UPDATE`;
     if (!rows[0]) throw new Error(`dream-run-store: run not found ${workspaceId}/${runId}`);
     return action(tx as unknown as Sql, mapRun(rows[0]));
-  })) as T;
+  };
+  // The governor composes this short transition inside its workspace admission transaction.
+  return (typeof sql.begin === 'function' ? await sql.begin(run) : await run(sql)) as T;
 }
 
 function requireCapability(run: DreamRun): DreamCapabilityRun {
