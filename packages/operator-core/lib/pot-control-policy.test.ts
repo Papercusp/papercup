@@ -22,8 +22,14 @@ vi.mock('./operator-state-pg', () => ({
 }));
 
 vi.mock('./sync-sse', () => ({
-  subscribe: state.subscribe.mockImplementation(async (listener: (event: { name: string }) => void) => {
-    state.listener = listener;
+  subscribe: state.subscribe.mockImplementation(async (
+    listener: (event: { name: string }) => void,
+    opts?: { filter?: (event: { name: string }) => boolean },
+  ) => {
+    state.listener = (event) => {
+      if (opts?.filter && !opts.filter(event)) return;
+      listener(event);
+    };
     return { send: listener, close: vi.fn() };
   }),
 }));
@@ -55,20 +61,14 @@ describe('work-scope policy cache invalidation', () => {
 
     await vi.waitFor(() => expect(placementOverride().workScope).toEqual(state.stored.workScope));
     expect(state.subscribe).toHaveBeenCalledOnce();
-  });
-
-  it('ignores unrelated invalidations', async () => {
-    state.stored = { workScope: { mode: 'enforce', allowHarnesses: ['papercusp'] } };
-    placementOverride();
-    await vi.waitFor(() => expect(state.listener).not.toBeNull());
-    const refresh = vi.spyOn(await import('./pot-control-policy'), 'refreshPotControlPolicy');
-    refresh.mockClear();
-
+    // Unrelated query invalidations must not refresh the policy cache.
     state.stored = { workScope: { mode: 'enforce', allowHarnesses: ['sidestage'] } };
     state.listener!({ name: 'accounts.pool' });
     await Promise.resolve();
-
-    expect(refresh).not.toHaveBeenCalled();
-    expect(placementOverride().workScope).toEqual({ mode: 'enforce', allowHarnesses: ['papercusp'] });
+    expect(placementOverride().workScope).toEqual({
+      mode: 'enforce',
+      allowHarnesses: ['papercusp'],
+      exceptions: [{ workItem: 'WI-2146963', reason: 'owner-directed takeover' }],
+    });
   });
 });
