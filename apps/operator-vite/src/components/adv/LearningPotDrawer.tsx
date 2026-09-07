@@ -46,6 +46,7 @@ import {
   type HiveOverrideSetResp,
 } from "@/lib/hive-override-set";
 import { runAgentTool } from "./run-tool";
+import DreamControl from "./DreamControl";
 import {
   buildPotDrawer,
   type PotDrawerConfigField,
@@ -610,6 +611,8 @@ export default function LearningPotDrawer() {
             {err}
           </p>
         ) : null}
+
+        <DreamControl potSlug={slug} />
 
         {model.sections.map((s) => (
           <SectionBlock
