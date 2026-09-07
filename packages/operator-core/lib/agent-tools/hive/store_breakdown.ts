@@ -173,10 +173,8 @@ export default defineTool({
           : undefined,
     };
 
-    // A tool handler returns the MCP content envelope, not a bare object — a
-    // bare return fails every tool overload of defineTool and falls through to
-    // the ROUTE overload, whose error ("Request has no properties in common
-    // with ...") names neither the real cause nor this file's shape.
-    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+    // Return the canonical payload shape so the framework owns MCP wire
+    // encoding and the tool remains schema-able.
+    return { data: payload };
   },
 });
