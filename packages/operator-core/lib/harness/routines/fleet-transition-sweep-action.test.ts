@@ -93,7 +93,11 @@ async function sweepRounds(rounds: FleetMemberObservation[][]): Promise<string[]
   const perRound: string[][] = [];
   for (const observations of rounds) {
     const emit = vi.fn().mockResolvedValue(undefined);
-    await runFleetTransitionSweep({ gather: async () => observations, emit });
+    await runFleetTransitionSweep({
+      gather: async () => observations,
+      emit,
+      currentContextEpoch: async () => null,
+    });
     await settle();
     perRound.push(emit.mock.calls.map((c) => c[0].key as string));
   }
