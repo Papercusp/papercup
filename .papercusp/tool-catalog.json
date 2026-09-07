@@ -20895,7 +20895,7 @@
           "POST"
         ]
       },
-      "description": "Grade a plan's exact current first-class spec set against the reusable spec-quality rubric, specialized by plan class. Returns a scorecards:emit-compatible draft, exact specSetHash, and every would-block reason; read-only.",
+      "description": "Preflight plan inputs, persisted acceptance class and first-class clauses together, then grade the exact spec set. Missing/invalid/unknown prerequisites return all discoverable blockers without a scorecard draft. A valid call derives class and exact fingerprint from the stores; read-only.",
       "capabilities": [
         "plans:read"
       ],
@@ -20958,7 +20958,7 @@
       "guidance": {
         "when": "Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses.",
         "notWhen": "Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.",
-        "chaining": "plans:get-specs → plans:evaluate-spec-quality { classRef } → scorecards:emit the returned draft → plans:start. Any spec revision changes specSetHash and requires a fresh scorecard."
+        "chaining": "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft → plans:start. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence."
       }
     },
     {

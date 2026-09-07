@@ -9,11 +9,13 @@ import { nativeSessionHandleForAdvSession } from './native-session-handles';
 import { getRegisteredSuSessionHost } from './su-session-host';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor, readDurableSuSession } from './su-session-persistence';
 import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
+import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
+import type { NativeSessionHandle } from './native-session-handles';
 import { activeWorkspaceId } from './workspace-registry';
 
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
   starting: new Map<string, Promise<Record<string, unknown>>>(),
-  engines: new Map<string, ClaudeSuEngine>(),
+  engines: new Map<string, ClaudeSuEngine | SuRpcEngine>(),
 }));
 
 export interface AttachedSuLaunchInput {
@@ -33,8 +35,8 @@ export interface AttachedSuLaunchInput {
 }
 
 export async function launchAttachedSuSession(request: Request, input: AttachedSuLaunchInput): Promise<Response> {
-  if (input.agent !== 'claude') {
-    return Response.json({ status: 'error', code: 'attached_engine_unavailable', error: `The ${input.agent} engine does not yet support PUI's structured connection. Choose Claude.` }, { status: 409 });
+  if (!['claude', 'codex', 'omp'].includes(input.agent)) {
+    return Response.json({ status: 'error', code: 'attached_engine_unavailable', error: `The ${input.agent} engine does not support PUI's structured connection.` }, { status: 409 });
   }
   const workspaceId = activeWorkspaceId();
   const key = `${workspaceId}:${input.harness_slug}:${input.agent_chat_id}`;
@@ -64,11 +66,13 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         throw new Error('This conversation already has a saved session. Reconnect that session before sending another turn.');
       }
       const row = await getAdvSession(previous.advSessionId);
+      const existingEngine = state.engines.get(key);
       return { status: 'ok', attached: true, duplicate: true, transport: 'structured',
         ready: !initializing,
         advSessionId: previous.advSessionId, ownerId: previous.ownerId, workspaceId,
         harnessSlug: previous.harnessSlug, agent: previous.backend,
-        nativeSession: row ? nativeSessionHandleForAdvSession(row) : null };
+        nativeSession: existingEngine && 'nativeSession' in existingEngine ? existingEngine.nativeSession()
+          : row ? nativeSessionHandleForAdvSession(row) : null };
     }
     const { bootstrapSu } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     // Preserve the request's authenticated principal. Bootstrap remains the one
@@ -82,31 +86,37 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
     }), undefined as never);
     const result = await response.json() as BootstrapSuResult & { error?: string };
     if (!response.ok || result.status !== 'ok') throw new Error(result.error ?? 'SU bootstrap failed');
-    if (!result.sessionId || !result.nativeSessionId || !result.envelopeEnv.PAPERCUSP_SID || !result.envelopeEnv.CLAUDE_CONFIG_DIR) {
+    if (!result.sessionId || !result.envelopeEnv.PAPERCUSP_SID
+      || result.agent !== input.agent
+      || (result.agent === 'claude' && (!result.nativeSessionId || !result.envelopeEnv.CLAUDE_CONFIG_DIR))) {
       if (result.sessionId) await markAdvSessionEnded(result.sessionId, null, 'cleanup');
-      throw new Error('SU bootstrap did not supply a complete Claude identity and configuration');
+      throw new Error('SU bootstrap did not supply a matching identity and configuration');
     }
-    let engine: ClaudeSuEngine | undefined;
+    let engine: ClaudeSuEngine | SuRpcEngine | undefined;
     try {
-      const binding: PuiSuSessionBinding & { backend: 'claude' } = {
-        operation: 'created', backend: 'claude', advSessionId: result.sessionId,
+      const binding: PuiSuSessionBinding = {
+        operation: 'created', backend: result.agent, advSessionId: result.sessionId,
         ownerId: result.envelopeEnv.PAPERCUSP_SID, workspaceId: result.workspaceId,
         harnessSlug: result.harnessSlug, planSlug: result.planSlug, nativeSession: null,
       };
-      const nativeSession = {
+      const nativeSession: NativeSessionHandle | null = result.agent === 'claude' ? {
         backend: 'claude' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId,
         sessionId: result.nativeSessionId, configDir: result.envelopeEnv.CLAUDE_CONFIG_DIR,
         configDirSource: 'live-process' as const, configDirUnresolvedReason: null,
         exactResumeSupported: true as const, missingReason: null,
-      };
+      } : null;
       binding.nativeSession = nativeSession;
       const bound = await bindSuSessionToAdvSession({ workspaceId, advSessionId: result.sessionId, agentChatId: input.agent_chat_id });
       if (bound.status !== 'bound' && bound.status !== 'already_bound') throw new Error('Could not bind the SU session to this conversation');
-      engine = startClaudeSuEngine(result, binding, { nativeSession, transcriptPath: null }, {
+      const options = {
         agentChatId: input.agent_chat_id, model: input.model, accountRoute: input.account,
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
-      });
+      };
+      engine = result.agent === 'claude'
+        ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },
+          { nativeSession: nativeSession as NonNullable<typeof nativeSession> & { backend: 'claude'; sessionId: string }, transcriptPath: null }, options)
+        : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' }, options);
       state.engines.set(key, engine);
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());
       const active = engine;
@@ -116,7 +126,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       void (async () => {
         try {
           await active.ready;
-          await setAdvSessionPid(result.sessionId!, active.pid(), 'pui-structured-claude');
+          await setAdvSessionPid(result.sessionId!, active.pid(), `pui-structured-${result.agent}`);
           await persistSuSessionDescriptor(result.sessionId!, active.adapter.host.descriptor());
           // done is initialized when the SDK actually starts. Reading it
           // before ready can observe the engine's pre-start placeholder.
@@ -131,7 +141,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           if (state.engines.get(key) === active) state.engines.delete(key);
         }
       })().catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error));
-      return { status: 'ok', transport: 'structured', agent: 'claude', advSessionId: binding.advSessionId,
+      return { status: 'ok', transport: 'structured', agent: result.agent, advSessionId: binding.advSessionId,
         ownerId: binding.ownerId, workspaceId: binding.workspaceId, harnessSlug: binding.harnessSlug,
         planSlug: binding.planSlug, nativeSession, ready: false };
     } catch (error) {

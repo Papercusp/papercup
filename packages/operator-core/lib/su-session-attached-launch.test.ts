@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
-  ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(),
+  ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
@@ -11,6 +11,7 @@ vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: v
 vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host }));
 vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist }));
 vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine }));
+vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
 import { launchAttachedSuSession } from './su-session-attached-launch';
 
@@ -29,6 +30,7 @@ beforeEach(() => {
     adapter: { reconcileRuntimeExit: mocks.reconcile, host: {
       descriptor: () => ({ lifecycle: 'starting' }), snapshot: () => ({ terminal: false }),
     } } });
+  mocks.rpc.mockImplementation(() => ({ ...mocks.engine(), nativeSession: () => null }));
 });
 
 describe('attached launch authority', () => {
@@ -105,10 +107,21 @@ describe('attached launch authority', () => {
   });
 
   it('does not downgrade an unsupported engine to a hidden native client', async () => {
-    const response = await launchAttachedSuSession(request(), { ...input, agent: 'codex' });
+    const response = await launchAttachedSuSession(request(), { ...input, agent: 'unsupported' });
     expect(response.status).toBe(409);
     expect((await response.json()).code).toBe('attached_engine_unavailable');
     expect(mocks.bootstrap).not.toHaveBeenCalled();
     expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'omp'])('starts %s with a runtime-assigned native id through the same bootstrap', async (agent) => {
+    mocks.bootstrap.mockImplementation(async () => Response.json({ ...boot, agent, nativeSessionId: null,
+      envelopeEnv: { PAPERCUSP_SID: 'su-engine', CODEX_HOME: '/configured/codex' } }));
+    const response = await launchAttachedSuSession(request(), { ...input, agent });
+    expect(await response.json()).toMatchObject({ status: 'ok', agent, nativeSession: null, ready: false });
+    expect(mocks.rpc).toHaveBeenCalledWith(expect.objectContaining({ agent }),
+      expect.objectContaining({ backend: agent, ownerId: 'su-engine', advSessionId: 18 }),
+      expect.objectContaining({ accountRoute: 'default', carry: 'warm' }));
+    await vi.waitFor(() => expect(mocks.pid).toHaveBeenCalledWith(18, 4321, `pui-structured-${agent}`));
   });
 });
