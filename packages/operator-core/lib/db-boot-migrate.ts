@@ -427,7 +427,17 @@ export async function applyPendingMigrationsNow(
     ([, entry]) => cooldownNow - entry.lastFailedAt < cooldownMs,
   );
   const coolingDown = new Map(coolingDownEntries);
-  const skipFile = coolingDown.size > 0 ? (f: string) => defaultSkipFile(f) || coolingDown.has(f) : undefined;
+  // When a backup owns the migration rendezvous but this exact immutable code
+  // tree has no pending migration, waiting serves no safety purpose: the
+  // runner can only perform its idempotent tracker read/bootstrap. Preserve a
+  // snapshot of the filenames we proved applied so a migration that appears in
+  // a mutable dev tree after the preflight can never be applied without the
+  // rendezvous.
+  let noPendingUnlockedSnapshot: ReadonlySet<string> | null = null;
+  const skipFile = (f: string): boolean =>
+    defaultSkipFile(f) ||
+    coolingDown.has(f) ||
+    (noPendingUnlockedSnapshot !== null && !noPendingUnlockedSnapshot.has(f));
   try {
     // WI-1194246 — this rendezvous must be UNBOUNDED IN BOTH DIMENSIONS.
     //
@@ -451,8 +461,45 @@ export async function applyPendingMigrationsNow(
     // IS restored below, because lock WAITS during migration should stay bounded.
     await client`SET lock_timeout = 0`;
     await client`SET statement_timeout = 0`;
-    await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
-    backupMigrationLockHeld = true;
+
+    // A workspace backup can legitimately hold this lock for many minutes.
+    // Request-only operators (:3170 and cluster workers) must not stay dark
+    // for that whole window when every migration in THEIR pinned tree is
+    // already applied. Try the rendezvous first (the ordinary path remains one
+    // query); only when it is busy do the cheap applied-set preflight.
+    const tryLock = await client<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
+    if (tryLock[0]?.acquired === true) {
+      backupMigrationLockHeld = true;
+    } else {
+      let migrationFiles: string[] | null = null;
+      try {
+        migrationFiles = (await readdir(sqlDir))
+          .filter((file) => file.endsWith('.sql'))
+          .filter((file) => !defaultSkipFile(file));
+        const appliedRows = await client<{ filename: string }[]>`
+          SELECT filename FROM harness_shared.schema_migrations`;
+        const applied = new Set(appliedRows.map((row) => row.filename));
+        if (migrationFiles.some((file) => !applied.has(file))) migrationFiles = null;
+      } catch (error) {
+        console.warn(
+          `[boot-migrate] could not prove the busy backup rendezvous is a no-op; waiting safely: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        migrationFiles = null;
+      }
+
+      if (migrationFiles !== null) {
+        noPendingUnlockedSnapshot = new Set(migrationFiles);
+        console.log(
+          `[boot-migrate] backup rendezvous busy, but all ${migrationFiles.length} migration(s) in this tree are already applied — continuing without a migration lock`,
+        );
+      } else {
+        await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+        backupMigrationLockHeld = true;
+      }
+    }
     await client`SET lock_timeout = '15s'`;
     // Retry ONLY pure transaction contention (lock timeout / deadlock /
     // serialization). Any other failure — a syntax error, a constraint

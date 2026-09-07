@@ -368,6 +368,64 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
 });
 
 describe('native boot migration/backup rendezvous (EI-21443484375613585)', () => {
+  it('does not keep a request-only host dark behind a backup when no migration is pending', async () => {
+    const filename = '956-native-boot-already-applied.sql';
+    const dir = makeSqlDir({
+      [filename]: 'CREATE TABLE harness_shared.must_not_run_unlocked (id int);',
+    });
+    await rootSql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.schema_migrations (
+        filename text PRIMARY KEY,
+        applied_at timestamptz NOT NULL DEFAULT now(),
+        sha256 text NOT NULL
+      )`);
+    await rootSql`
+      INSERT INTO harness_shared.schema_migrations (filename, sha256)
+      VALUES (${filename}, 'already-applied-fixture')
+      ON CONFLICT (filename) DO NOTHING`;
+    await seedMigrationReservations([filename]);
+
+    const holder = postgres(dbUrl, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+      connection: { application_name: 'pcbackup-workspace' },
+    });
+    let lockReleased = false;
+    try {
+      await holder`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+
+      // The result must settle WHILE the backup still owns the lock. A timing
+      // assertion alone would be ambiguous; successful settlement before the
+      // finally-block unlock proves this call never entered pg_advisory_lock.
+      const result = await Promise.race([
+        applyPendingMigrationsNow({ sqlDir: dir }),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('no-pending boot waited behind backup lock')), 5_000),
+        ),
+      ]);
+      expect(result).toMatchObject({ applied: 0, failed: [] });
+
+      const holderStillOwnsLock = await rootSql<{ held: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1
+            FROM pg_locks
+           WHERE locktype = 'advisory'
+             AND pid = (SELECT pid FROM pg_stat_activity
+                         WHERE datname = current_database()
+                           AND application_name = 'pcbackup-workspace'
+                         ORDER BY backend_start DESC LIMIT 1)
+             AND granted
+        ) AS held`;
+      expect(holderStillOwnsLock).toEqual([{ held: true }]);
+    } finally {
+      await holder`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+      lockReleased = true;
+      await holder.end({ timeout: 5 });
+    }
+    expect(lockReleased).toBe(true);
+  });
+
   it('waits behind a held backup advisory lock before applying an armed migration', async () => {
     const filename = '955-native-boot-backup-lock.sql';
     const dir = makeSqlDir({
