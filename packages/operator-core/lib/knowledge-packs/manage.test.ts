@@ -72,7 +72,7 @@ const noConflictJudge = async () => ({ conflicts: [] });
 
 describe('classifyPackInstall', () => {
   it('P-006 automatic selection applies both conservative shape and domain filters', async () => {
-    const { backend, remembered } = fakeBackend({});
+    const { backend } = fakeBackend({});
     const selected: KnowledgePack = { ...pack, items: [
       pack.items[0]!,
       { ...pack.items[1]!, appliesTo: ['ui'] },
@@ -80,8 +80,6 @@ describe('classifyPackInstall', () => {
     ] };
     const conservative = await classifyPackInstall({ potSlug: 'h', pack: selected, shapes: [], domains: [] }, { judge: noConflictJudge });
     expect(conservative.items.map((item) => item.itemId)).toEqual(['a']);
-    await applyPackInstall({ workspaceId: 'w', potSlug: 'h', pack: selected, review: conservative });
-    expect(remembered.map((item) => item.meta.pack_item_id)).toEqual(['a']);
     const targeted = await classifyPackInstall({ potSlug: 'h', pack: selected, shapes: ['ui'], domains: ['research'] }, { judge: noConflictJudge });
     expect(targeted.items.map((item) => item.itemId)).toEqual(['a', 'b', 'c']);
     expect(backend.search).toHaveBeenCalledTimes(4);

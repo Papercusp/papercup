@@ -720,6 +720,17 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
   // has already picked an approach — which is exactly what the lines below help
   // it do. Deliberately short: the composer BREAKS on the first line that does
   // not fit, so length spent here is taken from every line after it.
+  if (state.obligations) {
+    const projectedLines = state.obligations.projection.text.split('\n').filter(Boolean);
+    const omitted = state.obligations.projection.receipt.entriesOmitted;
+    if (omitted > 0) {
+      lines.push(`- obligations: +${omitted} omitted — ${state.obligations.detailRef}`);
+    }
+    lines.push(...projectedLines);
+  }
+  // A never-drop fact still precedes plan/frontier/work lines, but a current
+  // obligation recovery route must fit first: if the outer budget drops the
+  // obligation action, this exact reader is the only truthful way to recover it.
   if (state.neverDropFacts.length > 0) {
     lines.push(
       `- 🛡️ never-drop facts: ${compactIds(
@@ -727,14 +738,6 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
         FACT_DISPLAY_CAP,
       )} — facts:list before you plan.`,
     );
-  }
-  if (state.obligations) {
-    const projectedLines = state.obligations.projection.text.split('\n').filter(Boolean);
-    lines.push(...projectedLines);
-    const omitted = state.obligations.projection.receipt.entriesOmitted;
-    if (omitted > 0) {
-      lines.push(`- obligations: +${omitted} omitted — ${state.obligations.detailRef}`);
-    }
   }
   const frontierLine = renderExecutableFrontierLine(state.executableFrontier, committed);
   if (frontierLine) lines.push(frontierLine);
@@ -816,6 +819,28 @@ export function composeOrientationBlock(input: {
   }
   // Header alone says nothing — emit only if at least one real line survived.
   return out.length > 1 ? out.join('\n') : '';
+}
+
+/** Fingerprint only obligation content that survived the final outer budget.
+ * A provider receipt describes its inner projection; this check closes the
+ * second budget boundary before the shared cursor is staged. */
+export function fingerprintDeliveredOrientation(
+  state: OrientationState,
+  epoch: number,
+  committed: CursorState | null,
+  block: string,
+): CursorState {
+  const obligations = state.obligations;
+  if (!obligations) return fingerprintOrientation(state, epoch, committed);
+  const projectedLines = obligations.projection.text.split('\n').filter(Boolean);
+  const actionsDelivered = projectedLines.every((line) => block.includes(line));
+  const recoveryDelivered =
+    obligations.projection.receipt.entriesOmitted === 0 || block.includes(obligations.detailRef);
+  return fingerprintOrientation(
+    actionsDelivered && recoveryDelivered ? state : { ...state, obligations: undefined },
+    epoch,
+    committed,
+  );
 }
 
 /**
@@ -1240,7 +1265,7 @@ export async function buildTurnStartOrientationBlock(input: {
       await stage(
         ownerId,
         ORIENTATION_CURSOR_SURFACE,
-        fingerprintOrientation(state, epoch, ack?.committed ?? null),
+        fingerprintDeliveredOrientation(state, epoch, ack?.committed ?? null, block),
       ).catch(() => {});
     }
     return block;

@@ -3549,9 +3549,34 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       await vi.advanceTimersByTimeAsync(8_000);
       const r = await resultPromise;
       expect(r.ok).toBe(true);
-      expect(r.me).toEqual({ ok: false, degraded: true, agents: [] });
+      expect(r.me).toMatchObject({
+        ok: false,
+        degraded: true,
+        degradedLeg: 'fleet:assignments',
+        degradedReason: 'fleet:assignments read exceeded 8000ms',
+        retryable: true,
+        agents: [],
+      });
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+
+    it('annotates an unsuccessful fleet:assignments envelope even when it resolves without timing out', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({ ok: false, summary: null, agents: [] }),
+      });
+      const r = await composeOrient({ mode: 'monitor' }, call, 'me');
+      expect(r.ok).toBe(true);
+      expect(r.me).toMatchObject({
+        ok: false,
+        summary: null,
+        agents: [],
+        degraded: true,
+        degradedLeg: 'fleet:assignments',
+        degradedReason: 'fleet:assignments returned an unsuccessful response',
+        retryable: true,
+      });
     });
 
     it('`me` degrading never crashes the full-mode delta fold (fingerprintFleet stays try/catch-safe)', async () => {

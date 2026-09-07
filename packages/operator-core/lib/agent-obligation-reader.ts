@@ -220,6 +220,32 @@ export async function readAgentObligationAgenda(input: {
 
   let planPlacement: PlanPlacementProviderInput | undefined;
   let ownerReport: OwnerReportProviderInput | undefined;
+  const scopeReadFailure = goalOutcome.degraded || plansOutcome.degraded;
+  if (scopeReadFailure && !goalId) {
+    const scopeGeneration = agentObligationSourceGeneration({
+      ownerId: input.ownerId,
+      goalSubject: goalOutcome.degraded ? 'unknown' : goalId,
+      planContext: plansOutcome.degraded ? 'unknown' : planSlugs,
+    });
+    const detail =
+      degradedSources.filter((entry) => /goal subject|plan context/.test(entry)).join('; ') ||
+      'the canonical goal/plan scope was unavailable';
+    planPlacement = {
+      workspaceId: input.workspaceId,
+      ownerId: input.ownerId,
+      goalId: `unresolved-owner-scope:${input.ownerId}`,
+      observedAt,
+      sourceGeneration: scopeGeneration,
+      read: {
+        status: 'unknown',
+        failure: {
+          code: 'canonical-obligation-scope-read-failed',
+          detail,
+          retry: 'retry canonical goal-subject and plan-context discovery for this owner',
+        },
+      },
+    };
+  }
   if (goalId) {
     const placementGeneration = agentObligationSourceGeneration({
       portfolio: stablePortfolio(portfolio.value),
@@ -227,7 +253,7 @@ export async function readAgentObligationAgenda(input: {
       fleet: fleet.value,
     });
     const placementFailure =
-      portfolio.degraded || launch.degraded || fleet.degraded || fleet.value.status === 'unknown';
+      scopeReadFailure || portfolio.degraded || launch.degraded || fleet.degraded || fleet.value.status === 'unknown';
     planPlacement = {
       workspaceId: input.workspaceId,
       ownerId: input.ownerId,
@@ -240,7 +266,7 @@ export async function readAgentObligationAgenda(input: {
             failure: {
               code: 'canonical-plan-placement-read-failed',
               detail:
-                degradedSources.filter((entry) => /goal portfolio|goal launch|plan fleet/.test(entry)).join('; ') ||
+                degradedSources.filter((entry) => /goal subject|plan context|goal portfolio|goal launch|plan fleet/.test(entry)).join('; ') ||
                 'the canonical plan-fleet observation was unreadable',
               retry: 'refresh the portfolio, plan-fleet cohort, and exact launch resolution together',
             },

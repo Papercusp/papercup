@@ -807,6 +807,43 @@ function overlaySelfFleetMembership(
   return changed ? { ...record, agents } : me;
 }
 
+/**
+ * Keep a failed fleet-assignment leg self-describing in the compound result.
+ * `fleet:assignments` is allowed to return a partial `{ ok:false }` envelope,
+ * and the bounded wrapper can also synthesize one after a timeout. Without this
+ * annotation, callers see an empty `me.agents` array and cannot distinguish an
+ * unanswered read from a genuinely empty assignment set.
+ */
+function annotateDegradedFleetAssignments(
+  value: unknown,
+  outcome: { degraded: boolean; reason?: 'timeout' | 'error'; errorMessage?: string },
+): unknown {
+  const isObject = value && typeof value === 'object' && !Array.isArray(value);
+  const record =
+    isObject
+      ? { ...(value as Record<string, unknown>) }
+      : { ok: false, agents: [] as unknown[] };
+  const returnedFailure = isObject && (record.ok === false || record.degraded === true);
+  if (!outcome.degraded && !returnedFailure) return value;
+
+  const degradedReason =
+    (typeof record.degradedReason === 'string' && record.degradedReason) ||
+    (typeof record.reason === 'string' && record.reason) ||
+    outcome.errorMessage ||
+    (outcome.reason === 'timeout'
+      ? `fleet:assignments read exceeded ${ORIENT_FLEET_LEG_TIMEOUT_MS}ms`
+      : 'fleet:assignments returned an unsuccessful response');
+
+  return {
+    ...record,
+    ok: record.ok === false ? false : record.ok ?? false,
+    degraded: true,
+    degradedLeg: 'fleet:assignments',
+    degradedReason,
+    retryable: true,
+  };
+}
+
 /** PURE (P-016): which role-specific folds a caller's dispatch role earns.
  *  `papercup` (the user-facing FAST dock pane) → the live-system pane digest;
  *  `papercup-deep` (the hidden deep brain) → its open question thread. FULL mode
@@ -1082,6 +1119,7 @@ export async function composeOrient(
     },
   );
   let me = overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership);
+  me = annotateDegradedFleetAssignments(me, meResult);
   // EI-19452326548245557: this fold must BE the claim oracle, not a cheaper
   // lookalike. It used to be `work_items:list({ admissibleOnly: true })` — which by
   // that flag's OWN contract is "a cheap STRUCTURAL pre-filter ... NOT the full

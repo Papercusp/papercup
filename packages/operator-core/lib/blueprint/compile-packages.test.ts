@@ -120,7 +120,7 @@ describe('P-006 operator package adapter', () => {
         characteristic: 'correctness', ratingScale: ['fail', 'pass'],
         criteria: [{ key: 'correct', title: 'Correct', model: 'binary', method: 'check', driftMarkers: 'changed' }] }));
       put('harness/knowledge-packs/p006-facts/manifest.yaml', 'id: p006-facts\ntitle: Facts\ndescription: fixture\nversion: 1.0.0\n');
-      put('harness/knowledge-packs/p006-facts/items/fact.md', '---\nid: fact\ntitle: Fact\n---\nPinned knowledge.\n');
+      put('harness/knowledge-packs/p006-facts/fact.md', '---\nid: fact\ntitle: Fact\n---\nPinned knowledge.\n');
       const requests = [{ kind: 'recipe', ref: 'p006-recipe', version: '2.0.0' },
         { kind: 'rubric', ref: 'p006-rubric' }, { kind: 'knowledge-pack', ref: 'p006-facts' }];
       const inputs = await resolveBlueprintPackageInputs(requests);
@@ -128,7 +128,7 @@ describe('P-006 operator package adapter', () => {
       expect(recipe.value).toMatchObject({ title: 'Installed', script: 'return 1' });
       expect(inputs.find((entry) => entry.packageKind === 'rubric')?.value).toHaveProperty('criteria');
       const knowledge = inputs.find((entry) => entry.packageKind === 'knowledge-pack')!;
-      expect(knowledge.files.map((file) => file.path)).toContain('items/fact.md');
+      expect(knowledge.files.map((file) => file.path)).toContain('fact.md');
       expect(knowledge.value).toHaveProperty('items.0.text', 'Pinned knowledge.');
       expect(inputs.every((entry) => entry.dependencies.length === 0)).toBe(true);
       put('home/recipes/p006-recipe/notes.md', 'content beyond the manifest');

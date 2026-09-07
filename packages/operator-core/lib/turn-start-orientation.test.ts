@@ -14,6 +14,7 @@ import {
   composeOrientationBlock,
   defaultOrientationDeps,
   fingerprintOrientation,
+  fingerprintDeliveredOrientation,
   isLoopFireWithheld,
   orientationUnchanged,
   isEmptyOrientation,
@@ -235,6 +236,7 @@ describe('turn-start-orientation — when it speaks', () => {
 
   it('keeps obligation recovery reachable after the outer envelope is crowded', () => {
     const brief = obligationBrief();
+    brief.projection.text = `- [DUE] ${'load-bearing owner-report action '.repeat(5).trim()}`;
     const state: OrientationState = {
       ...withWork,
       loopArmed: false,
@@ -252,6 +254,12 @@ describe('turn-start-orientation — when it speaks', () => {
     expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
     expect(out).toContain('directed msg(s) awaiting YOUR reply');
     expect(out).toContain(brief.detailRef);
+    expect(out).not.toContain(brief.projection.text);
+    const prior = fingerprintOrientation(
+      { ...state, obligations: obligationBrief('agenda-before') },
+      EPOCH,
+    );
+    expect(fingerprintDeliveredOrientation(state, EPOCH, prior, out).obligations).toBe('agenda-before');
   });
 
   it('a held-item STATUS change re-emits, not just an id change', () => {

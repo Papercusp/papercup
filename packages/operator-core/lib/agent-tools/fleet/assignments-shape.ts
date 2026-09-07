@@ -219,6 +219,15 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
 
   return {
     ok: d.ok ?? true,
+    // A nested fleet-assignment read can be an explicit degraded fallback (for
+    // example coord:orient's bounded timeout). Keep its diagnostic fields at
+    // every payload tier; dropping them turns an unknown roster into a false
+    // empty `agents: []` result.
+    ...(typeof d.degraded === "boolean" ? { degraded: d.degraded } : {}),
+    ...(Array.isArray(d.degradedLegs) ? { degradedLegs: d.degradedLegs } : {}),
+    ...(typeof d.degradedLeg === "string" ? { degradedLeg: d.degradedLeg } : {}),
+    ...(typeof d.degradedReason === "string" ? { degradedReason: d.degradedReason } : {}),
+    ...(typeof d.retryable === "boolean" ? { retryable: d.retryable } : {}),
     ...(d.self !== undefined ? { self: d.self } : {}),
     // EI-18763132241176410: `scope` QUALIFIES the counts contract below — it names the
     // population the query asked about ({ agent, plan, fleet, harness, selfScoped,

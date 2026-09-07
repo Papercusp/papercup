@@ -389,6 +389,30 @@ describe("shapeFleetAssignments (P-022)", () => {
     expect(shapeFleetAssignments(weird, "trimmed")).toBe(weird);
   });
 
+  it("preserves degraded assignment diagnostics at both payload tiers", () => {
+    const degraded = {
+      ...data,
+      ok: false,
+      summary: null,
+      agents: [],
+      degraded: true,
+      degradedLeg: "fleet:assignments",
+      degradedReason: "fleet:assignments read exceeded 8000ms",
+      retryable: true,
+    };
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeFleetAssignments(degraded, tier) as Record<string, unknown>;
+      expect(out).toMatchObject({
+        ok: false,
+        degraded: true,
+        degradedLeg: "fleet:assignments",
+        degradedReason: "fleet:assignments read exceeded 8000ms",
+        retryable: true,
+        agents: [],
+      });
+    }
+  });
+
   it("sessionState defaults to null when the wakeability read was unavailable (EI-6077)", () => {
     const noSessionState = { ...data, agents: [agentRow(0, { sessionState: undefined })] };
     const out = shapeFleetAssignments(noSessionState, "trimmed") as {

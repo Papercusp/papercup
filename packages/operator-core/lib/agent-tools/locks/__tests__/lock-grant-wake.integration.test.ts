@@ -53,6 +53,7 @@ const {
   tryInsertWaiter,
   readWaiterStatus,
   readPendingEditDisposition,
+  readQueue,
   pokeWorkspace,
 } = await import('../su-lock-store');
 const { inWorkspaceTxn } = await import('../in-workspace-txn');
@@ -233,12 +234,12 @@ describe('lock grant → wake, lease-backstopped (real PG ×2)', async () => {
         const granted = await readWaiterStatus(getTxPool(), ticket);
         expect(granted.status).toBe('granted');
 
-        const stored = await getTxPool<Array<{ kind: string }>>`
+        const locksSql = getTxPool();
+        const stored = await locksSql<Array<{ kind: string }>>`
           SELECT jsonb_typeof(pending_edit) AS kind
             FROM agent_lock_waiters
            WHERE ticket_id = ${ticket}::uuid
         `;
-        console.error('DEBUG apply-on-grant stored', { ticket, stored });
         expect(stored[0]?.kind).toBe('object');
 
         const outcome = await reconcileLockTicket(ticket, h.ws, {
