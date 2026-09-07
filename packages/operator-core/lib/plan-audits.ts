@@ -76,6 +76,7 @@ import {
   type AcceptanceBarSeedProblem,
   type TransactionalAcceptanceBarSeedSuccess,
 } from './acceptance-bar-seed';
+import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 
 // ── the record ────────────────────────────────────────────────────────────────
 
@@ -1617,6 +1618,8 @@ export interface RecordCurrentActivationAuditInput {
   planSlug: string;
   harnessSlug: string;
   createdBy: string;
+  /** The exact class selected by the preceding spec-quality evaluation. */
+  classRef: PlanClassRubricRef;
   activation: ActivationAuditPayload;
   summary?: string | null;
 }
@@ -2020,6 +2023,7 @@ export async function recordCurrentActivationAudit(
         adoptionEpoch: Number(current.acceptance_bar_epoch),
         cohort: current.acceptance_bar_cohort ?? 'post-epoch',
         actorId: input.createdBy,
+        classRef: input.classRef,
         now: new Date(),
       });
       if (!seeded.ok) return seeded;

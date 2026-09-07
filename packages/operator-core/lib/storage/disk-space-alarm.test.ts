@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import {
   detectLowSpace,
   detectCriticalWriteHeadroom,
+  criticalWriteHeadroomBytes,
   formatDiskAlarmToast,
   runDiskSpaceAlarmOnce,
   diskPolicyFromEnv,
@@ -129,6 +130,19 @@ describe('detectCriticalWriteHeadroom', () => {
       snap({ totalInodes: 1_000_000, freeInodes: 30_000, freeInodesPct: 0.03 }),
     ]);
     expect(breaches[0].kinds).toEqual(['low-inodes']);
+  });
+});
+
+describe('criticalWriteHeadroomBytes', () => {
+  it('projects the same larger-of-absolute-or-percent reserve writers must preserve', () => {
+    expect(criticalWriteHeadroomBytes(20 * GIB)).toBe(2 * GIB);
+    expect(criticalWriteHeadroomBytes(500 * GIB)).toBe(10 * GIB);
+    expect(criticalWriteHeadroomBytes(1875.7 * GIB)).toBeCloseTo(37.514 * GIB, -3);
+  });
+
+  it('falls back to the absolute reserve when total bytes are not measurable', () => {
+    expect(criticalWriteHeadroomBytes(Number.NaN)).toBe(DEFAULT_DISK_POLICY.criticalFreeBytesMin);
+    expect(criticalWriteHeadroomBytes(0)).toBe(DEFAULT_DISK_POLICY.criticalFreeBytesMin);
   });
 });
 

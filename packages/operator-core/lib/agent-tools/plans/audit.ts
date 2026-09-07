@@ -64,6 +64,7 @@ import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
+import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import {
   recoverHarnessFromSlugs,
   requireUnambiguousSlugScope,
@@ -130,6 +131,9 @@ const argsSchema = z.object({
   phase: z.enum(['completion', 'activation']).default('completion').describe(
     '`completion` (default) audits implemented code. `activation` audits the source conversation before ready/active and records the exact current plan revision.',
   ),
+  classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
+    'Activation phase only: the exact PlanClassRubricRef used by plans:evaluate-spec-quality. Required; never infer it from plan prose.',
+  ),
   items: z.array(itemSchema).min(1).max(200).optional().describe('Completion phase only: one entry per plan item audited.'),
   findings: z.array(findingSchema).max(50).optional().describe('Completion phase only: out-of-scope discoveries.'),
   auditedSha: z.string().min(7).max(64).optional().describe('Completion phase only: commit audited against; resolved from the local tree when omitted.'),
@@ -148,6 +152,13 @@ const argsSchema = z.object({
     // Whether coverage is required depends on whether this is the first audit.
     // The prior-audit lookup is async and belongs in the handler, so the input
     // schema must admit omitted/empty arrays for carry-forward re-audits.
+    if (args.classRef === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['classRef'],
+        message: 'classRef is required for activation and must be the exact prior spec-quality evaluation class',
+      });
+    }
     if (args.mappings && new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mapping ids must be unique within an activation audit' });
     }
@@ -160,7 +171,7 @@ const argsSchema = z.object({
     if (!args.items) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
     }
-    for (const field of ['sourceRanges', 'mappings', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers'] as const) {
+    for (const field of ['sourceRanges', 'mappings', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
       if (args[field] !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is activation-phase only` });
       }
@@ -301,6 +312,19 @@ export default defineTool({
 
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
+      if (!args.classRef) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          error: 'activation_audit_invalid',
+          problems: [{
+            code: 'class_ref_required',
+            detail: 'classRef must be the exact PlanClassRubricRef used by plans:evaluate-spec-quality; do not infer it from plan prose',
+          }],
+          message: 'Activation audits require the exact evaluated PlanClassRubricRef so the acceptance BAR seed preserves plan-class provenance.',
+        } };
+      }
       const submittedActivation: ActivationAuditPayload = {
         sourceRanges: (args.sourceRanges ?? []).map((range) => {
           // `sessions:list` exposes both the raw session id and the convenient
@@ -486,6 +510,7 @@ export default defineTool({
         planSlug: args.slug,
         harnessSlug: harnessSlug ?? '',
         createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+        classRef: args.classRef,
         activation,
         summary: args.summary ?? null,
       });

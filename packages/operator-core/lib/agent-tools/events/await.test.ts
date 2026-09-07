@@ -193,6 +193,17 @@ describe('events:await wrapper defaults', () => {
     expect(registerAwait).not.toHaveBeenCalled();
     expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
   });
+  it('keeps registering when the optional monitor-dedup read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(hasActiveMonitorForOwnerPredicate).mockRejectedValueOnce(new Error('db-call-deadline: acquire(admin)'));
+
+    const out = await call({ event: 'work-item:done:WI-2146348' });
+
+    expect(out).toMatchObject({ ok: true, event: 'work-item:done:WI-2146348', await_id: 99 });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:monitorPredicateDedup'));
+    warn.mockRestore();
+  });
   it('guidance warns before registration that self-assignee status/done awaits are refused', () => {
     const guidance = awaitTool.guidance;
     expect(guidance).toBeDefined();

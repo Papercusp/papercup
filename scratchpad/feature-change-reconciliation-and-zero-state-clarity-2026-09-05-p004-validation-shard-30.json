@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "feature-change-p004-validation-shard-v1",
+  "workItemId": "WI-2146824",
+  "shard": 30,
+  "shardCount": 50,
+  "readOnlyValidation": true,
+  "validatedAt": "2026-09-07T08:44:00-04:00",
+  "source": {
+    "ledgerCommit": "f70ea2e6c4be8651b4d6488256d3b4886e83b7b6",
+    "ledgerPath": "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p003-dispositions.json",
+    "ledgerSha256": "57387275469ff54bf367c9271d1e5be785c6e0ba64d573d2c2b0c0de685f18ae",
+    "ledgerSha256Verified": true,
+    "resultPath": "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-shard-30.json",
+    "claimSpec": {
+      "specId": "fleet-nonp2p-feature-change-drain-v3-p004-validation-shards",
+      "revision": 18,
+      "fleet": "nonp2p-feature-change-drain-2026-09-04-v3"
+    }
+  },
+  "candidateIds": [
+    "EI-21394481656888796",
+    "EI-21394860043677075",
+    "EI-21396350167450849",
+    "EI-21396523716437322",
+    "EI-21397513332841942"
+  ],
+  "entries": [
+    {
+      "id": "EI-21394481656888796",
+      "frozen": {
+        "sourceSha256": "0befc41621c59518972fdc415dba6af69ba8a2b9896aa1bd6d9d55ff3c82682d",
+        "outcome": "candidate-already-implemented",
+        "confidence": "high"
+      },
+      "current": {
+        "state": "done",
+        "assignee": null,
+        "hasCompletionEvidence": true,
+        "references": "none reported"
+      },
+      "validation": "Preserve; already terminal and no recoverable transition was attempted."
+    },
+    {
+      "id": "EI-21394860043677075",
+      "frozen": {
+        "sourceSha256": "b294644ca312af7dfc32af3eb74b9c8bc619df7bad9c7c0bf3cf358396e84705",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "medium",
+        "proposedCanonical": "EI-21372569443205410"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": "none reported",
+        "proposedCanonicalState": "open"
+      },
+      "validation": "Preserve; no claim, hold, reference rewrite, or closure was attempted."
+    },
+    {
+      "id": "EI-21396350167450849",
+      "frozen": {
+        "sourceSha256": "75ce7e34c4a1a18278a50a15c0e68c3fb13afa9332c6366f971050a88c07d96c",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "medium",
+        "proposedCanonical": "EI-21552938316984596"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": "none reported",
+        "proposedCanonicalState": "open",
+        "proposedCanonicalReferenceContext": "inbound duplicate from EI-21307735047443422 remains on canonical row"
+      },
+      "validation": "Preserve; shared-root evidence is recorded without changing either row or its references."
+    },
+    {
+      "id": "EI-21396523716437322",
+      "frozen": {
+        "sourceSha256": "731cf771be9e1a4558ff3e1ed19d5301c7f67530d2b33520cf3e79b81e5a821a",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "medium",
+        "proposedCanonical": "EI-22090853673249150"
+      },
+      "current": {
+        "state": "open",
+        "origin": "remote",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": "none reported",
+        "proposedCanonicalState": "open",
+        "proposedCanonicalReferenceContext": "canonical outbound caused-by EI-22091535443158240 remains"
+      },
+      "validation": "Preserve; remote-origin and reference context were recorded without mutation."
+    },
+    {
+      "id": "EI-21397513332841942",
+      "frozen": {
+        "sourceSha256": "4af4cda6302dbb0a850c713e37de3f05a211462d7b2a8c4c659ac052b07ad32b",
+        "outcome": "candidate-already-implemented",
+        "confidence": "high"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": "none reported",
+        "agentReview": "revision-requested"
+      },
+      "validation": "Preserve; current implementation evidence is recorded, but the open row and review state forbid a live transition in this read-only lane."
+    }
+  ],
+  "verification": {
+    "checkpointRead": true,
+    "checkpointSource": "WI-2146824#checkpoint",
+    "candidateIdsMatchClaim": true,
+    "candidateIdsMatchFrozenLedger": true,
+    "currentRowsRead": true,
+    "currentRowsMutated": false,
+    "featureRowsMutated": false,
+    "changeRowsMutated": false,
+    "referenceRowsMutated": false,
+    "liveGateOpsTouched": false,
+    "sourceHead": "98d914695393ee15d350b98703991a18f77a583a",
+    "contractEvidence": [
+      "packages/operator-core/lib/agent-tools/loop/checkpoint.ts exposes insight/keyInsight and next/nextAction/goal compatibility plus checkpoint alias handling",
+      "packages/operator-core/lib/agent-tools/improvements/capture.ts nests linkTo under observation and normalizes numeric toolFailure.status",
+      "packages/operator-core/lib/agent-tools/work_items/claimable.ts retains sampleExcluded as the observation-floor input"
+    ],
+    "focusedTests": {
+      "command": "npm run test:file -- packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/work_items/claimable.test.ts",
+      "result": "3 files passed; 347 tests passed; 0 skipped",
+      "provenance": "HEAD 98d9146953",
+      "limitation": "loop/checkpoint.test.ts had pre-existing uncommitted peer edits (+86/-0), so this is local verification and not a committed-tree verdict"
+    }
+  }
+}

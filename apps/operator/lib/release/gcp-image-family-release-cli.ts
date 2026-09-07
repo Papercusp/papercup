@@ -18,6 +18,9 @@ import {
   executeConfiguredGcpImageFamilyRelease,
   probeGcpImageFamilyCredential,
   probeGcpImageFamilyExecutables,
+  verifyGcpImageFamilyExactPathReadiness,
+  type GcpImageFamilyExactPathReadinessConfig,
+  type GcpImageFamilyExactPathReadinessEvidence,
   type GcpImageFamilyReleaseCompositionOptions,
 } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family-production";
 import type {
@@ -30,11 +33,18 @@ import type {
 export interface GcpImageFamilyReleaseCliInput {
   request: GcpImageFamilyReleaseRequest;
   connection: WorkspaceHostProviderConnection;
+  readiness: GcpImageFamilyExactPathReadinessConfig;
 }
 
 export interface GcpImageFamilyReleaseCliDeps {
   readFile?: (path: string) => Promise<string>;
   execute?: typeof executeConfiguredGcpImageFamilyRelease;
+  verifyReadiness?: typeof verifyGcpImageFamilyExactPathReadiness;
+}
+
+export interface GcpImageFamilyReleaseCliResult {
+  readiness: GcpImageFamilyExactPathReadinessEvidence;
+  result: GcpImageFamilyReleaseResult;
 }
 
 export interface GcpImageFamilyReleaseCliArgs {
@@ -139,7 +149,9 @@ export function executionOptions(
   args: GcpImageFamilyReleaseCliArgs,
 ): GcpImageFamilyReleaseExecutionOptions {
   return {
-    ...(args.candidateImageId ? { candidateImageId: args.candidateImageId } : {}),
+    ...(args.candidateImageId
+      ? { candidateImageId: args.candidateImageId }
+      : {}),
     ...(args.resumePhase ? { resumePhase: args.resumePhase } : {}),
   };
 }
@@ -148,14 +160,21 @@ export function executionOptions(
 export function parseGcpImageFamilyReleaseCliInput(
   raw: unknown,
 ): GcpImageFamilyReleaseCliInput {
-  if (!isRecord(raw) || !isRecord(raw.request) || !isRecord(raw.connection)) {
+  if (
+    !isRecord(raw) ||
+    !isRecord(raw.request) ||
+    !isRecord(raw.connection) ||
+    !isRecord(raw.readiness)
+  ) {
     throw new Error(
-      "request file must contain object fields request and connection",
+      "request file must contain object fields request, connection, and readiness",
     );
   }
   return {
     request: raw.request as unknown as GcpImageFamilyReleaseRequest,
     connection: raw.connection as unknown as WorkspaceHostProviderConnection,
+    readiness:
+      raw.readiness as unknown as GcpImageFamilyExactPathReadinessConfig,
   };
 }
 
@@ -203,14 +222,20 @@ export async function runGcpImageFamilyReleaseCli(
   input: GcpImageFamilyReleaseCliInput,
   options: GcpImageFamilyReleaseCompositionOptions = {},
   execution: GcpImageFamilyReleaseExecutionOptions = {},
-  deps: Pick<GcpImageFamilyReleaseCliDeps, "execute"> = {},
-): Promise<GcpImageFamilyReleaseResult> {
-  return (deps.execute ?? executeConfiguredGcpImageFamilyRelease)(
+  deps: Pick<GcpImageFamilyReleaseCliDeps, "execute" | "verifyReadiness"> = {},
+): Promise<GcpImageFamilyReleaseCliResult> {
+  // This is the single enforced boundary: every failure above is read-only, and the injected
+  // executor below is the first call that can invoke Packer or a provider mutation.
+  const readiness = await (
+    deps.verifyReadiness ?? verifyGcpImageFamilyExactPathReadiness
+  )(input.readiness);
+  const result = await (deps.execute ?? executeConfiguredGcpImageFamilyRelease)(
     input.request,
     input.connection,
     options,
     execution,
   );
+  return { readiness, result };
 }
 
 function envOptions(
@@ -274,7 +299,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const result = await runGcpImageFamilyReleaseCli(
+  const execution = await runGcpImageFamilyReleaseCli(
     input,
     options,
     executionOptions(args),
@@ -283,7 +308,8 @@ async function main(): Promise<void> {
     ok: true,
     projectId: credential.projectId,
     credentialRef: credential.credentialRef,
-    result,
+    readiness: execution.readiness,
+    result: execution.result,
   };
   process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
 }

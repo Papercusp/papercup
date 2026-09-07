@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "feature-change-p004-validation-shard-v1",
+  "workItemId": "WI-2146827",
+  "shard": 34,
+  "shardCount": 50,
+  "readOnlyValidation": true,
+  "validatedAt": "2026-09-07T08:50:30-04:00",
+  "source": {
+    "ledgerCommit": "f70ea2e6c4be8651b4d6488256d3b4886e83b7b6",
+    "ledgerPath": "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p003-dispositions.json",
+    "ledgerSha256": "57387275469ff54bf367c9271d1e5be785c6e0ba64d573d2c2b0c0de685f18ae",
+    "ledgerSha256Verified": true,
+    "resultPath": "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-shard-34.json",
+    "claimSpec": {
+      "specId": "fleet-nonp2p-feature-change-drain-v3-p004-validation-shards",
+      "revision": 18,
+      "fleet": "nonp2p-feature-change-drain-2026-09-04-v3"
+    }
+  },
+  "candidateIds": [
+    "EI-21553758280298722",
+    "EI-21558026523957005",
+    "EI-21559120216750619",
+    "EI-21560470943112173",
+    "EI-21567839298927584"
+  ],
+  "entries": [
+    {
+      "id": "EI-21553758280298722",
+      "frozen": {
+        "sourceSha256": "776f577cf35fdc4e0e90e1d7d5ba27549551d6eb9364abca6c2aa5d7823394a8",
+        "outcome": "candidate-already-implemented",
+        "confidence": "high"
+      },
+      "current": {
+        "state": "done",
+        "origin": "local",
+        "assignee": null,
+        "hasCompletionEvidence": true,
+        "references": { "out": [], "in": [] }
+      },
+      "validation": "Fresh current-row read supersedes the stale open checkpoint snapshot; preserve as already terminal with no recoverable transition."
+    },
+    {
+      "id": "EI-21558026523957005",
+      "frozen": {
+        "sourceSha256": "837582f3ba4d56f18109e684832c766797139689cea8419d6ac9251c5e6e1ed8",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "medium",
+        "proposedCanonical": "EI-21372569443205410"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": { "out": [], "in": [] },
+        "proposedCanonicalState": "open",
+        "proposedCanonicalReferences": { "out": [], "in": [] }
+      },
+      "validation": "Preserve; no candidate/canonical claim, hold, reference rewrite, or closure was attempted."
+    },
+    {
+      "id": "EI-21559120216750619",
+      "frozen": {
+        "sourceSha256": "7ff84b9211f92d084af7f5b4242184cb4b5901c8c28c051401043a97ac72787a",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "medium",
+        "proposedCanonical": "EI-21552938316984596"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": { "out": [], "in": [] },
+        "proposedCanonicalState": "open",
+        "proposedCanonicalReferences": {
+          "out": [],
+          "in": [{ "rel": "duplicates", "src": "EI-21307735047443422" }]
+        }
+      },
+      "validation": "Preserve; the canonical inbound duplicate is unrelated to this candidate and remains untouched."
+    },
+    {
+      "id": "EI-21560470943112173",
+      "frozen": {
+        "sourceSha256": "acdc914a9377fb62485825fcf46924fdde032e8f9f0b046aa5dfd52b4342cbac",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "high",
+        "proposedCanonical": "EI-21389183423173568"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": { "out": [], "in": [] },
+        "proposedCanonicalState": "open",
+        "proposedCanonicalReferences": { "out": [], "in": [] }
+      },
+      "validation": "Preserve; the exact-plan-slug root and both reference directions were read without mutation."
+    },
+    {
+      "id": "EI-21567839298927584",
+      "frozen": {
+        "sourceSha256": "e846d2c5345a6d7c7ec32c37fff3a4bc443081e7f02e42b701a8f31f126a14a7",
+        "outcome": "candidate-shared-root-consolidation",
+        "confidence": "medium",
+        "proposedCanonical": "EI-21199492593176481"
+      },
+      "current": {
+        "state": "open",
+        "origin": "local",
+        "assignee": null,
+        "terminalCompletionRef": null,
+        "references": { "out": [], "in": [] },
+        "proposedCanonicalState": "open",
+        "proposedCanonicalReferences": { "out": [], "in": [] }
+      },
+      "validation": "Preserve; scheduler:get_next fleet-selector evidence and both reference directions were read without mutation."
+    }
+  ],
+  "verification": {
+    "checkpointRead": true,
+    "checkpointSource": "WI-2146827#checkpoint",
+    "candidateIdsMatchClaim": true,
+    "candidateIdsMatchFrozenLedger": true,
+    "currentRowsRead": true,
+    "referenceDirectionsRead": { "out": true, "in": true },
+    "currentRowsMutated": false,
+    "featureRowsMutated": false,
+    "changeRowsMutated": false,
+    "referenceRowsMutated": false,
+    "liveGateOpsTouched": false,
+    "sourceHead": "ddb59a866e514fbf65f7b423dca77e63446dd0b0",
+    "contractEvidence": [
+      "packages/operator-core/lib/agent-tools/plans/items.ts exposes itemIds with item/ids/itemId/items/item_ids/item_id compatibility aliases and exact-slug selection",
+      "packages/operator-core/lib/agent-tools/plans/search.ts exposes slug as a slug-only compatibility alias",
+      "packages/operator-core/lib/agent-tools/improvements/capture.ts nests linkTo under observation and coerces numeric toolFailure.status to string",
+      "packages/operator-core/lib/agent-tools/scheduler/get_next.ts documents the fleet-member request as harness/heldPaths/states/rigAvailable and rejects a fleet request argument"
+    ],
+    "focusedTests": {
+      "command": "npm run test:file -- packages/operator-core/lib/agent-tools/plans/items.test.ts packages/operator-core/lib/agent-tools/plans/search-args.test.ts packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/scheduler/get_next.test.ts",
+      "result": "PASS: 4 files, 214 tests, 0 skipped",
+      "provenance": "HEAD ddb59a866e; uncommittedPaths=0/4"
+    }
+  }
+}

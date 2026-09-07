@@ -171,6 +171,33 @@ export function detectCriticalWriteHeadroom(
   });
 }
 
+/**
+ * Minimum free bytes that keep a filesystem OUTSIDE the alarm's critical byte
+ * band. This is the scalar form of {@link detectCriticalWriteHeadroom} for a
+ * writer that must budget its own transient demand before it starts.
+ *
+ * The alarm's byte rule is an OR (absolute floor OR percentage floor), so the
+ * equivalent reserve is the larger threshold. Invalid totals retain the
+ * absolute floor instead of manufacturing percentage headroom from bad input.
+ */
+export function criticalWriteHeadroomBytes(
+  totalBytes: number,
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): number {
+  const absolute =
+    Number.isFinite(policy.criticalFreeBytesMin) && policy.criticalFreeBytesMin > 0
+      ? policy.criticalFreeBytesMin
+      : 0;
+  const proportional =
+    Number.isFinite(totalBytes) &&
+    totalBytes > 0 &&
+    Number.isFinite(policy.criticalFreePctMin) &&
+    policy.criticalFreePctMin > 0
+      ? totalBytes * policy.criticalFreePctMin
+      : 0;
+  return Math.max(absolute, proportional);
+}
+
 function fmtGb(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GB`;
 }

@@ -7493,7 +7493,7 @@
           "POST"
         ]
       },
-      "description": "Install a blueprint from the Cupboard: give a listingId (resolves the repo + ref from the listing) OR a githubUrl directly; the operator git-clones the repo, validates <listingRef>/blueprint.yaml (schema + semantics + dep-validation), and places it under ~/.papercusp/blueprints/<id>/ where it shadows the built-in of the same id. installPlugins:true consents to auto-install the blueprint's Cupboard-resolvable plugin deps; declared work-blueprint deps are pulled in too. The response reports the installed blueprint + any dep-closure installs.",
+      "description": "Manage the complete lifecycle of a Cupboard blueprint on the existing blueprint store: install/update validates the repo and immutable full-content closure; rollback selects a previously installed version; uninstall removes the active library entry while retaining pinned version bytes for live sessions. Prompt-text and burn-knob diffs are returned. activationStack preflights exclusive-slot conflicts for a combined install-and-activate; applying the desired revision remains the acknowledged P-040 activation door. No identity-specific installer or listing kind is used.",
       "capabilities": [
         "harness:write"
       ],

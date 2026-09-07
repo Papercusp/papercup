@@ -55,6 +55,7 @@ import {
   readIndexMetaFreshness,
   GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS,
   GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES,
+  measureDiskCapacityBytes,
   measureFreeDiskBytes,
   requiredFreeDiskBytes,
   shouldSkipForHive,
@@ -943,6 +944,24 @@ describe('free-disk admission — a rebuild is never admitted into a full filesy
     expect(requiredFreeDiskBytes(null, 4 * GIB)).toBe(4 * GIB);
   });
 
+  it('adds the alarm reserve to rebuild demand so the 2026-09-07 critical-root run is refused', () => {
+    const postgresReserve = 37.514 * GIB; // 2% of the measured 1,875.7 GiB root filesystem
+    const required = requiredFreeDiskBytes(5.28e9, 16 * GIB, postgresReserve);
+    expect(required).toBeCloseTo((16 + 37.514) * GIB, -3);
+
+    // The old independent 16 GiB gate admitted this band. The shared-reserve gate must not:
+    // GitNexus's transient rebuild budget cannot consume PostgreSQL's last write headroom.
+    const d = decideReindex(
+      baseInput({
+        freeDiskBytes: 40 * GIB,
+        requiredFreeDiskBytes: required,
+        protectedReserveBytes: postgresReserve,
+      }),
+    );
+    expect(d.run).toBe(false);
+    expect(d.reason).toContain('protected for PostgreSQL/shared writers');
+  });
+
   it('decideReindex defers on low disk with an actionable reason, even for a cold build', () => {
     const d = decideReindex(baseInput({ freeDiskBytes: 2 * GIB, requiredFreeDiskBytes: 16 * GIB }));
     expect(d.run).toBe(false);
@@ -972,6 +991,10 @@ describe('free-disk admission — a rebuild is never admitted into a full filesy
   });
 
   it('measureFreeDiskBytes reads a real filesystem and is null for a path that does not exist', () => {
+    const capacity = measureDiskCapacityBytes(tmpdir());
+    expect(capacity).not.toBeNull();
+    expect(capacity!.totalBytes).toBeGreaterThan(0);
+    expect(capacity!.freeBytes).toBeGreaterThan(0);
     const free = measureFreeDiskBytes(tmpdir());
     expect(free).not.toBeNull();
     expect(free!).toBeGreaterThan(0);
@@ -980,15 +1003,18 @@ describe('free-disk admission — a rebuild is never admitted into a full filesy
 
   it('the action measures free disk on the index filesystem and feeds it into decideReindex', () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
-    const measure = src.indexOf('const freeDiskBytes = measureFreeDiskBytes(');
-    const need = src.indexOf('const requiredFree = requiredFreeDiskBytes(', measure);
+    const measure = src.indexOf('const diskCapacity = measureDiskCapacityBytes(');
+    const reserve = src.indexOf('criticalWriteHeadroomBytes(diskCapacity.totalBytes', measure);
+    const need = src.indexOf('const requiredFree = requiredFreeDiskBytes(', reserve);
     const decision = src.indexOf('const decision = decideReindex(', need);
     expect(measure).toBeGreaterThan(0);
-    expect(need).toBeGreaterThan(measure);
+    expect(reserve).toBeGreaterThan(measure);
+    expect(need).toBeGreaterThan(reserve);
     expect(decision).toBeGreaterThan(need);
     const call = src.slice(decision, src.indexOf('});', decision));
-    expect(call).toContain('freeDiskBytes,');
+    expect(call).toContain('freeDiskBytes: diskCapacity?.freeBytes ?? null,');
     expect(call).toContain('requiredFreeDiskBytes: requiredFree,');
+    expect(call).toContain('protectedReserveBytes,');
     // the requirement is derived from the LIVE database size, not a hard-coded number
     expect(src.slice(need, decision)).toContain('measureGitnexusDbUsage(root).dbBytes');
   });

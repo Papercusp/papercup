@@ -1330,7 +1330,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const seeded = await db.adminSql.begin((tx) => seedAcceptanceBarsInTransaction({
       executor: tx as never, workspaceId, harnessSlug: 'papercusp', planSlug: subject,
       planContent: content, planTitle: 'METHOD pins', planStatus: 'active', planVersion: 1,
-      adoptionEpoch: 1, cohort: 'post-epoch', actorId: 'su-test', now: new Date('2026-09-05T00:00:00Z'),
+      adoptionEpoch: 1, cohort: 'post-epoch', classRef: 'plan-class-feature-ship', actorId: 'su-test',
+      now: new Date('2026-09-05T00:00:00Z'),
     }));
     expect(seeded.ok).toBe(true);
     if (!seeded.ok) throw new Error(seeded.message);
@@ -1388,6 +1389,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
       const rubricBefore = await rubrics.getRubric(rubricSlug);
       const audit = await recordCurrentActivationAudit({
         workspaceId, harnessSlug: 'papercusp', planSlug: subject, createdBy: 'audit-reviewer',
+        classRef: 'plan-class-feature-ship',
         activation: {
           sourceRanges: [{ sourceKind: 'codex', sessionId: 'reaudit-fixture', fromTurn: 0, toTurn: 0 }],
           mappings: ['P-001', 'P-002'].map((item, index) => ({

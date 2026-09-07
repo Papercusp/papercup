@@ -92,6 +92,7 @@ describe('blender:route-idea revision spine', () => {
       harnessSlug: HARNESS,
       planSlug: SLUG,
       createdBy: 'su-route-revision-test',
+      classRef: 'plan-class-feature-ship',
       activation: {
         sourceRanges: [{ sourceKind: 'plan_run', sessionId: 'session-route-revision-test', fromTurn: 0, toTurn: 0 }],
         mappings: [{

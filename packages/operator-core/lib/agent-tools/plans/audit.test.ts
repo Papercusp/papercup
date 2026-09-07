@@ -172,6 +172,7 @@ const activationArgs = (over: Record<string, unknown> = {}) => ({
   slug: 'plan-a',
   harness: 'papercusp',
   phase: 'activation',
+  classRef: 'plan-class-bugfix',
   sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 }],
   mappings: [{
     id: 'M-001',
@@ -454,12 +455,13 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).toHaveBeenCalled();
   });
 
-  it('admits omitted or empty coverage arrays at the schema for carry-forward re-audits', () => {
-    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(true);
+  it('requires the evaluated class and admits omitted or empty coverage arrays for carry-forward re-audits', () => {
+    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(false);
     expect(tool.args.safeParse({
       slug: 'plan-a',
       harness: 'papercusp',
       phase: 'activation',
+      classRef: 'plan-class-bugfix',
       sourceRanges: [],
       mappings: [],
     }).success).toBe(true);
@@ -470,6 +472,7 @@ describe('plans:audit phase:activation', () => {
       slug: 'plan-a',
       harness: 'papercusp',
       phase: 'activation',
+      classRef: 'plan-class-bugfix',
     } as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({
@@ -510,6 +513,7 @@ describe('plans:audit phase:activation', () => {
       slug: 'plan-a',
       harness: 'papercusp',
       phase: 'activation',
+      classRef: 'plan-class-bugfix',
       summary: 'decision-only re-audit',
     } as never, ctx)) as { data: any }).data;
 
@@ -599,6 +603,7 @@ describe('plans:audit phase:activation', () => {
       expect.objectContaining({
         workspaceId: 'test-workspace',
         planSlug: 'plan-a',
+        classRef: 'plan-class-bugfix',
         activation: expect.objectContaining({ mappings: [expect.objectContaining({ id: 'M-001' })] }),
       }),
     );

@@ -122,6 +122,13 @@ const _runs = new Map<string, RunState>();
 const OUTPUT_CAP_BYTES = 16 * 1024;
 const EVICTION_MS = 60 * 60 * 1000;
 const SNAPSHOT_PERSIST_TIMEOUT_MS = 1_000;
+/**
+ * Keep timeout recovery's optional initial snapshot write well inside the
+ * foreground transport margin. The detached child is launched first, so a
+ * slow import or database write can only downgrade durability; it cannot hide
+ * the recovery handle from the caller.
+ */
+export const DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS = 2_000;
 const SNAPSHOT_PRUNE_INTERVAL_MS = 60_000;
 let lastSnapshotPruneAt = 0;
 
@@ -552,23 +559,31 @@ export function startRun(req: SpawnRequest): RunSnapshot {
 }
 
 /**
- * Start a detached recovery only after its initial `running` snapshot has
- * completed one bounded durable write. The child must not become active before
- * this barrier: if the operator worker is restarted immediately after the
- * spawn, a sibling worker can still read the row and report the run rather than
- * turning a live detached process into `unknown_run`.
+ * Start a detached recovery with an actionable handle before waiting on its
+ * optional durable snapshot. The child must start first: a slow dynamic import
+ * or database write must not consume the foreground transport margin before
+ * testing:run can return `detachedRunId`.
  *
- * A database outage remains fail-soft. In that case the run still starts, but
- * `durable` is false and callers must not promise that testing:run-status can
- * recover it after a worker restart.
+ * `durable` is true only when the initial `running` snapshot write settled
+ * before this function returned. A timeout or database outage leaves the run
+ * readable from this worker's local map, but callers must not promise that
+ * testing:run-status can recover it after a worker restart. The persistence
+ * promise continues in the background after the bounded response window.
  */
 export async function startRunDurable(
   req: SpawnRequest,
   sqlOverride?: SqlLike,
 ): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
   const prepared = prepareRun(req);
-  const durable = await persistRunSnapshot(prepared.snapshot, sqlOverride);
   const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false });
+  const persistence = persistRunSnapshot(snapshot, sqlOverride).catch(() => false);
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<boolean>((resolve) => {
+    deadlineTimer = setTimeout(() => resolve(false), DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS);
+    deadlineTimer.unref?.();
+  });
+  const durable = await Promise.race([persistence, deadline]);
+  if (deadlineTimer) clearTimeout(deadlineTimer);
   return { snapshot, durable };
 }
 

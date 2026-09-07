@@ -1148,14 +1148,23 @@ export default defineTool({
     // about to register a fresh row.
     if (!isPattern(eventKey)) {
       const predicateKey = normalizeMonitorPredicateKey(eventKey);
-      if (
-        predicateKey &&
-        (await hasActiveMonitorForOwnerPredicate({
-          workspaceId: ctx.workspaceId ?? identity.workspaceId ?? activeWorkspaceId(),
-          ownerId: identity.ownerId,
-          predicateKey,
-        }))
-      ) {
+      // EI-22582439825634596: this is an OPTIONAL duplicate-monitor advisory, not
+      // part of the await's durable registration. A saturated admin pool used to
+      // let its bounded read reject here, so a valid events:await never reached
+      // registerAwait and the caller lost its wake source. Degrade this read just
+      // like the other best-effort probes; the exact await remains authoritative.
+      const monitorProbe = predicateKey
+        ? await withBoundedTimeout(
+            () =>
+              hasActiveMonitorForOwnerPredicate({
+                workspaceId: ctx.workspaceId ?? identity.workspaceId ?? activeWorkspaceId(),
+                ownerId: identity.ownerId,
+                predicateKey,
+              }),
+            { fallback: false, timeoutMs: 1_500, label: 'events-await:monitorPredicateDedup' },
+          )
+        : null;
+      if (monitorProbe?.value === true) {
         const refusal = monitorPredicateDedupRefusal(predicateKey, 'monitor')!;
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: refusal.code, message: refusal.message, ...refusal.details }) }],

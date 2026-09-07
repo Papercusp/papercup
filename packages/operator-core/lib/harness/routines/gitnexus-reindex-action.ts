@@ -83,6 +83,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { managedSpawn } from '../../task-manager/managed-spawn';
 import { dirSizeBytes } from '../../storage/disk';
+import { criticalWriteHeadroomBytes, diskPolicyFromEnv } from '../../storage/disk-space-alarm';
 import {
   DEFAULT_RESOURCE_BUDGET,
   classifyIndexDisk,
@@ -153,29 +154,49 @@ export const GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS = GITNEXUS_ANALYZE_TIMEOUT_MS +
  */
 export const GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES = 16 * 1024 ** 3;
 
-/** Free bytes available to this user on the filesystem holding `dir`; `null` when unmeasurable. */
-export function measureFreeDiskBytes(dir: string): number | null {
+export interface DiskCapacityBytes {
+  freeBytes: number;
+  totalBytes: number;
+}
+
+/** Capacity available to this user on the filesystem holding `dir`; `null` when unmeasurable. */
+export function measureDiskCapacityBytes(dir: string): DiskCapacityBytes | null {
   try {
     const s = statfsSync(dir);
-    const free = Number(s.bavail) * Number(s.bsize);
-    return Number.isFinite(free) && free >= 0 ? free : null;
+    const blockSize = Number(s.bsize);
+    const freeBytes = Number(s.bavail) * blockSize;
+    const totalBytes = Number(s.blocks) * blockSize;
+    return Number.isFinite(freeBytes) && freeBytes >= 0 && Number.isFinite(totalBytes) && totalBytes > 0
+      ? { freeBytes, totalBytes }
+      : null;
   } catch {
     return null;
   }
 }
 
+/** Compatibility scalar for callers/tests that only need the available byte count. */
+export function measureFreeDiskBytes(dir: string): number | null {
+  return measureDiskCapacityBytes(dir)?.freeBytes ?? null;
+}
+
 /**
- * PURE — the free space a full rebuild needs: the floor, or twice the live database when
- * that is larger (the shadow is a second copy; the WAL and parse caches ride in the margin).
- * An unknown database size falls back to the floor alone.
+ * PURE — the free space a full rebuild needs: its transient-write budget (the floor, or
+ * twice the live database when that is larger) PLUS the protected shared-writer reserve.
+ * The shadow is a second copy and the WAL/parse caches ride in the transient margin; the
+ * reserve remains free for PostgreSQL and other correctness-critical writers. An unknown
+ * database size falls back to the floor alone, and callers without a shared reserve retain
+ * the original behavior.
  */
 export function requiredFreeDiskBytes(
   dbBytes: number | null,
   minFreeBytes: number = GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES,
+  protectedReserveBytes: number = 0,
 ): number {
   const floor = Number.isFinite(minFreeBytes) && minFreeBytes > 0 ? minFreeBytes : GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES;
-  if (dbBytes == null || !Number.isFinite(dbBytes) || dbBytes <= 0) return floor;
-  return Math.max(floor, 2 * dbBytes);
+  const transientDemand =
+    dbBytes == null || !Number.isFinite(dbBytes) || dbBytes <= 0 ? floor : Math.max(floor, 2 * dbBytes);
+  const reserve = Number.isFinite(protectedReserveBytes) && protectedReserveBytes > 0 ? protectedReserveBytes : 0;
+  return transientDemand + reserve;
 }
 
 function gib(bytes: number): string {
@@ -496,6 +517,8 @@ export interface ReindexDecisionInput {
   freeDiskBytes?: number | null;
   /** What a full rebuild needs free (requiredFreeDiskBytes); ignored when freeDiskBytes is null. */
   requiredFreeDiskBytes?: number;
+  /** Portion of requiredFreeDiskBytes reserved for PostgreSQL/shared critical writers. */
+  protectedReserveBytes?: number;
   minCommitsBehind: number;
   maxLoadPerCore: number;
   minIntervalSec: number;
@@ -549,10 +572,16 @@ export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
   if (i.freeDiskBytes != null && Number.isFinite(i.freeDiskBytes)) {
     const need = i.requiredFreeDiskBytes ?? requiredFreeDiskBytes(null);
     if (i.freeDiskBytes < need) {
+      const protectedReserve =
+        i.protectedReserveBytes != null && Number.isFinite(i.protectedReserveBytes) && i.protectedReserveBytes > 0
+          ? i.protectedReserveBytes
+          : 0;
       return {
         run: false,
         reason:
-          `low disk (${gib(i.freeDiskBytes)} free on the index filesystem < ${gib(need)} a full rebuild needs) — ` +
+          `low disk (${gib(i.freeDiskBytes)} free on the index filesystem < ${gib(need)} a full rebuild needs` +
+          (protectedReserve > 0 ? `, including ${gib(protectedReserve)} protected for PostgreSQL/shared writers` : '') +
+          ') — ' +
           'deferring to the next tick; a rebuild admitted here dies on ENOSPC after its whole pass and can PANIC Postgres',
       };
     }
@@ -2374,7 +2403,9 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
       // run the very same canary/health/ok-line path a same-host completion takes.
       const spawnedAt = new Date(adoptable.spawnedAtMs).toISOString();
       const deadlineMs = adoptable.spawnedAtMs + timeoutMs + GITNEXUS_ADOPT_GRACE_MS;
-      const how = adoptable.stamped ? 'env-stamped' : 'unstamped, matched by the routine argv; spawn time from process age';
+      const how = adoptable.stamped
+        ? 'env-stamped'
+        : 'unstamped, matched by the routine argv; spawn time from process age';
       console.log(
         `[gitnexus-reindex] adopting live analyze pid ${adoptable.pid} (spawned ${spawnedAt} by a previous host ` +
           `incarnation — ${how}; ${writer.files.join(' + ')} held for write) — waiting up to ` +
@@ -2389,7 +2420,11 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
         );
         return;
       }
-      const verdict = judgeAdoptedRun(adoptable.spawnedAtMs, readIndexMetaFreshness(root), readStrandedIncompleteIndex(root));
+      const verdict = judgeAdoptedRun(
+        adoptable.spawnedAtMs,
+        readIndexMetaFreshness(root),
+        readStrandedIncompleteIndex(root),
+      );
       const elapsedSec = Math.round((Date.now() - adoptable.spawnedAtMs) / 1000);
       console.log(
         `[gitnexus-reindex] adopted analyze pid ${adoptable.pid} exited (waited ${Math.round(waited.waitedMs / 1000)}s) — ${verdict.reason}`,
@@ -2471,12 +2506,19 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   }
 
   // Free-disk admission (2026-09-05 ENOSPC): measured on the index directory's filesystem
-  // against the live database size, so the requirement tracks the graph as it grows.
+  // against the live database size, so the requirement tracks the graph as it grows. The
+  // rebuild demand is additive to the alarm's critical reserve: the 2026-09-07 recurrence
+  // first skipped at 13.7 GiB, then launched between alarm samples that kept the shared root
+  // at 0.5–0.7% free — already inside its 2% critical band — before PostgreSQL PANICked on
+  // pg_wal. Admission must leave that reserve untouched.
   const indexDir = path.join(root, '.gitnexus');
-  const freeDiskBytes = measureFreeDiskBytes(existsSync(indexDir) ? indexDir : root);
+  const diskCapacity = measureDiskCapacityBytes(existsSync(indexDir) ? indexDir : root);
+  const protectedReserveBytes =
+    diskCapacity == null ? 0 : criticalWriteHeadroomBytes(diskCapacity.totalBytes, diskPolicyFromEnv());
   const requiredFree = requiredFreeDiskBytes(
     measureGitnexusDbUsage(root).dbBytes,
     num(cfg, 'min_free_disk_bytes', GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES),
+    protectedReserveBytes,
   );
 
   const decision = decideReindex({
@@ -2486,8 +2528,9 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     secondsSinceIndexed,
     memoryPressure,
     memoryPressureReason,
-    freeDiskBytes,
+    freeDiskBytes: diskCapacity?.freeBytes ?? null,
     requiredFreeDiskBytes: requiredFree,
+    protectedReserveBytes,
     minCommitsBehind: num(cfg, 'min_commits_behind', DEFAULT_MIN_COMMITS_BEHIND),
     maxLoadPerCore: num(cfg, 'max_load_per_core', DEFAULT_MAX_LOAD_PER_CORE),
     minIntervalSec: num(cfg, 'min_interval_sec', DEFAULT_MIN_INTERVAL_SEC),

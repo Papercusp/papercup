@@ -5,8 +5,8 @@
   "shard": 29,
   "shardCount": 50,
   "readOnlyValidation": true,
-  "validationTimestamp": "2026-09-06T21:39:41.979Z",
-  "validationHead": "a74333cf34130a627080afefcd30c387d6feecc2",
+  "validationTimestamp": "2026-09-07T08:57:21.894Z",
+  "validationHead": "ddb59a866e514fbf65f7b423dca77e63446dd0b0",
   "ledger": {
     "path": "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p003-dispositions.json",
     "commit": "f70ea2e6c4be8651b4d6488256d3b4886e83b7b6",
@@ -39,7 +39,7 @@
     "currentWithoutCompletion": 5,
     "candidateInboundReferenceSetsEmpty": 4,
     "candidateOutboundReferenceSetsEmpty": 5,
-    "canonicalInboundReferenceSetsNonEmpty": 1,
+    "canonicalInboundReferenceSetsNonEmpty": 2,
     "canonicalOutboundReferenceSetsEmpty": 4,
     "remoteOriginRows": 0,
     "canonicalSurvivors": [
@@ -48,7 +48,7 @@
       "EI-21372569443205410",
       "EI-21561474701768385"
     ],
-    "overallRationale": "All five assigned candidates remain open, local, unassigned, and without terminal completion evidence. D-006 requires preserving producer identity, occurrence history, review state, unique evidence, and typed references; D-009 reserves any recoverable consolidation for one centralized apply lane. Candidate EI-21382868747036184 also retains revision-requested review. The plans:search candidate has one inbound edge from dropped EI-21461564260444675, while its approved canonical retains an inbound edge from dropped EI-21726598105311174 and an additional outbound edge to open EI-21641955545829392. This read-only shard recommends preservation for all five and performs no feature/change mutation."
+    "overallRationale": "All five assigned candidates remain open, local, unassigned, and without terminal completion evidence. D-006 requires preserving producer identity, occurrence history, review state, unique evidence, and typed references; D-009 reserves any recoverable consolidation for one centralized apply lane. Candidate EI-21382868747036184 also retains revision-requested review. The plans:search candidate has one inbound edge from dropped EI-21461564260444675; its approved canonical retains an inbound edge from dropped EI-21726598105311174, which also points to open EI-21641955545829392; and the capability:read canonical retains an inbound edge from completed EI-22568825013823458. This read-only shard recommends preservation for all five and performs no feature/change mutation."
   },
   "governingEvidence": {
     "decisions": [
@@ -74,17 +74,22 @@
   "focusedVerification": {
     "command": "npm run test:file -- packages/operator-core/lib/agent-tools/rubrics/rubrics-bulk.test.ts packages/operator-core/lib/agent-tools/plans/contract-repair-aliases.test.ts packages/operator-core/lib/agent-tools/plans/items-limit.test.ts packages/operator-core/lib/agent-tools/capability/read-byte-page-door-fit.test.ts packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/plans/search-args.test.ts",
     "result": "PASS",
-    "runId": "45d0498c-f59b-4c72-8f49-0230d30b5c5b",
+    "runId": "local-invocation:0a10678b77f940839ca5e574945e8352",
+    "runnerInvocationId": "0a10678b77f940839ca5e574945e8352",
+    "testLedger": {
+      "status": "not_recorded",
+      "reason": "testing:runs returned no_runs_recorded for this local invocation; shell runner evidence is retained below."
+    },
     "testFiles": 6,
-    "tests": 239,
+    "tests": 240,
     "skippedTests": 0,
     "failedTests": 0,
-    "head": "8431e1056c4fc860ed8ea4781d58cbd64bad36d9",
+    "head": "ddb59a866e514fbf65f7b423dca77e63446dd0b0",
     "testedPathsClean": true
   },
   "liveRevalidation": {
-    "revalidatedAt": "2026-09-06T21:39:41.979Z",
-    "head": "a74333cf34130a627080afefcd30c387d6feecc2",
+    "revalidatedAt": "2026-09-07T08:57:21.894Z",
+    "head": "ddb59a866e514fbf65f7b423dca77e63446dd0b0",
     "ledgerCommitPresent": true,
     "ledgerSha256Verified": true,
     "candidateRows": {
@@ -136,6 +141,18 @@
       "candidateOutboundEmpty": true,
       "canonicalInboundNonEmpty": [
         {
+          "id": "EI-21104648883881842",
+          "links": [
+            {
+              "rel": "duplicates",
+              "src": {
+                "kind": "issue",
+                "ref": "EI-22568825013823458"
+              }
+            }
+          ]
+        },
+        {
           "id": "EI-21561474701768385",
           "links": [
             {
@@ -186,11 +203,24 @@
         {
           "id": "EI-21641955545829392",
           "state": "open"
+        },
+        {
+          "id": "EI-22568825013823458",
+          "state": "done",
+          "outbound": [
+            {
+              "rel": "duplicates",
+              "dst": {
+                "kind": "issue",
+                "ref": "EI-21104648883881842"
+              }
+            }
+          ]
         }
       ]
     },
     "disposition": "preserve all five; no feature/change mutation",
-    "evidence": "All five candidate bodies, four canonical survivor bodies, both linked source rows, both reference directions, governing P-004/D-003/D-006/D-009/D-010 decisions, current producer code, and the current focused six-file suite were re-read or executed live."
+    "evidence": "All five candidate bodies, four canonical survivor bodies, three linked source rows, both reference directions, governing P-004/D-003/D-006/D-009/D-010 decisions, current plans:search producer code/tests, and the current focused six-file suite were re-read or executed live."
   },
   "priorVerificationRecovery": {
     "predecessorRunId": "df985216-c99e-4f33-8168-047cbe953092",
@@ -291,7 +321,7 @@
           ],
           "finding": "Current plans:items accepts the repaired itemIds/item/ids/itemId/items/item_ids/item_id aliases and bounded limit behavior; the candidate's review floor remains revision-requested."
         },
-        "tests": "The six-file focused run passed: contract-repair-aliases.test.ts contributed 39 tests and items-limit.test.ts contributed 11 tests.",
+        "tests": "The current six-file focused run passed: contract-repair-aliases.test.ts contributed 40 tests and items-limit.test.ts contributed 11 tests.",
         "plan": {
           "candidateSourcePlanSlug": null,
           "candidateSourcePlanItemIds": null,
@@ -366,7 +396,7 @@
       "inboundReferences": [],
       "outboundReferences": [],
       "canonicalId": "EI-21104648883881842",
-      "canonicalEvidence": "Live survivor is open/local/unassigned with no claim hold, completion evidence, plan-item stamp, or typed references; the family has unresolved review floors elsewhere, so the centralized lane must preserve the family until those resolve.",
+      "canonicalEvidence": "Live survivor is open/local/unassigned with no claim hold, completion evidence, or plan-item stamp. It retains one inbound duplicates edge from completed EI-22568825013823458; the family has unresolved review floors elsewhere, so the centralized lane must preserve the edge and family until those resolve.",
       "recommendation": "preserve",
       "proposedRecoverableOperation": "No mutation in this shard. A later centralized apply lane may reassess consolidation into EI-21104648883881842 only after the family review floor resolves and all producer identity, occurrence history, evidence, and references can be transferred transactionally.",
       "requiredIdentityAndEvidenceTransfers": [
@@ -409,7 +439,7 @@
           ],
           "finding": "The current improvements:capture wrapper and nesting contract are covered by the focused capture tests; the shared family remains under a review floor."
         },
-        "tests": "The six-file focused run passed: capture.test.ts contributed 153 tests.",
+        "tests": "The current six-file focused run passed: capture.test.ts contributed 153 tests.",
         "plan": {
           "candidateSourcePlanSlug": null,
           "candidateSourcePlanItemIds": null,
@@ -468,7 +498,7 @@
           ],
           "finding": "The current plans:search normalization accepts q-only callers and preserves canonical query precedence; the workspace-scoped harness boundary remains explicit in live usage."
         },
-        "tests": "The six-file focused run passed: search-args.test.ts contributed 2 tests.",
+        "tests": "The current six-file focused run passed: search-args.test.ts contributed 2 tests.",
         "plan": {
           "candidateSourcePlanSlug": null,
           "candidateSourcePlanItemIds": null,

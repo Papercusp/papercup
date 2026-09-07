@@ -134,6 +134,7 @@ const payload = {
   rejectedOrSuperseded: [],
   unresolvedBlockers: [],
 };
+const evaluatedClassRef = 'plan-class-bugfix' as const;
 
 const planContent = `---
 title: Activation target
@@ -237,6 +238,7 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'activation-target',
       createdBy: 'su-test',
+      classRef: evaluatedClassRef,
       activation: {
         ...payload,
         unresolvedBlockers: ['map the owner constraint before activation'],
@@ -324,6 +326,7 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'activation-target',
       createdBy: 'su-test',
+      classRef: evaluatedClassRef,
       activation: atomicPayload,
     });
 
@@ -354,6 +357,7 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'activation-target',
       createdBy: 'su-test',
+      classRef: evaluatedClassRef,
       activation: {
         ...atomicPayload,
         mappings: [{ ...atomicPayload.mappings[0], planTargets: ['P-999'] }],
@@ -380,6 +384,7 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'post-epoch-seed-target',
       createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
       activation,
     });
 
@@ -415,6 +420,7 @@ describe('migration 938 activation-audit ledger', () => {
     expect(rubricRows[0]?.template_data).toMatchObject({
       kind: 'acceptance',
       subjectPlan: 'post-epoch-seed-target',
+      classRef: evaluatedClassRef,
       barSetHash: subjects[0]?.acceptance_bar_set_hash,
       criteria: [
         expect.objectContaining({ barKey: 'R-1', evidencePlane: 'tree', mandatory: true }),
@@ -447,6 +453,7 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'post-epoch-seed-target',
       createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
       activation,
     });
     expect(second).toMatchObject({ ok: true, barSeed: { rubricChanged: false, rubricRevision: 1 } });
@@ -462,6 +469,7 @@ describe('migration 938 activation-audit ledger', () => {
     const input = {
       workspaceId: 'activation-audit-test', harnessSlug: 'papercusp',
       planSlug: 'post-epoch-seed-target', createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
       activation: { ...payload, mappings: [{ ...payload.mappings[0],
         planTargets: ['P-001', 'P-002', 'section:Requirements'] }] },
     };
@@ -547,6 +555,7 @@ describe('migration 938 activation-audit ledger', () => {
       harnessSlug: 'papercusp',
       planSlug: 'post-epoch-incomplete',
       createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
       activation: {
         ...payload,
         mappings: [{ ...payload.mappings[0], planTargets: ['P-001', 'section:Requirements'] }],

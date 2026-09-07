@@ -352,7 +352,7 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
 describe('durable detached snapshot lifecycle', () => {
   type Sql = Parameters<Store['persistRunSnapshot']>[1];
 
-  it('persists the running snapshot before spawning the detached child', async () => {
+  it('spawns the detached child before waiting for the running snapshot persistence', async () => {
     const events: string[] = [];
     const sql = vi.fn(async () => {
       events.push('persist');
@@ -368,7 +368,39 @@ describe('durable detached snapshot lifecycle', () => {
 
     expect(result.durable).toBe(true);
     expect(result.snapshot.status).toBe('running');
-    expect(events).toEqual(['persist', 'spawn']);
+    expect(events).toEqual(['spawn', 'persist']);
+  });
+
+  it('returns the detached handle before a slow initial snapshot write settles', async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      const write = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const sql = vi.fn(async () => {
+        await write;
+        return [];
+      }) as unknown as Sql;
+
+      const pending = store.startRunDurable(req(), sql);
+      // launchPreparedRun is synchronous, so the child handle exists even
+      // while the optional durable write is still blocked.
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS + 1);
+      const result = await pending;
+
+      expect(result.snapshot.runId).toBeTruthy();
+      expect(result.snapshot.status).toBe('running');
+      expect(result.durable).toBe(false);
+
+      // Let the background write settle before restoring real timers.
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps the active snapshot readable after the local worker state is gone', async () => {
