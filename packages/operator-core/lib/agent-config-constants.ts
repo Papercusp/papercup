@@ -273,10 +273,12 @@ export function modelWindowForTier(tier: Pick<ModelTier, 'spec' | 'contextWindow
  * and there is no bigger window to request: `gpt-5.5`, `gpt-5.4-mini`,
  * `gpt-5.3-codex-spark`. Note `gpt-5.4` IS extended (1M) while `gpt-5.4-mini` is
  * not — the anchors are what keep those apart, so do not loosen them to a
- * substring test.
+ * substring test. `gpt-6-astra` is also an extended family: its launch window
+ * comes from the direct Codex registry when present, while this predicate keeps
+ * the conservative role-cap derivation safe when the registry is absent.
  */
 export const CODEX_EXTENDED_WINDOW_FAMILY_RE =
-  /^(?:gpt-5\.6-(?:sol|terra|luna)|gpt-5\.4|sol|terra|luna)(?:\[[^\]]*\])?(?::[a-z0-9]+)?$/i;
+  /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna)|gpt-5\.4|sol|terra|luna)(?:\[[^\]]*\])?(?::[a-z0-9]+)?$/i;
 
 export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
   return spec != null && CODEX_EXTENDED_WINDOW_FAMILY_RE.test(spec.trim());

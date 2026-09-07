@@ -4,9 +4,9 @@
  * provide facts (model/backend/live override), then consume the returned
  * versioned budget instead of independently guessing 200k vs 1M.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 export const MODEL_CONTEXT_BUDGET_VERSION = 1;
 export const RUNTIME_OVERHEAD_TOKENS = Object.freeze({ full: 152_000, trimmed: 50_000 });
@@ -182,6 +182,27 @@ function jsonFile(path) {
   }
 }
 
+/**
+ * Resolve a Codex registry file without confusing the user's HOME with the
+ * direct CODEX_HOME that an isolated session receives. Explicit `home` keeps
+ * the historical HOME semantics (`<home>/.codex`), while `codexHome` and the
+ * process environment name the direct Codex root. A populated direct file is
+ * also accepted for callers that already have a CODEX_HOME path but use the
+ * legacy option name.
+ */
+function codexRegistryFile(name, { home, codexHome } = {}) {
+  const directHome =
+    String(codexHome ?? '').trim() ||
+    (home === undefined ? String(process.env.CODEX_HOME ?? '').trim() : '');
+  if (directHome) return join(directHome, name);
+
+  const root = String(home ?? homedir()).trim() || homedir();
+  const direct = join(root, name);
+  const nested = join(root, '.codex', name);
+  if (basename(root) === '.codex' || (existsSync(direct) && !existsSync(nested))) return direct;
+  return nested;
+}
+
 function findModelRecord(node, id) {
   if (Array.isArray(node)) {
     for (const value of node) {
@@ -227,7 +248,13 @@ export const CODEX_EXTENDED_WINDOW_FALLBACK = Object.freeze({
   'gpt-5.6-terra': 1_000_000,
   'gpt-5.6-luna': 1_000_000,
   'gpt-5.4': 1_000_000,
+  // Astra's live registry currently reports an 872k max. Prefer that record
+  // when the session home has one; this 1M value is only the safe fresh-home
+  // fallback before Codex has populated its direct registry.
+  'gpt-6-astra': 1_000_000,
 });
+
+const CODEX_REGISTRY_FIRST_EXTENDED_IDS = new Set(['gpt-6-astra']);
 
 /** Ceiling on the window we will DECLARE to the Codex CLI (plan D-002). */
 export const CODEX_MAX_CONFIGURED_WINDOW = 1_000_000;
@@ -242,9 +269,9 @@ export const CODEX_MAX_CONFIGURED_WINDOW = 1_000_000;
  */
 export const CODEX_AUTO_COMPACT_FRACTION = 0.9;
 
-function codexModelRecord(id, home) {
+function codexModelRecord(id, { home, codexHome } = {}) {
   if (!id) return null;
-  return findModelRecord(jsonFile(join(home, '.codex', 'models_cache.json')), id);
+  return findModelRecord(jsonFile(codexRegistryFile('models_cache.json', { home, codexHome })), id);
 }
 
 /**
@@ -269,13 +296,13 @@ function codexModelRecord(id, home) {
  * is INDISTINGUISHABLE from one that is absent, and deliberately so — both mean
  * "nothing extra to offer here".
  *
- * @param {{ home?: string }} [opts]
+ * @param {{ home?: string, codexHome?: string }} [opts]
  * @returns {Array<{ id: string, label: string | null, description: string | null,
  *   efforts: string[], defaultEffort: string | null, contextWindow: number | null,
  *   maxContextWindow: number | null }>}
  */
-export function listCodexInstalledModels({ home = homedir() } = {}) {
-  const cache = jsonFile(join(home, '.codex', 'models_cache.json'));
+export function listCodexInstalledModels({ home, codexHome } = {}) {
+  const cache = jsonFile(codexRegistryFile('models_cache.json', { home, codexHome }));
   const rows = Array.isArray(cache?.models) ? cache.models : [];
   return rows
     .filter((m) => m && typeof m === 'object' && String(m.visibility ?? '') !== 'hide')
@@ -321,22 +348,22 @@ export function listCodexInstalledModels({ home = homedir() } = {}) {
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
- * @param {{ home?: string }} [opts]
+ * @param {{ home?: string, codexHome?: string }} [opts]
  * @returns {{ model: string, window: number, autoCompactLimit: number, source: string } | null}
  */
-export function codexContextWindowConfig(model, { home = homedir() } = {}) {
-  const spec = model || codexDefaultModel(home);
+export function codexContextWindowConfig(model, { home, codexHome } = {}) {
+  const spec = model || codexDefaultModel(home, codexHome);
   const id = bareModelId(normalizeCodexCliModel(String(spec ?? '')));
   if (!id) return null;
 
-  const record = codexModelRecord(id, home);
+  const record = codexModelRecord(id, { home, codexHome });
   const declaredMax = POSITIVE(record?.max_context_window ?? record?.maxContextWindow);
   const declaredDefault = POSITIVE(record?.context_window ?? record?.contextWindow);
   const officialWindow = POSITIVE(CODEX_EXTENDED_WINDOW_FALLBACK[id]);
 
   let window = null;
   let source = null;
-  if (officialWindow) {
+  if (officialWindow && !(record && CODEX_REGISTRY_FIRST_EXTENDED_IDS.has(id))) {
     // D-008: keep the documented top-level opt-in exact even when the installed
     // model cache still advertises 872k. Codex 0.148.0 accepts these bytes and
     // reports 828,400 effective after applying the record's 95% factor.
@@ -374,8 +401,8 @@ export function codexContextWindowConfig(model, { home = homedir() } = {}) {
  * The per-session home ALSO bakes the same keys (P-004) because a bare
  * `psu --resume` names no model and therefore emits no `-c` at all.
  */
-export function codexContextConfigArgs(model, { home = homedir() } = {}) {
-  const cfg = codexContextWindowConfig(model, { home });
+export function codexContextConfigArgs(model, { home, codexHome } = {}) {
+  const cfg = codexContextWindowConfig(model, { home, codexHome });
   if (!cfg) return [];
   return [
     '-c',
@@ -390,8 +417,8 @@ export function codexContextConfigArgs(model, { home = homedir() } = {}) {
  * (P-004). `''` when the model has no extended window, so a caller can
  * concatenate unconditionally.
  */
-export function codexContextConfigToml(model, { home = homedir() } = {}) {
-  const cfg = codexContextWindowConfig(model, { home });
+export function codexContextConfigToml(model, { home, codexHome } = {}) {
+  const cfg = codexContextWindowConfig(model, { home, codexHome });
   if (!cfg) return '';
   return (
     `model_context_window = ${cfg.window}\n` +
@@ -399,9 +426,9 @@ export function codexContextConfigToml(model, { home = homedir() } = {}) {
   );
 }
 
-function codexDefaultModel(home) {
+function codexDefaultModel(home, codexHome) {
   try {
-    const text = readFileSync(join(home, '.codex', 'config.toml'), 'utf8');
+    const text = readFileSync(codexRegistryFile('config.toml', { home, codexHome }), 'utf8');
     return text.match(/^model\s*=\s*["']([^"']+)["']/m)?.[1] ?? null;
   } catch {
     return null;
@@ -442,7 +469,7 @@ export function appendCodexLaunchContextPrompt(promptText, launchContextText) {
   return section ? `${String(promptText ?? '').replace(/\n+$/, '')}${section}` : String(promptText ?? '');
 }
 
-export function installedModelContextWindow({ agent, model, home = homedir() }) {
+export function installedModelContextWindow({ agent, model, home, codexHome }) {
   const backend = String(agent ?? '').toLowerCase();
   if (backend === 'codex') {
     // We LAUNCH extended-window models at their declared max (D-002), so the
@@ -450,10 +477,10 @@ export function installedModelContextWindow({ agent, model, home = homedir() }) 
     // reports as `context_window`. Without this the preflight would refuse a
     // launch context that comfortably fits, and the seeded soft limit would be
     // derived from a window the session is not actually running.
-    const configured = codexContextWindowConfig(model, { home });
+    const configured = codexContextWindowConfig(model, { home, codexHome });
     if (configured) return { window: configured.window, source: configured.source };
-    const root = jsonFile(join(home, '.codex', 'models_cache.json'));
-    const id = bareModelId(model || codexDefaultModel(home));
+    const root = jsonFile(codexRegistryFile('models_cache.json', { home, codexHome }));
+    const id = bareModelId(model || codexDefaultModel(home, codexHome));
     const exact = id ? findModelRecord(root, id) : null;
     if (recordWindow(exact)) return { window: recordWindow(exact), source: 'codex-model-cache' };
     const visible = Array.isArray(root?.models) ? root.models.find((m) => recordWindow(m)) : null;
@@ -505,12 +532,13 @@ export function installedModelContextWindow({ agent, model, home = homedir() }) 
  *   agent?: string | null,
  *   model?: string | null,
  *   home?: string,
+ *   codexHome?: string,
  *   declaredWindow?: number | null,
  *   liveWindow?: number | null,
  * }} [opts]
  * @returns {{ window: number, source: string }}
  */
-export function resolveModelContextWindow({ agent, model, home = homedir(), declaredWindow, liveWindow } = {}) {
+export function resolveModelContextWindow({ agent, model, home, codexHome, declaredWindow, liveWindow } = {}) {
   const declared = POSITIVE(declaredWindow);
   const live = POSITIVE(liveWindow);
   if (declared || live) {
@@ -518,7 +546,7 @@ export function resolveModelContextWindow({ agent, model, home = homedir(), decl
     return { window, source: declared && live ? 'declared-live-min' : declared ? 'declared' : 'live' };
   }
 
-  const installed = installedModelContextWindow({ agent, model, home });
+  const installed = installedModelContextWindow({ agent, model, home, codexHome });
   if (installed) return installed;
 
   const backend = String(agent || 'claude').toLowerCase();
@@ -551,6 +579,7 @@ export function estimatePromptTokens(text) {
  *   agent?: string | null,
  *   model?: string | null,
  *   home?: string,
+ *   codexHome?: string,
  *   contextSize?: string | null,
  *   promptText?: string | null,
  *   additionalPromptText?: string | null,
@@ -578,7 +607,8 @@ export function estimatePromptTokens(text) {
 export function buildContextBudget({
   agent,
   model,
-  home = homedir(),
+  home,
+  codexHome,
   contextSize,
   promptText,
   additionalPromptText,
@@ -586,7 +616,7 @@ export function buildContextBudget({
   declaredWindow,
   liveWindow,
 } = {}) {
-  const resolved = resolveModelContextWindow({ agent, model, home, declaredWindow, liveWindow });
+  const resolved = resolveModelContextWindow({ agent, model, home, codexHome, declaredWindow, liveWindow });
   const variant = contextSize === 'full' ? 'full' : 'trimmed';
   const promptTokens = POSITIVE(estimatedPromptTokens) ?? estimatePromptTokens(
     `${String(promptText ?? '')}${String(additionalPromptText ?? '')}`,

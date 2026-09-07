@@ -924,7 +924,7 @@ export function writeRoleCodexHome(opts: {
   // next model-less resume and can select the denied Spark entry.
   const resolvedModel = resolveCodexModel(opts.model);
   const modelConfig = codexModelConfigToml(resolvedModel);
-  const contextConfig = codexContextConfigToml(resolvedModel).trimEnd();
+  const contextConfig = codexContextConfigToml(resolvedModel, { codexHome }).trimEnd();
   const toml = [
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...modelConfig,
@@ -1022,6 +1022,8 @@ export interface SuCodexConfigInput {
   /** Launch model. Omit/null resolves the managed Sol xhigh default, which keeps
    *  repair and model-less resume paths aligned with a fresh launch. */
   model?: string | null;
+  /** Direct per-session CODEX_HOME whose model registry should seed context roots. */
+  codexHome?: string | null;
   token?: string | null;
   codexGatewayAccountId?: string | null;
   codexGatewayAuto?: boolean;
@@ -1053,7 +1055,9 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   // has no CLI `-m` flag cannot fall through to CODEX_HOME/models_cache.json.
   const resolvedModel = resolveCodexModel(opts.model);
   const modelConfig = codexModelConfigToml(resolvedModel);
-  const contextConfig = codexContextConfigToml(resolvedModel).trimEnd();
+  const contextConfig = codexContextConfigToml(resolvedModel, {
+    codexHome: opts.codexHome ?? undefined,
+  }).trimEnd();
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...modelConfig,
@@ -1112,7 +1116,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
   mkdirSync(logDir, { recursive: true });
   const resolvedModel = resolveCodexModel(opts.model);
   const expectedModelConfig = codexModelConfigToml(resolvedModel).join('\n');
-  const expectedContextConfig = codexContextConfigToml(resolvedModel);
+  const expectedContextConfig = codexContextConfigToml(resolvedModel, { codexHome });
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
@@ -1140,7 +1144,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
     /* absent or unreadable — that is precisely the repair case */
   }
   if (!configReady) {
-    writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
+    writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome }), { mode: 0o600 });
   }
   const identity = repairSuCodexHomeIdentity(codexHome, opts.sid, opts.sessionKey);
   return {
@@ -1224,7 +1228,7 @@ export function writeSuCodexHome(opts: {
   const configPath = join(codexHome, 'config.toml');
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
-  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
+  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome }), { mode: 0o600 });
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
   // ON (new coord:inbox messages folded into the SAME activity:report round

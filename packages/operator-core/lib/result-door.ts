@@ -1282,6 +1282,26 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // items array announces its own truncation in band, so a cut there is visible.
     const preservePaths = [
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
+      // work_items:complete writes these fields before its bulky echoes, and its
+      // tier shaper deliberately spreads them through unchanged. The generic
+      // result-door is a later, independent projection seam, though: without an
+      // explicit priority here, a multi-row completion can keep row 1/2's
+      // identity while reducing a later row to `{id,ok,workItem:{_partial:true}}`.
+      // That is especially dangerous for `completionAuthority:'proposed'` and
+      // its two load-bearing warnings: the caller sees a close receipt but loses
+      // the evidence that it is not counted and why. Keep correlation first,
+      // then the authority/count verdict, then the explanatory warnings; values
+      // still obey the projector's normal string and transport budgets.
+      ...(opts.toolName === 'work_items:complete'
+        ? [
+            'results[].ok',
+            'results[].id',
+            'results[].completionAuthority',
+            'results[].countsTowardBurnDown',
+            'results[].authorityWarning',
+            'results[].requirementShortfallWarning',
+          ]
+        : []),
       ...(opts.preservePaths ?? []),
     ];
     const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);

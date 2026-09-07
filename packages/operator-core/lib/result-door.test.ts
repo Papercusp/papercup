@@ -406,6 +406,65 @@ describe('applyResultDoor', () => {
     expect(control.results[0]).not.toHaveProperty('shipReadiness');
   });
 
+  it('REGRESSION (EI-22626647927619840): work_items:complete keeps authority verdicts on later batch rows', () => {
+    const results = Array.from({ length: 3 }, (_, i) => {
+      const id = `EI-${22_626_647_927_619_840 + i}`;
+      return {
+        ok: true,
+        id,
+        completionAuthority: 'proposed',
+        countsTowardBurnDown: false,
+        authorityWarning:
+          "completionAuthority:'proposed' — this close was recorded, but content identity was not committed at write time and the item is NOT counted toward burn-down.",
+        requirementShortfallWarning:
+          'Completion requirements were deferred because no requirementDisposition was supplied; verify the close before relying on it.',
+        workItem: {
+          id,
+          kind: 'bug',
+          state: 'resolved',
+          title: `completion row ${i}`,
+          summary: 'S'.repeat(3_000),
+        },
+        completion: { summary: 'C'.repeat(3_000), testsRun: ['focused'] },
+      };
+    });
+    const payload = { ok: true, results, counts: { ok: results.length, failed: 0 } };
+    const original = JSON.stringify(payload);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const door = (toolName: string) => {
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        { toolName, workspaceId: 'ws-1', runId: RUN_ID },
+      ) as DoorableResult;
+      const textItems = doored.content.filter(
+        (item) => (item as { type?: string }).type === 'text',
+      ) as Array<{ text: string }>;
+      return JSON.parse(textItems[0].text) as {
+        results: Array<Record<string, unknown>>;
+        _projection: { truncated: boolean };
+      };
+    };
+
+    const parsed = door('work_items:complete');
+    expect(parsed._projection.truncated).toBe(true);
+    const realRows = parsed.results.filter((row) => row._truncated !== true);
+    expect(realRows).toHaveLength(results.length);
+    for (const row of realRows) {
+      expect(row.id).toEqual(expect.stringMatching(/^EI-/));
+      expect(row.completionAuthority).toBe('proposed');
+      expect(row.countsTowardBurnDown).toBe(false);
+      expect(row.authorityWarning).toEqual(expect.any(String));
+      expect(row.requirementShortfallWarning).toEqual(expect.any(String));
+    }
+
+    // FALSIFIABILITY CONTROL: the same bytes through an unrelated tool have no
+    // work_items:complete preservation declaration, so the authority fields are
+    // shed by the same generic budget rather than passing because the fixture fits.
+    const control = door('plans:list');
+    expect(control.results.some((row) => row.completionAuthority === undefined)).toBe(true);
+  });
+
   it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
     const original = JSON.stringify({
       ok: true,

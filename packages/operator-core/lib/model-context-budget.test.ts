@@ -101,6 +101,32 @@ describe('model-context-budget', () => {
     });
   });
 
+  it('reads a direct CODEX_HOME registry when no HOME override is supplied', () => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'psu-budget-codex-home-'));
+    writeFileSync(
+      join(codexHome, 'models_cache.json'),
+      JSON.stringify({
+        models: [{ slug: 'gpt-6-astra', context_window: 272_000, max_context_window: 872_000 }],
+      }),
+    );
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      expect(modelContextBudget.codexContextWindowConfig('gpt-6-astra')).toEqual({
+        model: 'gpt-6-astra',
+        window: 872_000,
+        autoCompactLimit: 784_800,
+        source: 'codex-model-cache-max',
+      });
+      expect(modelContextBudget.codexContextWindowConfig('gpt-6-astra', { codexHome })).toEqual(
+        modelContextBudget.codexContextWindowConfig('gpt-6-astra'),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+    }
+  });
+
   it('reads OMP contextWindow and clamps declared configuration to a live backend', () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-budget-omp-'));
     mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
@@ -257,6 +283,25 @@ describe('codex extended-window launch config', () => {
     });
     // ...and an unknown model gets nothing rather than a guess.
     expect(codexContextWindowConfig('gpt-unknown-model', { home: noRegistry })).toBeNull();
+  });
+
+  it('uses Astra\'s 1M fresh-home fallback but honors a direct registry max on resume', () => {
+    const noRegistry = mkdtempSync(join(tmpdir(), 'psu-codex-astra-bare-'));
+    expect(codexContextWindowConfig('gpt-6-astra', { home: noRegistry })).toMatchObject({
+      window: 1_000_000,
+      autoCompactLimit: 900_000,
+      source: 'codex-official-1m-policy',
+    });
+    const sessionHome = mkdtempSync(join(tmpdir(), 'psu-codex-astra-session-'));
+    writeFileSync(
+      join(sessionHome, 'models_cache.json'),
+      JSON.stringify({ models: [{ slug: 'gpt-6-astra', context_window: 272_000, max_context_window: 872_000 }] }),
+    );
+    expect(codexContextWindowConfig('gpt-6-astra', { codexHome: sessionHome })).toMatchObject({
+      window: 872_000,
+      autoCompactLimit: 784_800,
+      source: 'codex-model-cache-max',
+    });
   });
 
   it('preserves registry-derived sub-1M extended-window behavior for unrecognised models', () => {
