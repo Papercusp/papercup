@@ -35,6 +35,7 @@ const scriptedEngine = vi.hoisted(() => ({
   requests: [] as string[],
   engines: [] as ClaudeSuEngine[],
   events: [] as SuSessionEvent[],
+  initialization: Promise.resolve(),
 }));
 
 vi.mock('../su-session-claude-engine', async (original) => {
@@ -86,6 +87,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
         return {
           [Symbol.asyncIterator]: () => output[Symbol.asyncIterator](),
           initializationResult: async () => {
+            await scriptedEngine.initialization;
             if (scriptedEngine.mode === 'startup-exit') {
               output.end();
               throw new Error('PUI-E2E engine exited during initialization');
@@ -568,6 +570,7 @@ beforeEach(async () => {
   scriptedEngine.successText = 'PUI structured engine replied';
   scriptedEngine.requests = [];
   scriptedEngine.events = [];
+  scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
   if (scriptedEngine.real) {
     const warn = console.warn.bind(console);
@@ -634,6 +637,34 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       console.info('PUI_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256,
         chatId: chat.id, exactText: scriptedEngine.requests[0], traffic: sessionTraffic }));
     } finally { await pane.stop().catch(() => {}); }
+  });
+
+  test('first draft waits for delayed engine readiness and sends once without another Enter', async () => {
+    let releaseInitialization!: () => void;
+    scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+    const prompt = '  PUI delayed startup draft λ  ';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('· starting ·', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain(`> ${prompt}`);
+      expect(pane.screen()).not.toContain('Message not accepted');
+      expect(commandPosts).toHaveLength(0);
+      expect(scriptedEngine.requests).toHaveLength(0);
+      releaseInitialization();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('Message — Enter send');
+      expect(commandPosts).toHaveLength(1);
+      expect(commandPosts[0]).toMatchObject({ type: 'owner_turn', content: prompt });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toHaveLength(1);
+    } finally {
+      releaseInitialization();
+      await pane.stop();
+    }
   });
 
   test('interrupted startup retains the draft and retries without creating another chat', async () => {
