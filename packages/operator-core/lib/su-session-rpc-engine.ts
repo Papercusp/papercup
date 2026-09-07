@@ -22,6 +22,7 @@ import { persistSuSessionDescriptor } from './su-session-persistence';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import type { SuSessionEventInput, SuSessionHost } from './su-session-host';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
+import { SuNativeCards } from './su-session-native-cards';
 
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
@@ -153,6 +154,7 @@ export function startSuRpcEngine(
     },
     async interrupt() {
       if (!peer || closed) return unavailable('The engine is disconnected');
+      cards.cancel();
       const completing = turnCompletion;
       if (backend === 'codex') {
         if (!nativeTurnId && nativeStart) nativeTurnId = string(object((await nativeStart).turn).id);
@@ -179,6 +181,12 @@ export function startSuRpcEngine(
     ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, shared)
     : createOmpSuSessionAdapter(binding, { nativeSession: { ...native as OmpNativeSessionHandle, ompThreadId: nativeId() }, transcriptPath: null }, shared);
   const host = adapter.host as SuSessionHost<Backend>;
+  const cards = new SuNativeCards(binding.workspaceId!, `pui-native:${binding.advSessionId}:${options.runtimeGeneration ?? 0}`, (event) => {
+    if (closed) return;
+    emit(event as SuSessionEventInput<Backend>);
+    if (event.type === 'card') host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running',
+      event.phase === 'opened' ? 'Native engine is waiting for your response' : 'Native response delivered');
+  });
   function nativeId(): string { return native.backend === 'codex' ? native.rolloutId ?? '' : native.ompThreadId ?? ''; }
   function resumeHandle(): NativeHandle {
     const persisted = Boolean(nativePath && existsSync(nativePath));
@@ -210,9 +218,11 @@ export function startSuRpcEngine(
   }
   function onMessage(frame: RpcFrame): void {
     if (closed) return;
+    const frameThreadId = object(frame.params).threadId;
+    if (backend === 'codex' && frameThreadId && frameThreadId !== nativeId()) throw new Error('Codex event belongs to a different thread');
+    if (cards.handle(backend, frame, ownerTurnId || 'startup', (response) => { if (!closed) peer?.send(response); })) return;
     if (backend === 'codex') {
       const method = string(frame.method), params = object(frame.params);
-      if (params.threadId && params.threadId !== nativeId()) throw new Error('Codex event belongs to a different thread');
       const eventTurnId = string(params.turnId) || string(object(params.turn).id);
       if (method !== 'turn/started' && eventTurnId && nativeTurnId && eventTurnId !== nativeTurnId) return;
       if (frame.id != null && method) {
@@ -277,7 +287,7 @@ export function startSuRpcEngine(
   let closing: Promise<void> | undefined;
   function close(): Promise<void> {
     if (closing) return closing;
-    closed = true; ready = false; turnFinished?.();
+    closed = true; ready = false; turnFinished?.(); cards.cancel();
     closing = (async () => { await peer?.close(); })();
     return closing;
   }
@@ -329,7 +339,12 @@ export function startSuRpcEngine(
     if (!actualModel) throw new Error('Native engine did not identify its selected model');
     const requested = splitModelSpec(selectedModel).model;
     if (backend === 'codex' && requested && actualModel !== requested) throw new Error(`Codex selected ${actualModel}, expected ${requested}`);
-    host.emit({ type: 'session', descriptor: { ...host.descriptor(), model: actualModel } } as SuSessionEventInput<Backend>);
+    const descriptor = host.descriptor();
+    host.emit({ type: 'session', descriptor: { ...descriptor, model: actualModel,
+      capabilities: { ...descriptor.capabilities, features: { ...descriptor.capabilities.features,
+        'interactive-cards': { state: 'supported', implementation: 'native' },
+      } },
+    } } as SuSessionEventInput<Backend>);
     if (!options.peerFactory) recordSessionOwner(nativeId(), binding.ownerId, { advSessionId: binding.advSessionId });
     await refreshResumeEvidence();
     await persistSuSessionDescriptor(binding.advSessionId, host.descriptor());

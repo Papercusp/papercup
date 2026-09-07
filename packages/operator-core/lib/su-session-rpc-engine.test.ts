@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
+import { resolveCardResponse } from '@papercusp/agent-mcp';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
@@ -145,6 +146,21 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
   });
 
+  it('routes a real PUI card response back onto the native connection', async () => {
+    const f = fixture(backend); await f.engine.ready;
+    await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
+    f.emit(backend === 'codex'
+      ? { id: 23, method: 'item/commandExecution/requestApproval', params: { threadId: 'native-codex', command: 'touch approved.txt' } }
+      : { type: 'extension_ui_request', id: 'approve', method: 'confirm', title: 'Approve this action?' });
+    const opened = f.engine.adapter.host.recent.map(({ event }) => event).find((event) => event.type === 'card' && event.phase === 'opened');
+    if (!opened || opened.type !== 'card' || opened.phase !== 'opened') throw new Error('PUI did not receive the native card');
+    expect(resolveCardResponse({ correlationId: opened.card.correlationId, action: 'submit',
+      payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' })).toEqual({ ok: true });
+    await vi.waitFor(() => expect(f.sent).toContainEqual(backend === 'codex'
+      ? { id: 23, result: { decision: 'accept' } }
+      : { type: 'extension_ui_response', id: 'approve', confirmed: true }));
+  });
+
   it('resumes only the saved native handle with the same SU scope and context', async () => {
     const f = fixture(backend, { resume: true }); await f.engine.ready;
     if (backend === 'codex') {
@@ -173,4 +189,12 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       .resolves.toMatchObject({ status: 'refused' });
     expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
   });
+});
+
+it('rejects a Codex approval from a different thread before opening a card', async () => {
+  const f = fixture('codex'); await f.engine.ready;
+  expect(() => f.emit({ id: 'wrong', method: 'item/commandExecution/requestApproval',
+    params: { threadId: 'another-session', command: 'touch wrong.txt' } })).toThrow('different thread');
+  expect(f.engine.adapter.host.recent.some(({ event }) => event.type === 'card')).toBe(false);
+  expect(f.sent.some((frame) => frame.id === 'wrong')).toBe(false);
 });
