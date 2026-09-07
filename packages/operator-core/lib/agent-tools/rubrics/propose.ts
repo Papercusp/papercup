@@ -228,6 +228,12 @@ export const rubricsProposeArgs = z
       .describe(
         'mark this standard-kind rubric as a release gate; acceptance-kind rubrics are one-shot and cannot set releaseGating; every standard criterion then requires a unique machine-readable instrument binding',
       ),
+    stalenessWatched: z
+      .boolean()
+      .optional()
+      .describe(
+        'mark this standard-kind rubric as staleness-watched without gating a release; acceptance-kind rubrics are one-shot and watchdog-exempt',
+      ),
     dropKeys: z
       .array(z.string().min(1))
       .max(100)
@@ -270,6 +276,14 @@ export const rubricsProposeArgs = z
         path: ['releaseGating'],
         message:
           "releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt; set kind:'standard' for a reusable release bar",
+      });
+    }
+    if (args.kind === 'acceptance' && args.stalenessWatched === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['stalenessWatched'],
+        message:
+          'stalenessWatched is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt, so it cannot be staleness-watched',
       });
     }
 
@@ -391,6 +405,7 @@ export default defineTool({
       // template-data shape instead of failing dispatch validation.
       ...(args.methodRef != null ? { methodRef: args.methodRef } : {}),
       releaseGating: args.releaseGating,
+      stalenessWatched: args.stalenessWatched,
       dropKeys: args.dropKeys,
       allowMethodShrink: args.allowMethodShrink,
       shrinkReason: args.shrinkReason,

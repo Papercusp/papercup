@@ -1,7 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import proposeTool, { rubricsProposeArgs } from './propose';
 import { normalizeRequirementSections } from '../../requirement-contract';
+
+const mocks = vi.hoisted(() => ({
+  proposeRubric: vi.fn(),
+  validateRubricReplicationSql: vi.fn(),
+}));
+
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
+vi.mock('../../rubrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rubrics')>();
+  return { ...actual, proposeRubric: mocks.proposeRubric };
+});
+vi.mock('../../rubrics-replication-sql', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../rubrics-replication-sql')>();
+  return { ...actual, validateRubricReplicationSql: mocks.validateRubricReplicationSql };
+});
+vi.mock('../../detached-imports', () => ({
+  trackDetached: () => Promise.resolve({ notifySyncInvalidate: vi.fn() }),
+}));
 
 const base = {
   rubricRef: 'release-readiness',
@@ -18,6 +36,11 @@ const base = {
   ],
 };
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.validateRubricReplicationSql.mockResolvedValue({ ok: true });
+});
+
 const lightAcceptanceCriterion = {
   key: 'tests',
   title: 'Required tests pass for the shipped behavior',
@@ -25,7 +48,7 @@ const lightAcceptanceCriterion = {
   check: { kind: 'instrument', instrumentKey: 'none' },
 };
 
-describe('rubrics:propose args — releaseGating kind contract', () => {
+describe('rubrics:propose args — standard-only watchdog fields', () => {
   it('keeps the complete tool schema JSON-Schema-representable', () => {
     expect(() => z.toJSONSchema(proposeTool.args as never)).not.toThrow();
   });
@@ -103,6 +126,64 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     });
 
     expect(parsed.success).toBe(true);
+  });
+
+  it('accepts stalenessWatched for a standard-kind rubric', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'standard',
+      stalenessWatched: true,
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects stalenessWatched for acceptance-kind rubrics at dispatch validation', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [lightAcceptanceCriterion],
+      stalenessWatched: true,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ['stalenessWatched'],
+            message: expect.stringContaining('standard-kind only'),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it('forwards stalenessWatched through the handler to the rubric writer', async () => {
+    mocks.proposeRubric.mockResolvedValue({
+      ...base,
+      rubricId: 'release-readiness',
+      kind: 'standard',
+      description: '',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      methodRef: null,
+      stalenessWatched: true,
+      status: 'proposed',
+      createdBy: null,
+      proposedBy: 'me',
+      ratifiedBy: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    await proposeTool.handler({ ...base, kind: 'standard', stalenessWatched: true }, {} as never);
+
+    expect(mocks.proposeRubric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stalenessWatched: true,
+      }),
+    );
   });
 
   it('accepts an explicitly non-gating acceptance rubric', () => {
