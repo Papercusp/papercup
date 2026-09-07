@@ -81,6 +81,7 @@ import {
 } from './wake-executor-fresh-context';
 import { appendCrashResumeAdvisory } from './crash-resume-advisory';
 import { getPresence } from '../../agent-tools/coordination/presence';
+import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
 import { getWorkItem, isClaimHoldParked, isSettledWorkItemState } from '../../work-items';
@@ -655,6 +656,81 @@ async function currentFleetMemberDeadIsStale(
     // Fail open even if an injected resolver violates the Promise contract.
     return { stale: false, currentState: null };
   }
+}
+
+/**
+ * EI-220670: `fleet:context-critical:*` carries a fire-time pressure snapshot.
+ * A parked/retried delivery can outlive both the pressure bucket and the
+ * member's context generation, so the snapshot must be checked again at the
+ * actual wake boundary. Unknown reads deliberately preserve the wake.
+ */
+const FLEET_CONTEXT_CRITICAL_PREFIX = 'fleet:context-critical:';
+const FLEET_CONTEXT_CRITICAL_LOOKUP_TIMEOUT_MS = 1_000;
+
+type FleetContextCriticalPayload = {
+  fleetSlug: string;
+  agentId: string;
+  contextEpoch: number | null;
+};
+
+function parseFleetContextCriticalPayload(payload: unknown): FleetContextCriticalPayload | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as {
+    fleetSlug?: unknown;
+    agentId?: unknown;
+    transition?: unknown;
+    contextEpoch?: unknown;
+  };
+  if (record.transition !== 'context-critical') return null;
+  if (typeof record.fleetSlug !== 'string' || record.fleetSlug.trim().length === 0) return null;
+  if (typeof record.agentId !== 'string' || record.agentId.trim().length === 0) return null;
+  const contextEpoch =
+    typeof record.contextEpoch === 'number' && Number.isSafeInteger(record.contextEpoch) && record.contextEpoch >= 0
+      ? record.contextEpoch
+      : null;
+  return { fleetSlug: record.fleetSlug, agentId: record.agentId, contextEpoch };
+}
+
+type FleetContextCriticalFreshness = {
+  stale: boolean;
+  currentPressure: ContextPressureBucket | null;
+  currentEpoch: number | null;
+};
+
+async function currentFleetContextCriticalIsStale(
+  d: DeliveryWork,
+  getCurrentPressure: (agentId: string) => Promise<ContextPressureBucket | null>,
+  getCurrentEpoch: (agentId: string) => Promise<number | null>,
+  timeoutMs: number,
+): Promise<FleetContextCriticalFreshness> {
+  if (!d.eventKey.startsWith(FLEET_CONTEXT_CRITICAL_PREFIX) || d.eventKey.length <= FLEET_CONTEXT_CRITICAL_PREFIX.length) {
+    return { stale: false, currentPressure: null, currentEpoch: null };
+  }
+  const parsed = parseFleetContextCriticalPayload(d.payload);
+  if (!parsed) return { stale: false, currentPressure: null, currentEpoch: null };
+
+  const [pressureRead, epochRead] = await Promise.all([
+    withWakeTimeout(
+      Promise.resolve().then(() => getCurrentPressure(parsed.agentId)),
+      `fleet context-critical pressure/${parsed.agentId}`,
+      Math.max(1, timeoutMs),
+    ),
+    parsed.contextEpoch === null
+      ? Promise.resolve(null)
+      : withWakeTimeout(
+          Promise.resolve().then(() => getCurrentEpoch(parsed.agentId)),
+          `fleet context-critical generation/${parsed.agentId}`,
+          Math.max(1, timeoutMs),
+        ),
+  ]);
+  const currentPressure =
+    pressureRead === 'ok' || pressureRead === 'high' || pressureRead === 'critical' ? pressureRead : null;
+  const currentEpoch =
+    typeof epochRead === 'number' && Number.isSafeInteger(epochRead) && epochRead >= 0 ? epochRead : null;
+  const pressureStale = currentPressure !== null && currentPressure !== 'critical';
+  const generationStale =
+    parsed.contextEpoch !== null && currentEpoch !== null && currentEpoch > parsed.contextEpoch;
+  return { stale: pressureStale || generationStale, currentPressure, currentEpoch };
 }
 
 type CoalescedDeliveryEvent = {
@@ -2051,6 +2127,12 @@ export interface ExecuteWakeDeps {
   resolveMemberLiveness?: typeof resolveSessionStates;
   /** Upper bound for the delivery-time fleet member-dead liveness lookup. */
   fleetMemberDeadLookupTimeoutMs?: number;
+  /** EI-220670: delivery-time context-pressure read for fleet context-critical wakes. */
+  getCurrentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
+  /** Upper bound for the delivery-time fleet context-critical lookup. */
+  fleetContextCriticalLookupTimeoutMs?: number;
+  /** EI-220670: current compaction/context generation for the event's member. */
+  getCurrentContextEpoch?: (agentId: string) => Promise<number | null>;
   alive?: (pid: number | null) => boolean;
   /** WI-666: whether this owner has an active engine loop. Only loop owners
    *  are eligible for the bounded alive-but-uninjectable recovery leg. */
@@ -2702,6 +2784,28 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const resolveMemberLiveness = deps.resolveMemberLiveness ?? resolveSessionStates;
   const fleetMemberDeadLookupTimeoutMs =
     deps.fleetMemberDeadLookupTimeoutMs ?? FLEET_MEMBER_DEAD_LOOKUP_TIMEOUT_MS;
+  const getCurrentContextPressure =
+    deps.getCurrentContextPressure ??
+    (async (agentId: string) => (await fetchContextPressure([agentId])).get(agentId) ?? null);
+  const fleetContextCriticalLookupTimeoutMs =
+    deps.fleetContextCriticalLookupTimeoutMs ?? FLEET_CONTEXT_CRITICAL_LOOKUP_TIMEOUT_MS;
+  const getCurrentContextEpoch =
+    deps.getCurrentContextEpoch ??
+    (async (agentId: string) => {
+      try {
+        const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
+          import('../../memory/session-epoch-ledger'),
+          import('@papercusp/db-org'),
+        ]);
+        const epoch = await currentSessionEpoch(getOrgPg().sql, agentId);
+        // currentSessionEpoch is deliberately fail-soft and returns 0 when its
+        // ledger is unavailable. Treat that value as unknown here so a failed
+        // read can never suppress a legitimate positive-generation wake.
+        return Number.isSafeInteger(epoch) && epoch > 0 ? epoch : null;
+      } catch {
+        return null;
+      }
+    });
   const alive = deps.alive ?? pidAlive;
   const isLoopArmed =
     deps.isLoopArmed ?? (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
@@ -2840,6 +2944,41 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return degradeToInboxOrDrop(
         staleDelivery,
         `fleet member ${staleAgentId} is currently '${memberDeadCheck.currentState}', not 'ended' — this member-dead wake is STALE and RETRACTED, do not act on it`,
+        sendCoordMessage,
+      );
+    }
+
+    // EI-220670: context-critical is a fire-time pressure/generation snapshot.
+    // Revalidate it immediately before any wake side effect. Confirmed recovery
+    // or a newer context generation is downgraded to the durable inbox; missing,
+    // malformed, timed-out, or failed reads preserve the normal wake (fail-open).
+    const contextCriticalCheck = await currentFleetContextCriticalIsStale(
+      d,
+      getCurrentContextPressure,
+      getCurrentContextEpoch,
+      fleetContextCriticalLookupTimeoutMs,
+    );
+    if (contextCriticalCheck.stale) {
+      const parsedContextCritical = parseFleetContextCriticalPayload(d.payload);
+      const staleAgentId = parsedContextCritical?.agentId ?? 'unknown';
+      const staleReasons = [
+        contextCriticalCheck.currentPressure !== null && contextCriticalCheck.currentPressure !== 'critical'
+          ? `currently '${contextCriticalCheck.currentPressure}', not 'critical'`
+          : null,
+        parsedContextCritical?.contextEpoch !== null && contextCriticalCheck.currentEpoch !== null
+          ? `context generation ${contextCriticalCheck.currentEpoch} superseded emitted generation ${parsedContextCritical.contextEpoch}`
+          : null,
+      ].filter((reason): reason is string => reason !== null);
+      const detail = staleReasons.join('; ');
+      const staleDelivery = {
+        ...d,
+        summary:
+          `⚠ STALE — fleet member ${staleAgentId} context-critical wake is no longer current (${detail}). ` +
+          `Do NOT treat it as a live compaction signal or act on it. Original now-RETRACTED assertion: ${d.summary}`,
+      };
+      return degradeToInboxOrDrop(
+        staleDelivery,
+        `fleet member ${staleAgentId} context-critical wake is STALE and RETRACTED — ${detail}; do not act on it`,
         sendCoordMessage,
       );
     }

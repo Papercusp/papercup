@@ -111,6 +111,12 @@ async function isHarnessBlueprintRetired(workspaceId: string, slug: string): Pro
     workspaceId,
     harnessSlug: slug,
     blueprintPath: join(project.path, '.papercusp', 'blueprint.yaml'),
+  }).catch((error) => {
+    console.warn(
+      `[gym-cycle] effective-blueprint resolve failed (${slug}): ` +
+        `${error instanceof Error ? error.message : error}`,
+    );
+    return null;
   });
   return bp ? blueprintRetirement(bp) : null;
 }

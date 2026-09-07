@@ -42,6 +42,27 @@ dispatch:
   priority: plan-order
 `;
 
+const LOCAL_PARENT_YAML = `
+id: local-parent
+version: 0.1.0
+workItem:
+  kind: feature
+  idPrefix: F
+spine:
+  decider: director
+  edges:
+    DONE: { to: done }
+dispatch:
+  concurrency: 3
+  priority: plan-order
+`;
+
+const LOCAL_CHILD_YAML = `
+id: local-child
+version: 0.1.0
+extends: local-parent
+`;
+
 beforeAll(async () => {
   db = await createFreshPgDb('p006-dispatch-cache');
   await db.sql.unsafe(`
@@ -62,6 +83,8 @@ beforeAll(async () => {
   mkdirSync(join(dir, '.papercusp'), { recursive: true });
   blueprintPath = join(dir, '.papercusp', 'blueprint.yaml');
   writeFileSync(blueprintPath, YAML, 'utf8');
+  mkdirSync(join(dir, '.papercusp', 'blueprints', 'local-parent'), { recursive: true });
+  writeFileSync(join(dir, '.papercusp', 'blueprints', 'local-parent', 'blueprint.yaml'), LOCAL_PARENT_YAML, 'utf8');
 }, 90_000);
 
 afterAll(async () => {
@@ -105,6 +128,18 @@ describe('getEffectiveBlueprint — the dispatch-policy read path of the orchest
       blueprintPath: join(dir, '.papercusp', 'missing.yaml'),
     });
     expect(bp).toBeNull();
+  });
+
+  it('cache miss resolves a project-local extends parent before installed/built-in tiers', async () => {
+    const localChildPath = join(dir, '.papercusp', 'local-child.yaml');
+    writeFileSync(localChildPath, LOCAL_CHILD_YAML, 'utf8');
+    const bp = await getEffectiveBlueprint(db.sql as never, {
+      workspaceId: 'default',
+      harnessSlug: 'local-child-demo',
+      blueprintPath: localChildPath,
+    });
+    expect(bp?.id).toBe('local-child');
+    expect(bp?.dispatch?.concurrency).toBe(3);
   });
 
   it('the cached policy composes through resolveDispatchPolicy to the tick cap', async () => {

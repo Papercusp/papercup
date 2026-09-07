@@ -423,6 +423,12 @@ export interface FleetTransitionEventsDeps {
    */
   currentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
   /**
+   * Read the member's current compaction/context generation immediately before
+   * emitting a `context-critical` edge. A newer generation supersedes the
+   * fire-time edge even when the cached pressure bucket has not caught up.
+   */
+  currentContextEpoch?: (agentId: string) => Promise<number | null>;
+  /**
    * Re-read the member's current control state immediately before a queued
    * member-dead or context-critical edge emits. `null` means the member is no
    * longer in the fleet; a rejected read is treated as unknown and preserves
@@ -435,6 +441,25 @@ export interface FleetTransitionEventsDeps {
   /** Resolve an agent's current fleet. Default = the canonical append-only
    *  membership fact; injected as a stub in tests. */
   fleetOfAgent?: (workspaceId: string, ownerId: string) => Promise<string | null>;
+}
+
+/**
+ * Read the shared session context generation for an edge payload. The ledger
+ * helper is fail-soft and returns 0 when unavailable; 0 is treated as unknown
+ * here so a transient read failure cannot stamp a false old generation onto a
+ * real context-critical wake. Positive generations are optional payload data.
+ */
+async function readCurrentContextEpoch(agentId: string): Promise<number | null> {
+  try {
+    const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
+      import('./memory/session-epoch-ledger'),
+      import('@papercusp/db-org'),
+    ]);
+    const epoch = await currentSessionEpoch(getOrgPg().sql, agentId);
+    return Number.isSafeInteger(epoch) && epoch > 0 ? epoch : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -477,6 +502,7 @@ export async function fleetSlugOfAgent(
  */
 export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTransitionEventsDeps = {}): void {
   const emit = deps.emit ?? emitAwaitedEvent;
+  const currentContextEpoch = deps.currentContextEpoch ?? readCurrentContextEpoch;
   const summary =
     edge.kind === 'member-dead'
       ? `fleet ${edge.fleetSlug}: member ${edge.agentId} is DEAD (${edge.from ?? 'unknown'} → ${edge.to})`
@@ -529,6 +555,17 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
         }
         if (current !== CRITICAL_CONTEXT_BUCKET) return;
       }
+      let contextEpoch: number | null = null;
+      if (edge.kind === 'context-critical') {
+        try {
+          const observed = await currentContextEpoch(edge.agentId);
+          if (typeof observed === 'number' && Number.isSafeInteger(observed) && observed >= 0) {
+            contextEpoch = observed;
+          }
+        } catch (e: unknown) {
+          failSoft(`context-critical generation for ${edge.fleetSlug}/${edge.agentId}`, e);
+        }
+      }
       await emit({
         key: fleetTransitionKey(edge.fleetSlug, edge.kind),
         summary,
@@ -538,6 +575,7 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
           transition: edge.kind,
           from: edge.from,
           to: edge.to,
+          ...(contextEpoch === null ? {} : { contextEpoch }),
         },
         source: 'fleet',
       });

@@ -50,6 +50,7 @@
                   "kind": "card",
                   "interactions": [
                     "focus-transcript-entry",
+                    "open-diff",
                     "copy-rendered",
                     "copy-raw"
                   ]
@@ -83,6 +84,7 @@
                 "interactions": [
                   "edit-message",
                   "insert-newline",
+                  "open-attachment-picker",
                   "send-once",
                   "preserve-draft"
                 ]
@@ -254,7 +256,10 @@
             "interactions": [
               "attach-session",
               "focus-session",
-              "resume-session"
+              "resume-session",
+              "rename-session",
+              "archive-session",
+              "new-su-session"
             ]
           },
           "emptyState": {
@@ -360,6 +365,51 @@
           },
           "interactions": [
             "fork-session"
+          ]
+        }
+      ]
+    },
+    "attachment-picker": {
+      "kind": "list",
+      "binding": {
+        "slot": "selectedProject.attachments",
+        "repeats": true,
+        "shape": "ProjectAttachment"
+      },
+      "item": {
+        "kind": "card",
+        "interactions": [
+          "select-attachment",
+          "remove-attachment"
+        ]
+      },
+      "emptyState": {
+        "kind": "empty-state",
+        "copy": {
+          "key": "pui.attachments.empty",
+          "default": "No project files match this filter."
+        }
+      }
+    },
+    "about-support": {
+      "kind": "stack",
+      "direction": "vertical",
+      "children": [
+        {
+          "kind": "card",
+          "binding": {
+            "slot": "installedPui.identity",
+            "shape": "InstalledArtifactIdentity"
+          }
+        },
+        {
+          "kind": "menu",
+          "interactions": [
+            "check-for-updates",
+            "update",
+            "rollback",
+            "preview-diagnostics",
+            "uninstall"
           ]
         }
       ]

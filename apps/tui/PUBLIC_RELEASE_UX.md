@@ -310,6 +310,81 @@ Exact high-value copy:
 | No session match | No sessions match this filter. |
 | Approval parked | Waiting for your decision; the agent is paused. |
 
+## Files, installation, and support
+
+When the composer is focused, @ opens a project-scoped file/attachment picker.
+Every selected attachment is shown above the draft by project-relative path,
+kind, and stable reference. Removing an attachment does not alter the file.
+Cross-project and unreadable paths are refused with the reason; PUI never falls
+back to a similarly named file.
+
+Settings > About and Support shows the PUI version, build/source identity,
+installed artifact identity, update channel, and effective operator endpoint.
+The command palette exposes Check for updates, Update, Roll back, Diagnostics,
+and Uninstall. Update, rollback, and uninstall preview the exact version/path,
+preserve configuration and history by default, and require confirmation.
+Diagnostics previews its redacted contents before saving or copying.
+
+## Validated 80×24 frame and journey
+
+The compact design budgets the exact 24 terminal rows:
+
+| Rows | Contents |
+| --- | --- |
+| 1 | Destination strip with Agent Chat selected |
+| 2–19 | Agent Chat body: lifecycle/provenance plus scrollable transcript |
+| 20–23 | Four-row composer, or the blocking card plus its action hint |
+| 24 | Project/session status and o / Ctrl-T / Ctrl-S / ? affordances |
+
+At 80 columns the Context rail and presence rail are not allocated, so the
+composer retains all 80 columns. The same context projection opens full-screen
+with Ctrl-T; o returns to the same transcript and draft.
+
+The required keyboard walkthrough is:
+
+1. Press o from another destination; Agent Chat opens and focus reaches its
+   existing composer state.
+2. Press i, enter Unicode plus two logical lines using Alt-Enter or Ctrl-J, and
+   confirm the four-row composer keeps the draft visible.
+3. Press Enter; exactly one owner turn is accepted, the lifecycle changes to
+   Running, and Ctrl-X is advertised.
+4. Press Ctrl-T while idle; Context opens full-screen with the same session
+   identity and tasks. Press o; the transcript and draft state are unchanged.
+5. Press Ctrl-S; the global live/parked/ended/recorded switcher overlays the
+   compact frame. Esc closes only the overlay.
+6. Open a blocking question/approval; it replaces the composer action area,
+   retains transcript visibility, and returns focus after the decision.
+
+This row budget and journey are represented in the companion UI IR and were
+validated against UI-IR v0.1. They preserve the Surface B relationship without
+forcing two unreadable panes into 80 columns.
+
+## Capability replacement interaction map
+
+Every row in NATIVE_CAPABILITIES.md has an explicit in-PUI interaction:
+
+| Required capability | PUI interaction |
+| --- | --- |
+| First prompt and streamed response | Agent Chat i focuses the composer; Enter sends once; the same transcript streams the correlated reply. |
+| Persona, tools and permissions | Context shows SU/project identity and effective backend; tool and approval cards expose the same scoped tool plane. |
+| Editable task list | Ctrl-T opens Context; a/e/s/x/b/u/r/Shift-J/Shift-K/d/Shift-P perform the canonical task operations. |
+| Plans and work-item links | Context renders stable badges and Shift-P promotes/links the selected task without changing its identity. |
+| Multiline prompt editing | The four-row composer supports cursor editing, Alt-Enter or Ctrl-J newline, Unicode bracketed paste, undo/history, and draft preservation. |
+| Transcript navigation and copying | j/k and PgUp/PgDn navigate; search filters; y copies rendered content and Shift-Y copies the available raw payload. |
+| Tool requests and command output | Semantic transcript cards show request, arguments, output, terminal state, and correlation; Enter expands the focused card. |
+| Code changes and diffs | Change cards open an in-PUI scrollable diff with file/path/hunk context and the same y/Shift-Y copy contract. |
+| Approvals and permission scope | Parked approval cards show exact scope; Ctrl-Y allows once, Ctrl-N denies, and remembered scope is a separately labelled choice. |
+| Interactive questions | Number/arrows select, Space toggles checkboxes, free text retains a draft, and Enter answers only the correlated card. |
+| New/switch/rename/archive sessions | Sessions n opens in-PUI New SU session; Ctrl-S switches; the Sessions destination owns rename/archive/resume. |
+| Legacy history continuation and fork | Ended/recorded Sessions rows open read-only transcripts; Continue in new session and K preserve source provenance. |
+| Interrupt, end and recovery | Ctrl-X interrupts; R reconciles/resumes; K forks; E confirms end; unsupported controls remain visible with reasons. |
+| Model/account/effort/mode settings | l/m/e/a/u open live server-owned pickers; restart-required changes route through the in-PUI New SU session form. |
+| Context, usage and compaction | Context renders authoritative lifecycle/context/usage/carry measurements; missing values read Unknown; supported compaction is capability-checked. |
+| Commands, help, skills and plugins | : opens the one palette; live catalog/recipe search discovers commands, skills, plugins, and tools; ? and F1 explain the focused surface. |
+| Files and attachments | Composer @ opens the project-scoped picker and displays exact stable references before send. |
+| Authentication and first-run setup | The three-step in-PUI setup validates endpoint/project and exposes live engine/account choices with a repair path. |
+| Installation, update and support | Settings > About and Support plus palette actions expose version, update, rollback, uninstall, and redacted diagnostics. |
+
 ## Keyboard precedence
 
 Input is dispatched to the most specific active surface:
@@ -344,4 +419,3 @@ footer must work in that state; hidden shortcuts are not acceptance evidence.
 The companion UI IR is
 ../../docs/mockups/pui-public-release-ux.ir.json. The Markdown is authoritative
 for behavior and exact copy; the IR is the machine-validated layout/state index.
-

@@ -541,7 +541,13 @@ async function resolveHarnessDispatchGate(
       workspaceId,
       harnessSlug: slug,
       blueprintPath: join(stateDir, 'blueprint.yaml'),
-    }).catch(() => null);
+    }).catch((error) => {
+      console.warn(
+        `[dbos-orchestrator] effective-blueprint resolve failed (${slug}): ` +
+          `${error instanceof Error ? error.message : error}`,
+      );
+      return null;
+    });
     const dispatch = effectiveBlueprint?.dispatch ?? null;
     // WI-5645: the resolved blueprint already carries its ancestor chain's
     // `retired` (extends deep-merges it), so one read here covers every

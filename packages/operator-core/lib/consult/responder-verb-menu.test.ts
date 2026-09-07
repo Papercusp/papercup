@@ -19,6 +19,11 @@ describe('the consult responder verb menu names the read door', () => {
     const line = consultReadDoorLine('conv-abc');
     // The door itself, addressed to THIS conversation — a reviewer should not have to construct it.
     expect(line).toContain("conversations:get { id: 'conv-abc' }");
+    // The keyed-array envelope is easy to misread as a top-level thread. Pin the exact path so a
+    // successful read cannot silently turn into postCount 0 through `result.posts ?? []`.
+    expect(line).toContain('posts are at results[0].posts');
+    expect(line).toContain('not a top-level .posts field');
+    expect(line).toContain('undefined and looks like an empty thread');
     // The guessable name does not exist. Saying so is the whole discoverability fix: the reviewer
     // who reported this reached for `consult:read` and concluded the capability was missing.
     expect(line).toContain('consult:read');

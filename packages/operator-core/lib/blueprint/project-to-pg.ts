@@ -14,6 +14,7 @@
  * mirroring the gym control-plane, so the routes and the loader share one core.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { Sql } from 'postgres';
 import {
@@ -27,6 +28,7 @@ import {
 } from '@papercusp/orchestrator/blueprint';
 import { compileBlueprintWithPackages, provisionBlueprintPackages, blueprintPackageProvisioners } from './compile-packages';
 import { blueprintRegistrySets } from './registry-sets.js';
+import { operatorResolveExtends } from './installed-blueprints';
 import { registerHarnessOpProxies, type HarnessOpManifestEntry } from '../harness-ops/proxy.js';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 
@@ -47,6 +49,13 @@ function preRegisterSourceFileOps(path: string): void {
   } catch {
     /* loadBlueprintFromFile surfaces the real parse error */
   }
+}
+
+/** Resolve a source blueprint's extends chain across project-local, installed, and built-in tiers. */
+function resolveSourceBlueprintExtends(sourcePath: string | null | undefined) {
+  return operatorResolveExtends({
+    localDirs: sourcePath ? [join(dirname(sourcePath), 'blueprints')] : [],
+  });
 }
 
 export interface ProjectBlueprintInput {
@@ -78,7 +87,7 @@ export async function projectBlueprintToPg(
   input: ProjectBlueprintInput,
 ): Promise<{ contentHash: string; specification?: CompiledAgentSpecification }> {
   const loaded = input.loaded ?? (!input.specification && input.sourcePath
-    ? loadBlueprintFromFile(input.sourcePath, undefined, blueprintRegistrySets()) : undefined);
+    ? loadBlueprintFromFile(input.sourcePath, resolveSourceBlueprintExtends(input.sourcePath), blueprintRegistrySets()) : undefined);
   const specification = input.specification ? replayAgentSpecification(input.specification)
     : loaded ? await compileBlueprintWithPackages(loaded, {
       workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
@@ -184,7 +193,11 @@ export async function getEffectiveBlueprint(
   // chokepoint — the point a blueprint is admitted to the durable pipeline — so an
   // unregistered op is rejected here, not surfaced as a `requireCoordOp` throw mid
   // `coordProgramWorkflow`.
-  const loaded = loadBlueprintFromFile(opts.blueprintPath, undefined, blueprintRegistrySets());
+  const loaded = loadBlueprintFromFile(
+    opts.blueprintPath,
+    resolveSourceBlueprintExtends(opts.blueprintPath),
+    blueprintRegistrySets(),
+  );
   // Defensive: also register from the resolved blueprint (covers ops merged in via
   // `extends`, which the raw-file pre-register above wouldn't have seen).
   registerHarnessOpProxies((loaded.blueprint.ops ?? []) as HarnessOpManifestEntry[]);

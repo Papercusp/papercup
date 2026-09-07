@@ -13,7 +13,7 @@
  * argument I have not seen." They then reviewed a second time against the artifact alone. The
  * requester's replies were sitting in the thread the whole time.
  *
- * Two properties make this failure silent, and the wording below targets both:
+ * Three properties make this failure silent, and the wording below targets all three:
  *
  *   1. The natural guess is `consult:read`, which does not resolve — the verb family is
  *      write-only, so nothing an in-consult responder holds points at the reader. The door is
@@ -21,6 +21,9 @@
  *   2. A wrong-door read returns EMPTY, which is indistinguishable from "the thread has no
  *      replies". A reviewer who draws that inference reviews without the requester's responses
  *      and reports lower-confidence findings than the evidence actually supports.
+ *   3. The right door returns a keyed-array envelope: posts are at `results[0].posts`, not a
+ *      top-level `posts` field. A responder who reads `.posts` literally gets `undefined` and
+ *      can still mistake a successful read for an empty thread.
  *
  * Rendering the menu once is the whole point of this module. A hand-maintained sixth copy is
  * exactly how the omission got into five of them; `responder-verb-menu.test.ts` derives the wake
@@ -49,13 +52,16 @@ export interface ConsultResponderVerbMenuInput {
 }
 
 /**
- * The READ door, stated so that the two silent-failure modes above are both closed: it names the
- * verb (because the guessable name does not exist) and it says what a wrong-door read LOOKS like
- * (because an empty result otherwise reads as an empty thread).
+ * The READ door, stated so that the silent-failure modes above are closed: it names the verb
+ * (because the guessable name does not exist), the result path (because the keyed-array envelope
+ * nests posts under `results[0]`), and what a wrong-door read LOOKS like (because an empty result
+ * otherwise reads as an empty thread).
  */
 export function consultReadDoorLine(conversationId: string): string {
   return (
-    `READ THE THREAD FIRST — conversations:get { id: '${conversationId}' } returns every post oldest-first. ` +
+    `READ THE THREAD FIRST — conversations:get { id: '${conversationId}' } returns every post oldest-first; ` +
+    `posts are at results[0].posts (not a top-level .posts field), so a top-level read returns ` +
+    `undefined and looks like an empty thread. ` +
     `There is NO consult:read: the verb family is write-only, so the natural guess does not resolve and a ` +
     `wrong-door read comes back EMPTY — which is indistinguishable from a thread with no replies. If you ` +
     `believe there are no replies, confirm it through this door before answering as though there are none.`
