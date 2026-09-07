@@ -964,7 +964,29 @@ describe("Codex missing-model posture", () => {
       model: "gpt-5.6-sol:xhigh",
       model_source: "configured-default",
     });
+    expect(body.launch_argv).toEqual(
+      expect.arrayContaining([
+        "--model=gpt-5.6-sol:xhigh",
+        "--model-source=configured-default",
+      ]),
+    );
+    expect(() => modelArgsFor("codex", null)).toThrow(/Codex model is required/);
     expect(() => parseArgs(["--headless", "--agent=codex"])).toThrow(/Codex model is required/);
+    const authorizedHeadless = parseArgs([
+      "--headless",
+      "--agent=codex",
+      "--model-source=configured-default",
+    ]);
+    expect(authorizedHeadless).toMatchObject({
+      model: "gpt-5.6-sol:xhigh",
+      modelSource: "configured-default",
+    });
+    expect(
+      freshSuBootstrapBody(
+        { agent: "codex", workspace: "papercusp-workspace", harness: null, plan: null },
+        authorizedHeadless,
+      ),
+    ).toMatchObject({ headless: true, model_source: "configured-default" });
   });
 });
 
@@ -2853,7 +2875,14 @@ describe("psu-launcher arg parsing", () => {
         "--no-lsp",
       ],
     });
-    expect(resumeArgsFor({ agent: "codex", cwd: "/x" })).toEqual({
+    expect(
+      resumeArgsFor(
+        { agent: "codex", cwd: "/x" },
+        { model: "gpt-5.6-sol:xhigh" } as unknown as Parameters<
+          typeof resumeArgsFor
+        >[1],
+      ),
+    ).toEqual({
       bin: "codex",
       args: [
         "--dangerously-bypass-hook-trust",
@@ -2951,7 +2980,10 @@ describe("psu-launcher arg parsing", () => {
       NO_SUBAGENTS_DENY_FLAG,
       OWNER_DESKTOP_NOTIFY_DENY_FLAG,
     ]);
-    expect(resumeArgsFor({ agent: "codex", sessionId: "uuid-2" }).args).toEqual(
+    expect(resumeArgsFor(
+      { agent: "codex", sessionId: "uuid-2" },
+      { model: "gpt-5.6-sol:xhigh" } as unknown as Parameters<typeof resumeArgsFor>[1],
+    ).args).toEqual(
       [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
@@ -3000,7 +3032,10 @@ describe("psu-launcher arg parsing", () => {
       resumeArgsFor({ agent: "omp", ompThreadId: "t" }, { fork: true }),
     ).toThrow(/launch-context/);
     expect(
-      resumeArgsFor({ agent: "codex", sessionId: "uuid-2" }, { fork: true })
+      resumeArgsFor(
+        { agent: "codex", sessionId: "uuid-2" },
+        { fork: true, model: "gpt-5.6-sol:xhigh" } as unknown as Parameters<typeof resumeArgsFor>[1],
+      )
         .args,
     ).toEqual([
       "--dangerously-bypass-hook-trust",
@@ -3016,7 +3051,10 @@ describe("psu-launcher arg parsing", () => {
       "fork",
       "uuid-2",
     ]);
-    expect(resumeArgsFor({ agent: "codex" }, { fork: true }).args).toEqual([
+    expect(resumeArgsFor(
+      { agent: "codex" },
+      { fork: true, model: "gpt-5.6-sol:xhigh" } as unknown as Parameters<typeof resumeArgsFor>[1],
+    ).args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
       "-m",
@@ -3123,7 +3161,12 @@ describe("psu-launcher arg parsing", () => {
     ]);
     // codex: --add-dir is a TOP-LEVEL option, so it must precede the `resume` subcommand.
     expect(
-      resumeArgsFor({ agent: "codex", sessionId: "u" }, { addDir: ["/d"] })
+      resumeArgsFor(
+        { agent: "codex", sessionId: "u" },
+        { addDir: ["/d"], model: "gpt-5.6-sol:xhigh" } as unknown as Parameters<
+          typeof resumeArgsFor
+        >[1],
+      )
         .args,
     ).toEqual([
       "--dangerously-bypass-hook-trust",
@@ -3143,7 +3186,11 @@ describe("psu-launcher arg parsing", () => {
     expect(
       resumeArgsFor(
         { agent: "codex", sessionId: "u" },
-        { fork: true, addDir: ["/d"] },
+        {
+          fork: true,
+          addDir: ["/d"],
+          model: "gpt-5.6-sol:xhigh",
+        } as unknown as Parameters<typeof resumeArgsFor>[1],
       ).args,
     ).toEqual([
       "--dangerously-bypass-hook-trust",
@@ -3556,6 +3603,7 @@ describe("psu-launcher arg parsing", () => {
       plan: null,
       account: "codex-main",
       model: "gpt-5.6-sol:xhigh",
+      model_source: "configured-default",
     });
     expect(
       roleBootstrapBody({
@@ -5318,7 +5366,10 @@ describe("roleLaunchArgs (interactive role session)", () => {
   });
 
   it("codex: raw codex, hook-trust + approvals/sandbox bypass (CODEX_HOME via envelopeEnv)", () => {
-    const { bin, args } = roleLaunchArgs("codex", files);
+    const { bin, args } = roleLaunchArgs("codex", {
+      ...files,
+      model: "gpt-5.6-sol:xhigh",
+    });
     expect(bin).toBe("codex");
     expect(args).toEqual([
       "--dangerously-bypass-hook-trust",
@@ -5386,7 +5437,12 @@ describe("roleLaunchArgs (interactive role session)", () => {
   });
 
   it("codex needs no replacement switch (CODEX_HOME AGENTS.md is already the whole prompt)", () => {
-    expect(roleLaunchArgs("codex", files).args).toEqual([
+    expect(
+      roleLaunchArgs("codex", {
+        ...files,
+        model: "gpt-5.6-sol:xhigh",
+      }).args,
+    ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
       "-m",
@@ -5869,6 +5925,49 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       targetAgent: "codex",
       provider: "openai",
       modelSpec: "gpt-5.6-sol:xhigh",
+      modelSource: "explicit",
+    });
+  });
+
+  it("inherits a recorded Codex model for unattended native resume and rejects unresolved history", () => {
+    const recorded = {
+      ...source,
+      agent: "codex",
+      launchArgv: [
+        "psu",
+        "--no-picker",
+        "--agent=codex",
+        "--headless",
+        "--model=gpt-5.6-terra:high",
+        "--model-source=explicit",
+      ],
+    };
+    expect(resolveResumeTarget(recorded, { picker: false })).toMatchObject({
+      operation: "native",
+      modelSpec: "gpt-5.6-terra:high",
+      modelSource: "inherited",
+    });
+    expect(() =>
+      resolveResumeTarget({ ...recorded, launchArgv: null }, { picker: false }),
+    ).toThrow(/Codex model is required/);
+    expect(() =>
+      resolveResumeTarget(
+        { ...recorded, launchArgv: ["psu", "--agent=codex", "--model=gpt-5.3-codex-spark"] },
+        { picker: false },
+      ),
+    ).toThrow(/denied/i);
+  });
+
+  it("treats a visible backend-default choice as deliberate configured-default authorization", () => {
+    expect(
+      resolveResumeTarget(
+        { ...source, agent: "codex", launchArgv: null },
+        { picker: true },
+        { targetAgent: "codex", modelSpec: null },
+      ),
+    ).toMatchObject({
+      modelSpec: "gpt-5.6-sol:xhigh",
+      modelSource: "configured-default",
     });
   });
 
@@ -5945,6 +6044,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(args).toMatchObject({
       ownerId: "su-source-owner",
       account: "acct-openai",
+      modelSource: "explicit",
       sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
       sessionPortSourceAdvSessionId: 42,
       sessionPortSourceCwd: "/repo",
@@ -12299,6 +12399,32 @@ describe("resumeLaunchArgvRecord (EI-22441173036886852)", () => {
 
     expect(argv).not.toContain("--model=opus[1m]:max");
     expect(argv).toContain("--account=default");
+  });
+
+  it("records inherited Codex model provenance on an exact unattended resume", () => {
+    const argv = resumeLaunchArgvRecord(
+      {
+        id: 22498,
+        agent: "codex",
+        launchArgv: [
+          "psu",
+          "--no-picker",
+          "--agent=codex",
+          "--headless",
+          "--model=gpt-5.6-terra:high",
+          "--model-source=explicit",
+        ],
+      },
+      {
+        account: { mode: "default" },
+        model: "gpt-5.6-terra:high",
+        modelSource: "inherited",
+      },
+    );
+
+    expect(argv).toContain("--model=gpt-5.6-terra:high");
+    expect(argv).toContain("--model-source=inherited");
+    expect(argv).toContain("--headless");
   });
 });
 
