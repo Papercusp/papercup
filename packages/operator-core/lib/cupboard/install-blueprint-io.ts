@@ -38,7 +38,16 @@ import {
   type InstallBlueprintCoreDeps,
   type InstallBlueprintCoreResult,
 } from './install-blueprint-core';
-import { gitCloneShallow, buildInstallPluginDeps } from './install-io';
+import {
+  gitCloneShallow,
+  buildInstallPluginDeps,
+  installCupboardUnitFromListing,
+  reviewCupboardUnitFromListing,
+} from './install-io';
+import {
+  installCapabilityProviderPackageClosure,
+  reviewCapabilityProviderPackageClosure,
+} from './capability-provider-package-closure';
 import {
   BlueprintLifecycleError,
   rollbackBlueprintRelease,
@@ -190,6 +199,26 @@ function makeInstallCoreDeps(
           return rows.map((row) => ({ ...row, price: null }));
         },
       },
+      reviewCapabilityProviderPackages: (selections) =>
+        reviewCapabilityProviderPackageClosure(selections, {
+          deriveCatalog: () => derivePackCatalog({}),
+          reviewUnit: reviewCupboardUnitFromListing,
+        }),
+      installCapabilityProviderPackages: (review) =>
+        installCapabilityProviderPackageClosure(review, {
+          deriveCatalog: () => derivePackCatalog({}),
+          reviewUnit: reviewCupboardUnitFromListing,
+          installUnit: async (unit, expectedReview) => {
+            const installed = await installCupboardUnitFromListing(unit, { expectedReview });
+            return installed.ok
+              ? {
+                  ok: true,
+                  review: installed.review,
+                  declaredDeps: installed.declaredDeps,
+                }
+              : installed;
+          },
+        }),
       async commitCapabilitySelections(selections) {
         const sql = getOrgPg().sql;
         const applied = await sql.begin(async (tx) => {
@@ -340,6 +369,7 @@ export async function installBlueprintFromCupboard(
         ...capabilityScope,
         mode: input.capabilityMode ?? 'interactive' as const,
         selections: input.capabilityProviderSelections,
+        installProviderPackages: input.installPlugins === true,
       }
     : undefined;
 

@@ -13,6 +13,8 @@
  */
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { promises as fs } from 'node:fs';
+import { join } from 'node:path';
 import { GLOBAL_PLUGINS_DIR } from '../plugin-catalog';
 import { grantCapabilities } from '../plugin-grants';
 import { resolveCupboardBaseUrl } from './base-url';
@@ -21,6 +23,7 @@ import {
   InstallPluginError,
   type InstallPluginCoreDeps,
   type InstallPluginCoreInput,
+  type InstallPluginManifestReview,
   type InstallPluginCoreResult,
 } from './install-plugin-core';
 import type { InstallableUnitRef } from './resolve-and-install';
@@ -231,7 +234,11 @@ export async function installPluginFromCupboard(input: {
  */
 export async function installCupboardUnitFromListing(
   unit: InstallableUnitRef,
-  opts: { harness?: string; acceptCapabilities?: boolean } = {},
+  opts: {
+    harness?: string;
+    acceptCapabilities?: boolean;
+    expectedReview?: InstallPluginManifestReview;
+  } = {},
 ): Promise<
   | {
       ok: true;
@@ -244,6 +251,7 @@ export async function installCupboardUnitFromListing(
         // as a tool dep does (D-003 / P-007).
         events?: Array<{ family: string; optional?: boolean }>;
       };
+      review: InstallPluginManifestReview;
     }
   | { ok: false; error: string }
 > {
@@ -261,11 +269,61 @@ export async function installCupboardUnitFromListing(
         listingRef: coords.listingRef,
         harness: opts.harness,
         acceptCapabilities: opts.acceptCapabilities === true,
+        ...(opts.expectedReview ? { expectedReview: opts.expectedReview } : {}),
       },
       buildInstallPluginDeps(),
     );
-    return { ok: true, declaredDeps: result.installableDependencies };
+    return {
+      ok: true,
+      declaredDeps: result.installableDependencies,
+      review: result.review,
+    };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Vet one Cupboard plugin/pack through the exact install core in a disposable
+ * destination. This performs clone, manifest/trigger validation and dependency
+ * classification, but persists no plugin, grant, or host invalidation.
+ */
+export async function reviewCupboardUnitFromListing(
+  unit: InstallableUnitRef,
+  expectedProviderVersion?: string,
+): Promise<{ ok: true; review: InstallPluginManifestReview } | { ok: false; error: string }> {
+  if (!unit.listingId) {
+    return { ok: false, error: `unit "${unit.name}" has no Cupboard listing id to review` };
+  }
+  const coords = await resolveListingCoords(unit.listingId);
+  if (!coords) {
+    return { ok: false, error: `listing ${unit.listingId} not found or Cupboard unreachable` };
+  }
+  const reviewDir = await fs.mkdtemp(join(tmpdir(), 'cupboard-provider-review-'));
+  try {
+    const real = buildInstallPluginDeps();
+    const result = await installPluginFromCupboardCore(
+      { githubUrl: coords.githubUrl, listingRef: coords.listingRef },
+      {
+        ...real,
+        globalPluginsDir: () => reviewDir,
+        grant: async () => {},
+        invalidateHost: async () => {},
+      },
+    );
+    if (result.name !== unit.name) {
+      return { ok: false, error: `listing ${unit.listingId} resolved to ${result.name}, not ${unit.name}` };
+    }
+    if (expectedProviderVersion && result.version !== expectedProviderVersion) {
+      return {
+        ok: false,
+        error: `selected provider ${unit.name}@${expectedProviderVersion} resolved to version ${result.version}`,
+      };
+    }
+    return { ok: true, review: result.review };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await fs.rm(reviewDir, { recursive: true, force: true }).catch(() => {});
   }
 }

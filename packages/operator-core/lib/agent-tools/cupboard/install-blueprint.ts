@@ -42,7 +42,7 @@ export default defineTool({
     installPlugins: z
       .boolean()
       .optional()
-      .describe("Consent to auto-install the blueprint's Cupboard-resolvable plugin deps."),
+      .describe("Consent to auto-install the blueprint's Cupboard-resolvable plugin deps and the fully reviewed transitive package closure of selected capability providers."),
     operation: z.enum(['install', 'update', 'rollback', 'uninstall']).default('install'),
     blueprintId: z.string().max(120).optional().describe('Installed blueprint id; required for rollback/uninstall.'),
     targetVersion: z.string().max(200).optional().describe('Previously installed version or package content hash; required for rollback.'),
@@ -100,7 +100,13 @@ export default defineTool({
     });
 
     if (!outcome.ok) {
-      return text({ ok: false, error: outcome.error, detail: outcome.detail, status: outcome.status });
+      return text({
+        ok: false,
+        error: outcome.error,
+        detail: outcome.detail,
+        status: outcome.status,
+        ...(outcome.data === undefined ? {} : { data: outcome.data }),
+      });
     }
     const r = outcome.result;
     if (!('pluginInstalls' in r)) {
@@ -119,6 +125,8 @@ export default defineTool({
       activationRequired: r.operation === 'update',
       dependencies: r.dependencies,
       capabilityGrants: r.capabilityGrants,
+      capabilityProviderReview: r.capabilityProviderReview,
+      capabilityProviderInstalls: r.capabilityProviderInstalls,
       ...(r.pluginInstalls.length > 0 ? { pluginInstalls: r.pluginInstalls } : {}),
       ...(r.blueprintInstalls.length > 0 ? { blueprintInstalls: r.blueprintInstalls } : {}),
     });

@@ -19,6 +19,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep, dirname } from 'node:path';
 import type { PluginTriggerPack } from '@papercusp/plugin-sdk';
 import { isCompilableSchema } from '../json-schema-validation';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 
 export interface InstallPluginCoreInput {
   /** The plugin repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -30,6 +31,12 @@ export interface InstallPluginCoreInput {
   harness?: string;
   /** Record the manifest's declared capabilities as grants for `harness`. */
   acceptCapabilities?: boolean;
+  /** Optional immutable review receipt from a preceding sandbox vetting pass.
+   * The live install refuses before replacing any bytes if the repo now exposes
+   * a different package identity, permission set, dependency graph, or trigger
+   * surface. Used by capability-provider chaining so consent applies to exactly
+   * the complete transitive set the caller reviewed. */
+  expectedReview?: InstallPluginManifestReview;
 }
 
 export interface InstalledPluginManifest {
@@ -67,6 +74,8 @@ export interface InstallPluginCoreResult {
   granted: string[];
   /** Descriptor made discoverable by the post-copy host invalidation. */
   triggerPack?: InstalledTriggerPackReceipt;
+  /** Stable install-review material derived before any destination write. */
+  review: InstallPluginManifestReview;
   /**
    * Deps this unit declares that are not installed but resolvable from the
    * Cupboard (advisory — tool-distribution-granularity D-003). Empty when the
@@ -86,11 +95,73 @@ export interface InstallPluginCoreResult {
   };
 }
 
+export interface InstallPluginDeclaredDependencies {
+  tools: string[];
+  packs: string[];
+  plugins: string[];
+  events: ManifestEventDep[];
+}
+
+/** The exact security/dependency surface a caller consents to install. */
+export interface InstallPluginManifestReview {
+  name: string;
+  version: string;
+  kind: string;
+  capabilities: string[];
+  dependencies: InstallPluginDeclaredDependencies;
+  triggerPack?: InstalledTriggerPackReceipt;
+}
+
 /** A manifest-declared event dependency (plugin-SDK `ManifestEventDependency`, D-003). */
 export interface ManifestEventDep {
   family: string;
   /** listen-if-present: an unresolvable optional dep never blocks the install. */
   optional?: boolean;
+}
+
+function normalizedStrings(value: unknown): string[] {
+  return [...new Set(
+    (Array.isArray(value) ? value : [])
+      .filter((item): item is string => typeof item === 'string' && item.length > 0),
+  )].sort();
+}
+
+function normalizedEvents(value: unknown): ManifestEventDep[] {
+  const byFamily = new Map<string, ManifestEventDep>();
+  for (const item of Array.isArray(value) ? value : []) {
+    if (item == null || typeof item !== 'object') continue;
+    const { family, optional } = item as Record<string, unknown>;
+    if (typeof family !== 'string' || family.length === 0) continue;
+    const prior = byFamily.get(family);
+    if (prior && prior.optional !== true) continue;
+    byFamily.set(family, { family, ...(optional === true ? { optional: true } : {}) });
+  }
+  return [...byFamily.values()].sort((a, b) => a.family.localeCompare(b.family));
+}
+
+function manifestReview(
+  manifest: InstalledPluginManifest,
+  triggerPack: InstalledTriggerPackReceipt | undefined,
+  dependencies: {
+    tools?: string[];
+    packs?: string[];
+    plugins?: string[];
+    events?: ManifestEventDep[];
+  } | undefined,
+): InstallPluginManifestReview {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    kind: typeof manifest.kind === 'string' ? manifest.kind : 'plugin',
+    capabilities: normalizedStrings(manifest.capabilities),
+    dependencies: {
+      tools: normalizedStrings(dependencies?.tools),
+      packs: normalizedStrings(dependencies?.packs),
+      plugins: normalizedStrings(dependencies?.plugins),
+      events: normalizedEvents(dependencies?.events),
+    },
+    ...(triggerPack ? { triggerPack } : {}),
+  };
 }
 
 export interface InstallPluginCoreDeps {
@@ -372,6 +443,14 @@ export async function installPluginFromCupboardCore(
       }
     }
 
+    const review = manifestReview(manifest, triggerPack, declaredDeps);
+    if (input.expectedReview && canonicalJson(input.expectedReview) !== canonicalJson(review)) {
+      throw new InstallPluginError(
+        `plugin review changed after consent for ${manifest.name}@${manifest.version}; review the current package closure before installing`,
+        409,
+      );
+    }
+
     const target = join(deps.globalPluginsDir(), manifest.name);
     assertInside(deps.globalPluginsDir(), target, `plugin name "${manifest.name}"`);
     // mkdir the target's PARENT (not just global-plugins) so a scoped
@@ -380,7 +459,7 @@ export async function installPluginFromCupboardCore(
     await fs.mkdir(dirname(target), { recursive: true });
     await copyPluginDir(pluginDir, target);
 
-    const capabilities = Array.isArray(manifest.capabilities) ? manifest.capabilities : [];
+    const capabilities = review.capabilities;
 
     // Install-consent (D-009): when a target harness is given and the caller
     // accepted, record the manifest's declared caps as grants for that harness.
@@ -407,6 +486,7 @@ export async function installPluginFromCupboardCore(
       source: url,
       installedTo: target,
       granted,
+      review,
       ...(triggerPack ? { triggerPack } : {}),
       ...(installableDependencies ? { installableDependencies } : {}),
     };

@@ -338,6 +338,65 @@ status: draft
     expect(granted).toHaveLength(0);
   });
 
+  it('returns stable pre-write review material and refuses a changed consent receipt', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'reviewed-provider',
+      version: '2.0.0',
+      kind: 'plugin',
+      capabilities: ['secret:read', 'net:fetch', 'net:fetch'],
+      dependencies: {
+        tools: ['crm.lookup'],
+        plugins: ['audit-log'],
+        events: [{ family: 'crm:updated', optional: true }],
+      },
+    });
+    const first = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/reviewed-provider' },
+      makeDeps({
+        validateDependencies: async () => ({
+          ok: true,
+          missing: { tools: [], packs: [], plugins: [], events: [] },
+          installable: { tools: [], packs: [], plugins: ['audit-log'], events: [] },
+          messages: [],
+        }),
+      }),
+    );
+    expect(first.review).toEqual({
+      name: 'reviewed-provider',
+      version: '2.0.0',
+      kind: 'plugin',
+      capabilities: ['net:fetch', 'secret:read'],
+      dependencies: {
+        tools: ['crm.lookup'],
+        packs: [],
+        plugins: ['audit-log'],
+        events: [{ family: 'crm:updated', optional: true }],
+      },
+    });
+
+    await writeManifest(fixtureRepo, {
+      name: 'reviewed-provider',
+      version: '2.0.0',
+      kind: 'plugin',
+      capabilities: ['net:fetch', 'secret:read', 'shell:exec'],
+      dependencies: { tools: ['crm.lookup'], plugins: ['audit-log'] },
+    });
+    await expect(installPluginFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/reviewed-provider',
+        expectedReview: first.review,
+      },
+      makeDeps({
+        validateDependencies: async () => ({
+          ok: true,
+          missing: { tools: [], packs: [], plugins: [], events: [] },
+          installable: { tools: [], packs: [], plugins: ['audit-log'], events: [] },
+          messages: [],
+        }),
+      }),
+    )).rejects.toMatchObject({ status: 409 });
+  });
+
   it('rejects a non-github URL (400)', async () => {
     await expect(
       installPluginFromCupboardCore({ githubUrl: 'https://evil.example.com/x' }, makeDeps()),

@@ -70,6 +70,21 @@ function makeDeps(over: Partial<InstallBlueprintCoreDeps> = {}): InstallBlueprin
       cupboardPlugins: new Set<string>(),
       cupboardReachable: true,
     }),
+    reviewCapabilityProviderPackages: async (selections) => ({
+      ok: true,
+      roots: selections.map((selection) => ({
+        providerPackage: selection.providerPackage,
+        providerVersion: selection.providerVersion,
+        classRefs: [selection.classRef],
+        kind: 'plugin' as const,
+        status: 'installed' as const,
+        listingId: null,
+      })),
+      units: [],
+      stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+      advisory: [],
+      rounds: 0,
+    }),
     ...over,
   };
 }
@@ -315,6 +330,135 @@ describe('installBlueprintFromCupboardCore', () => {
     ]);
     expect(rollback).not.toHaveBeenCalled();
     expect(result.capabilityGrants?.disclosures).toHaveLength(1);
+  });
+
+  it('returns the complete provider review and requires consent before package or identity writes', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const installCapabilityProviderPackages = vi.fn();
+    const review = {
+      ok: true,
+      roots: [{
+        providerPackage: 'acme-crm', providerVersion: '2.0.0',
+        classRefs: ['crm.email@1.0.0'], kind: 'plugin' as const,
+        status: 'installable' as const, listingId: 'listing-acme-crm',
+      }],
+      units: [{
+        name: 'acme-crm', version: '2.0.0', kind: 'plugin' as const,
+        listingId: 'listing-acme-crm',
+        review: {
+          name: 'acme-crm', version: '2.0.0', kind: 'plugin',
+          capabilities: ['net:fetch'],
+          dependencies: { tools: [], packs: ['audit-pack'], plugins: [], events: [] },
+        },
+      }, {
+        name: 'audit-pack', version: '1.0.0', kind: 'pack' as const,
+        listingId: 'listing-audit-pack',
+        review: {
+          name: 'audit-pack', version: '1.0.0', kind: 'pack', capabilities: [],
+          dependencies: { tools: [], packs: [], plugins: [], events: [] },
+        },
+      }],
+      stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+      advisory: [],
+      rounds: 2,
+    };
+
+    await expect(installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent',
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate()],
+        },
+        reviewCapabilityProviderPackages: async () => review,
+        installCapabilityProviderPackages,
+        commitCapabilitySelections,
+      }),
+    )).rejects.toMatchObject({
+      status: 409,
+      code: 'capability_provider_install_consent_required',
+      data: { capabilityProviderReview: { units: [{ name: 'acme-crm' }, { name: 'audit-pack' }] } },
+    });
+    expect(installCapabilityProviderPackages).not.toHaveBeenCalled();
+    expect(commitCapabilitySelections).not.toHaveBeenCalled();
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+  });
+
+  it('installs the consented provider closure before binding and identity release', async () => {
+    await writeBlueprint(
+      fixtureRepo,
+      RUNNABLE_YAML +
+        '\nslots: [{ slot: domain }]' +
+        '\ngrants: { requires: [crm.email@1.0.0] }',
+    );
+    const order: string[] = [];
+    const review = {
+      ok: true,
+      roots: [{
+        providerPackage: 'acme-crm', providerVersion: '2.0.0',
+        classRefs: ['crm.email@1.0.0'], kind: 'plugin' as const,
+        status: 'installable' as const, listingId: 'listing-acme-crm',
+      }],
+      units: [{
+        name: 'acme-crm', version: '2.0.0', kind: 'plugin' as const,
+        listingId: 'listing-acme-crm',
+        review: {
+          name: 'acme-crm', version: '2.0.0', kind: 'plugin', capabilities: [],
+          dependencies: { tools: [], packs: [], plugins: [], events: [] },
+        },
+      }],
+      stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+      advisory: [],
+      rounds: 1,
+    };
+    const installResult = {
+      ok: true,
+      installed: [{ name: 'acme-crm', kind: 'plugin' as const, listingId: 'listing-acme-crm', tools: [] }],
+      stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+      advisory: [],
+      rounds: 1,
+      receipts: review.units,
+    };
+    const result = await installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent',
+          installProviderPackages: true,
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate()],
+        },
+        reviewCapabilityProviderPackages: async () => review,
+        installCapabilityProviderPackages: async () => {
+          order.push('install-packages');
+          return installResult;
+        },
+        commitCapabilitySelections: async () => {
+          order.push('bind-provider');
+          return { rollback: async () => {} };
+        },
+      }),
+    );
+    order.push('identity-installed');
+
+    expect(order).toEqual(['install-packages', 'bind-provider', 'identity-installed']);
+    expect(result.capabilityProviderReview?.units).toHaveLength(1);
+    expect(result.capabilityProviderInstalls?.receipts).toHaveLength(1);
   });
 
   it('compensates a new provider binding when the identity release fails', async () => {

@@ -109,6 +109,12 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           }],
           disclosures: ['Selected acme-crm@2.0.0 for crm.email@1.0.0 by explicit-selection.'],
         },
+        capabilityProviderReview: {
+          ok: true,
+          roots: [{ providerPackage: 'acme-crm', providerVersion: '2.0.0', status: 'installed' }],
+          units: [],
+        },
+        capabilityProviderInstalls: null,
         pluginInstalls: [],
         blueprintInstalls: [],
       },
@@ -142,6 +148,44 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
       diff: { promptText: [{ path: 'identity/prompts/p.md' }] },
       capabilityGrants: {
         selected: [{ providerPackage: 'acme-crm', disclosureRequired: true }],
+      },
+      capabilityProviderReview: {
+        roots: [{ providerPackage: 'acme-crm', status: 'installed' }],
+      },
+    });
+  });
+
+  it('preserves the full provider package review on a consent-required refusal', async () => {
+    mockInstall.mockResolvedValue({
+      ok: false,
+      status: 409,
+      error: 'capability_provider_install_consent_required',
+      detail: 'selected capability provider packages require install consent after transitive review',
+      data: {
+        capabilityProviderReview: {
+          ok: true,
+          units: [
+            { name: 'acme-crm', version: '2.0.0', review: { capabilities: ['net:fetch'] } },
+            { name: 'audit-pack', version: '1.0.0', review: { capabilities: [] } },
+          ],
+        },
+      },
+    });
+
+    const result = await call({
+      listingId: 'identity-listing',
+      potSlug: 'sales-ops',
+      capabilityProviderSelections: { 'crm.email@1.0.0': 'acme-crm@2.0.0' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 409,
+      error: 'capability_provider_install_consent_required',
+      data: {
+        capabilityProviderReview: {
+          units: [{ name: 'acme-crm' }, { name: 'audit-pack' }],
+        },
       },
     });
   });

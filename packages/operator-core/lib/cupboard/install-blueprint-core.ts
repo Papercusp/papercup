@@ -52,6 +52,10 @@ import {
   type CapabilityProviderSelection,
   type ResolveCapabilityGrantOptions,
 } from './capability-grant-resolver';
+import type {
+  CapabilityProviderPackageClosureReview,
+  CapabilityProviderPackageInstallResult,
+} from './capability-provider-package-closure';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -70,6 +74,9 @@ export interface InstallBlueprintCoreInput {
     potSlug: string;
     mode: ResolveCapabilityGrantOptions['mode'];
     selections?: Readonly<Record<string, string>>;
+    /** Consent to install the selected provider packages after their complete
+     * transitive review set has been returned/approved. */
+    installProviderPackages?: boolean;
   };
 }
 
@@ -93,6 +100,8 @@ export interface InstallBlueprintCoreResult {
   diff: BlueprintReleaseDiff;
   activationPreflight: BlueprintActivationPreflight;
   capabilityGrants: CapabilityGrantResolutionVerdict | null;
+  capabilityProviderReview: CapabilityProviderPackageClosureReview | null;
+  capabilityProviderInstalls: CapabilityProviderPackageInstallResult | null;
 }
 
 export interface InstallBlueprintCoreDeps {
@@ -119,6 +128,12 @@ export interface InstallBlueprintCoreDeps {
    */
   resolveHostSets: () => Promise<DependencyHostSets & { cupboardReachable: boolean }>;
   capabilityGrantDeps?: CapabilityGrantResolverDeps;
+  reviewCapabilityProviderPackages?: (
+    selections: readonly CapabilityProviderSelection[],
+  ) => Promise<CapabilityProviderPackageClosureReview>;
+  installCapabilityProviderPackages?: (
+    review: CapabilityProviderPackageClosureReview,
+  ) => Promise<CapabilityProviderPackageInstallResult>;
   commitCapabilitySelections?: (
     selections: readonly CapabilityProviderSelection[],
   ) => Promise<{ rollback: () => Promise<void> }>;
@@ -321,6 +336,8 @@ export async function installBlueprintFromCupboardCore(
     }
 
     let capabilityGrantResolution: CapabilityGrantResolutionVerdict | null = null;
+    let capabilityProviderReview: CapabilityProviderPackageClosureReview | null = null;
+    let capabilityProviderInstalls: CapabilityProviderPackageInstallResult | null = null;
     const grantCount =
       (declaredCapabilityGrants.requires?.length ?? 0) +
       (declaredCapabilityGrants.optional?.length ?? 0);
@@ -357,6 +374,64 @@ export async function installBlueprintFromCupboardCore(
           ? 'required capability class provider absent: ' + absent.join(', ')
           : 'provider choice required for capability class: ' + choices.join(', ');
         throw new InstallBlueprintError(detail, 409, code, capabilityGrantResolution);
+      }
+
+      if (capabilityGrantResolution.selected.length > 0) {
+        if (!deps.reviewCapabilityProviderPackages) {
+          throw new InstallBlueprintError(
+            'capability provider package review is not configured for this install path',
+            500,
+            'capability_provider_package_reviewer_unavailable',
+            capabilityGrantResolution,
+          );
+        }
+        capabilityProviderReview = await deps.reviewCapabilityProviderPackages(
+          capabilityGrantResolution.selected,
+        );
+        if (!capabilityProviderReview.ok) {
+          throw new InstallBlueprintError(
+            'selected capability provider package closure could not be fully vetted',
+            409,
+            'capability_provider_package_unavailable',
+            { capabilityGrants: capabilityGrantResolution, capabilityProviderReview },
+          );
+        }
+        if (
+          capabilityProviderReview.units.length > 0 &&
+          input.capabilityContext.installProviderPackages !== true
+        ) {
+          throw new InstallBlueprintError(
+            'selected capability provider packages require install consent after transitive review',
+            409,
+            'capability_provider_install_consent_required',
+            { capabilityGrants: capabilityGrantResolution, capabilityProviderReview },
+          );
+        }
+        if (capabilityProviderReview.units.length > 0) {
+          if (!deps.installCapabilityProviderPackages) {
+            throw new InstallBlueprintError(
+              'capability provider package installer is not configured for this install path',
+              500,
+              'capability_provider_package_installer_unavailable',
+              { capabilityGrants: capabilityGrantResolution, capabilityProviderReview },
+            );
+          }
+          capabilityProviderInstalls = await deps.installCapabilityProviderPackages(
+            capabilityProviderReview,
+          );
+          if (!capabilityProviderInstalls.ok) {
+            throw new InstallBlueprintError(
+              'selected capability provider package closure failed to install',
+              422,
+              'capability_provider_package_install_failed',
+              {
+                capabilityGrants: capabilityGrantResolution,
+                capabilityProviderReview,
+                capabilityProviderInstalls,
+              },
+            );
+          }
+        }
       }
     }
 
@@ -443,6 +518,8 @@ export async function installBlueprintFromCupboardCore(
       diff: lifecycle.diff,
       activationPreflight: lifecycle.activationPreflight,
       capabilityGrants: capabilityGrantResolution,
+      capabilityProviderReview,
+      capabilityProviderInstalls,
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
