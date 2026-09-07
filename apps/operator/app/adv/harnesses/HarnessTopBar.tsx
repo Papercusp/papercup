@@ -44,6 +44,7 @@ interface Props {
  */
 export default function HarnessTopBar({ slug }: Props) {
   const t = useLexicon();
+  const workUnits = t('workUnit', { plural: true });
   // WI-259 P-006 — cross-member browse: the "Hive content" rollup panel is
   // registered always but only offered in the Add-panel catalog when the Hive
   // umbrella flag is on (inert outside a hive, so the gate is mostly a courtesy).
@@ -85,7 +86,7 @@ export default function HarnessTopBar({ slug }: Props) {
           />
         )}
         {slug && (
-          <Tooltip label={`Reset this ${t('pot', { lower: true })}'s panel layout to the default Work items / Detail split`}>
+          <Tooltip label={`Reset this ${t('pot', { lower: true })}'s panel layout to the default ${workUnits} / Detail split`}>
             <button
               type="button"
               className="pc-adv-topbar__reset-layout"

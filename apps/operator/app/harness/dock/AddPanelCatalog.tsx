@@ -142,6 +142,7 @@ function labelFor(type: string, lex?: ReturnType<typeof useLexicon>): string {
   // (restore-pot-lexicon-public-release P-007). The panels themselves also set a
   // live title via api.setTitle once open; this covers the catalog menu label.
   if (lex) {
+    if (type === 'adv:work-items') return lex('workUnit', { plural: true });
     if (type === 'adv:hive-content') return `${lex('pot')} content`;
     if (type === 'workbench:hive-directory') return lex('pot', { plural: true });
   }

@@ -68,6 +68,12 @@ vi.mock('../../harness/primitives', () => ({
   IssueStatusPill: () => <span />, KindPill: () => <span />, SeverityPill: () => <span />, StatusPill: () => <span />,
 }));
 vi.mock('../../harness/TrustBadge', () => ({ TrustBadge: () => <span />, trustBadgeState: () => null }));
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+    const label = key === 'workUnit' ? (opts?.plural ? 'Deliverables' : 'Deliverable') : key;
+    return opts?.lower ? label.toLowerCase() : label;
+  },
+}));
 
 import WorkItemsPanel from './WorkItemsPanel';
 // The label moved to the shared filters module (owner ask 2026-08-17: the Learning
@@ -116,26 +122,26 @@ afterEach(cleanup);
 describe('WorkItemsPanel', () => {
   it('shows the pick-a-harness empty state when no slug is set', () => {
     renderPanel('');
-    expect(screen.getByText(/Pick a harness to view its work items/i)).toBeTruthy();
+    expect(screen.getByText(/Pick a harness to view its deliverables/i)).toBeTruthy();
     expect(screen.queryByTestId('grid')).toBeNull();
   });
 
   it('shows the loading state while the query is loading', () => {
     wiState = { loading: true, fetching: true, data: null, error: null };
     renderPanel();
-    expect(screen.getByText(/Loading work items/i)).toBeTruthy();
+    expect(screen.getByText(/Loading deliverables/i)).toBeTruthy();
   });
 
   it('shows an error state when the query errors', () => {
     wiState = { loading: false, fetching: false, data: null, error: { message: 'boom' } };
     renderPanel();
-    expect(screen.getByText(/Could not load work items: boom/i)).toBeTruthy();
+    expect(screen.getByText(/Could not load deliverables: boom/i)).toBeTruthy();
   });
 
   it('shows the no-items message when the harness has none', () => {
     wiState = { loading: false, fetching: false, data: [], error: null };
     renderPanel();
-    expect(screen.getByText(/No work items for this harness/i)).toBeTruthy();
+    expect(screen.getByText(/No deliverables for this harness/i)).toBeTruthy();
   });
 
   it('renders the grid and sets the panel title from the row count', () => {
@@ -143,9 +149,9 @@ describe('WorkItemsPanel', () => {
     expect(screen.getByTestId('grid')).toBeTruthy();
     expect(screen.getByTestId('row-WI-1')).toBeTruthy();
     expect(screen.getByTestId('row-F-2')).toBeTruthy();
-    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (2)');
+    expect(setTitle).toHaveBeenCalledWith('Deliverables · alpha (2)');
     // In-pane badge: not capped, not filtered → the plain total.
-    expect(screen.getByTestId('wi-count').textContent).toContain('2 items');
+    expect(screen.getByTestId('wi-count').textContent).toContain('2 deliverables');
   });
 
   it('keeps the DB total and load-more when a delta merge relocates _meta off row 0', async () => {
@@ -158,8 +164,8 @@ describe('WorkItemsPanel', () => {
     };
     summaryState = { loading: false, fetching: false, data: [{ total: 57, matched: 57, facets: [] }], error: null };
     renderPanel();
-    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (57)');
-    expect(screen.getByTestId('wi-count').textContent).toContain('57 items');
+    expect(setTitle).toHaveBeenCalledWith('Deliverables · alpha (57)');
+    expect(screen.getByTestId('wi-count').textContent).toContain('57 deliverables');
     expect(screen.getByTestId('wi-count').textContent).not.toContain('loaded');
     expect(rowArgs).toEqual({ harnessSlug: 'alpha', q: '', filters: {}, limit: 500 });
     fireEvent.click(screen.getByRole('button', { name: 'load-more' }));
@@ -171,10 +177,10 @@ describe('WorkItemsPanel', () => {
   it('reflects the filter in the title + badge (shown of store total)', () => {
     summaryState = { loading: false, fetching: false, data: [{ total: 2, matched: 1, facets: [] }], error: null };
     renderPanel('alpha', '?wq=login'); // matches WI-1 only → 1 of 2 loaded
-    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2)');
+    expect(setTitle).toHaveBeenCalledWith('Deliverables · alpha (1 of 2)');
     expect(screen.getByTestId('wi-count').textContent).toContain('1 of 2 match');
     expect(screen.getByTestId('wi-count').getAttribute('aria-label')).toContain(
-      'selected harness work-item corpus',
+      'selected harness deliverable corpus',
     );
   });
 
@@ -187,12 +193,12 @@ describe('WorkItemsPanel', () => {
   it('shows the no-match message when the filter excludes everything', () => {
     summaryState = { loading: false, fetching: false, data: [{ total: 2, matched: 0, facets: [] }], error: null };
     renderPanel('alpha', '?wq=zzzznope');
-    expect(screen.getByText(/No work items match the filter/i)).toBeTruthy();
+    expect(screen.getByText(/No deliverables match the filter/i)).toBeTruthy();
   });
 
   it('invokes the query invalidate on the refresh button', () => {
     renderPanel();
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh work items' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh deliverables' }));
     expect(invalidateMock).toHaveBeenCalledTimes(1);
     expect(summaryInvalidateMock).toHaveBeenCalledTimes(1);
   });

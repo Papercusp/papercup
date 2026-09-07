@@ -34,7 +34,12 @@ vi.mock('./useHarnessData', () => ({
   useHarnessFeature: () => ({ feature: null, loading: false, error: null, patchFeature: vi.fn() }),
   useHarnessIssues: () => ({ issues: [], patchIssue: vi.fn() }),
 }));
-vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+    const label = key === 'workUnit' ? (opts?.plural ? 'Deliverables' : 'Deliverable') : key;
+    return opts?.lower ? label.toLowerCase() : label;
+  },
+}));
 vi.mock('@papercusp/papercusp-shared', () => ({ openFeatureChat: vi.fn() }));
 // FeatureEditor pulls a rich editor at import — not needed for the empty/not-found
 // branch this test renders; stub it so module load stays jsdom-light.
@@ -78,7 +83,7 @@ describe('DetailPanel work-item detail subscription', () => {
     expect(container.querySelector('.pc-adv-detail')).toBeNull();
     const empty = container.querySelector('.pc-adv-detail__empty');
     expect(empty, 'the empty state must render under .pc-adv-detail__empty').toBeTruthy();
-    expect(empty!.textContent).toBe('Pick a work item from the list to inspect.');
+    expect(empty!.textContent).toBe('Pick a deliverable from the list to inspect.');
   });
 
   it('uses one-row detail authority and never depends on byHarness page membership', () => {

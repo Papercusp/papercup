@@ -21,7 +21,16 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 vi.mock('../../harness/dock/AddPanelCatalog', () => ({ AddPanelCatalog: () => <span data-testid="add-panel" /> }));
 const resetLayout = vi.fn();
 vi.mock('../../harness/dock/dock-actions', () => ({ resetLayout: () => resetLayout() }));
-vi.mock('../../harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
+vi.mock('../../../lib/flag-hooks', () => ({ useFlag: () => false }));
+vi.mock('../../../lib/useLexicon', () => ({
+  useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
+    const label = key === 'workUnit' ? (opts?.plural ? 'Deliverables' : 'Deliverable') : key === 'pot' ? 'Pot' : key;
+    return opts?.lower ? label.toLowerCase() : label;
+  },
+}));
+vi.mock('../../harness/Tooltip', () => ({
+  Tooltip: ({ children, label }: { children: React.ReactNode; label: string }) => <span title={label}>{children}</span>,
+}));
 
 import HarnessTopBar from './HarnessTopBar';
 
@@ -35,6 +44,7 @@ describe('<HarnessTopBar />', () => {
     render(<HarnessTopBar slug="h" />);
     expect(screen.getByTestId('add-panel')).toBeTruthy();
     expect(screen.getByRole('button', { name: /reset layout/i })).toBeTruthy();
+    expect(screen.getByTitle(/default Deliverables \/ Detail split/)).toBeTruthy();
   });
 
   it('does NOT render the pot-level actions — they belong to the pot bar now', () => {

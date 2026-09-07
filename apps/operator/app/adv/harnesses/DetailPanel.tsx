@@ -144,6 +144,8 @@ export function resolveSelectionKind(selectedId: string | null | undefined): Sel
  */
 export default function DetailPanel({ params, api }: PanelComponentProps) {
   const t = useLexicon();
+  const workUnit = t('workUnit', { lower: true });
+  const workUnits = t('workUnit', { plural: true, lower: true });
   const slug = (params.harnessSlug as string) || '';
   const pinnedId = (params.itemId as string) || null;
   const [urlSel, setUrlSel] = useQueryState('sel', parseAsString.withDefault(''));
@@ -266,11 +268,11 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }, [api, pinnedId, feature, issue, workItem, agent, t]);
 
   if (!slug) {
-    return <Empty>Pick a {t('pot', { lower: true })} to inspect its work items.</Empty>;
+    return <Empty>Pick a {t('pot', { lower: true })} to inspect its {workUnits}.</Empty>;
   }
 
   if (!selectedId) {
-    return <Empty>Pick a work item from the list to inspect.</Empty>;
+    return <Empty>Pick a {workUnit} from the list to inspect.</Empty>;
   }
 
   if (selectedId && !feature && !issue && !workItem && !agent) {
@@ -292,7 +294,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     if (kind === 'agent') {
       return <Empty>Agent {selectedId.slice('agent:'.length)} is no longer working here.</Empty>;
     }
-    return <Empty tone="error">No item found for {selectedId}.</Empty>;
+    return <Empty tone="error">No {workUnit} found for {selectedId}.</Empty>;
   }
 
   if (feature) {

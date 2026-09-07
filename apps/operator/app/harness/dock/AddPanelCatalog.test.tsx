@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
 // Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the routed
 // catalog labels from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
-vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
+vi.mock('@/lib/useLexicon', () => ({
+  useLexicon: () => (key: string, opts?: { plural?: boolean }) =>
+    key === 'workUnit' ? (opts?.plural ? 'Deliverables' : 'Deliverable') : key,
+}));
 import { AddPanelCatalog } from './AddPanelCatalog';
 import { panelRegistry } from './panel-registry';
 import { bindDockApi } from './dock-actions';
@@ -63,6 +66,13 @@ describe('AddPanelCatalog', () => {
     fireEvent.click(screen.getByLabelText('Add panel'));
     expect(screen.getByText('Features')).toBeTruthy();
     expect(screen.getByText('Issues')).toBeTruthy();
+  });
+
+  it('routes the work panel label through the selected harness domain lexicon', () => {
+    panelRegistry.register('adv:work-items', Stub);
+    render(<AddPanelCatalog />);
+    fireEvent.click(screen.getByLabelText('Add panel'));
+    expect(screen.getByText('Deliverables')).toBeTruthy();
   });
 
   it('excludes stub panel types by default', () => {

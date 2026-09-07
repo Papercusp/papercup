@@ -7,6 +7,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
 import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { CompanionListSummary } from '@papercusp/facets';
+import { useLexicon } from '@/lib/useLexicon';
 import {
   useColumnFilterState,
   useColumnFiltersFromState,
@@ -94,7 +95,11 @@ export interface WorkItemRow {
 const NO_ROWS: WorkItemRow[] = [];
 
 export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
+  const t = useLexicon();
   const slug = (params.harnessSlug as string) || '';
+  const workUnit = t('workUnit', { lower: true });
+  const workUnits = t('workUnit', { plural: true, lower: true });
+  const workUnitsTitle = t('workUnit', { plural: true });
   // The per-column filters (kind/state/severity/priority/…) live in ONE nuqs param
   // (`wif`) owned by useColumnFilters below. The global quick-search is a separate
   // affordance — `wq`, applied as a substring match ON TOP of the column filters.
@@ -219,9 +224,9 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
       kind: 'corpus',
       count: summary.matched,
       ...(serverPredicateActive ? { total: summary.total } : {}),
-      population: 'the selected harness work-item corpus',
+      population: `the selected harness ${workUnit} corpus`,
     };
-  }, [summary, summaryQuery.error, pairedFetching, serverPredicateActive]);
+  }, [summary, summaryQuery.error, pairedFetching, serverPredicateActive, workUnit]);
   const facetOptions = useMemo(() => workItemFacetOptions(summary), [summary]);
   const cf = useColumnFiltersFromState(columns, items ?? NO_ROWS, {
     ns: WORK_ITEM_FILTER_NS,
@@ -244,13 +249,13 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // unfiltered it's just the store total.
   const isFiltered = cf.hasActive || search.trim() !== '';
   const displayedCountEvidence = filterCountEvidence;
-  const counts = filterCountLabel(displayedCountEvidence);
+  const counts = filterCountLabel(displayedCountEvidence, workUnit);
   const titleCount = counts?.title;
   useEffect(() => {
-    if (titleCount != null) api.setTitle(`Work items · ${slug} (${titleCount})`);
-  }, [titleCount, slug, api]);
+    if (titleCount != null) api.setTitle(`${workUnitsTitle} · ${slug} (${titleCount})`);
+  }, [titleCount, slug, api, workUnitsTitle]);
 
-  if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its work items.</div>;
+  if (!slug) return <div className="pc-advpanel__empty">Pick a harness to view its {workUnits}.</div>;
 
   return (
     <div className="pc-advpanel">
@@ -260,8 +265,8 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           className="pc-advpanel__input"
           value={search}
           onChange={(e) => void setSearch(e.target.value)}
-          placeholder="Filter work items…"
-          aria-label="Filter work items"
+          placeholder={`Filter ${workUnits}…`}
+          aria-label={`Filter ${workUnits}`}
         />
         <ColumnFilterBar
           controller={cf.controller}
@@ -274,7 +279,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
             label={
               isFiltered
                 ? 'Rows matching the current filter / search, out of the store total.'
-                : 'Total work items for this harness.'
+                : `Total ${workUnits} for this harness.`
             }
           >
             <span
@@ -294,7 +299,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
             </span>
           </Tooltip>
         ) : null}
-        <Tooltip label="Refresh work items">
+        <Tooltip label={`Refresh ${workUnits}`}>
           <button
             type="button"
             className="pc-advpanel__iconbtn"
@@ -303,19 +308,19 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
               summaryQuery.invalidate();
             }}
             disabled={loading}
-            aria-label="Refresh work items"
+            aria-label={`Refresh ${workUnits}`}
           >
             <RefreshCw size={13} aria-hidden className={loading ? 'pc-advpanel__spin' : undefined} />
           </button>
         </Tooltip>
       </div>
       {error ? (
-        <div className="pc-advpanel__empty pc-advpanel__empty--err">Could not load work items: {error}</div>
+        <div className="pc-advpanel__empty pc-advpanel__empty--err">Could not load {workUnits}: {error}</div>
       ) : !items ? (
-        <div className="pc-advpanel__empty">Loading work items…</div>
+        <div className="pc-advpanel__empty">Loading {workUnits}…</div>
       ) : filtered.length === 0 ? (
         <div className="pc-advpanel__empty">
-          {items.length === 0 ? 'No work items for this harness.' : 'No work items match the filter.'}
+          {items.length === 0 ? `No ${workUnits} for this harness.` : `No ${workUnits} match the filter.`}
         </div>
       ) : (
         <VirtualGrid<WorkItemRow>

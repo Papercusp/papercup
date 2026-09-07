@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncResult: { data: unknown[]; error: Error | null };
@@ -22,6 +22,9 @@ vi.mock('@papercusp/sync', () => ({
 // ("No pots yet", "Failed to load pots") reads naturally against assertions.
 vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (key: string, opts?: { plural?: boolean }) => (opts?.plural ? `${key}s` : key),
+  HarnessLexiconProvider: ({ harnessSlug, children }: { harnessSlug: string; children: ReactNode }) => (
+    <div data-testid="harness-lexicon" data-harness-slug={harnessSlug}>{children}</div>
+  ),
 }));
 vi.mock('@/lib/useWorkspaceLabel', () => ({ useWorkspaceLabel: () => 'My Workspace' }));
 
@@ -97,6 +100,7 @@ describe('HarnessesWorkspace — dock branch', () => {
     expect(screen.getByTestId('dock').textContent).toBe('alpha');
     expect(screen.getByTestId('welcome')).toBeTruthy();
     expect(screen.getByTestId('topbar').textContent).toBe('alpha');
+    expect(screen.getByTestId('harness-lexicon').getAttribute('data-harness-slug')).toBe('alpha');
   });
 
   it('focuses the ?harness member within the hive over the hive root', () => {
@@ -110,6 +114,7 @@ describe('HarnessesWorkspace — dock branch', () => {
     };
     renderWs(<HarnessesWorkspace />, '?slug=home&harness=api');
     expect(screen.getByTestId('dock').textContent).toBe('api');
+    expect(screen.getByTestId('harness-lexicon').getAttribute('data-harness-slug')).toBe('api');
   });
 
   it('renders the member rail for a multi-member hive', () => {

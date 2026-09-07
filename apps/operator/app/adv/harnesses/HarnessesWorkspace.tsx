@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
-import { useLexicon } from '@/lib/useLexicon';
+import { HarnessLexiconProvider, useLexicon } from '@/lib/useLexicon';
 import { useWorkspaceLabel } from '@/lib/useWorkspaceLabel';
 import HarnessTopBar from './HarnessTopBar';
 import HarnessesDock from './HarnessesDock';
@@ -191,7 +191,7 @@ export default function HarnessesWorkspace() {
           onCreate={() => setCreateOpen(true)}
         />
       ) : (
-        <>
+        <HarnessLexiconProvider harnessSlug={dockSlug ?? ''}>
           {/* The dock, meta line, and welcome all key off the FOCUSED MEMBER
               (`?harness=` resolved against the hive's members), not the raw hive
               `?slug=` — so a hive with several member harnesses shows the picked
@@ -248,7 +248,7 @@ export default function HarnessesWorkspace() {
               )}
             </div>
           </div>
-        </>
+        </HarnessLexiconProvider>
       )}
 
       <CreateHarnessPicker
