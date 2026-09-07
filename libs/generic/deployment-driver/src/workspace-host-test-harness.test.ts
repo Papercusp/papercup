@@ -12,6 +12,9 @@ import type {
 } from "./workspace-host-types";
 import { WORKSPACE_HOST_CANARY_TAG_KEYS } from "./workspace-host-canary-identity";
 import {
+  appendWorkspaceHostSpendObservation,
+  createWorkspaceHostSpendObservation,
+  evaluateWorkspaceHostSpendFinality,
   type WorkspaceHostLiveCanarySpec,
   DeterministicWorkspaceHostFaultInjector,
   WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS,
@@ -26,6 +29,216 @@ import {
 
 const NOW = "2026-08-22T05:00:00.000Z";
 const LATER = "2026-08-22T06:00:00.000Z";
+
+describe("workspace-host exact spend settlement", () => {
+  const exactObservation = (
+    grossMicros: string,
+    creditMicros: string,
+    netMicros: string,
+    observedAt: string,
+    providerEvidenceRef: string,
+  ) =>
+    createWorkspaceHostSpendObservation({
+      currency: "USD",
+      grossMicros,
+      creditMicros,
+      netMicros,
+      observedAt,
+      providerEvidenceRef,
+    });
+
+  it("preserves exact credited micros while rounding gross exposure upward for budget gates", () => {
+    expect(
+      exactObservation(
+        "8651",
+        "-8651",
+        "0",
+        NOW,
+        "gcp://billing/run-r4/observation-1",
+      ),
+    ).toMatchObject({
+      currency: "USD",
+      grossMicros: "8651",
+      creditMicros: "-8651",
+      netMicros: "0",
+      budgetCents: 1,
+    });
+    expect(
+      exactObservation(
+        "1001",
+        "-1001",
+        "0",
+        NOW,
+        "gcp://billing/run-r5/observation-1",
+      ),
+    ).toMatchObject({
+      grossMicros: "1001",
+      netMicros: "0",
+      budgetCents: 1,
+    });
+  });
+
+  it("rejects rounded, inconsistent, or non-canonical provider amounts", () => {
+    expect(() =>
+      exactObservation("8.651", "-8651", "0", NOW, "gcp://billing/rounded"),
+    ).toThrow("canonical integer-micros");
+    expect(() =>
+      exactObservation(
+        "8651",
+        "8651",
+        "17302",
+        NOW,
+        "gcp://billing/positive-credit",
+      ),
+    ).toThrow("creditMicros must not be positive");
+    expect(() =>
+      exactObservation(
+        "8651",
+        "-8651",
+        "1",
+        NOW,
+        "gcp://billing/inconsistent-net",
+      ),
+    ).toThrow("netMicros must equal grossMicros + creditMicros");
+    expect(() =>
+      createWorkspaceHostSpendObservation({
+        currency: "usd",
+        grossMicros: "1",
+        creditMicros: "0",
+        netMicros: "1",
+        observedAt: NOW,
+        providerEvidenceRef: "gcp://billing/lowercase-currency",
+      }),
+    ).toThrow("ISO-4217");
+    expect(() =>
+      exactObservation(
+        "90071992547409920000",
+        "0",
+        "90071992547409920000",
+        NOW,
+        "gcp://billing/unsafe-cents",
+      ),
+    ).toThrow("safe integer-cents budget range");
+  });
+
+  it("keeps observation history append-only and exact retries idempotent", () => {
+    const firstInput = {
+      currency: "USD",
+      grossMicros: "8651",
+      creditMicros: "-8651",
+      netMicros: "0",
+      observedAt: NOW,
+      providerEvidenceRef: "gcp://billing/run-r4/observation-1",
+    } as const;
+    const first = appendWorkspaceHostSpendObservation([], firstInput);
+    const retried = appendWorkspaceHostSpendObservation(first, firstInput);
+    const second = appendWorkspaceHostSpendObservation(retried, {
+      ...firstInput,
+      observedAt: LATER,
+      providerEvidenceRef: "gcp://billing/run-r4/observation-2",
+    });
+
+    expect(first).toHaveLength(1);
+    expect(retried).toEqual(first);
+    expect(second).toHaveLength(2);
+    expect(second[0]).toEqual(first[0]);
+    expect(() =>
+      appendWorkspaceHostSpendObservation(first, {
+        ...firstInput,
+        grossMicros: "8652",
+        netMicros: "1",
+      }),
+    ).toThrow("conflicts with prior history");
+    expect(() =>
+      appendWorkspaceHostSpendObservation(first, {
+        ...firstInput,
+        currency: "EUR",
+        observedAt: LATER,
+        providerEvidenceRef: "gcp://billing/run-r4/wrong-currency",
+      }),
+    ).toThrow("cannot mix currencies");
+    expect(() =>
+      appendWorkspaceHostSpendObservation(first, {
+        ...firstInput,
+        observedAt: "2026-08-22T04:59:59.999Z",
+        providerEvidenceRef: "gcp://billing/run-r4/out-of-order",
+      }),
+    ).toThrow("timestamps must increase strictly");
+  });
+
+  it("requires two identical snapshots spanning the positive caller-supplied window", () => {
+    const first = exactObservation(
+      "1001",
+      "-1001",
+      "0",
+      NOW,
+      "gcp://billing/run-r5/observation-1",
+    );
+    const tooSoon = exactObservation(
+      "1001",
+      "-1001",
+      "0",
+      "2026-08-22T05:29:59.999Z",
+      "gcp://billing/run-r5/observation-2",
+    );
+    const stable = exactObservation(
+      "1001",
+      "-1001",
+      "0",
+      "2026-08-22T05:30:00.000Z",
+      "gcp://billing/run-r5/observation-3",
+    );
+    const changed = exactObservation(
+      "1002",
+      "-1001",
+      "1",
+      LATER,
+      "gcp://billing/run-r5/observation-4",
+    );
+
+    expect(evaluateWorkspaceHostSpendFinality([], 30 * 60_000)).toMatchObject({
+      status: "pending",
+      reason: "no-observations",
+      retryable: true,
+    });
+    expect(
+      evaluateWorkspaceHostSpendFinality([first], 30 * 60_000),
+    ).toMatchObject({
+      status: "pending",
+      reason: "insufficient-observations",
+    });
+    expect(
+      evaluateWorkspaceHostSpendFinality([first, tooSoon], 30 * 60_000),
+    ).toMatchObject({
+      status: "pending",
+      reason: "stability-window-open",
+      stableObservationCount: 2,
+      stableForMs: 30 * 60_000 - 1,
+    });
+    expect(
+      evaluateWorkspaceHostSpendFinality([first, tooSoon, stable], 30 * 60_000),
+    ).toMatchObject({
+      status: "settled",
+      retryable: false,
+      stableObservationCount: 3,
+      stableSince: NOW,
+      observation: { budgetCents: 1, netMicros: "0" },
+    });
+    expect(
+      evaluateWorkspaceHostSpendFinality(
+        [first, tooSoon, stable, changed],
+        30 * 60_000,
+      ),
+    ).toMatchObject({
+      status: "pending",
+      reason: "unstable",
+      stableObservationCount: 1,
+    });
+    expect(() => evaluateWorkspaceHostSpendFinality([first], 0)).toThrow(
+      "positive safe integer",
+    );
+  });
+});
 
 function desired(): WorkspaceHostDesiredSpec {
   return {

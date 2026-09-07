@@ -51,7 +51,8 @@ export class WorkspaceHostContractAssertionError extends Error {
 const SECRET_KEY =
   /(?:^|[_-])(api[_-]?key|access[_-]?key|secret|token|password|passphrase|private[_-]?key)(?:$|[_-])/i;
 const SECRET_VALUE = /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/;
-const SECRET_POLICY_SEGMENT = /(^|[_-])secret(?=[_-](?:scan|scanning|finding|findings|policy)(?:$|[_-]))/gi;
+const SECRET_POLICY_SEGMENT =
+  /(^|[_-])secret(?=[_-](?:scan|scanning|finding|findings|policy)(?:$|[_-]))/gi;
 
 function isSecretShapedKey(key: string): boolean {
   const normalized = key.replace(/([a-z\d])([A-Z])/g, "$1_$2");
@@ -59,7 +60,9 @@ function isSecretShapedKey(key: string): boolean {
   // that policy noun before applying the credential-key heuristic; any real
   // credential segment elsewhere in the key (for example secretScanToken)
   // remains visible and is still rejected.
-  return SECRET_KEY.test(normalized.replace(SECRET_POLICY_SEGMENT, "$1policy_subject"));
+  return SECRET_KEY.test(
+    normalized.replace(SECRET_POLICY_SEGMENT, "$1policy_subject"),
+  );
 }
 
 /**
@@ -766,6 +769,269 @@ export interface WorkspaceHostCanaryCostEvidence {
   observedAt: string;
   providerEvidenceRef: string;
 }
+
+/**
+ * One cumulative provider billing snapshot, preserving the provider's exact integer-micros
+ * accounting separately from the conservative integer-cents value used by safety gates.
+ *
+ * Micros are canonical decimal strings because these observations are persisted in JSON and can
+ * exceed JavaScript's safe-integer range. Credits retain the provider convention of being zero or
+ * negative; therefore `netMicros` must equal `grossMicros + creditMicros` exactly.
+ */
+export interface WorkspaceHostSpendObservationInput {
+  readonly currency: string;
+  readonly grossMicros: string;
+  readonly creditMicros: string;
+  readonly netMicros: string;
+  readonly observedAt: string;
+  readonly providerEvidenceRef: string;
+}
+
+export interface WorkspaceHostSpendObservation extends WorkspaceHostSpendObservationInput {
+  /** Upward-rounded gross charge exposure for the existing integer-cents budget gates. */
+  readonly budgetCents: number;
+}
+
+export type WorkspaceHostSpendFinality =
+  | {
+      readonly status: "pending";
+      readonly retryable: true;
+      readonly reason:
+        | "no-observations"
+        | "insufficient-observations"
+        | "unstable"
+        | "stability-window-open";
+      readonly observationCount: number;
+      readonly stableObservationCount: number;
+      readonly stableForMs: number;
+      readonly requiredStableWindowMs: number;
+    }
+  | {
+      readonly status: "settled";
+      readonly retryable: false;
+      readonly observationCount: number;
+      readonly stableObservationCount: number;
+      readonly stableSince: string;
+      readonly stableForMs: number;
+      readonly requiredStableWindowMs: number;
+      readonly observation: WorkspaceHostSpendObservation;
+    };
+
+const MICROS_PER_CENT = 10_000n;
+const CANONICAL_INTEGER_MICROS = /^(?:0|[1-9]\d*|-[1-9]\d*)$/;
+
+function requireCanonicalMicros(value: string, label: string): bigint {
+  if (!CANONICAL_INTEGER_MICROS.test(value)) {
+    throw new Error(
+      `${label} must be a canonical integer-micros decimal string`,
+    );
+  }
+  return BigInt(value);
+}
+
+/** Validate and normalize one exact cumulative spend snapshot. */
+export function createWorkspaceHostSpendObservation(
+  input: WorkspaceHostSpendObservationInput,
+): WorkspaceHostSpendObservation {
+  if (!/^[A-Z]{3}$/.test(input.currency)) {
+    throw new Error("spend observation currency must be an ISO-4217 code");
+  }
+  const grossMicros = requireCanonicalMicros(
+    input.grossMicros,
+    "spend observation grossMicros",
+  );
+  const creditMicros = requireCanonicalMicros(
+    input.creditMicros,
+    "spend observation creditMicros",
+  );
+  const netMicros = requireCanonicalMicros(
+    input.netMicros,
+    "spend observation netMicros",
+  );
+  if (grossMicros < 0n) {
+    throw new Error("spend observation grossMicros must not be negative");
+  }
+  if (creditMicros > 0n) {
+    throw new Error("spend observation creditMicros must not be positive");
+  }
+  if (grossMicros + creditMicros !== netMicros) {
+    throw new Error(
+      "spend observation netMicros must equal grossMicros + creditMicros",
+    );
+  }
+  requireTimestamp(input.observedAt, "spend observation observedAt");
+  requireNonEmpty(
+    input.providerEvidenceRef,
+    "spend observation providerEvidenceRef",
+  );
+  const budgetCents = (grossMicros + MICROS_PER_CENT - 1n) / MICROS_PER_CENT;
+  if (budgetCents > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      "spend observation grossMicros exceeds the safe integer-cents budget range",
+    );
+  }
+  return {
+    ...input,
+    budgetCents: Number(budgetCents),
+  };
+}
+
+function sameWorkspaceHostSpend(
+  left: WorkspaceHostSpendObservation,
+  right: WorkspaceHostSpendObservation,
+): boolean {
+  return (
+    left.currency === right.currency &&
+    left.grossMicros === right.grossMicros &&
+    left.creditMicros === right.creditMicros &&
+    left.netMicros === right.netMicros &&
+    left.budgetCents === right.budgetCents
+  );
+}
+
+function validateWorkspaceHostSpendHistory(
+  history: readonly WorkspaceHostSpendObservation[],
+): WorkspaceHostSpendObservation[] {
+  const validated: WorkspaceHostSpendObservation[] = [];
+  const evidenceRefs = new Set<string>();
+  for (const entry of history) {
+    const rebuilt = createWorkspaceHostSpendObservation(entry);
+    if (rebuilt.budgetCents !== entry.budgetCents) {
+      throw new Error(
+        "spend observation budgetCents must equal upward-rounded grossMicros",
+      );
+    }
+    const previous = validated.at(-1);
+    if (previous) {
+      if (entry.currency !== previous.currency) {
+        throw new Error("spend observation history cannot mix currencies");
+      }
+      if (Date.parse(entry.observedAt) <= Date.parse(previous.observedAt)) {
+        throw new Error(
+          "spend observation history timestamps must increase strictly",
+        );
+      }
+    }
+    if (evidenceRefs.has(entry.providerEvidenceRef)) {
+      throw new Error(
+        "spend observation history contains a duplicate providerEvidenceRef",
+      );
+    }
+    evidenceRefs.add(entry.providerEvidenceRef);
+    validated.push({ ...entry });
+  }
+  return validated;
+}
+
+/**
+ * Append a provider snapshot without ever rewriting prior history. An exact retry carrying the
+ * same evidence ref is idempotent; a conflicting reuse of that ref is rejected.
+ */
+export function appendWorkspaceHostSpendObservation(
+  history: readonly WorkspaceHostSpendObservation[],
+  input: WorkspaceHostSpendObservationInput,
+): readonly WorkspaceHostSpendObservation[] {
+  const validated = validateWorkspaceHostSpendHistory(history);
+  const observation = createWorkspaceHostSpendObservation(input);
+  const existing = validated.find(
+    (entry) => entry.providerEvidenceRef === observation.providerEvidenceRef,
+  );
+  if (existing) {
+    if (
+      existing.observedAt === observation.observedAt &&
+      sameWorkspaceHostSpend(existing, observation)
+    ) {
+      return validated;
+    }
+    throw new Error(
+      "spend observation providerEvidenceRef conflicts with prior history",
+    );
+  }
+  const previous = validated.at(-1);
+  if (previous) {
+    if (observation.currency !== previous.currency) {
+      throw new Error("spend observation history cannot mix currencies");
+    }
+    if (Date.parse(observation.observedAt) <= Date.parse(previous.observedAt)) {
+      throw new Error(
+        "spend observation history timestamps must increase strictly",
+      );
+    }
+  }
+  return [...validated, observation];
+}
+
+/**
+ * A cumulative bill is final only after at least two identical trailing snapshots span the
+ * caller's positive stability window. Empty, changed, or merely recent readings remain explicit
+ * retryable states; none of them are interpreted as zero.
+ */
+export function evaluateWorkspaceHostSpendFinality(
+  history: readonly WorkspaceHostSpendObservation[],
+  requiredStableWindowMs: number,
+): WorkspaceHostSpendFinality {
+  if (
+    !Number.isSafeInteger(requiredStableWindowMs) ||
+    requiredStableWindowMs <= 0
+  ) {
+    throw new Error("requiredStableWindowMs must be a positive safe integer");
+  }
+  const validated = validateWorkspaceHostSpendHistory(history);
+  if (validated.length === 0) {
+    return {
+      status: "pending",
+      retryable: true,
+      reason: "no-observations",
+      observationCount: 0,
+      stableObservationCount: 0,
+      stableForMs: 0,
+      requiredStableWindowMs,
+    };
+  }
+  const latest = validated[validated.length - 1]!;
+  let stableStartIndex = validated.length - 1;
+  while (
+    stableStartIndex > 0 &&
+    sameWorkspaceHostSpend(validated[stableStartIndex - 1]!, latest)
+  ) {
+    stableStartIndex -= 1;
+  }
+  const stableObservationCount = validated.length - stableStartIndex;
+  const stableSince = validated[stableStartIndex]!.observedAt;
+  const stableForMs = Date.parse(latest.observedAt) - Date.parse(stableSince);
+  if (stableObservationCount < 2) {
+    return {
+      status: "pending",
+      retryable: true,
+      reason: validated.length === 1 ? "insufficient-observations" : "unstable",
+      observationCount: validated.length,
+      stableObservationCount,
+      stableForMs,
+      requiredStableWindowMs,
+    };
+  }
+  if (stableForMs < requiredStableWindowMs) {
+    return {
+      status: "pending",
+      retryable: true,
+      reason: "stability-window-open",
+      observationCount: validated.length,
+      stableObservationCount,
+      stableForMs,
+      requiredStableWindowMs,
+    };
+  }
+  return {
+    status: "settled",
+    retryable: false,
+    observationCount: validated.length,
+    stableObservationCount,
+    stableSince,
+    stableForMs,
+    requiredStableWindowMs,
+    observation: { ...latest },
+  };
+}
 export interface WorkspaceHostCanaryResource {
   resource: WorkspaceHostResourceRef;
   tags: Readonly<Record<string, string>>;
@@ -1310,7 +1576,9 @@ export function fakeWorkspaceHostCapabilities(
  */
 export function makeFakeWorkspaceHostProvider<
   Extra extends object = Record<never, never>,
->(parts: Partial<WorkspaceHostProvider> & Extra): WorkspaceHostProvider & Extra {
+>(
+  parts: Partial<WorkspaceHostProvider> & Extra,
+): WorkspaceHostProvider & Extra {
   const base: WorkspaceHostProvider = {
     target: "gcp",
     capabilities: fakeWorkspaceHostCapabilities(),
