@@ -561,14 +561,14 @@ export default defineTool({
               SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker, turns.text
                 FROM harness_shared.session_turns AS turns
                WHERE turns.workspace_id = ${workspaceId}
-                 -- Do not interpolate an array of tuples with sql(...): postgres-js emits
-                 -- "IN ($1,$2),($3,$4)" instead of a parenthesized tuple list. Paired
-                 -- unnest preserves the source-kind/session-id relationship safely.
+                 -- Keep the two columns paired with one unnest. Bind each JS array
+                 -- directly: sql.array(...) expands a comma-separated SQL fragment
+                 -- here, which is invalid as one unnest argument on getOrgPg.
                  AND EXISTS (
                    SELECT 1
                      FROM unnest(
-                       ${sql.array(sourceKinds)}::text[],
-                       ${sql.array(sessionIds)}::text[]
+                       ${sourceKinds}::text[],
+                       ${sessionIds}::text[]
                      ) AS wanted(source_kind, session_id)
                     WHERE wanted.source_kind = turns.source_kind
                       AND wanted.session_id = turns.session_id
@@ -623,12 +623,13 @@ export default defineTool({
                   FROM harness_shared.session_turns AS turns
                  WHERE turns.workspace_id = ${workspaceId}
                    -- Keep the two key columns paired; a pair of independent ANY
-                   -- predicates would admit cross-session combinations.
+                   -- predicates would admit cross-session combinations. Bind each
+                   -- JS array directly rather than expanding a sql.array(...) list.
                    AND EXISTS (
                      SELECT 1
                        FROM unnest(
-                         ${sql.array(sourceKinds)}::text[],
-                         ${sql.array(sessionIds)}::text[]
+                         ${sourceKinds}::text[],
+                         ${sessionIds}::text[]
                        ) AS wanted(source_kind, session_id)
                       WHERE wanted.source_kind = turns.source_kind
                         AND wanted.session_id = turns.session_id

@@ -694,12 +694,18 @@ describe('plans:audit phase:activation', () => {
       unmeasuredSessions: [],
       gapTurns: 0,
     });
-    expect(mockOrgSqlArray).toHaveBeenCalledWith(['codex', 'claude']);
-    expect(mockOrgSqlArray).toHaveBeenCalledWith(['session-full-id', 'session-b']);
-    const queryTexts = mockOrgSql.mock.calls
-      .map(([strings]) => (Array.isArray(strings) && 'raw' in strings ? (strings as string[]).join('?') : ''))
-      .filter(Boolean);
-    expect(queryTexts.filter((text) => text.includes('FROM unnest('))).toHaveLength(2);
+    expect(mockOrgSqlArray).not.toHaveBeenCalled();
+    const unnestCalls = mockOrgSql.mock.calls.filter(([strings]) => (
+      Array.isArray(strings) &&
+      'raw' in strings &&
+      (strings as string[]).join('?').includes('FROM unnest(')
+    ));
+    expect(unnestCalls).toHaveLength(2);
+    for (const [, ...values] of unnestCalls) {
+      expect(values).toContainEqual(['codex', 'claude']);
+      expect(values).toContainEqual(['session-full-id', 'session-b']);
+    }
+    const queryTexts = unnestCalls.map(([strings]) => (strings as string[]).join('?'));
     expect(queryTexts.every((text) => !text.includes('(source_kind, session_id) IN'))).toBe(true);
   });
 
