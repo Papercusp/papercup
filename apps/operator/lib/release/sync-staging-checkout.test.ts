@@ -85,6 +85,18 @@ function execForcesLoopback(execStart: string): boolean {
   return r.status === 0;
 }
 
+function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
+  const r = runFn(
+    ['health_sha_matches_target'],
+    'health_sha_matches_target "$HEALTH_SHA" "$TARGET_SHA"',
+    { env: { HEALTH_SHA: healthSha, TARGET_SHA: targetSha } },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`health_sha_matches_target exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
 describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347)', () => {
   it('accepts the shipped shape: source .env.local, then explicitly force loopback', () => {
     expect(execForcesLoopback(
@@ -106,6 +118,17 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
 
   it('rejects an implicit/default bind because the effective staging policy is not proven', () => {
     expect(execForcesLoopback('exec node dist-host/hono-host.mjs')).toBe(false);
+  });
+});
+
+describe('sync-staging-checkout.sh runtime source identity (EI-22636310973765418)', () => {
+  it('accepts the short SHA baked into the exact target commit', () => {
+    expect(healthMatchesTarget('6370b7fa98', '6370b7fa98c4f2d54f3a2d968e0137a9fd5d8a3a')).toBe(true);
+  });
+
+  it('rejects a healthy process serving any other commit', () => {
+    expect(healthMatchesTarget('6370b7fa98', 'a5de12953b978f6e5f7fe58b891e7d4d8fd7d3fc')).toBe(false);
+    expect(healthMatchesTarget('', 'a5de12953b978f6e5f7fe58b891e7d4d8fd7d3fc')).toBe(false);
   });
 });
 
@@ -383,6 +406,23 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     expect(guardIdx).toBeLessThan(targetIdx);
   });
 
+  it('proves the unit serves the same isolated checkout before any sync decision', () => {
+    const guardIdx = script.indexOf('assert_staging_unit_checkout || exit 1');
+    const targetIdx = script.indexOf('target="$(git -C');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(targetIdx);
+    expect(script).toContain('PAPERCUSP_BUNDLE_REUSE_FRESH=1');
+  });
+
+  it('treats checkout equality as a no-op only when the running bundle reports that target SHA', () => {
+    const equalityIdx = script.indexOf('if [ "$target" = "$current" ]');
+    const noOpIdx = script.indexOf('running :3170 bundle already at', equalityIdx);
+    const mismatchIdx = script.indexOf('restart still required', equalityIdx);
+    expect(equalityIdx).toBeGreaterThan(-1);
+    expect(script.slice(equalityIdx, noOpIdx)).toContain('health_sha_matches_target');
+    expect(mismatchIdx).toBeGreaterThan(noOpIdx);
+  });
+
   it('consults paths_require_restart() before restarting', () => {
     expect(script).toMatch(/paths_require_restart/);
     expect(script).toMatch(/restart_required=0/);
@@ -412,15 +452,30 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     expect(script).toMatch(/staleness ceiling reached/);
   });
 
-  it('keeps the EI-13221 recent-restart grace and the health probe intact', () => {
+  it('keeps the EI-13221 recent-restart grace and strengthens health to exact source identity', () => {
     expect(script).toMatch(/RECENT_RESTART_GRACE_SEC/);
-    expect(script).toMatch(/did not return 200 within/);
+    expect(script).toContain('staging_health_source_sha');
+    expect(script).toMatch(/did not report target source/);
   });
 
   it('routes a required restart through audited dev:restart, never raw systemctl', () => {
     expect(script).toContain('"$PTOOL_BIN" dev:restart --json -');
     expect(script).toContain('"confirm":true,"authorize":true');
     expect(script).not.toContain('systemctl --user restart "$UNIT"');
+  });
+
+  it('prebuilds the proof-bound host bundle before requesting the coordinated restart', () => {
+    const prebuildIdx = script.indexOf('prebuilding proof-bound host bundle');
+    const restartIdx = script.indexOf('requesting coordinated restart');
+    expect(prebuildIdx).toBeGreaterThan(-1);
+    expect(restartIdx).toBeGreaterThan(prebuildIdx);
+    expect(script.slice(prebuildIdx, restartIdx)).toContain('PAPERCUSP_BUNDLE_REUSE_FRESH=1');
+  });
+
+  it('accepts post-restart health only when /api/health reports the target source SHA', () => {
+    const healthLoopIdx = script.indexOf('last_health_sha=');
+    expect(healthLoopIdx).toBeGreaterThan(-1);
+    expect(script.slice(healthLoopIdx)).toContain('health_sha_matches_target "$last_health_sha" "$target"');
   });
 
   it('fails before advancing when the coordinated restart mechanism is unavailable', () => {

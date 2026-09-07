@@ -108,6 +108,8 @@ export const DESCENDANT_FANOUT_CAP = 24;
 export const OMITTED_DESCENDANT_REF_CAP = 200;
 
 export interface ContainmentTree {
+  /** A failed edge read is not evidence that this object has no relationships. */
+  unavailable?: 'scope-unresolved' | 'read-failed';
   root: ContainmentNode;
   /** Nearest-first: index 0 is the immediate parent. Max length 2 (item→plan→goal). */
   ancestors: ContainmentNode[];
@@ -207,7 +209,7 @@ export async function resolveContainmentTree(
     fanOut: { admitted: 0, total: 0, cap, truncated: false },
     descended: wantsDown,
   };
-  if (!ws || !target.ref) return empty;
+  if (!ws || !target.ref) return { ...empty, unavailable: 'scope-unresolved' };
 
   try {
     const ancestors = wantsUp ? await resolveAncestors(ws, target, opts) : [];
@@ -229,7 +231,7 @@ export async function resolveContainmentTree(
       descended: wantsDown,
     };
   } catch {
-    return empty;
+    return { ...empty, unavailable: 'read-failed' };
   }
 }
 
@@ -359,9 +361,7 @@ async function resolveDescendants(
   // Fetch one page beyond the cap so `total` can report that MORE exist without
   // paying for the whole 126-item tail; the surplus becomes the disclosed refs.
   const fetchLimit = opts.cap + OMITTED_DESCENDANT_REF_CAP;
-  const rows = await boundedPgReadTxn<
-    (ItemEdgeRow & { has_checkpoint: boolean })[]
-  >(
+  const rows = await boundedPgReadTxn<(ItemEdgeRow & { has_checkpoint: boolean })[]>(
     (tx) => tx`
       SELECT w.feature_id, w.harness_slug, w.source_plan_slug, w.goal_id, w.title,
              (cn.scope IS NOT NULL) AS has_checkpoint
@@ -414,9 +414,11 @@ async function resolveDescendants(
  * which for 94% of items is the item itself" (measured 2026-09-02: of 16,792 open
  * items, 15,791 carry neither a plan nor a goal).
  */
-export function mostSpecificLevel(
-  refs: { workItemId?: string | null; planSlug?: string | null; goalId?: string | null },
-): ContainmentKind | null {
+export function mostSpecificLevel(refs: {
+  workItemId?: string | null;
+  planSlug?: string | null;
+  goalId?: string | null;
+}): ContainmentKind | null {
   if (refs.workItemId?.trim()) return 'work_item';
   if (refs.planSlug?.trim()) return 'plan';
   if (refs.goalId?.trim()) return 'goal';

@@ -23,9 +23,9 @@ import { hashPlanContent } from './content-hash';
 import { readPlanBySlug, resolvePlanScope, type PlanSourceOpts } from './source';
 import { listPlanRevisions } from './revisions';
 import { PLAN_STATUSES, type PlanStatus } from './parser';
+import { readPlanHistoryContext, type PlanHistoryContext } from '../../prior-attempt-context';
 
-const SECTION_RULE =
-  '═══════════════════════════════════════════════════════════════';
+const SECTION_RULE = '═══════════════════════════════════════════════════════════════';
 
 /**
  * The framing preamble — what a launched plan agent is and does.
@@ -82,6 +82,7 @@ export interface PlanBundleInput {
   /** The plan's declared JSON Schema, used ONLY to label each input with its
    *  `description` and to mark which are required. Never rendered itself. */
   inputSchema?: unknown;
+  history?: PlanHistoryContext;
 }
 
 /** The assembled bundle plus the launch metadata `plans:launch` needs. */
@@ -102,6 +103,7 @@ export interface PlanContextBundle {
   contentHash: string;
   /** Number of revisions whose rationale entered the digest. */
   rationaleCount: number;
+  history?: PlanHistoryContext;
 }
 
 /** Render one revision as a digest entry — a `· rev N` header line and
@@ -150,10 +152,7 @@ export function renderInputsBlock(inputs: unknown, inputSchema: unknown): string
 
   const lines = entries.map(([k, v]) => {
     const desc = schema?.properties?.[k]?.description;
-    const note = [
-      required.has(k) ? 'required' : null,
-      typeof desc === 'string' && desc.trim() ? desc.trim() : null,
-    ]
+    const note = [required.has(k) ? 'required' : null, typeof desc === 'string' && desc.trim() ? desc.trim() : null]
       .filter(Boolean)
       .join(' — ');
     let rendered: string;
@@ -165,14 +164,7 @@ export function renderInputsBlock(inputs: unknown, inputSchema: unknown): string
     return `${k.padEnd(pad)} = ${rendered}${note ? `   (${note})` : ''}`;
   });
 
-  return [
-    SECTION_RULE,
-    'INPUTS — the arguments this run was started with',
-    SECTION_RULE,
-    '',
-    ...lines,
-    '',
-  ].join('\n');
+  return [SECTION_RULE, 'INPUTS — the arguments this run was started with', SECTION_RULE, '', ...lines, ''].join('\n');
 }
 
 /**
@@ -181,14 +173,10 @@ export function renderInputsBlock(inputs: unknown, inputSchema: unknown): string
  * does the reads and calls this.
  */
 export function assemblePlanContextBundleText(input: PlanBundleInput): string {
-  const headerLines = [
-    `THE PLAN — ${input.title}`,
-    `slug: ${input.slug}   ·   status: ${input.status ?? 'draft'}`,
-  ];
+  const headerLines = [`THE PLAN — ${input.title}`, `slug: ${input.slug}   ·   status: ${input.status ?? 'draft'}`];
   if (input.status === 'superseded') {
     headerLines.push(
-      '⚠ This plan is superseded — confirm it is still the right plan ' +
-        'to work before making changes.',
+      '⚠ This plan is superseded — confirm it is still the right plan ' + 'to work before making changes.',
     );
   }
 
@@ -219,6 +207,9 @@ export function assemblePlanContextBundleText(input: PlanBundleInput): string {
     '',
     digest,
     '',
+    ...(input.history
+      ? [SECTION_RULE, 'PLAN HISTORY — own and bounded child evidence', SECTION_RULE, JSON.stringify(input.history), '']
+      : []),
   ].join('\n');
 }
 
@@ -288,6 +279,7 @@ export async function buildPlanContextBundle(
       ? (row.status as PlanStatus)
       : null;
   const status = rowStatus ?? parsed.frontmatter.status ?? null;
+  const history = await readPlanHistoryContext(slug, row.harnessSlug ?? opts.harnessSlug ?? '');
   const text = assemblePlanContextBundleText({
     title,
     slug,
@@ -296,6 +288,7 @@ export async function buildPlanContextBundle(
     rationales,
     inputs: opts.inputs !== undefined ? opts.inputs : row.templateData,
     inputSchema: row.inputSchema,
+    history,
   });
 
   return {
@@ -306,5 +299,6 @@ export async function buildPlanContextBundle(
     archived,
     contentHash: hashPlanContent(parsed.raw),
     rationaleCount: rationales.length,
+    history,
   };
 }

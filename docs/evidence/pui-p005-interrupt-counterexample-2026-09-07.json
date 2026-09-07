@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-005",
+  "workItem": "WI-10000427",
+  "spec": "PUI-INTERRUPT@4",
+  "method": "Historical before-fix counterexample, corrected focused regression, and the independently captured installed interrupt/follow-up journey",
+  "historicalCounterexample": {
+    "testRunId": 17630490,
+    "taskId": "0mtrnqtmt1o58mll11q",
+    "startedAt": "2026-09-07T19:52:59.311Z",
+    "finishedAt": "2026-09-07T19:52:59.463Z",
+    "log": ".papercusp/scratch/bash-3b412c08-7dc.log",
+    "logSha256": "eb6b51bf5c5490efe341619ff5bf1c3e613f0fadda57356e024382a648f437d2",
+    "recordedStatus": "fail",
+    "exitCode": 1,
+    "selectedTest": "structured Claude SU engine > acknowledges a long native response before input replay or result completion",
+    "failure": "expected 'refused' to be 'completed'; actual: refused; expected: completed",
+    "control": "does not acknowledge owner input from a nested agent stream passed in the same run",
+    "counts": { "failed": 1, "passed": 1, "skipped": 13 },
+    "source": "docs/evidence/pui-p005-installed-engine-2026-09-07.json#longTurnAcknowledgement",
+    "meaning": "Without acknowledgement of the root assistant message_start, a long response can outlive the input acknowledgement deadline and prevent the running PUI turn from reaching its interrupt action. The targeted assertion caught that pre-fix behavior; this is historical counterexample evidence, not a newly executed synthetic mutation."
+  },
+  "currentRegression": {
+    "runId": "fc1a441f-07e7-4400-9e80-1d5d39c0c4cf",
+    "testRunId": 17634774,
+    "tool": "testing:run",
+    "endpoint": "http://127.0.0.1:3170",
+    "args": {
+      "files": ["packages/operator-core/lib/su-session-claude-engine.test.ts"],
+      "testNamePattern": "native response|nested agent stream",
+      "timeoutMs": 50000,
+      "maxFailures": 3
+    },
+    "startedAt": "2026-09-07T22:06:33.987Z",
+    "finishedAt": "2026-09-07T22:06:34.085Z",
+    "counts": { "passed": 2, "failed": 0, "skipped": 13 },
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "testSha256": "de6f8e437acfecf4f42ee0b1634708d3de87c99edf5c713f47f53a4e26e473f6",
+    "sourceSha256": "52c3f2cd20da2736ba8f22c81384ba7abb40a6fde30bacfdb5b7d156af28d4b6",
+    "scope": "Only the two selected regression assertions ran here. The other 13 tests are not evidence from this run. The ledger retains worktree_dirty=true."
+  },
+  "installedJourney": {
+    "proof": "docs/evidence/pui-p005-installed-green-2026-09-07.json",
+    "testRunId": 17634325,
+    "protocolTestRunId": 17634326,
+    "bindingId": 1613,
+    "binarySha256": "6734915778311f914d632da7972460680398785ff3a3c9fe53e8ce5ee4e6d9a7",
+    "nativeSessionId": "dab59e22-05b0-4e8f-8462-4949469d3e3a",
+    "behavior": "The installed PUI received a long-response input acknowledgement while still running, sent interrupt from its keybinding, unlocked its composer, and rendered a unique follow-up in the unchanged native session.",
+    "freshness": "All seven named source hashes still matched at recovery and after the focused regression. The installed binary and companion independently matched their manifest. Runner provenance=unknown and no whole-transitive-tree pin remain explicit. The installed tests were reused without rerunning them."
+  },
+  "ledgerMetadataRecovery": {
+    "reason": "Earlier direct shell test invocations omitted explicit scope metadata. The canonical reporter and scoped binder behaved as designed; testing:run scope propagation was already fixed under EI-22622885010432899.",
+    "changes": [
+      { "testRunIds": [17634325, 17634326], "workspaceBefore": "papercusp-workspace", "harnessBefore": null, "harnessAfter": "papercusp", "guard": "dry-run then apply; expectedRows=2; exact IDs, file, times, source and status" },
+      { "testRunId": 17630490, "workspaceBefore": null, "harnessBefore": null, "workspaceAfter": "papercusp-workspace", "harnessAfter": "papercusp", "guard": "dry-run then apply; expectedRows=1; exact ID, file, time and failing status" }
+    ],
+    "preserved": "Execution statuses, timestamps, output, commit SHA and dirty flags were not changed. The historical counterexample remains a failing test row.",
+    "recurrenceGuard": "Use scoped testing:run; direct shell runs must explicitly set PAPERCUSP_TEST_RUN_HARNESS=papercusp and PAPERCUSP_WORKSPACE_ID=papercusp-workspace."
+  },
+  "excludedAttempts": "Additional Stryker attempts failed during test collection and produced no mutation verdict. Their temporary configs were removed; none is cited as successful fault evidence."
+}

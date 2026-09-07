@@ -38,6 +38,7 @@ STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp
 UNIT="${PAPERCUSP_STAGING_UNIT:-papercusp-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"
+STAGING_BUNDLE_SCRIPT="${PAPERCUSP_STAGING_BUNDLE_SCRIPT:-$STAGING_ROOT/apps/operator/bin/bundle-host.sh}"
 
 # WI-5710. The port we watch for live client connections — derived from
 # HEALTH_URL so the two can never disagree, overridable for tests.
@@ -79,6 +80,61 @@ assert_staging_unit_loopback() {
   fi
   log "FATAL: refusing staging sync/restart — $UNIT ExecStart does not force PAPERCUSP_BIND_HOST=127.0.0.1 after sourcing .env.local. Repair the unit/drop-in first; otherwise a shared off-loopback bind can crash-loop :3170 under the strict remote-auth boot guard."
   return 1
+}
+
+# EI-22636310973765418: the checkout advanced by this service and the checkout
+# executed by :3170 must be the SAME tree. On 2026-09-07 both effective
+# drop-ins pointed at the canonical shared tree while this script updated the
+# isolated papercusp-staging tree; builds and restarts therefore described
+# different source. Fail before touching either tree when that contract drifts.
+assert_staging_unit_checkout() {
+  local expected_root expected_workdir working_dir integration_env exec_pre reuse_env
+  expected_root="$(realpath -m "$STAGING_ROOT")"
+  expected_workdir="$expected_root/apps/operator"
+  working_dir="$(systemctl --user show -p WorkingDirectory --value "$UNIT" 2>/dev/null || true)"
+  working_dir="${working_dir#\!}"
+  integration_env="$(systemctl --user show -p Environment --value "$UNIT" 2>/dev/null || true)"
+  exec_pre="$(systemctl --user show -p ExecStartPre --value "$UNIT" 2>/dev/null || true)"
+  reuse_env="PAPERCUSP_BUNDLE_REUSE_FRESH=1"
+  if [[ -z "$working_dir" || "$(realpath -m "$working_dir")" != "$expected_workdir" ]]; then
+    log "FATAL: $UNIT WorkingDirectory does not resolve to $expected_workdir (got ${working_dir:-<empty>}); refusing to build one checkout and restart another"
+    return 1
+  fi
+  if [[ " $integration_env " != *" PAPERCUSP_INTEGRATION_ROOT=$expected_root "* ]]; then
+    log "FATAL: $UNIT PAPERCUSP_INTEGRATION_ROOT does not name $expected_root; refusing cross-checkout staging sync"
+    return 1
+  fi
+  if [[ "$exec_pre" != *"path=$expected_workdir/bin/bundle-host.sh"* ]]; then
+    log "FATAL: $UNIT ExecStartPre does not build from $expected_workdir/bin/bundle-host.sh"
+    return 1
+  fi
+  if [[ " $integration_env " != *" $reuse_env "* ]]; then
+    log "FATAL: $UNIT does not enable $reuse_env; a prebuilt bundle would be rebuilt only after stop"
+    return 1
+  fi
+}
+
+# Return the exact short source SHA baked into the running bundle. A 200 alone
+# is not freshness: before this fix :3170 returned 200 from 6370b7fa98 while
+# the isolated checkout had advanced far beyond it.
+staging_health_source_sha() {
+  curl -fsS --max-time 4 "$HEALTH_URL" 2>/dev/null | node -e '
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const sha = JSON.parse(body)?.sha;
+        if (typeof sha === "string" && /^[a-f0-9]{7,40}$/.test(sha)) process.stdout.write(sha);
+        else process.exitCode = 1;
+      } catch { process.exitCode = 1; }
+    });
+  '
+}
+
+health_sha_matches_target() {
+  local health_sha="${1:-}" target_sha="${2:-}"
+  [[ -n "$health_sha" && -n "$target_sha" && "$target_sha" == "$health_sha"* ]]
 }
 
 # --- WI-5710 gate 1: is a process restart actually REQUIRED? ----------------
@@ -218,25 +274,35 @@ fi
 # next timer tick, and it must never reach a restart that replaces a healthy old process with a
 # predictably rejected off-loopback boot.
 assert_staging_unit_loopback || exit 1
+assert_staging_unit_checkout || exit 1
 
 target="$(git -C "$INTEGRATION_ROOT" rev-parse --verify "${BRANCH}^{commit}")"
 current="$(git -C "$STAGING_ROOT" rev-parse --verify HEAD 2>/dev/null || echo none)"
+health_sha="$(staging_health_source_sha || true)"
+served_sha="${health_sha:-$current}"
+checkout_needs_advance=0
 
 if [ "$target" = "$current" ]; then
-  log "staging checkout already at ${target:0:8} — no-op"
-  exit 0
-fi
-
-# WI-5710 gate 1 — decide BEFORE doing any work whether the running process
-# actually needs to be replaced, or only the on-disk SPA refreshed.
-changed_count=0
-restart_required=1
-if [ "$current" = none ]; then
-  log "fresh staging checkout — full sync + restart"
+  if health_sha_matches_target "$health_sha" "$target"; then
+    log "staging checkout and running :3170 bundle already at ${target:0:10} — no-op"
+    exit 0
+  fi
+  # A prior tick may have advanced the checkout before dev:restart was
+  # refused/coalesced. Retrying from runtime SHA closes the old permanent
+  # no-op: checkout equality alone cannot prove the process loaded that tree.
+  log "staging checkout is at ${target:0:10}, but running :3170 reports ${health_sha:-no valid source SHA} — restart still required"
+  changed_count=0
+  restart_required=1
 else
+  checkout_needs_advance=1
+  # WI-5710 gate 1 — decide BEFORE doing any work whether the running process
+  # actually needs to be replaced, or only the on-disk SPA refreshed.
   changed_count="$(git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | grep -c . || true)"
   [ -n "$changed_count" ] || changed_count=0
-  if git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | paths_require_restart; then
+  if [ "$current" = none ]; then
+    log "fresh staging checkout — full sync + restart"
+    restart_required=1
+  elif git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | paths_require_restart; then
     restart_required=1
   else
     restart_required=0
@@ -251,7 +317,7 @@ fi
 if [ "$restart_required" = 1 ]; then
   live_clients="$(staging_live_client_count "$STAGING_PORT")"
   if [ "$live_clients" -gt 0 ] 2>/dev/null; then
-    age="$(current_commit_age_sec "$current")"
+    age="$(current_commit_age_sec "$served_sha")"
     if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
       log "deferring sync — $live_clients live client connection(s) on :$STAGING_PORT and the served build is only ${age}s old (< ${MAX_STALE_SEC}s ceiling); staying on ${current:0:8} so the live session keeps a consistent build. Will advance to ${target:0:8} once idle, or at the ceiling."
       exit 0
@@ -275,10 +341,14 @@ if [ "$restart_required" = 1 ] && [ -z "$PTOOL_BIN" ]; then
   exit 1
 fi
 
-log "advancing staging checkout ${current:0:8} → ${target:0:8} (${changed_count} changed path(s), restart_required=${restart_required})"
-PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_ROOT" \
-  bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
-    --ref "$BRANCH" --release "$STAGING_ROOT" --node-modules auto --build-spa
+if [ "$checkout_needs_advance" = 1 ]; then
+  log "advancing staging checkout ${current:0:8} → ${target:0:8} (${changed_count} changed path(s), restart_required=${restart_required})"
+  PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_ROOT" \
+    bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
+      --ref "$BRANCH" --release "$STAGING_ROOT" --node-modules auto --build-spa
+else
+  log "isolated checkout already at ${target:0:10}; repairing only the stale running generation"
+fi
 
 # WI-5710 — SPA-only advance: the dist is now refreshed on disk and host-spa.ts
 # serves it per request, so :3170 is ALREADY current. Restarting here would be
@@ -287,6 +357,17 @@ if [ "$restart_required" = 0 ]; then
   log "✅ skipping restart — all ${changed_count} changed path(s) are restart-exempt (SPA/docs/tests); the rebuilt SPA is already live on :$STAGING_PORT at ${target:0:8}"
   exit 0
 fi
+
+# Build the expensive host graph while the old process is still serving.
+# The staging-only freshness proof lets systemd's later ExecStartPre verify
+# and reuse these exact bytes in milliseconds; any source/output drift falls
+# back to the ordinary full rebuild before start.
+if [[ ! -f "$STAGING_BUNDLE_SCRIPT" ]]; then
+  log "FATAL: staging bundle script not found at $STAGING_BUNDLE_SCRIPT"
+  exit 1
+fi
+log "prebuilding proof-bound host bundle before stopping $UNIT"
+PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"
 
 # EI-13221: skip a REDUNDANT restart when $UNIT's current MainPID already came
 # up within the last RECENT_RESTART_GRACE_SEC — most likely a peer's `dev:restart`
@@ -367,7 +448,7 @@ if ! printf '%s' "$restart_result" | restart_result_is_accepted; then
   # persistent barrier means :3170 is silently serving stale code and somebody must
   # look. An unresolvable sha reports a huge age, so it escalates rather than defers.
   if printf '%s' "$restart_result" | restart_refusal_is_transient_git_sync; then
-    age="$(current_commit_age_sec "$current")"
+    age="$(current_commit_age_sec "$served_sha")"
     if [ "$age" -lt "$MAX_STALE_SEC" ] 2>/dev/null; then
       log "deferring restart — dev:restart refused on a transient git-sync barrier/collision that outlasted the ${GIT_SYNC_DRAIN_SEC}s drain, and the served build is only ${age}s old (< ${MAX_STALE_SEC}s ceiling). The checkout is already fast-forwarded to ${target:0:8}; the next tick will restart. Refusal: ${restart_result:0:300}"
       exit 0
@@ -379,13 +460,14 @@ if ! printf '%s' "$restart_result" | restart_result_is_accepted; then
 fi
 log "coordinated dev:restart accepted: ${restart_result:0:500}"
 
+last_health_sha=""
 for i in $(seq 1 30); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$HEALTH_URL" 2>/dev/null || echo 000)"
-  if [ "$code" = "200" ]; then
-    log "✅ :3170 healthy on staging ${target:0:8}"
+  last_health_sha="$(staging_health_source_sha || true)"
+  if health_sha_matches_target "$last_health_sha" "$target"; then
+    log "✅ :3170 healthy on exact staging source ${last_health_sha}"
     exit 0
   fi
   sleep 2
 done
-log "⚠ :3170 did not return 200 within ~60s after restart (target ${target:0:8}) — check the operator journal"
+log "⚠ :3170 did not report target source ${target:0:10} within ~60s after restart (last=${last_health_sha:-unavailable}) — check the operator journal"
 exit 1

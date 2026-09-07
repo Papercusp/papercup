@@ -44,6 +44,7 @@ import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors'
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { getStalePathRefsForSubjects, stalePathRefsNote } from '../../stale-path-hints-claim-port';
 import { evidenceCurrentInputSchema } from './spec-evidence-store';
+import { readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -125,7 +126,9 @@ const argsSchema = z
       .min(1)
       .max(100)
       .optional()
-      .describe("Compatibility alias for `items` (plans:items' spelling of the same selector); `items` wins when both are supplied."),
+      .describe(
+        "Compatibility alias for `items` (plans:items' spelling of the same selector); `items` wins when both are supplied.",
+      ),
     decisionId: z
       .string()
       .min(1)
@@ -151,7 +154,9 @@ const argsSchema = z
       .array(z.string().min(1))
       .max(100)
       .optional()
-      .describe('Compatibility alias for `decisions` (plural naming, matching `itemIds`); `decisions` wins when both are supplied.'),
+      .describe(
+        'Compatibility alias for `decisions` (plural naming, matching `itemIds`); `decisions` wins when both are supplied.',
+      ),
     mode: z
       .enum(['meta', 'sections', 'full'])
       .optional()
@@ -200,6 +205,11 @@ const argsSchema = z
     // waiting on a green-checkpoint gate that was never the blocker (the real
     // one was audit_coverage_stale). This exposes the EXISTING evaluator; it
     // does not add a second definition of the verdict.
+    priorAttemptRefs: z
+      .array(z.string().min(1))
+      .max(20)
+      .optional()
+      .describe('Recover exact raw refs from this plan history; missing refs remain explicit.'),
     shipReadiness: z
       .boolean()
       .optional()
@@ -1152,6 +1162,41 @@ export default defineTool({
       },
       { keyOf: (slug) => ({ slug }) },
     );
+    // Descendant history can change without a plan revision. Keep it outside the
+    // plan-body cache, and off narrow member/item and metadata reads.
+    const historyOnly = args.heading?.toLowerCase() === 'history';
+    if (
+      historyOnly ||
+      args.priorAttemptRefs?.length ||
+      (mode === 'full' && !args.heading && !requestedDecisionIds && !requestedItemIds)
+    ) {
+      const historyResults = env.results as Array<Record<string, unknown>>;
+      for (const [index, result] of historyResults.entries()) {
+        if (result.ok !== true || typeof result.slug !== 'string' || typeof result.harness !== 'string') continue;
+        const history = await readPlanHistoryContext(result.slug, result.harness);
+        const priorAttemptRecords = args.priorAttemptRefs?.length
+          ? await resolvePriorAttemptRefs({
+              harness: result.harness,
+              target: { kind: 'plan', ref: result.slug, harness: result.harness },
+              rawRefs: args.priorAttemptRefs,
+            })
+          : undefined;
+        // Do not mutate the cached base: history is fresh for this invocation only.
+        historyResults[index] = {
+          ...(historyOnly
+            ? {
+                ok: true,
+                slug: result.slug,
+                harness: result.harness,
+                version: result.version,
+                contentHash: result.contentHash,
+              }
+            : result),
+          history,
+          ...(args.priorAttemptRefs?.length ? { priorAttemptRecords } : {}),
+        };
+      }
+    }
     // EI-21967410937471873: the opt-in ship-blocker verdict — what would refuse
     // this plan's ship RIGHT NOW, without attempting the write.
     //

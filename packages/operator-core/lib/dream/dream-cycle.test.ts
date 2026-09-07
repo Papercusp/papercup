@@ -6,6 +6,8 @@ import { dreamRunId, estimateDreamCall, runDreamCycle, type DreamCycleDeps, type
 import { DreamAdmissionError } from './dream-governor';
 import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dream-run-provenance';
 import type { DreamRun } from './dream-run-store';
+import { buildCapabilitySamplingSnapshot } from './capability-sampler';
+import { freezeDreamEvaluationProtocol } from './dream-evaluation';
 
 type Fixture = Awaited<ReturnType<typeof createDreamCapabilityFixture>>;
 let f: Fixture;
@@ -171,6 +173,50 @@ function harness() {
 }
 
 describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
+  async function pilot(h: ReturnType<typeof harness>) {
+    const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: f.root, scope: f.scope, manifest: f.manifest, packets: f.packets });
+    const bound = freezeDreamEvaluationProtocol({ sourceSnapshot: snapshot.fingerprint,
+      benchmarkHash: 'a'.repeat(64), oracleHash: 'b'.repeat(64), independentLabelsRef: 'fixture:independent-labels',
+      seed: 'frozen-seed', models: { generator: 'dreamer', reviewer: 'reviewer' } });
+    h.input.pilot = { ...bound, arm: 'structured-pair' };
+    return bound;
+  }
+
+  it('blocks missing/changed pilot protocols before any adapter or paid call', async () => {
+    const h = harness();
+    await pilot(h);
+    h.input.pilot!.protocol = null;
+    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow();
+    expect(h.d.preflight).not.toHaveBeenCalled();
+    const valid = await pilot(h);
+    h.input.pilot!.protocol = { ...valid.protocol, seed: 'unregistered-change' };
+    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow('changed');
+    expect(h.d.beginRun).not.toHaveBeenCalled();
+    expect(h.llm).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the actual source snapshot before generation, preserving a rejected run', async () => {
+    const h = harness();
+    const valid = await pilot(h);
+    h.input.pilot = { ...freezeDreamEvaluationProtocol({ ...valid.protocol, sourceSnapshot: 'c'.repeat(64) }), arm: 'structured-pair' };
+    const result = await runDreamCycle(h.input, h.d);
+    expect(result.runs[0]?.status).toBe('error');
+    expect(h.row('cycle-1:dream:1').error).toContain('snapshot changed');
+    expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.sample).not.toHaveBeenCalled();
+  });
+
+  it('admits a valid frozen manual pilot through the same governor and persists its pin and reproducible seed', async () => {
+    const h = harness();
+    const valid = await pilot(h);
+    const result = await runDreamCycle(h.input, h.d);
+    expect(result.accepted).toBe(1);
+    expect(h.d.preflight).toHaveBeenCalledOnce();
+    expect(h.d.sample).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ seed: 'frozen-seed:structured-pair:cycle-1:dream:1' }));
+    expect(dreamCapabilityRun(h.row('cycle-1:dream:1'))?.evaluation).toEqual({ protocolPin: valid.pin, arm: 'structured-pair' });
+    expect(h.llm).toHaveBeenCalled();
+  });
+
   it('derives stable attempt identities and refuses invalid ones', () => {
     expect(dreamRunId('cycle', 2)).toBe('cycle:dream:3');
     expect(() => dreamRunId('', 0)).toThrow();

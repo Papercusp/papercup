@@ -10,11 +10,13 @@ import type { ScoutLlmCall } from '../scout/types';
 import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
 import { runDreamCycle, type DreamCycleInput, type DreamCycleResult } from './dream-cycle';
 import type { DreamRunMode } from './dream-run-store';
+import { DreamPilotPinSchema, type DreamPilotPin } from './dream-evaluation';
 
 export const DREAM_CYCLE_ACTION = 'dream-cycle';
 
 export interface DreamCycleActionConfig extends Pick<DreamCycleInput, 'cycle' | 'sampler' | 'pass' | 'review'> {
   mode: DreamRunMode;
+  pilot?: DreamPilotPin;
 }
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -36,6 +38,7 @@ export function parseDreamCycleActionConfig(payload: Record<string, unknown> | n
     throw new RangeError('Unsupported capability sampler setting');
   return {
     mode,
+    ...(root.pilot !== undefined ? { pilot: DreamPilotPinSchema.parse(root.pilot) } : {}),
     ...(object(root.cycle) ? { cycle: object(root.cycle) as Partial<DreamCycleConfig> } : {}),
     ...(object(root.sampler) ? { sampler: object(root.sampler)! } : {}),
     ...(object(root.pass) ? { pass: object(root.pass)! } : {}),
@@ -139,6 +142,7 @@ export async function productionDreamCycle(
       sampler: config.sampler,
       pass: config.pass,
       review: config.review,
+      pilot: config.pilot,
     },
     {
       llmCall,

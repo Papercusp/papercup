@@ -8,11 +8,22 @@
  * P-027 / P-028.
  */
 
-import { describe, expect, it } from 'vitest';
-import {
-  assemblePlanContextBundleText,
-  type PlanBundleRationale,
-} from '../context-bundle';
+import { describe, expect, it, vi } from 'vitest';
+const io = vi.hoisted(() => ({ read: vi.fn(), history: vi.fn() }));
+vi.mock('../source', async (original) => ({
+  ...(await original<typeof import('../source')>()),
+  readPlanBySlug: io.read,
+  resolvePlanScope: async () => ({ workspaceId: 'ws-history', harnessSlug: 'papercusp' }),
+}));
+vi.mock('../revisions', async (original) => ({
+  ...(await original<typeof import('../revisions')>()),
+  listPlanRevisions: async () => [],
+}));
+vi.mock('../../../prior-attempt-context', async (original) => ({
+  ...(await original<typeof import('../../../prior-attempt-context')>()),
+  readPlanHistoryContext: io.history,
+}));
+import { assemblePlanContextBundleText, buildPlanContextBundle, type PlanBundleRationale } from '../context-bundle';
 
 const RATIONALE_A: PlanBundleRationale = {
   seq: 2,
@@ -28,6 +39,28 @@ const RATIONALE_B: PlanBundleRationale = {
 };
 
 describe('assemblePlanContextBundleText', () => {
+  it('delivers child history in the actual launch bundle', async () => {
+    io.read.mockResolvedValue({
+      parsed: { frontmatter: { title: 'History plan' }, raw: '# Plan authority' },
+      row: { status: 'active', harnessSlug: 'papercusp' },
+      archived: false,
+    });
+    const history = {
+      status: 'available',
+      brief: {
+        fingerprint: 'child-generation',
+        attempts: [{ rawRef: 'WI-1#checkpoint', text: 'Root cause: child cursor advanced early.' }],
+      },
+      recovery: { tool: 'plans:get', args: { slug: 'history', harness: 'papercusp', heading: 'History' } },
+    };
+    io.history.mockResolvedValue(history);
+    const bundle = await buildPlanContextBundle('history', { harnessSlug: 'papercusp' });
+    expect(bundle?.text).toContain('child cursor advanced early');
+    expect(bundle?.text).toContain('child-generation');
+    expect(bundle?.text).toContain('WI-1#checkpoint');
+    expect(bundle?.history).toEqual(history);
+    expect(io.history).toHaveBeenCalledWith('history', 'papercusp');
+  });
   it('includes the framing preamble, the plan doc, and the rationale digest', () => {
     const text = assemblePlanContextBundleText({
       title: 'A Test Plan',

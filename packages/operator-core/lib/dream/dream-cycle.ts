@@ -29,6 +29,7 @@ import { DreamAdmissionError, type DreamGovernorPreflight, type RecordDreamSpend
 import type { DreamPassUsage } from './dream-pass';
 import type { SinkDreamInsightResult } from './dream-sink';
 import type { DreamRun, DreamRunMode, FinalizeDreamRunInput } from './dream-run-store';
+import { DreamPilotPinSchema, requireDreamPilotProtocol, type DreamPilotPin } from './dream-evaluation';
 
 export interface DreamCycleInput {
   workspaceId: string;
@@ -43,6 +44,8 @@ export interface DreamCycleInput {
   pass?: Partial<DreamPassConfig>;
   review?: Partial<DreamReviewConfig>;
   signal?: AbortSignal;
+  /** Explicit evaluation runs require a frozen protocol; ordinary manual cycles keep their existing controls. */
+  pilot?: DreamPilotPin;
 }
 type FinalizeInput = Omit<FinalizeDreamRunInput, 'workspaceId'>;
 type CallInput = Pick<DreamRunCall, 'callId' | 'phase' | 'model' | 'reservedUsd'>;
@@ -152,6 +155,14 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
   const config = resolveDreamCycleConfig(input.cycle);
   const pass = resolveDreamPassConfig({ maxOutputTokens: 4096, ...input.pass });
   const reviewConfig = resolveDreamReviewConfig({ maxOutputTokens: 4096, ...input.review });
+  const pilot = input.pilot === undefined ? null : DreamPilotPinSchema.parse(input.pilot);
+  const pilotConfig = pilot ? {
+    generator: pass.model, reviewer: reviewConfig.model, mode: input.mode,
+    samplerMode: input.sampler?.mode ?? 'structured', arity: input.sampler?.arity ?? 2,
+  } : null;
+  // Validate the protocol pin and policy before any adapter can perform work.
+  // The real on-disk population is independently compared below, before generation.
+  if (pilot) requireDreamPilotProtocol(pilot, { ...pilotConfig!, sourceSnapshot: pilot.protocol.sourceSnapshot });
   const now = deps.now ?? Date.now;
   const result: DreamCycleResult = {
     fired: false,
@@ -235,6 +246,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           reviewerModel: reviewConfig.model,
           dreamPromptVersion: CAPABILITY_DREAM_PROMPT_VERSION,
           reviewPromptVersion: CAPABILITY_REVIEW_VERSION,
+          ...(pilot ? { evaluation: { protocolPin: pilot.pin, arm: pilot.arm as 'uniform-pair' | 'structured-pair' | 'structured-triple' } } : {}),
         },
       });
       if (begun.run.status !== 'running') {
@@ -372,6 +384,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           eligible: snapshot.eligible.length,
           exclusions: snapshot.exclusions,
         };
+        if (pilot) requireDreamPilotProtocol(pilot, { ...pilotConfig!, sourceSnapshot: snapshot.fingerprint });
         const past = history
           .filter((r) => r.workspaceId === input.workspaceId && r.potSlug === input.potSlug)
           .flatMap((r) => {
@@ -386,7 +399,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
             exposures[entry.packet.unit.id] = (exposures[entry.packet.unit.id] ?? 0) + 1;
         const sampling = (deps.sample ?? sampleCapabilityCombination)(snapshot, {
           ...input.sampler,
-          seed: runId,
+          seed: pilot ? `${pilot.protocol.seed}:${pilot.arm}:${runId}` : runId,
           promptVersion: CAPABILITY_DREAM_PROMPT_VERSION,
           now: now(),
           exposures,

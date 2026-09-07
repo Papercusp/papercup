@@ -50,6 +50,7 @@ const HeaderSchema = z
     reviewerModel: name,
     dreamPromptVersion: name,
     reviewPromptVersion: name,
+    evaluation: z.object({ protocolPin: z.string().regex(/^[a-f0-9]{64}$/), arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']) }).strict().optional(),
   })
   .strict();
 const EnvelopeSchema = HeaderSchema.extend({
@@ -74,6 +75,7 @@ export interface BeginCapabilityRunInput {
   reviewerModel: string;
   dreamPromptVersion: string;
   reviewPromptVersion: string;
+  evaluation?: z.infer<typeof HeaderSchema>['evaluation'];
 }
 
 export function newDreamCapabilityRun(input: BeginCapabilityRunInput): DreamCapabilityRun {

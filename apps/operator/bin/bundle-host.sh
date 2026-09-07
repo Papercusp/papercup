@@ -25,10 +25,13 @@
 #
 # Consumers:
 #   - papercup-bg-host.service drop-in 95-bundled-entry.conf: ExecStartPre runs
-#     this, ExecStart runs `node dist-host/hono-host.mjs`. Rebuilt on EVERY
-#     service restart so a restart still picks up integration-tree edits
-#     (same contract as the old tsx boot — do NOT cache across restarts, a
-#     stale bundle silently runs old code, see
+#     this, ExecStart runs `node dist-host/hono-host.mjs`. It rebuilds on EVERY
+#     restart so a restart still picks up shared-tree edits.
+#   - papercusp-staging-api.service: staging-sync may prebuild against its clean,
+#     isolated committed checkout and opt into proof-bound reuse. Reuse requires
+#     the same clean HEAD plus an unchanged complete dist-host tree; every miss
+#     falls back to the ordinary rebuild. Never add unproved caching here — a
+#     stale bundle silently runs old code (see
 #     internal-docs/agent-insights/bg-host-runs-stale-routine-code.md).
 set -euo pipefail
 # EI-18808640677734527: resolve THIS script's directory ONCE, to an absolute
@@ -71,6 +74,28 @@ cd "$SCRIPT_DIR/.."
 
 ENTRY="${1:-bin/hono-host.ts}"
 OUTFILE="${2:-dist-host/hono-host.mjs}"
+OUTDIR="$(dirname "$OUTFILE")"
+STALE_MARKER="$OUTDIR/.bundle-stale.json"
+FRESH_MARKER="$OUTDIR/.bundle-fresh.json"
+FRESHNESS_HELPER="$SCRIPT_DIR/bundle-host-freshness.mjs"
+
+# EI-22636310973765418: staging-sync builds the expensive host bundle while the
+# old :3170 process is still serving. Its subsequent systemd ExecStartPre may
+# reuse those bytes only when a server-independent proof says BOTH source and
+# the complete dist-host runtime tree are unchanged. The opt-in is staging-only:
+# shared-tree/bg-host restarts retain the original rebuild-on-every-start rule.
+if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
+  if [[ ! -f "$STALE_MARKER" ]] && node "$FRESHNESS_HELPER" check \
+      --repo-root "$REPO_ROOT" \
+      --entry "$PWD/$ENTRY" \
+      --outfile "$PWD/$OUTFILE" \
+      --manifest "$PWD/$FRESH_MARKER" >/dev/null; then
+    echo "✓ reusing proof-bound fresh host bundle for $(git -C "$REPO_ROOT" rev-parse --short HEAD) — ExecStartPre has no build work"
+    exit 0
+  fi
+  # A failed or interrupted build must never leave an older proof reusable.
+  rm -f "$FRESH_MARKER"
+fi
 
 # ESM output: the host graph contains `import.meta.url` (a CJS bundle rejects
 # it). ESM has no `__dirname`/`__filename`/`require`, so the banner re-creates
@@ -210,7 +235,6 @@ trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$N
 # $STALE_MARKER and /api/health surfaces it (see
 # packages/operator-core/lib/bundle-staleness.ts). A VISIBLY-stale service is
 # strictly better than a down one; an INVISIBLY-stale one is worse than both.
-STALE_MARKER="$(dirname "$OUTFILE")/.bundle-stale.json"
 BUILD_LOG="$OUTFILE.build-error.log"
 
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
@@ -339,8 +363,6 @@ echo "✓ bundled: $(du -h "$OUTFILE" | cut -f1) $OUTFILE"
 #   dirname(dist-host/hono-host.mjs)/sql
 # esbuild only emits JS, never sibling src/sql/*.sql assets. Keep this in sync
 # with papercusp-desktop/bin/build-desktop-sidecar.sh's sidecar/sql copy.
-OUTDIR="$(dirname "$OUTFILE")"
-
 # systemd-scope.ts resolves this plain-Node helper beside the bundled host
 # entry. esbuild cannot emit a source .mjs sibling, so publish it explicitly
 # with the same temp-then-rename discipline as the host bundle. A missing
@@ -539,4 +561,21 @@ if [[ -f "$SENTINEL_WORKER_SRC" ]]; then
     || echo "WARNING: sentinel worker bundle FAILED — the host will run with NO blocked-loop detection"
 else
   echo "WARNING: sentinel worker not found at $SENTINEL_WORKER_SRC — the host will run with NO blocked-loop detection"
+fi
+
+# Stamp only after the bundle AND every runtime sibling/asset has published.
+# The helper refuses a dirty tree, a changed HEAD, a missing output, or an
+# incoherent dist-host tree. A stamp failure never makes an otherwise-good
+# build fail; it merely forces ExecStartPre to rebuild normally.
+if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
+  if fresh_head="$(node "$FRESHNESS_HELPER" stamp \
+      --repo-root "$REPO_ROOT" \
+      --entry "$PWD/$ENTRY" \
+      --outfile "$PWD/$OUTFILE" \
+      --manifest "$PWD/$FRESH_MARKER")"; then
+    echo "✓ stamped proof-bound host bundle freshness at ${fresh_head:0:10}"
+  else
+    rm -f "$FRESH_MARKER"
+    echo "WARNING: host bundle built successfully but could not be freshness-stamped — next start will rebuild"
+  fi
 fi

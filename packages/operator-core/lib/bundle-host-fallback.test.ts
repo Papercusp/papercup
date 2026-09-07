@@ -2,11 +2,12 @@
  * EI-20093985382484201 / WI-41242 — a broken shared tree must fail loudly
  * without corrupting the last-known-good bundle.
  *
- * `papercup-{staging,bg-host,dev}-api` run `bundle-host.sh` in ExecStartPre
- * against the LIVE shared working tree. Many agents edit that tree
- * continuously, so it is INVALID for the seconds between two keystrokes of any
- * multi-part edit. The fallback keeps the prior bytes intact, while WI-41242
- * makes the caller fail loudly so a release is not reported on stale code.
+ * `papercup-{staging,bg-host,dev}-api` run `bundle-host.sh` in ExecStartPre.
+ * Shared-tree callers can observe the seconds between two keystrokes of a
+ * multi-part edit; staging instead uses a clean isolated checkout and may reuse
+ * a separately proven prebuild. In every case the fallback keeps prior bytes
+ * intact, while WI-41242 makes a release caller fail loudly rather than report
+ * stale code as current.
  *
  * EI-19457229906581679: "deploy/systemd" in the line above used to be one
  * clause, and that conflation was the defect. A non-zero exit stops deploy-cli
