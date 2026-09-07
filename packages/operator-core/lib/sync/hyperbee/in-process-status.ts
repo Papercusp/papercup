@@ -431,7 +431,18 @@ export function getInProcessSubstrateStatus(
     };
   });
 
-  const summary = summariseWorkspaceSubstrate(substrateActive, harnesses);
+  const baseSummary = summariseWorkspaceSubstrate(substrateActive, harnesses);
+  // EI-22627350228756486: an unowned/non-owner read can have zero rows while
+  // the substrate owner and health inputs are both unreachable. The generic
+  // summary quite correctly treats zero rows as idle when the owner was
+  // reached, but that same shape is a blind spot when neither attestation is
+  // present. Preserve the empty row set (never fabricate a harness) while
+  // downgrading the aggregate verdict so absence of measurement cannot read as
+  // healthy.
+  const summary: WorkspaceSubstrateSummary =
+    (!reachedSubstrateOwner || !healthInputsObserved) && baseSummary.worstVerdict === 'healthy'
+      ? { ...baseSummary, worstVerdict: 'degraded' }
+      : baseSummary;
 
   return {
     substrateActive,

@@ -82,6 +82,8 @@ beforeEach(async () => {
   __setCachedReadEnabledForTests(true);
   M.listPlanIndexRows.mockClear();
   M.getPlanContentsBySlugs.mockClear();
+  M.getPlanRow.mockReset();
+  M.getPlanRow.mockResolvedValue(null);
   M.planHarnessesForSlugs.mockReset();
   M.planHarnessesForSlugs.mockResolvedValue(new Map());
   M.ctxToPlanSourceOpts.mockClear();
@@ -118,6 +120,66 @@ describe("plans:items — cache wiring", () => {
       "alpha",
       expect.objectContaining({ harnessSlug: "recovered-harness" }),
     );
+  });
+
+  it("discloses an ambient-harness mismatch for an exact slug instead of a bare not_found", async () => {
+    M.planHarnessesForSlugs.mockResolvedValueOnce(
+      new Map([["foreign-plan", ["papercusp"]]]),
+    );
+
+    const result = (await run({ slug: "foreign-plan" }, "ws-items", "sb-devboard-hive")) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(result.isError).toBe(true);
+    expect(body).toMatchObject({
+      error: "not_found",
+      slug: "foreign-plan",
+      harness: "sb-devboard-hive",
+      harnessMismatch: {
+        callerHarness: "sb-devboard-hive",
+        reportedHarness: "papercusp",
+        availableHarnesses: ["papercusp"],
+        harnessSource: "ambient",
+      },
+    });
+    expect((body.harnessMismatch as { warning: string }).warning).toContain(
+      "Pass harness:'papercusp'",
+    );
+    expect(M.getPlanRow).not.toHaveBeenCalled();
+  });
+
+  it("explains an explicit-harness miss without adding a lookup to hits", async () => {
+    M.getPlanRow.mockResolvedValueOnce(null);
+    M.planHarnessesForSlugs.mockResolvedValueOnce(
+      new Map([["foreign-plan", ["papercusp"]]]),
+    );
+
+    const result = (await run(
+      { slug: "foreign-plan", harness: "sb-devboard-hive" },
+      "ws-items",
+      "sb-devboard-hive",
+    )) as { isError?: boolean; content: Array<{ text: string }> };
+    const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(result.isError).toBe(true);
+    expect(body).toMatchObject({
+      error: "not_found",
+      slug: "foreign-plan",
+      harness: "sb-devboard-hive",
+      harnessMismatch: {
+        callerHarness: "sb-devboard-hive",
+        reportedHarness: "papercusp",
+        availableHarnesses: ["papercusp"],
+        harnessSource: "explicit",
+      },
+    });
+    expect((body.harnessMismatch as { warning: string }).warning).toContain(
+      "omit harness to auto-resolve",
+    );
+    expect(M.getPlanRow).toHaveBeenCalledTimes(1);
   });
 
   it("a repeat cross-plan query HITS (listPlanIndexRows runs once)", async () => {

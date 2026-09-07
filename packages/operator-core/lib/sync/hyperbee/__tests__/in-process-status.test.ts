@@ -251,8 +251,10 @@ describe('getInProcessSubstrateStatus', () => {
       _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
       const r = getInProcessSubstrateStatus({ isSubstrateOwnerProcessForTest: false });
       expect(r.reachedSubstrateOwner).toBe(false);
+      expect(r.healthInputsObserved).toBe(false);
       expect(r.bootedCount).toBe(0);
       expect(r.harnesses).toEqual([]);
+      expect(r.summary.worstVerdict).toBe('degraded');
     });
 
     it('isSubstrateOwnerProcessForTest:false + a fresh resolveRemoteBootedHandles ⇒ uses the remote handles', () => {

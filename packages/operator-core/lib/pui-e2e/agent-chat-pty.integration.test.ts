@@ -663,7 +663,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop().catch(() => {}); }
   });
 
-  test('first draft waits for delayed engine readiness and sends once without another Enter', async () => {
+  test('delayed readiness sends the first draft once and accepts a follow-up after completion', async () => {
     let releaseInitialization!: () => void;
     scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
     const prompt = '  PUI delayed startup draft λ  ';
@@ -685,6 +685,15 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(scriptedEngine.requests).toEqual([prompt]);
       expect((await waitForSavedTurn(prompt)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
       expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')).toHaveLength(1);
+      const followup = 'PUI follow-up after waiting-for-owner';
+      scriptedEngine.successText = 'PUI follow-up completed';
+      pane.write(followup);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText);
+      await pane.waitFor('Message — Enter send');
+      expect(scriptedEngine.requests).toEqual([prompt, followup]);
+      expect(commandPosts).toHaveLength(2);
+      expect((await waitForSavedTurn(followup)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(2);
     } finally {
       releaseInitialization();
       await pane.stop();

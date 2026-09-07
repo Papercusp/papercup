@@ -21,7 +21,7 @@ import { withWorkspace } from '@papercusp/db-org';
 import { readPlanBySlug } from './source';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
-import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
+import { harnessMismatchForMiss, recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { reconcileStartStatus } from './plan-start-state';
 import { hashPlanContent } from './content-hash';
@@ -57,17 +57,8 @@ import { evidenceCurrentInputSchema } from './spec-evidence-store';
  */
 const PLANS_GET_SOFT_TTL_MS = 45_000;
 
-interface PlanHarnessMismatch {
-  callerHarness: string;
-  reportedHarness?: string;
-  availableHarnesses: string[];
-  /** Whether the caller NAMED the searched harness, or inherited it from the session. */
-  harnessSource: 'explicit' | 'ambient';
-  warning: string;
-}
-
 /**
- * Explain a miss caused by a concrete harness that does not own the exact slug.
+ * Harness-mismatch disclosure is implemented in the shared slug-scope helper.
  *
  * A resumed/cold loop can retain a concrete harness from an earlier task, and a
  * carried checkpoint can name the wrong one outright. Do not silently rebind the
@@ -83,42 +74,6 @@ interface PlanHarnessMismatch {
  * caller re-passes the right harness or omits it to auto-resolve, while an
  * ambient caller has to name one to escape the inherited scope).
  */
-async function harnessMismatchForMiss(
-  ctx: unknown,
-  callerHarness: string,
-  slug: string,
-  harnessSource: 'explicit' | 'ambient',
-): Promise<PlanHarnessMismatch | null> {
-  try {
-    const decision = await recoverHarnessFromSlugs(ctx, [slug]);
-    if (decision.status !== 'resolved') return null;
-    const availableHarnesses = decision.ambiguous[slug] ?? [decision.harnessSlug];
-    if (availableHarnesses.includes(callerHarness)) return null;
-    const reportedHarness = availableHarnesses.length === 1 ? availableHarnesses[0] : undefined;
-    const target = reportedHarness
-      ? `harness '${reportedHarness}'`
-      : `harnesses ${availableHarnesses.map((h) => `'${h}'`).join(', ')}`;
-    const suggested = reportedHarness ?? availableHarnesses[0];
-    const searched =
-      harnessSource === 'explicit'
-        ? `plans:get searched harness '${callerHarness}' because you passed harness:'${callerHarness}' for '${slug}', `
-        : `plans:get searched ambient harness '${callerHarness}' for '${slug}', `;
-    const remedy =
-      harnessSource === 'explicit'
-        ? `Pass harness:'${suggested}' instead, or omit harness to auto-resolve the owning harness from the slug.`
-        : `Pass harness:'${suggested}' to read that plan explicitly.`;
-    return {
-      callerHarness,
-      ...(reportedHarness ? { reportedHarness } : {}),
-      availableHarnesses,
-      harnessSource,
-      warning: `${searched}but the exact slug is stored under ${target}. ${remedy}`,
-    };
-  } catch {
-    return null;
-  }
-}
-
 // + overwatch (overwatch-role-2026-06-15 B-01): the system-health supervisor reads full
 // plans to ground its nudges (read-only — its cap is plans:read, never plans:write).
 // + worker/cup (EI-939): a pipeline worker or generic Hive worker told to "mark plan

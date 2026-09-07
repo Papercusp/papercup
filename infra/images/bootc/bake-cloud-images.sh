@@ -38,6 +38,10 @@
 #   --release-root DIR   extracted vm-release tree to bake into the optional P-305 image target.
 #   --release-version V  version directory name for --release-root (both options are required
 #                        together; omitting both preserves the P-306/P-307 OS-only image).
+#   --source-image REF   reuse an already-verified local image instead of rebuilding it. The
+#                        source is retagged and pushed, then the normal registry-digest,
+#                        supply-chain and render gates still run. Mutually exclusive with the
+#                        release-root options because those inputs are already baked into REF.
 #   --insecure-registry  plain-HTTP / self-signed registry (local testing only).
 #   --dry-run            resolve and PLAN every step, run no build and no bake. Prints the same
 #                        digest-pinned refs the real run would use.
@@ -94,7 +98,7 @@ declare -A CLOUD_FILE=( [gcp]=image/disk.raw [aws]=image/disk.raw [azure]=vhd/di
 declare -A CLOUD_SHA=() CLOUD_BYTES=()
 
 REGISTRY=""; KEY=""; PUBKEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
-RELEASE_ROOT=""; RELEASE_VERSION=""
+RELEASE_ROOT=""; RELEASE_VERSION=""; SOURCE_IMAGE=""
 INSECURE=0; DRY_RUN=0
 BIB_IMG="${BOOTC_IMAGE_BUILDER:-quay.io/centos-bootc/bootc-image-builder:latest}"
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
@@ -111,6 +115,7 @@ while [ $# -gt 0 ]; do
     --out) OUT="${2:-}"; shift 2;;
     --release-root) RELEASE_ROOT="${2:-}"; shift 2;;
     --release-version) RELEASE_VERSION="${2:-}"; shift 2;;
+    --source-image) SOURCE_IMAGE="${2:-}"; shift 2;;
     --insecure-registry) INSECURE=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
     -h|--help) sed -n '1,45p' "$0"; exit 0;;
@@ -136,6 +141,8 @@ if [ -n "$RELEASE_ROOT" ] || [ -n "$RELEASE_VERSION" ]; then
   [ "${#RELEASE_VERSION}" -le 128 ] \
     || die "--release-version must be at most 128 characters"
 fi
+[ -z "$SOURCE_IMAGE" ] || { [ -z "$RELEASE_ROOT" ] && [ -z "$RELEASE_VERSION" ]; } \
+  || die "--source-image is mutually exclusive with --release-root/--release-version"
 case "$REGISTRY" in
   *' '*|*'<'*) die "--registry '$REGISTRY' is not a registry namespace";;
   */) die "--registry must not end in '/'";;
@@ -264,11 +271,21 @@ need_tool syft  "$SYFT_RESOLVED"
 need_tool grype "$GRYPE_RESOLVED"
 export SYFT_BIN="$SYFT_RESOLVED" GRYPE_BIN="$GRYPE_RESOLVED"
 
-# ── 1. Build the image ONCE ───────────────────────────────────────────────────────────────────
+# ── 1. Establish the image ONCE ───────────────────────────────────────────────────────────────
 # The registry namespace is substituted into policy.json + registries.d INSIDE the build (layer
 # 3), all-or-nothing, so an image either names the real registry in both files or fails closed
 # in both. Passing it here is what makes the built image able to verify its own upgrades.
-if [ "$DRY_RUN" -eq 1 ]; then
+if [ -n "$SOURCE_IMAGE" ] && [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: would require local source image=$SOURCE_IMAGE, retag it as $REPO:$TAG, and push it"
+elif [ -n "$SOURCE_IMAGE" ]; then
+  echo "### 1/4 reuse verified local image (no rebuild)"
+  "${PODMAN[@]}" image exists "$SOURCE_IMAGE" \
+    || { echo "BAKE_RESULT=FAILED source image absent from local storage: $SOURCE_IMAGE"; exit 1; }
+  "${PODMAN[@]}" tag "$SOURCE_IMAGE" "$REPO:$TAG" \
+    || { echo "BAKE_RESULT=FAILED retag source image"; exit 1; }
+  "${PODMAN[@]}" push "${TLS[@]}" "$REPO:$TAG" \
+    || { echo "BAKE_RESULT=FAILED push"; exit 1; }
+elif [ "$DRY_RUN" -eq 1 ]; then
   if [ -n "$RELEASE_ROOT" ]; then
     echo "DRY_RUN: would include release root=$RELEASE_ROOT version=$RELEASE_VERSION via target=workspace-host-release"
   fi

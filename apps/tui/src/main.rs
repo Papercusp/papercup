@@ -5206,15 +5206,9 @@ async fn send_su_turn_with_client(
                 return;
             }
         };
-        if !snapshot.executor_attached
-            || !snapshot.stream_ready
-            || snapshot.terminal
-            || !matches!(
-                snapshot.descriptor.lifecycle,
-                crate::su_session::SuSessionLifecycleState::Ready
-                    | crate::su_session::SuSessionLifecycleState::Running
-            )
-        {
+        // A connected engine remains usable while waiting for its next owner
+        // turn or after interruption; readiness is separate from that lifecycle.
+        if !snapshot.executor_attached || !snapshot.stream_ready || snapshot.terminal {
             fail(
                 "Session is not ready. Draft retained; reconnect to retry.".into(),
                 false,

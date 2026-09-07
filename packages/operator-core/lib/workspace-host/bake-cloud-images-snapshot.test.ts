@@ -41,6 +41,7 @@ function runFixture(
   script: string,
   render: 'raw' | 'archive' | 'empty' | 'stale' = 'raw',
   release?: { root?: string; version?: string },
+  sourceImage?: { ref: string; exists?: boolean },
 ): {
   status: number;
   output: string;
@@ -48,6 +49,7 @@ function runFixture(
   outFiles: string[];
   manifest: unknown;
   buildArgs: string[];
+  podmanCalls: string[];
 } {
   const dir = mkdtempSync(join(tmpdir(), 'ei-223550-bake-'));
   const source = join(dir, 'bake-cloud-images.sh');
@@ -58,6 +60,7 @@ function runFixture(
   const buildMarker = join(dir, 'build-started');
   const supplyChainMarker = join(dir, 'supply-chain-ran');
   const buildArgsPath = join(dir, 'build-args');
+  const podmanCallsPath = join(dir, 'podman-calls');
   const key = join(dir, 'release.key');
   const pubkey = join(dir, 'release.pub');
   const releaseRoot = release?.root ?? join(dir, 'release-root');
@@ -84,6 +87,7 @@ function runFixture(
 set -euo pipefail
 subcommand="\${1:-}"
 shift || true
+printf '%s\\n' "$subcommand $*" >> "$BAKE_TEST_PODMAN_CALLS"
 
 case "$subcommand" in
   info)
@@ -104,6 +108,11 @@ case "$subcommand" in
     ;;
   image)
     [ "\${1:-}" = "exists" ]
+    if [ "\${2:-}" = "$BAKE_TEST_SOURCE_IMAGE" ] && [ "$BAKE_TEST_SOURCE_EXISTS" != "1" ]; then
+      exit 1
+    fi
+    ;;
+  tag)
     ;;
   run)
     is_skopeo=0
@@ -163,6 +172,7 @@ set -euo pipefail
   const optionalArgs: string[] = [];
   if (release?.root !== undefined) optionalArgs.push('--release-root', release.root);
   if (release?.version !== undefined) optionalArgs.push('--release-version', release.version);
+  if (sourceImage !== undefined) optionalArgs.push('--source-image', sourceImage.ref);
 
   const result = spawnSync(
     'bash',
@@ -189,6 +199,9 @@ set -euo pipefail
         BAKE_TEST_MUTATION_MARKER: mutationMarker,
         BAKE_TEST_BUILD_MARKER: buildMarker,
         BAKE_TEST_BUILD_ARGS: buildArgsPath,
+        BAKE_TEST_PODMAN_CALLS: podmanCallsPath,
+        BAKE_TEST_SOURCE_IMAGE: sourceImage?.ref ?? '',
+        BAKE_TEST_SOURCE_EXISTS: sourceImage?.exists === false ? '0' : '1',
         BAKE_TEST_SUPPLY_CHAIN_MARKER: supplyChainMarker,
         BAKE_TEST_RENDER: render,
         RELEASE_STORAGE_DRIVER: 'overlay',
@@ -210,6 +223,9 @@ set -euo pipefail
       : null,
     buildArgs: existsSync(buildArgsPath)
       ? readFileSync(buildArgsPath, 'utf8').split(/\r?\n/).filter(Boolean)
+      : [],
+    podmanCalls: existsSync(podmanCallsPath)
+      ? readFileSync(podmanCallsPath, 'utf8').split(/\r?\n/).filter(Boolean)
       : [],
   };
 }
@@ -270,6 +286,51 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
           'PAPERCUSP_RELEASE_VERSION=0.0.18-r21',
         ]),
       );
+    } finally {
+      rmSync(releaseRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses an explicitly named local image without rebuilding it', () => {
+    const sourceImage = 'localhost/p305-release-target-current:20260907-1010';
+    const result = runFixture(SOURCE, 'raw', undefined, { ref: sourceImage });
+
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain('reuse verified local image (no rebuild)');
+    expect(result.files).not.toContain('build-started');
+    expect(result.podmanCalls).toEqual(
+      expect.arrayContaining([
+        `image exists ${sourceImage}`,
+        `tag ${sourceImage} localhost/test/workspace-host:papercusp-workspace-host-20260907`,
+      ]),
+    );
+    expect(result.podmanCalls.some((call) => call.startsWith('build '))).toBe(false);
+  });
+
+  it('refuses a missing source image before tag, push, signing, or rendering', () => {
+    const sourceImage = 'localhost/missing:rollback';
+    const result = runFixture(SOURCE, 'raw', undefined, { ref: sourceImage, exists: false });
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(`source image absent from local storage: ${sourceImage}`);
+    expect(result.files).not.toContain('build-started');
+    expect(result.files).not.toContain('supply-chain-ran');
+    expect(result.podmanCalls).toEqual([`image exists ${sourceImage}`]);
+  });
+
+  it('refuses source-image plus release-root inputs before invoking Podman', () => {
+    const releaseRoot = mkdtempSync(join(tmpdir(), 'p305-mutually-exclusive-root-'));
+    try {
+      const result = runFixture(
+        SOURCE,
+        'raw',
+        { root: releaseRoot, version: '0.0.18-r21' },
+        { ref: 'localhost/existing:r21' },
+      );
+
+      expect(result.status).toBe(2);
+      expect(result.output).toContain('--source-image is mutually exclusive with --release-root/--release-version');
+      expect(result.podmanCalls).toEqual([]);
     } finally {
       rmSync(releaseRoot, { recursive: true, force: true });
     }
