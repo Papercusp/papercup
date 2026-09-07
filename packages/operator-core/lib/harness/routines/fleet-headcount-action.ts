@@ -1251,6 +1251,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       // transiently claims the parent plan item before scheduler:get_next runs.
       planSlug: null,
       model: modelSpec,
+      modelSource: config.agent === 'codex' ? (modelSpec ? 'explicit' : 'configured-default') : null,
       effort: modelEffortFromSpec(modelSpec),
       account: effectiveAccount,
       carry: config.carry ?? 'warm',

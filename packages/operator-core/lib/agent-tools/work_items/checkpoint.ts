@@ -189,6 +189,7 @@ import {
   splitCarryNoteWalls,
   truncateCarryField,
   withCarryNoteChecks,
+  withCarryNoteWalls,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { describeUnreadRun } from '../../carry-note-unread-run';
@@ -1485,8 +1486,16 @@ export default defineTool({
           // The rows are NOT lost by stripping here: the transform below recovers them
           // from the stored prior note, which the store reads inside its own locked
           // transaction.
-          const priorBody = appendPriorRaw !== null ? splitCarryNoteChecks(appendPriorRaw).body : null;
-          checkpointToStore = joinCheckpoint(priorBody, joinAddendum);
+          // Walls are rendered as the final section. Joining after a trailing Walls
+          // section makes the addendum look like wall-section content, so the parser
+          // drops it as an unparseable wall row and the body-preservation guard reports
+          // a false `append_body_overflow`. Remove both structured sections before the
+          // join, then reattach walls after the new body; the locked transform below
+          // reattaches checks in their canonical before-walls position.
+          const { body: priorBody, walls: priorWalls } = splitCarryNoteWalls(
+            appendPriorRaw !== null ? splitCarryNoteChecks(appendPriorRaw).body : null,
+          );
+          checkpointToStore = withCarryNoteWalls(joinCheckpoint(priorBody, joinAddendum), priorWalls);
         }
         // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
         // read-scoping wildcard) — passing it straight through as `?? undefined`

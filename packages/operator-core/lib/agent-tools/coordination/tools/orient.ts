@@ -819,7 +819,7 @@ function annotateDegradedFleetAssignments(
   outcome: { degraded: boolean; reason?: 'timeout' | 'error'; errorMessage?: string },
 ): unknown {
   const isObject = value && typeof value === 'object' && !Array.isArray(value);
-  const record =
+  const record: Record<string, unknown> =
     isObject
       ? { ...(value as Record<string, unknown>) }
       : { ok: false, agents: [] as unknown[] };

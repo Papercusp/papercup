@@ -226,7 +226,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
   });
 
   it('declares both runtime membersTruncated representations in the result contract', () => {
-    const resultSchema = (leaderBriefTool as {
+    const resultSchema = (leaderBriefTool as unknown as {
       result: { safeParse: (value: unknown) => { success: boolean } };
     }).result;
     const shaped = shapeLeaderBrief(largeBrief(), 'trimmed') as Record<string, unknown>;

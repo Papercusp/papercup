@@ -7,6 +7,8 @@ Work item: `WI-2147072` / P-008. This is an in-progress evidence record; shipmen
 
 Acceptance rubric revision 5 preserves the seven existing outcomes and adds the required test layers. Independent approval is WI-10000444, thread-post:200074. A fresh complete amendment preview matched that approval before the CAS write from rubric 4 / plan 52. The resulting bar-set hash is `ca3298f63363387825eb41a28d0e69705d0b4c995a9bf26997073191cdce328f`.
 
+The current rubric is revision **6**. It adds the concrete structured-check files requested in independent critique WI-10000492 / comment200159 and clarifies the external GUI-journey evidence. BAR meanings, hashes, required layers and evidence planes are unchanged. Independent follow-up WI-10000511 / comment200173 passes all six meta criteria. The new meta attestation is EI-22595027678539732; its grading-integrity audit remains required.
+
 R-1 through R-5 require tree evidence. R-6 additionally requires containing deployment evidence. R-7 additionally requires a real cockpit journey; staging or an isolated current build is admissible. Component tests cannot satisfy that journey. Decisions D-011 and D-015 retain unexercised live-agent behavior and canary residue.
 
 ## Current automated execution
@@ -14,6 +16,8 @@ R-1 through R-5 require tree evidence. R-6 additionally requires containing depl
 The repository test router ran 15 files, comprising acceptance unit/component checks and the owner-report / goals PostgreSQL integration checks, at `ddb59a866e`, starting 2026-09-07T08:54:14.620Z and completing by 09:00:10Z. All 419 tests passed: 277 core unit tests, 113 component tests, and 29 real-PostgreSQL integration tests. No tests were skipped; the named paths were clean before and after. Full execution log: `/tmp/wi2147072-acceptance-tests-0854.log`.
 
 The additional event-await store and unanswered-directed PostgreSQL tests passed 100/100, with zero skips, at the same clean revision. Execution ran from 09:06:25Z to 09:10:19Z; log: `/tmp/wi2147072-recovery-tests-0906.log`. The implementation files recorded by the proof bindings have no diff from `ddb59a866e` at the subsequent verification read.
+
+The newly bound launch-agent / launch-on-plan checks passed 290 tests and the OMP injection checks passed 60 tests, with zero skips, at `e9f641f0a5`. Log: `/tmp/wi2147072-check-binding-tests-0927.log`.
 
 The separate provider, evaluator, leader brief, and brief-shape run passed 307 tests at `98d9146953` with no skips. Its 234 leader-brief tests supplement the checks above. The provider, evaluator, and leader-brief implementation files have no diff between that revision and `ddb59a866e`.
 
@@ -51,7 +55,7 @@ Still required: complete rubric vetting repairs and independent implementation g
 
 ## Proof binding index
 
-The following test bindings were written to the canonical evidence ledger against spec revision 2. Each row stores its exact source and test fingerprints, test file list, execution log, test layer, and tree evidence plane. R-6 still needs deployed evidence; R-7 still needs live E2E evidence. Full payload: `/tmp/wi2147072-proof-bindings-0906.json`.
+The table below records the historical spec-revision-2 bindings. Revision 6 projected every clause to **spec revision 3**. Forty current bindings, IDs **1344–1383**, retain the unchanged test and GUI observations and add the launch / OMP witnesses; their complete payload is `/tmp/wi2147072-proof-bindings-r6.json`. All 19 current clauses passed `plans:evaluate-spec-test-adequacy` with explicit current fingerprints (zero fail/unknown). This adequacy result does not supply the missing R-6 deployment proof or independent implementation acceptance. The old binding payload remains `/tmp/wi2147072-proof-bindings-0906.json`.
 
 | BAR / item | Layer | Binding ID |
 | --- | --- | ---: |
@@ -90,3 +94,11 @@ The following test bindings were written to the canonical evidence ledger agains
 | R-7 / P-007 | live E2E, GUI record | 1341 |
 | R-7 / P-008 | live E2E, GUI record | 1342 |
 | R-7 / P-009 | live E2E, GUI record | 1343 |
+
+The following anchors identify the additional current-revision check witnesses in the forty-row payload:
+
+- <a id="R-2-P-003-additional-checks-e9f641f0a5"></a>R-2 / P-003: launch-agent and launch-on-plan no-write controls.
+- <a id="R-2-P-006-additional-checks-e9f641f0a5"></a>R-2 / P-006: the same concrete launch-boundary checks.
+- <a id="R-2-P-007-additional-checks-e9f641f0a5"></a>R-2 / P-007: the same integrated launch-boundary checks.
+- <a id="R-5-P-004-additional-checks-e9f641f0a5"></a>R-5 / P-004: OMP port budget and hung-dispatch controls.
+- <a id="R-5-P-007-additional-checks-e9f641f0a5"></a>R-5 / P-007: the same injection-port controls.

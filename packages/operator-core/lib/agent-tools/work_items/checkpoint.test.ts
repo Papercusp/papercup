@@ -17,7 +17,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
 // truthful at the boundary, not about the boundary sitting at any particular number.
-import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, withCarryNoteChecks } from '../../carry-note';
+import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, withCarryNoteChecks, withCarryNoteWalls } from '../../carry-note';
 
 const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -812,6 +812,25 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       // The detailed prior record survives verbatim inside the stored text — the exact
       // failure EI-9036 reported (an addendum call silently wiping it) cannot happen.
       expect(r.storedHead).toContain('detailed 4-file build record');
+    });
+
+    it('append:true keeps the addendum outside a trailing Walls section', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      const prior = withCarryNoteWalls('prior narrative', [
+        { claim: 'the gate remains open', recheck: 'recheck the gate' },
+      ]);
+      getWorkItemCheckpoint.mockResolvedValueOnce(prior);
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+
+      const r = await one({ id: 'WI-7', checkpoint: 'new progress', append: true });
+
+      expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: false, verified: true });
+      const stored = setWorkItemCheckpoint.mock.calls.at(-1)?.[1] as string;
+      expect(stored).toContain('prior narrative');
+      expect(stored).toContain('new progress');
+      expect(stored).toContain('## Walls');
+      expect(stored.indexOf('new progress')).toBeLessThan(stored.indexOf('## Walls'));
+      expect(stored).toContain('the gate remains open');
     });
 
     it('append:true with NO prior checkpoint just stores the addendum as-is (no leading separator)', async () => {
