@@ -3114,9 +3114,12 @@ fi
 # PATCH /api/desktop/setup-wizard-state is an idempotent merge-update (the same
 # write the wizard's finish step and the onboarding tutor already perform), so
 # this seed cannot drift from the storage shape the way a hand-written INSERT
-# against harness_shared.setup_wizard_state would. Driving it from INSIDE the
-# webview reuses the origin the health gate just proved, so there is no second
-# port to resolve and no auth posture to reproduce.
+# against harness_shared.setup_wizard_state would. Drive the already-proven
+# wrapper-owned loopback origin directly: the bridge client hard-bounds every
+# eval RPC at 5s, which is shorter than a legitimate PATCH+GET can take on a
+# loaded verifier host. The explicit 30s HTTP bound below preserves a finite
+# failure while keeping the response/status evidence that a bridge timeout used
+# to erase.
 #
 # It then RE-READS the state and refuses to hand back the shell unless the gate
 # actually flipped. Without that read-back a failed seed is invisible: the
@@ -3124,23 +3127,51 @@ fi
 # the assertion fails somewhere far from the cause — the same silent-false-green
 # shape the origin-health gate above exists to prevent.
 if [ "$ISOLATED_SEED" = "ready" ]; then
-  SEED_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
-    (async function () {
-      var stamp = new Date().toISOString();
-      var patchStatus = await fetch('/api/desktop/setup-wizard-state', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ finished_at: stamp })
-      }).then(function (r) { return r.status; }).catch(function (e) { return 'ERR:' + e.message; });
-      var after = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' })
-        .then(function (r) { return r.json(); })
-        .catch(function () { return null; });
-      return JSON.stringify({
-        patchStatus: patchStatus,
-        finishedAt: (after && typeof after.finished_at === 'string') ? after.finished_at : null
-      });
-    })()
-  " 2>&1)" || SEED_JSON=""
+  SEED_URL="http://127.0.0.1:$DEV_PORT/api/desktop/setup-wizard-state"
+  if ! SEED_JSON="$(node - "$SEED_URL" 2>&1 <<'READY_SEED_JS'
+const url = process.argv[2];
+const timeoutMs = 30_000;
+const clip = (value) => String(value ?? '').slice(0, 2_000);
+
+try {
+  const stamp = new Date().toISOString();
+  const patch = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ finished_at: stamp }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const patchBody = await patch.text();
+  const read = await fetch(url, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const getBody = await read.text();
+  let after = null;
+  try { after = JSON.parse(getBody); } catch {}
+  const finishedAt = after && typeof after.finished_at === 'string'
+    ? after.finished_at
+    : null;
+  process.stdout.write(JSON.stringify({
+    patchStatus: patch.status,
+    getStatus: read.status,
+    patchBody: clip(patchBody),
+    getBody: clip(getBody),
+    finishedAt,
+  }));
+  if (!patch.ok || !read.ok || !finishedAt) process.exitCode = 1;
+} catch (error) {
+  process.stdout.write(JSON.stringify({
+    error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+  }));
+  process.exitCode = 1;
+}
+READY_SEED_JS
+  )"; then
+    echo "FATAL: VERIFY_TAURI_ISOLATED_SEED=ready endpoint transaction failed." >&2
+    echo "       PATCH/GET status, body, or transport evidence: $SEED_JSON" >&2
+    exit 1
+  fi
   # Assert the READ-BACK, not the PATCH status: a 200 that did not persist is
   # still an unseeded app, and the read-back is what the root route consults.
   if ! grep -Eq '"finishedAt"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$SEED_JSON"; then

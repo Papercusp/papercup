@@ -44,6 +44,9 @@ import { describe, expect, it } from 'vitest';
 const SCRIPT =
   process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+const readySeedStart = src.indexOf('if [ "$ISOLATED_SEED" = "ready" ]; then');
+const readySeedEnd = src.indexOf('export VERIFY_TAURI_SEED="$ISOLATED_SEED"', readySeedStart);
+const readySeedBlock = src.slice(readySeedStart, readySeedEnd);
 
 describe('EI-20191599988350937 — opt-in ready-app seed for isolated verification', () => {
   it('is the right script (guards a vacuous suite)', () => {
@@ -99,10 +102,29 @@ describe('EI-20191599988350937 — opt-in ready-app seed for isolated verificati
     expect(src).toMatch(/could not mark onboarding complete/);
   });
 
+  it('uses a bounded owned-origin HTTP transaction instead of the bridge client’s 5s eval', () => {
+    expect(readySeedStart).toBeGreaterThan(-1);
+    expect(readySeedEnd).toBeGreaterThan(readySeedStart);
+    expect(readySeedBlock).toContain(
+      'SEED_URL="http://127.0.0.1:$DEV_PORT/api/desktop/setup-wizard-state"',
+    );
+    expect(readySeedBlock).toContain('const timeoutMs = 30_000;');
+    expect(readySeedBlock).toContain('AbortSignal.timeout(timeoutMs)');
+    expect(readySeedBlock).not.toContain('$VERIFY_TAURI_AGENT_TOOLS_BIN');
+  });
+
+  it('retains PATCH/GET status and body evidence instead of replacing a failure with an empty result', () => {
+    expect(readySeedBlock).toContain('patchStatus: patch.status');
+    expect(readySeedBlock).toContain('getStatus: read.status');
+    expect(readySeedBlock).toContain('patchBody: clip(patchBody)');
+    expect(readySeedBlock).toContain('getBody: clip(getBody)');
+    expect(readySeedBlock).not.toContain('|| SEED_JSON=""');
+    expect(readySeedBlock).toContain('PATCH/GET status, body, or transport evidence: $SEED_JSON');
+  });
+
   it('fails the run rather than handing back a shell that still redirects', () => {
-    const seedBlock = src.slice(src.indexOf('if [ "$ISOLATED_SEED" = "ready" ]; then'));
-    expect(seedBlock).toMatch(/Refusing to hand back a shell/);
-    expect(seedBlock.slice(0, seedBlock.indexOf('log "ready-app seed VERIFIED'))).toMatch(
+    expect(readySeedBlock).toMatch(/Refusing to hand back a shell/);
+    expect(readySeedBlock.slice(0, readySeedBlock.indexOf('log "ready-app seed VERIFIED'))).toMatch(
       /exit 1/,
     );
   });
