@@ -662,11 +662,16 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       expect(recipe).toBeDefined();
       const args = evaluatorArgsSchema.parse(recipe!.args);
       expect(args.harness).toBe('papercusp');
+      const rerunCurrent = Array.isArray(args.current)
+        ? args.current
+        : args.current?.supplied
+          ? args.current.fingerprints
+          : undefined;
       const rerun = evaluateSpecTestAdequacy({
         clause: clause(),
-        evidence: reload(args.current),
+        evidence: reload(rerunCurrent),
         harness: args.harness,
-        current: args.current,
+        current: rerunCurrent,
         classRef: args.classRef,
       });
       expect(original.evidenceRefs).toEqual([selected.evidenceRef]);
