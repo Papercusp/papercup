@@ -865,6 +865,11 @@ pub fn decode_su_session_stream(
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Some(frame) = frames.recv().await {
+            // The shared SSE transport sends an initial heartbeat before its
+            // replay, plus periodic keepalives. These carry no session event.
+            if frame.event == "heartbeat" {
+                continue;
+            }
             if tx.send(decode_su_session_event(&frame)).is_err() {
                 return;
             }
@@ -946,6 +951,51 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn su_stream_keepalives_do_not_hide_replay_or_protocol_errors() {
+        let (tx, frames) = mpsc::unbounded_channel();
+        let mut events = decode_su_session_stream(frames);
+        tx.send(SseFrame {
+            event: "heartbeat".into(),
+            data: "{\"tsMs\":1}".into(),
+        })
+        .unwrap();
+        tx.send(envelope(
+            "lifecycle",
+            json!({"state":"ready", "runtimeGeneration":1}),
+        ))
+        .unwrap();
+        tx.send(SseFrame {
+            event: "heartbeat".into(),
+            data: "{\"tsMs\":2}".into(),
+        })
+        .unwrap();
+        let mut bad = envelope("lifecycle", json!({"state":"ready", "runtimeGeneration":1}));
+        let mut payload: Value = serde_json::from_str(&bad.data).unwrap();
+        payload["protocolVersion"] = json!(999);
+        bad.data = payload.to_string();
+        tx.send(bad).unwrap();
+        drop(tx);
+        assert!(matches!(
+            events.recv().await.unwrap().unwrap(),
+            SuSessionEvent::Lifecycle {
+                state: SuSessionLifecycleState::Ready,
+                ..
+            }
+        ));
+        assert!(
+            events.recv().await.unwrap().is_err(),
+            "unknown protocol remains an error"
+        );
+        assert!(events
+            .recv()
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("stream closed"));
     }
 
     #[test]
