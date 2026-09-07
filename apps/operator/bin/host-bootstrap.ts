@@ -265,19 +265,37 @@ async function stopPackagedMcpProxy(): Promise<void> {
  * boot-window class of WI-5441 (WI-5441 post 53143).
  *
  * A request-only host (PAPERCUSP_BACKGROUND_WORKERS=0 — the :3170 staging
- * operator, or a cluster-mode worker) never runs `applyPendingMigrationsAtBoot`
- * itself, so it returns immediately without waiting: migrations there are the
- * background-workers host's job, not this process's. On a backgroundWorkers
- * host it polls the boot-gate flag flipped right after
- * `applyPendingMigrationsAtBoot()` returns (see the substrate-boot IIFE
- * above), and — matching this whole boot path's log-and-continue
- * philosophy — a timeout is logged and swallowed rather than wedging boot:
- * a permanently-stuck flag (e.g. because `backgroundWorkersEnabled()` raced
- * true→false, which does not happen in practice) must never turn into a
- * process that never serves traffic.
+ * operator, or a cluster-mode worker) runs the same advisory-lock-coordinated
+ * `applyPendingMigrationsAtBoot` preflight here before it can serve. This is
+ * schema setup, not shared-DB background machinery, and is deliberately
+ * repeated per request process so a request-only host cannot silently depend
+ * on a background host that may be absent or stale. A null/failed result is
+ * rejected by the caller, which refuses to start HTTP rather than serving code
+ * against an unresolved schema. On a backgroundWorkers host it polls the
+ * boot-gate flag flipped right after `applyPendingMigrationsAtBoot()` returns
+ * (see the substrate-boot IIFE above), and — matching this whole boot path's
+ * log-and-continue philosophy — a timeout is logged and swallowed rather than
+ * wedging boot: a permanently-stuck flag must never turn into a process that
+ * never serves traffic.
  */
 export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void> {
-  if (!backgroundWorkersEnabled()) return;
+  if (!backgroundWorkersEnabled()) {
+    const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
+    const migrationResult = await applyPendingMigrationsAtBoot();
+    if (!migrationResult || migrationResult.failed.length > 0) {
+      const failureSummary = migrationResult
+        ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
+            .map((failure) => `${failure.file}: ${failure.error}`)
+            .join('; ')}`
+        : 'migration state could not be determined';
+      throw new Error(`[host-bootstrap] request-only migration preflight failed: ${failureSummary}`);
+    }
+    const { markMigrationsAppliedForRequestGate } = await import(
+      '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
+    );
+    markMigrationsAppliedForRequestGate();
+    return;
+  }
   try {
     const { awaitMigrationsAppliedForRequestGate } = await import(
       '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'

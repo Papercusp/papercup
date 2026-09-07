@@ -1075,8 +1075,9 @@ describe('buildTenantScopeAdvisory — test_runs gate-triage trap (EI-1932463348
 // workspace_id/harness_slug ⇒ correctly scoped" heuristic — those columns are NULL-by-design for
 // every CI/dogfood-reporter row (env-derived, stamped only by the per-hive ingestion route,
 // migration 413), so following the generic advisory's own suggested predicate silently excludes
-// every gate row and reads as a clean "no failures". test_runs gets its own advisory instead,
-// which fires even when workspace_id/harness_slug ARE mentioned and clears only on source/commit_sha.
+// every gate row and reads as a clean "no failures". Local/admin-ui rows may now carry explicit
+// tenant fields, so test_runs gets its own advisory instead: it fires for broad/partial reads and
+// clears on source/commit_sha or an exact run-group fence carrying both tenant predicates.
 describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-19324633485547042)', () => {
   beforeEach(() => clearTenantScopeSchemaCache());
 
@@ -1102,6 +1103,18 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     );
     expect(advisory).toContain('test_runs');
     expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('allows an exact run-group read fenced by both explicit tenant predicates', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, file_path, status FROM harness_shared.test_runs " +
+        "WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' " +
+        "AND run_group_id = 'dream-p005-authorization-20260907' LIMIT 10",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
   });
 
   it('is silent once the query scopes by source', async () => {

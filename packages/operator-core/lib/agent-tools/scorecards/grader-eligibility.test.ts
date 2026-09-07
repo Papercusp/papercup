@@ -141,6 +141,9 @@ describe('resolveAcceptanceGraderEligibility sole-vetting-critic rail (EI-221823
       workspaceId: 'ws-test',
     });
     expect(result.refusal?.code).toBe('grader_is_sole_vetting_critic');
+    expect(result.refusal?.error).toContain('second genuinely independent critic');
+    expect(result.refusal?.error).toContain('other supported vetting channel (consult or work-item)');
+    expect(result.refusal?.error).toContain('current rubric revision');
   });
 
   it('CONTROL (regression guard): two channel attestations that resolve to ONE lineage are still refused', async () => {

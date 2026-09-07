@@ -25,11 +25,12 @@ interface EnsureFlags {
    * bench reapers, substrate boot itself) runs — deliberately a narrower,
    * earlier signal than sql_migrations_complete/runtime_ensure_complete
    * above (those additionally wait on the substrate boot-gate flip, which is
-   * unrelated and would delay request-serving for no reason). Only a
-   * backgroundWorkers-enabled process ever sets this; a request-only host
-   * (PAPERCUSP_BACKGROUND_WORKERS=0) never runs applyPendingMigrationsAtBoot()
-   * itself and must not wait on it — see waitForBootMigrationGate in
-   * host-bootstrap.ts, which checks backgroundWorkersEnabled() first.
+   * unrelated and would delay request-serving for no reason). A background
+   * process marks this after its boot migration runner completes; a
+   * request-only host runs the same coordinated preflight in
+   * waitForBootMigrationGate before marking its own process-local flag.
+   * Each request-serving process keeps its own flag because globalThis is not
+   * shared across cluster workers.
    */
   request_gate_migrations_applied?: boolean;
 }

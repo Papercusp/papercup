@@ -48,6 +48,10 @@ export default defineTool({
     targetVersion: z.string().max(200).optional().describe('Previously installed version or package content hash; required for rollback.'),
     activationStack: z.array(z.string().min(1).max(120)).max(40).optional()
       .describe('Ids already selected for a combined install-and-activate preflight. Library-only install permits alternatives.'),
+    potSlug: z.string().min(1).max(120).optional()
+      .describe('Target pot for install-time capability-class grant resolution; required when the identity declares grants.'),
+    capabilityProviderSelections: z.record(z.string(), z.string().min(1)).optional()
+      .describe('Explicit provider choices keyed by exact class@version ref; values are provider package or package@version.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
@@ -87,6 +91,12 @@ export default defineTool({
       ...(args.blueprintId ? { blueprintId: args.blueprintId } : {}),
       ...(args.targetVersion ? { targetVersion: args.targetVersion } : {}),
       ...(args.activationStack ? { activationStack: args.activationStack } : {}),
+      workspaceId: subject,
+      ...(args.potSlug ? { potSlug: args.potSlug } : {}),
+      capabilityMode: 'agent',
+      ...(args.capabilityProviderSelections
+        ? { capabilityProviderSelections: args.capabilityProviderSelections }
+        : {}),
     });
 
     if (!outcome.ok) {
@@ -108,6 +118,7 @@ export default defineTool({
       activationPreflight: r.activationPreflight,
       activationRequired: r.operation === 'update',
       dependencies: r.dependencies,
+      capabilityGrants: r.capabilityGrants,
       ...(r.pluginInstalls.length > 0 ? { pluginInstalls: r.pluginInstalls } : {}),
       ...(r.blueprintInstalls.length > 0 ? { blueprintInstalls: r.blueprintInstalls } : {}),
     });

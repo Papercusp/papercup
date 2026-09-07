@@ -39,7 +39,7 @@ const engines: ClaudeSuEngine[] = [];
 afterEach(async () => { for (const engine of engines.splice(0)) { await engine.close(); engine.adapter.dispose(); } });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; initOnly?: boolean; wrongProbe?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
+function peer(config: { identity?: string; cwd?: string; connected?: boolean; holdInit?: boolean; holdMcp?: boolean; noAck?: boolean; holdResult?: boolean } = {}) {
   const output = new PassThrough({ objectMode: true });
   const prompts: SDKUserMessage[] = [];
   let receivedOptions: Options | undefined;
@@ -50,20 +50,10 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
     void (async () => {
       for await (const message of prompt) {
         prompts.push(message);
-        if (message.shouldQuery === false) {
-          if (config.holdInit) continue;
-          if (config.cwd || config.initOnly) {
-            output.write({ type: 'system', subtype: 'init', session_id: config.identity ?? nativeId, cwd: config.cwd ?? dir });
-          }
-          if (config.initOnly) {
-            output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
-            continue;
-          }
-          // The real CLI acknowledges transcript-only input without a query,
-          // system/init, or result. Never fabricate a model turn for readiness.
-          output.write({ ...message, isReplay: true, session_id: config.identity ?? nativeId,
-            uuid: config.wrongProbe ? 'unrelated-input' : message.uuid });
-        } else if (!config.noAck) {
+        if (!config.noAck) {
+          // A real CLI's turn metadata arrives only after a querying input.
+          // No transcript-only startup traffic is fabricated by this peer.
+          output.write({ type: 'system', subtype: 'init', session_id: config.identity ?? nativeId, cwd: config.cwd ?? dir });
           output.write(message);
           if (config.holdResult) continue;
           output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'Correlated reply' }] } });
@@ -73,8 +63,14 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
     })();
     return {
       [Symbol.asyncIterator]: () => output[Symbol.asyncIterator]() as AsyncIterator<SDKMessage>,
-      initializationResult: vi.fn(async () => ({ commands: [], agents: [], models: [], account: {}, output_style: 'default', available_output_styles: [] })),
-      mcpServerStatus: vi.fn(async () => [{ name: 'papercusp-su', status: config.connected === false ? 'failed' as const : 'connected' as const }]),
+      initializationResult: vi.fn(async () => {
+        if (config.holdInit) await new Promise(() => {});
+        return { commands: [], agents: [], models: [], account: {}, output_style: 'default', available_output_styles: [] };
+      }),
+      mcpServerStatus: vi.fn(async () => {
+        if (config.holdMcp) await new Promise(() => {});
+        return [{ name: 'papercusp-su', status: config.connected === false ? 'failed' as const : 'connected' as const }];
+      }),
       interrupt, close,
     };
   };
@@ -93,7 +89,7 @@ function command(engine: ClaudeSuEngine, type: 'owner_turn' | 'interrupt' | 'end
 }
 
 describe('structured Claude SU engine', () => {
-  it('requires the exact non-query receipt and SU tools before ready, without waiting for a model result', async () => {
+  it('requires initialized SDK controls and SU tools without inventing a startup model turn', async () => {
     const p = peer(); const engine = open(p);
     expect(engine.adapter.host.descriptor().lifecycle).toBe('starting');
     expect((await engine.adapter.host.acceptCommand(command(engine))).accepted).toBeNull();
@@ -102,8 +98,7 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.snapshot()).toMatchObject({ executorAttached: true, streamReady: true });
     expect(p.options()).toMatchObject({ sessionId: nativeId, cwd: dir, env: boot.envelopeEnv });
     expect(p.options()?.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent', 'Workflow']));
-    expect(p.prompts).toHaveLength(1);
-    expect(p.prompts[0]).toMatchObject({ isSynthetic: true, shouldQuery: false });
+    expect(p.prompts).toHaveLength(0);
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript')).toBe(false);
   });
 
@@ -112,8 +107,8 @@ describe('structured Claude SU engine', () => {
     const result = await engine.adapter.host.startCommand(command(engine)).terminal;
     expect(result.status).toBe('completed');
     await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
-    expect(p.prompts[1].message.content).toBe('  hi 雪\n\n');
-    expect(p.prompts[1].origin).toEqual({ kind: 'human' });
+    expect(p.prompts[0].message.content).toBe('  hi 雪\n\n');
+    expect(p.prompts[0].origin).toEqual({ kind: 'human' });
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
       type: 'transcript', role: 'assistant', turnId: 'owner-turn-1', content: 'Correlated reply',
     }));
@@ -132,26 +127,29 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({ type: 'transcript', turnId: 'owner-turn-1', content: 'first reply' }));
   });
 
-  it.each([{ identity: 'other-session' }, { cwd: '/another-project' }, { connected: false }])('cleans up a failed readiness check: %j', async (config) => {
-    const p = peer(config); const engine = open(p);
+  it('cleans up a disconnected SU tool connection before ready', async () => {
+    const p = peer({ connected: false }); const engine = open(p);
     await expect(engine.ready).rejects.toThrow();
     expect(p.close).toHaveBeenCalled();
     expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'lifecycle' && event.state === 'ready')).toBe(false);
   });
 
-  it('bounds a stalled startup and closes its protocol peer', async () => {
-    const p = peer({ holdInit: true }); const engine = open(p, { startupTimeoutMs: 20 });
+  it.each([{ holdInit: true }, { holdMcp: true }])('bounds a stalled SDK control handshake and closes its peer: %j', async (config) => {
+    const p = peer(config); const engine = open(p, { startupTimeoutMs: 20 });
     await expect(engine.ready).rejects.toThrow('timed out');
     expect(p.close).toHaveBeenCalled();
     expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
   });
 
-  it.each([{ initOnly: true }, { wrongProbe: true }])('cannot replace the exact readiness receipt with other traffic: %j', async (config) => {
-    const p = peer(config); const engine = open(p, { startupTimeoutMs: 20 });
-    await expect(engine.ready).rejects.toThrow('timed out');
+  it.each([{ identity: 'other-session' }, { cwd: '/another-project' }])('refuses the first owner turn when its native identity or project differs: %j', async (config) => {
+    const p = peer(config); const engine = open(p); await engine.ready;
+    const result = await engine.adapter.host.startCommand(command(engine)).terminal;
+    expect(result.status).toBe('refused');
+    await engine.done;
     expect(p.close).toHaveBeenCalled();
     expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
+    expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript' && event.role === 'assistant')).toBe(false);
   });
 
   it('converges an unexpected stream loss to a terminal failure', async () => {

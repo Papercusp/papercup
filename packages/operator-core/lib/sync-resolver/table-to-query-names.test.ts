@@ -84,6 +84,7 @@ describe('queryNamesForTriggerEvent', () => {
     // notifySyncInvalidate does NOT cover (a remote write never runs that handler).
     expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed')).toEqual([
       'hive.steering',
+      'learning.dream',
       'hive.beaconConsent',
     ]);
     expect(
@@ -91,7 +92,7 @@ describe('queryNamesForTriggerEvent', () => {
         workspace_id: 'w1',
         harness_slug: 'acme-hive',
       }),
-    ).toEqual(['hive.steering', { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } }]);
+    ).toEqual(['hive.steering', 'learning.dream', { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } }]);
   });
 
   it('maps harness_plans → the schedule queries (data-sync-push-completion P-002)', () => {

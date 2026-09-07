@@ -517,31 +517,38 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  * `harness_shared.test_runs` (EI-19324633485547042) does NOT fit either registry above. Unlike
  * {@link CORPUS_NAMESPACED_TABLES}, its `workspace_id`/`harness_slug` columns are NOT always-wrong
  * — rows ingested through the per-hive Tests-tab route (migration 413) genuinely carry real,
- * multi-tenant values. But every row from the CI / dogfood-admin-ui vitest reporter — the
- * population that matters for GATE triage — has BOTH columns NULL by construction: they are
- * env-derived (`libs/test-config/src/admin-test-runs-reporter.ts`) and that writer never stamps
- * them. So the generic heuristic's own signal of "correctly scoped" (the query MENTIONS
- * workspace_id/harness_slug) is backwards here: adding that predicate — exactly what the generic
- * advisory used to suggest — silently excludes every CI/gate row and returns a clean-looking empty
- * result, indistinguishable from "no failures". `source`/`commit_sha` are the columns that actually
- * discriminate a gate row, so `test_runs` is excluded from the generic/override checks below and
- * gets its own advisory ({@link buildTestRunsAdvisory}) that clears ONLY on those two columns —
- * firing even when workspace_id/harness_slug ARE present, since their presence is the trap, not the
- * fix.
+ * multi-tenant values, and local/admin-ui reporters can now stamp those same fields from their
+ * scoped environment. But CI / dogfood-admin-ui rows — the population that matters for GATE
+ * triage — can still have BOTH columns NULL by construction: the release checkpoint deliberately
+ * strips the per-hive environment before spawning its reporter. So the generic heuristic's own
+ * signal of "correctly scoped" (the query MENTIONS workspace_id/harness_slug) is backwards for a
+ * broad gate read: adding that predicate can silently exclude every CI/gate row and return a
+ * clean-looking empty result, indistinguishable from "no failures". `source`/`commit_sha` are the
+ * columns that actually discriminate a gate row, so `test_runs` is excluded from the
+ * generic/override checks below and gets its own advisory ({@link buildTestRunsAdvisory}). An
+ * exact run_group_id fenced by BOTH explicit tenant predicates is the separate safe case: it is
+ * an intentional per-run tenant read, so it must not be rejected as an unscoped query.
  */
 const TEST_RUNS_TABLE = 'test_runs';
 
 /**
  * Independent advisory for {@link TEST_RUNS_TABLE} — see its doc comment for why this can't be
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
- * mentioned"; here workspace_id/harness_slug mentioned is exactly the failure this warns about).
+ * mentioned"; here workspace_id/harness_slug mentioned is not enough for a broad CI read).
  * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
- * `commit_sha` is mentioned; returns null once either is present (the caveat's own fix).
+ * `commit_sha` is mentioned, unless the query has an exact run_group_id predicate alongside both
+ * workspace_id and harness_slug predicates. The latter is an explicit per-run tenant fence and
+ * is safe to execute without allowUnscoped; broad/partial tenant filters retain the CI warning.
  */
 function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
   if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
   const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
   if (mentions('source') || mentions('commit_sha')) return null;
+  const exactTenantRunGroupFence =
+    hasTenantPredicate(stripped, 'workspace_id') &&
+    hasTenantPredicate(stripped, 'harness_slug') &&
+    hasTenantPredicate(stripped, 'run_group_id');
+  if (exactTenantRunGroupFence) return null;
   return (
     '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter ' +
     'rows (env-derived — libs/test-config/src/admin-test-runs-reporter.ts — and stamped ONLY by the ' +

@@ -134,7 +134,9 @@ describe('host-bootstrap wires every startup guard', () => {
 
 describe('host-bootstrap fails the background plane closed on migration failure', () => {
   it('checks the boot-migration result before marking migrations applied or starting background machinery', () => {
-    const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()');
+    // Request-only hosts now run their own preflight in waitForBootMigrationGate().
+    // Select the later background-host occurrence this describe is about.
+    const apply = bootSrc.lastIndexOf('const migrationResult = await applyPendingMigrationsAtBoot()');
     const failureGuard = bootSrc.indexOf('if (!migrationResult || migrationResult.failed.length > 0)', apply);
     const withheld = bootSrc.indexOf('BACKGROUND STARTUP WITHHELD', failureGuard);
     const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', failureGuard);
@@ -151,6 +153,38 @@ describe('host-bootstrap fails the background plane closed on migration failure'
     const guardBody = bootSrc.slice(failureGuard, requestGate);
     expect(guardBody).toMatch(/BACKGROUND STARTUP WITHHELD[\s\S]*?return;/);
     expect(guardBody).toMatch(/markSubstrateBootRoutingFailed[\s\S]*?return;/);
+  });
+});
+
+describe('request-only hosts apply migrations before opening HTTP', () => {
+  it('runs the coordinated boot preflight and marks the request gate only after a clean result', () => {
+    const requestOnly = bootSrc.indexOf(
+      'if (!backgroundWorkersEnabled()) {\n    const { applyPendingMigrationsAtBoot }',
+    );
+    const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()', requestOnly);
+    const failure = bootSrc.indexOf('request-only migration preflight failed', apply);
+    const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
+
+    expect(requestOnly).toBeGreaterThan(-1);
+    expect(apply).toBeGreaterThan(requestOnly);
+    expect(failure).toBeGreaterThan(apply);
+    expect(requestGate).toBeGreaterThan(failure);
+    expect(bootSrc.slice(requestOnly, requestGate)).toMatch(
+      /if\s*\(!migrationResult\s*\|\|\s*migrationResult\.failed\.length\s*>\s*0\)[\s\S]*?throw new Error\(/,
+    );
+  });
+
+  it('fails closed when the request migration preflight rejects instead of serving anyway', () => {
+    const wait = honoHostSrc.indexOf('void waitForBootMigrationGate().then(() => {');
+    const start = honoHostSrc.indexOf('startRequestServers();', wait);
+    const failure = honoHostSrc.indexOf('request-serving startup withheld:', wait);
+    const exit = honoHostSrc.indexOf('process.exit(1);', failure);
+
+    expect(wait).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(wait);
+    expect(failure).toBeGreaterThan(start);
+    expect(exit).toBeGreaterThan(failure);
+    expect(honoHostSrc.slice(wait, exit)).toMatch(/\}\)\.catch\(\(e\)\s*=>\s*\{/);
   });
 });
 

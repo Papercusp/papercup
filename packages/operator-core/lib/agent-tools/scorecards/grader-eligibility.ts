@@ -348,7 +348,9 @@ export async function resolveAcceptanceGraderEligibility(params: {
             `grader '${callerId}' ${standing} for acceptance rubric ` +
             `'${rubric.rubricId}' — no recorded critic is independent of the grader, so rubric ` +
             `fitness and work compliance would be attested by the same party; use a different ` +
-            `independent grader`,
+            `independent grader, or obtain a second genuinely independent critic through the ` +
+            `other supported vetting channel (consult or work-item) at the current rubric ` +
+            `revision before grading`,
         },
       };
     }

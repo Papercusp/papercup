@@ -10,7 +10,22 @@ const release = fs.realpathSync(releaseRoot);
 const digest = b => crypto.createHash('sha256').update(b).digest('hex');
 const runTag = process.env.PORTAL_ACCEPTANCE_RUN_TAG ?? '';
 const caseFilter = process.env.PORTAL_ACCEPTANCE_CASE_FILTER ? new RegExp(process.env.PORTAL_ACCEPTANCE_CASE_FILTER) : null;
-const evidence = { schemaVersion: 1, startedAt: new Date().toISOString(), release, cases: [] };
+/* hud-panels pins an `agentConversation=` session, and that fixture ROTS.
+   SessionChatModal renders the Fleet toggle only when
+   `(fleetPeers || fleetUnknownSession)` (SessionChatModal.tsx:2768), and
+   deriveFleetPeers (fleet-peers.ts:159) returns null unless THAT session's
+   LIVE roster entry carries a fleetSlug. So the case needs a session that is
+   currently in the roster AND in a fleet — not merely a real session id.
+   The original id aged into coord:presence state 'recorded' (known, reaped,
+   fleet:null), which satisfies neither branch: `fleetPeers` is null because
+   there is no fleetSlug, and `fleetUnknownSession` is false because the
+   session IS known. All four hud-panels cases then fail as result:'unknown'
+   with `waiting for getByTestId('session-chat-fleet-toggle')` — a fixture
+   fault that reads exactly like a release regression.
+   Default is UNCHANGED so an unparameterised re-run reproduces the historical
+   evidence byte-for-byte; override to a currently fleet-bearing session. */
+const hudSession = process.env.PORTAL_ACCEPTANCE_HUD_SESSION ?? 'su-032510f2-f14f-4fbd-8b4f-aaa65622dac0';
+const evidence = { schemaVersion: 1, startedAt: new Date().toISOString(), release, hudSession, cases: [] };
 const save = () => fs.writeFileSync(path.join(out, runTag + 'results.json'), JSON.stringify(evidence, null, 2) + '\n');
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 let original, page;
@@ -59,7 +74,7 @@ try {
       await page.setViewportSize(viewport);
       const suffix = `${theme}-${viewport.width}x${viewport.height}`;
       await run('hud-panels-' + suffix, async () => {
-        await visit(page, '?app=hud&accountsPane=false&chatPane=false&agentConversation=su-032510f2-f14f-4fbd-8b4f-aaa65622dac0');
+        await visit(page, '?app=hud&accountsPane=false&chatPane=false&agentConversation=' + hudSession);
         for (const id of ['orders', 'dossier', 'fleet']) await page.getByTestId(`session-chat-${id}-toggle`).waitFor({ timeout: 15000 });
         const before = await panelStates(page), transitions = [];
         for (const s of before) {
@@ -79,7 +94,7 @@ try {
         const fullscreen = await page.evaluate(() => ({ active: document.fullscreenElement?.getAttribute('data-testid'), width: document.fullscreenElement?.getBoundingClientRect().width }));
         await page.getByTestId('session-chat-full-screen').click();
         await page.waitForFunction(() => document.fullscreenElement === null && !new URL(location.href).searchParams.get('chatMax'));
-        const sameOwner = new URL(page.url()).searchParams.get('agentConversation') === 'su-032510f2-f14f-4fbd-8b4f-aaa65622dac0';
+        const sameOwner = new URL(page.url()).searchParams.get('agentConversation') === hudSession;
         const statesRestored = before.every(s => restored.find(x => x.id === s.id)?.expanded === s.expanded);
         const togglesWorked = transitions.every(t => { const s = t.states.find(x => x.id === t.action); return s?.focused && s?.expanded !== before.find(x => x.id === t.action)?.expanded; });
         await page.keyboard.press('Escape');

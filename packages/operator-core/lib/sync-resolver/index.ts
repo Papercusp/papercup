@@ -3829,6 +3829,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'themes.catalog': {
+    // custom-themes + cupboard/theme-store read local JSON/package files.
+    backingTables: [],
     argsSchema: z.object({}),
     resolve: async () => {
       const { listThemeCatalog } = await import('../custom-themes');
@@ -4826,7 +4828,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'learning.dream': {
     backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope'],
     argsSchema: z.object({ potSlug: z.string().trim().min(1).max(120) }),
-    resolve: async (args: { potSlug: string }) => {
+    resolve: async (raw: unknown) => {
+      const args = raw as { potSlug: string };
       const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
       ]);

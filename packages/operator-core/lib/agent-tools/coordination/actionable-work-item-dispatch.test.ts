@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from '../../work-items';
+import { isAdmitted } from '../../work-items-admission';
+import { metadataWorkflowTargets } from '../plans/coordination-metadata-fixtures';
 import {
   assignActionableWorkItems,
   assignAndWakeActionableWorkItems,
@@ -222,6 +224,78 @@ describe('assignActionableWorkItems', () => {
     expect(result.skipped[0]?.reason).toContain('claim floor admission-pending');
     expect(result.skipped[0]?.reason).toContain('re-file with assign_to');
     expect(result.skipped[0]?.reason).not.toContain('outside the canonical admission frontier');
+  });
+});
+
+describe('P-001 existing-review recovery baseline', () => {
+  // Real assignment/wake composition, with only persistence, policy results and
+  // delivery IO injected. These are stage counts, not live fleet/latency proof.
+  it('keeps one identity through denied scope, pending screening, interrupted delivery and replay', async () => {
+    const id = 'WI-REVIEW-FIXTURE';
+    let row = issueWorkItem(id);
+    let scopeAllowed = false;
+    let admission: string = 'auto';
+    const d = deps({
+      observe: vi.fn(async () => ({
+        item: row, claimedBy: row.assignee,
+        available: !row.assignee && isAdmitted(admission),
+        gated: !isAdmitted(admission),
+      })),
+      claim: vi.fn(async (_id, assignee) => {
+        if (!scopeAllowed) return null;
+        row = { ...row, assignee };
+        return row;
+      }),
+      explainClaimFloors: vi.fn(async () => [{
+        id, admissible: false, refusedBy: 'admission-pending',
+        detail: 'duplicate screening is pending',
+      }]),
+    });
+    const request = { workItemIds: [id], targetAgent: 'fixture-reviewer', harness: 'email' };
+    const refused = await assignAndWakeActionableWorkItems(request, d);
+    expect(refused.assignment.failed[0]?.code).toBe('claim_refused');
+    expect(d.wake).not.toHaveBeenCalled();
+
+    // An authorized scope repair does not itself clear duplicate screening.
+    scopeAllowed = true;
+    admission = 'pending';
+    const pending = await assignAndWakeActionableWorkItems(request, d);
+    expect(pending.assignment.skipped[0]).toMatchObject({
+      code: 'admission_gated', claimFloor: { refusedBy: 'admission-pending' },
+    });
+    expect(d.claim).toHaveBeenCalledTimes(1);
+    expect(d.wake).not.toHaveBeenCalled();
+
+    // The existing promoter's persisted verdict is the ONLY changed input.
+    admission = 'admitted';
+    vi.mocked(d.wake).mockRejectedValueOnce(new Error('fixture delivery interruption'));
+    await expect(assignAndWakeActionableWorkItems(request, d)).rejects.toThrow('fixture delivery interruption');
+    expect(row.assignee).toBe('fixture-reviewer');
+
+    // Process loss preserves the database row, not a local progress counter.
+    row = JSON.parse(JSON.stringify(row)) as WorkItem;
+    const recovered = await assignAndWakeActionableWorkItems(request, d);
+    expect(recovered.assignment.retained).toEqual([id]);
+    expect(recovered.assignment.assigned).toEqual([]);
+    expect(recovered.wake).toMatchObject({ queued: 1, pickupConfirmed: false });
+    expect(d.claim).toHaveBeenCalledTimes(2); // one refusal, one landed assignment
+    expect(d.resolveTarget).toHaveBeenCalledTimes(metadataWorkflowTargets.reviewRecoveryRequests.before);
+    expect(recovered.assignment.executionWorkItemIds).toEqual([id]);
+  });
+
+  it('characterizes a revoked admission being ignored on an already-held replay', async () => {
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: issueWorkItem(id, 'wip', 'fixture-reviewer'),
+        claimedBy: 'fixture-reviewer', available: false, gated: true,
+      })),
+    });
+    const result = await assignAndWakeActionableWorkItems({
+      workItemIds: ['WI-REVIEW-FIXTURE'], targetAgent: 'fixture-reviewer',
+    }, d);
+    // P-003 changes this expectation: retaining a claim is not fresh authority.
+    expect(result.assignment.retained).toEqual(['WI-REVIEW-FIXTURE']);
+    expect(d.wake).toHaveBeenCalledTimes(metadataWorkflowTargets.revokedReviewWakes.before);
   });
 });
 

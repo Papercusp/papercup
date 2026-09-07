@@ -738,18 +738,16 @@ const clusterHandle = sidecarMode ? null : startCluster({
     runBootstrap();
     // WI-5441/WI-5764 (public-release boot-window federation-capture-hole guard):
     // do NOT start accepting HTTP traffic until this process's own boot migrations
-    // have applied (a no-op wait on a request-only/cluster-worker host — see
-    // waitForBootMigrationGate's doc). Previously startRequestServers() ran
-    // unconditionally right here, immediately after the fire-and-forget
-    // runBootstrap() call, with NO ordering guarantee against the still-running
-    // migration IIFE it kicked off — so a write could land on a table whose
-    // federation-capture trigger a slow/large migration set hadn't created yet,
-    // permanently and silently never federating (su-72ce40f2's diagnosis, WI-5441
-    // post 53143). fire-and-forget here is intentional and safe: onWorker's
-    // declared return type is `() => void` and cluster-fork.ts never awaits it
-    // (see StartClusterOpts), and waitForBootMigrationGate degrades open on its
-    // own timeout, so this can never wedge boot.
-    void waitForBootMigrationGate().finally(() => {
+    // have applied. Request-only processes run the coordinated preflight in
+    // waitForBootMigrationGate(); a failure rejects and exits before HTTP is
+    // exposed. Background processes retain the bounded, fail-soft gate wait.
+    // Previously startRequestServers() ran unconditionally right here,
+    // immediately after the fire-and-forget runBootstrap() call, with NO
+    // ordering guarantee against the still-running migration IIFE it kicked
+    // off — so a write could land on a table whose federation-capture trigger
+    // a slow/large migration set hadn't created yet, permanently and silently
+    // never federating (su-72ce40f2's diagnosis, WI-5441, post 53143).
+    void waitForBootMigrationGate().then(() => {
       startRequestServers();
       // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
       // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
@@ -788,6 +786,12 @@ const clusterHandle = sidecarMode ? null : startCluster({
         startWorkerStampPublisher();
         startWorkerStampReceiver();
       }
+    }).catch((e) => {
+      console.error(
+        '[hono-host] request-serving startup withheld: migration preflight failed — refusing to serve this schema:',
+        e instanceof Error ? e.message : e,
+      );
+      process.exit(1);
     });
   },
   // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers

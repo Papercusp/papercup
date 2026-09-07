@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "startedAt": "2026-09-07T04:17:08.876Z",
-  "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+  "startedAt": "2026-09-07T17:43:34.329Z",
+  "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/YxRyV_UAAFRVEiCtonjA4-20260907173044320-3334230-098fe40a",
+  "hudSession": "su-9686a4ce-a7ec-453c-8146-e7a71c5c11ca",
   "cases": [
     {
       "id": "hud-panels-light-1280x800",
@@ -97,8 +98,8 @@
             }
           ],
           "capturePath": "hud-session-chat-orders-toggle-light-1280x800.png",
-          "captureSha256": "cc910c4351070e9585e6e9275ff381558fb30159dfc81d9438f94bd53cf57127",
-          "capturedAt": "2026-09-07T04:17:12.003Z"
+          "captureSha256": "0a2229a76cb5cc3316081e702ef5ff7e7d528a07daa0ed5ca70ad586ddc3f44e",
+          "capturedAt": "2026-09-07T17:43:41.592Z"
         },
         {
           "action": "session-chat-dossier-toggle",
@@ -144,8 +145,8 @@
             }
           ],
           "capturePath": "hud-session-chat-dossier-toggle-light-1280x800.png",
-          "captureSha256": "6851c4959c77f4a0ef11b97d982593164e0c8b997c89584c84197c4245a9f343",
-          "capturedAt": "2026-09-07T04:17:12.806Z"
+          "captureSha256": "352c35fb3646a40506481136bfc9bb218649a7a171054c66dfcd2dd3b4fe1a3c",
+          "capturedAt": "2026-09-07T17:43:42.809Z"
         },
         {
           "action": "session-chat-fleet-toggle",
@@ -191,8 +192,8 @@
             }
           ],
           "capturePath": "hud-session-chat-fleet-toggle-light-1280x800.png",
-          "captureSha256": "df7e50f8f465f68282cfb74a370d670aab59c2dc3a9eb268f749d2337f76ace9",
-          "capturedAt": "2026-09-07T04:17:13.677Z"
+          "captureSha256": "f7130c77da54aa618647f02c307fb2161229692dbd7c6f7623d9de8092d9897b",
+          "capturedAt": "2026-09-07T17:43:44.127Z"
         }
       ],
       "restored": [
@@ -250,8 +251,8 @@
           "documentOverflow": false
         },
         "capturePath": "hud-window-light-1280x800.png",
-        "captureSha256": "79dc288ac087120791363b0b2a34068ca18a784626467f17c5c5a0d9579ea24b",
-        "capturedAt": "2026-09-07T04:17:14.525Z"
+        "captureSha256": "101686d4c489895f231709cc4b6adc996a45fd3721d2719373c3034d83294026",
+        "capturedAt": "2026-09-07T17:43:45.075Z"
       },
       "fullscreen": {
         "active": "session-chat-modal",
@@ -270,7 +271,7 @@
       },
       "theme": "light",
       "before": {
-        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "title": "portal-design-iteration-2026-09-05",
         "geometry": {
           "x": 90,
           "y": 32,
@@ -283,8 +284,8 @@
         },
         "iconPaths": 4,
         "capturePath": "plan-window-light-1280x800.png",
-        "captureSha256": "89be779235fd1616a300e80831187dbe7b548301c9f3f8d4cb9e043c0d6ed287",
-        "capturedAt": "2026-09-07T04:17:17.124Z"
+        "captureSha256": "d11e6911a53b9dd8c650c54403ed927b464064eab9fcd1fc214224cbf86e3994",
+        "capturedAt": "2026-09-07T17:43:49.690Z"
       },
       "full": {
         "geometry": {
@@ -298,8 +299,8 @@
           "documentOverflow": false
         },
         "capturePath": "plan-screen-light-1280x800.png",
-        "captureSha256": "14114271a8d31c84222f16b3fa7776a1170d7bc6d41f84d42835f58182962f3d",
-        "capturedAt": "2026-09-07T04:17:17.457Z"
+        "captureSha256": "61c20bc090f78311638f191c7c75c01f561640d6cd53fe1026ea88271a933695",
+        "capturedAt": "2026-09-07T17:43:50.249Z"
       },
       "restored": {
         "samePlan": true,
@@ -410,8 +411,8 @@
             }
           ],
           "capturePath": "hud-session-chat-orders-toggle-light-1440x900.png",
-          "captureSha256": "c4f3fe545c598303008e53fc95f6260f6070093609a2c18be5f22823844f444d",
-          "capturedAt": "2026-09-07T04:17:20.035Z"
+          "captureSha256": "f6caf9204b688e202383e4973af1fcc577418876a330087e18e7e56833aa3133",
+          "capturedAt": "2026-09-07T17:43:52.707Z"
         },
         {
           "action": "session-chat-dossier-toggle",
@@ -457,8 +458,8 @@
             }
           ],
           "capturePath": "hud-session-chat-dossier-toggle-light-1440x900.png",
-          "captureSha256": "313ee29fb7e4ebfebe3b774a9f7385ef1cb23644afc361bcc158c2f5e765552e",
-          "capturedAt": "2026-09-07T04:17:20.899Z"
+          "captureSha256": "a6fe1875778a2947f3aff270fe2c06cf5f34ff70a5ddfc738c42933a677a21a5",
+          "capturedAt": "2026-09-07T17:43:53.703Z"
         },
         {
           "action": "session-chat-fleet-toggle",
@@ -504,8 +505,8 @@
             }
           ],
           "capturePath": "hud-session-chat-fleet-toggle-light-1440x900.png",
-          "captureSha256": "426cb5067a6386706f9d267fcb08a7b28f77acb9dbb45c34a4ed580f0d689803",
-          "capturedAt": "2026-09-07T04:17:21.885Z"
+          "captureSha256": "8db1a8dbe1f95d92ebfa68ed91bddd4915b2b4316fbf86cb6d2fac2e0d0148e6",
+          "capturedAt": "2026-09-07T17:43:54.964Z"
         }
       ],
       "restored": [
@@ -563,8 +564,8 @@
           "documentOverflow": false
         },
         "capturePath": "hud-window-light-1440x900.png",
-        "captureSha256": "2e2c0cf9cae36f664eeebab2491ba51388f840e746b27a5440e1808e201be179",
-        "capturedAt": "2026-09-07T04:17:22.757Z"
+        "captureSha256": "26c2da7c69a0760085d6a03d23a4ba5de6826fd0d406c970924f1bd52c80481b",
+        "capturedAt": "2026-09-07T17:43:56.416Z"
       },
       "fullscreen": {
         "active": "session-chat-modal",
@@ -596,8 +597,8 @@
         },
         "iconPaths": 4,
         "capturePath": "plan-window-light-1440x900.png",
-        "captureSha256": "fc93f48d9eb254621b734cffff1e74c3c5edda42346515ad818f97b28a21ac14",
-        "capturedAt": "2026-09-07T04:17:26.120Z"
+        "captureSha256": "67ed0ecd0b49a8983d07a7c9bf8ed0fb534dca445078ae9d7680ff2b6f2d9c56",
+        "capturedAt": "2026-09-07T17:44:00.392Z"
       },
       "full": {
         "geometry": {
@@ -611,8 +612,8 @@
           "documentOverflow": false
         },
         "capturePath": "plan-screen-light-1440x900.png",
-        "captureSha256": "26e03c3272a587f4ec9ff9e8e804aa850978e09360c17f8419b50f2373c378be",
-        "capturedAt": "2026-09-07T04:17:26.323Z"
+        "captureSha256": "9dd70a19d53cdc725d882a0b0f3f7418013156d526713c10a9cdd2247bf798f2",
+        "capturedAt": "2026-09-07T17:44:00.712Z"
       },
       "restored": {
         "samePlan": true,
@@ -642,7 +643,7 @@
         "primaryHit": true
       },
       "focus": {
-        "label": "Unpin Calendar",
+        "label": "Unpin Home",
         "className": "rail-unpin",
         "outline": "rgb(40, 101, 90) solid 2px",
         "outlineWidth": "2px",
@@ -654,8 +655,8 @@
         "transition": "0s"
       },
       "capturePath": "rail-light-1280.png",
-      "captureSha256": "486300f3b599bd8719774a4613add913f1e6dbeb86f8e4c537297056c5fbb9c6",
-      "capturedAt": "2026-09-07T04:17:26.960Z",
+      "captureSha256": "43a7371b2761e751e7568f4ef01ec72ceeb89ee49b634797ef9f4e105fbadfa9",
+      "capturedAt": "2026-09-07T17:44:01.565Z",
       "result": "pass"
     },
     {
@@ -671,7 +672,7 @@
         "primaryHit": true
       },
       "focus": {
-        "label": "Unpin Calendar",
+        "label": "Unpin Home",
         "className": "rail-unpin",
         "outline": "rgb(40, 101, 90) solid 2px",
         "outlineWidth": "2px",
@@ -683,8 +684,8 @@
         "transition": "0s"
       },
       "capturePath": "rail-light-390.png",
-      "captureSha256": "b9cb726cc4a3fc5701245e0fe2eb85f6babb507e9898cbbd4f2ab78746be0134",
-      "capturedAt": "2026-09-07T04:17:27.368Z",
+      "captureSha256": "f2b3f0c8d83ef55c696e5711c27977011d3564ff92d50d2cf0b3b973cf165909",
+      "capturedAt": "2026-09-07T17:44:02.257Z",
       "result": "pass"
     },
     {
@@ -715,8 +716,8 @@
         },
         "native": false,
         "capturePath": "plan-fallback-light.png",
-        "captureSha256": "4ad972f8cb4119a79e3a96a7bcdc2226d6b5ab198f2c5eae734542650c699fa2",
-        "capturedAt": "2026-09-07T04:17:29.262Z"
+        "captureSha256": "2d4602ce3f014308980317d10ddf082c9bbe05708b2ab9ef29558aa3f4e58970",
+        "capturedAt": "2026-09-07T17:44:04.238Z"
       },
       "restored": {
         "samePlan": true,
@@ -731,8 +732,8 @@
           "documentOverflow": false
         },
         "capturePath": "plan-fallback-restored-light.png",
-        "captureSha256": "d0016443e0009222ef007f3df427d334da94f2b8202aab2425712648b89c415e",
-        "capturedAt": "2026-09-07T04:17:29.374Z"
+        "captureSha256": "1326e22cfefb0c02dc8032c0dde20720736458dc9f26dc9800b93d693e0f027b",
+        "capturedAt": "2026-09-07T17:44:05.459Z"
       },
       "result": "pass"
     },
@@ -744,7 +745,7 @@
         "width": 900,
         "height": 800
       },
-      "target": "inbox-row-owner-wall:loop-carry-note:su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f",
+      "target": "inbox-row-owner-wall:loop-carry-note:su-3b77bc46-80fd-45f4-83eb-662146bb8e07",
       "observed": {
         "bodyWidth": 416.28125,
         "clientWidth": 416,
@@ -760,12 +761,12 @@
         ],
         "metadataAbove": true,
         "documentOverflow": false,
-        "excerpt": "Do not claim P-001 until activation/spec/non-author/vetting gates are current and plans:start succeeds, including its checkpoint consult.\n\nRecheck\nAfter both evidence gates, call plans:start once, satisfy the returned checkpoint consult, re-call star",
+        "excerpt": "Windows/macOS OS-trust acceptance still awaits the credential location/decision; updater signatures are not OS trust and no unsigned-publication permission is inferred.\n\nRecheck\nRead Avi reply to coord-send-01dfd66173f111c423d06d58b5331b96629bd77be2d",
         "headClass": "op-inbox__detail-head"
       },
       "capturePath": "inbox-reading-light.png",
-      "captureSha256": "f4fa42d1b72806141b0bc11f2f2caa65cf477cd7b3ae8f791c7cad9515d07e18",
-      "capturedAt": "2026-09-07T04:17:30.999Z",
+      "captureSha256": "298a86843b8fbd2b51f370fb94be4f83bc0e147613e45fee121fb33035852a92",
+      "capturedAt": "2026-09-07T17:44:07.800Z",
       "result": "pass"
     },
     {
@@ -862,8 +863,8 @@
             }
           ],
           "capturePath": "hud-session-chat-orders-toggle-dark-1280x800.png",
-          "captureSha256": "3810e73fa2745fe2f40b81c52209466892d30bf7f8b127fb6617e1a2e14ccc75",
-          "capturedAt": "2026-09-07T04:17:32.930Z"
+          "captureSha256": "5e647b3de6273fa1bf3f9cfa5c4c07a7816c15116b29cace8190f8afadeacf51",
+          "capturedAt": "2026-09-07T17:44:12.894Z"
         },
         {
           "action": "session-chat-dossier-toggle",
@@ -909,8 +910,8 @@
             }
           ],
           "capturePath": "hud-session-chat-dossier-toggle-dark-1280x800.png",
-          "captureSha256": "15d74e24d9459d341930aa7e58ef6870915f2f41658fb9b723e5225552741a66",
-          "capturedAt": "2026-09-07T04:17:33.794Z"
+          "captureSha256": "fe92466569ba65c43a15444c7cd87e541c4f83558c23cabb2c1f7d37316d823c",
+          "capturedAt": "2026-09-07T17:44:13.989Z"
         },
         {
           "action": "session-chat-fleet-toggle",
@@ -956,8 +957,8 @@
             }
           ],
           "capturePath": "hud-session-chat-fleet-toggle-dark-1280x800.png",
-          "captureSha256": "cd3fd56251eca37c60902bb3e8f92446829ebb86e46f97d1509a8ea5628992bf",
-          "capturedAt": "2026-09-07T04:17:34.735Z"
+          "captureSha256": "09db1dd6c5c13e12a4da6ca20cde31a7cb92fefc7587e5ca70294bfe5a77e85a",
+          "capturedAt": "2026-09-07T17:44:14.978Z"
         }
       ],
       "restored": [
@@ -1015,8 +1016,8 @@
           "documentOverflow": false
         },
         "capturePath": "hud-window-dark-1280x800.png",
-        "captureSha256": "a3701a641348ce2662085cd5f4c055de1ecf7de9b1ccc2a61526107fd6ceb650",
-        "capturedAt": "2026-09-07T04:17:35.543Z"
+        "captureSha256": "ea93b087de9d42bab117af6aa998304fb6cfe997a19c3d556902aa198dcfb53d",
+        "capturedAt": "2026-09-07T17:44:16.035Z"
       },
       "fullscreen": {
         "active": "session-chat-modal",
@@ -1048,8 +1049,8 @@
         },
         "iconPaths": 4,
         "capturePath": "plan-window-dark-1280x800.png",
-        "captureSha256": "deace7a2389e0dbad5e4eadc09b12908b087bf9bdf1448020584e45766612d1a",
-        "capturedAt": "2026-09-07T04:17:38.161Z"
+        "captureSha256": "c1da2a13a0e0bf6f111edc7642810188b1d6e4da13dc475a1f6a36f267f8d1e0",
+        "capturedAt": "2026-09-07T17:44:19.188Z"
       },
       "full": {
         "geometry": {
@@ -1063,8 +1064,8 @@
           "documentOverflow": false
         },
         "capturePath": "plan-screen-dark-1280x800.png",
-        "captureSha256": "b8341a01b2219955a09e6cc3017fbbf6b210820d35892b917bde665e18897d56",
-        "capturedAt": "2026-09-07T04:17:38.339Z"
+        "captureSha256": "73dc13b24b7d678860f77e41eacc5021ccc701fb9fced2b1165eef1f3fd77fde",
+        "capturedAt": "2026-09-07T17:44:19.677Z"
       },
       "restored": {
         "samePlan": true,
@@ -1175,8 +1176,8 @@
             }
           ],
           "capturePath": "hud-session-chat-orders-toggle-dark-1440x900.png",
-          "captureSha256": "aaaa05cb59f8afbdf177d86f234ffa2f3786ece55dc9e0e1cd952b6e8b02f06d",
-          "capturedAt": "2026-09-07T04:17:43.367Z"
+          "captureSha256": "b5044e7ee7440aecb72c58dbbfb8c6cbb491d8f611370febb64b31759d852623",
+          "capturedAt": "2026-09-07T17:44:22.130Z"
         },
         {
           "action": "session-chat-dossier-toggle",
@@ -1222,8 +1223,8 @@
             }
           ],
           "capturePath": "hud-session-chat-dossier-toggle-dark-1440x900.png",
-          "captureSha256": "b570f57f8c7f4bd4a7c7f18dd096db10f6f53429889b2599374b12f5311eeeae",
-          "capturedAt": "2026-09-07T04:17:44.200Z"
+          "captureSha256": "dffb2552bb43a528ef90c4af268d30a076d07a326d8969bd0bbfba9aba17675c",
+          "capturedAt": "2026-09-07T17:44:23.196Z"
         },
         {
           "action": "session-chat-fleet-toggle",
@@ -1269,8 +1270,8 @@
             }
           ],
           "capturePath": "hud-session-chat-fleet-toggle-dark-1440x900.png",
-          "captureSha256": "0fae48bd4556424c1939c92bc21f54b9e97c11630291d78058d2b907887e1ad3",
-          "capturedAt": "2026-09-07T04:17:45.096Z"
+          "captureSha256": "8927538cc71bb0bfbd09d8c4c1c511b229725f3753bba0d36dfdcf20bc2e4086",
+          "capturedAt": "2026-09-07T17:44:24.431Z"
         }
       ],
       "restored": [
@@ -1328,8 +1329,8 @@
           "documentOverflow": false
         },
         "capturePath": "hud-window-dark-1440x900.png",
-        "captureSha256": "78429fd9667df7bcb793163c3088a8dbe900bdbae7f3ebbdc32be4aa74637bb3",
-        "capturedAt": "2026-09-07T04:17:45.923Z"
+        "captureSha256": "e049110f8fe0f16e7b46b8e9e60399afa45aeae1c642cfeb1668617c90b6cd05",
+        "capturedAt": "2026-09-07T17:44:25.362Z"
       },
       "fullscreen": {
         "active": "session-chat-modal",
@@ -1361,8 +1362,8 @@
         },
         "iconPaths": 4,
         "capturePath": "plan-window-dark-1440x900.png",
-        "captureSha256": "d37c1aad65455d299013d0e6b588cc01b6f03cf10d36873dce8f545f974d005b",
-        "capturedAt": "2026-09-07T04:17:49.079Z"
+        "captureSha256": "692659181ac78f301ddf888a0d235a230130db113d1b3df553139a917cc293e9",
+        "capturedAt": "2026-09-07T17:44:29.445Z"
       },
       "full": {
         "geometry": {
@@ -1376,8 +1377,8 @@
           "documentOverflow": false
         },
         "capturePath": "plan-screen-dark-1440x900.png",
-        "captureSha256": "ae3932819db92be4dca984b97839d0ac00eb81dd22ac57f0d47eca375fcc77b1",
-        "capturedAt": "2026-09-07T04:17:49.284Z"
+        "captureSha256": "6306b1f223aee5a0db95c8c44074efb603a0302b353b3fabdbed0316df78bb90",
+        "capturedAt": "2026-09-07T17:44:29.904Z"
       },
       "restored": {
         "samePlan": true,
@@ -1407,7 +1408,7 @@
         "primaryHit": true
       },
       "focus": {
-        "label": "Unpin Calendar",
+        "label": "Unpin Home",
         "className": "rail-unpin",
         "outline": "rgb(95, 174, 159) solid 2px",
         "outlineWidth": "2px",
@@ -1419,8 +1420,8 @@
         "transition": "0s"
       },
       "capturePath": "rail-dark-1280.png",
-      "captureSha256": "259c0c23e4ecc52e3a040028c8cc2c84303c72cae7986b6ba9f0a5d445230fe3",
-      "capturedAt": "2026-09-07T04:17:49.860Z",
+      "captureSha256": "157fe836f8966f6c43bd20866305070015554e895d3e27b2902e4fcba62f4ca7",
+      "capturedAt": "2026-09-07T17:44:31.143Z",
       "result": "pass"
     },
     {
@@ -1436,7 +1437,7 @@
         "primaryHit": true
       },
       "focus": {
-        "label": "Unpin Calendar",
+        "label": "Unpin Home",
         "className": "rail-unpin",
         "outline": "rgb(95, 174, 159) solid 2px",
         "outlineWidth": "2px",
@@ -1448,8 +1449,8 @@
         "transition": "0s"
       },
       "capturePath": "rail-dark-390.png",
-      "captureSha256": "bfc5daabaa1cb685358a9aee8f3d5b2f49f25fb5e93f702f22077174b10f2c91",
-      "capturedAt": "2026-09-07T04:17:50.284Z",
+      "captureSha256": "dfc4ee0ace057d5611434a46a4b876fc7ed7962218c538b9944f02f10a621778",
+      "capturedAt": "2026-09-07T17:44:31.699Z",
       "result": "pass"
     },
     {
@@ -1480,8 +1481,8 @@
         },
         "native": false,
         "capturePath": "plan-fallback-dark.png",
-        "captureSha256": "8f698c16bdf715b55f1527ab8be960c89bbe69dae66eb70a1eebbf66f6019a11",
-        "capturedAt": "2026-09-07T04:17:51.922Z"
+        "captureSha256": "7a0f845343af5a4e584c25ad9f17e36d779769e79ebc3cd867175b7e402a7326",
+        "capturedAt": "2026-09-07T17:44:33.250Z"
       },
       "restored": {
         "samePlan": true,
@@ -1496,8 +1497,8 @@
           "documentOverflow": false
         },
         "capturePath": "plan-fallback-restored-dark.png",
-        "captureSha256": "7f931eae31093bb4d95ce4b6c8df12a8fa68b2e0f2af5f92d79fd53f8bcbb10f",
-        "capturedAt": "2026-09-07T04:17:52.212Z"
+        "captureSha256": "174aaf4e3fa7935dc7aae3bcd1f1e77696d68516a8afe41f81d887abcdb80e72",
+        "capturedAt": "2026-09-07T17:44:33.630Z"
       },
       "result": "pass"
     },
@@ -1509,7 +1510,7 @@
         "width": 900,
         "height": 800
       },
-      "target": "inbox-row-owner-wall:loop-carry-note:su-c86de2dd-45a1-4e86-8b17-c07c4a096f7f",
+      "target": "inbox-row-owner-wall:loop-carry-note:su-3b77bc46-80fd-45f4-83eb-662146bb8e07",
       "observed": {
         "bodyWidth": 416.28125,
         "clientWidth": 416,
@@ -1525,12 +1526,12 @@
         ],
         "metadataAbove": true,
         "documentOverflow": false,
-        "excerpt": "Do not claim P-001 until activation/spec/non-author/vetting gates are current and plans:start succeeds, including its checkpoint consult.\n\nRecheck\nAfter both evidence gates, call plans:start once, satisfy the returned checkpoint consult, re-call star",
+        "excerpt": "Windows/macOS OS-trust acceptance still awaits the credential location/decision; updater signatures are not OS trust and no unsigned-publication permission is inferred.\n\nRecheck\nRead Avi reply to coord-send-01dfd66173f111c423d06d58b5331b96629bd77be2d",
         "headClass": "op-inbox__detail-head"
       },
       "capturePath": "inbox-reading-dark.png",
-      "captureSha256": "2a5dff159cde7ff68c014e5a77a873fb4c852f19f8b828beb42ebdceccdaf3e2",
-      "capturedAt": "2026-09-07T04:17:54.031Z",
+      "captureSha256": "eb44eb160bca333c4c05d10e28b95acee6214b229f8ad15cccebb1ee2ed6ee49",
+      "capturedAt": "2026-09-07T17:44:35.699Z",
       "result": "pass"
     }
   ],
@@ -1541,6 +1542,8 @@
       "voiceMuted": false,
       "homeApp": "home",
       "pinnedApps": [
+        "home",
+        "mail",
         "calendar",
         "phone",
         "desktops",
@@ -1563,6 +1566,8 @@
       "voiceMuted": false,
       "homeApp": "home",
       "pinnedApps": [
+        "home",
+        "mail",
         "calendar",
         "phone",
         "desktops",
@@ -1579,7 +1584,7 @@
     }
   },
   "preferencesRestored": true,
-  "releaseAfter": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/_h24SwYOHfExTCskF1rTh-20260907041350070-3167183-557305b9",
+  "releaseAfter": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/YxRyV_UAAFRVEiCtonjA4-20260907173044320-3334230-098fe40a",
   "releaseStable": true,
-  "completedAt": "2026-09-07T04:17:54.439Z"
+  "completedAt": "2026-09-07T17:44:36.925Z"
 }

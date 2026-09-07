@@ -29,24 +29,32 @@
   },
   "readinessChange": {
     "source": "packages/operator-core/lib/su-session-claude-engine.ts",
-    "summary": "Wait for the exact non-query probe receipt with matching native identity, plus initialization and connected SU MCP controls. Validate system/init identity and project whenever emitted. Mark actual PUI owner turns with SDK origin kind human.",
+    "summary": "Use actual SDK initialization and connected SU MCP control responses for readiness, without a transcript-only probe. Validate native identity on every frame and project on system/init. Mark actual PUI owner turns with SDK origin kind human.",
+    "supersededAttempt": "The receipt-based probe attempt was falsified by real task 0mtrix20b1tompcv8qw: launch returned HTTP 200 and the client attached, but no usable append receipt arrived before the engine's startup timeout. That attempt is withdrawn; its passing mocked tests are not current readiness proof.",
     "test": "packages/operator-core/lib/su-session-claude-engine.test.ts",
-    "unitTestsPassed": 13,
-    "unitTestsSkipped": 0,
+    "priorRevisionUnitTestsPassed": 13,
+    "priorRevisionUnitTestsSkipped": 0,
+    "currentUnitVerification": "pending",
     "unitRunStartedAt": "2026-09-07T17:25:34.076Z",
     "unitRunHead": "23f9c29c46",
     "unitRunProvenance": "local modifications, test-file router stamped",
     "counterexamples": [
-      "A real-style append receipt becomes ready without a system/init or turn result.",
-      "A synthetic init/result pair without the exact receipt cannot make the host ready.",
-      "An unrelated receipt cannot make the host ready.",
-      "Wrong native identity, wrong project and disconnected SU MCP remain refusals."
+      "No user or synthetic input is sent before SDK controls and SU MCP are initialized.",
+      "Stalled SDK initialization and stalled MCP controls cannot make the host ready.",
+      "Wrong native identity or project on the first turn fails the connection before forwarding its reply.",
+      "Disconnected SU MCP remains a readiness refusal."
     ]
   },
-  "activeRuns": {
-    "live": "0mtriiiijvctn4j16iz",
-    "protocolPeer": "0mtriijb0vfixwygmoc"
+  "asynchronousLaunch": {
+    "source": "packages/operator-core/lib/su-session-attached-launch.ts",
+    "problem": "The route's default 30-second watchdog marked a valid bootstrap plus awaited engine initialization as HTTP 408.",
+    "change": "Return the persisted session identity promptly and supervise bounded initialization through the existing host lifecycle. Retries reuse the still-initializing host; failed initialization closes it.",
+    "unitTestsPassed": 7,
+    "unitRunStartedAt": "2026-09-07T17:36:48.931Z",
+    "liveLaunchResult": "HTTP 200, followed by successful snapshot and event-stream attachment in task 0mtrix20b1tompcv8qw; readiness still failed under the superseded receipt-based attempt."
   },
+  "activeRuns": {},
+  "performanceFinding": "EI-22624891413821529: successful network.board resolve took 2088ms and its warning failed the first protocol-peer case; seven other fault cases passed. Cause remains unconfirmed. No timing warning was suppressed or test quarantined.",
   "limits": [
     "No real-provider passing result yet.",
     "P005 is Linux and the first supported engine only; P006 owns backend parity.",

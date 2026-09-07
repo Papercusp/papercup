@@ -1568,6 +1568,28 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.warning).toEqual(expect.stringContaining('may settle later'));
   });
 
+  it('keeps child dry-run previews out of applied mutation counts and names their disposition', () => {
+    const shaped = shapeMutationEcho({
+      ok: true,
+      logs: [],
+      dryRun: false,
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
+      plannedMutations: [{ tool: 'rubrics:amend', args: { rubricRef: 'bar', dryRun: true } }],
+      writeAttempts: [{ index: 0, tool: 'rubrics:amend', disposition: 'preview' }],
+    }) as Record<string, unknown>;
+
+    expect(shaped.mutations).toMatchObject({
+      count: 0,
+      byTool: {},
+      attemptedCount: 1,
+      settledPrefixCount: 0,
+      previewCount: 1,
+      previewByTool: { 'rubrics:amend': 1 },
+      dispositions: { preview: [0] },
+    });
+    expect(shaped.warning).toBeUndefined();
+  });
+
   it('ok:false with NO mutations dispatched carries no warning (nothing to guard against)', () => {
     const shaped = shapeMutationEcho({
       ok: false,
