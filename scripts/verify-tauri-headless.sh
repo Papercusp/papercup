@@ -794,9 +794,10 @@ if [ "$ISOLATED_SEED" = "ready" ] && [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]
 fi
 
 # The dependency snapshot uses hardlinks. A fast /tmp mount may be on another
-# device, so keep the verifier's existing lifetime/cleanup layout on the donor
-# filesystem. .papercusp is excluded from both source and dependency snapshots.
-select_verifier_work_root() {
+# device. Only the operator/dependency snapshot needs the donor filesystem;
+# the much larger SPA/profile/database payloads remain on TMPDIR.
+# .papercusp is excluded from both source and dependency snapshots.
+select_verifier_snapshot_root() {
   local work_root="${TMPDIR:-/tmp}" donor_device work_device
   donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
   work_device="$(stat -c %d -- "$work_root")" || return 1
@@ -806,22 +807,24 @@ select_verifier_work_root() {
     work_device="$(stat -c %d -- "$work_root")" || return 1
   fi
   if [ "$donor_device" != "$work_device" ]; then
-    echo "FATAL: no verifier work root on the dependency donor filesystem: $work_root" >&2
+    echo "FATAL: no verifier snapshot root on the dependency donor filesystem: $work_root" >&2
     return 1
   fi
   printf '%s\n' "$work_root"
 }
-WORK_ROOT="$(select_verifier_work_root)" || exit $?
-WORK="$(mktemp -d "$WORK_ROOT/verify-tauri-headless.XXXXXX")"
+OPERATOR_SNAPSHOT_PARENT="$(select_verifier_snapshot_root)" || exit $?
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 # The operator sidecar must not compile the mutable shared checkout while this
 # verifier is running. Keep an independent source tree (with a pinned
-# dependency farm) under WORK for the whole run; boot-only stop.sh owns its
+# dependency farm) for the whole run; boot-only stop.sh owns its
 # lifetime after this process hands the rig to the caller.
 OPERATOR_SOURCE_ROOT=""
+OPERATOR_SOURCE_WORK=""
 cleanup_operator_source_snapshot() {
-  if [ -n "${OPERATOR_SOURCE_ROOT:-}" ]; then
-    rm -rf -- "$OPERATOR_SOURCE_ROOT" 2>/dev/null || true
+  if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then
+    rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null || true
+    OPERATOR_SOURCE_WORK=""
     OPERATOR_SOURCE_ROOT=""
   fi
 }
@@ -852,6 +855,10 @@ write_run_marker() {
     rm -f "$marker_tmp" 2>/dev/null || true
     return 1
   }
+  # Both scratch roots share the same live owner, including boot-only handoff.
+  if [ -n "${OPERATOR_SOURCE_WORK:-}" ]; then
+    cp -- "$WORK/.papercusp-run" "$OPERATOR_SOURCE_WORK/.papercusp-run" || return 1
+  fi
 }
 
 write_run_marker "$$" || {
@@ -863,7 +870,7 @@ write_run_marker "$$" || {
 # isolated Tauri launch. The source copy is independent; dependency trees use
 # the reusable pinned-deps hardlink snapshot under the donor install mutex.
 snapshot_operator_source() {
-  local snapshot_root="$WORK/operator-source"
+  local snapshot_root
   local pinned_deps_lib="$DESKTOP_DIR/bin/lib/pinned-deps.sh"
   local pinned_deps_copy="$WORK/pinned-deps.sh"
   command -v rsync >/dev/null 2>&1 || {
@@ -878,6 +885,10 @@ snapshot_operator_source() {
     echo "FATAL: reusable pinned dependency helper is missing: $pinned_deps_lib" >&2
     return 1
   }
+  OPERATOR_SOURCE_WORK="$(mktemp -d "$OPERATOR_SNAPSHOT_PARENT/verify-tauri-headless.XXXXXX")" || return 1
+  snapshot_root="$OPERATOR_SOURCE_WORK/operator-source"
+  OPERATOR_SOURCE_ROOT="$snapshot_root"
+  write_run_marker "$$" || return 1
   mkdir -p "$snapshot_root" || return 1
   rsync -a --delete \
     --exclude='node_modules' \
@@ -919,7 +930,7 @@ snapshot_operator_source() {
   OPERATOR_SOURCE_ROOT="$(cd "$snapshot_root" && pwd -P)" || return 1
   log "operator source/dependency snapshot frozen at $OPERATOR_SOURCE_ROOT — IMMUTABLE for this run"
 }
-snapshot_operator_source || exit $?
+snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
 
 ASSERTION_INPUT_MANIFEST=""
 ASSERTION_INPUT_COUNT=0
@@ -1784,7 +1795,7 @@ rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" 2>/dev/null
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
 # Boot-only stop.sh owns the per-run source/dependency snapshot.
-[ -n "$OPERATOR_SOURCE_ROOT" ] && rm -rf -- "$OPERATOR_SOURCE_ROOT" 2>/dev/null
+[ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK" 2>/dev/null
 # EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
 # profile too. Remove it on the explicit --boot-only stop path as well as the
 # normal EXIT teardown; otherwise localStorage would outlive the run.

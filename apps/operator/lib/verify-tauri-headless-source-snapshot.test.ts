@@ -27,9 +27,7 @@ const sourceReexecIdx = src.indexOf(
 );
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
-const operatorSnapshotCallIdx = src.indexOf(
-  "snapshot_operator_source || exit $?",
-);
+const operatorSnapshotCallIdx = src.indexOf("snapshot_operator_source || {");
 const operatorSnapshotSource = src.slice(
   operatorSnapshotIdx,
   operatorSnapshotCallIdx,
@@ -92,9 +90,9 @@ describe("EI-22587788892654404 — a repo-local temp root cannot enter its own s
 });
 
 describe("EI-22588292228855829 — dependency snapshot stays on the donor filesystem", () => {
-  const chooserStart = src.indexOf("select_verifier_work_root() {");
+  const chooserStart = src.indexOf("select_verifier_snapshot_root() {");
   const chooserEnd = src.indexOf(
-    'WORK_ROOT="$(select_verifier_work_root)"',
+    'OPERATOR_SNAPSHOT_PARENT="$(select_verifier_snapshot_root)"',
     chooserStart,
   );
 
@@ -120,7 +118,7 @@ describe("EI-22588292228855829 — dependency snapshot stays on the donor filesy
             '  else printf "%s\\n" "$TEST_FALLBACK_DEVICE"; fi',
             "}",
             src.slice(chooserStart, chooserEnd),
-            "select_verifier_work_root",
+            "select_verifier_snapshot_root",
           ].join("\n"),
         ],
         {
@@ -157,7 +155,25 @@ describe("EI-22588292228855829 — dependency snapshot stays on the donor filesy
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain(
-      "no verifier work root on the dependency donor filesystem",
+      "no verifier snapshot root on the dependency donor filesystem",
+    );
+  });
+
+  it("keeps bulk payloads on TMPDIR and gives both roots the same cleanup and owner", () => {
+    expect(src).toContain(
+      'WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"',
+    );
+    expect(operatorSnapshotSource).toContain(
+      'snapshot_root="$OPERATOR_SOURCE_WORK/operator-source"',
+    );
+    expect(src).toContain(
+      'cp -- "$WORK/.papercusp-run" "$OPERATOR_SOURCE_WORK/.papercusp-run"',
+    );
+    expect(src).toContain(
+      "snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }",
+    );
+    expect(src).toContain(
+      '[ -n "$OPERATOR_SOURCE_WORK" ] && rm -rf -- "$OPERATOR_SOURCE_WORK"',
     );
   });
 });
