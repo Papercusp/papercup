@@ -163,6 +163,33 @@ describe('POST /api/agent-mcp/operator-converse — state-snapshot fan-out', () 
     expect(events).toEqual([]);
   });
 
+  it('PUBLIC TEXT mode: forwards state-snapshot cards for the portal proxy', async () => {
+    const res = await post({
+      messages: [],
+      trigger: 'user_message',
+      modality: 'text',
+      hostTrust: 'public',
+      principalToken: 'pi-bearer',
+    });
+    openRun({ workspaceId: 'ws-test', runId: 'public-text-run' });
+    setOpenCards('public-text-run', [
+      {
+        correlationId: 'cid-public-text',
+        prompt: 'public choice',
+        dataSchemaJson: {},
+        fallbackText: 'public choice fallback',
+        createdAt: 0,
+      },
+    ]);
+    const events = await collectEvents(res, 300);
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0].split('data: ')[1]);
+    expect(payload.runId).toBe('public-text-run');
+    expect(payload.snapshot.openCards).toEqual([
+      expect.objectContaining({ correlationId: 'cid-public-text' }),
+    ]);
+  });
+
   it('VOICE mode: forwards state-snapshots WITH fallbackText only', async () => {
     const res = await post({ messages: [], trigger: 'user_message', modality: 'voice' });
     openRun({ workspaceId: 'ws-test', runId: 'voice-run' });
@@ -199,12 +226,13 @@ describe('POST /api/agent-mcp/operator-converse — state-snapshot fan-out', () 
 
 describe('POST /api/agent-mcp/operator-converse — run-meta (WI-5023)', () => {
   // WI-5023: the route intentionally forwards state-snapshot cards onto THIS
-  // stream only for modality='voice' — text-mode observers (llm-testing's
-  // OperatorTarget) must instead watch the separate
+  // stream for modality='voice' and public text (whose portal proxy owns this
+  // single upstream stream). Owner text observers (llm-testing's OperatorTarget)
+  // must instead watch the separate
   // GET /operator/state-snapshot channel, scoped to this turn's own runId.
   // `run-meta` is the (additive-only) mechanism that hands them that runId;
   // it must fire on EVERY modality, first, before any card traffic.
-  it('emits run-meta with a runId on a TEXT turn (no modality forward, but still correlatable)', async () => {
+  it('emits run-meta with a runId on an OWNER TEXT turn (no snapshot forward, but still correlatable)', async () => {
     const res = await post({ messages: [], trigger: 'user_message' });
     const events = await collectAllEvents(res, 300);
     const runMeta = events.find((b) => b.includes('event: run-meta'));

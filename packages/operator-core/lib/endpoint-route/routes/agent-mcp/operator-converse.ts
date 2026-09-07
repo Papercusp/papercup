@@ -197,7 +197,13 @@ export default defineTool({
         sink.event('run-meta', { runId });
 
         let offStateChannel: (() => void) | null = null;
-        if (body.modality === 'voice') {
+        // Owner text chat already consumes the workspace-wide
+        // /operator/state-snapshot stream directly. Public text chat cannot:
+        // its portal proxy owns one upstream converse SSE and projects the
+        // safe card subset from that stream. Forward cards here for public
+        // trust too, or a nested chat:ask_choice registers and blocks while
+        // the portal has no channel on which to see or answer it.
+        if (body.modality === 'voice' || body.hostTrust === 'public') {
           offStateChannel = subscribeWorkspace(workspaceId, (vs) => {
             if (sink.closed) return;
             const hasVoiceCard = vs.snapshot.openCards?.some(
