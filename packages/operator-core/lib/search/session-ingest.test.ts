@@ -39,13 +39,23 @@ describe('parseClaudeLine', () => {
     const t = parseClaudeLine(
       JSON.stringify({
         type: 'user',
+        uuid: 'claude-owner-1',
+        parentUuid: null,
         message: { role: 'user', content: 'fix the login bug please' },
         timestamp: '2026-07-05T01:00:00.000Z',
         cwd: '/repo',
         sessionId: 'abc-123',
       }),
     );
-    expect(t).toMatchObject({ speaker: 'user', text: 'fix the login bug please', cwd: '/repo', sessionId: 'abc-123' });
+    expect(t).toMatchObject({
+      speaker: 'user',
+      text: 'fix the login bug please',
+      cwd: '/repo',
+      sessionId: 'abc-123',
+      requestId: 'claude-owner-1',
+      messageId: 'claude-owner-1',
+      parentMessageId: null,
+    });
     expect(t?.ts?.toISOString()).toBe('2026-07-05T01:00:00.000Z');
   });
 
@@ -53,8 +63,11 @@ describe('parseClaudeLine', () => {
     const t = parseClaudeLine(
       JSON.stringify({
         type: 'assistant',
+        uuid: 'claude-answer-1',
+        parentUuid: 'claude-owner-1',
         message: {
           role: 'assistant',
+          stop_reason: 'end_turn',
           content: [
             { type: 'thinking', thinking: 'secret reasoning' },
             { type: 'text', text: 'The root cause is the provenance stamp.' },
@@ -67,6 +80,30 @@ describe('parseClaudeLine', () => {
     expect(t?.speaker).toBe('assistant');
     expect(t?.text).toBe('The root cause is the provenance stamp.');
     expect(t?.text).not.toContain('secret reasoning');
+    expect(t).toMatchObject({
+      messageId: 'claude-answer-1',
+      parentMessageId: 'claude-owner-1',
+      responseDisposition: 'delivered',
+    });
+  });
+
+  it('distinguishes Claude tool progress and API interruption from final delivery', () => {
+    const progress = parseClaudeLine(JSON.stringify({
+      type: 'assistant',
+      uuid: 'a-progress',
+      parentUuid: 'u-1',
+      message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'text', text: 'I am checking.' }] },
+    }));
+    const interrupted = parseClaudeLine(JSON.stringify({
+      type: 'assistant',
+      uuid: 'a-error',
+      parentUuid: 'u-1',
+      isApiErrorMessage: true,
+      error: 'connection closed',
+      message: { role: 'assistant', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'Partial output.' }] },
+    }));
+    expect(progress?.responseDisposition).toBe('progress');
+    expect(interrupted?.responseDisposition).toBe('interrupted');
   });
 
   it('promotes only AskUserQuestion answers from tool_result carriers into searchable user turns', () => {
@@ -226,11 +263,35 @@ describe('parseOmpLine', () => {
       JSON.stringify({
         type: 'message',
         id: '2cd589cb',
+        parentId: null,
         timestamp: '2026-07-04T14:59:05.995Z',
         message: { role: 'user', content: [{ type: 'text', text: 'tools list please' }], attribution: 'user' },
       }),
     );
-    expect(t).toMatchObject({ speaker: 'user', text: 'tools list please' });
+    expect(t).toMatchObject({
+      speaker: 'user',
+      text: 'tools list please',
+      requestId: '2cd589cb',
+      messageId: '2cd589cb',
+      parentMessageId: null,
+    });
+  });
+
+  it('uses OMP stop/toolUse/error as delivered/progress/interrupted wire evidence', () => {
+    const line = (id: string, stopReason: string, errorMessage?: string) => parseOmpLine(JSON.stringify({
+      type: 'message',
+      id,
+      parentId: 'omp-owner-1',
+      message: {
+        role: 'assistant',
+        stopReason,
+        ...(errorMessage ? { errorMessage } : {}),
+        content: [{ type: 'text', text: `${stopReason} output` }],
+      },
+    }));
+    expect(line('a-stop', 'stop')?.responseDisposition).toBe('delivered');
+    expect(line('a-tool', 'toolUse')?.responseDisposition).toBe('progress');
+    expect(line('a-error', 'error', 'provider failed')?.responseDisposition).toBe('interrupted');
   });
 
   it('ignores non-message lines (title / session / thinking)', () => {
@@ -431,10 +492,38 @@ describe('parseCodexLine', () => {
       JSON.stringify({
         timestamp: '2026-07-05T04:26:13.877Z',
         type: 'response_item',
-        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done — deployed' }] },
+        payload: {
+          type: 'message',
+          id: 'codex-answer-1',
+          role: 'assistant',
+          phase: 'final_answer',
+          internal_chat_message_metadata_passthrough: { turn_id: 'codex-turn-1' },
+          content: [{ type: 'output_text', text: 'done — deployed' }],
+        },
       }),
     );
-    expect(t).toMatchObject({ speaker: 'assistant', text: 'done — deployed' });
+    expect(t).toMatchObject({
+      speaker: 'assistant',
+      text: 'done — deployed',
+      requestId: 'codex-turn-1',
+      messageId: 'codex-answer-1',
+      responseDisposition: 'delivered',
+    });
+  });
+
+  it('keeps Codex commentary as progress on the same typed turn id', () => {
+    const t = parseCodexLine(JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        id: 'codex-commentary-1',
+        role: 'assistant',
+        phase: 'commentary',
+        internal_chat_message_metadata_passthrough: { turn_id: 'codex-turn-1' },
+        content: [{ type: 'output_text', text: 'I am checking.' }],
+      },
+    }));
+    expect(t).toMatchObject({ requestId: 'codex-turn-1', responseDisposition: 'progress' });
   });
 
   it('skips developer-role instruction blobs and non-message payloads', () => {

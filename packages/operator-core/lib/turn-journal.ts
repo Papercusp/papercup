@@ -25,7 +25,12 @@
  */
 import { open, realpath, stat } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { FILE_ADAPTERS, jsonlAtDepth, type ParsedTurn } from './search/session-ingest';
+import {
+  FILE_ADAPTERS,
+  jsonlAtDepth,
+  type ParsedResponseDisposition,
+  type ParsedTurn,
+} from './search/session-ingest';
 
 export const JOURNAL_MARKER = '⟦journal⟧';
 /** An agent-authored note is bounded so a runaway "journal" can't become a
@@ -278,6 +283,90 @@ export interface TranscriptTailTurn {
   /** Verbatim text (already ingest-capped by the adapter). */
   text: string;
   ts: Date | null;
+  /** Logical native turn/request identity.  For linked-list clients this is
+   *  resolved to the originating text-user node while scanning the tail. */
+  requestId?: string | null;
+  /** Native response lifecycle evidence; absence remains unknown/open. */
+  responseDisposition?: ParsedResponseDisposition | null;
+  /** Present on the oldest returned turn when older transcript/request records
+   *  were outside the bounded read.  Consumers must not turn that into
+   *  "answered" or "no owner demand". */
+  requestHistoryStatus?: 'truncated';
+}
+
+interface TailLineLink {
+  messageId: string | null;
+  parentMessageId: string | null;
+  requestId: string | null;
+  completion: ParsedResponseDisposition | null;
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/**
+ * Read only the client-native linkage/lifecycle envelope.  This companion to
+ * the text adapter intentionally sees tool-result and task-complete records
+ * that `ParsedTurn` drops from the recall corpus: those records are the bridge
+ * between a final answer and the owner request it actually serves.
+ */
+function tailLineLink(line: string, sourceKind: JournalSourceKind): TailLineLink {
+  const empty: TailLineLink = {
+    messageId: null,
+    parentMessageId: null,
+    requestId: null,
+    completion: null,
+  };
+  let row: Record<string, unknown>;
+  try {
+    row = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return empty;
+  }
+
+  if (sourceKind === 'claude') {
+    return {
+      messageId: typeof row.uuid === 'string' ? row.uuid : null,
+      parentMessageId: typeof row.parentUuid === 'string' ? row.parentUuid : null,
+      requestId: null,
+      completion: null,
+    };
+  }
+  if (sourceKind === 'omp') {
+    return {
+      messageId: typeof row.id === 'string' ? row.id : null,
+      parentMessageId: typeof row.parentId === 'string' ? row.parentId : null,
+      requestId: null,
+      completion: null,
+    };
+  }
+
+  const payload = recordOf(row.payload);
+  if (!payload) return empty;
+  const metadata = recordOf(payload.internal_chat_message_metadata_passthrough);
+  const requestId =
+    typeof metadata?.turn_id === 'string'
+      ? metadata.turn_id
+      : typeof payload.turn_id === 'string'
+        ? payload.turn_id
+        : null;
+  if (row.type === 'event_msg' && (payload.type === 'task_complete' || payload.type === 'turn_completed')) {
+    const delivered = typeof payload.last_agent_message === 'string' && payload.last_agent_message.trim().length > 0;
+    return {
+      ...empty,
+      requestId,
+      completion: payload.error != null ? 'interrupted' : delivered ? 'delivered' : null,
+    };
+  }
+  return {
+    messageId: typeof payload.id === 'string' ? payload.id : null,
+    parentMessageId: null,
+    requestId,
+    completion: null,
+  };
 }
 
 /**
@@ -305,15 +394,55 @@ export async function readVerbatimTail(
     // A mid-file start lands mid-line — the first fragment is unparseable.
     if (start > 0) lines = lines.slice(1);
     const out: TranscriptTailTurn[] = [];
-    for (let i = lines.length - 1; i >= 0 && out.length < maxTurns; i -= 1) {
+    const requestByMessage = new Map<string, string>();
+    const lastAssistantByRequest = new Map<string, number>();
+    for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i].trim();
       if (!line) continue;
+      const link = tailLineLink(line, sourceKind);
       const turn = adapter.parseLine(line);
+      let requestId =
+        turn?.requestId ??
+        link.requestId ??
+        (link.parentMessageId ? requestByMessage.get(link.parentMessageId) ?? null : null);
+
+      // A real text-user node starts a logical request for the linked-list
+      // clients.  Synthetic tool-result nodes have no ParsedTurn, so they take
+      // the inherited parent request and keep the chain connected instead.
+      if (turn?.speaker === 'user') {
+        requestId = turn.requestId ?? turn.messageId ?? requestId;
+      }
+      if (link.messageId && requestId) requestByMessage.set(link.messageId, requestId);
+
       if (turn && (turn.speaker === 'assistant' || turn.speaker === 'user')) {
-        out.push({ speaker: turn.speaker, text: turn.text, ts: turn.ts });
+        out.push({
+          speaker: turn.speaker,
+          text: turn.text,
+          ts: turn.ts,
+          requestId,
+          responseDisposition: turn.responseDisposition ?? null,
+        });
+        if (turn.speaker === 'assistant' && requestId) {
+          lastAssistantByRequest.set(requestId, out.length - 1);
+        }
+      }
+
+      // Codex's task-complete record is the terminal receipt.  It can repair a
+      // legacy/missing message phase, but an errored completion never becomes a
+      // delivered answer merely because commentary text preceded it.
+      if (link.requestId && link.completion) {
+        const at = lastAssistantByRequest.get(link.requestId);
+        if (at != null) out[at] = { ...out[at], responseDisposition: link.completion };
       }
     }
-    return out.reverse();
+    const selected = out.slice(-maxTurns);
+    const truncated = start > 0 || out.length > maxTurns;
+    if (!truncated) return selected;
+    if (selected.length === 0) {
+      return [{ speaker: 'user', text: '', ts: null, requestHistoryStatus: 'truncated' }];
+    }
+    selected[0] = { ...selected[0], requestHistoryStatus: 'truncated' };
+    return selected;
   } finally {
     await fh.close();
   }

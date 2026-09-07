@@ -135,6 +135,25 @@ export interface CarryDocTailTurn {
    *  successor must never read an 'agent-injected' turn as owner words — the
    *  WI-3532 manufactured-directive class this stamp exists to kill. */
   provenance?: RecordedTurnClass | null;
+  /** Native logical request/turn identity, resolved through message-parent
+   *  links by turn-journal for clients that do not stamp it directly. */
+  requestId?: string | null;
+  /** Authoritative response lifecycle from the client wire.  Only
+   *  `delivered` settles a request; progress and interruption leave it open. */
+  responseDisposition?: 'progress' | 'delivered' | 'interrupted' | null;
+  /** Optional authoritative request-ledger transition.  This is deliberately
+   *  typed data, never inferred from words such as "cancel" in message text. */
+  requestDisposition?: 'cancelled' | 'superseded' | null;
+  /** Explicit typed supersession edges from an existing request/thread store. */
+  supersedesRequestIds?: string[];
+  /** Bounded-read failure signal from the transcript reader. */
+  requestHistoryStatus?: 'truncated' | 'unreadable';
+}
+
+export interface CarryDocOwnerRequest {
+  requestId: string | null;
+  text: string;
+  ts: string | null;
 }
 
 /**
@@ -167,6 +186,12 @@ export interface CarryDocTailTurn {
 export interface CarryDocContinuation {
   lastOwnerMessage: { text: string; ts: string | null } | null;
   answered: boolean;
+  /** Every unresolved owner request in chronological order. Optional for
+   *  backward-compatible stored/test documents; use unresolvedOwnerRequests()
+   *  rather than reading it directly. */
+  pendingOwnerMessages?: CarryDocOwnerRequest[];
+  /** Missing means the bounded request history was complete. */
+  requestHistoryStatus?: 'truncated' | 'unreadable';
   deliberate: boolean;
   selfRequested: boolean;
 }
@@ -478,10 +503,19 @@ async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn
       speaker: t.speaker,
       text: t.text,
       ts: t.ts ? t.ts.toISOString() : null,
+      requestId: t.requestId ?? null,
+      responseDisposition: t.responseDisposition ?? null,
+      requestHistoryStatus: t.requestHistoryStatus,
       provenance: t.speaker === 'user' ? classifyRecordedTurn(t.text) : null,
     }));
   } catch {
-    return [];
+    return [{
+      speaker: 'user',
+      text: '',
+      ts: null,
+      provenance: null,
+      requestHistoryStatus: 'unreadable',
+    }];
   }
 }
 
@@ -674,27 +708,76 @@ export function deriveContinuation(
 ): CarryDocContinuation {
   // A cut can only have been self-requested if it was also clean/deliberate.
   const selfRequested = boundaryDeliberate && boundarySelfRequested;
-  let idx = -1;
-  for (let i = tail.length - 1; i >= 0; i -= 1) {
-    if (isOwnerSpeechVerdict(tail[i].provenance?.verdict)) {
-      idx = i;
-      break;
+  const requests: Array<{
+    key: string;
+    request: CarryDocOwnerRequest;
+    settled: boolean;
+  }> = [];
+  const requestByKey = new Map<string, Array<(typeof requests)[number]>>();
+  const requestHistoryStatus = tail.find((turn) => turn.requestHistoryStatus)?.requestHistoryStatus;
+
+  const settle = (requestId: string | null | undefined) => {
+    if (!requestId) return;
+    for (const request of requestByKey.get(requestId) ?? []) request.settled = true;
+  };
+
+  for (let i = 0; i < tail.length; i += 1) {
+    const turn = tail[i];
+    for (const superseded of turn.supersedesRequestIds ?? []) settle(superseded);
+    if (turn.requestDisposition === 'cancelled' || turn.requestDisposition === 'superseded') {
+      settle(turn.requestId);
+    }
+
+    if (isOwnerSpeechVerdict(turn.provenance?.verdict)) {
+      const key = turn.requestId ?? `tail-owner-${i}`;
+      const entry = {
+        key,
+        request: { requestId: turn.requestId ?? null, text: turn.text, ts: turn.ts },
+        settled: false,
+      };
+      requests.push(entry);
+      const same = requestByKey.get(key) ?? [];
+      same.push(entry);
+      requestByKey.set(key, same);
+    }
+
+    // A response settles ONLY the request whose native/thread id it shares and
+    // only at the client's final delivered boundary. Commentary, acknowledg-
+    // ments, unrelated final answers and interrupted turns remain open.
+    if (turn.speaker === 'assistant' && turn.responseDisposition === 'delivered') {
+      settle(turn.requestId);
     }
   }
-  if (idx < 0) {
-    // No owner turn in the recent tail ⇒ nothing owner-shaped is open. `answered`
-    // is vacuously true (there is no open owner question to cross).
-    return { lastOwnerMessage: null, answered: true, deliberate: boundaryDeliberate, selfRequested };
+
+  if (requests.length === 0) {
+    // A COMPLETE tail with no owner turn is vacuously answered. A truncated or
+    // unreadable tail is explicitly UNKNOWN — never silently "no demand".
+    return {
+      lastOwnerMessage: null,
+      answered: requestHistoryStatus == null,
+      ...(requestHistoryStatus ? { requestHistoryStatus } : {}),
+      deliberate: boundaryDeliberate,
+      selfRequested,
+    };
   }
-  const owner = tail[idx];
-  // Answered ⇔ a model turn FOLLOWS the owner's final message in the tail.
-  const answered = tail.slice(idx + 1).some((t) => t.speaker === 'assistant');
+  const latest = requests[requests.length - 1];
+  const pendingOwnerMessages = requests.filter((request) => !request.settled).map((request) => request.request);
   return {
-    lastOwnerMessage: { text: owner.text, ts: owner.ts },
-    answered,
+    lastOwnerMessage: { text: latest.request.text, ts: latest.request.ts },
+    answered: latest.settled,
+    ...(pendingOwnerMessages.length > 0 ? { pendingOwnerMessages } : {}),
+    ...(requestHistoryStatus ? { requestHistoryStatus } : {}),
     deliberate: boundaryDeliberate,
     selfRequested,
   };
+}
+
+/** Backward-compatible open-request projection for consumers of older stored
+ * CarryDoc values that predate pendingOwnerMessages. */
+export function unresolvedOwnerRequests(cont: CarryDocContinuation): CarryDocOwnerRequest[] {
+  if (cont.pendingOwnerMessages) return cont.pendingOwnerMessages;
+  if (!cont.lastOwnerMessage || cont.answered) return [];
+  return [{ requestId: null, ...cont.lastOwnerMessage }];
 }
 
 /**
@@ -744,13 +827,18 @@ export interface OpenOwnerQuestionGate {
  * wires the actual bounce, mirroring the P-016 gate's single-refuse shape.
  */
 export function gateOpenOwnerQuestion(cont: CarryDocContinuation): OpenOwnerQuestionGate {
-  if (!cont.deliberate || !cont.lastOwnerMessage || cont.answered) {
+  if (
+    !cont.deliberate ||
+    (unresolvedOwnerRequests(cont).length === 0 && !cont.requestHistoryStatus)
+  ) {
     return { crossesOpenOwnerMessage: false };
   }
   return {
     crossesOpenOwnerMessage: true,
     refusalText:
-      'This compaction is HELD: your owner\'s final message is still UNANSWERED, and this is a ' +
+      (cont.requestHistoryStatus
+        ? `This compaction is HELD: owner-request history is ${cont.requestHistoryStatus.toUpperCase()}, so answered/no-demand is UNKNOWN, and this is a `
+        : 'This compaction is HELD: your owner\'s final message is still UNANSWERED, and this is a ') +
       'DELIBERATE boundary — do not abandon it across the cut. Either answer it first, or, if you are ' +
       'compacting to gain room to answer, retry: the successor receives that exact message as its ' +
       'first prompt (never as quoted history), so the question is carried, not lost.',
@@ -1291,15 +1379,29 @@ function renderContinuation(cont: CarryDocContinuation): string {
           'tail may be truncated mid-reply AND nothing was flushed; trust both less and re-verify via ' +
           'the self-recall pointer).',
   ];
-  if (cont.lastOwnerMessage) {
+  const pending = unresolvedOwnerRequests(cont);
+  if (cont.requestHistoryStatus) {
+    lines.push(
+      `- Owner-request history is ${cont.requestHistoryStatus.toUpperCase()}: answered/no-demand is UNKNOWN. ` +
+        "Recover the omitted records through the Self-recall pointer before treating the owner's work as closed.",
+    );
+  }
+  if (pending.length > 0) {
+    const preview = cap(pending[pending.length - 1].text, CONT_PREVIEW_CAP);
+    const subject = pending.length === 1
+      ? "Owner's final message is"
+      : `${pending.length} owner requests remain`;
+    lines.push(
+      `- ${subject} OPEN (unanswered) — ` +
+        'they are delivered together as your ACTUAL FIRST PROMPT, NOT quoted in the tail below. ' +
+        `Respond to every unresolved request directly. Preview: «${preview}»`,
+    );
+  } else if (cont.lastOwnerMessage) {
     const preview = cap(cont.lastOwnerMessage.text, CONT_PREVIEW_CAP);
     lines.push(
-      cont.answered
-        ? `- Owner's final message was ANSWERED before this boundary (quoted in the tail below). Preview: «${preview}»`
-        : "- Owner's final message is OPEN (unanswered) — it is delivered to you as your ACTUAL FIRST " +
-          `PROMPT, NOT quoted in the tail below. Respond to it directly. Preview: «${preview}»`,
+      `- Owner's final message was ANSWERED before this boundary (quoted in the tail below). Preview: «${preview}»`,
     );
-  } else {
+  } else if (!cont.requestHistoryStatus) {
     lines.push('- No owner turn in the recent tail — continue the standing work above.');
   }
   return `## Continuation (last-turn handling)\n${lines.join('\n')}`;
@@ -1311,22 +1413,30 @@ function renderTail(tail: CarryDocTailTurn[], cont: CarryDocContinuation): strin
   // quoted material" — a quoted copy reads as already-handled). Drop that one turn,
   // the LAST owner-typed turn, from the quoted tail.
   let quoted = tail;
-  if (cont.lastOwnerMessage && !cont.answered) {
-    let dropAt = -1;
-    for (let i = tail.length - 1; i >= 0; i -= 1) {
-      if (isOwnerSpeechVerdict(tail[i].provenance?.verdict)) {
-        dropAt = i;
-        break;
-      }
+  const pending = unresolvedOwnerRequests(cont);
+  if (pending.length > 0) {
+    const pendingKeys = new Map<string, number>();
+    for (const request of pending) {
+      const key = `${request.requestId ?? ''}\u0000${request.ts ?? ''}\u0000${request.text}`;
+      pendingKeys.set(key, (pendingKeys.get(key) ?? 0) + 1);
     }
-    if (dropAt >= 0) quoted = tail.filter((_, i) => i !== dropAt);
+    quoted = tail.filter((turn) => {
+      if (!isOwnerSpeechVerdict(turn.provenance?.verdict)) return true;
+      const key = `${turn.requestId ?? ''}\u0000${turn.ts ?? ''}\u0000${turn.text}`;
+      const count = pendingKeys.get(key) ?? 0;
+      if (count === 0) return true;
+      pendingKeys.set(key, count - 1);
+      return false;
+    });
   }
   if (quoted.length === 0) return null;
-  const blocks = quoted.map((t) => {
+  const blocks = quoted.filter((t) => t.text.trim().length > 0).map((t) => {
     const ts = t.ts ? ` @${t.ts}` : '';
     return `### ${tailTurnHeader(t)}${ts}\n${cap(t.text, TAIL_TURN_CAP)}`;
   });
-  return `## Verbatim tail (most recent turns; tool outputs are pointers)\n${blocks.join('\n\n')}`;
+  return blocks.length > 0
+    ? `## Verbatim tail (most recent turns; tool outputs are pointers)\n${blocks.join('\n\n')}`
+    : null;
 }
 
 export interface RenderCarryDocOpts {

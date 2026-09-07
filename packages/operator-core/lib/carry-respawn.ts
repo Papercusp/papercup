@@ -37,6 +37,7 @@ import {
   carryDocBudgetChars,
   gateOpenOwnerQuestion,
   renderCarryDoc,
+  unresolvedOwnerRequests,
 } from './carry-doc';
 import { deriveLaunchPromptText, type LaunchPlanRef } from './agent-tools/plans/launch-prompt';
 import { getLoopCarryNoteWithMeta, shortCarryHash, type LoopCarryNoteWithMeta } from './carry-note';
@@ -318,8 +319,19 @@ export function deriveRespawnFirstPrompt(
   plan?: LaunchPlanRef | null,
 ): string | null {
   const { continuation } = doc;
-  if (!continuation.lastOwnerMessage || continuation.answered) return null;
-  const ownerText = continuation.lastOwnerMessage.text.trim();
-  if (ownerText.length === 0) return null;
+  const pending = unresolvedOwnerRequests(continuation)
+    .map((request) => ({ ...request, text: request.text.trim() }))
+    .filter((request) => request.text.length > 0);
+  if (pending.length === 0) return null;
+  const ownerText =
+    pending.length === 1
+      ? pending[0].text
+      : [
+          'The following owner requests remain unresolved across this context boundary. ' +
+            'Address every request; do not treat one reply as resolving the others.',
+          ...pending.map((request, index) =>
+            `[Unresolved owner request ${index + 1}${request.requestId ? ` · ${request.requestId}` : ''}]\n${request.text}`
+          ),
+        ].join('\n\n');
   return deriveLaunchPromptText(ownerText, autoMode, plan ?? null);
 }

@@ -221,6 +221,29 @@ describe('deriveRespawnFirstPrompt (pure branch)', () => {
     expect(deriveRespawnFirstPrompt(doc(blank))).toBeNull();
   });
 
+  it('reissues every unresolved request together and does not replay a fully delivered set', () => {
+    const multiple: CarryDocContinuation = {
+      lastOwnerMessage: { text: 'newer request', ts: null },
+      answered: true,
+      pendingOwnerMessages: [
+        { requestId: 'request-1', text: 'older unfinished request', ts: null },
+        { requestId: 'request-3', text: 'third unfinished request', ts: null },
+      ],
+      deliberate: false,
+      selfRequested: false,
+    };
+    const prompt = deriveRespawnFirstPrompt(doc(multiple));
+    expect(prompt).toContain('older unfinished request');
+    expect(prompt).toContain('third unfinished request');
+    expect(prompt).toContain('Address every request');
+    expect(prompt).not.toContain('newer request'); // it was delivered; no replay
+
+    expect(deriveRespawnFirstPrompt(doc({
+      ...multiple,
+      pendingOwnerMessages: [],
+    }))).toBeNull();
+  });
+
   it('threads autoMode + plan through to deriveLaunchPromptText', () => {
     const out = deriveRespawnFirstPrompt(doc(OPEN_DELIBERATE), false, { slug: 'p', harness: 'papercusp' });
     expect(out).toContain('ship the release when the gate is green');

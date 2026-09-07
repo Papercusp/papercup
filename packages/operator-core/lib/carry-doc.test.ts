@@ -876,10 +876,25 @@ describe('renderCarryDoc (pure)', () => {
 });
 
 describe('deriveContinuation (pure, P-010)', () => {
-  const ownerTurn = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'owner-typed', origin: null } });
-  const ownerDialog = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'owner-dialog', origin: null } });
+  const ownerTurn = (text: string, requestId = 'request-1'): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, requestId, provenance: { verdict: 'owner-typed', origin: null } });
+  const ownerDialog = (text: string, requestId = 'dialog-1'): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, requestId, provenance: { verdict: 'owner-dialog', origin: null } });
   const wake = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'agent-injected', origin: 'wake-pump' } });
-  const model = (text: string): CarryDocTailTurn => ({ speaker: 'assistant', text, ts: null });
+  const model = (
+    text: string,
+    requestId = 'request-1',
+    responseDisposition: CarryDocTailTurn['responseDisposition'] = 'progress',
+  ): CarryDocTailTurn => ({ speaker: 'assistant', text, ts: null, requestId, responseDisposition });
+  const lifecycle = (
+    requestId: string,
+    requestDisposition: NonNullable<CarryDocTailTurn['requestDisposition']>,
+  ): CarryDocTailTurn => ({
+    speaker: 'user',
+    text: 'typed request lifecycle record',
+    ts: null,
+    requestId,
+    requestDisposition,
+    provenance: { verdict: 'agent-injected', origin: 'wake-pump' },
+  });
 
   it('identifies the final OWNER-typed turn — not a later agent-injected user turn (WI-3532 class)', () => {
     const cont = deriveContinuation([ownerTurn('do the thing'), model('on it'), wake('loop wake — continue')], true);
@@ -892,15 +907,73 @@ describe('deriveContinuation (pure, P-010)', () => {
     expect(cont.answered).toBe(false);
   });
 
-  it('answered=true when a model turn follows the owner message; false when it is the last real turn', () => {
-    expect(deriveContinuation([ownerTurn('q'), model('a')], true).answered).toBe(true);
+  it('requires a matching delivered response; acknowledgement, interruption and unrelated delivery stay open', () => {
+    expect(deriveContinuation([ownerTurn('q'), model('ack')], true).answered).toBe(false);
+    expect(deriveContinuation([ownerTurn('q'), model('partial', 'request-1', 'interrupted')], true).answered).toBe(false);
+    expect(deriveContinuation([ownerTurn('q'), model('other answer', 'request-2', 'delivered')], true).answered).toBe(false);
+    expect(deriveContinuation([ownerTurn('q'), model('answer', 'request-1', 'delivered')], true).answered).toBe(true);
     // A machine wake after the owner message does NOT answer it.
     expect(deriveContinuation([ownerTurn('q'), wake('w')], true).answered).toBe(false);
+  });
+
+  it('preserves multiple simultaneous requests and settles only the matching one', () => {
+    const cont = deriveContinuation([
+      ownerTurn('first', 'request-1'),
+      ownerTurn('second', 'request-2'),
+      model('second answer', 'request-2', 'delivered'),
+    ], true);
+    expect(cont.answered).toBe(true); // the latest owner request is answered
+    expect(cont.pendingOwnerMessages).toEqual([
+      { requestId: 'request-1', text: 'first', ts: null },
+    ]);
+    expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(true);
+  });
+
+  it('accepts typed cancellation and supersession but never scans prose for those words', () => {
+    expect(deriveContinuation([
+      ownerTurn('first', 'request-1'),
+      lifecycle('request-1', 'cancelled'),
+    ], true).pendingOwnerMessages).toBeUndefined();
+
+    const superseded = deriveContinuation([
+      ownerTurn('first', 'request-1'),
+      {
+        ...ownerTurn('replacement', 'request-2'),
+        supersedesRequestIds: ['request-1'],
+      },
+    ], true);
+    expect(superseded.pendingOwnerMessages).toEqual([
+      { requestId: 'request-2', text: 'replacement', ts: null },
+    ]);
+
+    const proseOnly = deriveContinuation([
+      ownerTurn('first', 'request-1'),
+      model('I cancelled and superseded it', 'request-1', 'progress'),
+    ], true);
+    expect(proseOnly.answered).toBe(false);
   });
 
   it('no owner turn ⇒ null message, vacuously answered, boundary flag flows through', () => {
     const cont = deriveContinuation([model('a'), wake('w')], false);
     expect(cont).toEqual({ lastOwnerMessage: null, answered: true, deliberate: false, selfRequested: false });
+  });
+
+  it('keeps truncated or unreadable request history explicitly unknown instead of no-demand', () => {
+    for (const requestHistoryStatus of ['truncated', 'unreadable'] as const) {
+      const cont = deriveContinuation([{
+        speaker: 'user',
+        text: '',
+        ts: null,
+        requestHistoryStatus,
+        provenance: { verdict: 'agent-injected', origin: 'wake-pump' },
+      }], true);
+      expect(cont).toMatchObject({
+        lastOwnerMessage: null,
+        answered: false,
+        requestHistoryStatus,
+      });
+      expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(true);
+    }
   });
 
   it('selfRequested defaults to the deliberate flag (historical meaning preserved) and can be overridden false', () => {
@@ -911,7 +984,11 @@ describe('deriveContinuation (pure, P-010)', () => {
   });
 
   it('picks the LAST owner turn when several are present', () => {
-    const cont = deriveContinuation([ownerTurn('first'), model('a'), ownerTurn('second')], true);
+    const cont = deriveContinuation([
+      ownerTurn('first', 'request-1'),
+      model('a', 'request-1', 'delivered'),
+      ownerTurn('second', 'request-2'),
+    ], true);
     expect(cont.lastOwnerMessage?.text).toBe('second');
     expect(cont.answered).toBe(false);
   });
@@ -954,7 +1031,13 @@ describe('buildCarryDoc continuation leg (P-010)', () => {
         { speaker: 'user', text: 'open question', ts: null, provenance: { verdict: 'owner-typed', origin: null } } as CarryDocTailTurn,
       ],
     });
-    expect(doc.continuation).toEqual({ lastOwnerMessage: { text: 'open question', ts: null }, answered: false, deliberate: true, selfRequested: true });
+    expect(doc.continuation).toEqual({
+      lastOwnerMessage: { text: 'open question', ts: null },
+      answered: false,
+      pendingOwnerMessages: [{ requestId: null, text: 'open question', ts: null }],
+      deliberate: true,
+      selfRequested: true,
+    });
     expect(gateOpenOwnerQuestion(doc.continuation).crossesOpenOwnerMessage).toBe(true);
   });
 

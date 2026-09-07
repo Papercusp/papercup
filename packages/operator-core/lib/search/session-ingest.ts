@@ -125,6 +125,14 @@ const PART_RETENTION_DAYS = 14;
 
 export type SourceKind = 'claude' | 'omp' | 'codex' | 'agent_chat';
 
+/**
+ * Native, non-semantic evidence about an assistant response.  `delivered`
+ * means the client recorded its final-answer boundary; it never means a text
+ * fragment merely happened to follow a prompt.  `interrupted` deliberately
+ * does NOT settle the request that was being served.
+ */
+export type ParsedResponseDisposition = 'progress' | 'delivered' | 'interrupted';
+
 export interface ParsedTurn {
   ts: Date | null;
   speaker: 'user' | 'assistant';
@@ -134,6 +142,18 @@ export interface ParsedTurn {
   /** SHA-256 of the raw, normalized prompt before cap/redaction. Claude only;
    *  used to correlate the hook-authenticated OWNER stamp at insert time. */
   promptHash?: string | null;
+  /** Native logical turn/request id when the client writes one on both sides
+   *  of the exchange (Codex today).  Other clients are correlated through the
+   *  message-parent chain below by the bounded transcript-tail reader. */
+  requestId?: string | null;
+  /** Native message graph identity.  These fields stay out of session_turns;
+   *  the carry tail uses them in-memory to connect final delivery to the owner
+   *  request it actually belongs to. */
+  messageId?: string | null;
+  parentMessageId?: string | null;
+  /** Mechanically derived from the client wire: Claude end_turn, Codex
+   *  final_answer, or OMP stop.  Missing/unknown is intentionally not success. */
+  responseDisposition?: ParsedResponseDisposition | null;
 }
 
 /** The faithful-render part kinds stored in session_turn_parts. Mirrors the
@@ -346,7 +366,7 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
   const queuedCommand = parseClaudeQueuedCommand(obj);
   if (queuedCommand) return queuedCommand;
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
-  const message = obj.message as { role?: string; content?: unknown } | undefined;
+  const message = obj.message as { role?: string; content?: unknown; stop_reason?: unknown } | undefined;
   if (!message) return null;
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
@@ -369,6 +389,19 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
   }
   const text = cleanTurnText(rawText);
   if (!text) return null;
+  const messageId = typeof obj.uuid === 'string' ? obj.uuid : null;
+  const parentMessageId = typeof obj.parentUuid === 'string' ? obj.parentUuid : null;
+  const stopReason = typeof message.stop_reason === 'string' ? message.stop_reason : null;
+  const responseDisposition: ParsedResponseDisposition | null =
+    speaker !== 'assistant'
+      ? null
+      : stopReason === 'end_turn'
+        ? 'delivered'
+        : stopReason === 'tool_use'
+          ? 'progress'
+          : obj.isApiErrorMessage === true || obj.error != null || stopReason === 'stop_sequence'
+            ? 'interrupted'
+            : null;
   return {
     ts: parseTs(obj.timestamp),
     speaker,
@@ -376,6 +409,10 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
     cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
     sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : null,
     promptHash: speaker === 'user' ? promptOriginHash(rawText) : null,
+    requestId: speaker === 'user' ? messageId : null,
+    messageId,
+    parentMessageId,
+    responseDisposition,
   };
 }
 
@@ -490,13 +527,39 @@ export function parseOmpLine(line: string): ParsedTurn | null {
     return null;
   }
   if (obj.type !== 'message') return null;
-  const message = obj.message as { role?: string; content?: unknown } | undefined;
+  const message = obj.message as {
+    role?: string;
+    content?: unknown;
+    stopReason?: unknown;
+    errorMessage?: unknown;
+  } | undefined;
   if (!message) return null;
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
   const text = cleanTurnText(textFromContent(message.content));
   if (!text) return null;
-  return { ts: parseTs(obj.timestamp), speaker, text };
+  const messageId = typeof obj.id === 'string' ? obj.id : null;
+  const parentMessageId = typeof obj.parentId === 'string' ? obj.parentId : null;
+  const stopReason = typeof message.stopReason === 'string' ? message.stopReason : null;
+  const responseDisposition: ParsedResponseDisposition | null =
+    speaker !== 'assistant'
+      ? null
+      : stopReason === 'stop'
+        ? 'delivered'
+        : stopReason === 'toolUse'
+          ? 'progress'
+          : stopReason === 'aborted' || stopReason === 'error' || message.errorMessage != null
+            ? 'interrupted'
+            : null;
+  return {
+    ts: parseTs(obj.timestamp),
+    speaker,
+    text,
+    requestId: speaker === 'user' ? messageId : null,
+    messageId,
+    parentMessageId,
+    responseDisposition,
+  };
 }
 
 /** Codex rollout line → turn. Lines: {timestamp, type:'response_item', payload:{type:'message', role, content:[{type:'input_text'|'output_text', text}]}}. */
@@ -523,13 +586,44 @@ export function parseCodexLine(line: string): ParsedTurn | null {
     return { ts, speaker: 'user', text, sessionId: obj.session_id };
   }
   if (obj.type !== 'response_item') return null;
-  const payload = obj.payload as { type?: string; role?: string; content?: unknown } | undefined;
+  const payload = obj.payload as {
+    type?: string;
+    role?: string;
+    content?: unknown;
+    id?: unknown;
+    phase?: unknown;
+    internal_chat_message_metadata_passthrough?: unknown;
+  } | undefined;
   if (!payload || payload.type !== 'message') return null;
   const speaker = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null; // 'developer'/'system' = injected instructions, skip
   const text = cleanTurnText(textFromContent(payload.content));
   if (!text) return null;
-  return { ts: parseTs(obj.timestamp), speaker, text };
+  const metadata =
+    payload.internal_chat_message_metadata_passthrough != null &&
+    typeof payload.internal_chat_message_metadata_passthrough === 'object' &&
+    !Array.isArray(payload.internal_chat_message_metadata_passthrough)
+      ? payload.internal_chat_message_metadata_passthrough as Record<string, unknown>
+      : null;
+  const requestId = typeof metadata?.turn_id === 'string' ? metadata.turn_id : null;
+  const phase = typeof payload.phase === 'string' ? payload.phase : null;
+  const responseDisposition: ParsedResponseDisposition | null =
+    speaker !== 'assistant'
+      ? null
+      : phase === 'final_answer'
+        ? 'delivered'
+        : phase === 'commentary'
+          ? 'progress'
+          : null;
+  return {
+    ts: parseTs(obj.timestamp),
+    speaker,
+    text,
+    requestId,
+    messageId: typeof payload.id === 'string' ? payload.id : null,
+    parentMessageId: null,
+    responseDisposition,
+  };
 }
 
 /**

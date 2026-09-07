@@ -278,6 +278,7 @@ describe('readVerbatimTail (P-009 carry-document tail leg)', () => {
     );
     const tail = await readVerbatimTail(f, 'claude', 3);
     expect(tail.map((t) => t.text)).toEqual(['first answer', 'second ask', 'second answer']);
+    expect(tail[0].requestHistoryStatus).toBe('truncated');
     expect(tail[0].speaker).toBe('assistant');
     expect(tail[2].ts?.toISOString()).toBe('2026-07-14T10:00:15.000Z');
   });
@@ -286,5 +287,60 @@ describe('readVerbatimTail (P-009 carry-document tail leg)', () => {
     const f = join(sandbox, 'sess.jsonl');
     writeFileSync(f, claudeLine('assistant', 'hi', '2026-07-14T10:00:00Z') + '\n');
     expect(await readVerbatimTail(f, 'claude', 0)).toEqual([]);
+  });
+
+  it('threads Claude and OMP final delivery through tool-result nodes to the originating request', async () => {
+    const claude = join(sandbox, 'claude.jsonl');
+    writeFileSync(claude, [
+      JSON.stringify({ type: 'user', uuid: 'cu1', parentUuid: null, message: { role: 'user', content: 'inspect it' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'ca1', parentUuid: 'cu1', message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }] } }),
+      JSON.stringify({ type: 'user', uuid: 'ct1', parentUuid: 'ca1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] } }),
+      JSON.stringify({ type: 'assistant', uuid: 'ca2', parentUuid: 'ct1', message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'inspection complete' }] } }),
+    ].join('\n') + '\n');
+    expect(await readVerbatimTail(claude, 'claude', 8)).toMatchObject([
+      { speaker: 'user', text: 'inspect it', requestId: 'cu1' },
+      { speaker: 'assistant', text: 'inspection complete', requestId: 'cu1', responseDisposition: 'delivered' },
+    ]);
+
+    const omp = join(sandbox, 'omp.jsonl');
+    writeFileSync(omp, [
+      JSON.stringify({ type: 'message', id: 'ou1', parentId: null, message: { role: 'user', content: [{ type: 'text', text: 'inspect OMP' }] } }),
+      JSON.stringify({ type: 'message', id: 'oa1', parentId: 'ou1', message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'tool-2', name: 'read' }] } }),
+      JSON.stringify({ type: 'message', id: 'ot1', parentId: 'oa1', message: { role: 'toolResult', content: [{ type: 'text', text: 'ok' }] } }),
+      JSON.stringify({ type: 'message', id: 'oa2', parentId: 'ot1', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'OMP complete' }] } }),
+    ].join('\n') + '\n');
+    expect(await readVerbatimTail(omp, 'omp', 8)).toMatchObject([
+      { speaker: 'user', text: 'inspect OMP', requestId: 'ou1' },
+      { speaker: 'assistant', text: 'OMP complete', requestId: 'ou1', responseDisposition: 'delivered' },
+    ]);
+  });
+
+  it('uses Codex task completion as the terminal receipt and keeps an errored turn interrupted', async () => {
+    const f = join(sandbox, 'codex.jsonl');
+    const message = (role: 'user' | 'assistant', text: string, turnId: string, phase?: string) => JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role,
+        ...(phase ? { phase } : {}),
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
+      },
+    });
+    writeFileSync(f, [
+      message('user', 'first request', 'turn-1'),
+      message('assistant', 'working', 'turn-1', 'commentary'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1', error: { message: 'interrupted' }, last_agent_message: null } }),
+      message('user', 'second request', 'turn-2'),
+      message('assistant', 'second result', 'turn-2', 'commentary'),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-2', error: null, last_agent_message: 'second result' } }),
+    ].join('\n') + '\n');
+    const tail = await readVerbatimTail(f, 'codex', 8);
+    expect(tail).toMatchObject([
+      { text: 'first request', requestId: 'turn-1' },
+      { text: 'working', requestId: 'turn-1', responseDisposition: 'interrupted' },
+      { text: 'second request', requestId: 'turn-2' },
+      { text: 'second result', requestId: 'turn-2', responseDisposition: 'delivered' },
+    ]);
   });
 });
