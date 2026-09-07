@@ -40,9 +40,9 @@ function captured() {
 describe('production capability Dream adapter', () => {
   it('binds the registered repository, stable workflow identity and scoped persistent adapters', async () => {
     await productionDreamCycle(ctx, { mode: 'manual' });
-    const { input, deps } = captured();
+    const { input } = captured();
     expect(h.registry).toHaveBeenCalledWith(ctx.workspaceId);
-    expect(input).toMatchObject({ ...ctx, cycleId: 'workflow-stable' });
+    expect(input).toMatchObject({ workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, cycleId: 'workflow-stable' });
   });
 
   it('loads only the capability manifest and preserves scope across every write', async () => {

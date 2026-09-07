@@ -28,7 +28,7 @@ function harness() {
   const d: DreamCycleDeps = {
     llmCall: llm,
     estimateCall: () => 0.05,
-    preflight: vi.fn(async () => ({ allow: true, loopId: 'dream:papercusp',
+    preflight: vi.fn(async () => ({ allow: true as const, loopId: 'dream:papercusp',
       cycleRemainingUsd: 1, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 })),
     loadPackets: vi.fn(async () => f.packets),
     loadHistory: vi.fn(async () => []),
@@ -83,7 +83,7 @@ function harness() {
     }),
     sink: vi.fn(async (id) => {
       row(id).routedRef = 'WI-proposal';
-      return { sunk: true, ideaId: 'dream:' + id, workItemId: 'WI-proposal', routedRef: 'WI-proposal',
+      return { sunk: true as const, ideaId: 'dream:' + id, workItemId: 'WI-proposal', routedRef: 'WI-proposal',
         sourceRefs: [], created: true };
     }),
     review: vi.fn(async (options, deps) => {
