@@ -52,6 +52,25 @@ import { FLEET_PARK_DEFAULT_RESUME_GATE } from '../../fleet-park-resume-path';
 
 export type FleetControlAction = 'wind-down' | 'resume';
 
+/** The durable controller marker written by the janitorial fleet reconcile routine. */
+export const FLEET_CONTROL_RECONCILER = 'system:fleet-control-reconcile';
+
+/**
+ * A reconciler-owned winding-down fleet with no live members is terminal cleanup,
+ * not a recoverable dead-leader handoff. Taking leadership there recreates the
+ * stale-scope incident this control path is meant to avoid.
+ */
+export function isReconciledEmptyFleet(
+  fleet: Pick<AgentFleetRecord, 'controlState' | 'controlBy'>,
+  liveMemberIds: readonly string[],
+): boolean {
+  return (
+    fleet.controlState === 'winding-down' &&
+    fleet.controlBy === FLEET_CONTROL_RECONCILER &&
+    liveMemberIds.length === 0
+  );
+}
+
 const ACTION_TO_STATE: Record<FleetControlAction, FleetControlState> = {
   'wind-down': 'winding-down',
   resume: 'active',
@@ -630,6 +649,30 @@ export async function applyFleetControl(
     }
     if (!leaderIsLive) {
       const leaderState = leaderReadFailed ? 'could not be confirmed live' : 'has no live presence';
+      // The reconciler only winds down fleets after a successful liveness read
+      // found every known member terminal. Re-read the live control audience before
+      // emitting recovery advice; a read failure keeps the old conservative advice
+      // rather than turning an unavailable roster into a terminal verdict.
+      if (fleet.controlState === 'winding-down' && fleet.controlBy === FLEET_CONTROL_RECONCILER) {
+        try {
+          const liveMembers = await listFleetControlMembers(slug);
+          if (isReconciledEmptyFleet(fleet, liveMembers)) {
+            return {
+              ok: false,
+              fleet: slug,
+              invokedAs,
+              error: 'fleet_reconciled_terminal',
+              message:
+                `fleet:${action} cannot recover '${slug}' by taking leadership: the fleet is ` +
+                `winding-down under ${FLEET_CONTROL_RECONCILER} and has no live members. ` +
+                'This is terminal janitorial cleanup; use the owner/relaunch path only if the mission ' +
+                'must be restarted, or finish the wind-down. No takeover was performed.',
+            };
+          }
+        } catch {
+          // Preserve the ordinary recovery advice when the live-member read is degraded.
+        }
+      }
       return {
         ok: false,
         fleet: slug,
@@ -731,7 +774,12 @@ export async function applyFleetControl(
     };
   }
   const record: AgentFleetRecord = updated;
-  if (action === 'resume' && !alreadyInState && (fleet.controlResumeGate ?? '').trim()) {
+  // A stale ACTIVE row can still carry a declared park gate when the previous
+  // resume returned early or the state and event planes were reconciled
+  // separately.  Idempotent resume must reconcile that gate too: clearing the
+  // columns without firing leaves members parked forever while reporting
+  // success.  Event emission is latching/idempotent, so repeating it is safe.
+  if (action === 'resume' && (fleet.controlResumeGate ?? '').trim()) {
     resumePath = await fireFleetResumeGate({
       gate: (fleet.controlResumeGate ?? '').trim(),
       slug,
