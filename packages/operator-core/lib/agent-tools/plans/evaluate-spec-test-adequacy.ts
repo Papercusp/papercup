@@ -103,6 +103,9 @@ export default defineTool({
       specRevision: args.specRevision,
       specFingerprint: args.specFingerprint,
       replaySnapshot: args.replaySnapshot === true,
+      ...(args.replaySnapshot === true && current !== undefined
+        ? { currentProvenance: 'server-measured' as const }
+        : {}),
       evidenceRefs: args.evidenceRefs,
       current,
       limit: evidenceLimit,
