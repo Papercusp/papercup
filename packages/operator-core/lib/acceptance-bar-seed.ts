@@ -21,6 +21,7 @@ import {
 } from './agent-tools/plans/plan-lock-key';
 import {
   setSpecClause,
+  type SpecBehaviorClass,
   type SpecClauseSql,
   type SpecClauseWrite,
 } from './agent-tools/plans/spec-clauses-store';
@@ -247,6 +248,21 @@ function evidencePlaneOf(raw: string | undefined): AcceptanceEvidencePlane | nul
   return normalized === 'tree' || normalized === 'deployed' || normalized === 'live'
     ? normalized
     : null;
+}
+
+/**
+ * A BAR whose proof is explicitly on a deployed/live plane is not automatically
+ * an automated test obligation. Keep the neutral automated class when the BAR
+ * declares test layers, but classify an otherwise manual delivery-plane BAR as
+ * non-automated so the adequacy floor can correctly be `none`.
+ */
+export function acceptanceBarBehaviorClass(
+  evidencePlane: AcceptanceEvidencePlane,
+  requiredTestLayers?: readonly string[],
+): SpecBehaviorClass {
+  return evidencePlane === 'tree' || (requiredTestLayers?.length ?? 0) > 0
+    ? 'happy-path'
+    : 'non-automated';
 }
 
 /** Parse the plan's existing design table. A third `evidence plane` column is
@@ -542,7 +558,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
         expectedRevision: 0,
         planItemId,
         behavior: criterion.model ?? '',
-        behaviorClass: 'happy-path',
+        behaviorClass: acceptanceBarBehaviorClass(evidencePlane, criterion.requiredTestLayers),
         requiredEvidence: [evidencePlane],
         ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
         lifecycleStatus: 'draft',
