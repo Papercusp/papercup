@@ -209,15 +209,41 @@ else
     || { tail -5 "$OUTDIR/grype.log"; die "grype"; }
 
   TOTAL=$(jq '.matches | length' "$OUTDIR/vulns.json")
-  ACTIONABLE=$(jq '[.matches[] | select(.vulnerability.fix.state=="fixed")
-                   | select(.vulnerability.severity=="Critical" or .vulnerability.severity=="High")] | length' \
-               "$OUTDIR/vulns.json")
+  # EL9 kernels are vendor-maintained RPMs. An `nvd:cpe` match against one of those RPMs
+  # compares its vendor version with an upstream kernel fixed version and therefore cannot
+  # establish that the vendor package is vulnerable: the fix may already be backported. Keep
+  # vendor-namespace matches actionable, but exclude only this unsupported generic-CPE shape.
+  # The package/type/EL9 guard prevents an unrelated artifact whose name happens to contain
+  # "kernel" from silently leaving the gate population.
+  GENERIC_KERNEL_CPE_EXCLUDED=$(jq '
+    def generic_kernel_cpe:
+      ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
+      and ((.artifact.type // "") | ascii_downcase) == "rpm"
+      and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
+      and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
+    [.matches[]
+      | select(.vulnerability.fix.state=="fixed")
+      | select(.vulnerability.severity=="Critical" or .vulnerability.severity=="High")
+      | select(generic_kernel_cpe)] | length
+  ' "$OUTDIR/vulns.json")
+  ACTIONABLE=$(jq '
+    def generic_kernel_cpe:
+      ((.artifact.name // "") | ascii_downcase | test("(^|-)kernel($|-)"))
+      and ((.artifact.type // "") | ascii_downcase) == "rpm"
+      and ((.artifact.version // "") | ascii_downcase | test("(^|[.-])el9([._-]|$)"))
+      and ((.vulnerability.namespace // "") | ascii_downcase) == "nvd:cpe";
+    [.matches[]
+      | select(.vulnerability.fix.state=="fixed")
+      | select(.vulnerability.severity=="Critical" or .vulnerability.severity=="High")
+      | select(generic_kernel_cpe | not)] | length
+  ' "$OUTDIR/vulns.json")
   # ⛔ D-289: the raw total is not a verdict. Measured on the P-306 image, 4 kernel RPMs each
   # reported an IDENTICAL 5,395 matches — one kernel's CVE set counted four times under four
   # names — so ~95% of a 29,872 headline was a single component counted repeatedly. Print the
   # dominating component beside the total so the number is never quoted bare.
   echo "GRYPE_MATCHES_RAW=$TOTAL   (matches, NOT distinct vulnerabilities — do not quote bare)"
   echo "GRYPE_TOP_COMPONENT=$(jq -r '.matches | group_by(.artifact.name) | max_by(length) | "\(.[0].artifact.name)=\(length)"' "$OUTDIR/vulns.json")"
+  echo "GRYPE_GENERIC_KERNEL_CPE_EXCLUDED=$GENERIC_KERNEL_CPE_EXCLUDED   (EL9 upstream CPE matches; vendor namespaces remain actionable)"
   echo "GRYPE_ACTIONABLE_CRIT_HIGH_WITH_FIX=$ACTIONABLE   <- the gate population"
 
   # The SBOM travels WITH the image, attested to the same digest, so a consumer can obtain it

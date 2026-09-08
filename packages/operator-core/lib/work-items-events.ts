@@ -212,6 +212,10 @@ export function emitWorkItemClaimableEvent(
  * Build the canonical `work-item:claimable` payload from a live item. The emitter
  * and the registration-time latch both use this helper so a payload filter is
  * evaluated against the same field/value derivation on both sides of the race.
+ * Claimable emits are guarded to unassigned rows, but `assignee` is still carried
+ * as an explicit null snapshot: claim specs may reference it inside boolean
+ * combinators, and omitting it would change `(assignee ∧ kind) OR id` into
+ * `kind OR id` during payload-filter derivation.
  *
  * `reason` is edge provenance, not current state. The live registration probe
  * deliberately omits it because it cannot infer which historical edge made a row
@@ -229,6 +233,7 @@ export function workItemClaimableEventPayload(
     harness: wi.harness,
     title: wi.title,
     state: wi.state,
+    assignee: wi.assignee,
     // WI-21834327391666056: carry goal provenance so goal-scoped claim specs
     // can narrow the canonical claimable await without falling back to a
     // hive-wide wake.

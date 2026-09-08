@@ -11,6 +11,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   GATE_RED_STREAK_CONDITION_PREFIX,
+  LIVE_GATE_OPS_CONDITION_PREFIXES,
+  liveGateOpsSelfSelectExplanation,
   STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES,
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExplanation,
@@ -27,9 +29,7 @@ describe('stop-the-line pure contracts (P-013/D-012)', () => {
     expect(STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES).toContain('deploy-parity:');
     // Exactly the catalog + the one direct-filer — a new exempt class must be a
     // deliberate edit here, not an accident of the spread.
-    expect(STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES).toHaveLength(
-      leaf.ACTIONABLE_CONDITION_PREFIXES.length + 1,
-    );
+    expect(STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES).toHaveLength(leaf.ACTIONABLE_CONDITION_PREFIXES.length + 1);
     // The trigger prefix itself is exempt (the gate item must stay claimable while
     // the line it opened is stopped — otherwise the throttle would starve its own fix).
     expect(STOP_THE_LINE_EXEMPT_CONDITION_PREFIXES).toContain(GATE_RED_STREAK_CONDITION_PREFIX);
@@ -42,6 +42,17 @@ describe('stop-the-line pure contracts (P-013/D-012)', () => {
   it('the trigger prefix matches the trackGateStall producer key shape', () => {
     expect(GATE_RED_STREAK_CONDITION_PREFIX).toBe('gate-red-streak:');
     expect(STOP_THE_LINE_RED_HOURS).toBe(24);
+  });
+
+  it('reserves only the two LIVE_GATE_OPS singleton prefixes for explicit by-id claims', () => {
+    expect(LIVE_GATE_OPS_CONDITION_PREFIXES).toEqual(['gate-red-streak:', 'green-stall:']);
+    for (const prefix of LIVE_GATE_OPS_CONDITION_PREFIXES) expect(prefix.endsWith(':')).toBe(true);
+
+    const text = liveGateOpsSelfSelectExplanation();
+    expect(text).toContain('gate-red-streak:');
+    expect(text).toContain('green-stall:');
+    expect(text).toContain('BY ID');
+    expect(text).toContain('gate.greenCheckpoint.ownership');
   });
 
   it('condition-bridge re-exports ARE the leaf module (identity, not a copy)', () => {

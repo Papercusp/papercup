@@ -86,12 +86,14 @@ import {
   type WorkItem,
 } from '../work-items';
 import { resolveIssuesScopeWorkspace } from '../issues-engineer';
-import { admittedWhereSqlWi, isIssueLocallyClaimableWhereSql, stopTheLineExclusionSql } from '../work-items-admission';
-import { trackDetached } from '../detached-imports';
 import {
-  agentReviewNormalExclusionSql,
-  readAgentReviewState,
-} from '../harness/improvements/agent-review-policy';
+  admittedWhereSqlWi,
+  isIssueLocallyClaimableWhereSql,
+  liveGateOpsSelfSelectExclusionSql,
+  stopTheLineExclusionSql,
+} from '../work-items-admission';
+import { trackDetached } from '../detached-imports';
+import { agentReviewNormalExclusionSql, readAgentReviewState } from '../harness/improvements/agent-review-policy';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
@@ -946,6 +948,10 @@ export const ISSUE_CLAIM_FLOORS = [
   { ok: 'ok_origin', bucket: 'remote_origin', field: 'remoteOrigin' },
   // Born-pending duplicate screening has not yet been adjudicated.
   { ok: 'ok_admission', bucket: 'admission_pending', field: 'admissionPending' },
+  // EI-22685972259555805: gate-red-streak:/green-stall: condition singletons are
+  // exclusive LIVE_GATE_OPS work. They remain directly claimable by id, but never
+  // circulate through a generic fleet's opportunistic self-select.
+  { ok: 'ok_live_gate_ops', bucket: 'live_gate_ops', field: 'liveGateOps' },
   // P-013/D-012 stop-the-line: the harness's gate-red-streak condition item has been open
   // >24h, and the row is neither a bug nor an alarm-condition item. Non-zero here is a
   // VERDICT ("the line is stopped"), never a drained lane — see stopTheLineExclusionSql /
@@ -992,10 +998,7 @@ export const ISSUE_CLAIM_EXCLUSION_COUNT_SELECT_SQL = ISSUE_CLAIM_FLOORS.map(
  * nothing" and "I measured everything and found nothing wrong" are the exact pair this whole
  * work-item exists to stop being the same value. The guard test pins both directions.
  */
-export function findBucketlessFloors(
-  floors: readonly IssueClaimFloorSpec[],
-  selectSql: string,
-): string[] {
+export function findBucketlessFloors(floors: readonly IssueClaimFloorSpec[], selectSql: string): string[] {
   return floors
     .filter((f) => !(selectSql.includes(`NOT ${f.ok}`) && new RegExp(`\\bAS\\s+${f.bucket}\\b`).test(selectSql)))
     .map((f) => f.ok);
@@ -1265,6 +1268,7 @@ export function issueClaimCandidateSubquery(
       -- true-remote-origin row read as claimable here while the real claim refused it.
       (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                AS ok_origin,
       (${admittedWhereSqlWi(sql)})                                      AS ok_admission,
+      (${liveGateOpsSelfSelectExclusionSql(sql)})                       AS ok_live_gate_ops,
       -- D-007: was the ONLY floor here that did not call a shared helper, and it drifted —
       -- it kept bi.workspace_id = 'default' (the hardcode migration 719 removed from every
       -- other reader) and left the feature leg unscoped entirely, while the real claim path
@@ -1414,16 +1418,18 @@ async function aggregateIssueClaimExclusionsOn(
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
       )::int AS revision_requested_agent_review
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
-  `) as Array<IssueClaimExclusionCountRow & {
-    matched: number;
-    claimable: number;
-    claimable_with_paths: number;
-    hold_open_leases: number;
-    durable_parks: number;
-    unattributed_claim_holds: number;
-    pending_agent_review: number;
-    revision_requested_agent_review: number;
-  }>;
+  `) as Array<
+    IssueClaimExclusionCountRow & {
+      matched: number;
+      claimable: number;
+      claimable_with_paths: number;
+      hold_open_leases: number;
+      durable_parks: number;
+      unattributed_claim_holds: number;
+      pending_agent_review: number;
+      revision_requested_agent_review: number;
+    }
+  >;
   const r = rows[0];
   const claimable = r?.claimable ?? 0;
   const nonEmptyPaths = r?.claimable_with_paths ?? 0;
@@ -1446,9 +1452,7 @@ async function aggregateIssueClaimExclusionsOn(
     // "true diagnostic into a lie" failure WI-521425 named.
     excluded: {
       ...mapIssueClaimExclusionCounts(r),
-      ...(opts.laneScopedPopulation
-        ? { observationLane: opts.laneScopedPopulation.observationLane }
-        : {}),
+      ...(opts.laneScopedPopulation ? { observationLane: opts.laneScopedPopulation.observationLane } : {}),
     },
     queueControl: {
       activeClaims: r?.taken ?? 0,
@@ -1682,9 +1686,10 @@ export async function sampleIssueClaimExclusions(
     agentReview: [],
   };
   for (const row of controlRows) {
-    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
-      ? row.payload as Record<string, unknown>
-      : {};
+    const payload =
+      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : {};
     if (row.axis === 'active-claim' && row.taken_by) {
       queueControl.activeClaims.push({
         id: row.feature_id,

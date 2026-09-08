@@ -49,12 +49,7 @@ export function isAutoPickable(
   // …OR the OWN-NODE fast-path: the row was authored by a substrate-log key this
   // workspace already knows as its own (see ownAuthorWhereSql for why that is sound).
   // A blank/absent pubkey NEVER qualifies — see the guards there.
-  if (
-    authorPubkey != null &&
-    authorPubkey !== '' &&
-    ownAuthorPubkeys != null &&
-    ownAuthorPubkeys.has(authorPubkey)
-  ) {
+  if (authorPubkey != null && authorPubkey !== '' && ownAuthorPubkeys != null && ownAuthorPubkeys.has(authorPubkey)) {
     return true;
   }
   // …OR the TRUST fast-path (Phase 3 / P-010): a remote+un-admitted item whose
@@ -532,7 +527,15 @@ export async function isWorkItemAutoPickable(
 ): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ origin: string | null; audit_verdict: string | null; admission: string | null; verified_author_github_user_id: number | string | null; author_pubkey: string | null }[]>`
+  const rows = await sql<
+    {
+      origin: string | null;
+      audit_verdict: string | null;
+      admission: string | null;
+      verified_author_github_user_id: number | string | null;
+      author_pubkey: string | null;
+    }[]
+  >`
     SELECT origin, audit_verdict, admission, verified_author_github_user_id, author_pubkey
       FROM harness_shared.harness_features_consolidated
      WHERE harness_slug = ${opts.harness}
@@ -643,6 +646,41 @@ export const STOP_THE_LINE_RED_HOURS = 24;
 
 /** The red-streak condition prefix — must match the trackGateStall producer's key. */
 export const GATE_RED_STREAK_CONDITION_PREFIX = 'gate-red-streak:';
+
+/**
+ * Condition singletons that OWN live release-gate operations. They are ordinary
+ * issue-family bugs so the stop-the-line repair exemption correctly keeps the
+ * repair LANE flowing, but the singleton itself must never circulate through
+ * opportunistic self-select: exactly one registered gate fixer claims it by id.
+ *
+ * Keep this list intentionally narrower than ACTIONABLE_CONDITION_PREFIXES.
+ * Most actionable alarms are normal repair work; only these two prefixes carry
+ * the live gate-control-plane exclusivity contract (release/gate-red-ownership).
+ */
+export const LIVE_GATE_OPS_CONDITION_PREFIXES = [GATE_RED_STREAK_CONDITION_PREFIX, 'green-stall:'] as const;
+
+/**
+ * TRUE means an issue row may survive the LIVE_GATE_OPS reservation floor.
+ * This fragment is composed only into issue-family SELF-SELECT reads/writes;
+ * the named claim-by-id path deliberately bypasses it, which is how the
+ * registered live gate fixer acquires the singleton.
+ */
+export function liveGateOpsSelfSelectExclusionSql(sql: OrgSql) {
+  const reservedPatterns = LIVE_GATE_OPS_CONDITION_PREFIXES.map((prefix) => `${prefix}%`);
+  return sql`(
+    wi.condition_key IS NULL
+    OR NOT (wi.condition_key LIKE ANY(${reservedPatterns as string[]}::text[]))
+  )`;
+}
+
+/** Static per-id refusal text; unlike stop-the-line, no harness-specific value is needed. */
+export function liveGateOpsSelfSelectExplanation(): string {
+  return (
+    'LIVE_GATE_OPS condition singleton (gate-red-streak: or green-stall:) — reserved to the ' +
+    'one registered live gate fixer and excluded from opportunistic self-select. A leader/owner ' +
+    'may still dispatch or claim it BY ID after checking gate.greenCheckpoint.ownership.'
+  );
+}
 
 /**
  * Condition-key prefixes whose items stay claimable while the line is stopped: the

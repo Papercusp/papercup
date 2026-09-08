@@ -113,6 +113,7 @@ describe('helpers', () => {
       id: 'WI-30',
       kind: 'task',
       harness: 'papercusp',
+      assignee: null,
       state: 'open',
       reason: 'released',
       goal: 'goal-1',
@@ -626,7 +627,7 @@ describe('emitWorkItemCreatedEvent (EI-8296)', () => {
 });
 
 describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
-  it('fires the GLOBAL work-item:claimable key with id/kind/severity/harness/title/state/reason', async () => {
+  it('fires the GLOBAL work-item:claimable key with id/kind/severity/harness/title/state/reason/assignee', async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');
     emitWorkItemClaimableEvent(
@@ -646,6 +647,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
         title: 'fresh work',
         state: 'open',
         reason: 'created',
+        assignee: null,
       }),
     });
   });

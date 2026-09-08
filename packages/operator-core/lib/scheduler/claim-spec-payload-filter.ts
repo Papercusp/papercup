@@ -20,7 +20,7 @@
  * on a real wake), but it MAY let through an item the spec later rejects (a cheap
  * re-miss — get_next stays the single authoritative claim path). Consequences:
  *   - a leaf on a field the payload does NOT carry (plan_item, paths, priority,
- *     age, risk_tier, redundancy, est_cost, assignee) is dropped permissively;
+ *     age, risk_tier, redundancy, est_cost) is dropped permissively;
  *   - a leaf whose op cannot be evaluated soundly on the payload scalar
  *     (relational `< <= > >=`, which only target numeric non-payload fields) is
  *     dropped permissively;
@@ -53,7 +53,10 @@ import type { FilterLeaf, FilterNode } from './claim-spec';
 /**
  * Claim-spec filter fields that appear (under the SAME key) on the
  * `work-item:claimable` event payload (`{ id, kind, severity, harness, title,
- * state, reason, plan, tags, goal }` — see emitWorkItemClaimableEvent). `severity`,
+ * state, reason, assignee, plan, tags, goal }` — see emitWorkItemClaimableEvent).
+ * The emitter only announces unassigned rows, but it carries that guaranteed
+ * `assignee: null` explicitly so an assignee leaf remains observable when it is
+ * nested under `any`/`not` rather than being silently dropped. `severity`,
  * `harness`, `state`, `reason` are payload-only (no claim-spec leaf references
  * them). `plan` is carried on the payload specifically so a plan-drain spec can
  * narrow here (EI-15185); `tags` likewise so a spec that EXCLUDES a whole tagged
@@ -62,7 +65,7 @@ import type { FilterLeaf, FilterNode } from './claim-spec';
  * carried from `WorkItem.goalId` so a goal-drain spec can narrow here as well
  * (EI-21834327391666056).
  */
-const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'plan', 'tags', 'goal']);
+const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'assignee', 'plan', 'tags', 'goal']);
 
 /** Array-VALUED payload fields — mingo/DataCondition still does implicit
  *  per-element matching for these (verified: `equals`/`notEquals`/`in`/`matches`

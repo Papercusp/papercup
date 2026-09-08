@@ -123,11 +123,6 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args) {
-    const presence = await getPresence(args.ownerId);
-    if (!presence) {
-      return { data: { ok: false, ownerId: args.ownerId, landed: false, via: null, title: null, reason: 'no presence row for that ownerId — see coord:presence' } };
-    }
-
     const shortId = args.ownerId.length > 12 ? args.ownerId.slice(0, 12) : args.ownerId;
     const title = `🔴🔴 FIND ME · ${shortId}${args.label ? ` · ${args.label}` : ''}`;
     const osc = oscTitle(title);
@@ -136,6 +131,14 @@ export default defineTool({
     const viaPty = await recolorViaPty(args.ownerId, osc).catch(() => false);
     if (viaPty) {
       return { data: { ok: true, ownerId: args.ownerId, landed: true, via: 'psu-pty', title } };
+    }
+
+    // The managed-pty path is independently owner-bound and can succeed even
+    // when the target has not written a coord_presence row yet. Only the raw
+    // tty fallback needs presence metadata.
+    const presence = await getPresence(args.ownerId);
+    if (!presence) {
+      return { data: { ok: false, ownerId: args.ownerId, landed: false, via: null, title, reason: 'no presence row for that ownerId — see coord:presence' } };
     }
 
     // Path 2: direct write to the recorded terminal device, guarded by the

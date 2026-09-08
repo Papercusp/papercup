@@ -25,6 +25,7 @@ function payloadOf(p: {
   id?: string;
   kind?: string;
   title?: string;
+  assignee?: string | null;
   plan?: string | null;
   tags?: string[];
   goal?: string | null;
@@ -35,6 +36,7 @@ function payloadOf(p: {
     severity: null,
     harness: null,
     title: p.title ?? '',
+    assignee: p.assignee ?? null,
     state: 'todo',
     reason: 'created',
     plan: p.plan ?? null,
@@ -92,6 +94,36 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
   it('goal `=` → { goal: { equals } }', () => {
     const f: FilterNode = { field: 'goal', op: '=', value: 'goal-drain' };
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ goal: { equals: 'goal-drain' } });
+  });
+
+  it('assignee `=` remains payload-filterable via the claimable null snapshot', () => {
+    const f: FilterNode = { field: 'assignee', op: '=', value: 'agent-self' };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({ assignee: { equals: 'agent-self' } });
+  });
+
+  it('preserves assignee inside a nested ALL instead of dropping it before an outer ANY', () => {
+    const f: FilterNode = {
+      any: [
+        {
+          all: [
+            { field: 'assignee', op: '=', value: 'agent-self' },
+            { field: 'kind', op: 'in', value: ['bug', 'change'] },
+          ],
+        },
+        { field: 'id', op: 'in', value: ['WI-10000606'] },
+      ],
+    };
+    expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({
+      any: [
+        {
+          all: [
+            { assignee: { equals: 'agent-self' } },
+            { kind: { in: ['bug', 'change'] } },
+          ],
+        },
+        { id: { in: ['WI-10000606'] } },
+      ],
+    });
   });
 
   it('ANY(goal, id) keeps both payload-visible arms instead of collapsing to undefined', () => {
@@ -227,6 +259,24 @@ describe('EI-15185 reproduction — the wasted wakes stop, real work still wakes
     expect(payloadMatchesFilter(derived, p)).toBe(false);
   });
 
+  it('EI-22638252352161446: an unassigned kind match does not wake an assignee-scoped OR arm', () => {
+    const filter: FilterNode = {
+      any: [
+        {
+          all: [
+            { field: 'assignee', op: '=', value: 'agent-self' },
+            { field: 'kind', op: 'in', value: ['bug', 'change'] },
+          ],
+        },
+        { field: 'id', op: 'in', value: ['WI-10000606'] },
+      ],
+    };
+    const derived = claimSpecFilterToClaimablePayloadFilter(filter);
+
+    expect(payloadMatchesFilter(derived, payloadOf({ id: 'WI-10000605', kind: 'change', assignee: null }))).toBe(false);
+    expect(payloadMatchesFilter(derived, payloadOf({ id: 'WI-10000606', kind: 'task', assignee: null }))).toBe(true);
+  });
+
   it('WI-5013 (an unrelated tracking issue) NO LONGER wakes the member', () => {
     const p = payloadOf({ id: 'WI-5013', kind: 'change', title: 'track the desktop update rollout' });
     expect(payloadMatchesFilter(derived, p)).toBe(false);
@@ -295,6 +345,8 @@ describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', 
     { field: 'title', op: 'contains', value: 'p2p' },
     { field: 'plan', op: '=', value: 'A' },
     { field: 'goal', op: '=', value: 'goal-a' },
+    { field: 'assignee', op: '=', value: 'agent-1' },
+    { field: 'assignee', op: '!=', value: 'agent-1' },
     // EI-14161: tags leaves — exact membership (`contains`/`=`), `in`, `!=`, and both
     // sides of a `not` must agree exactly with matchesClaimSpecFilter's array branch.
     { field: 'tags', op: 'contains', value: 'p2p' },
@@ -328,7 +380,7 @@ describe('SOUNDNESS — payload-only spec: derived match IFF spec would admit', 
     },
   ];
 
-  const items: Array<{ id?: string; kind?: string; title?: string; plan?: string | null; tags?: string[]; goal?: string | null }> = [
+  const items: Array<{ id?: string; kind?: string; title?: string; assignee?: string | null; plan?: string | null; tags?: string[]; goal?: string | null }> = [
     { id: 'F-1', kind: 'feature', title: 'sheets clone', plan: 'A', goal: 'goal-a' },
     { id: 'F-2', kind: 'feature', title: 'p2p sync fix', plan: 'B', goal: 'goal-b' },
     { id: 'C-1', kind: 'chunk', title: 'grid render', plan: 'A', goal: null },

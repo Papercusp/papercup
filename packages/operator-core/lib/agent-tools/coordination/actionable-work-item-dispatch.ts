@@ -11,6 +11,8 @@ import {
   explainIssueClaimFloors,
   isClaimHoldParked,
   observeWorkItem,
+  looksLikePolicyGate,
+  readWorkItemClaimHoldProvenance,
   readUnresolvedDepBlockers,
   type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
@@ -50,6 +52,38 @@ export interface WorkItemDispatchSkip {
   blockers?: string[];
   /** Canonical issue-family claim-floor attribution, when the readiness read can resolve it. */
   claimFloor?: ClaimFloorAttribution;
+  /**
+   * Why a claim-hold item is parked and the supported verb that can unblock it.
+   * `heldOpen` is the liveness-bound hold_open lease; `parked` is the durable
+   * release { claimHold:true } park. Keep both because either can coexist.
+   */
+  claimHold?: ClaimHoldDispatchDetails;
+}
+
+type ClaimHoldProvenance = ReturnType<typeof readWorkItemClaimHoldProvenance>;
+
+export interface ClaimHoldDispatchDetails extends ClaimHoldProvenance {
+  /** Typed re-evaluation contract persisted by release { claimHold:true }, when present. */
+  releaseContract: Record<string, unknown> | null;
+  /** A policy-tier reason needs ownerOverride in addition to force when clearing another holder's hold. */
+  policyGate: boolean;
+  unblock: {
+    tool: 'work_items:hold_open' | 'work_items:release';
+    args: {
+      id: string;
+      clear?: true;
+      claimHold?: false;
+    };
+    note: string;
+  };
+}
+
+function readClaimHoldReleaseContract(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const release = (payload as Record<string, unknown>).claim_hold_release;
+  return release && typeof release === 'object' && !Array.isArray(release)
+    ? release as Record<string, unknown>
+    : null;
 }
 
 export interface WorkItemDispatchClaimFailure {
@@ -184,6 +218,68 @@ function claimFloorReason(floor: ClaimFloorAttribution): string {
   );
 }
 
+function claimHoldDetails(workItemId: string, payload: unknown): ClaimHoldDispatchDetails {
+  const provenance = readWorkItemClaimHoldProvenance(payload);
+  const releaseContract = readClaimHoldReleaseContract(payload);
+  const leaseReason = provenance.heldOpen?.reason ?? null;
+  const parkReason = provenance.parked?.reason ?? null;
+  const policyGate = looksLikePolicyGate(leaseReason) || looksLikePolicyGate(parkReason);
+  const hasLease = provenance.heldOpen !== null;
+  const hasPark = provenance.parked !== null;
+
+  // A lease-only hold is owned by work_items:hold_open. A durable park is owned by
+  // work_items:release. If both conventions are present, release's explicit false
+  // clears the complete claim-hold fence in one supported call.
+  if (hasLease && !hasPark) {
+    return {
+      ...provenance,
+      releaseContract,
+      policyGate,
+      unblock: {
+        tool: 'work_items:hold_open',
+        args: { id: workItemId, clear: true },
+        note:
+          'Clear the held-open lease with work_items:hold_open { id, clear:true }. ' +
+          (policyGate
+            ? 'A policy-tier reason also requires ownerOverride:true with force:true when clearing another holder.'
+            : 'If another holder owns it, coordinate with them or use the checked force path.'),
+      },
+    };
+  }
+
+  const note = hasLease && hasPark
+    ? 'Clear both claim-hold conventions with work_items:release { id, claimHold:false }; verify the resulting row before dispatching.'
+    : provenance.attributed
+      ? 'Clear the durable park with work_items:release { id, claimHold:false }; verify the resulting row before dispatching.'
+      : 'The hold has no recorded provenance; inspect it before clearing with work_items:release { id, claimHold:false }.';
+  return {
+    ...provenance,
+    releaseContract,
+    policyGate,
+    unblock: {
+      tool: 'work_items:release',
+      args: { id: workItemId, claimHold: false },
+      note: note + (policyGate ? ' A policy-tier reason requires ownerOverride when clearing another holder.' : ''),
+    },
+  };
+}
+
+function claimHoldReason(workItemId: string, details: ClaimHoldDispatchDetails): string {
+  const parts: string[] = [];
+  if (details.heldOpen) {
+    parts.push(`held open by ${details.heldOpen.by}${details.heldOpen.reason ? `: ${details.heldOpen.reason}` : ''}`);
+  }
+  if (details.parked) {
+    parts.push(`durably parked by ${details.parked.by}${details.parked.reason ? `: ${details.parked.reason}` : ''}`);
+  }
+  const provenance = parts.length > 0 ? parts.join('; ') : 'unattributed (no held_open_by / claim_hold_by)';
+  return (
+    `work-item carries a claim hold (${provenance}). ` +
+    `${details.unblock.note} ` +
+    `Suggested call: ${details.unblock.tool} ${JSON.stringify(details.unblock.args)}.`
+  );
+}
+
 async function classifyOne(
   workItemId: string,
   targetAgent: string,
@@ -293,9 +389,15 @@ async function classifyOne(
     };
   }
   if (isClaimHoldParked(workItem.payload) || observed.claimHoldParked) {
+    const claimHold = claimHoldDetails(workItemId, workItem.payload);
     return {
       kind: 'skip',
-      skipped: { workItemId, code: 'claim_hold', reason: 'work-item carries a durable claim hold' },
+      skipped: {
+        workItemId,
+        code: 'claim_hold',
+        reason: claimHoldReason(workItemId, claimHold),
+        claimHold,
+      },
     };
   }
   if (holder && !retainedByTarget) {

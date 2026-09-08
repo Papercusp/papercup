@@ -234,6 +234,96 @@ describe('assignActionableWorkItems', () => {
     expect(result.skipped[0]?.reason).toContain('re-file with assign_to');
     expect(result.skipped[0]?.reason).not.toContain('outside the canonical admission frontier');
   });
+
+  it('EI-22637730449925244: a durable park exposes provenance and the release unpark verb', async () => {
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: { ...issueWorkItem(id), payload: {
+          _claimHold: true,
+          claim_hold_by: 'su-leader',
+          claim_hold_reason: 'awaiting owner decision',
+          claim_hold_at: '2026-09-08T10:00:00.000Z',
+          claim_hold_release: {
+            condition: 'owner decision is recorded',
+            trigger: 'owner:decision-recorded',
+            reachability: 'reachable',
+          },
+        } },
+        available: false,
+        claimedBy: null,
+        gated: true,
+        claimHoldParked: true,
+      })),
+    });
+
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-PARKED'],
+      targetAgent: 'agent-email-stable',
+    }, d);
+
+    expect(result.skipped[0]).toMatchObject({
+      workItemId: 'WI-PARKED',
+      code: 'claim_hold',
+      claimHold: {
+        heldOpen: null,
+        parked: {
+          by: 'su-leader',
+          reason: 'awaiting owner decision',
+          at: '2026-09-08T10:00:00.000Z',
+        },
+        releaseContract: {
+          condition: 'owner decision is recorded',
+          trigger: 'owner:decision-recorded',
+          reachability: 'reachable',
+        },
+        attributed: true,
+        policyGate: false,
+        unblock: {
+          tool: 'work_items:release',
+          args: { id: 'WI-PARKED', claimHold: false },
+        },
+      },
+    });
+    expect(result.skipped[0]?.reason).toContain('work_items:release');
+    expect(result.skipped[0]?.reason).toContain('claimHold:false');
+    expect(result.skipped[0]?.reason).toContain('su-leader');
+  });
+
+  it('EI-22637730449925244: a hold-open lease points to hold_open clear and policy override rules', async () => {
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: { ...issueWorkItem(id), payload: {
+          _claimHold: true,
+          held_open_by: 'su-leader',
+          held_open_reason: 'D-003 policy-tier gate — owner sign-off required',
+        } },
+        available: false,
+        claimedBy: 'su-leader',
+        gated: true,
+        claimHoldParked: true,
+      })),
+    });
+
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-LEASE'],
+      targetAgent: 'agent-email-stable',
+    }, d);
+
+    expect(result.skipped[0]).toMatchObject({
+      code: 'claim_hold',
+      claimHold: {
+        heldOpen: { by: 'su-leader', reason: expect.stringContaining('D-003') },
+        parked: null,
+        attributed: true,
+        policyGate: true,
+        unblock: {
+          tool: 'work_items:hold_open',
+          args: { id: 'WI-LEASE', clear: true },
+        },
+      },
+    });
+    expect(result.skipped[0]?.reason).toContain('ownerOverride:true');
+  });
 });
 
 describe('P-001 existing-review recovery baseline', () => {

@@ -55,6 +55,11 @@ export const STRUCTURAL_CLAIM_FLOORS: ReadonlySet<string> = new Set([
   'federation-detector',
   // an AUTO-loop-iteration bookkeeping marker, not work (EI-8802).
   'loop-noise',
+  // EI-22685972259555805: a LIVE_GATE_OPS condition singleton is reserved to the
+  // one registered gate fixer. It never becomes available to generic self-select
+  // merely by waiting; the owner/fixer must claim it explicitly by id, or the
+  // condition lifecycle must settle the row.
+  'live-gate-ops',
   // already carries a terminal completion record (EI-8972).
   'already-completed',
   // needs a >=2-machine rig this caller does not have (WI-2796).

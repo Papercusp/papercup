@@ -51,11 +51,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 // `assessSourceCoverage`: this consumer is not a registered `SearchSource`, and
 // SEARCH_SOURCE_SURFACES is asserted exhaustive in both directions against
 // SEARCH_SOURCES (coverage-gate.test.ts), so adding a key there would fail the suite.
-import {
-  assessSurfaceCoverage,
-  type CoverageSnapshot,
-  type SourceCoverageAssessment,
-} from './search/coverage-gate';
+import { assessSurfaceCoverage, type CoverageSnapshot, type SourceCoverageAssessment } from './search/coverage-gate';
 import { activeWorkspaceId } from './workspace-registry';
 import { checkAndEscalateSteeringChurn } from './steering-churn';
 import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
@@ -78,6 +74,8 @@ import {
   isAutoPickable,
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
+  liveGateOpsSelfSelectExclusionSql,
+  liveGateOpsSelfSelectExplanation,
   loadTrustedGithubUserIds,
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
@@ -125,10 +123,7 @@ import {
   readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
-import {
-  projectWorkItemColumns,
-  type WorkItemReadOptions,
-} from './work-item-read-projection';
+import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
 
 /**
  * Release cleanup is only needed on the explicit release paths. Keep the
@@ -2263,11 +2258,7 @@ export async function searchWorkItems(
       // `unknown`. Collapsing the two would make a skipped assessment read as a measured
       // one; keep them distinct exactly as the dupe guard does.
       if (snapshot !== null) {
-        coverage = assessSurfaceCoverage(
-          WORK_ITEM_SEARCH_COVERAGE_SOURCE,
-          WORK_ITEM_SEARCH_SURFACES,
-          snapshot,
-        );
+        coverage = assessSurfaceCoverage(WORK_ITEM_SEARCH_COVERAGE_SOURCE, WORK_ITEM_SEARCH_SURFACES, snapshot);
       }
     } catch {
       // Leave undefined: not assessed. Never a hand-written verdict object, which could
@@ -2287,9 +2278,7 @@ export async function searchWorkItems(
 /** The snapshot for {@link WORK_ITEM_SEARCH_SURFACES}. A failed READ yields an EMPTY
  *  map, which `assessSurfaceCoverage` already renders as `unknown` — never as healthy.
  *  `null` means "do not assess at all", which is a different statement entirely. */
-async function loadWorkItemSearchCoverage(
-  seam?: () => Promise<CoverageSnapshot>,
-): Promise<CoverageSnapshot | null> {
+async function loadWorkItemSearchCoverage(seam?: () => Promise<CoverageSnapshot>): Promise<CoverageSnapshot | null> {
   if (seam) {
     try {
       return await seam();
@@ -5081,24 +5070,22 @@ export async function claimWorkItem(
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
          AND ${autoPickableWhereSql(sql, ws)}
          -- P-002 born-pending: duplicate screening is a second, orthogonal gate.
-         AND ${
-           (() => {
-             const forceAdmission =
-               isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
-               opts.forceTakeoverAdmission.itemId === id &&
-               opts.forceTakeoverAdmission.target === assignee &&
-               opts.forceTakeoverAdmission.workspaceId === ws &&
-               opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
-                 ? opts.forceTakeoverAdmission
-                 : null;
-             return forceAdmission
-               ? sql`(
+         AND ${(() => {
+           const forceAdmission =
+             isForceTakeoverAdmission(opts.forceTakeoverAdmission) &&
+             opts.forceTakeoverAdmission.itemId === id &&
+             opts.forceTakeoverAdmission.target === assignee &&
+             opts.forceTakeoverAdmission.workspaceId === ws &&
+             opts.forceTakeoverAdmission.expectedAssignee === expectedAssignee
+               ? opts.forceTakeoverAdmission
+               : null;
+           return forceAdmission
+             ? sql`(
                    ${admittedWhereSql(sql)}
                    OR (admission = 'pending' AND taken_by = ${forceAdmission.expectedAssignee})
                  )`
-               : admittedWhereSql(sql);
-           })()
-         }
+             : admittedWhereSql(sql);
+         })()}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
@@ -5862,9 +5849,7 @@ export function reservedPlanLaneExclusionSql(
   // a bare TRUE, referencing the goal field additionally requires the row to actually CARRY a
   // goal. A spec may reference `goal` with a negative operator (e.g. `{op:'!='}`), and a bare
   // TRUE would then authorize goal-LESS rows the spec never meant to adopt.
-  const goalAuthorized = authorization.claimSpecReferencesGoal
-    ? sql`(${goalCol} IS NOT NULL)`
-    : sql`FALSE`;
+  const goalAuthorized = authorization.claimSpecReferencesGoal ? sql`(${goalCol} IS NOT NULL)` : sql`FALSE`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       -- EI-13524: a fleet stamp is a reservation in its own right, independently of
@@ -7455,6 +7440,11 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- exactly (origin local/null OR our own-node author key).
          AND ${isIssueLocallyClaimableWhereSql(sql, issueWs)}
          AND ${admittedWhereSqlWi(sql)}
+         -- EI-22685972259555805: live gate-control condition singletons belong to the
+         -- one registered LIVE_GATE_OPS fixer, never the opportunistic issue pool.
+         -- Keep them in POOL (real work exists) but out of READY; an explicit by-id
+         -- claim remains the ownership-aware escape.
+         AND ${liveGateOpsSelfSelectExclusionSql(sql)}
          AND ${filter.swarmId ? sql`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : sql`TRUE`}
          AND ${filter.excludeRedundant ? sql`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : sql`TRUE`}
          -- The blocking floor, from the ONE shared definition (D-007). This is the READY
@@ -7613,6 +7603,7 @@ export const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
     '(mig 499 / EI-6956), or FILED BY SOMEONE ELSE within the filing-grace window (WI-5939: the filer ' +
     'gets a head start to claim their own file-then-fix). Both clear on their own; the filer can claim ' +
     'its own row immediately, and PAPERCUSP_FILING_GRACE_SEC=0 disables the grace leg.',
+  'live-gate-ops': liveGateOpsSelfSelectExplanation(),
   // EI-22172757071586188: the 4th floor (after WI-37356's ok_no_blocker/ok_cooldown/ok_origin)
   // found missing from this oracle. Generic on purpose — unlike stopTheLineExplanation(harness),
   // this static map has no harness in scope; a caller wanting the harness-named verdict text
@@ -7656,12 +7647,20 @@ export function issueClaimBarFloorColumnsSql(
     claimSpecReferencesGoal?: boolean;
   },
 ) {
-  const { issueWs, assignee, cooldown, rigAvailable, claimantFleetSlug, claimSpecReferencesFleet, claimSpecReferencesGoal } =
-    opts;
+  const {
+    issueWs,
+    assignee,
+    cooldown,
+    rigAvailable,
+    claimantFleetSlug,
+    claimSpecReferencesFleet,
+    claimSpecReferencesGoal,
+  } = opts;
   return sql`
     (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
     (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
     (${admittedWhereSqlWi(sql)})                                           AS ok_admission,
+    (${liveGateOpsSelfSelectExclusionSql(sql)})                            AS ok_live_gate_ops,
     (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
     (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
     (${agentReviewNormalExclusionSql(sql)})                                AS ok_agent_review,
@@ -7728,6 +7727,7 @@ export async function explainIssueClaimFloors(
       ok_untaken: boolean;
       ok_origin: boolean;
       ok_admission: boolean;
+      ok_live_gate_ops: boolean;
       ok_observation: boolean;
       ok_needs_owner_action: boolean;
       ok_agent_review: boolean;
@@ -7781,35 +7781,37 @@ export async function explainIssueClaimFloors(
             ? 'origin'
             : !r.ok_admission
               ? 'admission-pending'
-              : !r.ok_observation
-                ? 'observation-lane'
-                : !r.ok_needs_owner_action
-                  ? 'needs-owner-action'
-                  : !r.ok_agent_review
-                    ? 'agent-review'
-                    : !r.ok_external_blocker
-                      ? 'external-blocker'
-                      : !r.ok_claim_hold
-                        ? 'claim-hold'
-                        : !r.ok_plan_lane
-                          ? 'plan-lane-reserved'
-                          : !r.ok_federation
-                            ? 'federation-detector'
-                            : !r.ok_loop_noise
-                              ? 'loop-noise'
-                              : !r.ok_completed
-                                ? 'already-completed'
-                                : !r.ok_watchdog_recovery
-                                  ? 'watchdog-recovery-window'
-                                  : !r.ok_rig
-                                    ? 'cross-machine-rig'
-                                    : !r.ok_no_blocker
-                                      ? 'blocked-dep'
-                                      : !r.ok_cooldown
-                                        ? 'cooldown'
-                                        : !r.ok_stop_line
-                                          ? 'stop-line'
-                                          : null;
+              : !r.ok_live_gate_ops
+                ? 'live-gate-ops'
+                : !r.ok_observation
+                  ? 'observation-lane'
+                  : !r.ok_needs_owner_action
+                    ? 'needs-owner-action'
+                    : !r.ok_agent_review
+                      ? 'agent-review'
+                      : !r.ok_external_blocker
+                        ? 'external-blocker'
+                        : !r.ok_claim_hold
+                          ? 'claim-hold'
+                          : !r.ok_plan_lane
+                            ? 'plan-lane-reserved'
+                            : !r.ok_federation
+                              ? 'federation-detector'
+                              : !r.ok_loop_noise
+                                ? 'loop-noise'
+                                : !r.ok_completed
+                                  ? 'already-completed'
+                                  : !r.ok_watchdog_recovery
+                                    ? 'watchdog-recovery-window'
+                                    : !r.ok_rig
+                                      ? 'cross-machine-rig'
+                                      : !r.ok_no_blocker
+                                        ? 'blocked-dep'
+                                        : !r.ok_cooldown
+                                          ? 'cooldown'
+                                          : !r.ok_stop_line
+                                            ? 'stop-line'
+                                            : null;
     return {
       id,
       admissible: refusedBy === null,
@@ -8121,6 +8123,10 @@ export async function claimNextIssueWorkItem(
           AND ${isIssueLocallyClaimableWhereSql(tx, issueWs)}
           -- P-002 born-pending: the promoter owns this lifecycle transition.
           AND ${admittedWhereSqlWi(tx)}
+          -- EI-22685972259555805: the gate-red-streak:/green-stall: singleton is
+          -- exclusive LIVE_GATE_OPS control-plane work. Ordinary repair bugs still
+          -- flow, while the registered fixer retains the explicit by-id claim path.
+          AND ${liveGateOpsSelfSelectExclusionSql(tx)}
           -- P-013/D-012 stop-the-line: while this harness's gate-red-streak condition item
           -- has been open >24h, non-repair rows are not self-selectable (bugs and
           -- alarm-condition items exempt; a named by-id claim still bypasses, which is the

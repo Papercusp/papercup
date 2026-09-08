@@ -3,7 +3,9 @@
  * gate-verdict-liveness-and-repair-reliability-2026-08-31: while a harness's
  * `gate-red-streak:<harness>` condition item has been OPEN for more than
  * STOP_THE_LINE_RED_HOURS, non-repair rows are not SELF-SELECTABLE on that harness —
- * and repair keeps flowing (bugs + alarm-condition items exempt).
+ * and repair keeps flowing (ordinary bugs + alarm-condition items exempt). The two
+ * LIVE_GATE_OPS singletons are a narrower exception: they are explicit-ID only so a
+ * generic repair fleet cannot contest the registered live gate fixer.
  *
  * What only a real database can prove, asserted against BOTH sides of the anti-drift
  * contract (the same both-sides shape as claim-respects-blocking.integration.test.ts):
@@ -34,6 +36,7 @@ import {
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
@@ -48,7 +51,7 @@ vi.mock('../workspace-registry', async () => {
 });
 
 const { aggregateIssueClaimExclusions, listIssueClaimableRows } = await import('./get-next');
-const { claimNextIssueWorkItem, claimNextWorkItem } = await import('../work-items');
+const { claimNextIssueWorkItem, claimNextWorkItem, claimWorkItem } = await import('../work-items');
 const { STOP_THE_LINE_RED_HOURS } = await import('../work-items-admission');
 
 const H = 'papercup';
@@ -96,6 +99,8 @@ beforeAll(async () => {
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL).simple();
+  // The explicit by-id assertion auto-subscribes the gate fixer to the item.
+  await ensureCoordCapabilityTables(db.sql);
   await db.sql
     .unsafe(
       `ALTER TABLE harness_shared.work_items
@@ -137,11 +142,14 @@ describe('P-013/D-012 — stop-the-line claim floor', () => {
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
     // Throttled: the plain change, the task, and the plan-promotion condition change.
     expect(out.excluded.stopTheLine).toBe(3);
+    // The red-streak singleton is repair work, but exclusively owned LIVE_GATE_OPS:
+    // visible in the pool and explainable under its own floor, never self-selected.
+    expect(out.excluded.liveGateOps).toBe(1);
     const rows = await listIssueClaimableRows(undefined, { harness: H }, 50);
     const ids = rows.map((r) => r.id).sort();
-    // Claimable: the bug, the deploy-parity condition change, and the red-streak
-    // condition item itself (kind bug AND exempt prefix — the fix must stay claimable).
-    expect(ids).toEqual(['WI-BUG', 'WI-PARITY', `WI-STL-${H}`].sort());
+    // Claimable: the ordinary bug and deploy-parity condition change. The red-streak
+    // singleton is deliberately absent; its registered fixer uses the by-id door.
+    expect(ids).toEqual(['WI-BUG', 'WI-PARITY'].sort());
   });
 
   it('CLAIM DOOR: claimNextIssueWorkItem refuses exactly what the preview refuses', async () => {
@@ -154,10 +162,33 @@ describe('P-013/D-012 — stop-the-line claim floor', () => {
     const second = await claimNextIssueWorkItem(filter, WS);
     const third = await claimNextIssueWorkItem(filter, WS);
     const served = [first, second, third].filter((r) => r != null).map((r) => r!.id);
-    // Only the exempt rows are ever served; the plain change never is.
-    expect(served.sort()).toEqual(['WI-BUG', `WI-STL-${H}`].sort());
+    // Only the ordinary repair bug is served; neither the plain change nor the
+    // exclusively owned red-streak singleton circulates through self-select.
+    expect(served).toEqual(['WI-BUG']);
     expect(served).not.toContain('WI-CHANGE');
+    expect(served).not.toContain(`WI-STL-${H}`);
+    expect(second).toBeNull();
     expect(third).toBeNull();
+  });
+
+  it('LIVE_GATE_OPS: green-stall is explicit-ID only while ordinary repair bugs flow', async () => {
+    await seedRow('WI-GREEN-STALL', {
+      itemKind: 'bug',
+      conditionKey: `green-stall:${H}`,
+    });
+    await seedRow('WI-BUG', { itemKind: 'bug' });
+
+    const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    expect(out.excluded.liveGateOps).toBe(1);
+    expect((await listIssueClaimableRows(undefined, { harness: H }, 50)).map((r) => r.id)).toEqual(['WI-BUG']);
+
+    const filter = { harness: H, assignee: 'su-generic' } as Parameters<typeof claimNextIssueWorkItem>[0];
+    expect((await claimNextIssueWorkItem(filter, WS))?.id).toBe('WI-BUG');
+    expect(await claimNextIssueWorkItem(filter, WS)).toBeNull();
+
+    // The floor governs self-select only: after ownership is checked, the registered
+    // gate fixer still acquires the singleton through the named by-id path.
+    expect((await claimWorkItem('WI-GREEN-STALL', 'su-gate-fixer', { harness: H }))?.id).toBe('WI-GREEN-STALL');
   });
 
   it('FEATURE FAMILY: feature self-select pauses while active, resumes when the item settles', async () => {

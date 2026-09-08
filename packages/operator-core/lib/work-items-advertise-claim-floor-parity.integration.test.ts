@@ -281,9 +281,11 @@ describe('EI-22172757071586188 — the oracle floor set is a SUPERSET of the rea
       'WI-STL-CONDITION',
       'WI-STL-CHANGE',
     ]);
-    // The condition item itself is a bug — exempt, still admissible (the throttle must not
-    // starve its own fix).
-    expect(conditionVerdict).toMatchObject({ admissible: true });
+    // The condition item itself remains stop-line-exempt repair work, but its narrower
+    // LIVE_GATE_OPS reservation keeps it out of generic self-select. The registered
+    // fixer still has the explicit by-id door (covered by stop-the-line-floor's claim test).
+    expect(conditionVerdict).toMatchObject({ admissible: false, refusedBy: 'live-gate-ops' });
+    expect(conditionVerdict.detail).toContain('BY ID');
     expect(changeVerdict).toMatchObject({ admissible: false, refusedBy: 'stop-line' });
     expect(changeVerdict.detail).toContain('stop-the-line');
   });

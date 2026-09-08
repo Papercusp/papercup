@@ -42,10 +42,22 @@ beforeEach(() => {
 describe('coord:mark-terminal', () => {
   it('no presence row for the ownerId -> landed:false with a loud reason', async () => {
     getPresence.mockResolvedValue(null);
+    recolorViaPty.mockResolvedValue(false);
     const b = await run({ ownerId: 'su-ghost' });
     expect(b).toMatchObject({ ok: false, landed: false, via: null });
     expect(String(b.reason)).toMatch(/no presence row/);
-    expect(recolorViaPty).not.toHaveBeenCalled();
+    expect(recolorViaPty).toHaveBeenCalledWith('su-ghost', expect.stringContaining('FIND ME'));
+    expect(recolorViaPty.mock.invocationCallOrder[0]).toBeLessThan(getPresence.mock.invocationCallOrder[0]);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('live psu-pty IPC path succeeds even when the owner has no presence row', async () => {
+    getPresence.mockResolvedValue(null);
+    recolorViaPty.mockResolvedValue(true);
+    const b = await run({ ownerId: 'su-ghost' });
+    expect(b).toMatchObject({ ok: true, landed: true, via: 'psu-pty' });
+    expect(recolorViaPty).toHaveBeenCalledWith('su-ghost', expect.stringContaining('FIND ME'));
+    expect(getPresence).not.toHaveBeenCalled();
     expect(writeFile).not.toHaveBeenCalled();
   });
 

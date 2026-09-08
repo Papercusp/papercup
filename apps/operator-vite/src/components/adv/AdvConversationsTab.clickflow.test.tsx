@@ -56,6 +56,7 @@ vi.mock('nuqs', () => {
     useQueryState,
     useQueryStates,
     parseAsString: p,
+    parseAsStringLiteral: () => p,
     parseAsStringEnum: () => p,
     parseAsArrayOf: () => p,
     createParser: () => p,
