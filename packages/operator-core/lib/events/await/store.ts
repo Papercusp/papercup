@@ -25,6 +25,7 @@ import { WAKE_TURN_CHANNELS } from './types';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import { reconcileEventExternalBlockers } from '../../work-items';
+import { reconcileEventDurableParks } from '../../work-items-durable-park-audit';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -2693,6 +2694,7 @@ export async function stampAnnouncementsFired(
     // for every key and this UPDATE matches nothing.
     if (rows.length > 0) {
       await reconcileEventExternalBlockers(tx, eventKey, meta.firedBy ?? undefined);
+      await reconcileEventDurableParks(tx, eventKey, meta.firedBy ?? undefined);
     }
     return rows.length;
   }) as Promise<number>;

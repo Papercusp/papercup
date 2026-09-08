@@ -8,7 +8,7 @@
  * code-intelligence contract.
  */
 import { describe, expect, it } from 'vitest';
-import bashTool from './bash';
+import bashTool, { detectUnboundedGitHistorySearch, formatUnboundedGitHistorySearchAdvice } from './bash';
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
@@ -17,6 +17,7 @@ type GuidanceTool = {
   guidance?: {
     when?: string;
   };
+  handler?: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
 };
 
 describe('capability:bash — repository search scope guidance', () => {
@@ -41,9 +42,48 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('Do not run an unbounded search from the repository root');
     expect(guidance).toContain('--max-columns 256 --max-columns-preview');
     expect(guidance).toContain('head` limits rows, not bytes');
+    expect(guidance).toContain('Bound git history scans');
+    expect(guidance).toContain('unbounded refused');
 
     // EI-21603394979563992: the optional jq tip is intentionally kept out of the
     // prompt (see bash.ts) so this guidance stays within the shared soft budget.
     expect(promptWeight(bashTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it('detects the reported unbounded all-ref pickaxe search but permits bounded or focused forms', () => {
+    const reported = detectUnboundedGitHistorySearch('git log --all --oneline -Sexplicit-full-request-overflow -- .');
+    expect(reported).toMatchObject({
+      selectors: expect.arrayContaining(['--all', '-Sexplicit-full-request-overflow']),
+    });
+    expect(formatUnboundedGitHistorySearchAdvice(reported!)).toContain('Add -n/--max-count');
+
+    expect(
+      detectUnboundedGitHistorySearch('git log --all --oneline -n 100 -Sexplicit-full-request-overflow -- .'),
+    ).toBeNull();
+    expect(
+      detectUnboundedGitHistorySearch(
+        'git log -Sexplicit-full-request-overflow -- packages/operator-core/lib/agent-tools/capability/bash.ts',
+      ),
+    ).toBeNull();
+  });
+
+  it.each([false, true])('refuses the unbounded history search before %s launch', async (run_in_background) => {
+    const tool = bashTool as unknown as GuidanceTool;
+    const result = await tool.handler?.(
+      {
+        command: 'git log --all --oneline -Sexplicit-full-request-overflow -- .',
+        cwd: process.cwd(),
+        ...(run_in_background ? { run_in_background: true } : {}),
+      },
+      {
+        projectDir: process.cwd(),
+        stateDir: process.cwd(),
+        signal: new AbortController().signal,
+        emit: () => {},
+        role: 'cup',
+      },
+    );
+    expect(result?.isError).toBe(true);
+    expect(JSON.parse(result!.content[0]!.text)).toMatchObject({ ok: false, reason: 'unbounded_git_history' });
   });
 });

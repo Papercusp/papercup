@@ -33,6 +33,8 @@ const reasons = async () => (await read()).failures.map(row => row.reason);
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'design-acceptance-'));
+  mkdirSync(dirname(join(root, testFile)), { recursive: true });
+  copyFileSync(join(repo, testFile), join(root, testFile));
   for (const observation of matrix.observations) {
     const destination = join(root, observation.capture.path);
     mkdirSync(dirname(destination), { recursive: true });
@@ -46,7 +48,7 @@ beforeEach(async () => {
   writeFileSync(join(root, 'build.json'), JSON.stringify({ portal: journey.positive.build.buildId, fixture: matrix.contract.cases[0].target.implementationRevision }));
   contract = designAcceptanceContractSchema.parse({
     schemaVersion: 1, reference, targetRoute: '/?app=desktops',
-    measurement: Object.fromEntries(DESIGN_FRESHNESS_DIMENSIONS.map(key => [key, key === 'served-build' ? ['served-build.txt', 'build.json'] : [`${key}.txt`]])),
+    measurement: Object.fromEntries(DESIGN_FRESHNESS_DIMENSIONS.map(key => [key, key === 'served-build' ? ['served-build.txt', 'build.json'] : key === 'test' ? ['test.txt', testFile] : [`${key}.txt`]])),
     builds: [
       { id: 'portal', manifestPath: 'build.json', revisionPath: ['portal'] },
       { id: 'fixture', manifestPath: 'build.json', revisionPath: ['fixture'] },
@@ -73,6 +75,8 @@ describe('current design acceptance over the desktop canary', () => {
   it('[desktop.gate.repaired] accepts the complete repaired journeys and reviewed state matrix', async () => {
     expect(await read()).toEqual({ satisfied: true, failures: [] });
     expect(readRun).toHaveBeenCalledWith(journey.positive.testRunId);
+    evidence.observations = []; writeEvidence();
+    expect(await reasons()).toContain('missing-case-evidence');
   });
   it('rejects the original loaded shell with the empty desktop destination', async () => {
     for (const row of evidence.journeys) {
@@ -86,20 +90,24 @@ describe('current design acceptance over the desktop canary', () => {
     expect(await reasons()).toEqual(expect.arrayContaining(['journey-failed', 'stale-build', 'browser-run-unproven']));
   });
   it('[desktop.gate.missing-proof] refuses a missing responsive case beside all other passing cases', async () => {
+    expect((await read()).satisfied).toBe(true);
     evidence.observations = evidence.observations.filter(row => row.caseId !== 'ready-narrow-dark');
     writeEvidence(); expect(await reasons()).toContain('missing-case-evidence');
   });
   it('[desktop.gate.wrong-target] a correct component matrix cannot cover navigation to another destination', async () => {
+    expect((await read()).satisfied).toBe(true);
     evidence.journeys[0]!.targetRoute = '/?app=cloud';
     writeEvidence(); expect(await reasons()).toContain('wrong-target');
   });
   for (const key of DESIGN_FRESHNESS_DIMENSIONS) {
     it(`[desktop.gate.stale-${key}] independently measures ${key} bytes again`, async () => {
+      expect((await read()).satisfied).toBe(true);
       writeFileSync(join(root, `${key}.txt`), 'changed after acceptance');
       expect(await reasons()).toContain(`stale-${key}`);
     });
   }
   it('[desktop.gate.stale-build] checks the actual current build revision independently of source', async () => {
+    expect((await read()).satisfied).toBe(true);
     writeFileSync(join(root, 'build.json'), JSON.stringify({ portal: 'new-build', fixture: 'new-fixture' }));
     expect(await reasons()).toContain('stale-build');
   });
@@ -130,6 +138,9 @@ describe('current design acceptance over the desktop canary', () => {
   it('requires every actual entry variant', async () => {
     evidence.journeys = evidence.journeys.filter(row => row.scenario !== 'persisted'); writeEvidence();
     expect(await reasons()).toContain('missing-journey-proof');
+  });
+  it('cannot fingerprint an unrelated test while omitting the actual browser test', () => {
+    expect(designAcceptanceContractSchema.safeParse({ ...contract, measurement: { ...contract.measurement, test: ['test.txt'] } }).success).toBe(false);
   });
 });
 
@@ -163,9 +174,18 @@ const completion = (requiredReferences: unknown = [reference]) => designEvidence
 });
 describe('the same obligations govern completion and shipment', () => {
   it('[desktop.gate.missing-registration] does not turn a missing binding into not-applicable', async () => {
+    expect(await completion()).toMatchObject({ status: 'satisfied' });
     expect(await completion([])).toMatchObject({ status: 'unsatisfied', enforced: true });
   });
+  it('an adopted approval cannot skip the acceptance contract by omitting its registration', async () => {
+    approval = { ...approval, acceptance: undefined };
+    const result = await feature();
+    expect(result.applicable && result.satisfied).toBe(false);
+    expect(result.references[0]!.acceptance!.failures).toContainEqual({ caseId: '*', reason: 'missing-acceptance-registration' });
+    expect(await completion()).toMatchObject({ status: 'unsatisfied', enforced: true });
+  });
   it('[desktop.gate.failed-late-obligation] an early passing candidate cannot hide a later failing reference', async () => {
+    expect(await completion()).toMatchObject({ status: 'satisfied' });
     evidence.journeys.at(-1)!.status = 'fail'; writeEvidence();
     const outcome = await designEvidenceCompletionGate(['passing-plan', reference.featureId], {
       ...flags, requiredReferences: [reference], workScope: { planSlug: reference.featureId, planItemIds: ['P-003'] },

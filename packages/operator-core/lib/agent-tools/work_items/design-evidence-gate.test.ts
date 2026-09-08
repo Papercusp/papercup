@@ -9,6 +9,15 @@
  * design-compare/{gate,feature-gate}.test.ts and is not re-tested here.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+const acceptanceRead = vi.hoisted(() => vi.fn());
+// The reference binding/terminal-write suite controls the artifact reader's
+// outcome. acceptance.test.ts separately drives that reader with real canary
+// images and filesystem mutations through the same feature/completion adapter.
+vi.mock('../../design-compare/acceptance', async (original) => ({
+  ...(await original<typeof import('../../design-compare/acceptance')>()),
+  designAcceptanceRoot: async () => '/isolated-acceptance-fixture',
+  readDesignAcceptance: acceptanceRead,
+}));
 
 // ─── R1: the mocks that let this file drive the REAL work_items:complete ─────
 // Mirrors complete.test.ts's wholesale engine mock. The point of the block at
@@ -638,6 +647,8 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
   }
 
   beforeEach(() => {
+    acceptanceRead.mockReset();
+    acceptanceRead.mockResolvedValue({ satisfied: true, failures: [] });
     getWorkItem.mockReset();
     getWorkItem.mockResolvedValue({
       id: ITEM,
@@ -805,6 +816,7 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     planSlug: PLAN_SLUG,
     planItemIds: ['P-001'],
     targetRoute: DESKTOP_ROUTE,
+    acceptance: { schemaVersion: 1, contractPath: 'contract.json', contractSha256: 'a'.repeat(64), evidencePath: 'evidence.json' },
   } as const;
 
   function desktopApprovalInput(revision = 1) {
@@ -900,6 +912,18 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     expect(result.ok, result.error).toBe(true);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
   });
+
+  it.each(['missing-acceptance-registration', 'missing-proof', 'wrong-target', 'stale-source', 'stale-build', 'invalid-capture', 'journey-failed'])(
+    'desktop.gate.%s: the real completion handler writes no terminal state', async (reason) => {
+      await prepareApprovedDesktop(deps(0));
+      approvedDesktopItem([DESKTOP_BINDING]);
+      acceptanceRead.mockResolvedValue({ satisfied: false, failures: [{ caseId: 'desktop', reason }] });
+      const result = await closeItem();
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain(reason);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    },
+  );
 
   it('desktop.binding.scope: a different implementing item cannot borrow the approved binding', async () => {
     await prepareApprovedDesktop(deps(0));

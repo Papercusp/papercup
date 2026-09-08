@@ -41,6 +41,9 @@ export const designAcceptanceContractSchema = z.object({
   }).strict(),
   renderCases: z.array(renderCase).min(1).max(200),
 }).strict().superRefine((contract, ctx) => {
+  if (!contract.measurement.test.includes(contract.journey.testFile)) {
+    ctx.addIssue({ code: 'custom', message: 'the actual browser test file must be included in test measurement' });
+  }
   const buildIds = contract.builds.map(row => row.id);
   if (new Set(buildIds).size !== buildIds.length ||
       !buildIds.includes(contract.journey.buildId) ||

@@ -35,6 +35,10 @@ import {
   evaluatePlanSpecCoverageGate,
   type PlanSpecCoverageGateVerdict,
 } from './agent-tools/plans/plan-spec-coverage-gate';
+import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
+// This suite checks shipment wiring; the design adapter's filesystem and
+// all-item aggregation are exercised by design-compare/acceptance.test.ts.
+vi.mock('./agent-tools/work_items/design-evidence-gate', () => ({ planDesignEvidenceGate: vi.fn() }));
 
 const rubricMocks = vi.hoisted(() => ({
   getAcceptanceRubricForPlan: vi.fn(),
@@ -161,6 +165,7 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(planDesignEvidenceGate).mockResolvedValue([]);
   mockBarLifecycle.mockResolvedValue({ phase: 'ship', applicable: false, satisfied: true,
     codes: [], blockingBars: [], contractCodes: [], codeAttribution: [], nextRepair: null, message: null });
   mockRubrics.mockImplementation(async (planSlug) => {
@@ -226,6 +231,28 @@ describe('grading-recruitment unfinished-item exception', () => {
 });
 
 describe('evaluatePlanAcceptanceGate', () => {
+  it('refuses stale design proof before a disabled rubric gate can return success', async () => {
+    mockFlag.mockResolvedValue(false);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'design-plan', harness_slug: 'papercusp', status: 'ready' }]));
+    vi.mocked(planDesignEvidenceGate).mockResolvedValue([
+      { status: 'satisfied', report: 'earlier passing obligation' },
+      { status: 'unsatisfied', enforced: true, featureId: 'design-plan', blockingReferenceIds: ['desktop'], report: 'stale-build' },
+    ]);
+    expect(await evaluatePlanAcceptanceGate('design-plan')).toMatchObject({ satisfied: false, code: 'design_evidence_unsatisfied', message: 'stale-build' });
+    expect(planDesignEvidenceGate).toHaveBeenCalledWith('design-plan', 'papercusp');
+  });
+  it('refuses an unreadable design obligation at shipment', async () => {
+    mockFlag.mockResolvedValue(false);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'design-plan', harness_slug: 'papercusp', status: 'ready' }]));
+    vi.mocked(planDesignEvidenceGate).mockRejectedValue(new Error('identity unreadable'));
+    expect(await evaluatePlanAcceptanceGate('design-plan')).toMatchObject({ satisfied: false, code: 'design_evidence_unavailable' });
+  });
+  it('permits shipment when the current design family has no enforced failure', async () => {
+    mockFlag.mockResolvedValue(false);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'design-plan', harness_slug: 'papercusp', status: 'ready' }]));
+    vi.mocked(planDesignEvidenceGate).mockResolvedValue([{ status: 'satisfied', report: 'all current obligations pass' }]);
+    expect(await evaluatePlanAcceptanceGate('design-plan')).toMatchObject({ satisfied: true });
+  });
   it('never borrows a shipped or exempt twin when the subject slug is ambiguous', async () => {
     mockPg.mockReturnValue(sqlReturning([
       { plan_slug: 'same-slug', harness_slug: 'a', status: 'shipped', template: 'rubric' },

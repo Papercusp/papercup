@@ -132,8 +132,10 @@ export async function evaluateFeatureDesignGate(
     }
     const approval = read.reference?.approval;
     let acceptance: DesignAcceptanceResult | undefined;
-    if (approval?.acceptance && read.reference) {
-      try {
+    if (approval && read.reference) {
+      if (!approval.acceptance) {
+        acceptance = { satisfied: false, failures: [{ caseId: '*', reason: 'missing-acceptance-registration' }] };
+      } else try {
         acceptance = await readDesignAcceptance({
           root: deps.acceptanceRoot ?? await designAcceptanceRoot(scope.harnessSlug),
           featureId: scope.featureId, referenceId,
@@ -156,6 +158,11 @@ export async function evaluateFeatureDesignGate(
     });
   }
 
+  return aggregateFeatureDesignGate(references);
+}
+
+/** Reused after work-item scope filtering; never invent a second aggregator. */
+export function aggregateFeatureDesignGate(references: readonly FeatureGateReference[]): FeatureDesignGateResult {
   const applicable = references.filter((r) => r.verdict.applicable);
   if (applicable.length === 0) return { applicable: false, references };
 

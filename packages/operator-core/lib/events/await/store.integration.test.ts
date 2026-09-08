@@ -636,6 +636,121 @@ describe('await-event store (PG)', () => {
     });
   });
 
+  it('firing clears only matching typed durable parks and preserves a coexisting lease', async () => {
+    const eventKey = 'gate:announcement-fire-releases-durable-park';
+    const otherKey = 'gate:announcement-fire-releases-durable-park-control';
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES
+        (
+          'EI-fire-durable-park', 'open', 'bug',
+          ${JSON.stringify({
+            _claimHold: true,
+            claim_hold_by: 'park-owner',
+            claim_hold_reason: 'resume when the gate opens',
+            claim_hold_at: '2026-09-08T18:00:00.000Z',
+            claim_hold_release: {
+              condition: 'the announced gate opens',
+              owner: 'gate-owner',
+              trigger: eventKey,
+              reachability: 'satisfied',
+              evidence: 'the gate was observed fired',
+            },
+            keepMe: 'yes',
+          })}::text::jsonb
+        ),
+        (
+          'EI-fire-durable-park-lease', 'open', 'bug',
+          ${JSON.stringify({
+            _claimHold: true,
+            claim_hold_by: 'park-owner',
+            claim_hold_reason: 'resume when the gate opens',
+            claim_hold_at: '2026-09-08T18:00:00.000Z',
+            claim_hold_release: {
+              condition: 'the announced gate opens',
+              owner: 'gate-owner',
+              trigger: eventKey,
+              reachability: 'reachable',
+              evidence: 'the gate is registered',
+            },
+            held_open_by: 'lease-owner',
+            held_open_reason: 'validation still owns the lease',
+            held_open_at: '2026-09-08T18:01:00.000Z',
+          })}::text::jsonb
+        ),
+        (
+          'EI-fire-durable-park-control', 'open', 'bug',
+          ${JSON.stringify({
+            _claimHold: true,
+            claim_hold_by: 'park-owner',
+            claim_hold_reason: 'wait for a different gate',
+            claim_hold_at: '2026-09-08T18:00:00.000Z',
+            claim_hold_release: {
+              condition: 'the other gate opens',
+              owner: 'gate-owner',
+              trigger: otherKey,
+              reachability: 'reachable',
+              evidence: 'the other gate is registered',
+            },
+          })}::text::jsonb
+        ),
+        (
+          'EI-fire-durable-park-assigned', 'open', 'bug',
+          ${JSON.stringify({
+            _claimHold: true,
+            claim_hold_by: 'park-owner',
+            claim_hold_reason: 'assigned work must remain parked',
+            claim_hold_at: '2026-09-08T18:00:00.000Z',
+            claim_hold_release: {
+              condition: 'the announced gate opens',
+              owner: 'gate-owner',
+              trigger: eventKey,
+              reachability: 'reachable',
+              evidence: 'the gate is registered',
+            },
+          })}::text::jsonb
+        )`;
+    await rootSql`
+      UPDATE harness_shared.work_items
+         SET taken_by = 'active-worker'
+       WHERE feature_id = 'EI-fire-durable-park-assigned'
+    `;
+
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).resolves.toBe(1);
+
+    const rows = await rootSql<{ feature_id: string; taken_by: string | null; payload: Record<string, unknown> }[]>`
+      SELECT feature_id, taken_by, payload
+        FROM harness_shared.work_items
+       ORDER BY feature_id
+    `;
+    const matching = rows.find((row) => row.feature_id === 'EI-fire-durable-park')!;
+    expect(matching.payload).toMatchObject({ keepMe: 'yes' });
+    expect(matching.payload).not.toHaveProperty('_claimHold');
+    expect(matching.payload).not.toHaveProperty('claim_hold_by');
+    expect(matching.payload).not.toHaveProperty('claim_hold_release');
+
+    const leased = rows.find((row) => row.feature_id === 'EI-fire-durable-park-lease')!;
+    expect(leased.payload).toMatchObject({
+      _claimHold: true,
+      held_open_by: 'lease-owner',
+      held_open_reason: 'validation still owns the lease',
+    });
+    expect(leased.payload).not.toHaveProperty('claim_hold_by');
+    expect(leased.payload).not.toHaveProperty('claim_hold_release');
+
+    const control = rows.find((row) => row.feature_id === 'EI-fire-durable-park-control')!;
+    expect(control.payload).toMatchObject({
+      _claimHold: true,
+      claim_hold_by: 'park-owner',
+      claim_hold_release: expect.objectContaining({ trigger: otherKey }),
+    });
+
+    const assigned = rows.find((row) => row.feature_id === 'EI-fire-durable-park-assigned')!;
+    expect(assigned.taken_by).toBe('active-worker');
+    expect(assigned.payload).toHaveProperty('claim_hold_by', 'park-owner');
+  });
+
   it('guards announcement retirement by owner, generation, and fired state', async () => {
     const foreign = await registerAnnouncement({ subscriberId: 'owner-a', eventKey: 'gate:retire-foreign', scopeKind: 'global' });
     await expect(retireAnnouncement({ announcementId: foreign.id, subscriberId: 'owner-b' })).resolves.toMatchObject({

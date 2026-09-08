@@ -22,6 +22,7 @@ import { listAllWorkItemsForFileExport } from '../../work-items';
 import {
   DesignGateUnavailableError,
   evaluateFeatureDesignGate,
+  aggregateFeatureDesignGate,
   renderFeatureDesignGate,
   type FeatureDesignGateResult,
 } from '../../design-compare/feature-gate';
@@ -147,7 +148,15 @@ export async function designEvidenceCompletionGate(
   const unavailable: string[] = [];
   for (const featureId of featureIds) {
     try {
-      const result = await deps.evaluate(featureId);
+      let result = await deps.evaluate(featureId);
+      if (result.references.some(ref => ref.reference?.approval)) {
+        result = aggregateFeatureDesignGate(result.references.filter(ref => {
+          const approval = ref.reference?.approval;
+          return !approval || declared.data.some(binding => binding.featureId === featureId && binding.referenceId === ref.referenceId) ||
+            !deps.workScope?.planItemIds?.length ||
+            (deps.workScope.planSlug === approval.planSlug && deps.workScope.planItemIds.some(id => approval.planItemIds.includes(id)));
+        }));
+      }
       for (const reference of result.references) {
         const current = reference.reference;
         const approval = current?.approval;
@@ -165,7 +174,7 @@ export async function designEvidenceCompletionGate(
           reason = 'approval-reference-replaced';
         }
         if (reason) {
-          failures.push({ featureId, referenceIds: [reference.referenceId], enforced: Boolean(approval?.acceptance) || enforced });
+          failures.push({ featureId, referenceIds: [reference.referenceId], enforced: Boolean(approval) || enforced });
           reports.push(`design '${featureId}': ${reason} for '${reference.referenceId}'. Bind the implementing item to the exact approved revision and image hash; changing the image requires reviewed re-approval.`);
         }
       }
@@ -242,6 +251,7 @@ export async function planDesignEvidenceGate(planSlug: string, harnessSlug: stri
   isEnabled?: () => Promise<boolean>;
   isEnforcing?: () => Promise<boolean>;
 }): Promise<DesignEvidenceGateOutcome[]> {
+  if (!await flagOrFalse(deps?.isEnabled ?? (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE, activeWorkspaceId()) as Promise<boolean>))) return [];
   const evaluate = deps?.evaluate ?? (async (featureId: string) => {
     const verbDeps = await designCompareDepsFor(harnessSlug);
     return evaluateFeatureDesignGate(
@@ -265,7 +275,7 @@ export async function planDesignEvidenceGate(planSlug: string, harnessSlug: stri
     const plan = await evaluate(planSlug);
     for (const ref of plan.references) {
       const approval = ref.reference?.approval;
-      if (!approval?.acceptance || approval.planSlug !== planSlug) continue;
+      if (!approval || approval.planSlug !== planSlug) continue;
       for (const itemId of approval.planItemIds) {
         if (items.some(item => item.sourcePlanItemIds?.includes(itemId))) continue;
         outcomes.push({ status: 'unsatisfied', enforced: true, featureId: planSlug,

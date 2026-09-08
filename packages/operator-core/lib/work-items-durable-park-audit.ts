@@ -8,6 +8,7 @@
  * a control-state fingerprint and writes an atomic audit row for every successful clear.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAgentReviewState } from './harness/improvements/agent-review-policy';
 import { saveTextArtifact } from './text-artifacts';
@@ -471,10 +472,121 @@ export function planDurableParkClear(
   delete nextPayload.claim_hold_by;
   delete nextPayload.claim_hold_reason;
   delete nextPayload.claim_hold_at;
+  delete nextPayload.claim_hold_release;
   const preservedLease = !!provenance.heldOpen;
   if (preservedLease) nextPayload._claimHold = true;
   else delete nextPayload._claimHold;
   return { ...result('cleared', preservedLease), nextPayload };
+}
+
+export interface EventDurableParkReconcileResult {
+  matched: number;
+  cleared: number;
+  skipped: number;
+  preservedLeases: number;
+}
+
+type EventDurableParkSql = OrgSql | TransactionSql;
+
+type EventDurableParkRow = {
+  workspace_id: string;
+  feature_id: string;
+  state: string;
+  taken_by: string | null;
+  payload: unknown;
+};
+
+/**
+ * Clear durable parks whose typed release contract names the event that just
+ * fired. This is intentionally narrower than external-blocker reconciliation:
+ * a durable park has no TTL and must only be cleared by its own exact trigger,
+ * never by an unrelated event or by the holder's liveness changing.
+ *
+ * The caller supplies its transaction so announcement latching and park
+ * settlement commit together. Rows are selected and updated with the same
+ * control-state fingerprint/CAS discipline as the explicit reconciliation
+ * path. A coexisting held-open lease remains in place and keeps `_claimHold`.
+ */
+export async function reconcileEventDurableParks(
+  tx: EventDurableParkSql,
+  eventKey: string,
+  actor?: string,
+  now = new Date().toISOString(),
+): Promise<EventDurableParkReconcileResult> {
+  const trigger = eventKey.trim();
+  if (!trigger) return { matched: 0, cleared: 0, skipped: 0, preservedLeases: 0 };
+
+  const parsedNow = Date.parse(now);
+  const updatedTs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  const settledBy = actor?.trim() || 'system:event-settlement';
+  const rows = await tx<EventDurableParkRow[]>`
+    SELECT workspace_id, feature_id, status AS state, taken_by, payload
+      FROM harness_shared.work_items
+     WHERE COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
+       AND NULLIF(COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by', '') IS NOT NULL
+       AND (taken_by IS NULL OR btrim(taken_by) = '')
+       AND COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'trigger' = ${trigger}
+     FOR UPDATE
+  `;
+
+  let cleared = 0;
+  let skipped = 0;
+  let preservedLeases = 0;
+  for (const row of rows) {
+    const expectedParkFingerprint = durableParkFingerprint({
+      state: row.state,
+      takenBy: row.taken_by,
+      payload: row.payload,
+    });
+    const plan = planDurableParkClear(
+      { id: row.feature_id, state: row.state, takenBy: row.taken_by, payload: row.payload },
+      {
+        id: row.feature_id,
+        expectedParkFingerprint,
+        reasonCode: 'condition-satisfied',
+        evidence: `announcement trigger "${trigger}" fired${actor?.trim() ? ` by ${settledBy}` : ''}`,
+      },
+    );
+    if (plan.outcome !== 'cleared' || !plan.nextPayload) {
+      skipped += 1;
+      continue;
+    }
+
+    const priorPayload = record(row.payload);
+    const updated = await tx<Array<{ feature_id: string }>>`
+      UPDATE harness_shared.work_items
+         SET payload = ${JSON.stringify(plan.nextPayload)}::text::jsonb,
+             updated_ts = ${updatedTs}
+       WHERE workspace_id = ${row.workspace_id}
+         AND feature_id = ${row.feature_id}
+         AND status = ${row.state}
+         AND (taken_by IS NULL OR btrim(taken_by) = '')
+         AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
+         AND NULLIF(COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by', '') IS NOT NULL
+         AND COALESCE(payload, '{}'::jsonb) -> 'claim_hold_release' ->> 'trigger' = ${trigger}
+         AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by')
+               IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_by)}
+         AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_reason')
+               IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_reason)}
+         AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_at')
+               IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_at)}
+         AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_by')
+               IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_by)}
+         AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_reason')
+               IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_reason)}
+         AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_at')
+               IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_at)}
+       RETURNING feature_id
+    `;
+    if (updated.length === 0) {
+      skipped += 1;
+      continue;
+    }
+    cleared += 1;
+    if (plan.preservedLease) preservedLeases += 1;
+  }
+
+  return { matched: rows.length, cleared, skipped, preservedLeases };
 }
 
 function ageBucket(ageMs: number): AuditAgeBucket {
@@ -1041,9 +1153,9 @@ export async function runWorkItemDurableParkReconciliation(opts: {
                    WHEN COALESCE(payload, '{}'::jsonb) ->> 'held_open_by' IS NOT NULL
                     AND COALESCE(payload, '{}'::jsonb) ->> 'held_open_by' <> ''
                    THEN COALESCE(payload, '{}'::jsonb)
-                          - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
+                          - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at' - 'claim_hold_release'
                    ELSE COALESCE(payload, '{}'::jsonb)
-                          - '_claimHold' - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
+                          - '_claimHold' - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at' - 'claim_hold_release'
                  END,
                  updated_ts = ${now()}
            WHERE workspace_id = ${opts.workspaceId}
