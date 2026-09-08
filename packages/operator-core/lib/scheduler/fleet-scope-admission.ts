@@ -288,12 +288,13 @@ export async function resolveFleetScopeContext(
   // No specific workspace (null / '*' / empty) ⇒ no fleet-member scope to resolve.
   if (!ws) return null;
   let ownerId = ownerIdOrName;
-  let membership = await latestFleetMembership(ws, ownerId).catch(() => null);
+  // A failed authority read is UNKNOWN, never evidence of an unscoped caller.
+  let membership = await latestFleetMembership(ws, ownerId);
 
   // plan_items:assign addresses a stable agent-name. Resolve it through the
   // canonical assignment/presence view before consulting append-only membership.
   if (!membership?.fleetSlug) {
-    const rows = await listFleetAssignments({ workspaceId: ws, agent: ownerIdOrName, activeOnly: true }).catch(() => []);
+    const rows = await listFleetAssignments({ workspaceId: ws, agent: ownerIdOrName, activeOnly: true });
     const row = rows.find((r) => r.agentId && r.fleetSlug && r.fleetRole === 'member');
     if (row?.agentId) {
       ownerId = row.agentId;
@@ -537,7 +538,7 @@ export async function readFleetPauseState(
   const ws = resolveClaimSpecWorkspace(workspaceId);
   if (!ws) return { windingDown: false, reason: null };
   const { getFleet } = await import('../agent-fleets-store');
-  const fleet = await getFleet(ws, scope.fleetSlug).catch(() => null);
+  const fleet = await getFleet(ws, scope.fleetSlug);
   if (fleet?.controlState !== 'winding-down') return { windingDown: false, reason: null };
   return { windingDown: true, reason: fleet.controlReason };
 }

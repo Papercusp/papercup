@@ -813,6 +813,22 @@ describe('work_items observe — `rd` (D-004, real PG)', () => {
     expect(obs?.gated).toBeUndefined();
   });
 
+  it('revalidates stored held admission and trust for dispatch without changing ordinary rd or ownership', async () => {
+    await seedFeature('F-held-replay', { origin: 'remote', auditVerdict: 'admit', takenBy: 'agB' });
+    const request = { harness: H, revalidateHeld: true };
+    expect(await wi.observeWorkItem('F-held-replay', request)).toMatchObject({ available: false, claimedBy: 'agB' });
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET audit_verdict = 'reject' WHERE feature_id = 'F-held-replay'`;
+    expect(await wi.observeWorkItem('F-held-replay', request)).toMatchObject({ gated: true, claimedBy: 'agB' });
+    expect((await wi.observeWorkItem('F-held-replay', { harness: H }))?.gated).toBeUndefined();
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET audit_verdict = 'admit', admission = 'pending' WHERE feature_id = 'F-held-replay'`;
+    expect(await wi.observeWorkItem('F-held-replay', request)).toMatchObject({ gated: true, claimedBy: 'agB', admissionPending: { reason: expect.any(String) } });
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET admission = 'admitted' WHERE feature_id = 'F-held-replay'`;
+    const recovered = await wi.observeWorkItem('F-held-replay', request);
+    expect(recovered).toMatchObject({ available: false, claimedBy: 'agB' });
+    expect(recovered?.gated).toBeUndefined();
+    expect((await wi.getWorkItem('F-held-replay', H))?.assignee).toBe('agB');
+  });
+
   // EI-22122824405906276: the admission-pending (duplicate-screening) floor is the FIRST
   // gate observeWorkItem checks — and, before this fix, the ONLY gated:true case that
   // carried no distinguishing field whatsoever (unlike claim-hold/plan-lane, which already
@@ -889,6 +905,17 @@ describe('issue-family (bug/change/task) remote-origin gate — the EI-7841 clas
     const obs = await wi.observeWorkItem('WI-remote-held', { harness: H });
     expect(obs).toMatchObject({ available: false, claimedBy: 'agB' });
     expect(obs?.gated).toBeUndefined();
+  });
+
+  it('revalidates held issue origin and duplicate admission from persisted rows', async () => {
+    await seedIssue('WI-held-peer', { origin: 'remote', takenBy: 'agB' });
+    expect(await wi.observeWorkItem('WI-held-peer', { harness: H, revalidateHeld: true }))
+      .toMatchObject({ available: false, claimedBy: 'agB', gated: true });
+    await seedIssue('WI-held-pending', { admission: 'pending', takenBy: 'agB' });
+    expect(await wi.observeWorkItem('WI-held-pending', { harness: H, revalidateHeld: true }))
+      .toMatchObject({ available: false, claimedBy: 'agB', gated: true, admissionPending: { reason: expect.any(String) } });
+    expect((await wi.getWorkItem('WI-held-peer', H))?.assignee).toBe('agB');
+    expect((await wi.getWorkItem('WI-held-pending', H))?.assignee).toBe('agB');
   });
 
   it('work_items:list admissibleOnly excludes a remote issue-family row only when passed; default lists everything', async () => {

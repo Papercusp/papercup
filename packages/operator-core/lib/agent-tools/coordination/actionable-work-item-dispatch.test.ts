@@ -52,6 +52,7 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
       claimedBy: null,
     })),
     claim: vi.fn(async (id, assignee) => workItem(id, 'open', assignee)),
+    authorize: vi.fn(async () => ({ allowed: true as const })),
     explainClaimFloors: vi.fn(async () => []),
     blockers: vi.fn(async () => []),
     planBlock: vi.fn(async () => null),
@@ -283,7 +284,7 @@ describe('P-001 existing-review recovery baseline', () => {
     expect(recovered.assignment.executionWorkItemIds).toEqual([id]);
   });
 
-  it('characterizes a revoked admission being ignored on an already-held replay', async () => {
+  it('refuses a revoked admission on an already-held replay without releasing ownership', async () => {
     const d = deps({
       observe: vi.fn(async (id) => ({
         item: issueWorkItem(id, 'wip', 'fixture-reviewer'),
@@ -293,9 +294,39 @@ describe('P-001 existing-review recovery baseline', () => {
     const result = await assignAndWakeActionableWorkItems({
       workItemIds: ['WI-REVIEW-FIXTURE'], targetAgent: 'fixture-reviewer',
     }, d);
-    // P-003 changes this expectation: retaining a claim is not fresh authority.
-    expect(result.assignment.retained).toEqual(['WI-REVIEW-FIXTURE']);
-    expect(d.wake).toHaveBeenCalledTimes(metadataWorkflowTargets.revokedReviewWakes.before);
+    expect(result.assignment.retained).toEqual([]);
+    expect(result.assignment.skipped[0]).toMatchObject({ code: 'admission_gated' });
+    expect(d.claim).not.toHaveBeenCalled();
+    expect(d.wake).toHaveBeenCalledTimes(metadataWorkflowTargets.revokedReviewWakes.after);
+  });
+
+  it.each([false, true])('checks current authority on every retry (held=%s)', async (held) => {
+    const id = 'WI-REVIEW-FIXTURE';
+    const d = deps({
+      observe: vi.fn(async () => ({
+        item: issueWorkItem(id, 'open', held ? 'fixture-reviewer' : null),
+        available: !held, claimedBy: held ? 'fixture-reviewer' : null,
+      })),
+      authorize: vi.fn()
+        .mockResolvedValueOnce({ allowed: false, reason: 'effective member override denies this exact id' })
+        .mockRejectedValueOnce(new Error('authority unavailable'))
+        .mockResolvedValueOnce({ allowed: true }),
+    });
+    const request = { workItemIds: [id], targetAgent: 'fixture-reviewer', workspaceId: 'workspace-fixture' };
+    const denied = await assignAndWakeActionableWorkItems(request, d);
+    expect(denied.assignment.skipped[0]).toMatchObject({ code: 'authority_denied' });
+    const unknown = await assignAndWakeActionableWorkItems(request, d);
+    expect(unknown.assignment.skipped[0]).toMatchObject({ code: 'read_failed', reason: 'authority read failed: authority unavailable' });
+    expect(d.claim).not.toHaveBeenCalled();
+    expect(d.wake).not.toHaveBeenCalled();
+    const recovered = await assignAndWakeActionableWorkItems(request, d);
+    expect(recovered.assignment.executionWorkItemIds).toEqual([id]);
+    expect(d.authorize).toHaveBeenLastCalledWith({
+      workItemId: id, target: 'fixture-reviewer', harness: 'email', workspaceId: 'workspace-fixture',
+    });
+    expect(d.observe).toHaveBeenLastCalledWith(id, { revalidateHeld: true });
+    expect(d.claim).toHaveBeenCalledTimes(held ? 0 : 1);
+    expect(d.wake).toHaveBeenCalledTimes(1);
   });
 });
 

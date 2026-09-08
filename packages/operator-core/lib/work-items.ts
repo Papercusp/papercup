@@ -8264,7 +8264,8 @@ export interface WorkItemObservation {
   available: boolean;
   claimedBy: string | null;
   /**
-   * EI-7841: true only when the item is UNCLAIMED yet still not-`available` because
+   * EI-7841: true when the item is UNCLAIMED (or revalidateHeld was requested)
+   * yet still not-`available` because
    * the feature-family G2 admission/trust gate (autoPickableWhereSql /
    * isAutoPickable — the same gate `work_items:claim` and `claim_next` enforce)
    * would refuse it: a remote, un-admitted, untrusted-author item. Omitted (not just
@@ -8274,7 +8275,8 @@ export interface WorkItemObservation {
    */
   gated?: boolean;
   /**
-   * EI-22122824405906276: set when the item is UNCLAIMED yet gated by the admission /
+   * EI-22122824405906276: set when the item is UNCLAIMED (or revalidateHeld was
+   * requested) yet gated by the admission /
    * duplicate-screening floor (`isWorkItemDuplicateAdmitted` — the FIRST floor checked
    * below, and the only one of the `gated:true` cases here that carried no distinguishing
    * field at all before this). Rendered from the SAME {@link admissionPendingExplanation} /
@@ -8347,7 +8349,7 @@ export interface WorkItemObservation {
  */
 export async function observeWorkItem(
   id: string,
-  opts: { harness?: string } = {},
+  opts: { harness?: string; revalidateHeld?: boolean } = {},
 ): Promise<WorkItemObservation | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
@@ -8355,8 +8357,11 @@ export async function observeWorkItem(
   // through getWorkItem's mapping layer (normalizeTakenBy already applied there), so this
   // is belt-and-suspenders — mirrors classifyClaimFailure's own defense-in-depth call.
   const unclaimed = !normalizeTakenBy(wi.assignee);
+  // Dispatch replay preserves ownership but must re-read admission/trust/origin.
+  // Ordinary rd callers retain the historical holder-only observation contract.
+  const checkAdmission = unclaimed || opts.revalidateHeld === true;
   if (
-    unclaimed &&
+    checkAdmission &&
     !(await isWorkItemDuplicateAdmitted(id, {
       workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
     }))
@@ -8369,7 +8374,7 @@ export async function observeWorkItem(
       admissionPending: { reason: admissionPendingExplanation(), remedy: admissionPendingCreateRemedy() },
     };
   }
-  if (unclaimed && wi.family === 'feature') {
+  if (checkAdmission && wi.family === 'feature') {
     // Cheap path first — local/admitted items (the vast majority) resolve without
     // touching the DB at all; only a remote+un-admitted item needs the trust-list
     // read to check the Phase-3 fast-path before concluding it's truly gated.
@@ -8396,7 +8401,7 @@ export async function observeWorkItem(
   // available:false/gated:true for ~3,800 open rows (measured 2026-08-02) that a real
   // claim-by-id would actually succeed on. Cheap path first: only a remote row needs
   // the extra DB round-trip, and a DB error fails SAFE (still reported gated).
-  if (unclaimed && wi.family === 'issue' && !isIssueLocallyClaimable(wi.origin)) {
+  if (checkAdmission && wi.family === 'issue' && !isIssueLocallyClaimable(wi.origin)) {
     let ownNodeClaimable = false;
     if (wi.origin === 'remote') {
       try {

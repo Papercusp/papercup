@@ -38,6 +38,7 @@ export type WorkItemDispatchSkipCode =
   | 'plan_lane_blocked'
   | 'plan_lane_claimed'
   | 'claim_hold'
+  | 'authority_denied'
   | 'admission_gated'
   | 'held_by_other';
 
@@ -113,7 +114,8 @@ export interface ActionableWorkItemDispatchResult {
 }
 
 export interface ActionableWorkItemDispatchDeps {
-  observe: (id: string, opts: { harness?: string }) => Promise<WorkItemObservation | null>;
+  observe: (id: string, opts: { harness?: string; revalidateHeld?: boolean }) => Promise<WorkItemObservation | null>;
+  authorize: typeof authorizeWorkItemDispatch;
   claim: (id: string, assignee: string, opts: { harness?: string }) => Promise<WorkItem | null>;
   /** The same named-id claim-floor oracle used by work_items:claim. */
   explainClaimFloors: typeof explainIssueClaimFloors;
@@ -130,6 +132,7 @@ export interface ActionableWorkItemDispatchDeps {
 
 const defaultDeps: ActionableWorkItemDispatchDeps = {
   observe: (id, opts) => observeWorkItem(id, opts),
+  authorize: authorizeWorkItemDispatch,
   claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),
   explainClaimFloors: explainIssueClaimFloors,
   blockers: (id, harness) => readUnresolvedDepBlockers(id, harness),
@@ -138,6 +141,27 @@ const defaultDeps: ActionableWorkItemDispatchDeps = {
   resolveTarget: resolveStableAgentTarget,
   wake: wakeRecipients,
 };
+
+/** Reuse the claim door's security floors, including the target's effective override.
+ * A durable assignment is a receipt, not cached permission for the next replay.
+ * Read failures propagate to classifyOne's fail-closed readiness result.
+ */
+export async function authorizeWorkItemDispatch(args: {
+  workItemId: string;
+  target: string;
+  harness?: string;
+  workspaceId?: string;
+}): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  const { gateWorkScope, readWorkScopePolicy } = await import('../../work-scope-policy');
+  const policy = await readWorkScopePolicy();
+  const workspace = await gateWorkScope('coord:dispatch', {
+    harness: args.harness, workItem: args.workItemId, actor: args.target,
+  }, policy);
+  if (!workspace.allowed) return { allowed: false, reason: workspace.message };
+  const { admitWorkItemForFleetTarget } = await import('../../scheduler/fleet-scope-admission');
+  const fleet = await admitWorkItemForFleetTarget(args);
+  return fleet.allowed ? { allowed: true } : { allowed: false, reason: fleet.reason };
+}
 
 function sameAgent(holder: string | null | undefined, target: string): boolean {
   return Boolean(holder) && holder === target;
@@ -164,6 +188,7 @@ async function classifyOne(
   workItemId: string,
   targetAgent: string,
   harness: string | undefined,
+  workspaceId: string | undefined,
   deps: ActionableWorkItemDispatchDeps,
 ): Promise<
   | { kind: 'claim'; workItemId: string }
@@ -172,7 +197,7 @@ async function classifyOne(
 > {
   let observed: WorkItemObservation | null;
   try {
-    observed = await deps.observe(workItemId, { ...(harness ? { harness } : {}) });
+    observed = await deps.observe(workItemId, { ...(harness ? { harness } : {}), revalidateHeld: true });
   } catch (error) {
     return {
       kind: 'skip',
@@ -284,8 +309,23 @@ async function classifyOne(
       },
     };
   }
-  if (retainedByTarget) return { kind: 'retained', workItemId };
-  if (!observed.available) {
+  try {
+    const authority = await deps.authorize({
+      workItemId, target: targetAgent, harness: harness ?? workItem.harness,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+    if (!authority.allowed) return {
+      kind: 'skip', skipped: { workItemId, code: 'authority_denied', reason: authority.reason },
+    };
+  } catch (error) {
+    return {
+      kind: 'skip', skipped: {
+        workItemId, code: 'read_failed',
+        reason: `authority read failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  }
+  if (observed.gated || (!retainedByTarget && !observed.available)) {
     // EI-22008434629323224: preserve the claim path's floors for targeted dispatch,
     // but do not collapse an issue-family refusal into the generic frontier text.
     // Reuse the same named-id oracle as work_items:claim so the caller receives the
@@ -318,16 +358,17 @@ async function classifyOne(
       },
     };
   }
+  if (retainedByTarget) return { kind: 'retained', workItemId };
   return { kind: 'claim', workItemId };
 }
 
 /** Assign only the current execution frontier. No wake occurs in this function. */
 export async function assignActionableWorkItems(
-  args: { workItemIds: readonly string[]; targetAgent: string; harness?: string },
+  args: { workItemIds: readonly string[]; targetAgent: string; harness?: string; workspaceId?: string },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemAssignment> {
   const requested = [...new Set(args.workItemIds.map((id) => id.trim()).filter(Boolean))];
-  const classified = await Promise.all(requested.map((id) => classifyOne(id, args.targetAgent, args.harness, deps)));
+  const classified = await Promise.all(requested.map((id) => classifyOne(id, args.targetAgent, args.harness, args.workspaceId, deps)));
   const toClaim = classified.filter((r): r is { kind: 'claim'; workItemId: string } => r.kind === 'claim');
   const retained = classified
     .filter((r): r is { kind: 'retained'; workItemId: string } => r.kind === 'retained')
@@ -364,7 +405,7 @@ export async function assignActionableWorkItems(
   const failed = claimResults
     .filter((r): r is Extract<(typeof claimResults)[number], { ok: false }> => !r.ok)
     .map(({ workItemId, code, reason }) => ({ workItemId, code, reason }));
-  const hardSkips = new Set<WorkItemDispatchSkipCode>(['not_found', 'read_failed', 'held_by_other']);
+  const hardSkips = new Set<WorkItemDispatchSkipCode>(['not_found', 'read_failed', 'held_by_other', 'authority_denied']);
   const executable = new Set([...assigned, ...retained]);
   const executionWorkItemIds = requested.filter((id) => executable.has(id));
   return {
@@ -524,6 +565,7 @@ export async function assignAndWakeActionableWorkItems(
       // stable adopted name. Only the wake below targets the ephemeral ownerId.
       targetAgent: args.targetAgent,
       ...(args.harness ? { harness: args.harness } : {}),
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
     },
     deps,
   );

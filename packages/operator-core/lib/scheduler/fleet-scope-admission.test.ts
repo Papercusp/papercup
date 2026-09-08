@@ -697,6 +697,19 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(admissionMocks.getWorkItem).not.toHaveBeenCalled();
     });
 
+    it.each(['membership', 'stable-target', 'pause'])('fails closed when %s authority cannot be read', async (stage) => {
+      if (stage === 'membership') admissionMocks.latestFleetMembership.mockRejectedValueOnce(new Error('authority unreadable'));
+      if (stage === 'stable-target') {
+        admissionMocks.latestFleetMembership.mockResolvedValueOnce(null);
+        admissionMocks.listFleetAssignments.mockRejectedValueOnce(new Error('authority unreadable'));
+      }
+      if (stage === 'pause') admissionMocks.getFleet.mockRejectedValueOnce(new Error('authority unreadable'));
+      await expect(admitWorkItemForFleetTarget({
+        target: 'su-member', workItemId: 'WI-in', workspaceId: 'default',
+      })).rejects.toThrow('authority unreadable');
+      expect(admissionMocks.getWorkItem).not.toHaveBeenCalled();
+    });
+
     it('allows the SAME in-spec claim once the fleet is active again (the fix is control-state-conditional)', async () => {
       admissionMocks.getFleet.mockResolvedValue({ fleetSlug: 'bugs', controlState: 'active', controlReason: null });
       admissionMocks.getWorkItem.mockResolvedValue(issueItem);
