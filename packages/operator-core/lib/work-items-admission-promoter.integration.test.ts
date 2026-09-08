@@ -443,6 +443,75 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(refused.guardRefusals).toEqual([expect.objectContaining({ reason: 'snapshot-drift' })]);
   });
 
+  it('refuses a legacy promote disposition without aborting the transaction', async () => {
+    await seedItem({ id: 'WI-legacy-promote', admission: null });
+    const snapshots = await readAdmissionMergeSnapshots(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ids: ['WI-legacy-promote'],
+    });
+
+    const result = await persistAdmissionPlan(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-legacy-promote-guard',
+      modelId: 'fixture',
+      nowMs: NOW,
+      pending: [],
+      snapshots: [...snapshots.values()],
+      plan: {
+        dispositions: [{ itemId: 'WI-legacy-promote', action: 'promote' }],
+        adjudications: [],
+        relatedPairs: [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      promotedIds: [],
+      mergedIds: [],
+      held: [{ itemId: 'WI-legacy-promote', reason: expect.stringContaining('admission-state-ineligible') }],
+      guardRefusals: [
+        {
+          itemId: 'WI-legacy-promote',
+          reason: 'admission-state-ineligible',
+          detail: expect.stringContaining('expected pending or unreviewed'),
+        },
+      ],
+    });
+    const [row] = await db.sql<Array<{ admission: string | null; status: string }>>`
+      SELECT admission, status FROM harness_shared.work_items WHERE feature_id = 'WI-legacy-promote'`;
+    expect(row).toEqual({ admission: null, status: 'open' });
+  });
+
+  it('does not turn an admitted recurrence replacement into a zero-row promote', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 30_000 });
+    await seedItem({
+      id: 'WI-keyed-canonical',
+      admission: 'admitted',
+      createdAtMs: NOW - 20_000,
+      payload: { watchdogKey: 'watchdog:shared-promoter' },
+    });
+    await seedItem({ id: 'WI-pending-bridge', admission: 'pending', createdAtMs: NOW - 10_000 });
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-admitted-recurrence-replacement',
+      sql: db.sql,
+      llmCall: judgementCall('r-finding-merge'),
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ promoted: 0, merged: 2, held: 0, guardRefusals: [], writerCoverageGap: [] });
+    const rows = await db.sql<Array<{ feature_id: string; status: string; admission: string | null }>>`
+      SELECT feature_id, status, admission FROM harness_shared.work_items ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'WI-canonical', status: 'dropped', admission: 'admitted' },
+      { feature_id: 'WI-keyed-canonical', status: 'open', admission: 'admitted' },
+      { feature_id: 'WI-pending-bridge', status: 'dropped', admission: 'admitted' },
+    ]);
+  }, 60_000);
+
   it('does not merge a younger outside-batch loser even when the target is canonical', async () => {
     await seedItem({ id: 'WI-target', createdAtMs: NOW - 20_000 });
     await seedItem({ id: 'WI-outside', createdAtMs: NOW - 10_000 });
