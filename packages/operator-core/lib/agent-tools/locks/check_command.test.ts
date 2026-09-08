@@ -44,6 +44,9 @@ const checkM = vi.mocked(checkBashCommand);
 const rowsM = vi.mocked(getSubstitutionRows);
 const goalEditM = vi.mocked(checkGoalModeEditGuard);
 const tool = (await import('./check_command')).default;
+type CheckVerdict = Awaited<ReturnType<typeof checkBashCommand>>;
+type ToolArgs = Parameters<typeof tool.handler>[0];
+type ToolContext = Parameters<typeof tool.handler>[1];
 
 /** A registry row shaped as the matcher consumes it. */
 const sedRow = {
@@ -92,7 +95,7 @@ describe('locks:check_command handler', () => {
   });
 
   it('passes an allow verdict through', async () => {
-    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as CheckVerdict);
     expect(body((await tool.handler({ command: 'ls' } as never, {} as never)) as Out)).toMatchObject({ ok: true, decision: 'allow' });
   });
 
@@ -140,7 +143,9 @@ describe('locks:check_command handler', () => {
     frozenM.evaluate.mockResolvedValue(frozenVerdict);
     frozenM.payload.mockReturnValue({ message });
 
-    const out = body((await tool.handler({ command: 'npm test', cwd: '/repo' } as never, {} as never)) as Out);
+    const out = body(
+      (await tool.handler({ command: 'npm test', cwd: '/repo' } as ToolArgs, {} as ToolContext)) as Out,
+    );
     expect(out).toMatchObject({
       decision: 'block',
       frozenLineageDenyReason: message,
