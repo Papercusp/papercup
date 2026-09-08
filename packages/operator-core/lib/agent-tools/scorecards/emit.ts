@@ -1151,6 +1151,36 @@ export async function emitScorecard(
           error: `self_audit_refused: a grading audit must come from a NON-AUTHOR (graded card author: ${gradedAuthor ?? 'unknown'}, auditor: ${input.createdBy ?? 'unknown'}) — mirror of the acceptance grader ≠ author rule`,
         };
       }
+      // EI-22643332515600282: a grading audit must be independent from the
+      // graded card's evidence source, not merely from its author. Vetting
+      // critics are the durable identity of the external critique recorded as
+      // evidence on a vetting card; allowing one of them to audit that card
+      // lets the critic certify quotations of their own review. Treat a
+      // rebind successor as the same party too, preserving the author guard's
+      // lineage semantics without changing the ordinary non-author path.
+      const gradingEvidenceSources = gradedObservation.vetting?.critics ?? [];
+      const evidenceSourceMatch = (
+        await Promise.all(
+          gradingEvidenceSources.map(async (source) => ({
+            source,
+            related: await (deps.lineageRelated ?? areAcceptanceLineageRelated)(
+              source,
+              input.createdBy,
+              { workspaceId: input.workspaceId || activeWorkspaceId() },
+            ),
+          })),
+        )
+      ).find(({ related }) => related)?.source;
+      if (evidenceSourceMatch) {
+        return {
+          ok: false as const,
+          code: 'auditor_is_graded_card_evidence_source' as const,
+          error:
+            `self_audit_refused: grading auditor '${input.createdBy}' is the graded card's recorded evidence source ` +
+            `('${evidenceSourceMatch}') — a grading audit must come from an independent party, not the critic whose ` +
+            'quotes form the graded evidence; use another auditor',
+        };
+      }
       auditContext = { subjectIssueId: args.subject.ref, auditor: input.createdBy };
     }
     // PENDING STAMP — a terminal standard-rubric card is final but UNAUDITED until a

@@ -985,6 +985,13 @@ export default defineTool({
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
 
+    // `tools:find` returns a hand-serialized ToolResult, so the generic
+    // payload-tier shaper cannot expand its compact discovery projection for
+    // an explicit `payloadTier:'full'` request. Preserve the ordinary bounded
+    // shape by default, but honor the framework's call-level escape hatch by
+    // returning the already-built, unbounded corpus schema for each hit.
+    const fullArgSchemaRequested = ctx.payloadTierOverride === 'full';
+
     // Honest mode marker (never silently pretend semantic ran):
     //   on          — index ready, the semantic leg contributed;
     //   warming      — embedder configured, index still building (lexical-only this call);
@@ -994,8 +1001,9 @@ export default defineTool({
     const projectedHits = hits.map((h) => ({
       tool: h.tool,
       description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
-      argSchema:
-        compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+      argSchema: fullArgSchemaRequested
+        ? h.argSchema
+        : compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
       returns: returnsByTool.get(h.tool) ?? null,
       returnsSource: returnSourcesByTool.get(h.tool) ?? null,
       via: h.via,

@@ -96,7 +96,7 @@ export interface WakeabilitySignals {
   wakeAttemptMiss?: boolean;
   /**
    * Epoch-ms of this owner's most recent agent_activity, or null when it has
-   * none inside WAKE_MISS_EVIDENCE_WINDOW_MS. Distinct from `liveTurn`, which
+   * none inside ACTIVITY_LOOKBACK_WINDOW_MS. Distinct from `liveTurn`, which
    * is a 10-minute boolean: this is the raw age the ACTIVITY-clock ceilings
    * below need (EI-21356812816484561). Free to emit — the widened activity
    * query already selects it.
@@ -140,6 +140,15 @@ export const LIVE_TURN_WINDOW_MS = PRESENCE_STALE_MS;
  * subscriber_id + event_key), not because the evidence goes stale.
  */
 export const WAKE_MISS_EVIDENCE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How far back the activity clock reads. `agent_activity` is retained for
+ * seven days, so the liveness query must cover that same bounded horizon:
+ * otherwise a heartbeat-fresh owner whose last turn is older than the
+ * wake-miss window becomes indistinguishable from a brand-new owner and
+ * incorrectly falls through to `parked`.
+ */
+export const ACTIVITY_LOOKBACK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * WARM-IDLE band (EI-21356812816484561): heartbeat fresh, but no turn for this
@@ -396,6 +405,7 @@ export async function fetchWakeability(
   // reads as null through a 10-minute window. liveTurn keeps its own 10-minute
   // meaning via the explicit recency check below.
   const missWindowSec = Math.max(windowSec, Math.round(WAKE_MISS_EVIDENCE_WINDOW_MS / 1000));
+  const activityWindowSec = Math.max(windowSec, Math.round(ACTIVITY_LOOKBACK_WINDOW_MS / 1000));
   const nowMs = Date.now();
 
   const [wake, turns, attempts] = await Promise.all([
@@ -412,7 +422,7 @@ export async function fetchWakeability(
              max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary = ${SESSION_END_MARKER}) AS last_end
         FROM harness_shared.agent_activity
        WHERE owner_id = ANY(${ownerIds}::text[])
-         AND created_at > now() - make_interval(secs => ${missWindowSec})
+         AND created_at > now() - make_interval(secs => ${activityWindowSec})
        GROUP BY owner_id`,
     sql<{ owner_id: string; attempt_at: string | null }[]>`
       SELECT owner_id, max(attempt_at) AS attempt_at

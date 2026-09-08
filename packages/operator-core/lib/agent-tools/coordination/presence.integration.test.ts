@@ -158,12 +158,24 @@ describe('fetchWakeability (real PG)', () => {
     const awaitRows = await admin<{ id: number }[]>`
       INSERT INTO harness_shared.event_awaits (subscriber_id, event_key)
       VALUES (${owner}, ${eventKey})
+      ON CONFLICT DO NOTHING
       RETURNING id`;
+    const awaitId =
+      awaitRows[0]?.id ??
+      (
+        await admin<{ id: number }[]>`
+          SELECT id
+            FROM harness_shared.event_awaits
+           WHERE subscriber_id = ${owner} AND event_key = ${eventKey}
+           ORDER BY id
+           LIMIT 1`
+      )[0]?.id;
+    if (awaitId == null) throw new Error(`missing event_awaits row for ${eventKey}`);
     const at = new Date(Date.now() - (opts.agoSec ?? 0) * 1000);
     await admin`
       INSERT INTO harness_shared.event_wake_deliveries
         (await_id, subscriber_id, event_key, status, channel, created_at, delivered_at)
-      VALUES (${awaitRows[0]!.id}, ${owner}, ${eventKey}, ${opts.status},
+      VALUES (${awaitId}, ${owner}, ${eventKey}, ${opts.status},
               ${opts.channel ?? null}, ${at},
               ${opts.status === 'delivered' ? at : null})`;
   }
@@ -273,6 +285,26 @@ describe('fetchWakeability (real PG)', () => {
   it('an owner with no rows is present in the map as { wakeable:false, liveTurn:false }', async () => {
     const m = await fetchWakeability([own('ghost')]);
     expect(m.get(own('ghost'))).toEqual({ wakeable: false, liveTurn: false });
+  });
+
+  it('EI-22642013373311117: keeps activity beyond the 24h wake-miss window for stale-session detection', async () => {
+    // The activity-dead ceiling is six hours, but the wake-miss evidence window
+    // is 24h. Before the fix, a multi-day-silent heartbeat-fresh owner lost its
+    // lastActivityMs row here and was incorrectly classified as a fresh parked
+    // candidate instead of an activity-dead session.
+    await seedAwait('stale-activity');
+    await seedActivity('stale-activity', {
+      kind: 'tool',
+      summary: 'last turn before the stale-activity horizon',
+      agoSec: 48 * 60 * 60,
+    });
+
+    const m = await fetchWakeability([own('stale-activity')]);
+    expect(m.get(own('stale-activity'))).toMatchObject({
+      wakeable: true,
+      liveTurn: false,
+      lastActivityMs: expect.any(Number),
+    });
   });
 
   it('EI-21216592915615709: terminal turn wake with only pre-wake activity is a miss, while pickup and non-turn rows are not', async () => {

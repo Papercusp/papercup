@@ -12,6 +12,9 @@ export function discoverOperatorUrl({ home }?: {
 /**
  * Standard CLI precedence: explicit --operator-url arg → PAPERCUSP_OPERATOR_URL
  * env override → live desktop discovery (operator.json) → dev-box :3070.
+ * Callers that run inside an operator host can opt into self-host precedence;
+ * that inserts the host's valid PAPERCUSP_HONO_PORT before the inherited env
+ * override, preventing a staging process from routing its writes to green.
  *
  * Returns a BASE ORIGIN — callers append their own path (ptool posts to
  * `base + '/api/mcp'`). `PAPERCUSP_OPERATOR_URL` is OVERLOADED and cannot be
@@ -27,13 +30,14 @@ export function discoverOperatorUrl({ home }?: {
  *
  * @param {{operatorUrl?: string | null}} [args]
  * @param {EnvironmentMap} [env]
- * @param {{home?: string}} [opts]
+ * @param {{home?: string, preferSelfPort?: boolean}} [opts]
  * @returns {string}
  */
 export function resolveOperatorBase(args?: {
     operatorUrl?: string | null;
 }, env?: EnvironmentMap, opts?: {
     home?: string;
+    preferSelfPort?: boolean;
 }): string;
 /**
  * Swap `url`'s origin for `freshBase`, keeping path/query/hash. Returns null

@@ -359,6 +359,37 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  it('refuses an auditor who is the graded card evidence source even when they are not its author', async () => {
+    getIssue.mockResolvedValue({
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
+          // The critic identity is the evidence source for this vetting card;
+          // its author is deliberately different to prove the old author-only
+          // guard would have allowed the audit.
+          vetting: {
+            consultId: 'conv-vetting',
+            rubricRevision: 1,
+            critiquePosts: 1,
+            critics: ['su-evidence-source'],
+          },
+        },
+      },
+    });
+
+    const res = await emitScorecard(auditArgs, {
+      createdBy: 'su-evidence-source',
+      ctxHarness: 'papercusp',
+      workspaceId: 'ws-test',
+    });
+
+    expect(res).toMatchObject({ ok: false, code: 'auditor_is_graded_card_evidence_source' });
+    expect((res as { error?: string }).error).toContain('recorded evidence source');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('refuses without a scorecard subject, on a non-scorecard subject, and on an already-audited one', async () => {
     const noSubject = await emitScorecard(
       { rubricRef: 'grading-integrity', ratings: RATINGS, terminal: true },
