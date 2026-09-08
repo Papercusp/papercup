@@ -753,10 +753,17 @@ export function evaluateSpecTestAdequacy(input: {
             ),
           };
 
+  // `evidence` is the current grading cohort when a current row exists. It is
+  // intentionally narrower than the exact clause population, so use the latter
+  // for existence/applicability claims. Otherwise an unknown historical fixture
+  // binding can be hidden by a current test binding and reported as absent.
+  const fixtureBindings = exactEvidence.filter(
+    (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
+  );
+  const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
   const fixtureApplicable =
-    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) ||
-    evidence.some((row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null);
-  ratings['fixture-calibration'] = fixtureApplicable
+    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || fixtureBindings.length > 0;
+  const fixtureRating = fixtureApplicable
     ? booleanRating(evidence, (d) => d.fixtureCalibrated, {
         pass: 'An applicable binding explicitly attests fixtureCalibrated=true.',
         fail: 'Applicable binding metadata explicitly attests fixtureCalibrated=false.',
@@ -764,8 +771,15 @@ export function evaluateSpecTestAdequacy(input: {
       })
     : {
         rating: 'not-applicable',
-        evidence: `No fixture binding or fixture fingerprint is present for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(evidence)}.`,
+        evidence: `No fixture binding or fixture fingerprint is present for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
       };
+  ratings['fixture-calibration'] =
+    fixtureOutsideCurrent.length > 0
+      ? {
+          ...fixtureRating,
+          evidence: `${fixtureRating.evidence} ${fixtureOutsideCurrent.length} exact fixture binding(s) are outside the current grading cohort; this cohort narrowing does not establish spec-scoped fixture absence.`,
+        }
+      : fixtureRating;
 
   // EI-22128161413448729: a self-attested `adequacy.falsifiable=true` flag is a WEAKER claim
   // than an actually-bound mutation/counterexample row with a killed/survived outcome — the two
@@ -778,6 +792,9 @@ export function evaluateSpecTestAdequacy(input: {
       SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
     );
   });
+  const exactMutationOrCounterexample = exactEvidence.filter(
+    (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
+  );
   const attestedFalsifiableOnly = evidence.filter((row) => detailsOf(row).falsifiable === true);
   ratings.falsifiability =
     boundMutationOrCounterexample.length > 0
@@ -792,15 +809,22 @@ export function evaluateSpecTestAdequacy(input: {
         ? {
             rating: 'pass',
             evidence: evidenceWithBindings(
-              `Attested falsifiable by binder on ${attestedFalsifiableOnly.length} binding(s); no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`,
+              `Attested falsifiable by binder on ${attestedFalsifiableOnly.length} binding(s); ${
+                exactMutationOrCounterexample.length > 0
+                  ? `${exactMutationOrCounterexample.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
+                  : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`
+              }`,
               attestedFalsifiableOnly,
             ),
           }
         : booleanRating(evidence, (d) => d.falsifiable, {
-            pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
-            fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
-            unknown: `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
-          });
+          pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
+          fail: `Bound metadata explicitly reports falsifiable=false for ${clauseIdentity(clause)}.`,
+          unknown:
+            exactMutationOrCounterexample.length > 0
+              ? `A mutation or counterexample binding exists in the exact clause population, but no current-cohort binding demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`
+              : `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
+        });
 
   let layerRating: AdequacyRatingEntry;
   if (clause.requiredTestLayers.length === 0) {
