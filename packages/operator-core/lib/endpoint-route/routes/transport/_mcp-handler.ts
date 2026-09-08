@@ -89,6 +89,7 @@ import {
   dispatchNeedsTx,
   effectiveDispatchWorkspace,
   synthesizeDispatchPrincipal,
+  synthesizeResourcePrincipal,
   synthesizeTransportPrincipal,
 } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
@@ -4258,16 +4259,42 @@ const handler = createMcpHandler(
     );
 
     // ── Resources ────────────────────────────────────────────────────
+    /**
+     * Resource requests share the MCP connection's transport authentication.
+     * The superuser bearer is a file-backed break-glass credential, not an
+     * agent-mcp token_index principal, so forwarding it to listResources/readResource
+     * would make every scratch spill fail with invalid_bearer. Reuse the
+     * already-validated spawn context and hand off its narrow resource principal;
+     * ordinary bearer-only callers retain the legacy resolution path.
+     */
+    const resourceAuthFromExtra = async (
+      extra: unknown,
+    ): Promise<{ bearer: string } | { principal: Principal }> => {
+      const url = urlFromExtra(extra);
+      const usesTransportPrincipal =
+        url?.searchParams.get('superuser') === '1' || url?.searchParams.get('principal') === 'pi';
+      if (!usesTransportPrincipal) return { bearer: bearerFromExtra(extra) };
+
+      const spawnRes = await tryBuildSpawnContext(extra);
+      if (spawnRes.kind === 'failed') {
+        throw new Error(`mcp_auth_failed: ${spawnRes.reason}`);
+      }
+      if (spawnRes.kind === 'ok') {
+        const principal = synthesizeResourcePrincipal(spawnRes.ctx);
+        if (principal) return { principal };
+      }
+      return { bearer: bearerFromExtra(extra) };
+    };
+
     server.server.setRequestHandler(sdk.ListResourcesRequestSchema, async (_req: unknown, extra: unknown) => {
-      const bearer = bearerFromExtra(extra);
-      const r = await listResources(bearer);
+      const r = await listResources(await resourceAuthFromExtra(extra));
       return { resources: r.ok ? (r.resources ?? []) : [] };
     });
     server.server.setRequestHandler(
       sdk.ReadResourceRequestSchema,
       async (req: { params: { uri: string } }, extra: unknown) => {
-        const bearer = bearerFromExtra(extra);
-        const r = await readResource({ uri: req.params.uri, bearer });
+        const auth = await resourceAuthFromExtra(extra);
+        const r = await readResource({ uri: req.params.uri, ...auth });
         if (!r.ok) throw new Error(`${r.error?.code}: ${r.error?.message}`);
         return { contents: [r.contents!] };
       },

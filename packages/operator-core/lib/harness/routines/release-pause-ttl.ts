@@ -411,6 +411,18 @@ export function isLoopStanddownPause(rawPause: unknown): boolean {
 }
 
 /**
+ * Does this stand-down cover the whole workspace rather than one fleet?
+ * `loop:standdown-all` writes `fleetSlug` only for its fleet-scoped form, so
+ * the absence of that key is the durable distinction. Keep this predicate on
+ * the raw pause blob: `readRoutinePause` intentionally drops scope metadata.
+ */
+export function isWorkspaceWideLoopStanddownPause(rawPause: unknown): boolean {
+  if (!isLoopStanddownPause(rawPause)) return false;
+  if (rawPause == null || typeof rawPause !== 'object' || Array.isArray(rawPause)) return false;
+  return !Object.prototype.hasOwnProperty.call(rawPause, 'fleetSlug');
+}
+
+/**
  * WRITE side for a stand-down pause: ALWAYS finite (unlike resolvePauseExpiryMs,
  * which returns null for anything outside the release group) — reuses the SAME
  * default constant and rounding rather than forking the math.
@@ -516,7 +528,7 @@ interface LoopStanddownRow {
  */
 export async function listLoopStanddownOwners(
   sql: Sql,
-  opts: { workspaceId?: string | null; nowMs?: number; limit?: number } = {},
+  opts: { workspaceId?: string | null; nowMs?: number; limit?: number; workspaceWideOnly?: boolean } = {},
 ): Promise<Set<string>> {
   const nowMs = opts.nowMs ?? Date.now();
   const limit = opts.limit ?? SWEEP_ROW_CAP;
@@ -543,6 +555,7 @@ export async function listLoopStanddownOwners(
 
   for (const row of rows) {
     if (!row.target_owner_id) continue;
+    if (opts.workspaceWideOnly && !isWorkspaceWideLoopStanddownPause(row.pause)) continue;
     if (classifyFinitePauseExpiry(readRoutinePause(row.pause), nowMs).expired) continue;
     held.add(row.target_owner_id);
   }

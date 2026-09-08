@@ -26,6 +26,8 @@ import {
   gatePausedBanner,
   isCheckpointQuiescencePause,
   isLoopStanddownPause,
+  isWorkspaceWideLoopStanddownPause,
+  listLoopStanddownOwners,
   isReleaseGroup,
   loopStanddownBanner,
   readRoutinePause,
@@ -444,6 +446,14 @@ describe('isLoopStanddownPause', () => {
 
   it('never matches an ordinary per-loop pause (routines:set / loop:end shape)', () => {
     expect(isLoopStanddownPause(pause())).toBe(false);
+  });
+});
+
+describe('isWorkspaceWideLoopStanddownPause', () => {
+  it('recognizes the unscoped marker and excludes fleet-scoped markers', () => {
+    expect(isWorkspaceWideLoopStanddownPause({ [LOOP_STANDDOWN_MARKER]: true })).toBe(true);
+    expect(isWorkspaceWideLoopStanddownPause({ [LOOP_STANDDOWN_MARKER]: true, fleetSlug: 'fleet-a' })).toBe(false);
+    expect(isWorkspaceWideLoopStanddownPause({ [LOOP_STANDDOWN_MARKER]: false })).toBe(false);
   });
 });
 
