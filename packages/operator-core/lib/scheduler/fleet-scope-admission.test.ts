@@ -779,13 +779,12 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss).not.toHaveProperty('claimableAwaitsCancelled');
     });
 
-    it('readFleetPauseState fails OPEN when the control-state read errors (never wedges claiming)', async () => {
+    it('readFleetPauseState preserves UNKNOWN when the control-state read errors', async () => {
       admissionMocks.getFleet.mockRejectedValue(new Error('pg unavailable'));
-      const state = await readFleetPauseState(
+      await expect(readFleetPauseState(
         { ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member', workspaceId: 'papercusp-workspace', record: fleetSpec },
         'papercusp-workspace',
-      );
-      expect(state).toEqual({ windingDown: false, reason: null });
+      )).rejects.toThrow('pg unavailable');
     });
   });
 

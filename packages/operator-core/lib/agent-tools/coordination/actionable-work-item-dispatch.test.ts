@@ -1,15 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from '../../work-items';
 import { isAdmitted } from '../../work-items-admission';
 import { metadataWorkflowTargets } from '../plans/coordination-metadata-fixtures';
 import {
   assignActionableWorkItems,
   assignAndWakeActionableWorkItems,
+  authorizeWorkItemDispatch,
   type ActionableWorkItemDispatchDeps,
   resolveStableAgentTarget,
   type StableAgentTargetDeps,
   type StableAgentTargetState,
 } from './actionable-work-item-dispatch';
+
+const authorityIO = vi.hoisted(() => ({ read: vi.fn(), gate: vi.fn(), fleet: vi.fn() }));
+vi.mock('../../work-scope-policy', () => ({
+  readWorkScopePolicy: authorityIO.read,
+  gateWorkScope: authorityIO.gate,
+}));
+vi.mock('../../scheduler/fleet-scope-admission', () => ({ admitWorkItemForFleetTarget: authorityIO.fleet }));
 
 function workItem(id: string, state = 'open', assignee: string | null = null): WorkItem {
   return {
@@ -297,7 +305,7 @@ describe('P-001 existing-review recovery baseline', () => {
     expect(result.assignment.retained).toEqual([]);
     expect(result.assignment.skipped[0]).toMatchObject({ code: 'admission_gated' });
     expect(d.claim).not.toHaveBeenCalled();
-    expect(d.wake).toHaveBeenCalledTimes(metadataWorkflowTargets.revokedReviewWakes.after);
+    expect(d.wake).toHaveBeenCalledTimes(metadataWorkflowTargets.revokedReviewWakes.maxAfter);
   });
 
   it.each([false, true])('checks current authority on every retry (held=%s)', async (held) => {
@@ -327,6 +335,32 @@ describe('P-001 existing-review recovery baseline', () => {
     expect(d.observe).toHaveBeenLastCalledWith(id, { revalidateHeld: true });
     expect(d.claim).toHaveBeenCalledTimes(held ? 0 : 1);
     expect(d.wake).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('production dispatch authority wiring', () => {
+  const request = { workItemId: 'WI-existing', target: 'stable-reviewer', harness: 'email', workspaceId: 'fixture-workspace' };
+  beforeEach(() => {
+    authorityIO.read.mockReset().mockResolvedValue({ mode: 'enforce', allowHarnesses: ['email'] });
+    authorityIO.gate.mockReset().mockResolvedValue({ allowed: true });
+    authorityIO.fleet.mockReset().mockResolvedValue({ allowed: true, scoped: false });
+  });
+  it('reads current workspace policy and passes the exact target and workspace to effective fleet admission', async () => {
+    expect(await authorizeWorkItemDispatch(request)).toEqual({ allowed: true });
+    expect(authorityIO.gate).toHaveBeenCalledWith('coord:dispatch', {
+      harness: 'email', workItem: 'WI-existing', actor: 'stable-reviewer',
+    }, { mode: 'enforce', allowHarnesses: ['email'] });
+    expect(authorityIO.fleet).toHaveBeenCalledWith(request);
+    authorityIO.fleet.mockResolvedValueOnce({ allowed: false, reason: 'member override revoked' });
+    expect(await authorizeWorkItemDispatch(request)).toEqual({ allowed: false, reason: 'member override revoked' });
+    expect(authorityIO.read).toHaveBeenCalledTimes(2);
+  });
+  it('stops before fleet admission on workspace denial or an unreadable policy', async () => {
+    authorityIO.gate.mockResolvedValueOnce({ allowed: false, message: 'workspace revoked' });
+    expect(await authorizeWorkItemDispatch(request)).toEqual({ allowed: false, reason: 'workspace revoked' });
+    authorityIO.read.mockRejectedValueOnce(new Error('policy read unavailable'));
+    await expect(authorizeWorkItemDispatch(request)).rejects.toThrow('policy read unavailable');
+    expect(authorityIO.fleet).not.toHaveBeenCalled();
   });
 });
 
