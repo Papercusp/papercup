@@ -71,6 +71,7 @@ import {
   buildServiceHealthDiagnostic,
   overlayNodeChildSupervision,
   overlaySystemdRestartRecency,
+  reconcileBootingHttpServices,
   reconcileBgHostTicker,
   BG_HOST_BOOT_GRACE_SEC,
   bgHostWatchdogOwnership,
@@ -203,6 +204,41 @@ describe("dev:service_health handler", () => {
     });
     expect(b.effective.supervisionUnhealthy).toBe(1);
     expect(b.evidence.unhealthySupervision.map((entry: { name: string }) => entry.name)).toEqual(["substrate-sidecar"]);
+  });
+
+  it("does not recommend restarting staging while its ExecStartPre is still activating", async () => {
+    probeM.mockResolvedValue([
+      {
+        name: "staging-api",
+        up: false,
+        status: null,
+        latencyMs: 3000,
+        url: "http://127.0.0.1:3170/api/desktop/version",
+        note: "connection refused",
+      },
+    ] as never);
+    supervisionM.mockReturnValueOnce([
+      {
+        name: "staging-api",
+        layer: "systemd-user",
+        autoRestart: true,
+        criticality: "important",
+        consecutiveProbeFailures: 0,
+        lastRestartAt: null,
+        restartsLast10m: 0,
+        flapState: "ok",
+        flapObserved: true,
+        activeState: "activating",
+        healthy: true,
+      },
+    ] as never);
+
+    const b = body((await tool.handler({} as never, {} as never)) as Out);
+
+    expect(b.services).toMatchObject([{ name: "staging-api", up: true, present: false }]);
+    expect(b.rootCause).toBeNull();
+    expect(b.nextVerb).toBeNull();
+    expect(b.effective).toMatchObject({ down: 0 });
   });
 });
 
@@ -404,6 +440,72 @@ describe("reconcileBgHostTicker (EI-19934795546523351, pure)", () => {
     expect(out.rootCause).toBeNull();
     expect(out.nextVerb).toBeNull();
     expect(out.effective.down).toBe(0);
+  });
+});
+
+describe("reconcileBootingHttpServices (EI-22636386056120623, pure)", () => {
+  const downStaging = {
+    name: "staging-api",
+    up: false,
+    status: null,
+    latencyMs: 3,
+    url: "http://127.0.0.1:3170/api/desktop/version",
+    note: "connection refused",
+  };
+
+  it("treats a refused listener as unknown while its supervised unit is still activating", () => {
+    const services = reconcileBootingHttpServices([downStaging], [
+      {
+        name: "staging-api",
+        layer: "systemd-user",
+        activeState: "activating",
+        healthy: true,
+      } as never,
+    ]);
+
+    expect(services[0]).toMatchObject({ up: true, present: false });
+    expect(services[0]?.note).toMatch(/UNKNOWN/);
+    expect(services[0]?.note).toMatch(/activating/);
+    expect(buildServiceHealthDiagnostic(services, [])).toMatchObject({
+      rootCause: null,
+      nextVerb: null,
+      effective: { down: 0 },
+    });
+  });
+
+  it.each(["reloading", "deactivating"] as const)(
+    "also suppresses the HTTP outage during a healthy %s transition",
+    (activeState) => {
+      const [service] = reconcileBootingHttpServices([downStaging], [
+        { name: "staging-api", layer: "systemd-user", activeState, healthy: true } as never,
+      ]);
+      expect(service).toMatchObject({ up: true, present: false });
+    },
+  );
+
+  it("stops suppressing once systemd is active, so a missing listener remains a real failure", () => {
+    const services = reconcileBootingHttpServices([downStaging], [
+      { name: "staging-api", layer: "systemd-user", activeState: "active", healthy: true } as never,
+    ]);
+    expect(services).toEqual([downStaging]);
+    expect(buildServiceHealthDiagnostic(services, [])).toMatchObject({
+      rootCause: { component: "staging-api" },
+      nextVerb: 'dev:restart { target:"staging" }',
+      effective: { down: 1 },
+    });
+  });
+
+  it("does not suppress a terminal systemd failure or a probe without an HTTP URL", () => {
+    const failed = reconcileBootingHttpServices([downStaging], [
+      { name: "staging-api", layer: "systemd-user", activeState: "failed", healthy: false } as never,
+    ]);
+    expect(failed).toEqual([downStaging]);
+
+    const portless = reconcileBootingHttpServices(
+      [{ ...downStaging, url: undefined }],
+      [{ name: "staging-api", layer: "systemd-user", activeState: "activating", healthy: true } as never],
+    );
+    expect(portless[0]).toEqual({ ...downStaging, url: undefined });
   });
 });
 

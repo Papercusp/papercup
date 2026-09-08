@@ -331,6 +331,53 @@ export function reconcileBgHostTicker(
   return next;
 }
 
+/**
+ * Reconcile an HTTP probe with the systemd state of the same service.
+ *
+ * A persistent service can be `ActiveState=activating` while its ExecStartPre
+ * is still building the runtime bundle, before systemd has assigned a MainPID
+ * or the application has opened its listener. The HTTP probe then reports
+ * connection refused even though the service manager has a healthy transition
+ * in progress. Treat that response as UNKNOWN while systemd is in one of its
+ * non-fault transitional states; once systemd reaches `active` (or a faulted
+ * terminal state), the HTTP result is authoritative again.
+ *
+ * This is bounded by systemd's own transition: a stuck start eventually leaves
+ * `activating` for its configured failure state, so this cannot hide a listener
+ * outage indefinitely or trigger a second restart into the same ExecStartPre.
+ * PURE — both inputs are already computed by the caller.
+ */
+export function reconcileBootingHttpServices(
+  services: ProbeResult[],
+  supervision: SupervisionStatusEntryWithRecency[],
+): ProbeResult[] {
+  const byName = new Map(supervision.map((entry) => [entry.name, entry]));
+  let out = services;
+  for (let i = 0; i < services.length; i++) {
+    const service = services[i]!;
+    if (service.up || service.present === false || service.url === undefined) continue;
+    const entry = byName.get(service.name);
+    if (
+      !entry ||
+      entry.healthy !== true ||
+      !['activating', 'reloading', 'deactivating'].includes(entry.activeState ?? '')
+    ) {
+      continue;
+    }
+    if (out === services) out = services.slice();
+    out[i] = {
+      ...service,
+      up: true,
+      present: false,
+      note:
+        `systemd state ${entry.activeState} is still transitioning — HTTP listener liveness is ` +
+        `UNKNOWN, not a confirmed outage. Do not dev:restart while this transition is in ` +
+        `progress; re-probe after systemd reaches a terminal state. (raw HTTP probe: ${service.note ?? "no detail"})`,
+    };
+  }
+  return out;
+}
+
 type ServiceRootCause = { component: string; reason: string };
 
 function restartVerbForService(name: string): string {
@@ -656,7 +703,7 @@ export default defineTool({
     // EI-19934795546523351: reconcile the bg-host-ticker verdict against this SAME
     // response's supervision block BEFORE it can drive a contradictory rootCause/
     // nextVerb — see reconcileBgHostTicker's doc comment.
-    const services = reconcileBgHostTicker(rawServices, supervision);
+    const services = reconcileBootingHttpServices(reconcileBgHostTicker(rawServices, supervision), supervision);
     // EI-20065717746825416: when a bg-host component is the failure we are about to prescribe a
     // restart for, read whether its out-of-process supervisor is actually running — so the verb
     // names a LIVE owner, reports a DEAD one as the critical finding it is, and says "unknown"
