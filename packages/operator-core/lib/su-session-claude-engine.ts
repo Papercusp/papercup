@@ -4,6 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -130,6 +131,7 @@ export function startClaudeSuEngine(
   });
   const model = splitModelSpec(options.model);
   const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
+  const systemPrompt = readFileSync(boot.promptFile, 'utf8');
   const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
   delete env.PAPERCUSP_TTY;
   env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1';
@@ -163,7 +165,11 @@ export function startClaudeSuEngine(
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort as Options['effort'] } : {}),
     abortController,
-    extraArgs: { 'system-prompt-file': boot.promptFile, 'exclude-dynamic-system-prompt-sections': null, 'replay-user-messages': null },
+    // Record the exact custom SU persona once per native conversation. On an
+    // exact resume the SDK then reuses that record verbatim instead of applying
+    // the large prompt file afresh on top of the restored conversation.
+    systemPrompt: { type: 'custom', prompt: systemPrompt, snapshot: true },
+    extraArgs: { 'exclude-dynamic-system-prompt-sections': null, 'replay-user-messages': null },
     spawnClaudeCodeProcess(spawnOptions) {
       const spec: TaskSpec = {
         class: 'agent-session', title: 'PUI Claude structured engine', launchedBy: 'pui-su-session',

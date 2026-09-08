@@ -113,7 +113,8 @@ describe('structured Claude SU engine', () => {
       { type: 'result', sessionId: nativeId, subtype: 'success', is_error: false },
     ].map((record) => JSON.stringify(record) + '\n').join(''));
     let beforeReady: ReturnType<ClaudeSuEngine['adapter']['host']['snapshot']> | undefined;
-    const engine = open(peer(), { resume: true, beforeReady: async () => {
+    const p = peer();
+    const engine = open(p, { resume: true, beforeReady: async () => {
       beforeReady = engine.adapter.host.snapshot();
     } }, { ...runtime, transcriptPath });
     await engine.ready;

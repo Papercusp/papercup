@@ -683,6 +683,7 @@ beforeAll(async () => {
     'PAPERCUSP_HONO_PORT',
     'PAPERCUSP_OPERATOR_URL',
     'PAPERCUSP_MCP_PROXY_BASE',
+    'PAPERCUSP_LAUNCH_CONTEXT_DIR',
     'PAPERCUSP_SU_CODEX_HOMES_DIR',
     'PAPERCUSP_SU_OMP_HOMES_DIR',
     'PAPERCUSP_SESSION_CLAUDE_DIR',
@@ -699,6 +700,7 @@ beforeAll(async () => {
     PAPERCUSP_WORKSPACE_ID: WORKSPACE,
     PAPERCUSP_WORKSPACES_ROOT: path.join(home, '.papercusp-workspaces'),
     PAPERCUSP_SERVE_UI: '0',
+    PAPERCUSP_LAUNCH_CONTEXT_DIR: path.join(home, 'launch-context'),
     PAPERCUSP_SU_CODEX_HOMES_DIR: path.join(home, 'native-codex'),
     PAPERCUSP_SU_OMP_HOMES_DIR: path.join(home, 'native-omp'),
     PAPERCUSP_SESSION_CLAUDE_DIR: path.join(home, 'native-claude'),
@@ -708,8 +710,9 @@ beforeAll(async () => {
   // before any bootstrap so they cannot replace a real user's native home.
   const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
   const { ompAgentHomeForSessionKey } = await import('../session-transcript-resolvers');
+  const { launchContextDir } = await import('../su-launch-context');
   for (const nativeHome of [codexHomeForSessionKey('isolation-check'),
-    sessionClaudeConfigDir('isolation-check'), ompAgentHomeForSessionKey('isolation-check')]) {
+    sessionClaudeConfigDir('isolation-check'), ompAgentHomeForSessionKey('isolation-check'), launchContextDir()]) {
     expect(path.relative(home, nativeHome).startsWith('..'), `native home escaped fixture: ${nativeHome}`).toBe(false);
   }
 
