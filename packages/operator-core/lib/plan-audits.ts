@@ -77,6 +77,8 @@ import {
   type TransactionalAcceptanceBarSeedSuccess,
 } from './acceptance-bar-seed';
 import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
+import { hashPlanContent } from './agent-tools/plans/content-hash';
+import { synchronizeAcceptanceBarSubjectRevision } from './acceptance-bar-amendment';
 
 // ── the record ────────────────────────────────────────────────────────────────
 
@@ -1955,9 +1957,10 @@ export async function recordCurrentActivationAudit(
       version: number | string;
       acceptance_bar_epoch: number | string | null;
       acceptance_bar_cohort: 'post-epoch' | 'legacy-backfilled' | null;
+      acceptance_bar_rubric_slug: string | null;
     }>>`
       SELECT content, content_hash, title, status, version,
-             acceptance_bar_epoch, acceptance_bar_cohort
+             acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_rubric_slug
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${input.workspaceId}
          AND harness_slug = ${input.harnessSlug}
@@ -2011,6 +2014,42 @@ export async function recordCurrentActivationAudit(
     };
     let barSeed: TransactionalAcceptanceBarSeedSuccess | null = null;
     if (current.acceptance_bar_epoch != null) {
+      if (current.acceptance_bar_rubric_slug) {
+        // A successful activation adopted the BARs against this exact snapshot.
+        // Revision-ledger seq is allocated independently of harness_plans.version:
+        // resolve the audit's identity, never use the BAR's version as a seq.
+        const [previous] = await executor<Array<{
+          content_snapshot: string; content_hash: string; subject_version: string | null;
+        }>>`
+          SELECT r.content_snapshot, r.content_hash,
+                 rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version
+            FROM (
+              SELECT audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash
+                FROM harness_shared.plan_audits
+               WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
+                 AND plan_slug = ${input.planSlug} AND audit_kind = 'activation'
+               ORDER BY audit_seq DESC LIMIT 1
+            ) a
+            JOIN harness_shared.plan_revisions r
+              ON r.id = a.audited_plan_revision_id AND r.seq = a.audited_plan_revision_seq
+             AND r.content_hash = a.audited_plan_content_hash
+             AND r.workspace_id = ${input.workspaceId} AND r.harness_slug = ${input.harnessSlug}
+             AND r.plan_slug = ${input.planSlug}
+            JOIN harness_shared.harness_plans rubric
+              ON rubric.workspace_id = ${input.workspaceId} AND rubric.harness_slug = ${input.harnessSlug}
+             AND rubric.plan_slug = ${current.acceptance_bar_rubric_slug}`;
+        if (previous && hashPlanContent(previous.content_snapshot) === previous.content_hash) {
+          // This reuses the Requirements/map fingerprint and canonical BAR/hash
+          // validation. Only the derived subject pin moves; METHOD, rubric version,
+          // and existing evidence identities remain intact. A real source change
+          // leaves the pin stale for the amendment guard below to refuse.
+          await synchronizeAcceptanceBarSubjectRevision(tx, {
+            workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
+            previousBody: previous.content_snapshot, nextBody: current.content,
+            previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
+          });
+        }
+      }
       const seeded = await seedAcceptanceBarsInTransaction({
         executor,
         workspaceId: input.workspaceId,
@@ -2026,7 +2065,8 @@ export async function recordCurrentActivationAudit(
         classRef: input.classRef,
         now: new Date(),
       });
-      if (!seeded.ok) return seeded;
+      // Catch-up may already have updated the derived pin in this transaction.
+      if (!seeded.ok) throw new AcceptanceBarSeedAbort(seeded);
       barSeed = seeded;
     }
     const audit = await insertPlanAudit(

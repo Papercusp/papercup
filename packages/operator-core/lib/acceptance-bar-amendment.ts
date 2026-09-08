@@ -67,7 +67,10 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     previousBody: string; nextBody: string; previousVersion: number; nextVersion: number;
   },
 ): Promise<boolean> {
-  if (args.nextVersion !== args.previousVersion + 1) return false;
+  // Re-audit can catch up across several neutral plan writes. Source equality
+  // and the locked rubric/hash checks below still govern every pin advance.
+  if (!Number.isSafeInteger(args.previousVersion) || args.previousVersion < 1 ||
+      !Number.isSafeInteger(args.nextVersion) || args.nextVersion <= args.previousVersion) return false;
   const [previousSource, nextSource] = await Promise.all([
     acceptanceBarSourceFingerprint(args.previousBody),
     acceptanceBarSourceFingerprint(args.nextBody),
