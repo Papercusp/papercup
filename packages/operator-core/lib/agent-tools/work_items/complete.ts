@@ -97,6 +97,7 @@ export type {
   CompletionTreeStampForEvidenceProbe,
 } from './completion-freshness';
 import { evaluateCloseTerminalCriteria } from './terminal-criteria';
+import { acquireWithContentionRetry } from '../locks/contention-retry';
 
 // EI-22361433147291495: completion validation + convergence legitimately took
 // 61.8s in the proxy continuation lane. Declare the established long-handler
@@ -3629,23 +3630,30 @@ async function completeOne(
       "path — or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (effectiveState) {
     try {
-      const res = await setWorkItemStateWithAliasInfo(it.id, effectiveState, {
-        harness: it.harness,
-        by: ident.ownerId,
-        // NO `completionRef` — see the block comment above. The narrative is not
-        // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
-        // caller's free-text `summary` alongside whatever structured fields exist,
-        // so it lands durably on the row's `_completionEvidence`, not just in this
-        // call's return value.
-        completionEvidence: completionEvidenceToPersist,
-        // P-008 (d): the resolved declaration, persisted under
-        // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
-        assumptions: resolvedAssumptions,
-        completionAuthority,
-        onTerminalConflict: (info) => {
-          terminalConflict = info;
-        },
-      });
+      // EI-22726666602239861: bounded state writes map transient PG 55P03/57014
+      // contention to a typed error. Retry the whole idempotent lifecycle write so a
+      // brief lock-timeout dip does not record completion evidence while leaving the
+      // item claimable. Non-contention errors still propagate immediately through the
+      // shared helper and land in stateError below.
+      const res = await acquireWithContentionRetry(() =>
+        setWorkItemStateWithAliasInfo(it.id, effectiveState, {
+          harness: it.harness,
+          by: ident.ownerId,
+          // NO `completionRef` — see the block comment above. The narrative is not
+          // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
+          // caller's free-text `summary` alongside whatever structured fields exist,
+          // so it lands durably on the row's `_completionEvidence`, not just in this
+          // call's return value.
+          completionEvidence: completionEvidenceToPersist,
+          // P-008 (d): the resolved declaration, persisted under
+          // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
+          assumptions: resolvedAssumptions,
+          completionAuthority,
+          onTerminalConflict: (info) => {
+            terminalConflict = info;
+          },
+        }),
+      );
       workItem = res.workItem ?? existing;
       aliasNote = res.aliasNote;
       aliased = res.aliased;

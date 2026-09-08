@@ -21,6 +21,12 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } 
 const dbMocks = vi.hoisted(() => ({
   planItemStatusRows: vi.fn(),
 }));
+const contentionMocks = vi.hoisted(() => ({
+  acquireWithContentionRetry: vi.fn(),
+}));
+vi.mock('../locks/contention-retry', () => ({
+  acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
@@ -235,6 +241,8 @@ beforeEach(() => {
   resolveAdoptedName.mockResolvedValue(null);
   dbMocks.planItemStatusRows.mockReset();
   dbMocks.planItemStatusRows.mockResolvedValue([{ status: 'done' }]);
+  contentionMocks.acquireWithContentionRetry.mockReset();
+  contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => run());
   getWorkItem.mockReset();
   setWorkItemStateWithAliasInfo.mockReset();
   setWorkItemClaimHold.mockReset();
@@ -932,6 +940,41 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.error).toBeUndefined();
       expect(r.workItem.state).toBe('resolved');
     });
+  });
+
+  it('retries a transient PG lock timeout before reporting completion success (EI-22726666602239861)', async () => {
+    const issue = { id: 'EI-timeout', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+    const timeout = Object.assign(new Error('operator write timed out waiting for a row/advisory lock'), {
+      name: 'OrgTxnTimeoutError',
+      pgCode: '55P03',
+    });
+    getWorkItem.mockResolvedValue(issue);
+    setWorkItemStateWithAliasInfo
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce(okState({ ...issue, state: 'resolved' }));
+
+    // The shared helper owns the production classifier/backoff policy. This seam test
+    // models its retry contract without waiting on the production multi-second sleeps.
+    contentionMocks.acquireWithContentionRetry.mockImplementation(async (run: () => Promise<unknown>) => {
+      try {
+        return await run();
+      } catch (error) {
+        expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+        return run();
+      }
+    });
+
+    const r = await one({
+      id: 'EI-timeout',
+      state: 'resolved',
+      completion: { summary: 'closed after a transient lock timeout', tests: 'focused test green' },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.workItem).toMatchObject({ id: 'EI-timeout', state: 'resolved' });
+    expect(r.stateError).toBeUndefined();
+    expect(contentionMocks.acquireWithContentionRetry).toHaveBeenCalledTimes(1);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
   });
 
   // ── EI-19312103118112942: fleet drain members were measured settling (holding zero
