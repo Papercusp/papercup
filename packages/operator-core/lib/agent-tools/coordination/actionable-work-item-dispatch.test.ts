@@ -351,6 +351,7 @@ describe('production dispatch authority wiring', () => {
       harness: 'email', workItem: 'WI-existing', actor: 'stable-reviewer',
     }, { mode: 'enforce', allowHarnesses: ['email'] });
     expect(authorityIO.fleet).toHaveBeenCalledWith(request);
+    expect(authorityIO.read).toHaveBeenCalledWith('fixture-workspace');
     authorityIO.fleet.mockResolvedValueOnce({ allowed: false, reason: 'member override revoked' });
     expect(await authorizeWorkItemDispatch(request)).toEqual({ allowed: false, reason: 'member override revoked' });
     expect(authorityIO.read).toHaveBeenCalledTimes(2);

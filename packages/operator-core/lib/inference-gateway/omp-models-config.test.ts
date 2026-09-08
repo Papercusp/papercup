@@ -89,7 +89,9 @@ describe('ompGatewayModelsConfig', () => {
     expect(cfg.content).toContain('baseUrl: "http://127.0.0.1:8788"');
     expect(cfg.content).toContain(`apiKey: "${OMP_GATEWAY_PLACEHOLDER_KEY}"`);
     expect(cfg.content).toContain('api: anthropic-messages');
-    expect(cfg.content).toContain('auth: apiKey');
+    // The placeholder credential hides the upstream OAuth token from OMP.
+    // Its supported auth mode must request OAuth wire formatting explicitly.
+    expect(cfg.content).toContain('auth: oauth');
     expect(cfg.content).toContain('"x-papercusp-account": "acct-7"');
     expect(cfg.content).toContain('- id: "claude-sonnet-4-6"');
   });
@@ -98,6 +100,7 @@ describe('ompGatewayModelsConfig', () => {
     const cfg = ompGatewayModelsConfig({ provider: 'openai', accountId: 'oa-1', port: 8788 })!;
     expect(cfg.baseUrl).toBe('http://127.0.0.1:8788/v1');
     expect(cfg.content).toContain('api: openai-responses');
+    expect(cfg.content).toContain('auth: apiKey');
   });
 
   it('exposes caller-supplied models and selects the first', () => {
