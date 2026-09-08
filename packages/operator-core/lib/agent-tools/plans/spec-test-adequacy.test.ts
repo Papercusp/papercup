@@ -6,6 +6,7 @@ import {
   ADEQUACY_CRITERIA,
   classifySpecEvidenceLineage,
   evaluateSpecTestAdequacy,
+  isNonCodeWorkItemKind,
   latestLogicalEvidence,
   requiredProofFloor,
 } from './spec-test-adequacy';
@@ -379,6 +380,27 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('fail');
     expect(result.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'fail' });
     expect(result.wouldBlock).toContain('plan-class-risk-floor');
+  });
+
+  it('does not assign an executable proof floor to the canonical non-code task kind', () => {
+    const nonCodeClause = clause({
+      behaviorClass: 'lifecycle',
+      requiredTestLayers: ['integration'],
+      mutationRequired: true,
+    });
+
+    expect(isNonCodeWorkItemKind(' TASK ')).toBe(true);
+    expect(requiredProofFloor(nonCodeClause, 'plan-class-bugfix', 'task')).toBe('none');
+    expect(requiredProofFloor(nonCodeClause, 'plan-class-bugfix', 'change')).toBe('l4');
+
+    const result = evaluateSpecTestAdequacy({
+      clause: nonCodeClause,
+      evidence: [],
+      classRef: 'plan-class-bugfix',
+      workItemKind: 'task',
+    });
+    expect(result.requiredProofFloor).toBe('none');
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('not-applicable');
   });
 
   it('accepts exact targeted mutation proof and only a justified current approved L4 waiver', () => {

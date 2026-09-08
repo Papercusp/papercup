@@ -18,6 +18,7 @@ import {
 import type { EnforcementEligibility } from '../plans/spec-enforcement-eligibility';
 import {
   evaluateSpecTestAdequacy,
+  isNonCodeWorkItemKind,
   requiredProofFloor,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   specTestAdequacySubjectRef,
@@ -278,6 +279,15 @@ export async function specTestAdequacyCompletionGate(
   const { planSlugs: enforcedPlanSlugs, clauses } = enforcedClausesOf(contract);
   if (clauses.length === 0) return withReport({ ok: true, applicable: false, checked: [] });
 
+  // `task` is the canonical non-code kind (research was folded into it). A plan may
+  // still carry projected clauses for a task deliverable, but executable L3/L4 proof
+  // is not a meaningful completion obligation for that item. Resolve the contract first
+  // so cross-plan diagnostics remain available, then bypass the proof gate before an
+  // absent attestation can make the non-code item structurally uncloseable.
+  if (isNonCodeWorkItemKind(input.workItem.kind)) {
+    return withReport({ ok: true, applicable: false, checked: [] });
+  }
+
   if (!input.attestation) {
     const potentiallyTestRequiring = clauses.filter(
       (clause) => clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
@@ -338,6 +348,7 @@ export async function specTestAdequacyCompletionGate(
       clause,
       evidence,
       classRef: input.attestation.classRef,
+      workItemKind: input.workItem.kind,
     });
     const label = `${clause.specId}@${clause.revision}`;
     if (result.verdict !== 'pass') {

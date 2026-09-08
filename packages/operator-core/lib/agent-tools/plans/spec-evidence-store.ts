@@ -405,7 +405,7 @@ type OpaqueFingerprintDimension = 'fixture' | 'rubric' | 'environment';
 
 /** Trust metadata for the current-fingerprint tuple used by the classifier. */
 interface CurrentnessClassificationOptions {
-  provenance?: 'server-measured';
+  provenance?: 'server-measured' | 'partially-server-measured';
   /** Applicable non-repository dimensions supplied by the caller beside server measurements. */
   attestedDimensions?: OpaqueFingerprintDimension[];
 }
@@ -583,6 +583,14 @@ export interface ListSpecEvidenceOptions {
   evidenceKinds?: SpecEvidenceKind[];
   evidenceRefs?: string[];
   current?: EvidenceCurrentInput[];
+  /** Pin reads to one immutable clause revision instead of the live revision pointer. */
+  specRevision?: number;
+  /** Optional content hash paired with specRevision for an exact immutable pin. */
+  specFingerprint?: string;
+  /** Replay the supplied current tuple as a prior server measurement; never re-read live files. */
+  replaySnapshot?: boolean;
+  /** Provenance for a replayed current tuple. */
+  currentProvenance?: 'server-measured' | 'partially-server-measured';
   currentness?: Array<'current' | 'stale' | 'unknown'>;
   limit?: number;
 }
@@ -803,9 +811,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const evidenceKinds = options.evidenceKinds ?? [];
   const evidenceRefs = options.evidenceRefs ?? [];
   const limit = options.limit ?? 200;
+  const specRevision = options.specRevision;
+  const specFingerprint = options.specFingerprint;
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => {
+      const specIsCurrent =
+        options.replaySnapshot && specRevision !== undefined
+          ? tx`(
+              b.spec_revision = ${specRevision}
+              AND (${specFingerprint ?? null}::text IS NULL OR b.spec_fingerprint = ${specFingerprint ?? null})
+            )`
+          : tx`(b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash)`;
       const rows = await tx<EvidenceRow[]>`
     SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
            b.spec_revision, c.current_revision, b.spec_fingerprint,
@@ -813,7 +830,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
            b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
            b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
-           (b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash) AS spec_is_current,
+           ${specIsCurrent} AS spec_is_current,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
               JOIN harness_shared.testing_surfaces s ON s.id = ce.surface_ref
@@ -836,6 +853,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
      WHERE b.workspace_id = ${scope.workspaceId}
        AND b.harness_slug = ${scope.harnessSlug}
        AND b.plan_slug = ANY(${planSlugs}::text[])
+       AND (${specRevision ?? null}::int IS NULL OR b.spec_revision = ${specRevision ?? null})
+       AND (${specFingerprint ?? null}::text IS NULL OR b.spec_fingerprint = ${specFingerprint ?? null})
        AND (${workItemIds.length} = 0 OR b.work_item_id = ANY(${workItemIds}::text[]))
        AND (${specIds.length} = 0 OR b.spec_id = ANY(${specIds}::text[]))
        AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))
@@ -875,11 +894,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
 
   const currentByRef = new Map((options.current ?? []).map((c) => [`${c.evidenceKind}\0${c.evidenceRef}`, c]));
-  const measurementRoot = rows.some((row) => measurementFromDetails(row.details))
+  const measurementRoot = !options.replaySnapshot && rows.some((row) => measurementFromDetails(row.details))
     ? resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug)
     : null;
   const serverMeasurements = await Promise.all(
     rows.map(async (row) => {
+      if (options.replaySnapshot) return null;
       const recipe = measurementFromDetails(row.details);
       if (!recipe) return null;
       try {
@@ -921,10 +941,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       measured?.status === 'measured'
         ? { ...callerCurrent, ...measured.current }
         : callerCurrent;
+    const replayProvenance =
+      options.replaySnapshot && options.currentProvenance
+        ? { provenance: options.currentProvenance }
+        : {};
     const currentness = classifySpecEvidenceCurrentness(
       row,
       current,
-      measured?.status === 'measured' ? { provenance: 'server-measured', attestedDimensions } : {},
+      measured?.status === 'measured'
+        ? { provenance: 'server-measured', attestedDimensions }
+        : replayProvenance,
     );
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
@@ -973,6 +999,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                       ...(measured.current.testFingerprint === null ? [] : ['test']),
                     ],
                     ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
+                    current: measured.current,
                   }
                 : measured,
           }

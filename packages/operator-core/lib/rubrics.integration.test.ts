@@ -1542,6 +1542,104 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(applied?.classRef).toBe('plan-class-feature-ship');
   });
 
+  it('rebinds terminal work items from superseded BAR revisions without rewriting history', async () => {
+    const seeded = await seedBarContract('terminal-rebind-subject', { authorMethods: true });
+    const { workspaceId, subject } = seeded;
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const explicitWorkItemId = 'WI-rubrics-terminal-rebind-explicit';
+    const provenanceWorkItemId = 'WI-rubrics-terminal-rebind-provenance';
+
+    // One terminal item is discoverable only through its existing historical edge;
+    // the other is discoverable through canonical plan provenance. Both must be
+    // carried forward when the BAR revision changes, even though neither item is
+    // claimable anymore.
+    await db.adminSql`
+      DELETE FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+         AND work_item_id = ANY(${[explicitWorkItemId, provenanceWorkItemId]}::text[])`;
+    await db.adminSql`
+      DELETE FROM harness_shared.work_items
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp'
+         AND feature_id = ANY(${[explicitWorkItemId, provenanceWorkItemId]}::text[])`;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status,
+         source_plan_slug, source_plan_item_ids, payload)
+      VALUES
+        (${workspaceId}, 'papercusp', ${explicitWorkItemId}, 'feature', 'Terminal explicit coverage', 'done',
+         NULL, NULL, '{}'::jsonb),
+        (${workspaceId}, 'papercusp', ${provenanceWorkItemId}, 'feature', 'Terminal provenance coverage', 'done',
+         ${subject}, ARRAY['P-002'], ${JSON.stringify({ plan_item: { slug: subject, item: 'P-002' } })}::jsonb)`;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_spec_revision_edges
+        (workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+         spec_revision, spec_fingerprint, created_by)
+      SELECT c.workspace_id, c.harness_slug, ${explicitWorkItemId}, c.plan_slug,
+             c.spec_id, c.current_revision, r.content_hash, 'terminal-rebind-fixture'
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug
+         AND r.plan_slug=c.plan_slug AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+       WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp'
+         AND c.plan_slug=${subject} AND r.source_bar_key='R-1'`;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_spec_revision_edges
+        (workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+         spec_revision, spec_fingerprint, created_by)
+      SELECT c.workspace_id, c.harness_slug, ${provenanceWorkItemId}, c.plan_slug,
+             c.spec_id, c.current_revision, r.content_hash, 'terminal-rebind-fixture'
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug
+         AND r.plan_slug=c.plan_slug AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+       WHERE c.workspace_id=${workspaceId} AND c.harness_slug='papercusp'
+         AND c.plan_slug=${subject} AND r.source_bar_key='R-2'`;
+
+    const priorEdges = await db.adminSql<{ work_item_id: string; spec_id: string; spec_revision: number }[]>`
+      SELECT work_item_id, spec_id, spec_revision
+        FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}
+       ORDER BY work_item_id, spec_id`;
+    expect(priorEdges).toHaveLength(2);
+
+    const after = await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug,
+      actorId: 'terminal-rebind-actor',
+      criterion: {
+        key: before.criteria[0]!.key,
+        field: 'method',
+        mode: 'append',
+        text: 'Verify the terminal coverage edge after the BAR revision.',
+      },
+    });
+    expect(after!.revision).toBe(before.revision! + 1);
+
+    const edges = await db.adminSql<{
+      work_item_id: string;
+      spec_id: string;
+      spec_revision: number;
+      current_revision: number;
+    }[]>`
+      SELECT e.work_item_id, e.spec_id, e.spec_revision, c.current_revision
+        FROM harness_shared.work_item_spec_revision_edges e
+        JOIN harness_shared.plan_spec_clauses c
+          ON c.workspace_id=e.workspace_id AND c.harness_slug=e.harness_slug
+         AND c.plan_slug=e.plan_slug AND c.spec_id=e.spec_id
+       WHERE e.workspace_id=${workspaceId} AND e.harness_slug='papercusp'
+         AND e.plan_slug=${subject}
+         AND e.work_item_id = ANY(${[explicitWorkItemId, provenanceWorkItemId]}::text[])
+       ORDER BY e.work_item_id, e.spec_id, e.spec_revision`;
+    expect(edges).toHaveLength(4);
+    expect(edges.filter((edge) => edge.spec_revision === edge.current_revision)).toEqual([
+      expect.objectContaining({ work_item_id: explicitWorkItemId, spec_id: 'AUTO-BAR-R-1-P-001' }),
+      expect.objectContaining({ work_item_id: provenanceWorkItemId, spec_id: 'AUTO-BAR-R-2-P-002' }),
+    ]);
+    expect(edges.filter((edge) => edge.spec_revision !== edge.current_revision)).toEqual([
+      expect.objectContaining({ work_item_id: explicitWorkItemId, spec_id: 'AUTO-BAR-R-1-P-001' }),
+      expect.objectContaining({ work_item_id: provenanceWorkItemId, spec_id: 'AUTO-BAR-R-2-P-002' }),
+    ]);
+  });
+
   it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;

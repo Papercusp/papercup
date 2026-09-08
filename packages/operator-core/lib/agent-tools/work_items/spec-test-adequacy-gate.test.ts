@@ -559,6 +559,19 @@ describe('specTestAdequacyCompletionGate', () => {
     expect(result).toEqual({ ok: true, applicable: false, checked: [] });
     expect(deps.listEvidence).not.toHaveBeenCalled();
   });
+
+  it('treats a task-kind plan deliverable as non-applicable without an executable-proof attestation', async () => {
+    const deps = passingDeps();
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: { ...WORK_ITEM, kind: 'task' } },
+      deps,
+    );
+
+    expect(result).toEqual({ ok: true, applicable: false, checked: [] });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
 });
 
 /**

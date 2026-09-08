@@ -361,6 +361,57 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     }
   }, 20_000);
 
+  it('returns a failing CLI status while preserving diagnostics when a nested command throws', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-chain-error-status-'));
+    const dataDir = join(fixtureRoot, 'data');
+    const sessionName = 'chain-error-status';
+    const env = {
+      ...process.env,
+      VERDICT_DATA_DIR: dataDir,
+      VERDICT_SESSION: sessionName,
+      PAPERCUSP_SID: '',
+      CODEX_SESSION_ID: '',
+      VERDICT_START_TIMEOUT_MS: '5000',
+      VERDICT_IDLE_TIMEOUT: '60000',
+    };
+    const run = (command: string, ...args: string[]) =>
+      execFileAsync(
+        process.execPath,
+        [require.resolve('verdict-cli/bin/browse.mjs'), command, ...args],
+        { env, maxBuffer: 32 * 1024, timeout: 12_000 },
+      );
+
+    try {
+      // Warm the daemon so the assertion covers chain status propagation, not
+      // startup failure handling.
+      await run('status');
+      const chain = JSON.stringify([
+        ['js', "throw new Error('CHAIN-JS-FAIL')"],
+        ['url'],
+      ]);
+
+      let failure: unknown = null;
+      try {
+        await run('chain', chain);
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).not.toBeNull();
+      const err = failure as { code?: number; stderr?: unknown };
+      expect(err.code).not.toBe(0);
+      const stderr = String(err.stderr ?? '');
+      expect(stderr).toContain('js: Error:');
+      expect(stderr).toContain('CHAIN-JS-FAIL');
+      // The chain continues and the failing response still carries the
+      // bounded per-command transcript, rather than only a generic HTTP error.
+      expect(stderr).toContain('url: about:blank');
+    } finally {
+      await run('stop').catch(() => undefined);
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 25_000);
+
   it('exits after a successful first command while the detached daemon stays alive', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-startup-unref-'));
     const fakeNode = join(fixtureRoot, 'node');

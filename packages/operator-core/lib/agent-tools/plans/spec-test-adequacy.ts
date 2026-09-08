@@ -452,7 +452,22 @@ function l4WaiverOf(exemption: Record<string, unknown> | null, now: Date): L4Wai
   };
 }
 
-export function requiredProofFloor(clause: SpecClauseRevision, classRef: PlanClassRubricRef): 'none' | 'l3' | 'l4' {
+/**
+ * `task` is the canonical non-code work-item kind (research was folded into it), so
+ * executable test-proof floors do not apply to a task even when a plan clause was
+ * projected with a behavior class that would otherwise require L3/L4. Keep this
+ * classification at the floor boundary so every caller gets the same exemption.
+ */
+export function isNonCodeWorkItemKind(kind: string | null | undefined): boolean {
+  return typeof kind === 'string' && kind.trim().toLowerCase() === 'task';
+}
+
+export function requiredProofFloor(
+  clause: SpecClauseRevision,
+  classRef: PlanClassRubricRef,
+  workItemKind?: string | null,
+): 'none' | 'l3' | 'l4' {
+  if (isNonCodeWorkItemKind(workItemKind)) return 'none';
   if (clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0) return 'none';
   if (classRef === 'plan-class-migration' || classRef === 'plan-class-bugfix') return 'l4';
   if (clause.mutationRequired || HIGH_RISK_BEHAVIOR_CLASSES.has(clause.behaviorClass)) return 'l4';
@@ -465,8 +480,9 @@ function riskFloorRating(
   classRef: PlanClassRubricRef,
   evidence: SpecEvidenceForAdequacy[],
   now: Date,
+  workItemKind?: string | null,
 ): { floor: 'none' | 'l3' | 'l4'; rating: AdequacyRatingEntry } {
-  const floor = requiredProofFloor(clause, classRef);
+  const floor = requiredProofFloor(clause, classRef, workItemKind);
   if (floor === 'none') {
     return {
       floor,
@@ -686,6 +702,8 @@ export function evaluateSpecTestAdequacy(input: {
   current?: EvidenceCurrentInput[];
   /** Exact caller selectors that constrain the evidence population on replay. */
   rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] };
+  /** Work-item classification; `task` is the canonical non-code kind. */
+  workItemKind?: string | null;
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
@@ -1184,7 +1202,7 @@ export function evaluateSpecTestAdequacy(input: {
             evidence: `No evidence exists whose freshness can be established for ${clauseIdentity(clause)}. ${clauseProbe(clause)}`,
           };
 
-  const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
+  const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date(), input.workItemKind);
   ratings['plan-class-risk-floor'] = risk.rating;
 
   const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);

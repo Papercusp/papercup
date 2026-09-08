@@ -163,7 +163,7 @@ index a3392d2..035b660 100755
 +  } else { outputError(e.message); }
  }
 diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
-index 249847c..cc6d907 100644
+index 249847c..dc829a5 100644
 --- a/node_modules/verdict-cli/src/server.mjs
 +++ b/node_modules/verdict-cli/src/server.mjs
 @@ -54,6 +54,23 @@ function profilePath(name) {
@@ -331,7 +331,36 @@ index 249847c..cc6d907 100644
  
    // Advanced
    async diff(args) {
-@@ -508,10 +574,7 @@ const commands = {
+@@ -497,21 +563,33 @@ const commands = {
+   async chain(args) {
+     let cmds; try { cmds = JSON.parse(args.join(' ')); } catch { return 'Error: invalid JSON. Use: [["goto","url"],["snapshot","-i"]]'; }
+     const results = [];
++    let failed = false;
+     for (const [cmd, ...a] of cmds) {
+-      const h = commands[cmd]; if (!h) { results.push(`${cmd}: unknown`); continue; }
+-      try { results.push(`${cmd}: ${await h(a)}`); } catch (e) { results.push(`${cmd}: Error: ${e.message}`); }
++      const h = commands[cmd];
++      if (!h) { failed = true; results.push(`${cmd}: unknown`); continue; }
++      try {
++        const result = await h(a);
++        const rendered = `${cmd}: ${result}`;
++        // A command may report an actionable error as a return value rather than
++        // throwing (for example, a missing selector). Keep its diagnostic in the
++        // bounded transcript, but make the chain's HTTP/CLI status fail closed.
++        if (typeof result === 'string' && result.startsWith('Error:')) failed = true;
++        results.push(rendered);
++      } catch (e) {
++        failed = true;
++        results.push(`${cmd}: Error: ${e.message}`);
++      }
+     }
+-    return results.join('\n---\n');
++    const transcript = results.join('\n---\n');
++    if (failed) throw new Error(transcript);
++    return transcript;
+   },
+   async status() { return `URL: ${page.url()}\nTitle: ${await page.title()}\nRefs: ${refs.size}\nViewport: ${page.viewportSize().width}x${page.viewportSize().height}`; },
+   async stop() { await shutdown(); return 'Stopped'; }
  };
  
  // Console & network collectors
