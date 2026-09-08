@@ -2,6 +2,7 @@
 import {
   listScorecards,
   scorecardEvidenceFingerprint,
+  settledGradingAuditIsCurrent,
   type ScorecardRow,
 } from '../../scorecards';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
@@ -144,8 +145,7 @@ function scorecardStructurallyExact(card: ScorecardRow, evaluation: PlanSpecQual
 function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult): boolean {
   return (
     scorecardStructurallyExact(card, evaluation) &&
-    card.gradingAudit?.state !== 'pending' &&
-    card.gradingAudit?.state !== 'failed'
+    settledGradingAuditIsCurrent(card)
   );
 }
 

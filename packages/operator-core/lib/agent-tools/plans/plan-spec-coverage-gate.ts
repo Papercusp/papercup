@@ -35,7 +35,7 @@
  * to report-only: a truncated read can miss the very row that proves a clause current,
  * so refusing on one would manufacture a false stale verdict.
  */
-import { listScorecards, type ScorecardRow } from '../../scorecards';
+import { listScorecards, settledGradingAuditIsCurrent, type ScorecardRow } from '../../scorecards';
 import { listSpecClauses, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
 import { listSpecEvidence, type SpecEvidenceKind } from './spec-evidence-store';
 import { SPEC_TEST_ADEQUACY_RUBRIC_REF } from './spec-test-adequacy';
@@ -311,8 +311,7 @@ function usableAdequacyCard(card: ScorecardRow, subjectRef: string): boolean {
     !card.retracted &&
     !card.supersededBy &&
     card.provisional === undefined &&
-    card.gradingAudit?.state !== 'pending' &&
-    card.gradingAudit?.state !== 'failed' &&
+    settledGradingAuditIsCurrent(card) &&
     Object.values(card.ratings).every(acceptedRating)
   );
 }
