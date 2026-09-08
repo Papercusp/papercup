@@ -1700,6 +1700,7 @@ describe('work_items:complete (keyed-array)', () => {
     };
     const specAdequacy = {
       classRef: 'plan-class-feature-ship',
+      evidenceRefs: ['test:reconnect'],
       current: [
         {
           evidenceKind: 'test',
@@ -1740,6 +1741,15 @@ describe('work_items:complete (keyed-array)', () => {
           assumptions: 'none',
           completion: { summary: 'fixed' },
           specAdequacy: { ...specAdequacy, classRef: 'invented-parallel-rubric' },
+        }).success,
+      ).toBe(false);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: { ...specAdequacy, evidenceRefs: [] },
         }).success,
       ).toBe(false);
     });
