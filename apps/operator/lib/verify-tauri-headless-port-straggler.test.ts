@@ -103,4 +103,14 @@ describe('EI-11559 — verify-tauri-headless holds the port lock until its sidec
     // sidecar still holds the port — exactly what let the straggler poison the next run.
     expect(stopScript).not.toMatch(/kill "\$PORT_LOCK_KEEPER_PID"/);
   });
+
+  it('escape-sidecar cleanup requires this invocation provenance as well as the reused port', () => {
+    const stopScript = src.match(/cat > "\$WORK\/stop\.sh" <<STOP([\s\S]*?)\nSTOP/)?.[1];
+    expect(stopScript).toBeTruthy();
+    const provenanceChecks = stopScript!.match(
+      /grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=\$TAURI_LAUNCH_PROVENANCE"/g,
+    );
+    expect(provenanceChecks).toHaveLength(2);
+    expect(stopScript).toContain('OPERATOR_DEV_PORT=$DEV_PORT');
+  });
 });

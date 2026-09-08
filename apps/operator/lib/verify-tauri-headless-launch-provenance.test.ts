@@ -34,8 +34,16 @@ describe('EI-20200818150345989 — verifier bridge handoff carries launch proven
   it('stamps both the existing session identity and a dedicated provenance marker', () => {
     expect(src).toContain('PAPERCUSP_SID="$TAURI_OWNER_SID"');
     expect(src).toContain(
+      'TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID:run:$(date +%s%N)-$$-$RANDOM"',
+    );
+    expect(src).toContain(
       'PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"',
     );
+  });
+
+  it('makes provenance unique per invocation, not merely per long-lived agent session', () => {
+    expect(src).not.toContain('TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID"\n');
+    expect(src).toMatch(/TAURI_LAUNCH_PROVENANCE=.*:run:.*\$\$/);
   });
 
   it('requires display, operator port, SID, and provenance from the target process environment', () => {

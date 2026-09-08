@@ -456,16 +456,16 @@ source "$DESKTOP_DIR/bin/lib/federation-asserts.sh"   # reuse fed_pick_free_port
 [ -d "$DESKTOP_DIR" ] || { echo "FATAL: $DESKTOP_DIR not found — set PAPERCUSP_REPO_DIR" >&2; exit 1; }
 
 # Do not create a rig that cannot be attributed to the caller. PAPERCUSP_SID is
-# already the session's durable coordination identity; reusing it avoids a
-# second identity source and lets the target process prove which agent launched
-# it.
+# already the session's durable coordination identity. Keep it as the owner
+# half of provenance, then add a per-invocation nonce so two sequential rigs
+# from one long-lived agent cannot satisfy each other's teardown selector.
 TAURI_OWNER_SID="${PAPERCUSP_SID:-}"
 [ -n "$TAURI_OWNER_SID" ] || {
   echo "FATAL: PAPERCUSP_SID is unset — refusing to launch an unattributed Tauri verifier." >&2
   echo "       Run this from a tracked agent session so the returned bridge cannot be confused with the owner's desktop." >&2
   exit 1
 }
-TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID"
+TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID:run:$(date +%s%N)-$$-$RANDOM"
 
 # EI-21107555111779921: `npm run install:safe` rewrites the shared root
 # node_modules while holding this repo's fs mutex. Starting a verifier in that
@@ -1875,19 +1875,22 @@ fi
 # escaped that group (observed: the run's original hono-host plus five
 # restart attempts, all bound to the SAME \$DEV_PORT, only one of them under
 # \$TAURI_PID). Reap by PORT, not by tracked pid: every recognized verifier
-# operator process whose real /proc/<pid>/environ carries OUR OPERATOR_DEV_PORT is
-# unambiguously ours to kill (mirrors the pid-by-environ idiom this script
-# already uses for isolation verification, above). Best-effort — a missing
+# operator process whose real /proc/<pid>/environ carries BOTH our port and our
+# per-invocation provenance is unambiguously ours to kill. Port alone is not an
+# identity: a later run can reuse it after this run releases the display. A
+# delayed/stale stop.sh must never kill that successor. Best-effort — a missing
 # /proc entry or a transient pgrep race never fails teardown.
 for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
+  grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"\$_env_p" || continue
   kill -TERM "\$_p" 2>/dev/null
 done
 sleep 1
 for _p in \$(pgrep -f "$OPERATOR_HOST_PROCESS_RE" 2>/dev/null); do
   _env_p="\$(tr '\\0' '\\n' < "/proc/\$_p/environ" 2>/dev/null)" || continue
   grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"\$_env_p" || continue
+  grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"\$_env_p" || continue
   kill -9 "\$_p" 2>/dev/null
 done
 [ -n "$OPENBOX_PID" ] && kill -9 $OPENBOX_PID 2>/dev/null
