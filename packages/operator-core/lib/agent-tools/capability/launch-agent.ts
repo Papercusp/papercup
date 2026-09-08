@@ -437,7 +437,7 @@ export default defineTool({
         .enum(['claude', 'codex', 'omp'])
         .optional()
         .describe(
-          'Which agent CLI backs a FRESH launch (default: the psu default). Ignored for resume/fork — a session resumes under the CLI it was recorded on.',
+          'Which agent CLI backs a FRESH launch (default: the psu default). Ignored for an in-place resume/fork — a session resumes under the CLI it was recorded on; an identity-preserving successor may explicitly override the predecessor backend.',
         ),
       role: z
         .string()
@@ -527,40 +527,47 @@ export default defineTool({
           'Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.',
         ),
     });
-    // Keep the fresh/source distinction in the published schema. The handler
-    // rejects `plan` with a resume or successor, and a resume/fork must carry its
-    // actionable next turn rather than opening an ambiguous idle CLI.
-    return z
-      .union([
-      base.extend({
+    // Keep the fresh/source distinction in the published schema, but validate it
+    // with field-specific issues instead of a union of `z.never()` branches. The
+    // union used to report `successor` as the offending field whenever a valid
+    // successor carried a source-only override such as `carry`, because the
+    // fresh branch rejected successor before the source branch rejected carry.
+    // Successors are fresh processes, so they may override backend, account,
+    // model, placement, and carry while retaining the predecessor identity.
+    return base
+      .extend({
         carry: z
           .enum(['warm', 'cold'])
           .optional()
           .describe(
-            "Warm/cold auto-mode carry for a FRESH launch. `members[i].carry` overrides this flat value; a resume/fork preserves the target session's loop/profile carry.",
+            "Warm/cold auto-mode carry for a FRESH launch or identity-preserving successor. `members[i].carry` overrides this flat value; an in-place resume/fork preserves the target session's loop/profile carry.",
           ),
-        resume: z
-          .never()
-          .optional()
-          .describe('Only valid for a source launch without `plan`; put new direction in `brief` when resuming.'),
-        successor: z
-          .never()
-          .optional()
-          .describe('Only valid for a source launch without `plan`; use `plan` only for a fresh launch.'),
-      }),
-      base.extend({
-        plan: z
-          .never()
-          .optional()
-          .describe('Only valid for a FRESH launch; resumed and successor sessions keep their own context.'),
-        carry: z
-          .never()
-          .optional()
-          .describe('Only valid for a FRESH launch; a resume/fork preserves the target session or fleet loop carry.'),
-      }),
-      ])
+      })
       .superRefine((value, refinement) => {
-        if (value.resume && !value.brief?.trim()) {
+        const hasResume = Boolean(value.resume?.agentId || value.resume?.sessionId);
+        const hasSuccessor = Boolean(value.successor?.agentId || value.successor?.sessionId);
+        if (hasResume && hasSuccessor) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['successor'],
+            message: '`resume` and `successor` are mutually exclusive; choose the source recovery mode you want.',
+          });
+        }
+        if (value.plan && (hasResume || hasSuccessor)) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['plan'],
+            message: '`plan` is for a FRESH launch; resumed and successor sessions keep their own context.',
+          });
+        }
+        if (hasResume && value.carry) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['carry'],
+            message: '`carry` is not valid for an in-place resume/fork; the target session preserves its loop/profile carry. Use `successor` to start a fresh identity-preserving context with an explicit carry.',
+          });
+        }
+        if (hasResume && !value.brief?.trim()) {
           refinement.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['brief'],
@@ -766,25 +773,25 @@ export default defineTool({
             'A fresh process cannot safely retain an active owner identity; use ordinary resume, which forks live sources.'
           );
         }
-        // A successor must run the same backend as its predecessor. An explicit
-        // mismatch would create a new process that can no longer interpret the
-        // predecessor's transcript/carry contract, so refuse before spawning.
+        // A successor is a fresh context, so an explicit backend override is
+        // supported. This is the recovery escape hatch when the predecessor's
+        // provider/runtime or account is the reason it died. Without an explicit
+        // override, preserve the recorded backend when it is supported.
         const sourceAgent =
           target.agent === 'claude' || target.agent === 'codex' || target.agent === 'omp' ? target.agent : null;
-        if (target.agent && !sourceAgent) {
+        if (target.agent && !sourceAgent && !args.agent) {
           return (
             `Cannot start successor for ${target.ownerId}: the ended source recorded unsupported agent ${target.agent}. ` +
-            'No process was opened; launch a fresh agent with an explicit supported backend.'
+            'Pass an explicit supported `agent` override, or launch a fresh agent.'
           );
         }
         if (args.agent && sourceAgent && args.agent !== sourceAgent) {
-          return (
-            `Cannot start successor for ${target.ownerId}: requested agent ${args.agent} differs from the ended source agent ${sourceAgent}. ` +
-            'Omit agent to inherit the predecessor backend.'
+          notes.push(
+            `✓ Successor backend override: requested ${args.agent} instead of the ended source backend ${sourceAgent}; the fresh context retains predecessor identity ${target.ownerId}.`,
           );
         }
-        resumeAgent = sourceAgent;
-        args.agent ??= sourceAgent ?? undefined;
+        resumeAgent = args.agent ?? sourceAgent;
+        args.agent ??= resumeAgent ?? undefined;
         args.cwd ??= target.cwd ?? undefined;
         notes.push(
           `✓ Fresh successor for ${sourceKind === 'critical-dormant' ? 'critical dormant source' : 'ended session'} ${target.sessionId} (${target.agent ?? 'agent'}) is pre-pinned to the original coord identity ${target.ownerId}; ` +

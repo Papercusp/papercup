@@ -105,6 +105,7 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
         const statement = Array.isArray(strings) ? strings.join(' ') : '';
         // postgres.js invokes the same callable for composable SQL fragments and
         // executed statements. Only top-level statements consume a fixture row.
+        if (/^\s*SELECT d\.blocked_ref\b/.test(statement)) return {};
         if (!/\b(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b/i.test(statement)) return {};
         executedSql.push(args);
         return Promise.resolve(responses.shift() ?? []);

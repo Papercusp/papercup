@@ -7,6 +7,7 @@ import { preflightDispatchStack } from '@papercusp/tooldef';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { readSuperuserToken } from './superuser-token';
 import { synthesizeDispatchPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
+import { resolveConcreteHarnessSlug } from './agent-tools/_harness-scope';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { AdmissionRecoveryScope } from './work-item-admission-recovery';
 
@@ -57,10 +58,12 @@ export function bindAdmissionAuthority(
       ctx.telemetrySurface) {
     throw new AdmissionAuthorityRefused('explicit kernel/reaction dispatch context is not renewable for admission recovery');
   }
+  const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+  if (!harnessSlug) return undefined;
   const bound = admissionAuthoritySchema.safeParse({
     ...ctx.admissionRecoveryAuthority,
     context: {
-      workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug,
+      workspaceId: ctx.workspaceId, harnessSlug,
       profile: ctx.profile ?? 'engineer', runId: ctx.runId, spawnId: ctx.spawnId,
       parentSpawnId: ctx.parentSpawnId ?? null, chunkId: ctx.chunkId ?? null,
       featureId: ctx.featureId ?? null, planRunSessionId: ctx.planRunSessionId ?? null,

@@ -433,6 +433,57 @@ export function evaluateExactPlanAdmission(args: {
   );
 }
 
+export interface ExactPlanLaneHealthPreflightArgs {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  /** Audit actor that authored this ephemeral admission spec. */
+  actor: string;
+  /** Omit claimant for a caller-neutral population read. */
+  claimant?: string;
+  specId: string;
+  fleetSlug?: string;
+  /** Explicit family narrowing is safe only when the caller already knows it. */
+  claimKinds?: readonly string[];
+}
+
+/**
+ * Read the exact-plan claim lane without requiring promoted-row coverage.
+ *
+ * `plans:start` calls this before approval/promotion. At that point an empty
+ * promoted-row census is expected, so the full admission verdict would report
+ * `promotion-lag` and deadlock every first start. This helper deliberately
+ * measures only the claim-lane oracle; post-promotion admission remains
+ * authoritative for coverage and claimability.
+ */
+export async function preflightExactPlanLaneHealth(
+  args: ExactPlanLaneHealthPreflightArgs,
+): Promise<FleetLaneHealth | null> {
+  const built = buildExactPlanClaimSpec(args.specId, args.planSlug, args.claimKinds);
+  const validation = validateClaimSpec(built);
+  if (!validation.ok || !validation.spec)
+    throw new Error(`invalid exact-plan claim spec: ${validation.errors.join('; ')}`);
+  const spec = validation.spec;
+  const record: ClaimSpecRecord = {
+    source: 'fleet',
+    spec,
+    revision: spec.revision,
+    updatedBy: args.actor,
+    updatedAt: null,
+    harnessSlug: args.harnessSlug,
+    fleetSlug: args.fleetSlug ?? `exact-plan:${args.planSlug}`,
+  };
+  return readClaimSpecLaneHealth({
+    spec,
+    record,
+    fleet: record.fleetSlug!,
+    harness: args.harnessSlug,
+    workspaceId: args.workspaceId,
+    assignee: args.claimant,
+    matchedBy: 'exact-plan-lane-health-preflight',
+  });
+}
+
 export async function preflightExactPlanAdmission(args: {
   workspaceId: string;
   harnessSlug: string;

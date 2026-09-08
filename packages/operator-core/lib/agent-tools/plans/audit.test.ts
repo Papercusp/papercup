@@ -61,6 +61,9 @@ vi.mock('./source', () => ({
   VALID_PLAN_SLUG: /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/,
 }));
 vi.mock('./spec-clauses-store', () => ({ setSpecClause: vi.fn() }));
+vi.mock('./get-activation-readiness', () => ({
+  previewPlanStartConsult: vi.fn(),
+}));
 
 import {
   getEffectiveItemAudits,
@@ -73,6 +76,7 @@ import {
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
+import { previewPlanStartConsult } from './get-activation-readiness';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import { recoverHarnessFromSlugs } from './slug-scope';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
@@ -89,6 +93,7 @@ const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 const mockGetPlanRow = vi.mocked(getPlanRow);
 const mockSetSpecClause = vi.mocked(setSpecClause);
 const mockRecoverHarness = vi.mocked(recoverHarnessFromSlugs);
+const mockPreviewPlanStartConsult = vi.mocked(previewPlanStartConsult);
 
 const ctx = {
   log: vi.fn(),
@@ -130,6 +135,10 @@ beforeEach(() => {
     ok: true,
     audit: { auditSeq: 2 } as never,
     auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+  });
+  mockPreviewPlanStartConsult.mockResolvedValue({
+    outcome: 'proceed',
+    verdict: 'no_qualified_responder',
   });
   mockRepairFiling.mockResolvedValue({
     conditionKey: 'activation-audit:papercusp/plan-a',
@@ -631,6 +640,27 @@ describe('plans:audit phase:activation', () => {
     expect(mockItems).toHaveBeenCalledWith('plan-a');
     expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
       mockItems.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('returns the side-effect-free plans:start consult preview after recording activation', async () => {
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      activationReadiness: {
+        consult: { outcome: 'proceed', verdict: 'no_qualified_responder' },
+      },
+    });
+    expect(mockPreviewPlanStartConsult).toHaveBeenCalledWith({
+      workspaceId: 'test-workspace',
+      requesterId: 'su-auditor',
+      planSlug: 'plan-a',
+      planContent: expect.stringContaining('slug: plan-a'),
+    });
+    expect(mockRecordActivation.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockPreviewPlanStartConsult.mock.invocationCallOrder[0]!,
     );
   });
 

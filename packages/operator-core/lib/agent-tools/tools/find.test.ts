@@ -307,6 +307,69 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('alias-group:items[].canonical|legacy');
   });
 
+  it.each([
+    'Not the same field as `canonical`.',
+    'NOT the SAME logical field as `canonical`.',
+    'This is not an equivalent field as `canonical`.',
+    'Never aliased to another field; not an alias for `canonical`.',
+    'No alias for `canonical`.',
+    'This is not a compatibility alias of `canonical`.',
+    "This isn't an alias for `canonical`.",
+    'This isn’t the same field as `canonical`.',
+    'These aren’t the same logical field as `canonical`.',
+    'This was not an alias of `canonical`.',
+    'This was never aliased for `canonical`.',
+    'This wasn’t an alias of `canonical`.',
+    'These weren’t the same field as `canonical`.',
+    '**Not** the **same field as** `canonical`.',
+  ])('does not publish negated aliases: %s', (description) => {
+    const fields = {
+      type: 'object',
+      properties: { canonical: { type: 'string' }, separate: { type: 'string', description } },
+    };
+    const schema = {
+      ...fields,
+      properties: { ...fields.properties, items: { type: 'array', items: fields } },
+    };
+    expect(schemaAliasAnnotation(schema)).toBe('');
+    expect(compactSchemaForResult(schema)).not.toContain('alias-group:');
+  });
+
+  it.each([
+    'Alias for `canonical`.',
+    'Compatibility alias of `canonical`.',
+    'The same field as `canonical`.',
+    'Equivalent logical field as `canonical`.',
+    'Not an alias for `unrelated`; alias for `canonical`.',
+    'Not the same field as `unrelated`, but the same field as `canonical`.',
+  ])('retains affirmative aliases: %s', (description) => {
+    const schema = {
+      type: 'object',
+      properties: {
+        canonical: { type: 'string' },
+        unrelated: { type: 'string' },
+        legacy: { type: 'string', description },
+      },
+    };
+    expect(schemaAliasAnnotation(schema)).toBe('alias-group:canonical|legacy');
+    expect(compactSchemaForResult(schema)).toContain('alias-group:canonical|legacy');
+  });
+
+  it('keeps explicit alias metadata independent of a negated prose comparison', () => {
+    expect(schemaAliasAnnotation({
+      type: 'object',
+      properties: {
+        canonical: { type: 'string' },
+        unrelated: { type: 'string' },
+        legacy: {
+          type: 'string',
+          description: 'Not the same field as `unrelated`.',
+          'x-papercusp-aliases': ['canonical'],
+        },
+      },
+    })).toBe('alias-group:canonical|legacy');
+  });
+
   it('surfaces the live work_items:create alias groups in both discovery projections', () => {
     expect(workItemsCreate.name).toBe('work_items:create');
     const { corpus, schemaByTool } = buildCorpus();
@@ -776,6 +839,43 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
           }
         }
       }
+    }
+  });
+
+  it('EI-22692063823365372: returned coord:send discovery keeps knowledge and uncertainty fields independent', async () => {
+    const { corpus, schemaByTool } = buildCorpus();
+    const result = await callHandler({ query: 'coord:send', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'coord:send');
+    expect(hit).toBeDefined();
+    const falseAlias = /alias-group:[^;]*(?:youMayNotKnow|couldNotDetermine)/;
+    for (const text of [
+      schemaAliasAnnotation(schemaByTool.get('coord:send')),
+      corpus.find((entry) => entry.tool === 'coord:send')!.argSchema,
+      compactSchemaForResult(schemaByTool.get('coord:send')),
+      hit!.argSchema,
+    ]) {
+      expect(text).not.toMatch(falseAlias);
+    }
+
+    // Both fields may coexist. Their own strict entry shapes still govern
+    // acceptance, for shorthand and bulk sends; discovery changes no validator.
+    const section = {
+      text: 'Independent fields',
+      youMayNotKnow: [{ ref: 'WI-1234', provenance: 'authored' }],
+      couldNotDetermine: [{ what: 'whether the candidate carries the fix' }],
+    };
+    for (const bulk of [false, true]) {
+      const message = { to: ['bee-1'], summary: 'field parity', expects: 'none', body: [section] };
+      expect(coordSend.args.safeParse(bulk ? { items: [message] } : message).success).toBe(true);
+      const swapped = {
+        ...message,
+        body: [{
+          ...section,
+          youMayNotKnow: section.couldNotDetermine,
+          couldNotDetermine: section.youMayNotKnow,
+        }],
+      };
+      expect(coordSend.args.safeParse(bulk ? { items: [swapped] } : swapped).success).toBe(false);
     }
   });
 

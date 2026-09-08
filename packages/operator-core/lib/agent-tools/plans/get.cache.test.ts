@@ -106,6 +106,7 @@ const M = vi.hoisted(() => {
     })),
     resolveCtxHarnessSlug: vi.fn(() => 'papercup'),
     resolveEffectiveHarnessSlug: vi.fn(() => 'papercup'),
+    previewPlanStartConsult: vi.fn(),
     getAcceptanceRubricForPlan: vi.fn(async (slug: string) => ({
       rubricId: `rubric-${slug}`,
       status: 'ratified',
@@ -182,6 +183,12 @@ vi.mock('../../rubrics', () => ({
 vi.mock('../../plan-audits', () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
 }));
+vi.mock('./get-activation-readiness', () => ({
+  previewPlanStartConsult: M.previewPlanStartConsult,
+}));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-reader' }),
+}));
 
 import tool from './get';
 import {
@@ -224,6 +231,11 @@ beforeEach(async () => {
   M.ctxToPlanSourceOpts.mockClear();
   M.getAcceptanceRubricForPlan.mockClear();
   M.getLatestPlanAudit.mockClear();
+  M.previewPlanStartConsult.mockClear();
+  M.previewPlanStartConsult.mockResolvedValue({
+    outcome: 'proceed',
+    verdict: 'no_live_responder',
+  });
   M.history.mockClear();
   M.historyRefs.mockClear();
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
@@ -418,6 +430,44 @@ describe('plans:get — cache wiring', () => {
     expect(M.getLatestPlanAudit).toHaveBeenCalledWith('alpha', {
       workspaceId: 'ws-get',
     });
+  });
+
+  it('opts into a fresh activation consult preview without caching its time-varying result', async () => {
+    const first = await run({ slug: 'alpha', activationReadiness: true });
+
+    expect(first.results[0]).toMatchObject({
+      activationReadiness: {
+        consult: { outcome: 'proceed', verdict: 'no_live_responder' },
+      },
+    });
+    expect(M.previewPlanStartConsult).toHaveBeenCalledWith({
+      workspaceId: 'ws-get',
+      requesterId: 'su-reader',
+      planSlug: 'alpha',
+      planContent: expect.stringContaining('slug: alpha'),
+    });
+
+    M.previewPlanStartConsult.mockResolvedValueOnce({
+      outcome: 'nudge',
+      candidates: [{ ownerId: 'su-peer', liveness: 'live' }],
+      selection: { min: 1, max: 3, selected: [{ ownerId: 'su-peer', via: 'floor' }] },
+    });
+    const second = await run({ slug: 'alpha', activationReadiness: true });
+
+    expect(second.results[0]).toMatchObject({
+      activationReadiness: {
+        consult: { outcome: 'nudge', candidates: [{ ownerId: 'su-peer' }] },
+      },
+    });
+    expect(M.previewPlanStartConsult).toHaveBeenCalledTimes(2);
+    // The ordinary plan body remains cached; the preview's uncached source read
+    // is the deliberate time-varying boundary.
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not evaluate activation readiness unless explicitly requested', async () => {
+    await run({ slug: 'alpha' });
+    expect(M.previewPlanStartConsult).not.toHaveBeenCalled();
   });
 
   it('surfaces the permanent forced-past marker on ordinary and meta reads', async () => {

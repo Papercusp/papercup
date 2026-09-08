@@ -29,6 +29,7 @@ import {
   buildExactPlanClaimSpec,
   deriveExactPlanClaimKinds,
   evaluateExactPlanAdmission,
+  preflightExactPlanLaneHealth,
   preflightExactPlanAdmission,
 } from './plan-admission-preflight';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
@@ -738,5 +739,55 @@ describe('preflightExactPlanAdmission IO wiring', () => {
     const spec = buildExactPlanClaimSpec('exact-plan', 'plan-a');
     expect(validateClaimSpec(spec)).toMatchObject({ ok: true });
     expect(spec.view.filter).toEqual({ field: 'plan', op: '=', value: 'plan-a' });
+  });
+});
+
+describe('preflightExactPlanLaneHealth', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 0, feature: 0 }));
+  });
+
+  it('reads the broad exact-plan lane without requiring promoted-row coverage', async () => {
+    const laneHealth = await preflightExactPlanLaneHealth({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      actor: 'su-test',
+      claimant: 'su-test',
+      specId: 'plans-start-plan-a-lane-health',
+      fleetSlug: 'exact-plan:plan-a',
+    });
+
+    expect(laneHealth).toMatchObject({ effective: { claimable: 0 } });
+    expect(mocks.getPlanRow).not.toHaveBeenCalled();
+    expect(mocks.listWorkItems).not.toHaveBeenCalled();
+    expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fleet: 'exact-plan:plan-a',
+        harness: 'papercusp',
+        workspaceId: 'ws-1',
+        assignee: 'su-test',
+        matchedBy: 'exact-plan-lane-health-preflight',
+        spec: expect.objectContaining({
+          specId: 'plans-start-plan-a-lane-health',
+          view: { filter: { field: 'plan', op: '=', value: 'plan-a' } },
+        }),
+      }),
+    );
+  });
+
+  it('preserves UNKNOWN instead of converting an unavailable lane read to zero', async () => {
+    mocks.readClaimSpecLaneHealth.mockResolvedValue(null);
+
+    await expect(
+      preflightExactPlanLaneHealth({
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+        planSlug: 'plan-a',
+        actor: 'su-test',
+        specId: 'plans-start-plan-a-lane-health',
+      }),
+    ).resolves.toBeNull();
   });
 });

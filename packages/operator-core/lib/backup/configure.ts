@@ -83,9 +83,9 @@ configureBackup({
       // is inert; it is here because WI-1194246 proposes adding one, and this rendezvous
       // was measured waiting 253.7s / 118.4s on the live box. This connection is
       // dedicated to holding the lock and is ended on release, so nothing is reset.
-      await client`SET lock_timeout = 0`;
-      await client`SET statement_timeout = 0`;
       if (options?.tryOnly) {
+        await client`SET lock_timeout = 0`;
+        await client`SET statement_timeout = 0`;
         const rows = await client<{ acquired: boolean }[]>`
           SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
         if (rows[0]?.acquired !== true) {
@@ -96,6 +96,8 @@ configureBackup({
           return undefined;
         }
       } else {
+        await client`SET lock_timeout = 0`;
+        await client`SET statement_timeout = 0`;
         await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
       }
     } catch (error) {

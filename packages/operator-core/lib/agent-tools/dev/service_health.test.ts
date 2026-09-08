@@ -216,7 +216,7 @@ describe("dev:service_health handler", () => {
         url: "http://127.0.0.1:3170/api/desktop/version",
         note: "connection refused",
       },
-    ] as never);
+    ]);
     supervisionM.mockReturnValueOnce([
       {
         name: "staging-api",
@@ -231,7 +231,7 @@ describe("dev:service_health handler", () => {
         activeState: "activating",
         healthy: true,
       },
-    ] as never);
+    ]);
 
     const b = body((await tool.handler({} as never, {} as never)) as Out);
 

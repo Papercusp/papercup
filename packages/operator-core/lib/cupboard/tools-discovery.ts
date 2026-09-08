@@ -247,6 +247,13 @@ function descriptionAliasTargets(description: unknown): string[] {
   ];
   for (const pattern of patterns) {
     for (const match of description.matchAll(pattern)) {
+      // A negated comparison is a distinction, not an alias declaration.
+      // Check the immediate prefix (including articles/Markdown), rather than
+      // the whole description: a later affirmative declaration still counts.
+      const prefix = description.slice(0, match.index).replace(/[`*_"]/g, '');
+      if (/\b(?:not|never|no|isn['’]t|aren['’]t|wasn['’]t|weren['’]t)\s+(?:(?:an?|the|compatibility)\s+)*$/i.test(prefix)) {
+        continue;
+      }
       const name = aliasFieldName(match[1]);
       if (name) targets.push(name);
     }

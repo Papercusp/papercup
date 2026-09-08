@@ -80,6 +80,10 @@ afterEach(() => {
 });
 
 describe('admission replay policy fidelity', () => {
+  it('does not persist the workspace-wide harness sentinel as a replay identity', () => {
+    expect(bound({ harnessSlug: '*' })).toBeUndefined();
+  });
+
   it('renews current applied state at both canonical tool seats, without persisting the stamp', async () => {
     const authority = bound({
       appliedExecutionRevision: revision, executionRevision: revision,

@@ -45,6 +45,8 @@ import { getDoorConstantsSync } from '../../context-doors-config';
 import { getStalePathRefsForSubjects, stalePathRefsNote } from '../../stale-path-hints-claim-port';
 import { evidenceCurrentInputSchema } from './spec-evidence-store';
 import { readPlanHistoryContext, resolvePriorAttemptRefs } from '../../prior-attempt-context';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { previewPlanStartConsult } from './get-activation-readiness';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -222,6 +224,12 @@ const argsSchema = z
       .optional()
       .describe(
         'shipReadiness proof: freshly measured evidence fingerprints, identical to plans:set-plan-status current. Missing comparisons remain unknown and cannot establish fulfillment.',
+      ),
+    activationReadiness: z
+      .boolean()
+      .optional()
+      .describe(
+        "Ask for the side-effect-free activation readiness preview. Returns `activationReadiness.consult` with the same selected candidates, evidence, selection provenance, and honest no-responder/degraded outcome that `plans:start` would evaluate — without opening a consult or changing the plan. Use this before `plans:audit { phase:'activation' }` or plans:start so feedback can shape first-class clauses early.",
       ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
@@ -1251,6 +1259,50 @@ export default defineTool({
             message: `Ship readiness could not be evaluated (${
               error instanceof Error ? error.message : String(error)
             }).`,
+          };
+        }
+      }
+    }
+    // EI-22638466916646751: the plan-start consult used to be visible only as a
+    // late `plans:start` refusal, after activation/BAR/spec-quality work had
+    // already been committed. Keep the preview opt-in because routing embeds
+    // transcript history and resolves live liveness; unlike the plan body it is
+    // time-varying and must never be cached with the ordinary read.
+    if (args.activationReadiness) {
+      const requesterId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+      for (const result of env.results as Array<Record<string, unknown>>) {
+        if (result.ok !== true) continue;
+        const slug = typeof result.slug === 'string' ? result.slug : null;
+        if (!slug) continue;
+        try {
+          const previewRead = await readPlanBySlug(slug, opts);
+          if (!previewRead?.row.content) {
+            result.activationReadiness = {
+              consult: {
+                outcome: 'unavailable',
+                error: 'consult_preview_unavailable',
+                message: 'Consult candidate preview could not be evaluated because the canonical plan content was unavailable.',
+              },
+            };
+            continue;
+          }
+          result.activationReadiness = {
+            consult: await previewPlanStartConsult({
+              workspaceId: previewRead.row.workspaceId,
+              requesterId,
+              planSlug: slug,
+              planContent: previewRead.row.content,
+            }),
+          };
+        } catch (error) {
+          // Keep the advisory read useful if a plan disappears between the
+          // cached detail read and this explicitly requested live preview.
+          result.activationReadiness = {
+            consult: {
+              outcome: 'unavailable',
+              error: 'consult_preview_unavailable',
+              message: `Consult candidate preview could not be evaluated (${error instanceof Error ? error.message : String(error)}).`,
+            },
           };
         }
       }

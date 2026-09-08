@@ -288,7 +288,7 @@ describe('goals:start — the happy path', () => {
         ],
       },
       recovery: { tool: 'goals:get', args: { id: 'resolved-at-runtime', detail: 'full' } },
-    } as never);
+    });
 
     try {
       const res = await call();

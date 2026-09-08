@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 
 // This is a live Portal acceptance case, not the operator Vite server started by
 // the default E2E config. Set the explicit target and reuse-server mode to run it.

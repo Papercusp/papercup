@@ -152,6 +152,15 @@ export interface FlushGateOutcome {
   fallback?: FlushFallbackResult;
 }
 
+/**
+ * A deliberate boundary is agent-requested and uses the P-016 refuse-once
+ * ladder. A forced boundary is runtime-owned: it must preserve the same
+ * checkpoint/loop flush invariant, but cannot bounce the already-over-limit
+ * session and wait for another model turn. It writes the bounded mechanical
+ * fallback on the first tripwire encounter and then proceeds.
+ */
+export type FlushGateMode = 'deliberate' | 'forced';
+
 /** Test/host seam for {@link resolveAgentToolCallsSinceNote} — mirrors the real
  *  `countAgentToolCallsInWindow`'s call shape so a unit test never opens a real
  *  Postgres connection to exercise the 'cold-successor-no-progress' tripwire. */
@@ -210,6 +219,8 @@ async function resolveAgentToolCallsSinceNote(
  */
 export async function runFlushGate(input: {
   boundary: GateBoundary;
+  /** Defaults to the deliberate P-016 refuse-once ladder. */
+  mode?: FlushGateMode;
   ownerId: string;
   workspaceId: string;
   sessionId: string;
@@ -307,6 +318,7 @@ async function dropTerminalHeldTripwires(
 
 async function runFlushGateInner(input: {
   boundary: GateBoundary;
+  mode?: FlushGateMode;
   ownerId: string;
   workspaceId: string;
   sessionId: string;
@@ -352,6 +364,31 @@ async function runFlushGateInner(input: {
         );
   const tripwires = terminalCheck.tripwires;
   const droppedTerminalHeldItemIds = terminalCheck.droppedTerminalHeldItemIds;
+
+  // A watchdog-owned carry-respawn is already the emergency boundary: the
+  // session is over its force threshold and may not get another model turn
+  // before the host cuts it. Preserve the flush invariant without routing this
+  // path through the deliberate refuse-once ladder. The deliberate
+  // session:request-compaction caller leaves `mode` unset and remains bounded
+  // by exactly the existing refuse → mechanical-fallback sequence.
+  if (input.mode === 'forced' && tripwires.length > 0) {
+    const fallback = await writeFlushFallback({
+      ownerId: input.ownerId,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      sinceIso: input.sinceIso,
+      journalNote: input.journalNote ?? null,
+      tripwires,
+      brief,
+      nowMs,
+    });
+    // A prior deliberate refusal may have left a marker behind. The forced
+    // path has now crossed the boundary itself, so retire that marker just as
+    // the normal mechanical-fallback rung does; never create one here.
+    await clearRefused(input.boundary, input.ownerId);
+    return { verdict: 'mechanical-fallback', tripwires, droppedTerminalHeldItemIds, fallback };
+  }
+
   const alreadyRefused = await wasRecentlyRefused(input.boundary, input.ownerId, nowMs);
   const verdict = decideFlushGate({ tripwires, alreadyRefused });
 

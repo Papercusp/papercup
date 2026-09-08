@@ -65,6 +65,7 @@ import { getPlanRow } from './source';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { previewPlanStartConsult } from './get-activation-readiness';
 import {
   recoverHarnessFromSlugs,
   requireUnambiguousSlugScope,
@@ -242,11 +243,11 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, and records the current revision. Post-epoch activation also transactionally seeds acceptance BARs from the plan's `## Requirements`/`### Bar-to-work map`; parse, map, or projection failures roll back. No parallel review tool exists.",
+    "Record a plan audit: `completion` (default) re-resolves each item's code/test citations and preserves provenance; `activation` maps canonical `session_turn` refs to P-NNN/D-NNN/sections, resolves them, records the current revision, and returns an advisory activation-readiness consult preview. Post-epoch activation also transactionally seeds acceptance BARs from the plan's `## Requirements`/`### Bar-to-work map`; parse, map, or projection failures roll back. No parallel review tool exists.",
   guidance: {
     when: "Before ready/active, read the COMPLETE source conversation (not memory/summary); map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions; ensure each `## Requirements` R-N has one Design Bar-to-work map row (optional `tree|deployed|live`); use `activation`. Before shipped, use `completion` against ACTUAL CODE.",
     returns:
-      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved, barSeed? }. barSeed names the active rubric revision, barSetHash, BAR count, and projection-edge count; a named bar_* refusal means audit/rubric/projection writes all rolled back. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }; when item-scoped validation problems occur in a mixed batch, valid entries are recorded and the result adds partial:true, problems, and rejectedItemIds so the caller can retry only those items. Batch-wide problems remain no-record.",
+      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved, barSeed?, activationReadiness:{consult} }. activationReadiness is side-effect-free and advisory; it uses the same candidate selection and honest degraded/no-responder outcomes that plans:start would evaluate, without opening a consult. barSeed names the active rubric revision, barSetHash, BAR count, and projection-edge count; a named bar_* refusal means audit/rubric/projection writes all rolled back. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }; when item-scoped validation problems occur in a mixed batch, valid entries are recorded and the result adds partial:true, problems, and rejectedItemIds so the caller can retry only those items. Batch-wide problems remain no-record.",
     notWhen: "Not mid-implementation. Grade a rubric with scorecards:emit; record a decision with plans:add-decision; repair unresolved/open activation mappings before auditing.",
     chaining:
       `sessions:search/read → repair omissions → activation audit → ready. Later edits preserve the audit and return audited/current revision id/seq/contentHash; re-audit after changes to ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} need no re-audit. Completion: plans:audit → rubric/scorecard → shipped.`,
@@ -277,6 +278,7 @@ export default defineTool({
       // that promise is backed by the registered schema rather than by prose —
       // guidance-output-schema-live-guard fails a promised-but-undeclared field.
       barSeed: z.unknown().optional(),
+      activationReadiness: z.object({ consult: z.unknown() }).optional(),
       sourceRefsResolved: z.number().int().nonnegative().optional(),
       slug: z.string().optional(),
       itemsAuditedThisPass: z.number().int().nonnegative().optional(),
@@ -526,6 +528,25 @@ export default defineTool({
         } };
       }
 
+      // EI-22638466916646751: surface the same side-effect-free checkpoint
+      // consult preview that plans:start would evaluate. The audit is already
+      // durable at this point, so an unavailable advisory preview must remain
+      // visible without changing the successful audit outcome.
+      const activationReadiness = {
+        consult: currentPlan?.content
+          ? await previewPlanStartConsult({
+              workspaceId,
+              requesterId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+              planSlug: args.slug,
+              planContent: currentPlan.content,
+            })
+          : {
+              outcome: 'unavailable' as const,
+              error: 'consult_preview_unavailable' as const,
+              message: 'Consult candidate preview could not be evaluated because the canonical plan content was unavailable.',
+            },
+      };
+
       // P-019 / D-047: derive DRAFT spec clauses from the realizing mappings this audit
       // just recorded, so the design→code contract exists BY DEFAULT rather than by
       // opt-in. Safe to run unconditionally: a `draft` clause is outside the coverage
@@ -701,6 +722,7 @@ export default defineTool({
         repairedOmissions: activation.repairedOmissions.length,
         rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
         derivedSpecClauses,
+        activationReadiness,
         ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),
         underRead,
         sourceSpan,

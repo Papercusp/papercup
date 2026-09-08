@@ -462,6 +462,32 @@ describe('published launch args schema', () => {
     ).toBe(false);
   });
 
+  it('accepts successor placement and runtime overrides while pointing resume carry errors at carry', () => {
+    const successor = launchAgent.args.safeParse({
+      successor: { agentId: 'su-a1a71' },
+      brief: 'recover on an alternate runtime',
+      agent: 'claude',
+      headless: true,
+      account: 'default',
+      model: 'sonnet',
+      carry: 'warm',
+      label: 'alternate successor',
+    });
+    expect(successor.success).toBe(true);
+
+    const resumeWithCarry = launchAgent.args.safeParse({
+      resume: { agentId: 'su-a1a71' },
+      brief: 'continue the recovery',
+      carry: 'cold',
+    });
+    expect(resumeWithCarry.success).toBe(false);
+    if (!resumeWithCarry.success) {
+      expect(resumeWithCarry.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: ['carry'] })]),
+      );
+    }
+  });
+
   it('does not impose a local agent-count ceiling before governed admission', () => {
     expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
     expect(
@@ -473,15 +499,13 @@ describe('published launch args schema', () => {
   });
 
   it('documents members.role as a dynamic harness persona id, not a lane label', () => {
-    // The published args preserve two source-launch variants in a ZodUnion;
-    // inspect the first object variant's shared member schema.
+    // The published args use one object schema with conditional source-launch
+    // validation, so the shared member schema is directly on the object shape.
     const argsOut = (launchAgent.args as unknown as {
-      options: Array<{
-        shape: {
-          members: { unwrap: () => { element: { shape: Record<string, { description?: string }> } } };
-        };
-      }>;
-    }).options[0]!;
+      shape: {
+        members: { unwrap: () => { element: { shape: Record<string, { description?: string }> } } };
+      };
+    });
     const members = argsOut.shape.members.unwrap();
     const role = members.element.shape.role;
 
@@ -1096,6 +1120,44 @@ describe('resume + fork (D-004/D-007)', () => {
       },
     });
     expect(textOf(res)).toContain("agent's first turn");
+  });
+
+  it('allows a successor to override the predecessor runtime and launch placement', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    renderCarryBriefTextMock.mockReturnValue('checkpoint: recover on the alternate runtime');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-successor-override', successfulCalls: 1 }],
+      note: 'successor override verified',
+    });
+
+    const res = await launchAgent.handler(
+      {
+        successor: { agentId: 'su-a1a71' },
+        brief: 'recover on the alternate runtime',
+        agent: 'claude',
+        account: 'auto',
+        model: 'sonnet',
+        headless: true,
+        carry: 'warm',
+        label: 'alternate successor',
+      },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--agent=claude');
+    expect(command).toContain('--account=auto');
+    expect(command).toContain('--model=sonnet');
+    expect(command).toContain('--headless');
+    expect(command).toContain('--carry=warm');
+    expect(command).toContain('--owner-id=su-a1a71');
+    expect(textOf(res)).toContain('Successor backend override');
   });
 
   it('promotes a dormant critical resume to an identity-preserving fresh successor', async () => {

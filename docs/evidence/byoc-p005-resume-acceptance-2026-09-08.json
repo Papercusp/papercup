@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P-005 restart-safe release resume acceptance",
+  "framework": "operational",
+  "command": [
+    "testing:run files=[scripts/lib/release-task-journal.test.ts,scripts/publish-workspace-host-artifacts.test.ts,packages/operator-core/lib/harness/routines/nightly-release-cut-action.test.ts,packages/operator-core/lib/task-manager/managed-spawn-payload-env.test.ts,packages/operator-core/lib/workspace-host/artifact-trust.test.ts] timeoutMs=50000 maxFailures=10",
+    "node \"$(git rev-parse --show-toplevel)/scripts/test-files.mjs\" packages/operator-core/lib/task-manager/store.integration.test.ts -- --testNamePattern=restart-safe release receipt journal",
+    "node --test papercusp-desktop/test/release-local-linux-reuse.test.js",
+    "npm --workspace @papercusp/web run lint:no-hand-rolled-cli-entry",
+    "npm --workspace @papercusp/web run lint:tests",
+    "npm run gen:contract:check",
+    "npm run lint:tsc:scripts -- --files=scripts/lib/release-task-journal.ts,scripts/lib/release-task-journal.test.ts",
+    "testing:run files=[packages/operator-core/lib/check-assert-integrity.test.ts] timeoutMs=50000 maxFailures=10"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-08T10:10:17.247Z",
+  "finishedAt": "2026-09-08T10:23:57.972Z",
+  "summary": "At stable superproject HEAD e80e92cbba2a557648ed7d9281ad92dcf2a16fc5 and desktop HEAD b0df06e011b13c8bfa26c75f78b0f3a21d8e17af, the focused release-journal, publisher restart/lost-response, nightly-cut, managed-spawn, artifact-trust, real-Postgres receipt, and desktop Linux/manifest recovery suites passed. The policy and exact-file TypeScript guards passed in the same stable-head batch. A later current-tree assertion-integrity run passed at c3584a09870f57b8817f44b08f3758566680e33d. These already-executed checks demonstrate reconciliation before retry, stable one-use request identities, zero duplicate provider mutations after accepted-response loss, verified-byte reuse, and fail-closed behavior for missing, surplus, corrupt, or identity-mismatched outputs.",
+  "assertions": [
+    {
+      "id": "stable-head-focused-cohort",
+      "passed": true,
+      "evidence": "testing:run fa584330-42c8-4ef9-9c5e-aeb29d5d295f passed 50, failed 0, skipped 0 across 5 files in 455 ms. Per-file counts were release-task-journal 6, publisher 6, nightly cut 13, managed-spawn environment 13, and artifact trust 12. START_HEAD and END_HEAD were both e80e92cbba2a557648ed7d9281ad92dcf2a16fc5."
+    },
+    {
+      "id": "real-postgres-receipt-journal",
+      "passed": true,
+      "evidence": "Detached durable testing run 5a5bf717-0570-45e8-95b9-d7a50786846b exited 0 and passed the 4 tests selected by `restart-safe release receipt journal` in packages/operator-core/lib/task-manager/store.integration.test.ts; 26 nonmatching tests were skipped. It ran from 2026-09-08T10:11:19.328Z through 2026-09-08T10:13:02.629Z with pre/post provenance stamped at clean HEAD e80e92cbba."
+    },
+    {
+      "id": "receipt-transition-integrity",
+      "passed": true,
+      "evidence": "The real-Postgres cohort proves intent -> unknown -> reconciled committed receipts preserve immutable source/artifact/credential identity, cursor races permit one winner, request reuse and advance-without-intent fail closed, and malformed or count-mismatched receipt chains are unavailable rather than empty success."
+    },
+    {
+      "id": "desktop-failure-injection",
+      "passed": true,
+      "evidence": "`node --test papercusp-desktop/test/release-local-linux-reuse.test.js` passed 24, failed 0, skipped 0 in 5994.885661 ms at stable superproject HEAD e80e92cbba2a557648ed7d9281ad92dcf2a16fc5 and desktop HEAD b0df06e011b13c8bfa26c75f78b0f3a21d8e17af."
+    },
+    {
+      "id": "linux-reconcile-before-retry",
+      "passed": true,
+      "evidence": "Named desktop cases proved a lost Linux outcome is reconciled before a fresh one-use attempt; verified existing Linux bytes activate canonical reuse; a committed receipt with lost bytes fails closed; present-but-tampered bytes are not rewritten as confirmed absence; empty, surplus, wrong-version, and ambiguous same-version artifact sets are refused."
+    },
+    {
+      "id": "manifest-reconcile-before-regeneration",
+      "passed": true,
+      "evidence": "Named desktop cases proved a lost manifest response reuses verified outputs without regeneration, confirmed absence refuses the spent request before regeneration, committed receipts cannot bypass missing or tampered outputs, and the verifier composes the canonical manifest generator, exact artifact ledger, health/hash/cardinality, and signature checks."
+    },
+    {
+      "id": "publisher-zero-duplicate-mutations",
+      "passed": true,
+      "evidence": "The 6-test publisher file includes `lost accepted responses plus a restart after every stage produce zero duplicate provider mutations`, exercising all six publication stages with response loss and injected process stops while preserving stage request identities and reconciling provider state before proceeding."
+    },
+    {
+      "id": "release-journal-state-machine",
+      "passed": true,
+      "evidence": "The 6-test shared release-task-journal file proved canonical stable input hashes, attempt-distinct provider-safe request IDs, one winner under concurrent begin, intent reconciliation into committed reuse, confirmed-absence refusal before a new attempt, and fail-closed identity/request mismatches."
+    },
+    {
+      "id": "assertion-reachability-integrity",
+      "passed": true,
+      "evidence": "testing:run 02668cf3-fdd2-4596-9511-acb3ca127a22 passed 46, failed 0, skipped 0 in packages/operator-core/lib/check-assert-integrity.test.ts at START_HEAD=END_HEAD=c3584a09870f57b8817f44b08f3758566680e33d; ledger row 17698261 records 1726 ms from 2026-09-08T10:23:56.240Z to 2026-09-08T10:23:57.972Z."
+    },
+    {
+      "id": "no-hand-rolled-cli-entry-guard",
+      "passed": true,
+      "evidence": "The stable-head chained guard command exited 0 after `npm --workspace @papercusp/web run lint:no-hand-rolled-cli-entry`, confirming no new hand-rolled CLI entry guard."
+    },
+    {
+      "id": "test-domain-enrollment-guard",
+      "passed": true,
+      "evidence": "The same chained command exited 0 after `npm --workspace @papercusp/web run lint:tests`, confirming every canonical test matches a registry glob and resolves to an executing runner."
+    },
+    {
+      "id": "generated-contract-guard",
+      "passed": true,
+      "evidence": "The same chained command exited 0 after `npm run gen:contract:check`, confirming .papercusp/testing-domains.json was current."
+    },
+    {
+      "id": "release-journal-exact-typecheck",
+      "passed": true,
+      "evidence": "The same chained command finished with exit 0 and LINT_TSC_RESULT label=scripts scope=files status=clean at 2026-09-08T10:11:17.691Z, head=e80e92cbba, for scripts/lib/release-task-journal.ts and scripts/lib/release-task-journal.test.ts."
+    },
+    {
+      "id": "stable-execution-provenance",
+      "passed": true,
+      "evidence": "Every focused implementation-path run recorded identical start/end HEAD where available. The automatic ledger rows 17698223-17698227, 17698241, and 17698261 corroborate file, status, timing, and commit provenance; their incomplete workspace/harness scope is why this committed artifact is recorded through testing:record-run before spec binding."
+    }
+  ],
+  "plan": {
+    "slug": "byoc-delivery-acceleration-2026-09-06",
+    "planItem": "P-005",
+    "workItem": "WI-10000403",
+    "spec": "BYOC-ACCEL-P005-RESUME@2",
+    "specContentHash": "bce25779abaaf78152f30fefccf297e9249c2121de17a6c8f37e0816326ac8ae"
+  },
+  "runs": {
+    "focused": "fa584330-42c8-4ef9-9c5e-aeb29d5d295f",
+    "realPostgres": "5a5bf717-0570-45e8-95b9-d7a50786846b",
+    "assertIntegrity": "02668cf3-fdd2-4596-9511-acb3ca127a22"
+  },
+  "source": {
+    "superprojectHead": "e80e92cbba2a557648ed7d9281ad92dcf2a16fc5",
+    "desktopHead": "b0df06e011b13c8bfa26c75f78b0f3a21d8e17af",
+    "integrityHead": "c3584a09870f57b8817f44b08f3758566680e33d"
+  },
+  "excluded": {
+    "affectedRun": "A later exact-path npm run test:affected request was safely refused with exit 75 during a protected release-gate delivery/classifier phase. It is not represented as executed or passing evidence here.",
+    "storage": "Low storage is only a required negative fixture. It is not asserted as the cause of the later G10 failure."
+  }
+}
