@@ -270,6 +270,23 @@ describe('facts:assert volatile-measurement contract', () => {
   });
 });
 
+describe('facts:assert TTL spelling contract', () => {
+  it('publishes only ttlSec and rejects the legacy ttlDays key as unknown', () => {
+    const publishedProps = (z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, { description?: string }>;
+    }).properties ?? {};
+    expect(publishedProps.ttlSec).toBeDefined();
+    expect(publishedProps.ttlDays).toBeUndefined();
+
+    const parsed = assertTool.args.safeParse({ ...base, ttlDays: 7 });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    const message = formatIssues(parsed.error.issues);
+    expect(message).toMatch(/ttlDays/i);
+    expect(publishedProps.ttlSec?.description ?? '').toMatch(/ttlSec/i);
+  });
+});
+
 /**
  * EI-22057520151022793 — a private, undecidable work_item fact missing `settledBy`
  * was reported as "shareable: Invalid input: expected true; settledBy: Invalid

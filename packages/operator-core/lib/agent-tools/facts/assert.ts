@@ -626,13 +626,6 @@ export default defineTool({
       .describe(
         "P-018: HOW this convention is enforced (kind:'convention' only) — 'structural' (impossible to do wrong; no agent decision involved), 'gate' (refused at a chokepoint), or 'detector' (measured, never silently tolerated). gate/detector REQUIRE floor (a rate in (0,1]) + reviewBy: D-016 — \"a detector without a floor is prose exhortation in a costume\". 'structural' takes neither. There is deliberately no 'prompt' tier: a convention carried only by documentation omits this and reads as untiered.",
       ),
-    // EI-19302143721139535: keep the common duration-unit guess inside the
-    // schema so its targeted correction can be aggregated with independent
-    // ttlSec/body violations. It remains a refusal, not a silent alias.
-    ttlDays: z
-      .unknown()
-      .optional()
-      .describe('Not accepted. Use ttlSec (seconds, maximum 7776000 = 90 days).'),
     ttlSec: z
       .number()
       .int()
@@ -823,19 +816,10 @@ export default defineTool({
           body?: unknown;
           slot?: unknown;
           acceptTruncation?: unknown;
-          ttlDays?: unknown;
           subjectVolatile?: unknown;
           measuredAt?: unknown;
           measurement?: { measuredAt?: unknown } | null;
         };
-        if (candidate.ttlDays !== undefined) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['ttlDays'],
-            message:
-              'facts:assert — ttlDays is not accepted; use ttlSec (seconds, maximum 7776000 = 90 days).',
-          });
-        }
         if (
           typeof candidate.key === 'string' &&
           typeof candidate.body === 'string' &&
