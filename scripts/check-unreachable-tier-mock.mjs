@@ -72,6 +72,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+import { runGuardWithIndexFaultGuard, withGitIndexFaultRetry } from './lib/git-index-fault.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -362,8 +363,15 @@ function runSelfTest() {
 // Thin I/O shell
 // ---------------------------------------------------------------------------
 
+// EI-22703095921400106: a torn `.git/index` on the shared staging tree made this call throw
+// `fatal: .git/index: index file smaller than expected`, which the affected runner read as a
+// LINT VIOLATION rather than "the instrument could not read the repository". Retry the
+// known-transient index fault (git-sync repairs it), then surrender as NOT CHECKED — never as a
+// finding. Every other git error still propagates untouched.
 function gitFiles(...globs) {
-  return execFileSync('git', ['ls-files', ...globs], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  return withGitIndexFaultRetry(() =>
+    execFileSync('git', ['ls-files', ...globs], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+  )
     .split('\n')
     .filter(Boolean);
 }
@@ -455,4 +463,6 @@ function main() {
   process.exit(1);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  runGuardWithIndexFaultGuard(main, { guard: 'unreachable-tier-mock' });
+}
