@@ -69,6 +69,60 @@ async function panelStates(p) {
       reachable: !!hit && (hit === e || e.contains(hit)), x: r.x, y: r.y, width: r.width, height: r.height };
   }));
 }
+async function planPopupBodyState(p) {
+  return p.locator('[data-testid="plan-popup-body"]').evaluate(body => {
+    const placeholder = body.querySelector('.pc-plans__placeholder');
+    const preview = body.querySelector('.pc-plan-document__preview');
+    const previewText = preview?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const rendered = Boolean(
+      preview &&
+      !preview.querySelector('.pc-plan-document__fallback') &&
+      preview.children.length > 0 &&
+      previewText,
+    );
+    return {
+      settled: rendered && !placeholder,
+      placeholderText: placeholder?.textContent?.trim() ?? null,
+      previewChildCount: preview?.children.length ?? 0,
+      previewText: previewText.slice(0, 240),
+      rendered,
+    };
+  });
+}
+async function waitForPlanPopupBody(p) {
+  await p.evaluate(() => {
+    delete window.__planPopupBodySettlement;
+  });
+  await p.waitForFunction(() => {
+    const body = document.querySelector('[data-testid="plan-popup-body"]');
+    const placeholder = body?.querySelector('.pc-plans__placeholder');
+    const preview = body?.querySelector('.pc-plan-document__preview');
+    const text = preview?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const settled = Boolean(
+      body &&
+      !placeholder &&
+      preview &&
+      !preview.querySelector('.pc-plan-document__fallback') &&
+      preview.children.length > 0 &&
+      text,
+    );
+    if (!settled) {
+      delete window.__planPopupBodySettlement;
+      return false;
+    }
+    const previous = window.__planPopupBodySettlement;
+    if (!previous || previous.body !== body || previous.text !== text) {
+      window.__planPopupBodySettlement = { body, text, since: performance.now() };
+      return false;
+    }
+    // A loaded body can still be replaced by a stale navigation response. Require
+    // the same semantic body to survive a stability window before capturing it.
+    return performance.now() - previous.since >= 150;
+  }, undefined, { timeout: 15000 });
+  const state = await planPopupBodyState(p);
+  if (!state.settled) throw new Error(`plan popup body regressed after settlement: ${JSON.stringify(state)}`);
+  return state;
+}
 try {
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await visit(page, '?app=home&accountsPane=false&chatPane=false');
@@ -114,16 +168,17 @@ try {
       await run('plan-popup-' + suffix, async () => {
         await visit(page, '?app=plans&accountsPane=false&chatPane=false&pplan=portal-design-iteration-2026-09-05');
         await page.getByTestId('plan-popup-fullscreen').waitFor({ timeout: 15000 });
-        await page.waitForTimeout(1000);
-        const before = { title: await page.locator('.plan-popup__title').innerText(), geometry: await popupGeometry(page, '.plan-popup'), iconPaths: await page.getByTestId('plan-popup-fullscreen').locator('svg path,svg polyline,svg rect').count(), ...(await capture(page, 'plan-window-' + suffix)) };
+        const body = await waitForPlanPopupBody(page);
+        const before = { title: await page.locator('.plan-popup__title').innerText(), body, geometry: await popupGeometry(page, '.plan-popup'), iconPaths: await page.getByTestId('plan-popup-fullscreen').locator('svg path,svg polyline,svg rect').count(), ...(await capture(page, 'plan-window-' + suffix)) };
         await page.getByTestId('plan-popup-fullscreen').click();
         await page.waitForFunction(() => document.fullscreenElement?.getAttribute('data-testid') === 'plan-popup-fullscreen-surface');
-        const full = { geometry: await popupGeometry(page, '[data-testid="plan-popup-fullscreen-surface"]'), ...(await capture(page, 'plan-screen-' + suffix)) };
+        const fullBody = await waitForPlanPopupBody(page);
+        const full = { body: fullBody, geometry: await popupGeometry(page, '[data-testid="plan-popup-fullscreen-surface"]'), ...(await capture(page, 'plan-screen-' + suffix)) };
         await page.getByTestId('plan-popup-fullscreen').click();
         await page.waitForFunction(() => document.fullscreenElement === null);
         const restored = { samePlan: new URL(page.url()).searchParams.get('pplan') === 'portal-design-iteration-2026-09-05', geometry: await popupGeometry(page, '.plan-popup') };
         await page.getByTestId('plan-popup-close').click();
-        return { viewport, theme, before, full, restored, result: before.iconPaths > 0 && before.geometry.contained && full.geometry.contained && restored.samePlan ? 'pass' : 'fail' };
+        return { viewport, theme, before, full, restored, result: before.body.settled && full.body.settled && before.iconPaths > 0 && before.geometry.contained && full.geometry.contained && restored.samePlan ? 'pass' : 'fail' };
       });
     }
     for (const viewport of [{ width: 1280, height: 768 }, { width: 390, height: 768 }]) {
