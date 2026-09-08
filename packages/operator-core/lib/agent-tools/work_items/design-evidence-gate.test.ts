@@ -755,6 +755,35 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
   });
 
+  it('REFUSES a declared approved design with no ratification through the real completion handler', async () => {
+    getWorkItem.mockResolvedValue({
+      id: ITEM, kind: 'change', family: 'issue', state: 'in_progress',
+      harness: HARNESS, sourcePlanSlug: PLAN_SLUG,
+      payload: { designReferences: [{ featureId: PLAN_SLUG, referenceId: REF }] },
+    });
+    designCompareDepsFor.mockResolvedValue(deps(0));
+    const result = await closeItem();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('not actively ratified');
+    expect(result.error).toContain(REF);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: a declared design closes through the real handler once its exact reference passes', async () => {
+    getWorkItem.mockResolvedValue({
+      id: ITEM, kind: 'change', family: 'issue', state: 'in_progress',
+      harness: HARNESS, sourcePlanSlug: PLAN_SLUG,
+      payload: { designReferences: [{ featureId: PLAN_SLUG, referenceId: REF }] },
+    });
+    const d = deps(0);
+    await ratifyOnCalibrationHost(d);
+    await compareAgainst(d);
+    designCompareDepsFor.mockResolvedValue(d);
+    const result = await closeItem();
+    expect(result.ok, result.error).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+  });
+
   it('REFUSES an unexpected gate fault while enforcing, and writes no terminal state', async () => {
     designCompareDepsFor.mockRejectedValue(new TypeError('programming error'));
 

@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Disk-space recovery P-001/P-002 historical acceptance proof",
+  "framework": "operational",
+  "command": [
+    "testing:run :3170 packages/operator-core/lib/storage/final-disk-accounting.live.test.ts packages/operator-core/lib/storage/audit-archive-relocation.live.test.ts",
+    "sha256sum /mnt/backup/offload/macos-vm/.p001-evidence-20260907/coverage-census.json",
+    "work_items:get :3170 WI-10000410 WI-10000411 WI-10000412 WI-10000413 with completion evidence",
+    "plans:get :3170 disk-space-recovery-macos-first-2026-09-07 Decisions at revision 20",
+    "coord:plan-events disk-space-recovery-macos-first-2026-09-07",
+    "dev:pg_query exact test_runs rows 17684135 and 17684136"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-08T08:18:47.054Z",
+  "finishedAt": "2026-09-08T08:32:47.496Z",
+  "summary": "Read-only acceptance replay confirmed the historical P-001/P-002 execution contracts and ordering from canonical terminal work-item and plan records, revalidated the P-001 coverage census byte-for-byte, and paired them with fresh current-host P-003/P-004 live verifiers. No disk mutation was repeated.",
+  "assertions": [
+    {
+      "id": "fresh-live-host-verifiers",
+      "passed": true,
+      "evidence": "testing:run group 8ec16601-8474-4a09-875d-34f32c6dd988 passed 4, failed 0, skipped 0 across final-disk-accounting.live.test.ts and audit-archive-relocation.live.test.ts. Canonical test_runs rows 17684135 and 17684136 both have status=pass at HEAD 21ad4bbd312c66d19b1516c8bcd75d0bcce60b61."
+    },
+    {
+      "id": "p001-census-byte-identity",
+      "passed": true,
+      "evidence": "/mnt/backup/offload/macos-vm/.p001-evidence-20260907/coverage-census.json SHA-256 is exactly 5afa2c7855f535caa2b08219338e9c1777ee03374328e060ef4cac7e8bda4262, matching canonical evidence row 1308."
+    },
+    {
+      "id": "p001-terminal-contract",
+      "passed": true,
+      "evidence": "WI-10000410 is terminal done with a 16/16 complete coverage population and no residue: clean VM quiescence, sparse-copy and metadata parity, full image sizes/SHA-256/qemu checks, atomic public-path cutover, canonical open-file placement, QMP and guest health, rollback removal, and measured root/backup deltas."
+    },
+    {
+      "id": "p001-before-other-reclaim",
+      "passed": true,
+      "evidence": "Canonical plan events record P-001 done at 2026-09-07T09:43:57.342Z, before P-002 at 10:11:58.600Z, P-003 at 20:19:17.699Z, and P-004 at 22:16:44.977Z. Current plan decision D-002 requires exactly this order."
+    },
+    {
+      "id": "capacity-verification-and-fail-closed-cutover",
+      "passed": true,
+      "evidence": "Current decisions D-003 and D-004 preserve the measured destination-capacity calculation and require full byte, SHA-256, qemu, metadata, path, and service verification before source removal. WI-10000410 and WI-10000412 terminal contracts record those gates passing before cutover/removal."
+    },
+    {
+      "id": "p002-idle-derived-only-scope",
+      "passed": true,
+      "evidence": "WI-10000411 is terminal done. Its canonical completion records build_process_count=0, target_env_process_count=0, and no fuser users before cleaning only the three named rebuildable Cargo target directories; VM, PostgreSQL, Docker, Kopia, swap, audit archive, backup repositories, and /mnt/data were excluded."
+    },
+    {
+      "id": "p002-measured-reclaim",
+      "passed": true,
+      "evidence": "WI-10000411 records 11,765,026,816 allocated bytes removed and root available bytes 597,131,251,712 to 608,805,113,856, a 11,673,862,144-byte increase during cleanup. A later rebuild of derived Cargo output is expected and does not rewrite this historical execution result."
+    },
+    {
+      "id": "terminal-plan-record-coherence",
+      "passed": true,
+      "evidence": "Plan revision 20 remains awaiting-acceptance with P-001 through P-004 terminal done. WI-10000410, WI-10000411, WI-10000412, and WI-10000413 all expose structured completion evidence and ordered closedAt values consistent with the plan-event ledger."
+    },
+    {
+      "id": "read-only-replay",
+      "passed": true,
+      "evidence": "This replay used only testing and read/hash operations. It did not stop the VM, copy or remove any image/archive, clean any Cargo target, replace any symlink, or change protected infrastructure."
+    }
+  ],
+  "plan": {
+    "slug": "disk-space-recovery-macos-first-2026-09-07",
+    "revision": 20,
+    "workItems": [
+      "WI-10000410",
+      "WI-10000411",
+      "WI-10000412",
+      "WI-10000413"
+    ]
+  }
+}
