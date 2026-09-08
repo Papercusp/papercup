@@ -17,7 +17,7 @@ import {
   type Rubric,
   type RubricCriterion,
 } from './rubrics';
-import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
+import { listSpecClauses, type SpecBehaviorClass, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
@@ -208,6 +208,10 @@ export interface AcceptanceBarTrace {
   mandatory: boolean | null;
   requiredScope: string[];
   evidencePlane: 'tree' | 'deployed' | 'live' | null;
+  /** The projected clause class; absent on snapshots written before this field existed. */
+  behaviorClass?: SpecBehaviorClass | null;
+  /** Additive trace of the clause mutation obligation. */
+  mutationRequired?: boolean;
   requiredTestLayers?: string[];
   passRatings: string[];
   coversBarKeys: string[];
@@ -851,6 +855,16 @@ export function projectAcceptanceBarContractSnapshot(
     const clauses = input.clauses.rows
       .filter((clause) => clause.sourceBar?.barKey === barKey)
       .sort((a, b) => a.specId.localeCompare(b.specId));
+    const clauseBehaviorClasses = [...new Set(clauses.map((clause) => clause.behaviorClass))];
+    const behaviorClass: SpecBehaviorClass | null = clauseBehaviorClasses.length === 1
+      ? clauseBehaviorClasses[0]!
+      : null;
+    // A generated delivery-plane BAR with no declared layers is a manual/operational
+    // obligation. Any automated class, explicit layer, or mutation keeps the normal
+    // adequacy floor in force; mixed projections fail closed rather than weakening it.
+    const automatedProofRequired = clauses.length === 0 || clauses.some((clause) =>
+      clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
+    );
     const mappings = clauses.map((clause) => ({
       planItemId: clause.planItemId,
       planItemStatus: itemStatus.get(clause.planItemId) ?? null,
@@ -967,7 +981,7 @@ export function projectAcceptanceBarContractSnapshot(
     if (workContractState === 'stale') addCode('bar_snapshot_work_contract_stale');
     if (proofState === 'missing') addCode('bar_snapshot_proof_missing');
     if (proofState === 'stale' || proofState === 'truncated') addCode('bar_snapshot_proof_stale');
-    if (criterion.role === 'outcome') {
+    if (criterion.role === 'outcome' && automatedProofRequired) {
       if (adequacyState === 'undeclared') addCode('bar_snapshot_proof_depth_missing');
       else if (adequacyState !== 'pass') addCode('bar_snapshot_proof_inadequate');
     }
@@ -990,6 +1004,8 @@ export function projectAcceptanceBarContractSnapshot(
       mandatory: criterion.mandatory ?? null,
       requiredScope: normalized(criterion.requiredScope),
       evidencePlane: criterion.evidencePlane ?? null,
+      behaviorClass,
+      mutationRequired: clauses.some((clause) => clause.mutationRequired),
       requiredTestLayers,
       passRatings: normalized(criterion.passRatings),
       coversBarKeys: normalized(criterion.coversBarKeys),
