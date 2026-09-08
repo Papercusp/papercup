@@ -171,6 +171,7 @@ export interface AdmissionMergeGuardRefusal {
     | 'producer-identity-mismatch'
     | 'plan-obligation-mismatch'
     | 'outside-mutation-scope'
+    | 'admission-state-ineligible'
     | 'conditional-write-miss';
   detail: string;
 }
@@ -1843,9 +1844,14 @@ export function selectAdmissionRecurrenceCanonicals(
       const item = items.get(id);
       if (!item) continue;
       if (id === replacement) {
-        if (current || item.admission === 'pending' || item.admission === 'unreviewed') {
+        if (item.admission === 'pending' || item.admission === 'unreviewed') {
           dispositionsById.set(id, { itemId: id, action: 'promote' });
         } else {
+          // An already-admitted/legacy replacement is already claimable.  A
+          // stale merge disposition must not be rewritten as `promote`: the
+          // promotion writer intentionally updates only pending/unreviewed
+          // rows, and turning this endpoint into a promote would create a
+          // zero-row conditional write in the same transaction.
           dispositionsById.delete(id);
         }
       } else if (isTerminal(item)) {
@@ -2949,6 +2955,12 @@ function endpointProtection(
   const payload = recordValue(snapshot.payload);
   if (snapshot.origin === 'remote') {
     return { reason: 'remote-owned', detail: `${role} ${snapshot.id} is remote-owned` };
+  }
+  if (role === 'promote' && snapshot.admission !== 'pending' && snapshot.admission !== 'unreviewed') {
+    return {
+      reason: 'admission-state-ineligible',
+      detail: `promote ${snapshot.id} has admission ${snapshot.admission ?? 'legacy'}; expected pending or unreviewed`,
+    };
   }
   if (snapshot.assignee) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
