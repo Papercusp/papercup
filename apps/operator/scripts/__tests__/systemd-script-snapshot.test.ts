@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -44,6 +44,10 @@ async function waitForFile(path: string) {
 }
 
 describe('papercusp-script-snapshot.sh', () => {
+  it('keeps the systemd ExecStart wrapper executable', async () => {
+    expect((await stat(WRAPPER)).mode & 0o111).toBe(0o111);
+  });
+
   it('passes bash syntax validation', () => {
     const result = spawnSync('bash', ['-n', WRAPPER], { encoding: 'utf8' });
     expect(result.status).toBe(0);

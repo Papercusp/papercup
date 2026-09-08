@@ -48,10 +48,18 @@ function observe(agentChatId: string, harnessSlug: string): void {
 
 const server = createAdaptorServer({ fetch: async (request, env) => {
   const pathname = new URL(request.url).pathname;
+  const tracksReadiness = pathname.includes('/su-session');
+  const before = tracksReadiness ? [...observed].map((host) => host.snapshot()) : undefined;
+  const requestedAt = new Date().toISOString();
   const launch = request.method === 'POST' && pathname === '/api/adv/sessions/launch-su'
     ? await request.clone().json() as { agent_chat_id: string; harness_slug: string } : null;
   const response = await app.fetch(request, env);
   if (launch) observe(launch.agent_chat_id, launch.harness_slug);
+  if (tracksReadiness) {
+    const body = !pathname.endsWith('/events') ? await response.clone().json().catch(() => undefined) : undefined;
+    send({ type: 'readiness', path: pathname, method: request.method, requestedAt, respondedAt: new Date().toISOString(),
+      status: response.status, before, after: [...observed].map((host) => host.snapshot()), body });
+  }
   if (pathname.endsWith('/su-session/commands')) {
     for (const host of observed) {
       const row = await getAdvSession(host.descriptor().identity.advSessionId);

@@ -38,12 +38,39 @@ test('Desktops sidebar opens option B directly, including its real disconnected 
   }).toBe(true);
   expect(await destination.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('desktop-option-b-390.png'), fullPage: true });
+  await roster.scrollIntoViewIfNeeded();
+  await expect(roster).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath('desktop-option-b-390-roster.png'), fullPage: true });
 });
 
-test('an invalid desktop deep link cannot open a different machine', async ({ page }) => {
+for (const param of ['desktopHost', 'host']) {
+  test(`an invalid ${param} deep link cannot open a different machine`, async ({ page }) => {
+    await page.goto(`${portalUrl}/?app=desktops&${param}=acceptance-missing-host&accountsPane=false&chatPane=false`, { waitUntil: 'domcontentloaded' });
+    const destination = page.getByRole('region', { name: 'Desktop workspace', exact: true });
+    await expect(destination.getByText('Workspace unavailable', { exact: true })).toBeVisible();
+    await expect(destination.getByRole('region', { name: /^Desktops for / })).toHaveCount(0);
+    await expect(destination.getByRole('button', { name: 'Take control', exact: true })).toHaveCount(0);
+    await expect.poll(() => new URL(page.url()).searchParams.get(param)).toBe('acceptance-missing-host');
+  });
+}
+
+test('workspace selection survives reload and browser back/forward', async ({ page }) => {
   await page.goto(`${portalUrl}/?app=desktops&desktopHost=acceptance-missing-host&accountsPane=false&chatPane=false`, { waitUntil: 'domcontentloaded' });
   const destination = page.getByRole('region', { name: 'Desktop workspace', exact: true });
   await expect(destination.getByText('Workspace unavailable', { exact: true })).toBeVisible();
-  await expect(destination.getByRole('region', { name: /^Desktops for / })).toHaveCount(0);
-  await expect(destination.getByRole('button', { name: 'Take control', exact: true })).toHaveCount(0);
+  await destination.getByRole('combobox', { name: 'Desktop workspace', exact: true }).click();
+  await page.getByRole('option').first().click();
+  const workspace = destination.getByRole('region', { name: /^Desktops for / });
+  await expect(workspace).toBeVisible();
+  const selectedHost = new URL(page.url()).searchParams.get('desktopHost');
+  expect(selectedHost).toBeTruthy();
+  expect(selectedHost).not.toBe('acceptance-missing-host');
+  const selectedName = await workspace.getAttribute('aria-label');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(workspace).toHaveAttribute('aria-label', selectedName!);
+  await page.goBack({ waitUntil: 'domcontentloaded' });
+  await expect(destination.getByText('Workspace unavailable', { exact: true })).toBeVisible();
+  await page.goForward({ waitUntil: 'domcontentloaded' });
+  await expect(workspace).toHaveAttribute('aria-label', selectedName!);
+  await expect.poll(() => new URL(page.url()).searchParams.get('desktopHost')).toBe(selectedHost);
 });
