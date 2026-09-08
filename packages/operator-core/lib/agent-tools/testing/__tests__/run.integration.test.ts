@@ -736,6 +736,8 @@ describe('testing:run (integration)', () => {
       root: '/repo',
       files: ['packages/example.test.ts'],
       testNamePattern: 'suite > --focused test',
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'papercusp',
     });
 
     expect(request).toMatchObject({
@@ -751,6 +753,10 @@ describe('testing:run (integration)', () => {
       '--testNamePattern=suite > --focused test',
     ]);
     expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
+    expect(request.env).toEqual({
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+    });
   });
 
   // EI-19324351741370770: the foreground timeout used to kill only the router

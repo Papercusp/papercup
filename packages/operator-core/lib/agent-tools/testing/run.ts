@@ -185,8 +185,14 @@ export function buildDetachedTestRunRequest(opts: {
   root: string;
   files: string[];
   testNamePattern?: string;
+  workspaceId?: string;
+  harnessSlug?: string;
 }): SpawnRequest {
   const vitestArgs = opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : [];
+  const env: NodeJS.ProcessEnv = {
+    ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
+    ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
+  };
   return {
     kind: 'vitest',
     label: `testing:run timeout recovery (${opts.files.join(', ')})`,
@@ -194,6 +200,7 @@ export function buildDetachedTestRunRequest(opts: {
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
+    ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
 
@@ -1625,6 +1632,8 @@ export async function runTestFilesCore(opts: {
               root,
               files: pathResolution.files,
               ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
+              ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
+              ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
             }),
           )
         : undefined;
