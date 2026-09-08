@@ -181,7 +181,7 @@ describe('stale adv-session terminal marker repair (EI-21365346411486602)', () =
     expect(advSessionRowsMock).not.toHaveBeenCalled();
   });
 
-  it('reactivates either half of the terminal tuple and clears the complete tuple', async () => {
+  it('reactivates either half of the terminal tuple only when no keyed resume owns the row', async () => {
     advSessionRowsMock.mockResolvedValueOnce([{ id: 17842 }]);
 
     await expect(reactivateAdvSessionByOwner('su-half-terminal')).resolves.toBe(true);
@@ -192,8 +192,9 @@ describe('stale adv-session terminal marker repair (EI-21365346411486602)', () =
     expect(sql).toContain('ended_at = NULL');
     expect(sql).toContain('ended_by = NULL');
     expect(sql).toContain('ended_signal = NULL');
-    expect(sql).toContain('resume_claim_key = NULL');
-    expect(sql).toContain('resume_claimed_at = NULL');
+    expect(sql).toContain('AND resume_claim_key IS NULL');
+    expect(sql).not.toContain('resume_claim_key = NULL');
+    expect(sql).not.toContain('resume_claimed_at = NULL');
   });
 });
 
