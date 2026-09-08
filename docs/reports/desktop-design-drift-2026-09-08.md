@@ -1,6 +1,6 @@
 # Desktop GUI design drift: findings, repair and prevention plan
 
-Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and evidence review updated at 09:54 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
+Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and evidence review updated at 10:39 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
 
 ## Current conclusion
 
@@ -83,7 +83,11 @@ The served portal build is `sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6f
 
 Formal acceptance remains open. The current acceptance rubric is revision 3, with the original BAR meanings preserved and the bugfix class and verification methods recorded. The current spec-quality card is `EI-22684842903034302`; independent audit `EI-22685428343609739` passed. The earlier card `EI-22683309730362618` failed audit and is superseded. The documentation guidance clause has an explicit manual-review exemption from unit testing; the guidance remains mandatory under R-2.
 
-Independent review also rejected the original test-adequacy cards' freshness claims. Their copied fingerprint inputs did not independently measure the source. The source and test blobs still match the executed runs; replacement bindings 2098–2105 now use the existing server measurement mechanism. Replacement cards `EI-22686434382631229`, `EI-22686436835731837`, and `EI-22686438933474762` replay with passing currentness and await independent audit. This measures repository source, test and saved artifact bytes. It does not claim a fresh live deployment measurement; the historical browser runs retain their original build identities, and final acceptance still requires an independent actual-portal run and visual inspection.
+Independent review rejected the original test-adequacy cards' freshness claims because copied fingerprint inputs did not independently measure the source. Replacement bindings 2098–2105 use the existing server measurement mechanism; all three replacement cards passed independent audit at 10:28 UTC. The UI repair work item **WI-10000654 is now done**, with entry and state proofs accepted.
+
+A later edit to the shared completion handler correctly invalidated the gate-hardening proof before WI-10000685 could close. Its focused suite passed again at 10:33 UTC: 31 tests, recorded as run `17698322`. Fresh gate card `EI-22689293844092114` is awaiting review, paused until the engineer holding that source file finishes their remaining edits. WI-10000685, P-003's formal proof and final plan acceptance remain open. This is an evidence dependency, not a newly observed portal UI failure.
+
+Server measurement covers repository source, test and saved artifact bytes. It does not claim a fresh live deployment measurement; the historical browser runs retain their original build identities, and final acceptance still requires an independent actual-portal run and visual inspection. Code-truth audit 5 now resolves the source/evidence citations for all three plan items.
 
 The rubric critique is recorded at `WI-10000712#201552`, with author vetting `EI-22686582146057973`. Three weaknesses remain explicit: R-2 mixes outcome and implementation language; R-1/R-3 share some browser evidence; and the browser/manual review lacks its own structured runner binding. R-1/R-2's structured test checks run Vitest, so placing a Playwright file there would use the wrong runner. These limitations do not waive the required browser journey, visual comparison, causal report or cloud-connectivity disclosure. The broader proposal below is the place to refine this enforcement contract.
 
