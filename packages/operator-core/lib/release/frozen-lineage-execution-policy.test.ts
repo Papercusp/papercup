@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assessFrozenLineageLaunchCas, type FrozenRepairQueuePreflight } from './checkpoint-required-ancestor';
+import {
+  assessFrozenLineageLaunchCas,
+  type FrozenRepairQueuePreflight,
+} from './checkpoint-required-ancestor';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 import {
   compareFrozenLineageIdentity,
@@ -41,7 +44,9 @@ const identity = (overrides: Partial<FrozenLineageIdentity> = {}): FrozenLineage
   ...overrides,
 });
 
-const launchPreflight = (overrides: Partial<FrozenRepairQueuePreflight> = {}): FrozenRepairQueuePreflight => ({
+const launchPreflight = (
+  overrides: Partial<FrozenRepairQueuePreflight> = {},
+): FrozenRepairQueuePreflight => ({
   proceed: true,
   reason: 'clear',
   candidate: REPAIR_HEAD,
@@ -458,7 +463,7 @@ describe('frozen lineage carry policy', () => {
     expect(rendered).toContain(`candidate=${CANDIDATE}`);
     expect(rendered).toContain(`repairHead=${REPAIR_HEAD}`);
     expect(rendered).toContain(`queueRevision=${REVISION}`);
-    expect(rendered).toContain('source');
+    expect(rendered).toContain("source");
     expect(rendered).toContain("release:repair-queue { op:'admit', paths:[...] }");
     expect(frozenLineageCarryViolationPayload(verdict)).toMatchObject({
       ok: false,

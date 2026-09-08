@@ -12,9 +12,16 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { matchCommandToSubstitutions, strongestTier, type SubstitutionMatch } from '../../bash-substitution/match';
+import {
+  matchCommandToSubstitutions,
+  strongestTier,
+  type SubstitutionMatch,
+} from '../../bash-substitution/match';
 import { recordFiresDetached } from '../../bash-substitution/fires';
-import { attachInvokeEnvelopes, type InvokeEnvelope } from '../../bash-substitution/invoke-envelope';
+import {
+  attachInvokeEnvelopes,
+  type InvokeEnvelope,
+} from '../../bash-substitution/invoke-envelope';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
 import { readFileLockIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
@@ -99,17 +106,15 @@ export default defineTool({
   args: z.object({
     command: z.string().min(1).max(32000),
     cwd: z.string().max(4096).optional(),
-    tracked_mutation: z
-      .boolean()
-      .optional()
-      .describe(
-        'Hook-derived verdict: this shell command structurally mutates at least one tracked file. ' +
-          'When true, apply the same GOAL-mode never-implement gate as a native Edit/Write claim.',
-      ),
+    tracked_mutation: z.boolean().optional().describe(
+      'Hook-derived verdict: this shell command structurally mutates at least one tracked file. ' +
+      'When true, apply the same GOAL-mode never-implement gate as a native Edit/Write claim.',
+    ),
   }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
-    const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    const workspaceId =
+      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
     const frozenLineageRoot = resolveCapabilityIntegrationRoot();
     const commandCwd = args.cwd
       ? realpathSoft(isAbsolute(args.cwd) ? args.cwd : resolve(frozenLineageRoot ?? process.cwd(), args.cwd))
