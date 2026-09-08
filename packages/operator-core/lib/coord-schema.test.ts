@@ -559,6 +559,26 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
     expect(out).not.toContain('↪');
   });
 
+  it('does not render a shorter prose prefix when structured fields cite the full item', () => {
+    const short = {
+      ref: { kind: 'work-item', id: 'EI-224' },
+      ok: true,
+      label: 'EI-224 [bug/done]',
+      snippet: 'unrelated terminal item',
+    };
+    const fullId = 'EI-22489500008234936';
+    const entry = {
+      ...e({ summary: 'Timeout fallback: EI-224 is still open' }),
+      sections: [{ premises: [`work-item:${fullId}`], forYouBecause: { ref: fullId } }],
+    } as unknown as CoordLineSource;
+    const out = renderInjection([entry], {
+      bodyRefs: new Map([['EI-224', short]]) as never,
+      nowMs: FIXTURE_NOW,
+    });
+    expect(out).toContain('Timeout fallback: EI-224 is still open');
+    expect(out).not.toContain('↪ EI-224 [bug/done]');
+  });
+
   it('no bodyRefs map (legacy caller / hydration failed) ⇒ prior behavior, plain line', () => {
     expect(renderInjection([e({ summary: 'see WI-4173' })])).not.toContain('↪');
   });

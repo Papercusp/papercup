@@ -100,18 +100,87 @@ export function parseRefToken(token: string): HydratableRef | null {
  * 'diag-EI-123-unlabeled' do not manufacture a shorter phantom ref. */
 const BODY_WORK_ITEM = /(?<![\w-])((?:WI|EI)-\d+)(?![\w-])/g;
 
+/** Structured work-item refs are exact citations, unlike ids found in prose.
+ * Keep this deliberately narrower than the prose detector: only the fields
+ * whose contract is a ref are allowed to establish an ambiguity fence. */
+const STRUCTURED_WORK_ITEM_REF = /^(?:work-item:)?(?:wi:)?((?:WI|EI)-\d+)(?:#[^\s#]+)?$/i;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function structuredWorkItemId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = STRUCTURED_WORK_ITEM_REF.exec(value.trim());
+  return match?.[1]?.toUpperCase() ?? null;
+}
+
+/** Collect exact work-item refs from the envelope's typed/authored fields.
+ *
+ * A message can contain a display-shortened prose token (`EI-224`) beside a
+ * structured citation of the real item (`EI-22489500008234936`). Resolving the
+ * former against the work-item table is dangerous when the prefix itself is a
+ * different, real row. These fields are the sender's typed refs; free prose is
+ * intentionally not inspected here. */
+function structuredWorkItemIds(entry: unknown): ReadonlySet<string> {
+  const record = asRecord(entry);
+  const ids = new Set<string>();
+  if (!record) return ids;
+
+  const add = (value: unknown) => {
+    const id = structuredWorkItemId(value);
+    if (id) ids.add(id);
+  };
+  const addRefObject = (value: unknown) => add(asRecord(value)?.ref);
+  const addRefList = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    for (const item of value) {
+      if (typeof item === 'string') add(item);
+      else addRefObject(item);
+    }
+  };
+  const addSections = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    for (const section of value) {
+      const s = asRecord(section);
+      if (!s) continue;
+      addRefList(s.premises);
+      add(asRecord(s.forYouBecause)?.ref);
+      addRefList(s.youMayNotKnow);
+      add(asRecord(s.blockedOn)?.ref);
+    }
+  };
+
+  addSections(record.sections);
+  // Accept the pre-normalized structured body shape as well. The persisted
+  // envelope uses `sections`, but this keeps the pure helper safe for callers
+  // that hand it the original structured body.
+  addSections(record.body);
+  addRefList(record.basedOn);
+  add(asRecord(record.why)?.goalRef);
+  add(asRecord(record.blockedOn)?.ref);
+  add(asRecord(record.expectEffect)?.itemId);
+  add(asRecord(record.forYouBecause)?.ref);
+  return ids;
+}
+
 /**
  * Auto-detect hydratable refs in free prose (P-008). Deliberately NARROW:
  * work-item ids only (WI-/EI-), the shapes agents cite constantly and receivers
  * re-fetch or half-remember. De-duped, first-`max` in order of appearance.
  * (F- ids are excluded from auto-detect: too collision-prone in prose.)
  */
-export function detectBodyRefs(text: string, max = DEFAULT_REF_BUDGET.maxRefs): HydratableRef[] {
+export function detectBodyRefs(
+  text: string,
+  max = DEFAULT_REF_BUDGET.maxRefs,
+  include?: (id: string) => boolean,
+): HydratableRef[] {
   const out: HydratableRef[] = [];
   const seen = new Set<string>();
   if (!text) return out;
   for (const m of text.matchAll(BODY_WORK_ITEM)) {
     const id = m[1].toUpperCase();
+    if (include && !include(id)) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     out.push({ kind: 'work-item', id });
@@ -310,7 +379,15 @@ export function detectEntryBodyRefs(
   const text = [entry?.summary, entry?.body]
     .filter((v): v is string => typeof v === 'string' && v.length > 0)
     .join(' ');
-  return detectBodyRefs(text, max);
+  const structuredIds = structuredWorkItemIds(entry);
+  return detectBodyRefs(text, max, (id) => {
+    // A strict prefix is ambiguous: it may be a different real row, so never
+    // decorate it as authoritative when the same envelope carries the longer
+    // typed citation. Exact citations remain eligible.
+    return ![...structuredIds].some(
+      (structuredId) => structuredId.length > id.length && structuredId.startsWith(id),
+    );
+  });
 }
 
 /**

@@ -238,6 +238,21 @@ describe('body auto-refs (P-008) — eligibility, opt-out, entry detection, tail
     expect(detectEntryBodyRefs(null)).toEqual([]);
   });
 
+  it('does not resolve a prose id that is a strict prefix of a structured citation', () => {
+    const fullId = 'EI-22489500008234936';
+    const entry = {
+      summary: 'Timeout fallback: EI-224 is still open',
+      sections: [{ premises: [`work-item:${fullId}`], forYouBecause: { ref: fullId } }],
+    };
+    expect(detectEntryBodyRefs(entry as never)).toEqual([]);
+
+    // The exact structured id remains eligible when it is also present in the
+    // display text; only the ambiguous shorter prefix is fenced.
+    expect(detectEntryBodyRefs({ ...entry, summary: `See EI-224 and ${fullId}` } as never)).toEqual([
+      { kind: 'work-item', id: fullId },
+    ]);
+  });
+
   it('clampSnippetTail keeps the TAIL with a leading ellipsis, one-lined, bounded', () => {
     expect(clampSnippetTail('short note', 60)).toBe('short note');
     const long = `${'x'.repeat(100)} next: wire the opt-out\nflag + tests`;
