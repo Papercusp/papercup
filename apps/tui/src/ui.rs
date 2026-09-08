@@ -2718,13 +2718,32 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 .collect()
         })
         .unwrap_or_default();
-    let composer_h = 4 + turn_error.len() as u16;
     // Inline card (sentinel-tui-shared-backend-and-cards Phase 2a): when the
     // operator brain has an open `chat:ask_choice` card, reserve a bottom strip
     // for it (between the transcript and the composer) and render it there. The
     // card's height scales with its content, clamped so the transcript stays
     // visible. No card → the transcript fills the space as before.
     let card_h = card_block_height(app, area);
+    // Keep each selected setting together when the Presence rail or a narrow
+    // terminal leaves too little room for the complete configuration row.
+    let width = area.width.saturating_sub(2).max(1) as usize;
+    let mut selection_rows: Vec<String> = Vec::new();
+    for field in app.agent_chat_selection_label().split(" · ") {
+        if let Some(last) = selection_rows.last_mut() {
+            if Line::from(last.as_str()).width() + 3 + Line::from(field).width() <= width {
+                last.push_str(" · ");
+                last.push_str(field);
+                continue;
+            }
+        }
+        selection_rows.extend(wrap_text(field, width));
+    }
+    // On very short panes keep the draft/error and transcript space available.
+    // Normal panes reserve every measured configuration row.
+    let selection_limit = area.height.saturating_sub(card_h)
+        .saturating_sub(turn_error.len() as u16 + 5).max(1) as usize;
+    selection_rows.truncate(selection_limit);
+    let composer_h = 3 + selection_rows.len() as u16 + turn_error.len() as u16;
     let constraints = if card_h > 0 {
         vec![
             Constraint::Min(1),
@@ -3119,10 +3138,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         )
     };
-    let mut composer_lines = vec![
-        Line::from(Span::styled(app.agent_chat_selection_label(), Theme::dim())),
-        Line::from(Span::styled(ctext, cstyle)),
-    ];
+    let mut composer_lines: Vec<Line> = selection_rows.into_iter()
+        .map(|row| Line::from(Span::styled(row, Theme::dim())))
+        .collect();
+    composer_lines.push(Line::from(Span::styled(ctext, cstyle)));
     composer_lines.extend(
         turn_error
             .into_iter()
@@ -7875,6 +7894,23 @@ mod tests {
         let typing = render(&app, 100, 20);
         assert!(typing.contains("Enter send"));
         assert!(typing.contains("> hello"));
+    }
+
+    #[test]
+    fn chat_composer_keeps_selected_account_and_mode_visible_with_presence() {
+        for width in [100, 150] {
+            let mut app = App::new();
+            app.harness = "papercusp".into();
+            app.show_presence = true;
+            app.chat_account = Some("auto".into());
+            app.chat_mode = Some("auto".into());
+            app.chat_composing = true;
+            app.chat_input = "the unsent draft".into();
+            let text = render(&app, width, 44);
+            assert!(text.contains("account auto"), "width {width}: {text}");
+            assert!(text.contains("mode auto"), "width {width}: {text}");
+            assert!(text.contains("> the unsent draft"), "width {width}: {text}");
+        }
     }
 
     /// EI-22067863854642076: a legacy/unclassified conversation's composer

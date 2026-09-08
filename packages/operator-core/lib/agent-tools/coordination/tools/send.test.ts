@@ -1261,7 +1261,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
   const actionBody = [{ text: 'please perform the acceptance step', forYouBecause: { relation: 'other' as const, note: 'you own this step' } }];
 
   it('warns when an action message names an unassigned work-item', async () => {
-    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', assignee: null });
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', state: 'open', assignee: null });
 
     const b = await body({
       to: ['bee-1'],
@@ -1285,7 +1285,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
   });
 
   it('stays quiet when the directed target already holds the named work-item', async () => {
-    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', assignee: 'bee-1' });
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', state: 'open', assignee: 'bee-1' });
 
     const b = await body({
       to: ['bee-1'],
@@ -1298,7 +1298,7 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
   });
 
   it('names the non-holder when a multi-recipient action includes the current holder', async () => {
-    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', assignee: 'bee-1' });
+    getWorkItemM.mockResolvedValueOnce({ id: 'WI-872411', state: 'open', assignee: 'bee-1' });
 
     const b = await body({
       to: ['bee-1', 'bee-2'],
@@ -1312,6 +1312,20 @@ describe('coord:send work-item routing advisory (EI-21824246903447871)', () => {
       recipientsNotHolding: ['bee-2'],
       assignments: [{ workItemId: 'WI-872411', assignee: 'bee-1' }],
     });
+  });
+
+  it('stays quiet for terminal work-items such as completed scorecard subjects', async () => {
+    getWorkItemM.mockResolvedValueOnce({ id: 'EI-22637132888380914', state: 'done', assignee: null });
+
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'Please dispatch EI-22637132888380914',
+      expects: 'action',
+      body: actionBody,
+    });
+
+    expect(b.results[0].dispatchAdvisory).toBeUndefined();
+    expect(sendM).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the existing send successful when the advisory lookup fails', async () => {

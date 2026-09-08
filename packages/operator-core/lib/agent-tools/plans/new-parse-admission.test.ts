@@ -99,10 +99,70 @@ describe('plans:new parse admission (EI-22005620513894909)', () => {
     expect(payload.unparsedItemLines).toBeUndefined();
   });
 
+  it('refuses Requirements without the activation BAR map before persistence', async () => {
+    const out = await call([
+      '## Requirements',
+      '',
+      '**R-1 — Export data.** Every matching customer is exported exactly once.',
+      '',
+      '## Design',
+      '',
+      'The exporter reads the customer table.',
+      '',
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` implement the exporter',
+      '',
+    ].join('\n'));
+
+    expect(out.isError).toBe(true);
+    expect(withPlanLockM).not.toHaveBeenCalled();
+    const payload = JSON.parse(out.content[0]!.text) as Record<string, any>;
+    expect(payload).toMatchObject({
+      error: 'invalid_plan_content',
+      reason: 'acceptance_bar_authoring',
+      acceptanceBar: {
+        requiredMapHeading: '### Bar-to-work map for this plan',
+        requiredColumns: ['bar', 'implementing plan items', 'evidence plane'],
+        allowedEvidencePlanes: ['tree', 'deployed', 'live'],
+      },
+    });
+    expect(payload.acceptanceBar.problems).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'bar_mapping_missing' })]),
+    );
+  });
+
+  it('accepts a complete Requirements + BAR map and persists once', async () => {
+    const out = await call([
+      '## Requirements',
+      '',
+      '**R-1 — Export data.** Every matching customer is exported exactly once.',
+      '',
+      '## Design',
+      '',
+      '### Bar-to-work map for this plan',
+      '',
+      '| bar | implementing plan items | evidence plane |',
+      '|---|---|---|',
+      '| R-1 | P-001 | tree |',
+      '',
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` implement the exporter',
+      '',
+    ].join('\n'));
+
+    expect(out.isError).toBeUndefined();
+    expect(withPlanLockM).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(out.content[0]!.text)).toMatchObject({ ok: true, itemsParsed: 1 });
+  });
+
   it('documents the plans:start spec-triad prerequisite in guidance', () => {
     const guidance = (tool as { guidance: { when: string; chaining: string } }).guidance;
     expect(guidance.when).toContain('Requirements');
     expect(guidance.when).toContain('Design');
+    expect(guidance.when).toContain('Bar-to-work map for this plan');
+    expect(guidance.chaining).toContain('Bar-to-work map for this plan');
     expect(guidance.chaining).toContain('P-NNN');
     expect(guidance.chaining).toContain('plans:start');
   });

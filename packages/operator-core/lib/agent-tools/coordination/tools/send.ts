@@ -392,6 +392,11 @@ interface DispatchAdvisory {
   note: string;
 }
 
+// This advisory recommends a NEW claim for a recipient who does not hold the
+// item. Keep it aligned with actionable-work-item-dispatch's unassigned
+// frontier; terminal/blocked items must not produce a dispatch suggestion.
+const DISPATCH_ADVISORY_CLAIMABLE_STATES = new Set(['open', 'failing', 'todo']);
+
 /**
  * Detect the "cheerful acceptance, zero claim" route at the send seam.
  *
@@ -431,7 +436,7 @@ async function deriveDispatchAdvisory(
       }),
     );
     const assignments = rows.flatMap((item, index) => {
-      if (!item) return [];
+      if (!item || !DISPATCH_ADVISORY_CLAIMABLE_STATES.has(item.state)) return [];
       return [{ workItemId: refs[index]!.id, assignee: item.assignee?.trim() || null }];
     });
     if (assignments.length === 0) return undefined;

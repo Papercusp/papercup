@@ -30,6 +30,11 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
 import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { resolveAgentIdentity } from '../coordination/identity';
+import {
+  parseBarMappings,
+  parseRequirementBars,
+  type AcceptanceBarSeedProblem,
+} from '../../acceptance-bar-seed';
 
 /**
  * A boolean flag that ALSO accepts the exact wire strings `'true'`/`'false'`.
@@ -108,7 +113,7 @@ export const argsSchema = z
       .max(200_000)
       .optional()
       .describe(
-        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Requirements, ## Design, ## Phase 1 with items, ## Decisions). This is the same canonical field name used by plans:set-content. When provided, plans:new writes valid frontmatter + this content in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/ownerEmail. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item: plans:new refuses malformed item-looking lines with structured parse feedback before writing. plans:new returns itemsParsed + the parsed items so you can confirm they registered. If you intend to call plans:start, include substantive ## Requirements and ## Design sections alongside the P-NNN items; plans:start holds promotion until that spec triad is present. Omit content to get the empty starter template.',
+        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Requirements, ## Design, ## Phase 1 with items, ## Decisions). This is the same canonical field name used by plans:set-content. When provided, plans:new writes valid frontmatter + this content in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/ownerEmail. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item: plans:new refuses malformed item-looking lines with structured parse feedback before writing. If the body includes `## Requirements`, every `**R-1 — Title.** outcome` must also have a row in `## Design` under the exact `### Bar-to-work map for this plan` heading, using `| bar | implementing plan items | evidence plane |` and `tree`, `deployed`, or `live`; plans:new validates this post-epoch BAR contract before persistence and reports the exact missing/invalid rows. plans:new returns itemsParsed + the parsed items so you can confirm they registered. If you intend to call plans:start, include substantive ## Requirements, the complete Design BAR map, and canonical P-NNN items; plans:start holds promotion until that spec triad is present. Omit content to get the empty starter template.',
       ),
     propertySchema: z
       .record(z.string(), z.unknown())
@@ -203,6 +208,29 @@ single id, status token, free text, optional blocked-by.)
 (Use plans:add-decision to append. Each decision is a third-level
 heading with a date line and a body paragraph.)
 `;
+}
+
+/**
+ * Validate the authoring shape that post-epoch activation audits consume. The
+ * BAR writer refuses semantic inference: every Requirements R-N must have an
+ * explicit Design map row to one or more P-NNN items. Keeping this preflight
+ * beside plans:new turns a later `bar_mapping_missing` refusal into an
+ * actionable creation-time error.
+ *
+ * Bodies without Requirements are intentionally out of this check. The empty
+ * starter and legacy/non-BAR authoring paths retain their existing lifecycle.
+ */
+export function validateAcceptanceBarAuthoring(planContent: string): AcceptanceBarSeedProblem[] {
+  if (!/^##\s+Requirements\s*$/im.test(planContent)) return [];
+
+  const requirements = parseRequirementBars(planContent);
+  if (!requirements.ok) return requirements.problems;
+
+  const mappings = parseBarMappings(
+    planContent,
+    new Set(requirements.bars.map((bar) => bar.barKey)),
+  );
+  return mappings.ok ? [] : mappings.problems;
 }
 
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
@@ -372,11 +400,11 @@ export default defineTool({
   description:
     'Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `content` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.',
   guidance: {
-    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the plan will be started, include substantive Requirements + Design sections and canonical P-NNN item lines.',
+    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the body includes Requirements, author canonical `**R-N — Title.** outcome` records and a Design `### Bar-to-work map for this plan` table mapping every R-N to one or more P-NNN items with evidence plane `tree`, `deployed`, or `live`; plans:new validates this before writing. If the plan will be started, include substantive Requirements + the complete Design BAR map + canonical P-NNN item lines.',
     notWhen:
       'You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.',
     chaining:
-      'Author-in-one: plans:new { slug, title, content }. For plans:start promotion, include substantive ## Requirements + ## Design sections and canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items.',
+      'Author-in-one: plans:new { slug, title, content }. A Requirements section is a post-epoch acceptance-BAR source and must include the exact `### Bar-to-work map for this plan` table; plans:new refuses missing/malformed rows before persistence. For plans:start promotion, include substantive ## Requirements + the complete ## Design BAR map + canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new (empty starter) → plans:set-now → plans:add-item × N → plans:set-content with the complete spec. Then plans:start to promote items to work-items.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -432,6 +460,44 @@ export default defineTool({
               message:
                 'plans:new refused to create the plan because one or more item-looking lines do not match the canonical P-NNN item grammar.',
               parseFeedback: parseSummary,
+              ...parseSummary,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Post-epoch plans seed acceptance BARs from Requirements plus the
+    // explicit Design map during activation. Refuse an authored Requirements
+    // section before persistence when that source is incomplete; otherwise the
+    // creator gets a successful plans:new followed much later by an opaque
+    // plans:audit `bar_mapping_missing` failure. No semantic mapping is
+    // invented here — the caller must name every R-N → P-NNN edge.
+    const acceptanceBarProblems = body != null && body.trim().length > 0
+      ? validateAcceptanceBarAuthoring(renderedBody)
+      : [];
+    if (acceptanceBarProblems.length > 0) {
+      const first = acceptanceBarProblems[0]!;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'invalid_plan_content',
+              reason: 'acceptance_bar_authoring',
+              slug,
+              message:
+                'plans:new refused to create the plan because its Requirements would not satisfy the post-epoch acceptance BAR contract. ' +
+                `${first.detail}.`,
+              acceptanceBar: {
+                problems: acceptanceBarProblems,
+                requiredMapHeading: '### Bar-to-work map for this plan',
+                requiredColumns: ['bar', 'implementing plan items', 'evidence plane'],
+                allowedEvidencePlanes: ['tree', 'deployed', 'live'],
+                hint:
+                  'Add one map row for every **R-N — Title.** record, mapping it to one or more existing P-NNN items; do not infer the mapping.',
+              },
               ...parseSummary,
             }),
           },

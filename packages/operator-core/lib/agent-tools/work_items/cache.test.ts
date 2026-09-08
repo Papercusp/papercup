@@ -188,6 +188,18 @@ describe("work_items:list — cache wiring", () => {
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
   });
 
+  it("plural states alias reaches the store and shares its order-insensitive cache key", async () => {
+    await list({ states: ["open", "wip"] });
+    expect(M.listWorkItems).toHaveBeenCalledWith(
+      expect.objectContaining({ state: undefined, states: ["open", "wip"] }),
+    );
+
+    // `states` compiles to ANY(...), so equivalent orderings should reuse the same
+    // cache entry rather than issuing another database read.
+    await list({ states: ["wip", "open"] });
+    expect(M.listWorkItems).toHaveBeenCalledTimes(1);
+  });
+
   it("assignedBy participates in the cache key (no delegator-filter leak)", async () => {
     await list({ assignedBy: "owner-a" });
     await list({ assignedBy: "owner-b" });

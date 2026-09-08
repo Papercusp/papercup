@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-08T11:00:16.697Z",
+  "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f",
+  "hudSession": "su-00a54271-72dd-4ac8-904d-b23239b51871",
+  "hudSessionOwnerId": "su-00a54271-72dd-4ac8-904d-b23239b51871",
+  "hudSessionSource": "live-roster",
+  "hudSessionFleet": "nonp2p-feature-change-drain-2026-09-04-v3",
+  "cases": [
+    {
+      "id": "plan-popup-light-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "light",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "semantic-check-plan-window-light-1280x800.png",
+        "captureSha256": "1a93d331e30ba1685e48280cad8a7507be7c9578505f234e1db6af19e7f36a33",
+        "capturedAt": "2026-09-08T11:00:35.267Z"
+      },
+      "full": {
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "semantic-check-plan-screen-light-1280x800.png",
+        "captureSha256": "82acb3ae945c7ff930252db509656909f3a598200df4346f837c41d7d716d6fc",
+        "capturedAt": "2026-09-08T11:00:35.595Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "plan-popup-dark-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "dark",
+      "before": {
+        "title": "portal-design-iteration-2026-09-05",
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "semantic-check-plan-window-dark-1280x800.png",
+        "captureSha256": "c82e14171468d523b7b222f8fec493c5145101c3eb33a5506030665d5a59719f",
+        "capturedAt": "2026-09-08T11:00:48.288Z"
+      },
+      "full": {
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "semantic-check-plan-screen-dark-1280x800.png",
+        "captureSha256": "0b0a61f7fb48d3e3ae9307757dc4c0295aa99e6f923ea71c97c2a7e282a631cb",
+        "capturedAt": "2026-09-08T11:00:48.552Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    }
+  ],
+  "initial": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "final": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "preferencesRestored": true,
+  "releaseAfter": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f",
+  "releaseStable": true,
+  "completedAt": "2026-09-08T11:00:49.031Z"
+}

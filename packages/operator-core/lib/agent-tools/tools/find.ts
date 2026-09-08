@@ -71,6 +71,7 @@ const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
 
 type JsonSchemaNode = {
+  'x-papercusp-call-constraint'?: unknown;
   type?: unknown;
   enum?: unknown;
   const?: unknown;
@@ -549,7 +550,8 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
   });
   if (parts.length === 0) return null;
   const aliasHint = schemaAliasAnnotation(root);
-  const prefix = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}`;
+  const callConstraints = schemaCallConstraintAnnotation(root);
+  const prefix = `${callConstraints ? `${callConstraints}; ` : ''}${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${aliasHint ? `${aliasHint}; ` : ''}`;
   const withDescriptions = new Set(parts.filter((part) => part.description).map((part) => part.index));
   const render = (includedDescriptions: ReadonlySet<number>): string =>
     `${prefix}${parts
@@ -570,6 +572,38 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     }
   }
   return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
+}
+
+/**
+ * Retain validator-owned constraints that JSON Schema cannot express (such as
+ * a conditional cap on joined section text). Unlike optional description prose,
+ * these annotations precede the bounded field list. Walk arrays/unions too so
+ * shorthand and bulk callers see the same rule at its actual argument path.
+ */
+function schemaCallConstraintAnnotation(inputSchema: unknown): string {
+  const annotations = new Set<string>();
+  const ancestors = new Set<object>();
+  const walk = (value: unknown, path: string): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || ancestors.has(value)) return;
+    ancestors.add(value);
+    const node = value as JsonSchemaNode;
+    const constraint = node['x-papercusp-call-constraint'];
+    if (typeof constraint === 'string' && constraint.trim()) {
+      annotations.add(`constraint:${path || '$'} (${constraint.trim()})`);
+    }
+    for (const branches of [node.anyOf, node.oneOf]) {
+      if (Array.isArray(branches)) for (const branch of branches) walk(branch, path);
+    }
+    if (node.items) walk(node.items, `${path}[]`);
+    if (node.properties && typeof node.properties === 'object' && !Array.isArray(node.properties)) {
+      for (const [name, child] of Object.entries(node.properties)) {
+        walk(child, path ? `${path}.${name}` : name);
+      }
+    }
+    ancestors.delete(value);
+  };
+  walk(inputSchema, '');
+  return [...annotations].join('; ');
 }
 
 /** Project a registered RESULT schema, including array/scalar-rooted shapes. */

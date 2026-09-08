@@ -1064,7 +1064,15 @@ export const messageBodyArg = z
       `${DEFAULT_INBOX_BODY_CAP} characters is REFUSED and NOTHING is sent — that is all a ` +
       'default inbox read shows, so a load-bearing ask must fit it. Put the detail on the ' +
       'work-item and send a pointer.',
-  );
+  )
+  .meta({
+    // Discovery must retain this conditional, aggregate bound when it drops
+    // verbose descriptions. A maxLength on body/text would falsely impose an
+    // unconditional or per-section cap. The send validator uses this same
+    // receiver-derived constant; its parity test covers both sides of the bound.
+    'x-papercusp-call-constraint':
+      `expects!=none => body text joined with "\\n\\n" <=${DEFAULT_INBOX_BODY_CAP} characters`,
+  });
 
 export {
   premisesArg,

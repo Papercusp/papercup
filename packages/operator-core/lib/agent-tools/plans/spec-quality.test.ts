@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { evaluatePlanSpecQuality } from './spec-quality';
+import evaluateSpecQualityTool from './evaluate-spec-quality';
+import startPlanTool from './start';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -156,5 +158,39 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(bug.wouldBlock).toContain('plan-class-specialization');
     expect(migration.wouldBlock).not.toContain('plan-class-specialization');
+  });
+});
+
+describe('spec-quality activation guidance', () => {
+  it('publishes the complete scorecard → independent-audit → start sequence and reviewer recipe', () => {
+    const evaluateGuidance = [
+      evaluateSpecQualityTool.description,
+      evaluateSpecQualityTool.guidance?.when,
+      evaluateSpecQualityTool.guidance?.returns,
+      evaluateSpecQualityTool.guidance?.chaining,
+    ].join('\n');
+    const evaluateChain = evaluateSpecQualityTool.guidance?.chaining ?? '';
+    const startGuidance = [
+      startPlanTool.description,
+      startPlanTool.guidance?.when,
+      startPlanTool.guidance?.chaining,
+    ].join('\n');
+
+    for (const guidance of [evaluateGuidance, startGuidance]) {
+      expect(guidance).toContain('plans:evaluate-spec-quality');
+      expect(guidance).toContain('scorecards:emit');
+      expect(guidance).toContain('grading-integrity');
+      expect(guidance).toContain('plans:start');
+    }
+    expect(evaluateGuidance).toContain('capability:launch-agent');
+    expect(evaluateGuidance).toContain("independent:true");
+    expect(evaluateGuidance).toContain('different author/lineage');
+    expect(evaluateChain.indexOf('plans:evaluate-spec-quality')).toBeLessThan(
+      evaluateChain.indexOf('scorecards:emit'),
+    );
+    expect(evaluateChain.indexOf('scorecards:emit')).toBeLessThan(
+      evaluateChain.indexOf('grading-integrity'),
+    );
+    expect(evaluateChain.indexOf('grading-integrity')).toBeLessThan(evaluateChain.indexOf('plans:start'));
   });
 });

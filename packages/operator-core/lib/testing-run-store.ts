@@ -439,6 +439,8 @@ export interface SpawnRequest {
   command: string;
   args: string[];
   cwd?: string;
+  /** Environment values supplied by the caller for the child process. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -503,6 +505,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   const worktreeBefore = captureWorktreeSnapshot(cwd);
   const childEnv = {
     ...process.env,
+    ...req.env,
     PAPERCUSP_TEST_RUN_GROUP: runId,
     // P-004 (deterministic-coverage-census): arm coverage attribution, so an admin-UI
     // run contributes the same surface→test evidence an agent's `testing:run` does. A

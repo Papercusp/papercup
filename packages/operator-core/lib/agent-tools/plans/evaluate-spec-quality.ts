@@ -22,13 +22,16 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-quality',
   description:
-    "Preflight plan inputs, persisted acceptance class and first-class clauses together, then grade the exact spec set. Missing/invalid/unknown prerequisites return all discoverable blockers without a scorecard draft. A valid call derives class and exact fingerprint from the stores; read-only.",
+    "Preflight plan inputs, persisted acceptance class and first-class clauses together, then grade the exact spec set. Missing/invalid/unknown prerequisites return all discoverable blockers without a scorecard draft. A valid call derives class and exact fingerprint from the stores; read-only. For enforcement-eligible plans, the returned draft starts a four-step activation chain: evaluate → emit the terminal scorecard → settle its independent grading-integrity audit → plans:start.",
   guidance: {
-    when: 'Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses.',
+    when:
+      'Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses. The terminal standard-rubric card emitted from this result remains audit-pending until a NON-AUTHOR reviewer emits its grading-integrity audit.',
     notWhen:
       'Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.',
+    returns:
+      "A valid result includes `scorecardDraft`, but that draft is not the final start prerequisite by itself. Complete this sequence: (1) repair every returned blocker and re-run this evaluator, (2) pass the exact draft to `scorecards:emit` with `terminal:true`, (3) have a different non-author session settle the returned card's `gradingAudit` with one terminal `scorecards:emit { rubricRef:'grading-integrity', subject:{ kind:'scorecard', ref:'<scorecardId>' }, ratings:{...} }`, then (4) call `plans:start`. Reusable reviewer dispatch recipe: `capability:launch-agent { agent:'codex', role:'judge', independent:true, headless:true, brief:'Inspect scorecards:list for <scorecardId>; emit exactly one complete terminal grading-integrity scorecard for that subject; do not edit implementation files or emit another card.' }`. `independent:true` keeps a fresh launch outside the caller's fleet; the reviewer must still be a different author/lineage, and the caller should verify the audit is settled before starting.",
     chaining:
-      'plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft → plans:start. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence.',
+      "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft with terminal:true → dispatch or await the NON-AUTHOR grading-integrity reviewer → scorecards:list { rubricRef:'spec-quality', subjectRef:'<scorecardId>' } and confirm gradingAudit is settled → plans:start { slug }. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence.",
     seeAlso: ['plans:get-specs', 'scorecards:emit', 'rubrics:get spec-quality'],
   },
   capability: 'plans:read',

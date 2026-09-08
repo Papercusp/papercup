@@ -22,6 +22,7 @@ import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import coordSend from '../coordination/tools/send';
+import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
 
@@ -741,6 +742,61 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toContain('premises?:array(≤20)<string>');
     expect(compact).toContain('forYouBecause?:object{relation');
     expect(compact).not.toContain('premises?:array(≤20){');
+  });
+
+  it('keeps the conditional joined-body cap in returned coord:send discovery, with validator parity', async () => {
+    const result = await callHandler({ query: 'coord:send', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'coord:send');
+    expect(hit).toBeDefined();
+    const rule = `expects!=none => body text joined with "\\n\\n" <=${DEFAULT_INBOX_BODY_CAP} characters`;
+    expect(hit!.argSchema).toContain(`constraint:body (${rule})`);
+    expect(hit!.argSchema).toContain(`constraint:items[].body (${rule})`);
+    expect(hit!.argSchema!.length).toBeLessThanOrEqual(2200);
+
+    for (const bulk of [false, true]) {
+      for (const expects of ['ack', 'answer', 'action', 'none']) {
+        for (const excess of [0, 1]) {
+          // The separator contributes two characters to the aggregate. A
+          // per-section limit would wrongly accept the over-cap case.
+          const message = {
+            to: ['bee-1'],
+            summary: 'cap parity',
+            expects,
+            body: [
+              { text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP - 3 + excess), forYouBecause: { relation: 'owns' } },
+              { text: 'x' },
+            ],
+          };
+          const parsed = coordSend.args.safeParse(bulk ? { items: [message] } : message);
+          expect(parsed.success, JSON.stringify({ bulk, expects, excess })).toBe(expects === 'none' || excess === 0);
+          if (!parsed.success) {
+            expect(parsed.error.issues.some((issue) =>
+              issue.message.includes(`${DEFAULT_INBOX_BODY_CAP}-character default inbox cap`),
+            )).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it('preserves nested constraint paths and deduplicates union annotations under description pressure', () => {
+    const body = { type: 'string', 'x-papercusp-call-constraint': 'mode=ask => length<=42' };
+    const schema = {
+      type: 'object',
+      properties: {
+        body: { anyOf: [body, body] },
+        items: { type: 'array', items: { type: 'object', properties: { body } } },
+        ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => [
+          `detail${i}`, { type: 'string', description: 'optional prose '.repeat(50) },
+        ])),
+      },
+    };
+    const compact = compactSchemaForResult(schema)!;
+    expect(compact.match(/constraint:body /g)).toHaveLength(1);
+    expect(compact).toContain('constraint:items[].body (mode=ask => length<=42)');
+    expect(compact.length).toBeLessThanOrEqual(2200);
+    expect(compactSchemaForResult({ type: 'object', properties: { ordinary: { type: 'string' } } }))
+      .toBe('ordinary?:string');
   });
 
   it('keeps ordinary unions intact when they are not teaching-only array branches', () => {

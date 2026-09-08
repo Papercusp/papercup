@@ -1,0 +1,335 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-08T11:04:07.747Z",
+  "release": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f",
+  "hudSession": "su-00a54271-72dd-4ac8-904d-b23239b51871",
+  "hudSessionOwnerId": "su-00a54271-72dd-4ac8-904d-b23239b51871",
+  "hudSessionSource": "live-roster",
+  "hudSessionFleet": "nonp2p-feature-change-drain-2026-09-04-v3",
+  "cases": [
+    {
+      "id": "plan-popup-light-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "light",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "semantic-stable-plan-window-light-1280x800.png",
+        "captureSha256": "eb993781216539dadcbd3f5e7278ff75b827b2b7b2a9591a51dba95e6e80234d",
+        "capturedAt": "2026-09-08T11:04:15.899Z"
+      },
+      "full": {
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "semantic-stable-plan-screen-light-1280x800.png",
+        "captureSha256": "7f0dc3b070b54942b067e6ba5dfff49cc8361cc901fbac0cb292cefd5ec69628",
+        "capturedAt": "2026-09-08T11:04:16.719Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "plan-popup-light-1440x900",
+      "plane": "live",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "before": {
+        "title": "portal-design-iteration-2026-09-05",
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "semantic-stable-plan-window-light-1440x900.png",
+        "captureSha256": "8850b1daad541fd92ffa9cbec590cad86c11f5ddc15d5f488861d796bfb3ba5f",
+        "capturedAt": "2026-09-08T11:04:23.664Z"
+      },
+      "full": {
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "semantic-stable-plan-screen-light-1440x900.png",
+        "captureSha256": "edc923c7253ee33372d776352b41e561047a99b3d4ee33be6dbb0709acb9551f",
+        "capturedAt": "2026-09-08T11:04:24.467Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "plan-popup-dark-1280x800",
+      "plane": "live",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "theme": "dark",
+      "before": {
+        "title": "portal-design-iteration-2026-09-05",
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "semantic-stable-plan-window-dark-1280x800.png",
+        "captureSha256": "f14f400cfb974bddee73c6047344f37fe514004ab548763aff16e766916eb50b",
+        "capturedAt": "2026-09-08T11:04:27.691Z"
+      },
+      "full": {
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1280,
+          "height": 800,
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "semantic-stable-plan-screen-dark-1280x800.png",
+        "captureSha256": "90ae3dfa578e7b7fac47d50108f93f8fa8394d66ad9fee0aca3a72ae33183ae7",
+        "capturedAt": "2026-09-08T11:04:28.609Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 90,
+          "y": 32,
+          "width": 1100,
+          "height": 736,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    },
+    {
+      "id": "plan-popup-dark-1440x900",
+      "plane": "live",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "before": {
+        "title": "Portal (:3081) — continuous design iteration across every rail tab",
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "iconPaths": 4,
+        "capturePath": "semantic-stable-plan-window-dark-1440x900.png",
+        "captureSha256": "b5c0e8c6730c300be8053a2a28f1db3359aca60a4a7d45af846e66a8c9bf351b",
+        "capturedAt": "2026-09-08T11:04:33.605Z"
+      },
+      "full": {
+        "body": {
+          "settled": true,
+          "placeholderText": null,
+          "previewChildCount": 34,
+          "previewText": "Now State: Implementation, deploy and evidence are COMPLETE and verified (release YxRyV_UAA…-098fe40a live, sourceRootDigest 8d35ca25cc6f independently recomputed). CORRECTED 2026-09-08T00:19Z per D-017: the prior text of this block was WRO",
+          "rendered": true
+        },
+        "geometry": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "clientWidth": 1440,
+          "scrollWidth": 1440,
+          "contained": true,
+          "documentOverflow": false
+        },
+        "capturePath": "semantic-stable-plan-screen-dark-1440x900.png",
+        "captureSha256": "7cdd2d15629f3f6d8a4e6c1fad9267d2b0518524ea9d2d266a68b5cb946c022c",
+        "capturedAt": "2026-09-08T11:04:34.158Z"
+      },
+      "restored": {
+        "samePlan": true,
+        "geometry": {
+          "x": 170,
+          "y": 32,
+          "width": 1100,
+          "height": 836,
+          "clientWidth": 1100,
+          "scrollWidth": 1100,
+          "contained": true,
+          "documentOverflow": false
+        }
+      },
+      "result": "pass"
+    }
+  ],
+  "initial": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "final": {
+    "url": "http://127.0.0.1:3081/?app=home&accountsPane=false&chatPane=false",
+    "preferences": {
+      "theme": "dark",
+      "voiceMuted": false,
+      "homeApp": "home",
+      "pinnedApps": [
+        "calendar",
+        "phone",
+        "desktops",
+        "plans",
+        "inbox",
+        "workspaces",
+        "overview",
+        "hud",
+        "work",
+        "learning",
+        "workflows"
+      ],
+      "dismissed": []
+    }
+  },
+  "preferencesRestored": true,
+  "releaseAfter": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/sAkL9leDemaAAqkCOmti2-20260908090133472-3040183-ef6fa24f",
+  "releaseStable": true,
+  "completedAt": "2026-09-08T11:04:34.804Z"
+}
