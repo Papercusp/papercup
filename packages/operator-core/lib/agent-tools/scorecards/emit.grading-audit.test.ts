@@ -81,6 +81,8 @@ import type { ObservationRatings } from '../../harness/improvements/observation-
 
 const mkRubric = (rubricId: string, kind: string) => ({
   rubricId,
+  revision: 1,
+  criteriaHash: 'rubric-hash-v1',
   workspaceId: 'ws',
   kind,
   characteristic: 'grading-integrity',
@@ -310,11 +312,14 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('a NON-AUTHOR audit files, settles the subject, and is itself never stamped pending (one level)', async () => {
     const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(res.ok).toBe(true);
-    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', {
+    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({
       auditIssueId: 'EI-AUDIT-1',
       auditor: 'su-auditor',
       verdict: 'passed',
-    });
+      rubricRevision: 1,
+      criteriaHash: 'rubric-hash-v1',
+      requireCurrentIdentity: true,
+    }));
     expect((res as { gradingAuditRecorded?: boolean }).gradingAuditRecorded).toBe(true);
     // D-004 one level: the audit card carries NO pending stamp of its own.
     const payload = captureImprovement.mock.calls[0][0] as {

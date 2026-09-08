@@ -1370,7 +1370,12 @@ export async function emitScorecard(
     // AUDIT PATH — this emit IS a grading audit (rubricRef = the meta-rubric).
     // Validated BEFORE filing: an audit card filed and then unable to settle its
     // subject would strand both halves. Mirrors the acceptance grader ≠ author rule.
-    let auditContext: { subjectIssueId: string; auditor: string } | null = null;
+    let auditContext: {
+      subjectIssueId: string;
+      auditor: string;
+      rubricRevision?: number;
+      criteriaHash?: string;
+    } | null = null;
     if (args.rubricRef === GRADING_INTEGRITY_RUBRIC_REF) {
       if (args.subject?.kind !== 'scorecard' || !args.subject.ref) {
         return {
@@ -1488,7 +1493,12 @@ export async function emitScorecard(
           };
         }
       }
-      auditContext = { subjectIssueId: args.subject.ref, auditor: input.createdBy };
+      auditContext = {
+        subjectIssueId: args.subject.ref,
+        auditor: input.createdBy,
+        ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
+        ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
+      };
     }
     // PENDING STAMP — a terminal standard-rubric card is final but UNAUDITED until a
     // non-author audit settles it (never the audit card itself: one level).
@@ -1501,10 +1511,18 @@ export async function emitScorecard(
       }) &&
       (await gradingAuditGateEnabled())
     ) {
+      // Pin the audit contract itself, not only the graded rubric. A settled
+      // audit must be re-opened when the grading-integrity rubric changes.
+      const [auditRubricRevision, auditCriteriaHash] = await Promise.all([
+        getRubricPlanRevision(GRADING_INTEGRITY_RUBRIC_REF),
+        getRubricCriteriaHash(GRADING_INTEGRITY_RUBRIC_REF),
+      ]);
       gradingAudit = {
         state: 'pending',
         metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
         stampedAt: new Date().toISOString(),
+        ...(auditRubricRevision != null ? { rubricRevision: auditRubricRevision } : {}),
+        ...(auditCriteriaHash != null ? { criteriaHash: auditCriteriaHash } : {}),
       };
     }
     let sourceHive = args.sourceHive ?? input.ctxHarness;
@@ -1939,6 +1957,9 @@ export async function emitScorecard(
         auditIssueId: result.issue.id,
         auditor: auditContext.auditor,
         verdict: auditVerdictFromRatings(ratings),
+        requireCurrentIdentity: true,
+        ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
+        ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
       });
     }
     const acceptanceGraderCleanup =
