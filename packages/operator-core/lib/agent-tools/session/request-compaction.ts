@@ -905,7 +905,7 @@ export default defineTool({
           }${
             stale.length > 0
               ? ` ${stale.length} held work-item(s) have a STALE checkpoint (${stale
-                  .map((s) => `${s.id} ${s.ageMinutes}m old`)
+                  .map((s) => `${s.id} ${s.ageMinutes}m of progress after checkpoint`)
                   .join(', ')}) — everything since it was written will NOT carry; refresh it now if this unit progressed since.`
               : ''
           }`

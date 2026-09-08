@@ -601,12 +601,13 @@ export default defineTool({
       // the shape a shared payload takes for a slot with no value, so `.optional()` refused
       // the case the field exists to serve. arm.ts was the unfixed half of that pair: a
       // fleet wake-recovery carry that armed with `workItem: null` was rejected outright.
-      // The readers here already coalesce (`args.workItem?.trim()`), and this schema has no
-      // `.refine()` counting `!== undefined` on it, so widening the schema IS sufficient —
-      // unlike checkpoint.ts, where two non-coalescing readers had to be repaired with it.
+      // `null` is an explicit request to clear an active loop's binding; omission preserves
+      // that binding during a cadence/goal retune. The handler therefore must distinguish
+      // `args.workItem === undefined` from `args.workItem === null` even though both are
+      // accepted by the shared nullable payload shape.
       .nullish()
       .describe(
-        "The WI-/EI-/F- work-item this loop is DRIVING. Explicit null is treated as omission. The loop attempts to auto-CLAIM it for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer's item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.",
+        "The WI-/EI-/F- work-item this loop is DRIVING. On an active-loop retune, explicit null clears the prior binding while omission preserves it. The loop attempts to auto-CLAIM a provided item for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer's item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.",
       ),
     carry: z
       .enum(['warm', 'cold'])
@@ -827,6 +828,10 @@ export default defineTool({
     const intervalSecArg: number = inheritedIntervalSec;
     const rawGoal: string = inheritedGoal;
     const explicitWorkItem = args.workItem?.trim();
+    const workItemWasExplicitlyCleared = args.workItem === null;
+    // An empty string retains the legacy omission behavior; a non-empty id or explicit
+    // null is a meaningful override that must suppress prior-anchor/autodetect fallback.
+    const workItemOverride = Boolean(explicitWorkItem) || workItemWasExplicitlyCleared;
     const monitorAuthorityWorkItem =
       preparedMonitorConfig?.authority.kind === 'work-item' ? preparedMonitorConfig.authority.workItem : undefined;
     // Resolve the effective carry before choosing the harness so a COLD loop's
@@ -845,11 +850,11 @@ export default defineTool({
       args.carry ??
       (prior?.active
         ? prior.carry
-        : !explicitWorkItem && !monitorAuthorityWorkItem
+        : !workItemOverride && !monitorAuthorityWorkItem
           ? FRESH_LOOP_DEFAULT_CARRY
           : undefined);
     const autoDetectedWorkItemForScope =
-      !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
+      !workItemOverride && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
     const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
     // Only the INNER tool argument is an explicit migration request. A concrete
     // request-origin harness is still authoritative for a FRESH arm, but tools:invoke
@@ -1189,7 +1194,7 @@ export default defineTool({
     // death-resilience work-item claim.
     const priorWorkItem =
       resolvedMode === 'work' &&
-      !explicitWorkItem &&
+      !workItemOverride &&
       !monitorAuthorityWorkItem &&
       prior?.active === true &&
       typeof prior.workItem === 'string' &&
@@ -1434,7 +1439,14 @@ export default defineTool({
       continuation: args.continuation ?? 'settle',
       mode: resolvedMode,
       ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
-      ...(claimedWorkItem ? { workItem: claimedWorkItem } : {}),
+      // Preserve the omission-vs-clear distinction through the writer: materializeLoop
+      // intentionally preserves its stored anchor only for `undefined`, while `null`
+      // clears it.
+      ...(workItemWasExplicitlyCleared
+        ? { workItem: null }
+        : claimedWorkItem
+          ? { workItem: claimedWorkItem }
+          : {}),
       customWakePrompt: hasCustomWakePrompt,
     });
     const control = await refreshControlAnchorAfterMutation({

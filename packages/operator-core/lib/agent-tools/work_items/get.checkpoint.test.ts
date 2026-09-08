@@ -17,6 +17,7 @@
  * instead of discovering staleness only after acting on it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 
 const getWorkItem = vi.fn();
 const getWorkItemDetail = vi.fn();
@@ -132,6 +133,30 @@ const env = async (x: unknown) => {
   return res.data;
 };
 const one = async (x: unknown) => (await env(x)).results[0];
+
+it('declares the actual checkpoint/comment window output with writer-owned numeric post identity', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-contract', title: 'contract' });
+  const post: ThreadPostRow = {
+    id: 42, thread_id: 'thread-contract', author_id: null,
+    body: 'Exact prior finding', created_ts: '2026-09-08T00:00:00.000Z',
+  };
+  getWorkItemThreadWindow.mockResolvedValue({
+    total: 7, posts: [post], topics: [], createdAt: post.created_ts,
+  });
+  const output = await env({ id: 'WI-contract', threadLimit: 1 });
+  const schema = (get as unknown as {
+    result: { safeParse: (value: unknown) => { success: boolean } };
+  }).result;
+  expect(output.results[0].threadWindow).toMatchObject({ total: 7, posts: [post] });
+  expect(schema.safeParse(output).success).toBe(true);
+  const row = output.results[0];
+  const withRow = (changes: Record<string, unknown>) => ({ ...output, results: [{ ...row, ...changes }] });
+  expect(schema.safeParse(withRow({ checkpoint: null, threadWindow: null })).success).toBe(true);
+  expect(schema.safeParse(withRow({ checkpoint: false })).success).toBe(false);
+  expect(schema.safeParse(withRow({
+    threadWindow: { total: 7, posts: [{ ...post, id: '42' }] },
+  })).success).toBe(false);
+});
 
 it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
   // Keeping this assertion beside the handler's existing wiring tests prevents

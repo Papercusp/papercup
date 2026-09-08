@@ -1667,6 +1667,23 @@ describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler
     );
   });
 
+  it('EI-22656186904542038: explicit workItem:null clears an active prior anchor', async () => {
+    priorLoopM.mockResolvedValue(
+      priorLoop({
+        goal: 'continue EI-DONE',
+        kickoff: 'kickoff-prompt',
+        workItem: 'EI-DONE',
+      }) as never,
+    );
+
+    const b = body(await call({ intervalSec: 600, goal: 'continue the next lane', workItem: null }));
+
+    expect(b).toMatchObject({ ok: true, loop: { workItem: null }, workItemClaim: null });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
   it('no prior loop ⇒ priorLoopOverwrite null (the default arm shape, unaffected)', async () => {
     const b = body(await call({}));
     expect(b.priorLoopOverwrite).toBeNull();
