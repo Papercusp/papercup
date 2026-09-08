@@ -694,6 +694,22 @@ describe('specTestAdequacyCompletionGate — universal contract resolution (P-01
     expect(evidenceCall?.planSlugs).toEqual(['reconnect-plan']);
   });
 
+  it('forwards an exact evidence selection so superseded bindings remain historical without poisoning completion', async () => {
+    const deps = passingDeps();
+    const result = await specTestAdequacyCompletionGate(
+      {
+        workItem: { ...WORK_ITEM, kind: 'bug' },
+        attestation: { ...ATTESTATION, evidenceRefs: ['test:reconnect'] },
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    expect(deps.listEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ evidenceRefs: ['test:reconnect'] }),
+    );
+  });
+
   it('does NOT enforce an active plan that has adopted no clauses — the per-plan migration lane', async () => {
     // "Migrate active plans individually" is the other half of the scope line. An ACTIVE
     // plan reached only by an edge, with no clause of its own adopted, must not refuse —

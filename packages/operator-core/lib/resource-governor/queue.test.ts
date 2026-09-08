@@ -31,6 +31,12 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
   failEnqueueTimes = 0;
   /** Every enqueue attempt, so a test can assert a non-retryable fault was tried exactly ONCE. */
   enqueueAttempts = 0;
+  /** EI-22697720752476196: fail the next N terminal release transitions with a transient
+   *  contention error, then succeed — reproduces the PG row-lock failure seen in cleanup. */
+  failReleaseClaimTimes = 0;
+  releaseClaimError: unknown;
+  /** Every release attempt, so the retry and non-retry paths are both observable. */
+  releaseClaimAttempts = 0;
 
   get size(): number {
     return this.rows.size;
@@ -216,6 +222,11 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
     actualDemand: DurableAdmissionRecord['demand'] | undefined,
     nowMs: number,
   ) {
+    this.releaseClaimAttempts += 1;
+    if (this.failReleaseClaimTimes > 0) {
+      this.failReleaseClaimTimes -= 1;
+      throw this.releaseClaimError ?? new Error('database unavailable');
+    }
     return this.leaseMutation(receiptId, leaseId, (record) => ({
       ...record,
       state: 'completed',
@@ -522,6 +533,52 @@ describe('WorkItemAdmissionQueueDriver', () => {
     expect(outcome.kind).toBe('queued');
     expect(store.size).toBe(1);
     expect(store.enqueueAttempts).toBe(3); // two failures + the successful write
+  });
+
+  // EI-22697720752476196: the original production red happened AFTER test execution, while
+  // WorkItemAdmissionQueueDriver.release() tried to complete its governed receipt. The same
+  // bounded retry must cover this terminal row-lock transition, or a transient 57014 still
+  // reports a cleanup failure and leaks the reservation.
+  it('rides out transient pg contention during terminal resource release', async () => {
+    const store = new MemoryQueueStore();
+    store.failReleaseClaimTimes = 2; // the contention dip clears before the third CAS attempt
+    store.releaseClaimError = contentionError();
+    const { governor: api, driver } = governor(store, () => 1_000, noSleep);
+    const admitted = await api.admit({ idempotencyKey: 'release-rides-out', admissionClass: 'process' });
+    if (admitted.kind !== 'queued') throw new Error('expected a queued receipt');
+    const claim = await driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'worker',
+      ttlMs: 1_000,
+    });
+    if (!claim) throw new Error('expected a targeted lease');
+
+    await expect(api.release(claim.context, { cpuWeight: 1 })).resolves.toEqual({
+      requestId: claim.context.requestId,
+      released: true,
+    });
+    expect(store.releaseClaimAttempts).toBe(3); // two transient failures + the successful release
+    await expect(api.status('release-rides-out')).resolves.toMatchObject({ state: 'completed' });
+  });
+
+  it('does not retry a non-contention terminal release failure', async () => {
+    const store = new MemoryQueueStore();
+    store.failReleaseClaimTimes = 1;
+    store.releaseClaimError = Object.assign(new Error('relation "resource_governor_admissions" does not exist'), {
+      code: '42P01',
+    });
+    const { governor: api, driver } = governor(store, () => 1_000, noSleep);
+    const admitted = await api.admit({ idempotencyKey: 'release-real-fault', admissionClass: 'process' });
+    if (admitted.kind !== 'queued') throw new Error('expected a queued receipt');
+    const claim = await driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'worker',
+      ttlMs: 1_000,
+    });
+    if (!claim) throw new Error('expected a targeted lease');
+
+    await expect(api.release(claim.context)).rejects.toThrow('resource_governor_admissions');
+    expect(store.releaseClaimAttempts).toBe(1);
   });
 
   /**

@@ -28,6 +28,12 @@ import {
 
 export interface SpecAdequacyCompletionAttestation {
   classRef: PlanClassRubricRef;
+  /**
+   * Exact immutable proof identities to grade. Historical bindings remain in the
+   * ledger, but a caller can exclude superseded run-specific refs just as
+   * plans:evaluate-spec-test-adequacy already permits.
+   */
+  evidenceRefs?: string[];
   current?: EvidenceCurrentInput[];
 }
 
@@ -326,6 +332,7 @@ export async function specTestAdequacyCompletionGate(
     planSlugs: enforcedPlanSlugs,
     workItemIds: [input.workItem.id],
     specIds: relevant.map((clause) => clause.specId),
+    evidenceRefs: input.attestation.evidenceRefs,
     current: input.attestation.current,
     limit: 1000,
   });

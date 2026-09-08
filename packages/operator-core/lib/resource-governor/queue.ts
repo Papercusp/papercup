@@ -885,13 +885,27 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
 
   async release(context: AdmissionContext, actualDemand?: ResourceDemand): Promise<AdmissionRelease> {
     if (!context.leaseId) return { requestId: context.requestId, released: false };
+    const leaseId = context.leaseId;
     const stored = await this.store.find(this.namespace, context.idempotencyKey);
     if (!stored) return { requestId: context.requestId, released: false };
     if (context.receiptId && context.receiptId !== stored.receiptId) {
       return { requestId: context.requestId, released: false };
     }
     const releasedAtMs = this.now();
-    const released = await this.store.releaseClaim(stored.receiptId, context.leaseId, actualDemand, releasedAtMs);
+    // Release is a terminal admission transition, but it still takes a row lock. A transient
+    // pg 55P03/57014 here used to escape the enqueue retry and make an otherwise completed test
+    // surface as a cleanup failure. The transition is CAS/idempotent: a timeout aborts the
+    // transaction before it can commit, and a retry with the same lease identity either completes
+    // the row or observes that another caller already did so. Reuse the same bounded contention
+    // retry policy as admission enqueue rather than dropping the release (which would leak the
+    // durable reservation).
+    const released = await acquireWithContentionRetry(
+      () => this.store.releaseClaim(stored.receiptId, leaseId, actualDemand, releasedAtMs),
+      {
+        ...(this.admissionRetryBackoffsMs ? { backoffsMs: this.admissionRetryBackoffsMs } : {}),
+        ...(this.sleep ? { sleep: this.sleep } : {}),
+      },
+    );
     if (released?.changed && actualDemand && this.onActualDemand) {
       await this.onActualDemand({
         receiptId: stored.receiptId,

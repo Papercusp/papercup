@@ -121,4 +121,38 @@ describe('synchronizeFinishWork plan-item reflection carries the coverage guard'
     const { calls } = await runFinish('open');
     expect(calls.find((c) => c.fire === 'plans:set-status')).toBeUndefined();
   });
+
+  it('keeps a terminal close truthful and retries only the missing checkpoint cleanup leg', async () => {
+    // EI-22703164970810180: terminal state/evidence can commit before boundedOrgTxn
+    // acquisition for checkpoint cleanup times out. The caller must see incomplete finish
+    // convergence, then be able to retry the same completion without losing the close.
+    const clearCheckpoint = vi
+      .fn<(_ref: unknown, _checkpoint: string | null) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('db-call-deadline: boundedOrgTxn:acquire(admin)'))
+      .mockResolvedValueOnce(undefined);
+    const fire = vi.fn(async (_opts: FiredReaction) => ({ ok: true as const }));
+    const readPlanItemStatus = vi.fn(async () => 'done');
+    const args = {
+      id: 'EI-22703164970810180',
+      workItem: { state: 'done', harness: 'papercusp', payload: { plan_item: STAMP } },
+      completionEvidenceStored: true,
+      ctx,
+    };
+
+    const first = await synchronizeFinishWork(args, {
+      fire: fire as never,
+      clearCheckpoint: clearCheckpoint as never,
+      readPlanItemStatus,
+    });
+    expect(first).toMatchObject({ complete: false, checkpointCleared: false, planItem: 'done' });
+    expect(first.errors?.join(' ')).toContain('checkpoint cleanup failed: db-call-deadline');
+
+    const retry = await synchronizeFinishWork(args, {
+      fire: fire as never,
+      clearCheckpoint: clearCheckpoint as never,
+      readPlanItemStatus,
+    });
+    expect(retry).toMatchObject({ complete: true, checkpointCleared: true, planItem: 'done' });
+    expect(clearCheckpoint).toHaveBeenCalledTimes(2);
+  });
 });

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "plan": "design-acceptance-journey-enforcement-2026-09-08",
+  "workItemId": "WI-10000754",
+  "specRef": "AUTO-BAR-R-2-P-002@3",
+  "status": "verification-in-progress",
+  "sourceTest": "apps/operator/e2e/portal-desktop-design.spec.ts",
+  "original": {
+    "testRunId": 17712295,
+    "runGroupId": "design-journey-p002-original-matrix-20260908",
+    "build": {
+      "schemaVersion": 2,
+      "buildId": "5J8-nhZvCyUiBU5llWuxa",
+      "release": "5J8-nhZvCyUiBU5llWuxa-20260908023028593-1218708-bbd344f2",
+      "sourceRoot": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "publishedAt": "2026-09-08T02:30:28.593Z",
+      "sourceRootDigest": "58830c696715b247b7f79a0b6a398511110986f1b9216ad0e797ee01a0cada55"
+    },
+    "cases": [
+      {
+        "scenarioId": "desktop.entry.canonical",
+        "outcome": "expected-fail",
+        "shellReady": true,
+        "desktopWorkspacePresent": false,
+        "cloudManagementPresent": true,
+        "captureSha256": "87d28ed9db1fce2b79cc7d3e27e52ab4668bd8fd411defb6db151c067d70824b",
+        "failureStage": "initial desktop destination (before later selection/history actions)"
+      },
+      {
+        "scenarioId": "desktop.entry.clean",
+        "outcome": "expected-fail",
+        "shellReady": true,
+        "desktopWorkspacePresent": false,
+        "cloudManagementPresent": true,
+        "captureSha256": "f6e180e3d3b365955b2d0873ff082d92c5ca0ac7113e0b6c2cb40c7c5bb0a77b",
+        "failureStage": "initial desktop destination (before later selection/history actions)"
+      },
+      {
+        "scenarioId": "desktop.entry.history",
+        "outcome": "expected-fail",
+        "shellReady": true,
+        "desktopWorkspacePresent": false,
+        "cloudManagementPresent": true,
+        "captureSha256": "7ea00002982141e4741fd27193040f38fc5b45cb350ee6708464691da74ebf60",
+        "failureStage": "initial desktop destination (before later selection/history actions)"
+      },
+      {
+        "scenarioId": "desktop.entry.legacy",
+        "outcome": "expected-fail",
+        "shellReady": true,
+        "desktopWorkspacePresent": false,
+        "cloudManagementPresent": true,
+        "captureSha256": "2d5d62696c46308a7e23d200c5cc8834b5de71b89766aa29e598c7794816a16d",
+        "failureStage": "initial desktop destination (before later selection/history actions)"
+      },
+      {
+        "scenarioId": "desktop.entry.persisted",
+        "outcome": "expected-fail",
+        "shellReady": true,
+        "desktopWorkspacePresent": false,
+        "cloudManagementPresent": true,
+        "captureSha256": "1d6fed3aa113bfe0fc2199dc5f46f6ae73264a7c4749b63d841cf601eeb99e9d",
+        "failureStage": "initial desktop destination (before later selection/history actions)"
+      },
+      {
+        "scenarioId": "desktop.entry.reload",
+        "outcome": "expected-fail",
+        "shellReady": true,
+        "desktopWorkspacePresent": false,
+        "cloudManagementPresent": true,
+        "captureSha256": "1d6fed3aa113bfe0fc2199dc5f46f6ae73264a7c4749b63d841cf601eeb99e9d",
+        "failureStage": "initial desktop destination (before later selection/history actions)"
+      }
+    ],
+    "reproduction": "Run the source test with --grep desktop.entry against the named immutable original standalone generation using the normal portal service environment and its existing discovered PORTAL_DATABASE_URL, injected without printing secrets. Preview port was 3881 and has been stopped."
+  },
+  "positive": {
+    "status": "pending-new-preview",
+    "baselineTestRunId": 17709578,
+    "baselineScope": "four pre-existing real-portal tests passed before expansion; does not establish the six new scenarios"
+  },
+  "readinessDefect": {
+    "workItemId": "EI-22708091798400094",
+    "beforeTestRunId": 17711801,
+    "sourcePath": "/home/marsh-office/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/packages/ui/src/shell.tsx",
+    "rootCause": "refresh Promise.all waits for optional workspace stats before setApps, so a pending stats read prevents navigation rendering despite apps200",
+    "fix": "Invoke existing refreshWorkspaceStats independently of the app-list refresh",
+    "regression": "desktop navigation completes while the auxiliary workspace-stats request is held",
+    "afterStatus": "pending-preview",
+    "relatedChecks": "96 shell/preference tests passed"
+  },
+  "limits": [
+    "Original six failures all establish the missing destination before later scenario actions; individual repaired-path assertions remain required.",
+    "Fixtures or disconnected layouts do not prove connected-cloud control.",
+    "Temporary failure captures are identified by digest; the durable ledger and source test are the rerun authority.",
+    "No operator-core shipment or final plan completion claimed."
+  ]
+}
