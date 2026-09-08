@@ -8,12 +8,14 @@ import { findBoxIdentityPaths } from '../scripts/lib/identity-leak-patterns.mjs'
 const TERMINAL_STATES = new Set(['done', 'closed', 'resolved', 'dropped']);
 const ARTIFACT_RE =
   /^feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-shard-(\d+)\.json$/;
+const DEFAULT_MAX_ASSIGNMENT_AGE_MS = 24 * 60 * 60 * 1000;
 
 function parseArgs(argv) {
   const out = {
     artifacts: 'scratchpad',
     expectedShards: 50,
     expectedCandidates: 236,
+    maxAssignmentAgeMs: DEFAULT_MAX_ASSIGNMENT_AGE_MS,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
@@ -23,11 +25,15 @@ function parseArgs(argv) {
     else if (key === '--artifacts') out.artifacts = value;
     else if (key === '--expected-shards') out.expectedShards = Number(value);
     else if (key === '--expected-candidates') out.expectedCandidates = Number(value);
+    else if (key === '--max-assignment-age-ms') out.maxAssignmentAgeMs = Number(value);
     else throw new Error('Unknown argument: ' + key);
     i += 1;
   }
   if (!out.assignments) throw new Error('--assignments is required');
   if (!out.ledger) throw new Error('--ledger is required');
+  if (!Number.isFinite(out.maxAssignmentAgeMs) || out.maxAssignmentAgeMs <= 0) {
+    throw new Error('--max-assignment-age-ms must be a positive number');
+  }
   return out;
 }
 
@@ -99,6 +105,61 @@ function sameArray(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function isRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Assignment rows are a snapshot of live work-item state, not an authority by
+ * themselves. Require the producer to identify the export and capture time
+ * before exposing any row status as a live aggregate. This deliberately fails
+ * closed: an old repository JSON file must produce UNKNOWN, never a stale
+ * terminal/open verdict.
+ */
+function validateAssignmentFreshness(document, maxAgeMs, nowMs = Date.now()) {
+  const captureTimestampField =
+    document.capturedAt !== undefined
+      ? 'capturedAt'
+      : document.generatedAt !== undefined
+        ? 'generatedAt'
+        : null;
+  const captureTimestamp = captureTimestampField == null ? null : document[captureTimestampField];
+  const capturedAtMs = typeof captureTimestamp === 'string' ? Date.parse(captureTimestamp) : NaN;
+  const sourceIdentity = document.sourceIdentity;
+  const sourceIdentityPresent = isRecord(sourceIdentity);
+  const sourceIdentityFields = ['kind', 'scope', 'revision'];
+  const missingSourceIdentityFields = sourceIdentityPresent
+    ? sourceIdentityFields.filter((field) => !isNonEmptyString(sourceIdentity[field]))
+    : sourceIdentityFields;
+  const ageMs = Number.isFinite(capturedAtMs) ? nowMs - capturedAtMs : null;
+  const checks = {
+    captureTimestampPresent: captureTimestampField != null,
+    captureTimestampValid: Number.isFinite(capturedAtMs),
+    captureTimestampNotFuture: Number.isFinite(ageMs) && ageMs >= 0,
+    captureTimestampFresh: Number.isFinite(ageMs) && ageMs <= maxAgeMs,
+    sourceIdentityPresent,
+    sourceIdentityComplete: sourceIdentityPresent && missingSourceIdentityFields.length === 0,
+  };
+  const reasons = [];
+  if (!checks.captureTimestampPresent) reasons.push('assignment-capture-timestamp-missing');
+  else if (!checks.captureTimestampValid) reasons.push('assignment-capture-timestamp-invalid');
+  else if (!checks.captureTimestampNotFuture) reasons.push('assignment-capture-timestamp-in-future');
+  else if (!checks.captureTimestampFresh) reasons.push('assignment-source-stale');
+  if (!checks.sourceIdentityPresent) reasons.push('assignment-source-identity-missing');
+  else if (!checks.sourceIdentityComplete) reasons.push('assignment-source-identity-incomplete');
+  return {
+    verdict: reasons.length === 0 ? 'fresh' : 'unknown',
+    capturedAt: Number.isFinite(capturedAtMs) ? new Date(capturedAtMs).toISOString() : captureTimestamp,
+    captureTimestampField,
+    ageMs,
+    maxAgeMs,
+    sourceIdentity: sourceIdentityPresent ? sourceIdentity : null,
+    missingSourceIdentityFields,
+    checks,
+    reasons,
+  };
+}
+
 const args = parseArgs(process.argv.slice(2));
 const assignmentPath = resolve(args.assignments);
 const ledgerPath = resolve(args.ledger);
@@ -106,6 +167,38 @@ const artifactDirectory = resolve(args.artifacts);
 const assignmentDocument = JSON.parse(readFileSync(assignmentPath, 'utf8'));
 const rows = Array.isArray(assignmentDocument) ? assignmentDocument : assignmentDocument.rows;
 if (!Array.isArray(rows)) throw new Error('Assignment input must be an array or { rows: [...] }');
+const assignmentFreshness = validateAssignmentFreshness(assignmentDocument, args.maxAssignmentAgeMs);
+
+if (assignmentFreshness.verdict !== 'fresh') {
+  const output = {
+    schemaVersion: 'feature-change-p004-validation-aggregate-v1',
+    generatedAt: new Date().toISOString(),
+    ok: false,
+    verdict: 'unknown',
+    assignmentFreshness,
+    readiness: {
+      ready: false,
+      verdict: 'unknown',
+      checks: { assignmentFreshness: false },
+      unknownReason: 'Assignment freshness proof is missing or stale; row states are not authoritative.',
+    },
+    sources: {
+      assignments: args.assignments,
+      ledger: args.ledger,
+      artifacts: args.artifacts,
+    },
+    population: { assignmentRows: rows.length },
+    statusCounts: null,
+    recommendationCounts: null,
+    frozenOutcomeCounts: null,
+    warnings: [],
+    errors: [{ code: 'assignment-freshness-unknown', reasons: assignmentFreshness.reasons }],
+    shards: [],
+  };
+  process.stdout.write(JSON.stringify(output, null, 2) + '\n');
+  process.exit(1);
+}
+
 const ledgerDocument = JSON.parse(readFileSync(ledgerPath, 'utf8'));
 if (!Array.isArray(ledgerDocument.entries)) throw new Error('Ledger must contain entries[]');
 
@@ -372,6 +465,8 @@ const readinessChecks = {
 };
 const readiness = {
   ready: Object.values(readinessChecks).every(Boolean) && errors.length === 0,
+  verdict: Object.values(readinessChecks).every(Boolean) && errors.length === 0 ? 'ready' : 'not-ready',
+  assignmentFreshness: assignmentFreshness.verdict,
   checks: readinessChecks,
   missingArtifactShards,
   invalidArtifactShards,
@@ -381,6 +476,8 @@ const output = {
   schemaVersion: 'feature-change-p004-validation-aggregate-v1',
   generatedAt: new Date().toISOString(),
   ok: readiness.ready,
+  verdict: readiness.ready ? 'ready' : 'not-ready',
+  assignmentFreshness,
   readiness,
   sources: {
     assignments: args.assignments,

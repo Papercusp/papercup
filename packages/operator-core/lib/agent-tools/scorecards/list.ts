@@ -12,6 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -131,13 +132,13 @@ export default defineTool({
       } catch (error) {
         // EI-21592547181442895: an exhausted, transient read contention sequence is
         // actionable to callers and must not degrade into generic handler_error.
-        if (error instanceof OrgTxnTimeoutError) {
+        if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
           return {
             data: {
               ok: false,
               error: 'timeout',
               retryable: true,
-              pgCode: error.pgCode,
+              ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
               message:
                 `scorecards:list read hit transient database contention: ${error.message}. ` +
                 'No scorecards were returned; retry shortly.',

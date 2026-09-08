@@ -156,7 +156,14 @@ import {
   type OpenAiCacheStats,
 } from './cache-policy';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
-import { AdmitImmediatelyDriver, Governor, type AdmissionContext } from '../resource-governor/admission';
+import {
+  AdmitImmediatelyDriver,
+  AdmissionPersistenceError,
+  Governor,
+  type AdmissionContext,
+} from '../resource-governor/admission';
+import { OrgTxnTimeoutError } from '../pg-bounded-txn';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import {
   admitGatewayRequest,
   gatewayAdmissionBypassKeyForRequest,
@@ -9605,6 +9612,44 @@ export function createInferenceGateway(deps: GatewayDeps) {
             },
             { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC), connection: 'close' },
           );
+        }
+        return;
+      }
+      // EI-22708683358025859: the durable admission ledger is the second
+      // pre-upstream persistence boundary, after the payload spool. A bounded
+      // PG transaction or connection-acquire timeout here used to miss the
+      // spool-specific branch above and fall into the generic crash backstop
+      // below, producing an opaque, terminal 500 with x-should-retry:false.
+      // No upstream work has started when admission cannot be recorded, so
+      // report the same truthful persistence-unavailable contract as a spool
+      // failure and let the client retry once the control store recovers.
+      if (
+        e instanceof AdmissionPersistenceError ||
+        e instanceof OrgTxnTimeoutError ||
+        e instanceof DbCallDeadlineError
+      ) {
+        log('warn', `inference-gateway: refusing request — durable admission persistence unavailable: ${e.message}`);
+        req.resume();
+        if (!res.headersSent) {
+          sendJson(
+            res,
+            503,
+            {
+              type: 'error',
+              error: {
+                type: 'overloaded_error',
+                message: 'inference-gateway: durable admission persistence unavailable; retry shortly',
+              },
+              gateway: true,
+            },
+            {
+              'retry-after': String(LOADSHED_RETRY_AFTER_SEC),
+              'x-should-retry': 'true',
+              connection: 'close',
+            },
+          );
+        } else if (!res.destroyed) {
+          res.destroy();
         }
         return;
       }

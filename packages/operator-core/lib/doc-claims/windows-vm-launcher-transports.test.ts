@@ -224,3 +224,33 @@ describe.skipIf(NO_TRACKED)(`windows-vm launcher: deployed copy has not drifted 
     ).toBe(TRACKED);
   });
 });
+
+describe.skipIf(NO_TRACKED)('windows-vm launcher: nested flush routing keeps watchdogs enabled', () => {
+  function cpuFeatures(script: string): string[] {
+    const argv = execContinuation(script).lines.join('\n');
+    return argv.match(/(?:^|\s)-cpu\s+(\S+)/)?.[1].split(',') ?? [];
+  }
+
+  it('enables the separate nested TLB flush route and its APIC prerequisite', () => {
+    expect(cpuFeatures(TRACKED)).toEqual(expect.arrayContaining([
+      'hv-tlbflush', 'hv-tlbflush-direct', 'hv-vapic',
+    ]));
+  });
+
+  it('retains direct synthetic timers and all required prerequisites', () => {
+    expect(cpuFeatures(TRACKED)).toEqual(expect.arrayContaining([
+      'hv-stimer-direct', 'hv-stimer', 'hv-synic', 'hv-time', 'hv-vpindex',
+    ]));
+  });
+
+  it('does not suppress watchdogs or enable Intel-only nested VMCS', () => {
+    expect(cpuFeatures(TRACKED)).not.toEqual(expect.arrayContaining(['hv-relaxed']));
+    expect(cpuFeatures(TRACKED)).not.toEqual(expect.arrayContaining(['hv-evmcs']));
+  });
+
+  it('CONTROL: ordinary flush support alone lacks the nested route', () => {
+    const ordinaryOnly = TRACKED.replace(',hv-tlbflush-direct', '');
+    expect(cpuFeatures(ordinaryOnly)).toContain('hv-tlbflush');
+    expect(cpuFeatures(ordinaryOnly)).not.toContain('hv-tlbflush-direct');
+  });
+});

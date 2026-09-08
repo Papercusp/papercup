@@ -21,6 +21,7 @@ import { createFailoverPool } from './account-failover';
 import { createDurableGatewayAdmissionGovernor } from './durable-admission';
 import { MemoryAdmissionQueueStore } from '../resource-governor/memory-admission-queue-store';
 import type { AdmissionRequest, AdmissionContext, ResourceDemand } from '../resource-governor/admission';
+import { OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import {
   configureScheduledRegistry,
@@ -2418,6 +2419,43 @@ test('EI-21922950476359370: the THIRD exhaustion exit — an unclassified crash 
     'false',
     'an unclassified gateway-internal crash with no upstream response to forward must not invite a downstream SDK to retry it silently forever',
   );
+}, 15_000);
+
+test('EI-22708683358025859: a durable-admission PG timeout is a retryable persistence-unavailable 503 and never reaches upstream', async () => {
+  let upstreamCalls = 0;
+  const persistenceFailureGovernor = {
+    admit: async () => {
+      throw new OrgTxnTimeoutError('57014', new Error('canceling statement due to statement timeout'));
+    },
+    release: async (context: AdmissionContext) => ({ requestId: context.requestId, released: true }),
+  };
+  await boot(
+    (_req, res) => {
+      upstreamCalls += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    },
+    { admissionGovernor: persistenceFailureGovernor },
+  );
+
+  const res = await post({ model: 'claude-opus-5', messages: [{ role: 'user', content: 'x' }] });
+  const body = (await res.json()) as {
+    type?: string;
+    error?: { type?: string; message?: string };
+    gateway?: boolean;
+  };
+  assert.equal(res.status, 503, 'pre-upstream durable-persistence failure is service unavailable, not 500');
+  assert.equal(res.headers.get('x-should-retry'), 'true', 'the recovered control store may serve a later retry');
+  assert.ok(res.headers.get('retry-after'), 'the retry is paced rather than immediate');
+  assert.deepEqual(body, {
+    type: 'error',
+    error: {
+      type: 'overloaded_error',
+      message: 'inference-gateway: durable admission persistence unavailable; retry shortly',
+    },
+    gateway: true,
+  });
+  assert.equal(upstreamCalls, 0, 'a request without a durable admission receipt must never execute upstream');
 }, 15_000);
 
 test('a genuinely unsupported (non-http(s)/non-socks) egress proxyUrl fails SAFE → default shared egress, never a silent break (B-GW-3)', async () => {

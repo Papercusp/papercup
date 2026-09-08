@@ -10,11 +10,16 @@ import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } fro
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems, type WorkItem } from './work-items';
+import { reserveAcceptanceReviewTarget, type AcceptanceReviewReservationRef } from './coord/condition-upsert';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
 // Manual citation checks must use the same subject tree as the frozen audit, and
 // the fresh-judge prompt and the assigned-grader briefs must say so identically —
 // so the guidance is single-sourced beside the briefs, in grading-cascade.ts.
-import { ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE, GRADING_CASCADE_FLAVOR } from './consult/grading-cascade';
+import {
+  ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
+  acceptanceReviewReservationGuidance,
+  GRADING_CASCADE_FLAVOR,
+} from './consult/grading-cascade';
 import { listTasks } from './task-manager/store';
 import { killTask } from './task-manager/control';
 
@@ -145,6 +150,8 @@ export type AcceptanceGraderLifecycle = {
   /** Wake delivery for the HEAD grader ({ woke: 0 } = parked; they read the
    * grading request on their next turn — the subscribe is durable). */
   notified?: { woke: number };
+  /** The durable typed review-target assignment used by this dispatch. */
+  reviewReservation?: AcceptanceReviewReservationRef;
   /** Why dispatch was skipped (state 'settled'), or — on any other state — the
    * not-settled reading that ALLOWED the dispatch. Recorded on both paths on
    * purpose: a skip nobody can see is how this bug class hides, and so is a
@@ -800,6 +807,8 @@ export interface OpenGradingCascadeParams {
   graders: AssignedGrader[];
   /** The routing snapshot to persist (menu provenance + the refill pool). */
   routing: unknown;
+  /** The durable typed assignment this cascade is servicing. */
+  reservation?: AcceptanceReviewReservationRef;
 }
 export interface OpenGradingCascadeResult {
   conversationId: string;
@@ -854,7 +863,13 @@ async function prodOpenGradingCascade(
      WHERE workspace_id = ${params.workspaceId}
        AND closed_at IS NULL
        AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+       AND routing -> 'cascade' ->> 'planSlug' = ${params.planSlug}
        AND routing -> 'cascade' ->> 'rubricId' = ${params.rubricId}
+       AND (
+         ${params.reservation?.conditionKey ?? null}::text IS NULL
+         OR routing -> 'cascade' -> 'reservation' ->> 'conditionKey' = ${params.reservation?.conditionKey ?? null}
+         OR NOT (routing -> 'cascade' ? 'reservation')
+       )
      LIMIT 1
   `) as unknown as Array<{ conversation_id: string }>;
   if (existing[0]) return { conversationId: existing[0].conversation_id, woke: 0 };
@@ -862,8 +877,18 @@ async function prodOpenGradingCascade(
   const head = params.graders[0]!;
   const brief =
     head.via === 'minimum'
-      ? briefs.buildMinimumFillAcceptanceGraderBrief(params.planSlug, params.harnessSlug, params.rubricId)
-      : briefs.buildAssignedAcceptanceGraderBrief(params.planSlug, params.harnessSlug, params.rubricId);
+      ? briefs.buildMinimumFillAcceptanceGraderBrief(
+          params.planSlug,
+          params.harnessSlug,
+          params.rubricId,
+          params.reservation,
+        )
+      : briefs.buildAssignedAcceptanceGraderBrief(
+          params.planSlug,
+          params.harnessSlug,
+          params.rubricId,
+          params.reservation,
+        );
 
   const opened = await conversations.openConversation(identity, {
     kind: 'consult',
@@ -885,6 +910,7 @@ async function prodOpenGradingCascade(
       planSlug: params.planSlug,
       rubricId: params.rubricId,
       harnessSlug: params.harnessSlug,
+      ...(params.reservation ? { reservation: params.reservation } : {}),
     },
   };
   const expiresAt = new Date(Date.now() + PROCEED_EXPIRY_MS).toISOString();
@@ -1017,6 +1043,7 @@ export async function resolveAcceptanceGrader(
     discover?: typeof prodDiscoverGrader;
     openCascade?: typeof prodOpenGradingCascade;
     readSettlement?: typeof readAcceptanceGradingSettlement;
+    reserveReviewTarget?: typeof reserveAcceptanceReviewTarget;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   let settlement: AcceptanceGradingSettlement | undefined;
@@ -1031,6 +1058,7 @@ export async function resolveAcceptanceGrader(
       }
     | undefined;
   let discoveryRubricId: string | undefined;
+  let reviewReservation: AcceptanceReviewReservationRef | undefined;
   try {
     const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
       ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
@@ -1101,6 +1129,30 @@ export async function resolveAcceptanceGrader(
         };
       }
 
+      // Launcher idempotency protects a process receipt; this condition-keyed
+      // reservation protects the durable reviewer-visible target across retries
+      // and concurrent dispatches. The key includes the nullable rubric revision
+      // so distinct revisions remain independent.
+      const rubricRevision = (rubric as unknown as { revision?: number | null }).revision ?? null;
+      const reserved = await (deps.reserveReviewTarget ?? reserveAcceptanceReviewTarget)(
+        {
+          workspaceId: plan.row.workspaceId,
+          harnessSlug: plan.row.harnessSlug ?? null,
+          planSlug,
+          rubricId,
+          revision: rubricRevision,
+        },
+        {
+          title: `Acceptance review-target reservation — ${planSlug} (${rubricId})`,
+          summary:
+            `Canonical reviewer assignment for acceptance target ${planSlug} at rubric revision ` +
+            `${rubricRevision ?? 'legacy'}.`,
+        },
+      );
+      // `created` is an upsert outcome for the caller, not part of the stable
+      // reference copied into briefs and persisted routing.
+      reviewReservation = { conditionKey: reserved.conditionKey, id: reserved.id };
+
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
         // Opening the cascade is BEST-EFFORT in exactly the way the single wake
@@ -1116,6 +1168,7 @@ export async function resolveAcceptanceGrader(
             rubricId,
             graders: selection.graders,
             routing: selection.routing,
+            reservation: reviewReservation,
           },
           ctx,
         ).catch(() => null);
@@ -1132,6 +1185,7 @@ export async function resolveAcceptanceGrader(
           eligibility: selection.eligibility,
           ...(selection.escalation ? { escalation: selection.escalation } : {}),
           notified: { woke: opened?.woke ?? 0 },
+          reviewReservation,
           ...(settlement ? { settlement } : {}),
         };
       }
@@ -1152,8 +1206,13 @@ export async function resolveAcceptanceGrader(
     );
     discovery = { excluded: [], freshReason: 'discovery_error', discoveryError: msg };
   }
-  const launched = await launchAcceptanceGrader(planSlug, ctx, deps);
-  return { ...launched, ...(discovery ?? {}), ...(settlement ? { settlement } : {}) };
+  const launched = await launchAcceptanceGrader(planSlug, ctx, { ...deps, reviewReservation });
+  return {
+    ...launched,
+    ...(reviewReservation ? { reviewReservation } : {}),
+    ...(discovery ?? {}),
+    ...(settlement ? { settlement } : {}),
+  };
 }
 
 export async function launchAcceptanceGrader(
@@ -1177,6 +1236,8 @@ export async function launchAcceptanceGrader(
     startupStallLogMaxRechecks?: number;
     nowMs?: () => number;
     staleAfterMs?: number;
+    /** Durable typed assignment to quote in the fresh-judge brief. */
+    reviewReservation?: AcceptanceReviewReservationRef;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
@@ -1259,6 +1320,7 @@ export async function launchAcceptanceGrader(
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
     'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
     ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
+    acceptanceReviewReservationGuidance(deps.reviewReservation),
     `Recorded rerun command (for provenance; your judge policy forbids executing Bash): ${rerun}`,
     `FROZEN_ACCEPTANCE_CONTEXT=${snapshot}`,
   ].join('\n\n');

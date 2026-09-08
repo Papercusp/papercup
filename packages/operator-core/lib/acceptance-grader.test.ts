@@ -25,6 +25,7 @@ const plan = {
 
 const rubric = {
   rubricId: 'acceptance-ship-the-thing',
+  revision: 3,
   title: 'Ship acceptance',
   proposedBy: 'su-implementer',
   criteria: [{ key: 'outcome', title: 'Outcome works', description: 'The shipped outcome is verified.' }],
@@ -128,9 +129,25 @@ describe('isAcceptanceGradingRequestForPlan', () => {
       ),
     ).toBe(false);
   });
+
+  it('does not treat a review-target reservation as an in-flight grading request', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        {
+          title: 'Acceptance review-target reservation — ship-the-thing (acceptance-ship-the-thing)',
+          summary: 'Canonical reviewer assignment for acceptance target ship-the-thing at rubric revision 3.',
+        },
+        'ship-the-thing',
+      ),
+    ).toBe(false);
+  });
 });
 
 function deps(launch: ReturnType<typeof vi.fn>) {
+  const reviewReservation = {
+    conditionKey: 'acceptance-review-target:v1:test-key',
+    id: 'WI-review-target',
+  };
   return {
     readPlan: vi.fn(async () => plan),
     getRubric: vi.fn(async () => rubric),
@@ -144,6 +161,7 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     // exercising the dispatch path deterministically, without reaching a database.
     readSettlement: vi.fn(async () => ({ settled: false, reason: 'no_author_acceptance' as const, rubricRevision: 7 })),
     lineageRelated: vi.fn(async () => false),
+    reserveReviewTarget: vi.fn(async () => ({ ...reviewReservation, created: true })),
   };
 }
 
@@ -728,9 +746,57 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
         harnessSlug: 'papercusp',
         rubricId: 'acceptance-ship-the-thing',
         graders,
+        reservation: {
+          conditionKey: 'acceptance-review-target:v1:test-key',
+          id: 'WI-review-target',
+        },
       }),
       ctx,
     );
+    expect(result.reviewReservation).toEqual({
+      conditionKey: 'acceptance-review-target:v1:test-key',
+      id: 'WI-review-target',
+    });
+  });
+
+  it('reserves the typed target once and carries it into a fresh-judge brief', async () => {
+    const launch = freshLaunch();
+    const reserveReviewTarget = vi.fn(async (target: Record<string, unknown>) => ({
+      conditionKey: `acceptance-review-target:v1:${String(target.revision)}`,
+      id: 'WI-review-target',
+      created: true,
+    }));
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      reserveReviewTarget: reserveReviewTarget as never,
+      discover: vi.fn(async () => ({
+        verdict: 'fresh' as const,
+        graders: [],
+        excluded: [],
+        freshReason: 'all_eligible_unselectable' as const,
+      })),
+    });
+
+    expect(result.state).toBe('launched');
+    expect(reserveReviewTarget).toHaveBeenCalledWith(
+      {
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        planSlug: 'ship-the-thing',
+        rubricId: 'acceptance-ship-the-thing',
+        revision: 3,
+      },
+      expect.objectContaining({ title: expect.stringContaining('review-target reservation') }),
+    );
+    const launchCalls = launch.mock.calls as unknown as Array<[{ brief?: unknown }]>;
+    const launchArgs = launchCalls[0]?.[0];
+    expect(String(launchArgs?.brief)).toContain('acceptance-review-target:v1:3');
+    expect(String(launchArgs?.brief)).toContain('WI-review-target');
+    expect(result.reviewReservation).toEqual({
+      conditionKey: 'acceptance-review-target:v1:3',
+      id: 'WI-review-target',
+    });
   });
 
   // ── WI-1699998: an already-decided grading is never re-routed ──

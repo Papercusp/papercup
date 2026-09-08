@@ -13,6 +13,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import type { ScorecardRow } from '../../scorecards';
 
@@ -154,6 +155,25 @@ describe('scorecards:list correctness payload', () => {
       retryable: true,
       pgCode: '55P03',
     });
+    expect(result.data.message).toContain('retry shortly');
+  });
+
+  it('returns a typed retryable envelope when acquisition misses its deadline', async () => {
+    listScorecardPageM.mockRejectedValueOnce(
+      new DbCallDeadlineError('boundedPgReadTxn:acquire(admin)', 8000, 8000, 'org-admin'),
+    );
+
+    const result = (await listTool.handler(
+      { subjectRef: 'EI-subject' } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+    });
+    expect(result.data.pgCode).toBeUndefined();
     expect(result.data.message).toContain('retry shortly');
   });
 

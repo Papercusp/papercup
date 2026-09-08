@@ -112,13 +112,13 @@ export function acceptanceReviewTargetConditionKey(target: AcceptanceReviewTarge
  */
 export async function reserveAcceptanceReviewTarget(
   target: AcceptanceReviewTarget,
-  input: Pick<CreateWorkItemInput, 'title' | 'summary'> = {},
+  input: Partial<Pick<CreateWorkItemInput, 'title' | 'summary'>> = {},
 ): Promise<AcceptanceReviewReservationRef & { created: boolean }> {
   const normalized = normalizeAcceptanceReviewTarget(target);
   const conditionKey = acceptanceReviewTargetConditionKey(normalized);
   const result = await upsertConditionWorkItem(conditionKey, {
     kind: 'task',
-    title: input.title ?? `Acceptance grading reservation — ${normalized.planSlug} (${normalized.rubricId})`,
+    title: input.title ?? `Acceptance review-target reservation — ${normalized.planSlug} (${normalized.rubricId})`,
     summary:
       input.summary ??
       `Canonical reviewer assignment for acceptance target ${normalized.planSlug} at revision ${normalized.revision ?? 'legacy'}.`,

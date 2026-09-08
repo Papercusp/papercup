@@ -24,30 +24,111 @@ function gitBlobSha(value) {
     .digest('hex');
 }
 
-function runAggregate(directory, assignments, ledger, expectedShards, expectedCandidates) {
+function runAggregate(
+  directory,
+  assignments,
+  ledger,
+  expectedShards,
+  expectedCandidates,
+  { assignmentDocument, maxAssignmentAgeMs } = {},
+) {
   const assignmentsPath = join(directory, 'assignments.json');
   const ledgerPath = join(directory, 'ledger.json');
-  writeFileSync(assignmentsPath, JSON.stringify({ rows: assignments }));
+  writeFileSync(
+    assignmentsPath,
+    JSON.stringify(
+      assignmentDocument ?? {
+        capturedAt: new Date().toISOString(),
+        sourceIdentity: {
+          kind: 'test-work-items-export',
+          scope: 'p004-aggregate-test',
+          revision: 'fixture-v1',
+        },
+        rows: assignments,
+      },
+    ),
+  );
   writeFileSync(ledgerPath, JSON.stringify({ entries: ledger }));
+  const args = [
+    script,
+    '--assignments',
+    assignmentsPath,
+    '--ledger',
+    ledgerPath,
+    '--artifacts',
+    directory,
+    '--expected-shards',
+    String(expectedShards),
+    '--expected-candidates',
+    String(expectedCandidates),
+  ];
+  if (maxAssignmentAgeMs != null) {
+    args.push('--max-assignment-age-ms', String(maxAssignmentAgeMs));
+  }
   const result = spawnSync(
     process.execPath,
-    [
-      script,
-      '--assignments',
-      assignmentsPath,
-      '--ledger',
-      ledgerPath,
-      '--artifacts',
-      directory,
-      '--expected-shards',
-      String(expectedShards),
-      '--expected-candidates',
-      String(expectedCandidates),
-    ],
+    args,
     { encoding: 'utf8' },
   );
   return { ...result, output: JSON.parse(result.stdout) };
 }
+
+test('missing assignment freshness proof is unknown and cannot expose row states', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'p004-aggregate-unknown-'));
+  try {
+    const result = runAggregate(directory, [], [], 0, 0, {
+      assignmentDocument: { rows: [] },
+    });
+
+    assert.equal(result.status, 1);
+    assert.equal(result.output.ok, false);
+    assert.equal(result.output.verdict, 'unknown');
+    assert.equal(result.output.readiness.verdict, 'unknown');
+    assert.deepEqual(result.output.assignmentFreshness.reasons, [
+      'assignment-capture-timestamp-missing',
+      'assignment-source-identity-missing',
+    ]);
+    assert.equal(result.output.statusCounts, null);
+    assert.deepEqual(result.output.shards, []);
+    assert.deepEqual(result.output.errors, [
+      {
+        code: 'assignment-freshness-unknown',
+        reasons: [
+          'assignment-capture-timestamp-missing',
+          'assignment-source-identity-missing',
+        ],
+      },
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('stale assignment freshness proof is unknown even with a complete source identity', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'p004-aggregate-stale-'));
+  try {
+    const result = runAggregate(directory, [], [], 0, 0, {
+      assignmentDocument: {
+        capturedAt: new Date(Date.now() - 60_000).toISOString(),
+        sourceIdentity: {
+          kind: 'test-work-items-export',
+          scope: 'p004-aggregate-test',
+          revision: 'fixture-v1',
+        },
+        rows: [],
+      },
+      maxAssignmentAgeMs: 1_000,
+    });
+
+    assert.equal(result.status, 1);
+    assert.equal(result.output.verdict, 'unknown');
+    assert.deepEqual(result.output.assignmentFreshness.reasons, ['assignment-source-stale']);
+    assert.deepEqual(result.output.readiness.unknownReason, 'Assignment freshness proof is missing or stale; row states are not authoritative.');
+    assert.deepEqual(result.output.shards, []);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('an internally consistent partial cohort is not reported ready or ok', () => {
   const directory = mkdtempSync(join(tmpdir(), 'p004-aggregate-incomplete-'));
@@ -161,6 +242,7 @@ test('a complete terminal cohort with a validated artifact remains green', () =>
     assert.equal(result.status, 0);
     assert.equal(result.output.ok, true);
     assert.equal(result.output.readiness.ready, true);
+    assert.equal(result.output.assignmentFreshness.verdict, 'fresh');
     assert.deepEqual(result.output.errors, []);
     assert.equal(result.output.population.validatedArtifactCount, 1);
   } finally {
