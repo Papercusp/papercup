@@ -42,6 +42,7 @@ import {
 // EI-14161: same single-sourcing for `tags`, so a spec's tag-based exclusion
 // (the p2p/rig-fenced class title-globs used to stand in for) is derivable too.
 import { planSlugOfWorkItem, staticTagsOfWorkItem } from './scheduler/claim-spec-match';
+import type { PlanItemLaneBlock } from './scheduler/plan-item-lane-guard';
 // Type-only (erased at runtime) — the subscriber inject shape. The concrete
 // fanoutForObject is lazy-imported inside the default seam below so this module
 // keeps no static edge to the fan-out projection (cycle-safe).
@@ -159,6 +160,27 @@ export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsD
   emitWorkItemClaimableEvent(wi, 'created', deps);
 }
 
+type PlanItemLaneBlockReason = (wi: WorkItem) => Promise<PlanItemLaneBlock | null>;
+
+/** Resolve the plan-lane guard lazily so the lifecycle event module keeps its documented
+ * work-items import cycle safe. Claimable events are best-effort notifications; the guard's
+ * own fail-open contract is preserved if a plan read is unavailable. */
+async function defaultPlanItemLaneBlockReason(wi: WorkItem): Promise<PlanItemLaneBlock | null> {
+  const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+  return planItemLaneBlockReason(wi);
+}
+
+/** Avoid a plan read for the overwhelmingly common unplanned lifecycle event. The mapped
+ * WorkItem carries source-plan columns for current projections; payload.plan_item covers the
+ * legacy promotion path and older event snapshots. */
+function mayHavePlanItemLinkage(wi: WorkItem): boolean {
+  if (wi.sourcePlanSlug && (wi.sourcePlanItemIds?.length ?? 0) > 0) return true;
+  const payload = wi.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const planItem = (payload as Record<string, unknown>).plan_item;
+  return Boolean(planItem && typeof planItem === 'object' && !Array.isArray(planItem));
+}
+
 /** The states an unassigned item can be pulled from — get_next/claim_next's floor. */
 const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 
@@ -191,20 +213,32 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 export function emitWorkItemClaimableEvent(
   wi: WorkItem,
   reason: 'created' | 'released' | 'unblocked' | 'requeued',
-  deps: Pick<SettledEventsDeps, 'emit'> = {},
+  deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason'> = {},
 ): void {
   if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
   const payload = workItemClaimableEventPayload(wi, reason);
   void Promise.resolve()
-    .then(() =>
-      emit({
+    .then(async () => {
+      if (mayHavePlanItemLinkage(wi)) {
+        const check = deps.planItemLaneBlockReason ?? defaultPlanItemLaneBlockReason;
+        let blocked: PlanItemLaneBlock | null = null;
+        try {
+          blocked = await check(wi);
+        } catch (e) {
+          // This is a diagnostic parity guard, not a hard lifecycle floor. A plan read failure
+          // must not strand a genuinely claimable event; the scheduler remains authoritative.
+          failSoft(`claimable-plan-lane-check for ${wi.id}`, e);
+        }
+        if (blocked) return;
+      }
+      await emit({
         key: 'work-item:claimable',
         summary: `${wi.id} claimable (${reason}): ${wi.title}`,
         payload,
         source: 'work-items',
-      }),
-    )
+      });
+    })
     .catch((e: unknown) => failSoft(`claimable-event for ${wi.id}`, e));
 }
 
@@ -270,6 +304,13 @@ export async function liveWorkItemClaimableEventPayload(
 ): Promise<Record<string, unknown> | null> {
   const wi = await getWorkItem(id, harness);
   if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return null;
+  // Keep the registration-time latch aligned with the producer guard. Without this check a
+  // waiter registering after a stale claimable emit could receive `already_claimable` for a
+  // plan-linked row that scheduler:get_next would immediately reject on its plan-item DAG.
+  if (mayHavePlanItemLinkage(wi)) {
+    const blocked = await defaultPlanItemLaneBlockReason(wi).catch(() => null);
+    if (blocked) return null;
+  }
   return workItemClaimableEventPayload(wi);
 }
 
@@ -482,6 +523,9 @@ export function workItemIdFromRef(ref: { kind: string; ref: string }): { id: str
  *  seam (P-005) — this module owns NO store of its own. */
 export interface SettledEventsDeps {
   emit?: typeof emitAwaitedEvent;
+  /** WI-22699169150878155: injectable parity check so claimable lifecycle events do not
+   * advertise a row whose linked plan-item lane is blocked/owner-gated/terminal. */
+  planItemLaneBlockReason?: PlanItemLaneBlockReason;
   getItem?: typeof getWorkItem;
   listOut?: BlockingEdgeReader['listOut'];
   listIn?: BlockingEdgeReader['listIn'];

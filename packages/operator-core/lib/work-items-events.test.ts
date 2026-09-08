@@ -724,6 +724,59 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     expect(emit).toHaveBeenCalledOnce();
   });
 
+  it('EI-22699169150878155: drops a plan-linked item whose plan lane is blocked', async () => {
+    const emit = typedEmit();
+    const planItemLaneBlockReason = vi.fn(async () => ({
+      reason: 'plan-item frozen-candidate-carry-and-launch-fail-closed-2026-09-07#P-005 is effectively blocked',
+      planSlug: 'frozen-candidate-carry-and-launch-fail-closed-2026-09-07',
+      itemId: 'P-005',
+      effectiveStatus: 'blocked',
+      staleBlockedHint: null,
+    }));
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    emitWorkItemClaimableEvent(
+      wi({
+        id: 'WI-10000422',
+        kind: 'feature',
+        family: 'feature',
+        state: 'open',
+        assignee: null,
+        harness: 'papercusp',
+        sourcePlanSlug: 'frozen-candidate-carry-and-launch-fail-closed-2026-09-07',
+        sourcePlanItemIds: ['P-005'],
+      }),
+      'released',
+      { emit, planItemLaneBlockReason },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(planItemLaneBlockReason).toHaveBeenCalledOnce();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('preserves a claimable event for a plan-linked item whose lane is clear', async () => {
+    const emit = typedEmit();
+    const planItemLaneBlockReason = vi.fn(async () => null);
+    const { emitWorkItemClaimableEvent } = await import('./work-items-events');
+    emitWorkItemClaimableEvent(
+      wi({
+        id: 'WI-10000423',
+        kind: 'feature',
+        family: 'feature',
+        state: 'open',
+        assignee: null,
+        harness: 'papercusp',
+        sourcePlanSlug: 'ready-plan',
+        sourcePlanItemIds: ['P-001'],
+      }),
+      'released',
+      { emit, planItemLaneBlockReason },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(planItemLaneBlockReason).toHaveBeenCalledOnce();
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({ key: 'work-item:claimable' });
+  });
+
   it('CO-FIRES from the unblocked path for an unassigned claimable dependent (reason: unblocked)', async () => {
     const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const dependent = wi({ id: 'WI-DEP', state: 'open', assignee: null });

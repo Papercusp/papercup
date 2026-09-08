@@ -376,10 +376,27 @@ async function resolvePlanItemStampFromColumns(
  *  — the collision check needs the SAME plan-item linkage resolution (either
  *  mechanism) this guard already does; duplicating it would let the two drift. */
 export async function resolvePlanItemStamp(
-  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
 ): Promise<PlanItemStamp | null> {
   const fromPayload = extractPlanItemStampFromPayload(workItem.payload);
   if (fromPayload) return fromPayload;
+  // The normal WorkItem projection already carries the indexed source-plan columns. Prefer
+  // those mapped values over a second view read: claimable lifecycle events run from the same
+  // projection and must be able to apply this guard without introducing an avoidable DB round
+  // trip (or losing the linkage when the event is emitted after a release). Keep the DB fallback
+  // below for sparse/legacy callers whose projection does not include these optional fields.
+  if (
+    typeof workItem.sourcePlanSlug === 'string' &&
+    workItem.sourcePlanSlug.trim() &&
+    Array.isArray(workItem.sourcePlanItemIds) &&
+    workItem.sourcePlanItemIds.length > 0
+  ) {
+    const itemIds = workItem.sourcePlanItemIds.filter(
+      (itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0,
+    );
+    if (itemIds.length > 0) return { plan_slug: workItem.sourcePlanSlug.trim(), item_ids: itemIds };
+  }
   try {
     return await resolvePlanItemStampFromColumns(workItem);
   } catch {
@@ -406,7 +423,8 @@ export interface PlanItemNeedsHumanContradiction {
  * {@link resolvePlanItemStamp}.
  */
 export async function planItemNeedsHumanContradiction(
-  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
 ): Promise<PlanItemNeedsHumanContradiction | null> {
   const stamp = await resolvePlanItemStamp(workItem);
   if (!stamp) return null;
@@ -450,7 +468,8 @@ export async function planItemNeedsHumanContradiction(
  * lane is clear.
  */
 export async function planItemLaneBlockReason(
-  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
 ): Promise<PlanItemLaneBlock | null> {
   const stamp = await resolvePlanItemStamp(workItem);
   if (!stamp) return null;
@@ -586,7 +605,8 @@ export interface PlanItemLiveClaimBlock {
  * coord:orient's claimable read.
  */
 export async function planItemLiveClaimReason(
-  workItem: Pick<WorkItem, 'payload' | 'harness'> & Partial<Pick<WorkItem, 'id' | 'family'>>,
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
 ): Promise<PlanItemLiveClaimBlock | null> {
   const stamp = await resolvePlanItemStamp(workItem);
   if (!stamp) return null;
