@@ -1025,7 +1025,7 @@ export function renderMemberBaseline(opts: {
     '',
     `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, ${plan ? `working plan \`${plan}\`` : 'draining your fleet claim-lane backlog'}. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    "Loop: **pull** with `scheduler:get_next { harness: '<your-harness>' }` (`heldPaths`; `states` only when filtering and only `open|failing`, never `todo`/terminal; `rigAvailable`; omit `specId`/`revision`; inspect `claimedUnder`; leader steers via `scheduler:set_claim_spec`; NOT `work_items:claim_next`; PICKUP is yours) → **read** with `work_items:get` → **act** → terminal evidence → repeat. Do NOT self-prioritize by scanning `work_items:list`.",
+    "Loop: **pull** with `scheduler:get_next { harness: '<your-harness>' }` (`heldPaths`; `states` only when filtering and only `open|failing`; never pass retired `todo` or floor/terminal states; `rigAvailable`; omit `specId`/`revision`; inspect `claimedUnder`; leader steers via `scheduler:set_claim_spec`; NOT `work_items:claim_next`; PICKUP is yours) → **read** with `work_items:get` → **act** → terminal evidence → repeat. Do NOT self-prioritize by scanning `work_items:list`.",
     '',
     '## Non-negotiables',
     rules,
