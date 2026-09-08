@@ -351,9 +351,12 @@ export const evaluateAcceptanceBarContract = evaluateAcceptanceBarLifecycle;
 export async function readAndEvaluateAcceptanceBarLifecycle(
   planSlug: string,
   phase: AcceptanceBarLifecyclePhase,
-  options: { expectedApplicable?: boolean; current?: EvidenceCurrentInput[] } = {},
+  options: { expectedApplicable?: boolean; current?: EvidenceCurrentInput[]; harnessSlug?: string } = {},
 ): Promise<AcceptanceBarLifecycleVerdict> {
-  const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, { current: options.current });
+  const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, {
+    current: options.current,
+    ...(options.harnessSlug ? { harnessSlug: options.harnessSlug } : {}),
+  });
   // Only a positively identified legacy plan may bypass the contract. A missing,
   // unavailable, ambiguous, or truncated subject read cannot establish legacy
   // status, even when a generic start door has no adoption-marker assertion.
