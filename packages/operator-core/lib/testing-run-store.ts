@@ -33,7 +33,7 @@ import {
   finishSyncEnrolment,
   syncEnrolmentScopePath,
 } from './task-manager/enroll-sync';
-import type { TaskSpec } from './task-manager/types';
+import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/types';
 
 export { captureWorktreeSnapshot, computeWorktreeDirty };
 export type { WorktreeGitSnapshot };
@@ -95,6 +95,8 @@ export type RunStatus = 'running' | 'pass' | 'fail' | 'cancelled' | 'error';
 
 export interface RunSnapshot {
   runId: string;
+  /** The task-manager row that owns this process, when enrolment was enabled. */
+  taskId?: string;
   kind: 'vitest' | 'playwright' | 'cargo' | 'node' | 'shell' | 'admin-suite';
   label: string;
   filePath?: string;
@@ -130,6 +132,7 @@ let lastSnapshotPruneAt = 0;
 
 interface DurableRunSnapshotRow {
   run_id: string;
+  task_id: string | null;
   kind: RunSnapshot['kind'];
   label: string;
   file_path: string | null;
@@ -140,6 +143,8 @@ interface DurableRunSnapshotRow {
   finished_at: Date | string | number | null;
   output: string;
   truncated: boolean;
+  /** Joined task-manager state used to reconcile a worker-death orphan. */
+  task_state?: TaskState | string | null;
 }
 
 function snapshotPersistenceEnabled(sqlOverride?: SqlLike): boolean {
@@ -199,6 +204,7 @@ function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
   if (startedAt === null || command === null) return null;
   return {
     runId: row.run_id,
+    ...(row.task_id === null ? {} : { taskId: row.task_id }),
     kind: row.kind,
     label: row.label,
     ...(row.file_path === null ? {} : { filePath: row.file_path }),
@@ -239,11 +245,11 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
   try {
     query = sql`
       INSERT INTO harness_shared.testing_run_snapshots
-        (run_id, kind, label, file_path, command, status, exit_code, started_at, finished_at, output, truncated)
+        (run_id, kind, label, file_path, command, status, exit_code, started_at, finished_at, output, truncated, task_id)
       VALUES
         (${persistedSnapshot.runId}, ${persistedSnapshot.kind}, ${persistedSnapshot.label}, ${persistedSnapshot.filePath ?? null},
          ${JSON.stringify(persistedSnapshot.command)}::jsonb, ${persistedSnapshot.status}, ${persistedSnapshot.exitCode},
-         ${startedAt}, ${finishedAt}, ${persistedSnapshot.output}, ${persistedSnapshot.truncated})
+         ${startedAt}, ${finishedAt}, ${persistedSnapshot.output}, ${persistedSnapshot.truncated}, ${persistedSnapshot.taskId ?? null})
       ON CONFLICT (run_id) DO UPDATE SET
         kind = EXCLUDED.kind,
         label = EXCLUDED.label,
@@ -295,6 +301,7 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
             THEN harness_shared.testing_run_snapshots.truncated
           ELSE EXCLUDED.truncated
         END,
+        task_id = COALESCE(EXCLUDED.task_id, harness_shared.testing_run_snapshots.task_id),
         updated_at = now()
     `;
   } catch {
@@ -324,8 +331,11 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
   try {
     query = sql`
       SELECT run_id, kind, label, file_path, command, status, exit_code,
-             started_at, finished_at, output, truncated
+             started_at, finished_at, output, truncated, task_id,
+             task_ledger.state AS task_state
         FROM harness_shared.testing_run_snapshots
+        LEFT JOIN harness_shared.task_ledger AS task_ledger
+          ON task_ledger.task_id = harness_shared.testing_run_snapshots.task_id
        WHERE run_id = ${runId}
          AND (finished_at IS NULL OR finished_at >= now() - interval '1 hour')
        LIMIT 1
@@ -335,7 +345,67 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
   }
   const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(query);
   const row = rows?.[0];
-  return row ? snapshotFromRow(row) : null;
+  if (!row) return null;
+  const snapshot = snapshotFromRow(row);
+  if (!snapshot) return null;
+  return reconcilePersistedOrphan(snapshot, row, sql);
+}
+
+/**
+ * A detached snapshot is not itself a liveness oracle: the worker that owned
+ * its child may have disappeared after writing `status='running'`. The linked
+ * task-manager row is the durable process-liveness authority. Once that row is
+ * terminal, the process is conclusively gone (or was killed), so keeping the
+ * snapshot running would manufacture a live result forever.
+ *
+ * The update is compare-and-set on `status='running'`. A late child close or a
+ * concurrent status reader therefore cannot resurrect a terminal snapshot, and
+ * concurrent readers converge on the same honest `error` disposition.
+ */
+async function reconcilePersistedOrphan(
+  snapshot: RunSnapshot,
+  row: DurableRunSnapshotRow,
+  sql: SqlLike,
+): Promise<RunSnapshot> {
+  const taskState = row.task_state;
+  if (snapshot.status !== 'running' || typeof taskState !== 'string' || !isTerminalState(taskState as TaskState)) {
+    return snapshot;
+  }
+
+  const finishedAt = Date.now();
+  const note =
+    `\n[detached-recovery] task-manager reports linked process ${row.task_id ?? snapshot.taskId ?? 'unknown'} ` +
+    `is no longer live (state=${taskState}); no test verdict was observed.\n`;
+  const combinedOutput = snapshot.output + note;
+  const output = combinedOutput.length > OUTPUT_CAP_BYTES ? combinedOutput.slice(-OUTPUT_CAP_BYTES) : combinedOutput;
+  const reconciled: RunSnapshot = {
+    ...snapshot,
+    status: 'error',
+    exitCode: null,
+    finishedAt,
+    output,
+    truncated: snapshot.truncated || combinedOutput.length > OUTPUT_CAP_BYTES,
+  };
+
+  let update: PromiseLike<unknown>;
+  try {
+    update = sql`
+      UPDATE harness_shared.testing_run_snapshots
+         SET status = 'error',
+             exit_code = NULL,
+             finished_at = ${new Date(finishedAt).toISOString()},
+             output = ${reconciled.output},
+             truncated = ${reconciled.truncated},
+             updated_at = now()
+       WHERE run_id = ${snapshot.runId}
+         AND status = 'running'
+       RETURNING run_id
+    `;
+  } catch {
+    return snapshot;
+  }
+  const rows = await boundedSnapshotQuery<unknown[]>(update);
+  return rows && rows.length > 0 ? reconciled : snapshot;
 }
 
 function evictOldRuns(): void {
@@ -457,6 +527,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   // keeps its existing shape and a persistence outage never prevents a test
   // run from starting.
   const enrolment = beginSyncEnrolment(taskSpec);
+  if (enrolment.enrolled) snapshot.taskId = enrolment.taskId;
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'test-run');
   const wrapped = enrolment.wrap(req.command, req.args, childEnv, cwd);
   return { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped };
