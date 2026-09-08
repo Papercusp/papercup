@@ -100,6 +100,18 @@ export interface CandidateSnapshotInput {
   } | null;
 }
 
+/**
+ * The queue identity a frozen-repair dispatcher is about to act on. Keep this
+ * structural so the snapshot module stays independent of the queue reducer;
+ * the dispatcher supplies the canonical queue row at the call site.
+ */
+export interface CandidateSnapshotDispatchRepairQueue {
+  candidate: string;
+  repairHead: string;
+  phase: string;
+  failingTests?: readonly string[] | null;
+}
+
 function boundedText(value: unknown, max: number): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -366,20 +378,53 @@ function sameSha(left: string | null | undefined, right: string | null | undefin
 
 /**
  * Check the identity a dispatcher is about to act on against the terminal
- * snapshot it read.  The comparison intentionally uses the same sorted
+ * snapshot it read. The moving-tip path intentionally uses the same sorted
  * signature derivation as the dispatcher, preventing a fresh snapshot for a
  * different failure from being treated as equivalent.
+ *
+ * Frozen repair is a different stream: `candidate` is the immutable full-gate
+ * pin in the persisted snapshot, while the dispatcher targets the queue's
+ * mutable `repairHead`. Its queue row is the authoritative failure signature,
+ * and the queue may remain awaiting-fixer longer than the moving-tip freshness
+ * window. Only an identity-matched `awaiting-fixer` queue gets that age waiver;
+ * malformed, phase-mismatched, or future-dated snapshots still fail closed.
  */
 export function candidateSnapshotMatchesDispatch(
   snapshot: CandidateSnapshot | null | undefined,
   input: {
     candidate: string;
     failingTests?: readonly string[] | null;
+    repairQueue?: CandidateSnapshotDispatchRepairQueue | null;
     nowMs?: number;
     maxAgeMs?: number;
   },
 ): boolean {
-  if (!snapshot || !isCandidateSnapshotFresh(snapshot, input.nowMs, input.maxAgeMs)) return false;
+  if (!snapshot) return false;
+
+  const nowMs = input.nowMs ?? Date.now();
+  const queue = input.repairQueue;
+  if (queue) {
+    // A queue-aware dispatch is valid only for the one phase where a fixer is
+    // owned by the queue. Do not turn this exception into a general stale-data
+    // bypass, and do not accept a snapshot from the future.
+    if (queue.phase !== 'awaiting-fixer' || !Number.isFinite(nowMs) || snapshot.observedAtMs > nowMs) {
+      return false;
+    }
+    if (snapshot.ownership.kind !== 'frozen-repair' || snapshot.ownership.phase !== queue.phase) return false;
+    if (!sameSha(snapshot.ownership.frozenCandidate, queue.candidate)) return false;
+    if (!sameSha(snapshot.ownership.repairHead, queue.repairHead)) return false;
+    if (!sameSha(queue.repairHead, input.candidate)) return false;
+    // A hold tick records the immutable pin; a red verdict at the repair head
+    // records that head in the legacy `candidate` field. Both are valid only
+    // when the ownership fields above bind them to this exact queue row.
+    if (!sameSha(snapshot.candidate, queue.candidate) && !sameSha(snapshot.candidate, queue.repairHead)) {
+      return false;
+    }
+    const expected = candidateSnapshotFailureSignature(queue.failingTests, queue.candidate);
+    return expected != null && snapshot.failureSignature === expected;
+  }
+
+  if (!isCandidateSnapshotFresh(snapshot, nowMs, input.maxAgeMs)) return false;
   if (!sameSha(snapshot.candidate, input.candidate)) return false;
   const expected = candidateSnapshotFailureSignature(input.failingTests, input.candidate);
   return expected != null && snapshot.failureSignature === expected;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANDIDATE_SNAPSHOT_MAX_AGE_MS,
   buildCandidateSnapshot,
   candidateSnapshotFailureSignature,
   candidateSnapshotMatchesDispatch,
@@ -111,6 +112,98 @@ describe('candidate snapshot', () => {
         failingTests: ['a.test.ts', 'b.test.ts'],
         nowMs: 1_101,
         maxAgeMs: 100,
+      }),
+    ).toBe(false);
+  });
+
+  it('matches an old snapshot for the exact awaiting-fixer queue using its immutable pin, repair head, and failures', () => {
+    const frozenCandidate = 'C'.repeat(40);
+    const repairHead = 'D'.repeat(40);
+    const snapshot = buildCandidateSnapshot(
+      {
+        candidate: frozenCandidate,
+        failingTests: ['lib/red.test.ts'],
+        repairQueue: {
+          candidate: frozenCandidate,
+          repairHead,
+          phase: 'awaiting-fixer',
+        },
+      },
+      1_000,
+    );
+    expect(snapshot).not.toBeNull();
+
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        failingTests: ['wrong-fallback.test.ts'],
+        repairQueue: {
+          candidate: frozenCandidate,
+          repairHead,
+          phase: 'awaiting-fixer',
+          failingTests: ['lib/red.test.ts'],
+        },
+        nowMs: 1_000 + CANDIDATE_SNAPSHOT_MAX_AGE_MS * 2,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects a frozen dispatch when queue identity, phase, failures, or timestamp is unsafe', () => {
+    const frozenCandidate = 'C'.repeat(40);
+    const repairHead = 'D'.repeat(40);
+    const snapshot = buildCandidateSnapshot(
+      {
+        candidate: repairHead,
+        failingTests: ['lib/red.test.ts'],
+        repairQueue: {
+          candidate: frozenCandidate,
+          repairHead,
+          phase: 'awaiting-fixer',
+        },
+      },
+      1_000,
+    );
+    expect(snapshot).not.toBeNull();
+    const queue = {
+      candidate: frozenCandidate,
+      repairHead,
+      phase: 'awaiting-fixer',
+      failingTests: ['lib/red.test.ts'],
+    };
+
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: 'E'.repeat(40),
+        repairQueue: queue,
+        nowMs: 1_000 + CANDIDATE_SNAPSHOT_MAX_AGE_MS * 2,
+      }),
+    ).toBe(false);
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: { ...queue, repairHead: 'E'.repeat(40) },
+        nowMs: 1_000 + CANDIDATE_SNAPSHOT_MAX_AGE_MS * 2,
+      }),
+    ).toBe(false);
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: { ...queue, phase: 'ready-to-verify' },
+        nowMs: 1_000 + CANDIDATE_SNAPSHOT_MAX_AGE_MS * 2,
+      }),
+    ).toBe(false);
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: { ...queue, failingTests: ['lib/other.test.ts'] },
+        nowMs: 1_000 + CANDIDATE_SNAPSHOT_MAX_AGE_MS * 2,
+      }),
+    ).toBe(false);
+    expect(
+      candidateSnapshotMatchesDispatch(snapshot, {
+        candidate: repairHead,
+        repairQueue: queue,
+        nowMs: 900,
       }),
     ).toBe(false);
   });
