@@ -203,7 +203,10 @@ const ACCEPTANCE_GRADER_FALLBACK = {
   account: 'default' as const,
 };
 
-export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted' | 'startup_connection_stalled';
+export type AcceptanceGraderTerminalFailureCode =
+  | 'model_quota_exhausted'
+  | 'startup_connection_stalled'
+  | 'inference_gateway_error';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -231,6 +234,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     startupStallDelayMs = ACCEPTANCE_GRADER_STARTUP_STALL_RECHECK_DELAY_MS,
     startupStallMaxRechecks = ACCEPTANCE_GRADER_STARTUP_STALL_MAX_RECHECKS,
     allowStandaloneWeeklyLimit = false,
+    allowInferenceGatewayError = false,
     detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
@@ -246,6 +250,12 @@ export async function detectAcceptanceGraderTerminalFailure(
      * the same prose; callers must make that ambiguity impossible first.
      */
     allowStandaloneWeeklyLimit?: boolean;
+    /**
+     * A controlled launch whose prompt cannot quote a terminal gateway screen may
+     * opt into the exact 5xx + completed-turn detector. Keep this false for the
+     * general acceptance prompt because frozen evidence can contain error prose.
+     */
+    allowInferenceGatewayError?: boolean;
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
@@ -259,6 +269,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     latestRawLog = await readLogTail(logPath);
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
+      allowInferenceGatewayError,
     });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
@@ -276,6 +287,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     latestRawLog = await readLogTail(logPath);
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
+      allowInferenceGatewayError,
     });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
@@ -304,7 +316,10 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
  */
 export function classifyAcceptanceGraderTerminalFailure(
   rawLog: string,
-  { allowStandaloneWeeklyLimit = false }: { allowStandaloneWeeklyLimit?: boolean } = {},
+  {
+    allowStandaloneWeeklyLimit = false,
+    allowInferenceGatewayError = false,
+  }: { allowStandaloneWeeklyLimit?: boolean; allowInferenceGatewayError?: boolean } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
   const legacyQuota = normalized.match(
@@ -326,11 +341,32 @@ export function classifyAcceptanceGraderTerminalFailure(
     ? normalized.match(/You've hit your weekly limit\s*·\s*resets [^\n]{1,120}/i)
     : null;
   const quota = legacyQuota ?? sessionQuota ?? standaloneWeeklyQuota;
-  if (!quota) return null;
-  return {
-    code: 'model_quota_exhausted',
-    evidence: quota[0].replace(/\s+/g, ' ').trim().slice(0, 400),
-  };
+  if (quota) {
+    return {
+      code: 'model_quota_exhausted',
+      evidence: quota[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
+  // EI-22707978312331135: a headless Claude turn can terminate on a gateway 5xx,
+  // render its completed-turn footer, and return to an idle prompt while the
+  // enclosing process stays alive. The process ledger therefore says "running"
+  // forever, and an idempotent recovery launch dedupes back to the same dead
+  // mission. Require BOTH the exact gateway screen and Claude's completed-turn
+  // footer, and keep recognition opt-in so quoted error prose in a general frozen
+  // acceptance prompt cannot retire a healthy grader.
+  const gatewayError = allowInferenceGatewayError
+    ? normalized.match(
+        /API Error:\s*5\d{2}\s+inference-gateway internal error\.[\s\S]{0,800}?Cooked for [^\n]{1,120}?\s*·\s*done\b/i,
+      )
+    : null;
+  if (gatewayError) {
+    return {
+      code: 'inference_gateway_error',
+      evidence: gatewayError[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+  return null;
 }
 
 /**

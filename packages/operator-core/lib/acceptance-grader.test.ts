@@ -596,6 +596,21 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it('matches a completed inference-gateway 5xx turn only for a controlled caller', () => {
+    const raw =
+      '\u001b[38;5;220m●\u001b[3GAPI Error: 500 inference-gateway internal error. This is a server-side\r\n' +
+      'issue, usually temporary — try again in a moment. If it persists, check your inference gateway ' +
+      '(127.0.0.1:8788).\r\n' +
+      '\u001b[38;5;246m✻ Cooked for 12m 56s · done 11:27 AM\u001b[0m\r\n❯';
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toEqual({
+      code: 'inference_gateway_error',
+      evidence:
+        'API Error: 500 inference-gateway internal error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:8788). ✻ Cooked for 12m 56s · done',
+    });
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),
@@ -603,6 +618,12 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     expect(classifyAcceptanceGraderTerminalFailure("You've reached your test limit.")).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure("You've hit your session limit · resets 5pm")).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure('/limit-reset to reset your session limit now')).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure(
+        'The incident report quotes API Error: 500 inference-gateway internal error without a terminal footer.',
+        { allowInferenceGatewayError: true },
+      ),
+    ).toBeNull();
   });
 });
 
