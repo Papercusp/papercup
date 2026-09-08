@@ -496,6 +496,8 @@ export async function applyPendingMigrationsNow(
           `[boot-migrate] backup rendezvous busy, but all ${migrationFiles.length} migration(s) in this tree are already applied — continuing without a migration lock`,
         );
       } else {
+        await client`SET lock_timeout = '0'`;
+        await client`SET statement_timeout = '0'`;
         await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
         backupMigrationLockHeld = true;
       }
