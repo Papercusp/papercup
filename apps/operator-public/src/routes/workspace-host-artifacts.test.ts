@@ -291,6 +291,19 @@ async function uploadMultipartPart(
   );
 }
 
+async function multipartPartStatus(
+  env: Env,
+  bundleSha256: string,
+  uploadId: string,
+  partNumber: number,
+): Promise<Response> {
+  return api.request(
+    `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
+    { headers: { authorization: 'Bearer github-token' } },
+    env,
+  );
+}
+
 async function completeMultipart(
   env: Env,
   bundleSha256: string,
@@ -483,6 +496,53 @@ describe('workspace-host artifact publication', () => {
     expect(drifted.status).toBe(409);
     expect(await drifted.json()).toMatchObject({ error: 'multipart_operation_conflict' });
     expect(r2.multipartUploads.size).toBe(1);
+  });
+
+  it('reconciles a lost part response from its committed receipt without another R2 mutation', async () => {
+    const bundle = new TextEncoder().encode('one restart-safe part');
+    const bundleSha256 = await sha256Hex(bundle);
+    const operationId = crypto.randomUUID();
+    const { env, r2 } = authedEnv();
+    const initiated = await initiateMultipart(env, bundleSha256, bundle.byteLength, [{
+      partNumber: 1,
+      sha256: bundleSha256,
+      sizeBytes: bundle.byteLength,
+    }], operationId);
+    expect(initiated.status).toBe(201);
+
+    // Discard the response after the server has accepted and receipted the R2
+    // mutation, matching a client transport loss/restart.
+    const lost = await uploadMultipartPart(
+      env,
+      bundleSha256,
+      operationId,
+      1,
+      bundle,
+      bundleSha256,
+    );
+    expect(lost.status).toBe(200);
+    expect(r2.multipartPartUploadCalls).toBe(1);
+
+    const status = await multipartPartStatus(env, bundleSha256, operationId, 1);
+    expect(status.status).toBe(200);
+    const committed = await status.json() as { etag: string };
+    expect(committed).toMatchObject({ state: 'committed', sha256: bundleSha256 });
+
+    const replay = await uploadMultipartPart(
+      env,
+      bundleSha256,
+      operationId,
+      1,
+      bundle,
+      bundleSha256,
+    );
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      etag: committed.etag,
+      deduped: true,
+      resumed: true,
+    });
+    expect(r2.multipartPartUploadCalls).toBe(1);
   });
 
   it('uploads a bounded multipart bundle with verified replay, incomplete, conflict, and finalize behavior', async () => {

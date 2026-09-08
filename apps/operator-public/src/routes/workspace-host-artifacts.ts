@@ -40,6 +40,8 @@ const ARTIFACT_TRUST_VERSION = 'artifact-trust-v1';
 const MULTIPART_STATE_SCHEMA_VERSION = 1;
 const MULTIPART_STATE_KIND = 'papercusp-workspace-host-multipart-upload';
 const MULTIPART_STATE_NAMESPACE = 'workspace-host-multipart-v1';
+const MULTIPART_PART_RECEIPT_KIND = 'papercusp-workspace-host-multipart-part-receipt';
+const MULTIPART_PART_RECEIPT_NAMESPACE = 'workspace-host-multipart-part-v1';
 const MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
 export const WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES = 32 * 1024 * 1024;
 export const WORKSPACE_HOST_MULTIPART_MAX_PARTS = 1024;
@@ -98,6 +100,21 @@ interface MultipartUploadState {
   parts: MultipartPartPlan[];
 }
 
+interface MultipartPartReceipt {
+  schemaVersion: 1;
+  kind: typeof MULTIPART_PART_RECEIPT_KIND;
+  state: 'intent' | 'committed';
+  bundleSha256: string;
+  uploadId: string;
+  partNumber: number;
+  sha256: string;
+  sizeBytes: number;
+  createdByGithubUserId: number;
+  createdAt: string;
+  etag?: string;
+  committedAt?: string;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -125,6 +142,14 @@ function finalizationKey(bundleSha256: string): string {
 
 function multipartStateKey(bundleSha256: string, uploadId: string): string {
   return `${artifactPrefix(bundleSha256)}/.multipart/${encodeURIComponent(uploadId)}.json`;
+}
+
+function multipartPartReceiptKey(
+  bundleSha256: string,
+  uploadId: string,
+  partNumber: number,
+): string {
+  return `${artifactPrefix(bundleSha256)}/.multipart/${encodeURIComponent(uploadId)}/parts/${partNumber}.json`;
 }
 
 function multipartStateMatches(
@@ -363,6 +388,81 @@ async function readMultipartState(
   } catch {
     return null;
   }
+}
+
+function parseMultipartPartReceipt(
+  value: unknown,
+  expected: {
+    bundleSha256: string;
+    uploadId: string;
+    partNumber: number;
+  },
+): MultipartPartReceipt | null {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.kind !== MULTIPART_PART_RECEIPT_KIND ||
+    (value.state !== 'intent' && value.state !== 'committed') ||
+    value.bundleSha256 !== expected.bundleSha256 ||
+    value.uploadId !== expected.uploadId ||
+    value.partNumber !== expected.partNumber ||
+    !isHexSha256(value.sha256) ||
+    !Number.isSafeInteger(value.sizeBytes) ||
+    Number(value.sizeBytes) <= 0 ||
+    !Number.isSafeInteger(value.createdByGithubUserId) ||
+    Number(value.createdByGithubUserId) <= 0 ||
+    typeof value.createdAt !== 'string' ||
+    !Number.isFinite(Date.parse(value.createdAt))
+  ) return null;
+  if (value.state === 'committed') {
+    if (
+      typeof value.etag !== 'string' ||
+      value.etag.length === 0 ||
+      value.etag.length > 512 ||
+      typeof value.committedAt !== 'string' ||
+      !Number.isFinite(Date.parse(value.committedAt))
+    ) return null;
+  } else if (value.etag !== undefined || value.committedAt !== undefined) {
+    return null;
+  }
+  return value as unknown as MultipartPartReceipt;
+}
+
+async function readMultipartPartReceipt(
+  env: Env,
+  expected: { bundleSha256: string; uploadId: string; partNumber: number },
+): Promise<MultipartPartReceipt | null> {
+  const object = await env.ARTIFACTS.get(
+    multipartPartReceiptKey(expected.bundleSha256, expected.uploadId, expected.partNumber),
+  );
+  if (!object || object.size > MULTIPART_CONTROL_MAX_BYTES) return null;
+  try {
+    const receipt = parseMultipartPartReceipt(JSON.parse(await object.text()), expected);
+    const metadata = object.customMetadata ?? {};
+    if (
+      !receipt ||
+      metadata.namespace !== MULTIPART_PART_RECEIPT_NAMESPACE ||
+      metadata.bundleSha256 !== expected.bundleSha256 ||
+      metadata.uploadId !== expected.uploadId ||
+      metadata.partNumber !== String(expected.partNumber) ||
+      metadata.createdByGithubUserId !== String(receipt.createdByGithubUserId)
+    ) return null;
+    return receipt;
+  } catch {
+    return null;
+  }
+}
+
+function multipartPartReceiptMatches(
+  receipt: MultipartPartReceipt,
+  expected: MultipartPartPlan & { createdByGithubUserId: number },
+): boolean {
+  return (
+    receipt.partNumber === expected.partNumber &&
+    receipt.sha256 === expected.sha256 &&
+    receipt.sizeBytes === expected.sizeBytes &&
+    receipt.createdByGithubUserId === expected.createdByGithubUserId
+  );
 }
 
 function parseCompletionParts(
@@ -1127,10 +1227,95 @@ async function uploadMultipartPart(c: Context<{ Bindings: Env }>): Promise<Respo
     );
   }
 
+  const receiptIdentity = { bundleSha256, uploadId, partNumber };
+  const receiptExpected = { ...expected, createdByGithubUserId: operator.id };
+  let priorReceipt: MultipartPartReceipt | null;
+  try {
+    priorReceipt = await readMultipartPartReceipt(c.env, receiptIdentity);
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'part-reconcile');
+  }
+  if (priorReceipt) {
+    if (!multipartPartReceiptMatches(priorReceipt, receiptExpected)) {
+      return c.json({ error: 'multipart_part_operation_conflict' }, 409);
+    }
+    if (priorReceipt.state === 'intent') {
+      return c.json({ error: 'multipart_part_outcome_unknown', uploadId, partNumber }, 409);
+    }
+    return c.json({
+      ok: true,
+      uploadId,
+      partNumber,
+      etag: priorReceipt.etag,
+      sha256: priorReceipt.sha256,
+      bytes: priorReceipt.sizeBytes,
+      deduped: true,
+      resumed: true,
+    });
+  }
+
+  const receiptKey = multipartPartReceiptKey(bundleSha256, uploadId, partNumber);
+  const receiptMetadata = {
+    namespace: MULTIPART_PART_RECEIPT_NAMESPACE,
+    bundleSha256,
+    uploadId,
+    partNumber: String(partNumber),
+    createdByGithubUserId: String(operator.id),
+  };
+  const intent: MultipartPartReceipt = {
+    schemaVersion: 1,
+    kind: MULTIPART_PART_RECEIPT_KIND,
+    state: 'intent',
+    bundleSha256,
+    uploadId,
+    partNumber,
+    sha256: actualSha256,
+    sizeBytes: body.byteLength,
+    createdByGithubUserId: operator.id,
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    const claimed = await putCreateOnly(c.env.ARTIFACTS, receiptKey, JSON.stringify(intent), {
+      httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      customMetadata: receiptMetadata,
+    });
+    if (claimed === 'exists') {
+      const raced = await readMultipartPartReceipt(c.env, receiptIdentity);
+      if (!raced || !multipartPartReceiptMatches(raced, receiptExpected)) {
+        return c.json({ error: 'multipart_part_operation_conflict' }, 409);
+      }
+      if (raced.state === 'intent') {
+        return c.json({ error: 'multipart_part_outcome_unknown', uploadId, partNumber }, 409);
+      }
+      return c.json({
+        ok: true,
+        uploadId,
+        partNumber,
+        etag: raced.etag,
+        sha256: raced.sha256,
+        bytes: raced.sizeBytes,
+        deduped: true,
+        resumed: true,
+      });
+    }
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'part-intent');
+  }
+
   try {
     const part = await c.env.ARTIFACTS
       .resumeMultipartUpload(artifactKey(bundleSha256, 'server.tgz'), state.r2UploadId)
       .uploadPart(partNumber, body);
+    const committed: MultipartPartReceipt = {
+      ...intent,
+      state: 'committed',
+      etag: part.etag,
+      committedAt: new Date().toISOString(),
+    };
+    await c.env.ARTIFACTS.put(receiptKey, JSON.stringify(committed), {
+      httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      customMetadata: receiptMetadata,
+    });
     return c.json({
       ok: true,
       uploadId,
@@ -1138,10 +1323,62 @@ async function uploadMultipartPart(c: Context<{ Bindings: Env }>): Promise<Respo
       etag: part.etag,
       sha256: actualSha256,
       bytes: body.byteLength,
+      deduped: false,
+      resumed: false,
     });
   } catch (error) {
     return multipartStorageFailure(c, error, 'part');
   }
+}
+
+async function getMultipartStatus(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const operator = await requireOperator(c);
+  if (operator instanceof Response) return operator;
+  const bundleSha256 = c.req.param('bundleSha256');
+  const uploadId = c.req.query('uploadId');
+  const partNumber = parsePositiveInteger(c.req.query('partNumber'));
+  if (!isHexSha256(bundleSha256)) return c.json({ error: 'invalid_bundle_sha256' }, 400);
+  if (!isMultipartUploadId(uploadId)) return c.json({ error: 'invalid_multipart_upload_id' }, 400);
+  if (partNumber === null || partNumber > WORKSPACE_HOST_MULTIPART_MAX_PARTS) {
+    return c.json({ error: 'invalid_multipart_part_number' }, 400);
+  }
+  let state: MultipartUploadState | null;
+  let receipt: MultipartPartReceipt | null;
+  try {
+    [state, receipt] = await Promise.all([
+      readMultipartState(c.env, bundleSha256, uploadId),
+      readMultipartPartReceipt(c.env, { bundleSha256, uploadId, partNumber }),
+    ]);
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'status');
+  }
+  if (!state) {
+    const object = await c.env.ARTIFACTS.head(artifactKey(bundleSha256, 'server.tgz'));
+    const descriptor = descriptorFromObject(object, 'server.tgz', bundleSha256);
+    return descriptor
+      ? c.json({ ok: true, uploadId, completed: true, bundle: descriptor })
+      : c.json({ error: 'multipart_upload_not_found' }, 404);
+  }
+  if (state.createdByGithubUserId !== operator.id) {
+    return c.json({ error: 'multipart_upload_owner_mismatch' }, 403);
+  }
+  const expected = state.parts[partNumber - 1];
+  if (!expected || expected.partNumber !== partNumber) {
+    return c.json({ error: 'multipart_part_not_planned' }, 400);
+  }
+  if (!receipt) return c.json({ ok: true, uploadId, partNumber, state: 'absent' });
+  if (!multipartPartReceiptMatches(receipt, { ...expected, createdByGithubUserId: operator.id })) {
+    return c.json({ error: 'multipart_part_operation_conflict' }, 409);
+  }
+  return c.json({
+    ok: true,
+    uploadId,
+    partNumber,
+    state: receipt.state,
+    sha256: receipt.sha256,
+    bytes: receipt.sizeBytes,
+    ...(receipt.state === 'committed' ? { etag: receipt.etag } : {}),
+  });
 }
 
 async function completeMultipartArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
@@ -1414,6 +1651,7 @@ export function workspaceHostArtifactsRoute(): Hono<{ Bindings: Env }> {
     '/admin/artifacts/workspace-host/sha256/:bundleSha256/server.tgz/multipart';
 
   app.post(multipartPath, initiateMultipartArtifact);
+  app.get(multipartPath, getMultipartStatus);
   app.put(`${multipartPath}/parts/:partNumber`, uploadMultipartPart);
   app.post(`${multipartPath}/complete`, completeMultipartArtifact);
   app.delete(multipartPath, abortMultipartArtifact);

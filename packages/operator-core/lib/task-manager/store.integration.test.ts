@@ -17,6 +17,7 @@ import type postgres from 'postgres';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { TaskReleaseReceiptInput, TaskReleaseReceiptState } from './store';
 import type { TaskTerminalProvenance } from './types';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -188,9 +189,9 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
   }
 
   function receipt(
-    state: store.TaskReleaseReceiptState,
-    over: Partial<store.TaskReleaseReceiptInput> = {},
-  ): store.TaskReleaseReceiptInput {
+    state: TaskReleaseReceiptState,
+    over: Partial<TaskReleaseReceiptInput> = {},
+  ): TaskReleaseReceiptInput {
     return {
       operationId,
       requestIdentity: 'multipart-init-01',

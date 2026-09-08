@@ -682,6 +682,7 @@ export class FakeR2 {
   customMetadata = new Map<string, Record<string, string>>();
   etags = new Map<string, string>();
   multipartUploads = new Map<string, FakeMultipartRecord>();
+  multipartPartUploadCalls = 0;
   nextMultipartUploadId: string | null = null;
   nextMultipartCompleteReturnOmitsCustomMetadata = false;
   private nextMultipartUpload = 1;
@@ -766,6 +767,7 @@ export class FakeR2 {
       key,
       uploadId,
       uploadPart: async (partNumber, value) => {
+        this.multipartPartUploadCalls += 1;
         const record = this.multipartUploads.get(uploadId);
         if (!record || record.key !== key) {
           throw new Error('uploadPart: The specified multipart upload does not exist. (10024)');
