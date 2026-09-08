@@ -269,6 +269,25 @@ export function describeProbeScope(recheck: string | null | undefined): ProbeSco
  * actual quantifier. ALL-CAPS emphasis is the real discipline signal, and
  * {@link isPrescriptiveClaim} is the dedicated mechanism for it — which runs
  * first, making any case rule here redundant as well as wrong.
+ *
+ * MEASURED AND DECLINED (2026-09-08, EI-22682260860546891). A quantifier word
+ * written as a QUOTED FIELD VALUE — `expects:'none'`, `channel:'none'`,
+ * `instrumentKey:'none'` — satisfies the guards below (a quote is neither
+ * alphanumeric nor `_-`) and is read as if the writer had asserted breadth.
+ * Real, and negligible: over `harness_shared.carry_notes` (237,740 note lines,
+ * 19,055 re-check rows) 17 rows carry a quote-delimited quantifier, and on only
+ * 4 of them — 0.021% — is it the SOLE quantifier, i.e. the only rows whose
+ * verdict a mask would change. That is ~40x under this module's own 0.8%
+ * wiring bar and 5x under the `nothing about` mask below; and unlike that one
+ * it has no self-defeating dynamic, because quoting a field value is ordinary
+ * prose rather than language this lint told the writer to add.
+ *
+ * ⛔ The wider `key:<quantifier>` shape looks 17x bigger (71 sole-quantifier
+ * rows) and is an INSTRUMENT ARTIFACT: that population is dominated by
+ * `Monitor-only: no claim, wake, takeover…`, where the word after the colon is
+ * the writer's genuine quantifier and the colon ends a phrase rather than
+ * introducing a field. Masking on a bare `key:` would suppress that whole
+ * family to fix four rows. Do not widen this to unquoted operands.
  */
 // `\b` treats the hyphen in an identifier as a word boundary, so it reads the
 // `no` in `deliberate-no-pair`/`no-op` as a standalone quantifier. A hyphen is

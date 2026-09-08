@@ -23,12 +23,13 @@ const hudSelection = await resolveHudSessionFromRoster({
   base,
   envSession: process.env.PORTAL_ACCEPTANCE_HUD_SESSION,
 });
-const hudSession = hudSelection.sessionId;
+const hudSessionOwnerId = hudSelection.sessionOwnerId;
 const evidence = {
   schemaVersion: 1,
   startedAt: new Date().toISOString(),
   release,
-  hudSession,
+  hudSession: hudSessionOwnerId,
+  hudSessionOwnerId,
   hudSessionSource: hudSelection.source,
   hudSessionFleet: hudSelection.fleetSlug ?? null,
   cases: [],
@@ -81,7 +82,7 @@ try {
       await page.setViewportSize(viewport);
       const suffix = `${theme}-${viewport.width}x${viewport.height}`;
       await run('hud-panels-' + suffix, async () => {
-        await visit(page, '?app=hud&accountsPane=false&chatPane=false&agentConversation=' + hudSession);
+        await visit(page, '?app=hud&accountsPane=false&chatPane=false&agentConversation=' + hudSessionOwnerId);
         for (const id of ['orders', 'dossier', 'fleet']) await page.getByTestId(`session-chat-${id}-toggle`).waitFor({ timeout: 15000 });
         const before = await panelStates(page), transitions = [];
         for (const s of before) {
@@ -101,7 +102,7 @@ try {
         const fullscreen = await page.evaluate(() => ({ active: document.fullscreenElement?.getAttribute('data-testid'), width: document.fullscreenElement?.getBoundingClientRect().width }));
         await page.getByTestId('session-chat-full-screen').click();
         await page.waitForFunction(() => document.fullscreenElement === null && !new URL(location.href).searchParams.get('chatMax'));
-        const sameOwner = new URL(page.url()).searchParams.get('agentConversation') === hudSession;
+        const sameOwner = new URL(page.url()).searchParams.get('agentConversation') === hudSessionOwnerId;
         const statesRestored = before.every(s => restored.find(x => x.id === s.id)?.expanded === s.expanded);
         const togglesWorked = transitions.every(t => { const s = t.states.find(x => x.id === t.action); return s?.focused && s?.expanded !== before.find(x => x.id === t.action)?.expanded; });
         await page.keyboard.press('Escape');

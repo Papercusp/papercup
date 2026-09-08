@@ -16,6 +16,12 @@ export type IntervalSnapshotAdmission =
       evidence?: Record<string, unknown>;
     };
 
+/** Options for acquiring the direct-session migration rendezvous. */
+export interface BackupMigrationLockOptions {
+  /** Return immediately with `undefined` when another producer holds the lock. */
+  tryOnly?: boolean;
+}
+
 /** A held direct-session migration rendezvous for a backup snapshot. */
 export interface BackupMigrationLock {
   /** Release the session lock and close any host-owned session. */
@@ -69,7 +75,9 @@ export interface BackupHost {
    * snapshot (including its metadata row and final status) completes. Absent ⇒
    * standalone backup behavior is unchanged.
    */
-  acquireMigrationLock?: () => Promise<BackupMigrationLock | undefined>;
+  acquireMigrationLock?: (
+    options?: BackupMigrationLockOptions,
+  ) => Promise<BackupMigrationLock | undefined>;
   /**
    * Optional named interval scheduler for lifecycle heartbeats. When absent,
    * the package uses its dependency-free unref'd timeout fallback.

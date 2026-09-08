@@ -7,9 +7,10 @@
  * on the left, that shows a preview of the users questions, and then you click
  * and it scrolls to the answer(past all the tool calls etc)."
  *
- * A turn in this file is exactly what the reader means by one: a question and
- * everything that came back because of it. It is derived from the ALREADY
- * RENDERED `ChatMessage[]` — not from the raw timeline — for two reasons:
+ * A turn in this file is exactly what the reader means by one: one raw session
+ * wake (owner or automatic) and everything visible that came back because of
+ * it. Generic feeds retain their user-message boundaries. It is derived from
+ * the ALREADY RENDERED `ChatMessage[]` — not from the raw timeline.
  *
  *   1. The rail must index what is actually on screen. `session-transcript-mapping`
  *      collapses tool_use into chips and DROPS tool_result/status entirely, and
@@ -34,7 +35,7 @@ import type { ChatMessage } from './chat-types';
 export interface SessionTurn {
   /** 1-based, as the reader counts them. Stable for a given message array. */
   turn: number;
-  /** Index of the user message that opened this turn. */
+  /** Visible opening row: owner question, or first reply for a hidden automatic prompt. */
   questionIndex: number;
   /**
    * Index of the message a rail click should land on: the turn's ANSWER.
@@ -85,33 +86,42 @@ function parseMs(ts: string | null | undefined): number | null {
 /**
  * Split a rendered conversation into turns, oldest first.
  *
- * A turn opens on each `role === 'user'` message and runs until the next one.
- * Messages BEFORE the first user message (a transcript that opens with the
- * agent's own text, or a projection row) belong to no turn — they are not an
- * answer to anything, and inventing a turn 0 for them would put a row in the
- * rail with no question to preview.
+ * A marked turn opens the first time its explicit identity appears, including
+ * an assistant-only row whose machine prompt is hidden. An unmarked user
+ * message still opens a boundary for generic feeds and optimistic echoes.
+ * Repeated identities never reopen, so a prompt/reply pair is counted once.
+ * Messages before the first explicit boundary or unmarked user remain outside
+ * the rail as leading partial/projection rows.
  */
 export function deriveSessionTurns(messages: readonly ChatMessage[]): SessionTurn[] {
-  const turns: SessionTurn[] = [];
-
+  const boundaries: Array<{ firstIndex: number; identity: ChatMessage['sessionTurn'] | null }> = [];
+  const seenSessionTurns = new Set<string>();
   for (let i = 0; i < messages.length; i += 1) {
-    if (messages[i].role !== 'user') continue;
-
-    // Everything up to the next user message, or the end.
-    let end = messages.length - 1;
-    for (let j = i + 1; j < messages.length; j += 1) {
-      if (messages[j].role === 'user') {
-        end = j - 1;
-        break;
+    const identity = messages[i].sessionTurn;
+    if (identity) {
+      if (!seenSessionTurns.has(identity.id)) {
+        seenSessionTurns.add(identity.id);
+        boundaries.push({ firstIndex: i, identity });
       }
+      continue;
     }
+    if (messages[i].role === 'user') boundaries.push({ firstIndex: i, identity: null });
+  }
+
+  const turns: SessionTurn[] = [];
+  for (let boundaryIndex = 0; boundaryIndex < boundaries.length; boundaryIndex += 1) {
+    const boundary = boundaries[boundaryIndex];
+    const i = boundary.firstIndex;
+    const end = boundaries[boundaryIndex + 1]?.firstIndex != null
+      ? boundaries[boundaryIndex + 1].firstIndex - 1
+      : messages.length - 1;
 
     /* The LAST non-empty assistant message in the range, not the first: a turn
        can emit several (a projection row, an echo, then the real reply), and
        the one the reader is looking for is the final response. */
     let answerIndex: number | null = null;
     let toolCount = 0;
-    for (let j = i + 1; j <= end; j += 1) {
+    for (let j = i; j <= end; j += 1) {
       const m = messages[j];
       if (m.role === 'assistant') {
         toolCount += m.tools?.length ?? 0;
@@ -119,7 +129,7 @@ export function deriveSessionTurns(messages: readonly ChatMessage[]): SessionTur
       }
     }
 
-    const askedAt = messages[i].ts ?? null;
+    const askedAt = boundary.identity?.startedAt ?? messages[i].ts ?? null;
     const answeredAt = answerIndex == null ? null : (messages[answerIndex].ts ?? null);
     const askedMs = parseMs(askedAt);
     const answeredMs = parseMs(answeredAt);
@@ -129,7 +139,7 @@ export function deriveSessionTurns(messages: readonly ChatMessage[]): SessionTur
       questionIndex: i,
       answerIndex,
       jumpIndex: answerIndex ?? i,
-      question: messages[i].content.trim(),
+      question: boundary.identity?.preview ?? messages[i].content.trim(),
       askedAt,
       answeredAt,
       durationMs:
@@ -139,7 +149,6 @@ export function deriveSessionTurns(messages: readonly ChatMessage[]): SessionTur
       lastIndex: end,
     });
 
-    i = end;
   }
 
   return turns;

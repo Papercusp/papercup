@@ -979,6 +979,25 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling events:status or a peer-owned plan gate for completion',
   },
   {
+    // ── EI-22631392773986974 — fleet-scoped announced gates have the same
+    // documentation-only contract as plan-scoped gates. `fleet:resume` mints
+    // `fleet:<slug>:<gate>` at runtime, so the shape must be discoverable without
+    // becoming a wildcard membership match for unrelated fleet keys.
+    family: 'fleet-event',
+    keyTemplate: 'fleet:<slug>:<gate>',
+    announcedShape: true,
+    params: [
+      { name: 'slug', required: true, describe: 'the fleet slug in the announced key' },
+      { name: 'gate', required: true, describe: 'the stable gate name' },
+    ],
+    describe:
+      'A fleet-qualified announced gate FIRED; declaration visibility and latch generation remain in the announcement row, while this key is the awaitable completion signal. DISCOVERY-ONLY: the key is minted at runtime by events:emit or fleet:resume, so this shape is documented but never matched — read the ANNOUNCED section of events:catalog for live gates.',
+    emitter:
+      'events:emit announcement + fleet control fire path (packages/operator-core/lib/agent-tools/events/emit.ts → packages/operator-core/lib/agent-tools/fleet_registry/control-core.ts → packages/operator-core/lib/events/await/announce-key.ts)',
+    exists: true,
+    replacesPoll: 'polling events:status or a peer-owned fleet gate for completion',
+  },
+  {
     family: 'rate-limit-exhausted',
     keyTemplate: 'rate-limit:exhausted:<accountId>',
     params: [

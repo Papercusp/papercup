@@ -5910,7 +5910,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "After acting on (or deliberately not acting on) coord message(s) — closes the loop for the sender. Ack several at once via msg_ids:[…].",
@@ -7012,7 +7013,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "Share context or ask. `summary` is the required inbox headline; `body` is detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.",
@@ -32389,7 +32391,8 @@
         "kettle",
         "doc-steward",
         "release-fixer",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
@@ -32943,6 +32946,17 @@
         "mug",
         "documenter",
         "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "As the resolver behind state:read { cell:\"workspace.workScope\" }, or when you only need to READ whether the workspace is confined to an allow-list of harnesses.",
+        "notWhen": "To set or clear the policy — that is workspace:work_scope { op:\"set\"|\"clear\" }.",
+        "chaining": "state:read { cell:\"workspace.workScope\" } is the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
+      }
+    }
+  ]
+}
+or"
       ],
       "profile": "engineer",
       "guidance": {

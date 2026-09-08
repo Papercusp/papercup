@@ -1779,6 +1779,9 @@ pub struct App {
     pub should_quit: bool,
     pub status: String,
     pub tab: Tab,
+    /// Startup preferences may arrive after the owner starts using the UI.
+    /// Consume them once, only while no interactive input has superseded them.
+    view_state_restore_pending: bool,
     /// Single-pane dock mode (native-terminal-desktop P-013 / D-011): when set,
     /// the renderer shows JUST this tab's body full-screen (no tab strip / HUD /
     /// work area) and the run loop re-pins `tab` to it. The chat dock's operator
@@ -2391,12 +2394,11 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
-            status:
-                "pui · Agent Chat · s Sessions · l chats · m model · e effort · a acct · [/] pot"
-                    .to_string(),
+            status: "pui".to_string(),
             // D-031 / P-019: Agent Chat is the product front door. `title()`
             // remains Operator only as the stable persistence identity.
             tab: Tab::Operator,
+            view_state_restore_pending: true,
             pinned: None,
             plans: Vec::new(),
             plan_sel: 0,
@@ -7191,6 +7193,19 @@ impl App {
 
     /// The single reducer. Pure w.r.t. I/O, so it is unit-testable.
     pub fn update(&mut self, ev: Event) -> Action {
+        // Loading the saved view follows asynchronous startup reads. Any owner
+        // input takes precedence over that old snapshot, including composing on
+        // the default tab (which need not change a persisted field). Read-only
+        // inspection and background data must still allow an untouched restore.
+        let interactive = match &ev {
+            Event::Key(key) => key.kind != crossterm::event::KeyEventKind::Release,
+            Event::Paste(text) => !text.is_empty(),
+            Event::TuiIntent { intent, .. } => intent != "get_state",
+            _ => false,
+        };
+        if interactive {
+            self.view_state_restore_pending = false;
+        }
         match ev {
             Event::Paste(text) => {
                 // Text-entry overlays consume the paste as DATA. Newlines are
@@ -8232,6 +8247,9 @@ impl App {
                 Action::Render
             }
             Event::ViewStateLoaded(vs) => {
+                if !std::mem::replace(&mut self.view_state_restore_pending, false) {
+                    return Action::None;
+                }
                 let restored_theme = self.apply_view_state(&vs);
                 // Restore may land us on the Plans tab — publish so the poller fetches
                 // the selected plan's item-states on first paint (P-005a).

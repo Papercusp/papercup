@@ -33,6 +33,12 @@
  *
  * A turn with neither text nor tool calls produces no assistant message (a
  * pure-status/result-only turn stays invisible — still noise reduction).
+ *
+ * Every visible row from a prompt-backed turn also carries the same
+ * sessionTurn descriptor. That descriptor is the owner-safe bridge between
+ * raw prompt boundaries and the rendered turn rail: an owner prompt supplies
+ * its visible text, while a machine prompt supplies only the neutral preview
+ * "Automatic continuation." The machine body remains hidden.
  */
 
 import type { ChatMessage, ChatToolCall } from './chat-types';
@@ -129,6 +135,17 @@ export function mapSessionTimeline(
   const planSlugField = planSlug !== undefined ? { planSlug } : {};
 
   for (const turn of turns) {
+    const promptText = turn.prompt ? ownerVisiblePromptText(turn.prompt.text ?? '') : '';
+    const sessionTurn = turn.prompt
+      ? {
+          id: 'session-turn-' + turn.seq,
+          kind: promptText ? ('owner' as const) : ('automatic' as const),
+          preview: promptText || 'Automatic continuation.',
+          ...(turn.startTs ? { startedAt: turn.startTs } : {}),
+        }
+      : null;
+    const sessionTurnField = sessionTurn ? { sessionTurn } : {};
+
     if (turn.prompt) {
       // EI-20130618357432548: a prompt that papercusp INJECTED carries machine
       // annotations the owner never typed — the `⟦turn-origin:…⟧` provenance
@@ -146,7 +163,6 @@ export function mapSessionTimeline(
       // what the human actually authored, keyed on turn PROVENANCE rather than a
       // marker deny-list (which rots, and fails open, every time a wake kind is
       // added). Returning '' makes the existing guard below drop the message.
-      const promptText = ownerVisiblePromptText(turn.prompt.text ?? '');
       if (promptText) {
         messages.push({
           role: 'user',
@@ -156,6 +172,7 @@ export function mapSessionTimeline(
           // exactly what a user-side stamp should say.
           ...tsField(turn.prompt.ts),
           ...planSlugField,
+          ...sessionTurnField,
         });
         bind(turn.prompt, messages.length - 1);
       }
@@ -220,6 +237,7 @@ export function mapSessionTimeline(
            last resort — a prompt-led turn always has one. */
         ...tsField(contentTs ?? turn.endTs ?? turn.startTs),
         ...planSlugField,
+        ...sessionTurnField,
       });
       // Every entry of the turn, INCLUDING the dropped tool_result/status ones
       // (see the interface note) — an anchor on a tool_result must still land

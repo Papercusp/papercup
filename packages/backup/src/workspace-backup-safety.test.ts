@@ -260,6 +260,33 @@ describe('pre-destructive snapshot intent lifecycle (EI-217072)', () => {
       ),
     ).toBe(true);
   });
+
+  it('releases a scheduler-admitted lock when the durable intent insert fails', async () => {
+    const release = vi.fn(async () => {});
+    const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const text = strings.join('?');
+      if (text.includes('INSERT INTO harness_shared.backup_snapshots')) {
+        return Promise.reject(new Error('snapshot intent insert failed'));
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    configureBackupStepRunner({
+      runStep: async <T>(_name: string, fn: () => Promise<T>): Promise<T> => fn(),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    const lock = { release };
+
+    await expect(w.snapshot('interval', undefined, { migrationLock: lock })).rejects.toThrow(
+      /snapshot intent insert failed/,
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function dirWith(p: string, marker: string): Promise<void> {

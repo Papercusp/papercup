@@ -21,7 +21,11 @@
 
 import { spawnSync } from 'node:child_process';
 import type { Sql } from 'postgres';
-import { backupHost, type IntervalSnapshotAdmission } from './config';
+import {
+  backupHost,
+  type BackupMigrationLock,
+  type IntervalSnapshotAdmission,
+} from './config';
 import { workspaceBackupFor } from './singleton';
 import type { SnapshotTriggerReason } from './types';
 
@@ -130,10 +134,22 @@ async function tick(): Promise<void> {
       }
       LAST_INTERVAL_DEFERRAL.delete(r.workspace_id);
 
+      // The scheduler runs in more than one operator process. Probe the same
+      // dedicated-session rendezvous used by WorkspaceBackup before consuming
+      // cadence/in-flight state; a blocking acquire here would recreate the
+      // cross-process convoy that caused repeated 900s dump watchdog failures.
+      // The returned session is transferred into snapshot() and held until its
+      // final receipt write, so there is no try-then-release race.
+      const lockResult = await tryAcquireIntervalMigrationLock();
+      if (lockResult.defer) {
+        await recordIntervalDeferral(sql, r.workspace_id, lockResult.defer);
+        continue;
+      }
+
       const next: WorkspaceTickState = { lastFiredAt: now, inFlight: true };
       STATE.set(r.workspace_id, next);
       pendingSnapshots.push(
-        runSnapshot(r.workspace_id, 'interval', undefined).finally(() => {
+        runSnapshot(r.workspace_id, 'interval', undefined, lockResult.lock).finally(() => {
           const cur = STATE.get(r.workspace_id);
           if (cur) cur.inFlight = false;
         }),
@@ -142,6 +158,40 @@ async function tick(): Promise<void> {
     await Promise.all(pendingSnapshots);
   } catch (err) {
     console.warn('[backup-scheduler] tick failed:', err);
+  }
+}
+
+interface IntervalMigrationLockResult {
+  lock?: BackupMigrationLock;
+  defer?: Extract<IntervalSnapshotAdmission, { status: 'defer' }>;
+}
+
+async function tryAcquireIntervalMigrationLock(): Promise<IntervalMigrationLockResult> {
+  const acquire = backupHost().acquireMigrationLock;
+  // Standalone package consumers may not provide a migration applier. Keep
+  // their historical behavior: WorkspaceBackup will acquire a blocking lock
+  // after it has created the durable snapshot intent row.
+  if (!acquire) return {};
+  try {
+    const lock = await acquire({ tryOnly: true });
+    if (lock) return { lock };
+    return {
+      defer: {
+        status: 'defer',
+        reason: 'migration-rendezvous-busy',
+        evidence: { tryOnly: true },
+      },
+    };
+  } catch (error) {
+    return {
+      defer: {
+        status: 'defer',
+        reason: 'migration-rendezvous-unreadable',
+        evidence: {
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+        },
+      },
+    };
   }
 }
 
@@ -207,7 +257,9 @@ async function runSnapshot(
   workspaceId: string,
   reason: SnapshotTriggerReason,
   context: Record<string, unknown> | undefined,
+  migrationLock?: BackupMigrationLock,
 ): Promise<void> {
+  let lockTransferred = false;
   try {
     const wb = workspaceBackupFor(workspaceId);
     const settings = await wb.getSettings();
@@ -222,9 +274,29 @@ async function runSnapshot(
       if (settings.cadenceMode !== 'event' && settings.cadenceMode !== 'both') return;
       if (!settings.eventTriggers.includes(reason)) return;
     }
-    await wb.snapshot(reason, context);
+    if (migrationLock) {
+      const snapshotPromise = wb.snapshot(reason, context, { migrationLock });
+      lockTransferred = true;
+      await snapshotPromise;
+    } else {
+      await wb.snapshot(reason, context);
+    }
   } catch (err) {
     console.warn(`[backup-scheduler] snapshot ${reason} for ${workspaceId} failed:`, err);
+  } finally {
+    // A settings change can disable a workspace between the scheduler query
+    // and this call. In that case no WorkspaceBackup operation receives the
+    // probe lock, so release it here rather than leaking the dedicated session.
+    if (migrationLock && !lockTransferred) {
+      try {
+        await migrationLock.release();
+      } catch (error) {
+        console.warn(
+          `[backup-scheduler] migration rendezvous release for ${workspaceId} failed:`,
+          error,
+        );
+      }
+    }
   }
 }
 

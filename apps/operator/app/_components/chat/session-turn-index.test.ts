@@ -40,6 +40,15 @@ function agent(content: string, opts: { tools?: string[]; ts?: string } = {}): C
   };
 }
 
+function rawTurn(
+  id: string,
+  preview: string,
+  kind: NonNullable<ChatMessage['sessionTurn']>['kind'] = 'owner',
+  startedAt?: string,
+): NonNullable<ChatMessage['sessionTurn']> {
+  return { id, kind, preview, ...(startedAt ? { startedAt } : {}) };
+}
+
 /** Two complete turns, the shape the popup renders for a real session. */
 const TWO_TURNS: ChatMessage[] = [
   user('why is the gate red', iso(0)),
@@ -54,6 +63,49 @@ describe('deriveSessionTurns', () => {
     expect(turns.map((t) => t.turn)).toEqual([1, 2]);
     expect(turns.map((t) => t.question)).toEqual(['why is the gate red', 'fix it then']);
     expect(turns.map((t) => t.questionIndex)).toEqual([0, 2]);
+  });
+
+  it('counts one explicitly marked owner prompt/reply pair exactly once', () => {
+    const identity = rawTurn('raw-1', 'run the tests', 'owner', iso(0));
+    const turns = deriveSessionTurns([
+      { ...user('run the tests', iso(0)), sessionTurn: identity },
+      { ...agent('All green.', { ts: iso(30_000) }), sessionTurn: identity },
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({
+      question: 'run the tests',
+      questionIndex: 0,
+      answerIndex: 1,
+      jumpIndex: 1,
+      firstIndex: 0,
+      lastIndex: 1,
+    });
+  });
+
+  it('opens an assistant-only automatic turn and navigates to its visible reply', () => {
+    const owner = rawTurn('raw-owner', 'why is the gate red');
+    const automatic = rawTurn('raw-auto', 'Automatic continuation.', 'automatic', iso(180_000));
+    const turns = deriveSessionTurns([
+      { ...user('why is the gate red', iso(0)), sessionTurn: owner },
+      { ...agent('I found the cause.', { ts: iso(120_000) }), sessionTurn: owner },
+      { ...agent('The lock opened.', { ts: iso(240_000) }), sessionTurn: automatic },
+    ]);
+    expect(turns.map((turn) => turn.question)).toEqual(['why is the gate red', 'Automatic continuation.']);
+    expect(turns.map((turn) => turn.jumpIndex)).toEqual([1, 2]);
+    expect(turns.map((turn) => turn.answerIndex)).toEqual([1, 2]);
+  });
+
+  it('keeps an unmarked echo boundary without reopening a seen raw turn', () => {
+    const identity = rawTurn('raw-1', 'original question');
+    const turns = deriveSessionTurns([
+      { ...user('original question'), sessionTurn: identity },
+      user('follow-up sent mid-turn'),
+      { ...agent('Answer after the follow-up'), sessionTurn: identity },
+    ]);
+    expect(turns.map((turn) => turn.question)).toEqual(['original question', 'follow-up sent mid-turn']);
+    expect(turns.map((turn) => turn.answerIndex)).toEqual([null, 2]);
+    expect(turns.map((turn) => [turn.firstIndex, turn.lastIndex])).toEqual([[0, 0], [1, 2]]);
   });
 
   it('points the jump at the ANSWER, not the question', () => {

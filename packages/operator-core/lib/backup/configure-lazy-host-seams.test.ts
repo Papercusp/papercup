@@ -36,7 +36,7 @@ const h = vi.hoisted(() => ({
 
 const pg = vi.hoisted(() => {
   const client = Object.assign(
-    vi.fn((_strings: readonly string[], ..._values: unknown[]) => Promise.resolve([])),
+    vi.fn((_strings: readonly string[], ..._values: unknown[]): Promise<unknown> => Promise.resolve([])),
     { end: vi.fn(async () => {}) },
   );
   return { client, postgres: vi.fn(() => client) };
@@ -68,13 +68,17 @@ beforeEach(() => {
 
 async function configuredHost(): Promise<{
   readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
-  acquireMigrationLock: () => Promise<{ release: () => Promise<void> }>;
+  acquireMigrationLock: (options?: { tryOnly?: boolean }) => Promise<{
+    release: () => Promise<void>;
+  } | undefined>;
   scheduleInterval: (name: string, intervalMs: number, callback: () => void | Promise<void>) => { stop: () => void };
 }> {
   await import('./configure');
   return h.configureBackup.mock.calls[0]![0] as {
     readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
-    acquireMigrationLock: () => Promise<{ release: () => Promise<void> }>;
+    acquireMigrationLock: (options?: { tryOnly?: boolean }) => Promise<{
+      release: () => Promise<void>;
+    } | undefined>;
     scheduleInterval: (name: string, intervalMs: number, callback: () => void | Promise<void>) => { stop: () => void };
   };
 }
@@ -177,6 +181,7 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     expect(String(pg.client.mock.calls[1]![0])).toContain('SET statement_timeout = 0');
     expect(String(pg.client.mock.calls[2]![0])).toContain('pg_advisory_lock');
 
+    if (!lock) throw new Error('blocking advisory-lock acquisition unexpectedly returned no lock');
     await lock.release();
     expect(pg.client).toHaveBeenCalledTimes(4);
     expect(String(pg.client.mock.calls[3]![0])).toContain('pg_advisory_unlock');
@@ -187,6 +192,28 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     await lock.release();
     expect(pg.client).toHaveBeenCalledTimes(4);
     expect(pg.client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns no lock and closes the session when a try-only probe is busy', async () => {
+    const host = await configuredHost();
+    pg.client.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([{ acquired: false }]);
+
+    await expect(host.acquireMigrationLock({ tryOnly: true })).resolves.toBeUndefined();
+    expect(String(pg.client.mock.calls.at(-1)?.[0])).toContain('pg_try_advisory_lock');
+    expect(pg.client.end).toHaveBeenCalled();
+  });
+
+  it('transfers a try-only lock when the probe succeeds', async () => {
+    const host = await configuredHost();
+    pg.client.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([{ acquired: true }]);
+
+    const lock = await host.acquireMigrationLock({ tryOnly: true });
+    expect(lock).toBeDefined();
+    expect(String(pg.client.mock.calls.at(-1)?.[0])).toContain('pg_try_advisory_lock');
+
+    await lock!.release();
+    expect(String(pg.client.mock.calls.at(-1)?.[0])).toContain('pg_advisory_unlock');
+    expect(pg.client.end).toHaveBeenCalled();
   });
 
   it('routes package lifecycle heartbeats through the named managed scheduler', async () => {

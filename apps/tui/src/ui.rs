@@ -4058,7 +4058,8 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let identity_error = app.backend_identity_error.as_ref();
-    let (text, style) = match app.last_error.as_ref().or(identity_error) {
+    let error = app.last_error.as_ref().or(identity_error);
+    let (text, style) = match error {
         Some(e) => (
             format!("{} {e}", crate::glyph::severity::WARN),
             Theme::warn(),
@@ -4073,10 +4074,6 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             (text, Theme::dim())
         }
     };
-    f.render_widget(
-        Paragraph::new(Line::from(text)).style(Theme::status_text(style)),
-        area,
-    );
     // The right edge carries one of two right-aligned indicators (each in its
     // own sub-rect so it never clobbers the left status text):
     //   • the companion workbench indicator (P-004) when the zellij plugin is
@@ -4084,7 +4081,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     //   • a standing discoverability hint (D-012) so the help overlay + the
     //     re-openable tutorial stay visible regardless of how long the status
     //     hint-string is (it would otherwise clip off the right edge).
-    let right = app.workbench_summary().unwrap_or_else(|| {
+    let mut right = app.workbench_summary().unwrap_or_else(|| {
         if app.tab != Tab::Operator {
             // Must survive restored non-chat state and narrow layouts where the
             // optional dock cannot render: one key always lands in the composer.
@@ -4093,7 +4090,26 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             "l/m/e/a/u:select · b:backend · i:compose · ?:help".to_string()
         }
     });
-    let w = (right.chars().count() as u16 + 1).min(area.width);
+    // Reserve disjoint rectangles before either render. Full shortcuts are
+    // optional when they would cover a status/error; the compact help hint
+    // (and the global chat key outside Agent Chat) remains discoverable.
+    let text = Line::from(text);
+    if error.is_some() || text.width() + Line::from(right.as_str()).width() + 1 > area.width as usize {
+        right = if app.tab == Tab::Operator || error.is_some() {
+            "?:help"
+        } else {
+            "o:Agent Chat · ?:help"
+        }.to_string();
+    }
+    let w = (Line::from(right.as_str()).width() as u16 + 1).min(area.width);
+    let left = Rect {
+        width: area.width.saturating_sub(w),
+        ..area
+    };
+    f.render_widget(
+        Paragraph::new(text).style(Theme::status_text(style)),
+        left,
+    );
     let sub = Rect {
         x: area.x + area.width.saturating_sub(w),
         y: area.y,

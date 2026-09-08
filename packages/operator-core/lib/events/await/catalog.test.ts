@@ -158,6 +158,8 @@ describe('renderCatalog', () => {
     // WI-1632193: still RENDERED (that is what makes the shape discoverable), even
     // though keyMatchesCatalog no longer matches it — see the announcedShape tests.
     expect(byFamily['plan-event'].key).toBe('plan:<slug>:<gate>');
+    expect(byFamily['fleet-event'].key).toBe('fleet:<slug>:<gate>');
+    expect(byFamily['fleet-event'].awaitable_now).toBe(true);
   });
 
   it('makes the self-assignee restriction discoverable for both work-item await families', () => {
@@ -240,6 +242,9 @@ describe('scoped announced gates are NOT catalog families (WI-1632193)', () => {
     // the shape, and it matches nothing so a typo of it cannot pass as catalogued.
     expect(renderCatalog().find((candidate) => candidate.family === 'plan-event')).toMatchObject({
       key: 'plan:<slug>:<gate>',
+    });
+    expect(renderCatalog().find((candidate) => candidate.family === 'fleet-event')).toMatchObject({
+      key: 'fleet:<slug>:<gate>',
     });
   });
 
@@ -357,7 +362,7 @@ describe('EI-10870 — keyMatchesCatalog (the orphan-await guard)', () => {
     }
     // Pin the exemption's size so a future announcedShape row is a deliberate act:
     // silently widening this is how the orphan guard would go dark a second time.
-    expect(exempted).toBe(1);
+    expect(exempted).toBe(2);
   });
 });
 

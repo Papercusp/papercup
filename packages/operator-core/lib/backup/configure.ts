@@ -62,7 +62,7 @@ configureBackup({
    * on a different connection from the later snapshot work and release early.
    * This handle owns exactly one session for the whole snapshot lifecycle.
    */
-  acquireMigrationLock: async () => {
+  acquireMigrationLock: async (options) => {
     const { url } = getHarnessAdminUrlWithSource();
     const client = postgres(url, {
       max: 1,
@@ -85,7 +85,19 @@ configureBackup({
       // dedicated to holding the lock and is ended on release, so nothing is reset.
       await client`SET lock_timeout = 0`;
       await client`SET statement_timeout = 0`;
-      await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      if (options?.tryOnly) {
+        const rows = await client<{ acquired: boolean }[]>`
+          SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
+        if (rows[0]?.acquired !== true) {
+          // A failed probe owns no lock. Close this dedicated session before
+          // returning so every due interval attempt leaves no idle connection
+          // behind while another process holds the rendezvous.
+          await client.end({ timeout: 5 }).catch(() => {});
+          return undefined;
+        }
+      } else {
+        await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      }
     } catch (error) {
       await client.end({ timeout: 5 }).catch(() => {});
       throw error;

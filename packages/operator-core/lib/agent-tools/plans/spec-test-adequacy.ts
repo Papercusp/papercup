@@ -371,6 +371,28 @@ function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]
   return `${statement} Bound evidence: ${bindingSummary(rows)}.`;
 }
 
+/**
+ * Presence-and-sign ONLY, deliberately — this is not where fakery is stopped.
+ *
+ * REFERENTIAL EXISTENCE IS ENFORCED IN POSTGRES, at bind time, by the
+ * `spec_evidence_bindings_validate_refs` BEFORE INSERT trigger installed in
+ * migration 855 (`harness_shared.validate_spec_evidence_binding_refs`). It
+ * rejects a `test_run_id` / `coverage_evidence_ref` that does not resolve with
+ * ERRCODE 23503, and matches on `workspace_id` AND `harness_slug`, so a
+ * fabricated or cross-tenant id can never reach a row this function ever sees.
+ *
+ * Read this predicate on its own and `execution-integrity` looks trivially
+ * fakeable (`testRunId: 1` would satisfy it). That reading is wrong, and it has
+ * cost a bogus bug filing at least once — EI-22684973731417610, filed against
+ * this exact function and retracted after the trigger was verified live via
+ * pg_trigger + pg_get_functiondef. Audit the DB before concluding the ledger
+ * reference is unchecked.
+ *
+ * Corollary worth knowing: because the trigger matches harness_slug exactly, a
+ * test run recorded under a DIFFERENT harness than the binding (or with the
+ * NULL scope that CI/dogfood-reporter rows carry by design) cannot be bound as
+ * evidence at all.
+ */
 function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
   return (
     (Number.isSafeInteger(row.testRunId) && row.testRunId! > 0) ||
@@ -566,6 +588,9 @@ function rerunRecipeFor(
     ).values(),
   ].sort((a, b) => `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`));
   const selectedKeys = new Set(selectedEvidence.map((row) => `${row.evidenceKind}\0${row.evidenceRef}`));
+  const selectedEvidenceRefs = [...new Set(selectedEvidence.map((row) => row.evidenceRef))].sort((a, b) =>
+    a.localeCompare(b),
+  );
   const fingerprints: SpecTestAdequacyCurrentFingerprint[] = (current ?? [])
     .filter((row) => selectedKeys.has(`${row.evidenceKind}\0${row.evidenceRef}`))
     .map((row) => ({
@@ -597,7 +622,11 @@ function rerunRecipeFor(
       classRef,
       specIds: [clause.specId],
       ...(selection?.workItemIds?.length ? { workItemIds: [...selection.workItemIds] } : {}),
-      ...(selection?.evidenceRefs?.length ? { evidenceRefs: [...selection.evidenceRefs] } : {}),
+      // The recipe must replay the exact evidence population the evaluator graded,
+      // even when the caller selected it indirectly through a work item or plan
+      // item. Reusing only the caller's optional evidenceRefs would let later
+      // bindings silently widen a persisted scorecard's replay.
+      ...(selectedEvidenceRefs.length ? { evidenceRefs: selectedEvidenceRefs } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
       // Fingerprints classify the selected bindings; the selectors above define

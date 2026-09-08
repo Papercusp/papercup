@@ -30,6 +30,27 @@ export interface ChatToolCall {
 
 import type { ReportBlock } from '@papercusp/chat-protocol';
 
+/**
+ * Owner-safe identity for one raw session turn.
+ *
+ * A session turn starts on every transcript prompt, including machine wakes
+ * whose prompt body must never be rendered as owner speech. The mapper stamps
+ * this same descriptor on every visible message from that raw turn so a
+ * downstream navigation surface can recover the real boundary without
+ * exposing the hidden prompt. Generic chat messages leave it unset and keep
+ * their ordinary user-message grouping.
+ */
+export interface SessionTurnIdentity {
+  /** Stable within one mapped transcript window. */
+  id: string;
+  /** Whether the raw prompt came from the owner or from session machinery. */
+  kind: 'owner' | 'automatic';
+  /** Safe rail copy; never contains a hidden machine prompt body. */
+  preview: string;
+  /** When the raw turn started, when the transcript carried an instant. */
+  startedAt?: string;
+}
+
 export interface ChatMessage {
   /** Who spoke. Surfaces tint by role. */
   role: 'user' | 'assistant' | 'system';
@@ -103,4 +124,6 @@ export interface ChatMessage {
    * contract one layer down).
    */
   planSlug?: string | null;
+  /** Raw session-turn boundary metadata; absent on generic chat feeds/echoes. */
+  sessionTurn?: SessionTurnIdentity;
 }

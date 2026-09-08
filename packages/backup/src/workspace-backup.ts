@@ -315,10 +315,27 @@ export class WorkspaceBackup {
     context?: Record<string, unknown>,
     opts?: {
       onStarted?: (snapshotId: number) => void;
+      /** A scheduler-admitted lock already held on a dedicated session. */
+      migrationLock?: BackupMigrationLock;
     },
   ): Promise<SnapshotResult> {
     const current = SNAPSHOT_IN_FLIGHT.get(this.workspaceId);
     if (current) {
+      // The scheduler acquires the cross-process rendezvous before it marks
+      // its interval attempt in-flight. If this process already has a direct
+      // snapshot running, join it — but release the probe lock because the
+      // existing operation owns the actual lifecycle.
+      if (opts?.migrationLock) {
+        try {
+          await opts.migrationLock.release();
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[backup] migration rendezvous release after snapshot join for ${this.workspaceId} failed:`,
+            error,
+          );
+        }
+      }
       if (opts?.onStarted) {
         if (current.startedId !== undefined) {
           opts.onStarted(current.startedId);
@@ -340,6 +357,7 @@ export class WorkspaceBackup {
         const callbacks = entry.pendingStartedCallbacks.splice(0);
         for (const callback of callbacks) callback(snapshotId);
       },
+      migrationLock: opts?.migrationLock,
     });
     entry.promise = run.then(
       (result) => {
@@ -374,6 +392,8 @@ export class WorkspaceBackup {
        * status instead of the tool call itself blocking on it.
        */
       onStarted?: (snapshotId: number) => void;
+      /** A scheduler-admitted lock to hold through the complete snapshot. */
+      migrationLock?: BackupMigrationLock;
     },
   ): Promise<SnapshotResult> {
     const sql = backupHost().getSql();
@@ -391,7 +411,10 @@ export class WorkspaceBackup {
     let dbDumpOk: boolean | null = null;
     let receiptFinalized = false;
     let heartbeat: BackupIntervalHandle | undefined;
-    let migrationLock: BackupMigrationLock | undefined;
+    // A scheduler-admitted lock is already owned before the durable row is
+    // inserted. Keep it in the local lifecycle from the first instruction so
+    // an early INSERT/step failure still releases the transferred session.
+    let migrationLock: BackupMigrationLock | undefined = opts?.migrationLock;
 
     const finalizeFailure = async (message: string): Promise<void> => {
       if (snapshotRowId === undefined || receiptFinalized) return;
@@ -464,10 +487,14 @@ export class WorkspaceBackup {
 
       await this.event(snapshotRowId!, 'progress', { phase: 'started', sources });
 
-      // Coordinate the snapshot with native boot/db:migrate AFTER the intent
-      // exists. A migration can therefore see this latest `running` receipt
-      // and fail closed even while the snapshot waits for the rendezvous.
-      migrationLock = await backupHost().acquireMigrationLock?.();
+      // Direct callers acquire after the durable intent exists, so a migration
+      // can see the latest `running` receipt while the snapshot waits. The
+      // interval scheduler may pass a try-acquired lock here instead: that
+      // cross-process admission happened before scheduler state was consumed,
+      // and this operation must keep the same session lock through completion.
+      if (!migrationLock) {
+        migrationLock = await backupHost().acquireMigrationLock?.();
+      }
       await this.ensureRepo();
       const password = await deriveRepoPassword(this.workspaceId);
       const env = this.envWithPassword(password);

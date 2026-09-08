@@ -280,7 +280,7 @@ describe('WI-1611805 — the derived ARITY bound on keyMatchesCatalog', () => {
     // re-opens EI-21666331086562886 (a declared gate nobody could find in the
     // catalog); dropping the second re-opens the `plan:draft-redy:x` typo hole.
     const shapes = EVENT_CATALOG.filter((e) => e.announcedShape);
-    expect(shapes.length).toBeGreaterThan(0); // the exemption above is not vacuous
+    expect(shapes.map((e) => e.family)).toEqual(['plan-event', 'fleet-event']);
     for (const e of shapes) {
       // DISCOVERABLE: it is a real catalog row with a real buildable key…
       const params = Object.fromEntries(e.params.map((p) => [p.name, 'x']));

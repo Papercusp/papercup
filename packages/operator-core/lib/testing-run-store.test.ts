@@ -109,6 +109,30 @@ describe('startRun', () => {
     expect(spawnMock).toHaveBeenCalledWith('npx', ['vitest', 'run'], expect.objectContaining({ cwd: '/tmp' }));
   });
 
+  it('merges caller environment into the child while preserving run-owned markers', () => {
+    const snap = store.startRun(
+      req({
+        env: {
+          PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+          PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+          PAPERCUSP_TEST_RUN_GROUP: 'caller-group-must-not-win',
+        },
+      }),
+    );
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'npx',
+      ['vitest', 'run'],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+          PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+          PAPERCUSP_TEST_RUN_GROUP: snap.runId,
+        }),
+      }),
+    );
+  });
+
   it('enrols before spawning and wraps the command with the exact task spec/env/cwd', () => {
     const enrolment = {
       taskId: 'task-confined',
@@ -420,6 +444,8 @@ describe('durable detached snapshot lifecycle', () => {
           finished_at: values[8],
           output: values[9],
           truncated: values[10],
+          task_id: values[11],
+          task_state: 'running',
         };
         return [];
       }
@@ -436,6 +462,85 @@ describe('durable detached snapshot lifecycle', () => {
 
     await expect(store.getRunAsync(snapshot.runId, sql)).resolves.toMatchObject({
       runId: snapshot.runId,
+      taskId: 'task-test-run',
+      status: 'running',
+      finishedAt: null,
+    });
+  });
+
+  it('reconciles a persisted running snapshot when its linked task is terminal', async () => {
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) {
+        return [
+          {
+            run_id: 'orphan-run',
+            task_id: 'task-orphan',
+            kind: 'shell',
+            label: 'orphan',
+            file_path: null,
+            command: ['bash', '-c', 'true'],
+            status: 'running',
+            exit_code: null,
+            started_at: new Date(1_700_000_000_000),
+            finished_at: null,
+            output: 'partial output',
+            truncated: false,
+            task_state: 'exited',
+          },
+        ];
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: 'orphan-run' }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync('orphan-run', sql)).resolves.toMatchObject({
+      runId: 'orphan-run',
+      taskId: 'task-orphan',
+      status: 'error',
+      exitCode: null,
+      finishedAt: expect.any(Number),
+      output: expect.stringContaining('no test verdict was observed'),
+    });
+    expect(updates).toHaveLength(1);
+    expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0].join(' ')).toContain(
+      "WHERE run_id =",
+    );
+  });
+
+  it('does not report a local orphan conversion when the compare-and-set loses a race', async () => {
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('SELECT run_id, kind, label')) {
+        return [
+          {
+            run_id: 'raced-run',
+            task_id: 'task-raced',
+            kind: 'shell',
+            label: 'raced',
+            file_path: null,
+            command: ['bash', '-c', 'true'],
+            status: 'running',
+            exit_code: null,
+            started_at: new Date(1_700_000_000_000),
+            finished_at: null,
+            output: '',
+            truncated: false,
+            task_state: 'killed',
+          },
+        ];
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return [];
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync('raced-run', sql)).resolves.toMatchObject({
+      runId: 'raced-run',
+      taskId: 'task-raced',
       status: 'running',
       finishedAt: null,
     });

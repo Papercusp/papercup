@@ -1006,6 +1006,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
       expect(recipe).toBeDefined();
       const args = evaluatorArgsSchema.parse(recipe!.args);
       expect(args.harness).toBe('papercusp');
+      expect(args.evidenceRefs).toEqual([legacy.evidenceRef, selected.evidenceRef].sort());
       const rerunCurrent = Array.isArray(args.current)
         ? args.current
         : args.current?.supplied
@@ -1089,6 +1090,7 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
 
     expect(recipe.args.slug).toBe('reconnect-plan');
     expect(recipe.args.specIds).toEqual(['SPEC-003-01']);
+    expect(recipe.args.evidenceRefs).toEqual(['surface:reconnect']);
     expect(recipe.args.includeDraft).toBe(true);
   });
 

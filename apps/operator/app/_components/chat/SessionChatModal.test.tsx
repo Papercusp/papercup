@@ -250,6 +250,9 @@ beforeEach(() => {
   vi.stubGlobal('IntersectionObserver', class {
     observe() {} unobserve() {} disconnect() {}
   });
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {} unobserve() {} disconnect() {}
+  });
   H.results = {};
   attentionInvalidate.mockClear();
   lastWorkItemPopupProps = {};
@@ -617,6 +620,16 @@ describe('SessionChatModal', () => {
     expect(screen.queryByText(/A{100,}/)).toBeNull();
   });
 
+  it('binds shared assistant and owner bubbles to the dark session-chat host tokens', () => {
+    const css = readFileSync(resolve(__dirname, 'session-chat.css'), 'utf8');
+    const hostTokens = css.split('}').find((block) => block.includes('.session-chat .op-chat-shared'));
+    expect(hostTokens).toMatch(/--pc-chat-bubble-assistant:\s*var\(--bg-2\)/);
+    expect(hostTokens).toMatch(/--pc-chat-bubble-assistant-fg:\s*var\(--fg\)/);
+    expect(hostTokens).toMatch(/--pc-chat-bubble-user:\s*var\(--bg-popover,\s*var\(--bg\)\)/);
+    expect(hostTokens).toMatch(/--pc-chat-bubble-user-fg:\s*var\(--fg\)/);
+    expect(hostTokens).not.toMatch(/#f7f7f8|#eef2ff/);
+  });
+
   it('loads and prepends older stable-owner pages until the beginning of retained history', async () => {
     fetchMock.mockImplementation(async (input: string | URL | Request) => {
       const url = String(input);
@@ -689,6 +702,28 @@ describe('SessionChatModal', () => {
     fireEvent.click(rows[0]);
     fireEvent.click(rows[2]);
     await waitFor(() => expect(scrollToIndexSpy.mock.calls.at(-1)?.[0]).toBe(5));
+  });
+
+  it('renders hidden machine prompts as automatic rail turns without exposing their bodies', async () => {
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-turns', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'prompt', text: 'owner question' },
+        { kind: 'text', text: 'owner answer' },
+        { kind: 'prompt', text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\n[await-event] secret machine body' },
+        { kind: 'text', text: 'automatic answer' },
+      ]));
+    });
+
+    const rows = within(await screen.findByTestId('turn-rail')).getAllByTestId('turn-rail-row');
+    expect(rows.map((row) => row.getAttribute('data-turn'))).toEqual(['1', '2']);
+    expect(rows[1].textContent).toContain('Automatic continuation.');
+    expect(screen.queryByText(/secret machine body/)).toBeNull();
+    scrollToIndexSpy.mockClear();
+    fireEvent.click(rows[1]);
+    await waitFor(() => expect(scrollToIndexSpy).toHaveBeenCalledWith(2, { align: 'start' }));
   });
 
   describe('P-012 identity chip', () => {

@@ -3,12 +3,15 @@ const text = value => (typeof value === 'string' ? value.trim() : '');
 /**
  * The HUD fixture needs a session that is both present in the active roster
  * and attached to a fleet. Recorded/ended sessions are real ids, but they do
- * not render the Fleet toggle that this acceptance case exercises.
+ * not render the Fleet toggle that this acceptance case exercises. `ownerId`
+ * is the backend-neutral identity consumed by `agentConversation` and the
+ * fleet-peer resolver; the legacy `sessionId` is only populated for Claude
+ * sessions and must not gate current Codex/OMP rows.
  */
 export function isLiveFleetSession(row) {
   return Boolean(
     row &&
-      text(row.sessionId) &&
+      text(row.ownerId) &&
       text(row.fleetSlug) &&
       row.liveness === 'live' &&
       row.stale !== true &&
@@ -17,7 +20,7 @@ export function isLiveFleetSession(row) {
 }
 
 function stableKey(row) {
-  return [text(row.sessionId), text(row.ownerId), text(row.fleetSlug)].join('\u0000');
+  return [text(row.ownerId), text(row.fleetSlug), text(row.sessionId)].join('\u0000');
 }
 
 /**
@@ -28,7 +31,7 @@ function stableKey(row) {
  */
 export function resolveHudSession({ envSession, roster }) {
   const explicit = text(envSession);
-  if (explicit) return { sessionId: explicit, source: 'env' };
+  if (explicit) return { sessionOwnerId: explicit, source: 'env' };
 
   const candidates = (Array.isArray(roster?.active) ? roster.active : [])
     .filter(isLiveFleetSession)
@@ -42,7 +45,7 @@ export function resolveHudSession({ envSession, roster }) {
     throw new Error('No live fleet-bearing session is available in /api/adv/roster.active');
   }
   return {
-    sessionId: text(selected.sessionId),
+    sessionOwnerId: text(selected.ownerId),
     source: 'live-roster',
     fleetSlug: text(selected.fleetSlug),
     ownerId: text(selected.ownerId) || null,

@@ -6,6 +6,8 @@ const h = vi.hoisted(() => ({
     cadence_minutes: number;
     last_started_at: Date | string | null;
   }>,
+  acquireMigrationLock: vi.fn(),
+  useMigrationLock: false,
   readIntervalSnapshotAdmission: vi.fn(),
   sql: vi.fn(),
 }));
@@ -20,6 +22,10 @@ vi.mock('node:child_process', () => ({
 vi.mock('./config', () => ({
   backupHost: () => ({
     getSql: () => h.sql,
+    // Keep the legacy no-host-lock fixture behavior for cadence tests that
+    // exercise scheduler admission independently. Lock-specific cases opt in
+    // explicitly so an undefined probe result retains its real "busy" meaning.
+    acquireMigrationLock: h.useMigrationLock ? h.acquireMigrationLock : undefined,
     readIntervalSnapshotAdmission: h.readIntervalSnapshotAdmission,
   }),
 }));
@@ -44,6 +50,8 @@ describe('triggerSnapshotEvent cadence admission', () => {
     getSettings.mockReset();
     snapshot.mockReset();
     h.intervalRows = [];
+    h.useMigrationLock = false;
+    h.acquireMigrationLock.mockReset().mockResolvedValue(undefined);
     h.readIntervalSnapshotAdmission.mockReset().mockResolvedValue({ status: 'admit' });
     h.sql.mockReset().mockImplementation(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
@@ -84,6 +92,8 @@ describe('interval snapshot admission rendezvous', () => {
   beforeEach(() => {
     getSettings.mockReset().mockResolvedValue(settings({ cadenceMode: 'interval' }));
     snapshot.mockReset().mockResolvedValue({ snapshotId: 1 });
+    h.useMigrationLock = false;
+    h.acquireMigrationLock.mockReset().mockResolvedValue(undefined);
     h.intervalRows = [{
       workspace_id: 'interval-admission-ws',
       cadence_minutes: 60,
@@ -140,6 +150,55 @@ describe('interval snapshot admission rendezvous', () => {
       'interval-admission-unreadable-ws',
       expect.stringContaining('interval-admission-unreadable'),
     ]));
+  });
+
+  it('defers a due interval while the cross-process migration rendezvous is busy', async () => {
+    h.intervalRows = [{
+      workspace_id: 'interval-lock-busy-ws',
+      cadence_minutes: 60,
+      last_started_at: null,
+    }];
+    h.useMigrationLock = true;
+    h.acquireMigrationLock.mockResolvedValueOnce(undefined);
+
+    await runBackupSchedulerTick();
+
+    expect(h.acquireMigrationLock).toHaveBeenCalledWith({ tryOnly: true });
+    expect(snapshot).not.toHaveBeenCalled();
+    const eventCall = h.sql.mock.calls.find(([strings]) =>
+      (strings as TemplateStringsArray).join(' ').includes('INSERT INTO harness_shared.backup_events'));
+    expect(eventCall).toEqual(expect.arrayContaining([
+      'interval-lock-busy-ws',
+      expect.stringContaining('migration-rendezvous-busy'),
+    ]));
+
+    // The busy probe must leave cadence state untouched so the next tick can
+    // retry the same due interval after the other process releases the lock.
+    const lock = { release: vi.fn(async () => {}) };
+    h.acquireMigrationLock.mockResolvedValueOnce(lock);
+    await runBackupSchedulerTick();
+    await vi.waitFor(() => expect(snapshot).toHaveBeenCalledWith(
+      'interval',
+      undefined,
+      { migrationLock: lock },
+    ));
+  });
+
+  it('transfers an admitted lock to the snapshot and releases it if settings changed', async () => {
+    h.intervalRows = [{
+      workspace_id: 'interval-settings-changed-ws',
+      cadence_minutes: 60,
+      last_started_at: null,
+    }];
+    const lock = { release: vi.fn(async () => {}) };
+    h.useMigrationLock = true;
+    h.acquireMigrationLock.mockResolvedValueOnce(lock);
+    getSettings.mockResolvedValueOnce({ enabled: false });
+
+    await runBackupSchedulerTick();
+
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(lock.release).toHaveBeenCalledTimes(1);
   });
 
   it('does not settle until the admitted snapshot completes', async () => {
