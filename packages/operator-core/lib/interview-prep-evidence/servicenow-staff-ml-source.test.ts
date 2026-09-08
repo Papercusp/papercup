@@ -164,6 +164,21 @@ describe('ServiceNow Staff ML interview-prep source contract', () => {
     expect(thirdDrillTitle).not.toMatch(/^3\. Where should the Harness stop and MCP begin\?/);
   });
 
+  it('kills a superseded-requisition provenance mutant', () => {
+    const mutantHtml = html.replaceAll('744000146824899', 'JB0074818');
+    expect(mutantHtml).not.toBe(html);
+    const mutant = new DOMParser().parseFromString(mutantHtml, 'text/html');
+    const ownerFacts = [...mutant.querySelectorAll<HTMLElement>('#sources article')].find((article) =>
+      article.querySelector('.badge.owner'),
+    );
+
+    expect(ownerFacts).toBeDefined();
+    expect(() => {
+      expect(normalized(ownerFacts?.textContent)).toContain('744000146824899');
+      expect(normalized(ownerFacts?.textContent)).not.toContain('JB0074818');
+    }).toThrow();
+  });
+
   it('contains the role map, technical drills, motivation scripts, and separate question banks', () => {
     const matrixRows = document.querySelectorAll('#coverage table.matrix tbody tr');
     const drills = document.querySelectorAll('#drills details.drill');
