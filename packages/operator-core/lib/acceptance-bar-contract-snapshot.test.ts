@@ -435,6 +435,17 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(blocked, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
   });
 
+  it('does not invent an automated proof floor for a non-automated delivery-plane clause', () => {
+    const input = fixture(1);
+    input.clauses.rows[0]!.behaviorClass = 'non-automated';
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]).toMatchObject({ behaviorClass: 'non-automated', requiredTestLayers: [] });
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_proof_depth_missing');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes)
+      .not.toContain('bar_snapshot_proof_depth_missing');
+  });
+
   it('uses current evidence across planes for mixed-layer adequacy on a live BAR', () => {
     const input = provedFixture(1);
     const criterion = input.rubrics.rows[0]!.criteria[0]!;
