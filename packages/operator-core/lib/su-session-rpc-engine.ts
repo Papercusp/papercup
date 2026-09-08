@@ -162,18 +162,29 @@ export function startSuRpcEngine(
       if (!peer || closed) return unavailable('The engine is disconnected');
       cards.cancel();
       const completing = turnCompletion;
-      if (backend === 'codex') {
-        if (!nativeTurnId && nativeStart) nativeTurnId = string(object((await nativeStart).turn).id);
-        if (nativeTurnId) await peer.request({ method: 'turn/interrupt', params: { threadId: nativeId(), turnId: nativeTurnId } });
-      } else await peer.request({ type: 'abort' });
-      if (completing) {
-        let timer: ReturnType<typeof setTimeout>;
-        try {
-          await Promise.race([completing, new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error('Native interrupt did not finish the active turn')), options.deliveryTimeoutMs ?? 30_000);
-          })]);
-        } catch (error) { await close(); return unavailable(String(error)); }
-        finally { clearTimeout(timer!); }
+      try {
+        if (backend === 'codex') {
+          if (!nativeTurnId && nativeStart) nativeTurnId = string(object((await nativeStart).turn).id);
+          if (nativeTurnId) await peer.request({ method: 'turn/interrupt', params: { threadId: nativeId(), turnId: nativeTurnId } });
+        } else {
+          await peer.request({ type: 'abort' }, options.deliveryTimeoutMs ?? 30_000);
+          // OMP responds only after session.abort has cancelled setup and
+          // awaited native idle. A turn cancelled before agent_start has no
+          // agent_end event, so that idle acknowledgement settles delivery.
+          turnFinished?.();
+        }
+        if (completing) {
+          let timer: ReturnType<typeof setTimeout>;
+          try {
+            await Promise.race([completing, new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error('Native interrupt did not finish the active turn')), options.deliveryTimeoutMs ?? 30_000);
+            })]);
+          } finally { clearTimeout(timer!); }
+        }
+      } catch (error) {
+        reportRuntimeFailure(error);
+        await close();
+        return unavailable(String(error));
       }
       host.transition('interrupted', 'Owner interrupted the native turn');
       return { ok: true as const };
