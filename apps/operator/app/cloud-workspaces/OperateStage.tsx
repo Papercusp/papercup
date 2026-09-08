@@ -22,7 +22,7 @@
  * the host advertises a connector.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -34,19 +34,7 @@ import {
   Square,
 } from "lucide-react";
 import { Button } from "@/app/harness/Button";
-import type { HostedDesktopViewerState } from "./HostedDesktopViewer";
-import { HostedDesktopWorkspace } from "./HostedDesktopWorkspace";
-import {
-  HostedWorkspaceSession,
-  type HostedDesktopQueryState,
-  type HostedWorkspaceDesktopBridge,
-} from "./HostedWorkspaceSession";
-import type {
-  HostedDesktopRosterEntry,
-  HostedDesktopThumbnailResult,
-  HostedDesktopViewerMode,
-} from "./hosted-desktop-viewer-protocol";
-import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
+import { HostedDesktopConnection } from "./HostedDesktopConnection";
 import {
   focusSafely,
   SignalList,
@@ -247,115 +235,7 @@ function HostRow({
   const tabButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
   const chip = hostStateChip(workspace);
   const plan = lifecycleActionPlan(workspace);
-  const hostedConnector = readHostedWorkspaceConnector(workspace.tunnel);
   const panelId = `host-panel-${workspace.id}`;
-  const [hostedWorkspaceId, setHostedWorkspaceId] = useState<string | null>(
-    null,
-  );
-  const [desktopBridge, setDesktopBridge] =
-    useState<HostedWorkspaceDesktopBridge | null>(null);
-  const [desktopRoster, setDesktopRoster] = useState<
-    HostedDesktopRosterEntry[]
-  >([]);
-  const [desktopRosterState, setDesktopRosterState] =
-    useState<HostedDesktopQueryState>("idle");
-  const [desktopRosterError, setDesktopRosterError] = useState<string | null>(
-    null,
-  );
-  const [desktopThumbnails, setDesktopThumbnails] = useState<
-    Readonly<Record<string, HostedDesktopThumbnailResult>>
-  >({});
-  const [selectedDesktop, setSelectedDesktop] = useState<{
-    desktopSessionId: string;
-    mode: HostedDesktopViewerMode;
-  } | null>(null);
-  const [desktopViewerState, setDesktopViewerState] =
-    useState<HostedDesktopViewerState | null>(null);
-  const requestedThumbnailIdsRef = useRef(new Set<string>());
-
-  const handleWorkspaceIdChange = useCallback((workspaceId: string) => {
-    setHostedWorkspaceId(workspaceId);
-  }, []);
-  const handleDesktopBridgeChange = useCallback(
-    (bridge: HostedWorkspaceDesktopBridge | null) => {
-      setDesktopBridge(bridge);
-      if (!bridge) {
-        requestedThumbnailIdsRef.current.clear();
-        setDesktopThumbnails({});
-      }
-    },
-    [],
-  );
-  const handleDesktopRosterChange = useCallback(
-    (desktops: HostedDesktopRosterEntry[]) => {
-      setDesktopRoster(desktops);
-      setDesktopRosterError(null);
-      setDesktopThumbnails({});
-      requestedThumbnailIdsRef.current.clear();
-      setSelectedDesktop((current) =>
-        current &&
-        desktops.some(
-          (entry) => entry.desktopSessionId === current.desktopSessionId,
-        )
-          ? current
-          : null,
-      );
-    },
-    [],
-  );
-  const handleDesktopThumbnailChange = useCallback(
-    (result: HostedDesktopThumbnailResult) => {
-      setDesktopThumbnails((current) => ({
-        ...current,
-        [result.desktopSessionId]: result,
-      }));
-    },
-    [],
-  );
-  const handleDesktopQueryStateChange = useCallback(
-    (
-      state: HostedDesktopQueryState,
-      operation?: "roster" | "thumbnail",
-      code?: string,
-    ) => {
-      if (
-        operation === "roster" ||
-        (operation === undefined && state === "idle")
-      ) {
-        setDesktopRosterState(state);
-      }
-      if (state === "error" && operation === "roster") {
-        setDesktopRosterError(code ?? "desktop_roster_failed");
-      } else if (state !== "error" && operation === "roster") {
-        setDesktopRosterError(null);
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (hostedConnector) return;
-    setHostedWorkspaceId(null);
-    setDesktopBridge(null);
-    setDesktopRoster([]);
-    setDesktopRosterState("idle");
-    setDesktopRosterError(null);
-    setDesktopThumbnails({});
-    setSelectedDesktop(null);
-    setDesktopViewerState(null);
-    requestedThumbnailIdsRef.current.clear();
-  }, [hostedConnector?.routeLabel]);
-
-  useEffect(() => {
-    if (!desktopBridge || desktopRoster.length === 0) return;
-    for (const desktop of desktopRoster) {
-      if (requestedThumbnailIdsRef.current.has(desktop.desktopSessionId)) {
-        continue;
-      }
-      requestedThumbnailIdsRef.current.add(desktop.desktopSessionId);
-      desktopBridge.requestThumbnail(desktop.desktopSessionId);
-    }
-  }, [desktopBridge, desktopRoster]);
 
   const onTabKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
@@ -655,23 +535,7 @@ function HostRow({
             ) : null}
             {activeTab === "logs" ? <LogsTab workspace={workspace} /> : null}
             {activeTab === "cost" ? <CostTab workspace={workspace} /> : null}
-            {activeTab === "desktops" ? (
-              <HostedDesktopWorkspace
-                hostName={workspace.name}
-                workspaceId={hostedWorkspaceId}
-                hostId={workspace.id}
-                routeLabel={hostedConnector?.routeLabel ?? null}
-                bridge={desktopBridge}
-                roster={desktopRoster}
-                rosterState={desktopRosterState}
-                rosterError={desktopRosterError}
-                thumbnails={desktopThumbnails}
-                selectedDesktop={selectedDesktop}
-                viewerState={desktopViewerState}
-                onSelectDesktop={setSelectedDesktop}
-                onViewerStateChange={setDesktopViewerState}
-              />
-            ) : null}
+            <HostedDesktopConnection workspace={workspace} showDesktop={activeTab === "desktops"} />
           </div>
 
           <div className={styles.hostPanelFooter}>
@@ -685,18 +549,6 @@ function HostRow({
             </Button>
           </div>
 
-          {hostedConnector ? (
-            <HostedWorkspaceSession
-              hostId={workspace.id}
-              routeLabel={hostedConnector.routeLabel}
-              workspaceName={workspace.name}
-              onWorkspaceIdChange={handleWorkspaceIdChange}
-              onDesktopBridgeChange={handleDesktopBridgeChange}
-              onDesktopRosterChange={handleDesktopRosterChange}
-              onDesktopThumbnailChange={handleDesktopThumbnailChange}
-              onDesktopQueryStateChange={handleDesktopQueryStateChange}
-            />
-          ) : null}
         </div>
       ) : null}
     </li>
