@@ -149,7 +149,7 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
     // hand, so a future edit that drifts from it would silently disagree with them.
     // Cross-checked here against a real SGR sequence so the pin can't rot into a
     // pattern that LOOKS right but no longer actually matches ANSI colour codes.
-    const sedProgram = "s/\\x1b\\[[0-9;]*m//g";
+    const sedProgram = 's/\\x1b\\[[0-9;]*m//g';
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
     expect(inner).toContain(`sed -u '${sedProgram}'`);
     const ansiRe = /\x1b\[[0-9;]*m/g;
@@ -630,10 +630,7 @@ describe('launchDetachedCheckpoint', () => {
     expect(execFn).toHaveBeenCalledWith('git', expect.arrayContaining(['-C', '/portal-subject']));
     expect(spawnFn).toHaveBeenCalledWith(
       'systemd-run',
-      expect.arrayContaining([
-        '--working-directory=/papercusp-tooling',
-        '--setenv=PAPERCUSP_RELEASE_SLUG=portal',
-      ]),
+      expect.arrayContaining(['--working-directory=/papercusp-tooling', '--setenv=PAPERCUSP_RELEASE_SLUG=portal']),
     );
     expect(result.argv.at(-1)).toContain("PAPERCUSP_INTEGRATION_ROOT='/portal-subject'");
     expect(result.argv.at(-1)).toContain("unset 'DATABASE_URL' &&");
@@ -1328,8 +1325,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
 
   describe('readCheckpointProcessAuthorityCheap (P-009 pre-lock materialization)', () => {
     const now = Date.parse('2026-08-24T18:00:00.000Z');
-    const checkpointCgroupPath =
-      `/user.slice/user-1000.slice/user@1000.service/app.slice/${checkpointUnitForRoot('/tree')}.service`;
+    const checkpointCgroupPath = `/user.slice/user-1000.slice/user@1000.service/app.slice/${checkpointUnitForRoot('/tree')}.service`;
     const env = (over: Record<string, string> = {}) =>
       Object.entries({
         PAPERCUSP_GATE_VERDICT_WORKSPACE: 'papercusp-workspace',
@@ -1365,8 +1361,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     it('rejects an unrelated agent scope even when it inherits every authority stamp', async () => {
       await expect(
         probe({
-          readCgroup: () =>
-            '0::/user.slice/user-1000.slice/user@1000.service/papercusp-agent.slice/pc-agent.scope\n',
+          readCgroup: () => '0::/user.slice/user-1000.slice/user@1000.service/papercusp-agent.slice/pc-agent.scope\n',
         }),
       ).resolves.toMatchObject({ active: false, probeFailed: false, pid: null, cgroupPath: null });
     });
@@ -1426,6 +1421,21 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       await expect(reading).resolves.toMatchObject({ active: true, probeFailed: false, pid: 200 });
       expect(readEnvironment).toHaveBeenCalledTimes(1);
       expect(readEnvironment).toHaveBeenCalledWith(200);
+    });
+
+    it('keeps the production broad cgroup filter inside the global budget across a host-sized PID census', async () => {
+      const readEnvironment = vi.fn(() => env());
+      const reading = await probe({
+        // Production hosts can expose several thousand PID directories. Non-existent PIDs
+        // exercise the real default cgroup reader without depending on another live process.
+        listPids: () => Array.from({ length: 8_000 }, (_, index) => 9_000_000 + index),
+        readCgroup: undefined,
+        readEnvironment,
+        totalTimeoutMs: 1_000,
+      });
+
+      expect(reading).toMatchObject({ active: false, probeFailed: false });
+      expect(readEnvironment).not.toHaveBeenCalled();
     });
 
     it('returns UNKNOWN when one procfs read exceeds its per-read deadline', async () => {

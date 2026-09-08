@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -117,6 +117,10 @@ describe('structured Claude SU engine', () => {
       beforeReady = engine.adapter.host.snapshot();
     } }, { ...runtime, transcriptPath });
     await engine.ready;
+    expect(p.options()?.systemPrompt).toEqual({
+      type: 'custom', prompt: readFileSync(promptFile, 'utf8'), snapshot: true,
+    });
+    expect(p.options()?.extraArgs).not.toHaveProperty('system-prompt-file');
     expect(beforeReady).toMatchObject({ streamReady: false, executorAttached: false,
       descriptor: { lifecycle: expect.stringMatching(/^(starting|resuming)$/) } });
     expect(engine.adapter.host.recent.map(({ event }) => event)).toEqual(expect.arrayContaining([
@@ -153,6 +157,10 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.descriptor().lifecycle).toBe('ready');
     expect(engine.adapter.host.snapshot()).toMatchObject({ executorAttached: true, streamReady: true });
     expect(p.options()).toMatchObject({ sessionId: nativeId, cwd: dir, env: boot.envelopeEnv });
+    expect(p.options()?.systemPrompt).toEqual({
+      type: 'custom', prompt: readFileSync(promptFile, 'utf8'), snapshot: true,
+    });
+    expect(p.options()?.extraArgs).not.toHaveProperty('system-prompt-file');
     expect(p.options()?.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent', 'Workflow']));
     expect(p.prompts).toHaveLength(0);
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript')).toBe(false);

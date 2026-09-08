@@ -268,7 +268,7 @@ describe('fleet:bench — stage mode', () => {
     });
     expect(out).toMatchObject({
       ok: true,
-      bench_id: 42,
+      bench_id: '42',
       member: 'su-worker',
       event: 'p2p-git:phase3-open',
       stagedAssignment: 'flip TEST hive bridged',
@@ -276,6 +276,7 @@ describe('fleet:bench — stage mode', () => {
       registered: true,
       benched_by: 'su-leader',
     });
+    expect(typeof out.bench_id).toBe('string');
   });
 
   it('keeps the default bench alive until the wake event instead of expiring after 30 minutes', async () => {
@@ -436,7 +437,7 @@ describe('fleet:bench — stage mode refuses a live lane [WI-5938 acceptance]', 
   it('ACCEPTANCE: a genuinely drained lane still benches normally', async () => {
     vi.mocked(readFleetLaneHealth).mockResolvedValueOnce(lane(0, 0));
     const out = await call({ member: 'su-worker', wakeEvent: 'k', stagedAssignment: 'x' });
-    expect(out).toMatchObject({ ok: true, bench_id: 42, lane: { verdict: 'drained', claimable: 0 } });
+    expect(out).toMatchObject({ ok: true, bench_id: '42', lane: { verdict: 'drained', claimable: 0 } });
     expect(registerAwait).toHaveBeenCalled();
   });
 

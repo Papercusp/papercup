@@ -45,12 +45,7 @@ import {
   gateVerdictEnv,
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
-import {
-  GATE_FIRE_ID_ENV,
-  isGateFireId,
-  mintGateFireId,
-  recordGateFire,
-} from './release/gate-fire-ledger';
+import { GATE_FIRE_ID_ENV, isGateFireId, mintGateFireId, recordGateFire } from './release/gate-fire-ledger';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release/checkpoint-memory-admission';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
@@ -1130,7 +1125,13 @@ function isPromiseLike<T>(value: ProbeAwaitable<T>): value is PromiseLike<T> {
 export interface CheckpointProcessAuthorityProbeDeps {
   listPids?: () => ProbeAwaitable<number[]>;
   readEnvironment?: (pid: number) => ProbeAwaitable<string | null>;
-  readCgroup?: (pid: number) => ProbeAwaitable<string | null>;
+  /**
+   * The cgroup is the broad filter across every host PID. Keep this synchronous: Linux
+   * synthesizes /proc/<pid>/cgroup in memory, while thousands of async readFile requests
+   * queue behind unrelated libuv work and can exhaust the whole census deadline before an
+   * unrelated PID is excluded.
+   */
+  readCgroup?: (pid: number) => string | null;
   readProcessStartMs?: (pid: number) => ProbeAwaitable<number | null>;
   nowMs?: () => number;
   /** Override the total census budget in tests or a caller with a tighter deadline. */
@@ -1157,6 +1158,22 @@ async function defaultReadProcFile(pid: number, name: 'environ' | 'cgroup'): Pro
   } catch {
     // A process may exit between the directory listing and this read. That row simply
     // stopped being evidence; it does not poison the rest of the procfs census.
+    return null;
+  }
+}
+
+/**
+ * Synchronous on purpose: this is the cheap OS-owned broad filter over every PID. Unlike
+ * `/proc/<pid>/environ`, cgroup is a tiny kernel-generated virtual file. Reading it inline
+ * avoids leaving thousands of uncancellable fs.promises requests queued after the one-second
+ * authority census has already returned.
+ */
+function defaultReadProcCgroup(pid: number): string | null {
+  try {
+    return readFileSync(`/proc/${pid}/cgroup`, 'utf8');
+  } catch {
+    // The PID may disappear between enumeration and this read. That is absence of evidence,
+    // not a failed authority probe.
     return null;
   }
 }
@@ -1293,7 +1310,7 @@ export async function readCheckpointProcessAuthorityCheap(
 ): Promise<CheckpointProcessAuthorityReading> {
   const listPids = deps.listPids ?? defaultListProcPids;
   const readEnvironment = deps.readEnvironment ?? ((pid: number) => defaultReadProcFile(pid, 'environ'));
-  const readCgroup = deps.readCgroup ?? ((pid: number) => defaultReadProcFile(pid, 'cgroup'));
+  const readCgroup = deps.readCgroup ?? defaultReadProcCgroup;
   const readProcessStartMs = deps.readProcessStartMs ?? defaultReadProcessStartMsAsync;
   const nowMs = (deps.nowMs ?? Date.now)();
   const totalTimeoutMs = Math.max(1, deps.totalTimeoutMs ?? CHECKPOINT_PROCESS_AUTHORITY_PROBE_TIMEOUT_MS);
@@ -1330,14 +1347,15 @@ export async function readCheckpointProcessAuthorityCheap(
     // The cgroup is the OS-owned authority boundary. Read it before the inherited environment
     // so an unrelated PID whose /proc/<pid>/environ read is delayed cannot consume the census
     // budget or turn an otherwise-idle gate into an indeterminate reading.
-    const cgroup = await readBounded(() => readCgroup(pid), totalTimeoutMs);
-    if (cgroup.status !== 'ok') {
+    let rawCgroup: string | null;
+    try {
+      rawCgroup = readCgroup(pid);
+    } catch (error) {
       return {
         status: 'failed',
-        detail: probeReadFailureDetail(`cgroup read for pid ${pid}`, cgroup),
+        detail: `cgroup read for pid ${pid} failed: ${probeErrorMessage(error)}`,
       };
     }
-    const rawCgroup = cgroup.value;
     if (rawCgroup === null) return { status: 'ok', match: null };
     const cgroupPath = unifiedCgroupPath(rawCgroup);
     if (!cgroupPath || !checkpointCgroupContainsUnit(cgroupPath, expectedCheckpointUnit)) {
@@ -1847,9 +1865,7 @@ export function buildCheckpointSystemdArgv(
     logicalAttemptId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(logicalAttemptId)
       ? [`--setenv=${CHECKPOINT_QUALIFICATION_ATTEMPT_ENV}=${logicalAttemptId}`]
       : [];
-  const gateFireEnv = isGateFireId(gateFireId)
-    ? [`--setenv=${GATE_FIRE_ID_ENV}=${gateFireId}`]
-    : [];
+  const gateFireEnv = isGateFireId(gateFireId) ? [`--setenv=${GATE_FIRE_ID_ENV}=${gateFireId}`] : [];
   const routedEnv = Object.entries(extraEnv)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
     .map(([key, value]) => `--setenv=${key}=${value}`);
@@ -2722,7 +2738,7 @@ export async function launchDetachedCheckpoint(
           // The wake itself is already fail-soft/best-effort (see cancelStaleCheckpointAwaits),
           // so firing it without blocking keeps the child listener in the same tick.
           if (active.candidate) {
-          void cancelStaleAwaits(subjectRoot, active.candidate).catch(() => {});
+            void cancelStaleAwaits(subjectRoot, active.candidate).catch(() => {});
           }
         } else {
           return Promise.resolve({
@@ -2757,7 +2773,10 @@ export async function launchDetachedCheckpoint(
   // The request is computed with the SAME expression buildCheckpointSystemdArgv uses for its
   // MemoryMax property, so the admission and the scope can never disagree about the size of
   // this run. Fails open on an unmeasurable probe and on a sole run — see the module note.
-  const capacityMode = opts.extraEnv?.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null;
+  const capacityMode =
+    opts.extraEnv?.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ??
+    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ??
+    null;
   const memoryAdmission = admitCheckpointMemory({
     requestG: checkpointScopeMemoryMaxG({
       PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: capacityMode ?? 'shared',

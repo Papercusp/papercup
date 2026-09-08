@@ -18,31 +18,51 @@ export function isRepositoryIndexFault(error: any): boolean;
  * Defaults (4 attempts, 250ms, doubling → ~1.75s worst case) are sized to git-sync's repair
  * window while staying far below any guard's own runtime, so a healthy run pays nothing at all:
  * the retry path is entered only after a fault has already been classified.
+ *
+ * @template T
+ * @param {() => T} run
+ * @param {{ attempts?: number, delayMs?: number, onRetry?: (info: { attempt: number, of: number, delayMs: number, error: unknown }) => void }} [options]
+ * @returns {T}
  */
-export function withGitIndexFaultRetry(run: any, { attempts, delayMs, onRetry }?: {
-    attempts?: number | undefined;
-    delayMs?: number | undefined;
-}): any;
+export function withGitIndexFaultRetry<T>(run: () => T, { attempts, delayMs, onRetry }?: {
+    attempts?: number;
+    delayMs?: number;
+    onRetry?: (info: {
+        attempt: number;
+        of: number;
+        delayMs: number;
+        error: unknown;
+    }) => void;
+}): T;
 /**
  * Print the UNDETERMINED banner for a persistent index fault and return EXIT_NOT_CHECKED.
  *
  * Returns null when the error is NOT an index fault, so the caller rethrows instead of
  * swallowing it. The banner is deliberately loud and names the guard: a NOT_CHECKED run is a
  * hole in coverage, and a quiet hole is how a guard stops guarding without anyone noticing.
+ *
+ * @param {unknown} error
+ * @param {{ guard?: string, log?: (...args: any[]) => void }} [options]
+ * @returns {number | null} EXIT_NOT_CHECKED for an index fault, else null.
  */
-export function reportIndexFaultNotChecked(error: any, { guard, log }?: {
-    log?: {
-        (...data: any[]): void;
-        (message?: any, ...optionalParams: any[]): void;
-    } | undefined;
-}): 2 | null;
+export function reportIndexFaultNotChecked(error: unknown, { guard, log }?: {
+    guard?: string;
+    log?: (...args: any[]) => void;
+}): number | null;
 /**
  * The whole contract in one call, for a guard whose `main()` is synchronous.
  *
  * Wraps the entrypoint so a persistent index fault exits EXIT_NOT_CHECKED with the banner above
  * instead of crashing with a non-zero status the runner would read as a violation.
+ *
+ * @template T
+ * @param {() => T} main
+ * @param {{ guard?: string }} [options]
+ * @returns {T}
  */
-export function runGuardWithIndexFaultGuard(main: any, { guard }?: {}): any;
+export function runGuardWithIndexFaultGuard<T>(main: () => T, { guard }?: {
+    guard?: string;
+}): T;
 export { EXIT_NOT_CHECKED };
 /** Thrown when the index is still unreadable after every retry. */
 export class RepositoryIndexFaultError extends Error {

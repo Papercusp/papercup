@@ -706,7 +706,9 @@ export default defineTool({
     return {
       data: {
         ok: true,
-        bench_id: park.benchId,
+        // Await row ids are numeric internally, but the public tool envelope
+        // declares bench_id as a string (and callers use it as an opaque id).
+        bench_id: String(park.benchId),
         member: args.member,
         event: park.eventKey,
         ...(patternAwait ? { pattern: true } : {}),
