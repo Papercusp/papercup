@@ -3049,6 +3049,12 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
       files: [{ scope: 'superproject', file: 'apps/operator-docs/src/content/docs/x.mdx', detector: 'mdx' }],
     });
 
+    // The local result remains `synced`, but the routine headline must expose
+    // that the commit was partial and the named file stayed dirty.
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({ last_status: 'quarantined', local_sync_status: 'synced' }),
+    );
+
     // dispatch resolved declaratively from the launch blueprint by the content-error event key
     expect(resolveLaunchTargetForEventMock).toHaveBeenCalledWith(
       'git-sync:content-error', { installSlug: 'papercup', workspaceId: 'ws-42' });

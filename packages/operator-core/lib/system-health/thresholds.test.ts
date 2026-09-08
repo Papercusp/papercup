@@ -480,6 +480,9 @@ describe('deployStatus', () => {
   it('warns when the read-time freshness verdict degrades a raw synced outcome', () => {
     expect(deployStatus(dp({ gitSyncStatus: 'degraded' }), now)).toBe('warn');
   });
+  it('warns when git-sync committed a partial result with content-quarantined files', () => {
+    expect(deployStatus(dp({ gitSyncStatus: 'quarantined' }), now)).toBe('warn');
+  });
   it('warn when git-sync excluded an oversized blob (it will never push)', () => {
     expect(deployStatus(dp({ gitSyncOversizedCount: 1 }), now)).toBe('warn');
   });

@@ -461,7 +461,7 @@ export interface DeployHealth {
   /** Worst active git-sync routine's effective status, or null if none/unreadable.
    * `degraded` is a read-time freshness override when the raw writer outcome is stale
    * or an in-flight fire has exceeded the scheduled stale window. */
-  gitSyncStatus: 'synced' | 'conflict' | 'error' | 'nothing' | 'skipped' | 'degraded' | null;
+  gitSyncStatus: 'synced' | 'conflict' | 'error' | 'nothing' | 'skipped' | 'quarantined' | 'degraded' | null;
   /** Max consecutive FAILING git-sync ticks across active routines, whatever the
    *  failing leg was. EI-19275994927087666: this is NOT a push-failure counter —
    *  it counts commit failures, conflicts and push failures alike, and reading it

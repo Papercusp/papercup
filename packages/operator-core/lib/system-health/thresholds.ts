@@ -388,7 +388,12 @@ export const BG_HOST_STALE_CODE_GRACE_MS = 20 * 60_000;
 export function deployStatus(d: DeployHealth, now: number): PanelStatus {
   if (d.gitSyncConsecutiveErrorTicks >= GIT_SYNC_PUSH_FAIL_CRIT && d.gitSyncPushBacklog !== 0) return 'crit';
   if (d.deployedShortSha === null && d.lastCommitAtMs === null) return 'unknown';
-  if (d.gitSyncStatus === 'error' || d.gitSyncStatus === 'degraded' || d.gitSyncOversizedCount > 0) return 'warn';
+  if (
+    d.gitSyncStatus === 'error' ||
+    d.gitSyncStatus === 'degraded' ||
+    d.gitSyncStatus === 'quarantined' ||
+    d.gitSyncOversizedCount > 0
+  ) return 'warn';
   if (d.lastCommitAtMs !== null && now - d.lastCommitAtMs > SYNC_LAG_WARN_MS) return 'warn';
   if (d.deployedBehindStaging !== null && d.deployedBehindStaging > DEPLOY_BEHIND_WARN) return 'warn';
   // WI-1258129: the refs above can ALL be healthy while a long-lived process runs

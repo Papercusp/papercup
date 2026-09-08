@@ -2157,12 +2157,21 @@ async function recordOutcome(
     outcome.bulkExcluded ?? outcome.oversized.filter((f) => f.exclusionReason === 'cumulative-limit')
   ).filter((f) => f.exclusionReason === 'cumulative-limit');
   const oversized = outcome.oversized.filter((f) => f.exclusionReason !== 'cumulative-limit');
+  // A local commit can still be valid while the content guard leaves dirty files
+  // out of it.  Do not publish that partial success as plain `synced`: the routine
+  // headline is the first health signal most callers read.  Keep the precise local
+  // outcome in `local_sync_status` and the file-level evidence in
+  // `last_content_errors`; this status only makes the quarantine impossible to miss.
+  const recordedStatus =
+    outcome.contentErrors.length > 0 && (outcome.status === 'synced' || outcome.status === 'nothing')
+      ? 'quarantined'
+      : outcome.status;
   const localSyncRecordedAt = Date.now();
   await patchRoutineMetadata(
     slug,
     workspaceId,
     {
-    last_status: outcome.status,
+    last_status: recordedStatus,
     last_synced_at: localSyncRecordedAt,
     // EI-21647996938145436: this is a write-time receipt from the process that
     // actually ran the routine, not a re-derived checkout HEAD. The boot-time
