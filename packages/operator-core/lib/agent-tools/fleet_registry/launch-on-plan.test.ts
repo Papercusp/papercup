@@ -430,7 +430,7 @@ describe('member baseline scheduler states guidance', () => {
   it('documents only open|failing and tells members to omit states unless filtering', () => {
     const baseline = renderMemberBaseline({ fleetSlug: 'atlas-fleet', plan: 'p-plan', count: 3 });
 
-    expect(baseline).toContain('`states` — only `open|failing`; omit `states` unless deliberately filtering');
+    expect(baseline).toContain('`states` only when filtering and only `open|failing`');
     expect(baseline).toContain('never pass retired `todo` or floor/terminal states');
     expect(baseline).not.toContain("states: ['todo'");
   });
