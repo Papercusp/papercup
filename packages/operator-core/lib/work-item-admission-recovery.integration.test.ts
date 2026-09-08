@@ -103,6 +103,51 @@ describe('original-item durable admission recovery', () => {
     expect((await current()).payload._admissionRecovery.state).toBe('held');
   });
 
+  it.each([
+    { wake: { queued: 1, woken: 0 }, state: 'delivered', stage: 'await-pickup' },
+    { wake: { queued: 0, woken: 1 }, state: 'held', stage: 'wake' },
+    { wake: { woken: 1 }, state: 'delivered', stage: 'await-pickup' },
+    { wake: { woken: 0 }, state: 'held', stage: 'wake' },
+  ])('records queue truth without inferring pickup: $wake', async ({ wake, state, stage }) => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ dispatch: vi.fn(async () => ({ ok: true, wake }) as
+      Awaited<ReturnType<AdmissionRecoveryDeps['dispatch']>>) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect((await current()).payload._admissionRecovery).toMatchObject({ state, stage, pickupConfirmed: false });
+  });
+
+  it('reports a screening hold before dispatch and resumes the same request after repair', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ screen: vi.fn(async () => undefined) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).not.toHaveBeenCalled();
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      requestId: first.request.requestId, state: 'held', stage: 'screen',
+      reason: expect.stringContaining('screening left the original item pending'), pickupConfirmed: false,
+    });
+    const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(retry.request).toMatchObject({ requestId: first.request.requestId, stage: 'queued' });
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    expect((await current()).payload._admissionRecovery).toMatchObject({ state: 'delivered', stage: 'await-pickup' });
+  });
+
+  it('retains the canonical assignment refusal in the original request', async () => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ dispatch: vi.fn(async () => ({
+      ok: false, wake: null, warning: 'no assignment landed',
+      target: { requested: 'reviewer', ownerId: 'reviewer', present: true, sessionState: 'parked', wakeable: true },
+      assignment: {
+        ok: false, targetAgent: 'reviewer', requested: [scope.workItemId], actionable: [], assigned: [], retained: [],
+        skipped: [{ workItemId: scope.workItemId, code: 'dependency_blocked' as const,
+          reason: 'unresolved work-item blocker: WI-dependency' }], failed: [], executionWorkItemIds: [],
+      },
+    })) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'held', stage: 'assign', reason: 'unresolved work-item blocker: WI-dependency', pickupConfirmed: false,
+    });
+  });
+
   it('concurrent/repeated requests persist one identity and atomically accelerate the real routine', async () => {
     // First commit establishes the visible identity; racing retries must preserve it.
     const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
@@ -295,13 +340,13 @@ describe('original-item durable admission recovery', () => {
         await db.sql`UPDATE harness_shared.work_items SET taken_by = 'reviewer' WHERE feature_id = ${scope.workItemId}`;
       }
       authorize.mockRejectedValue(new AdmissionRecoveryRefused('original caller revoked during dispatch'));
-      await args.beforeMutate!();
+      await args.beforeMutate!(phase === 'before-wake' ? 'wake' : 'claim');
       throw new Error('unreachable wake');
     }) });
     await runAdmissionRecoveries(scope, d, db.sql);
     expect((await current()).payload._admissionRecovery).toMatchObject({
       state: 'held', requestId: first.request.requestId, pickupConfirmed: false,
-      reason: 'original caller revoked during dispatch',
+      reason: 'original caller revoked during dispatch', stage: phase === 'before-wake' ? 'wake' : 'assign',
     });
     expect((await current()).taken_by).toBe(phase === 'before-wake' ? 'reviewer' : null);
     authorize.mockResolvedValue(undefined);

@@ -369,6 +369,12 @@ function recordIndicatesCompaction(record: Record<string, unknown>): boolean {
   return subtype.includes('compact');
 }
 
+interface ClaudeTextStream {
+  turnId: string;
+  content: string;
+  started: boolean;
+}
+
 /** Translate one attached native Claude runtime into the shared host. */
 export class ClaudeSuSessionAdapter {
   readonly host: SuSessionHost<'claude'>;
@@ -382,6 +388,8 @@ export class ClaudeSuSessionAdapter {
   private readonly unregister: (() => void) | null;
   private lastErrorKey: string | null = null;
   private readonly transportCorrelatesTurns: boolean;
+  private streamingMessageId: string | null = null;
+  private readonly textStreams = new Map<string, Map<number, ClaudeTextStream>>();
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'claude' },
@@ -458,6 +466,83 @@ export class ClaudeSuSessionAdapter {
     } as SuSessionEventInput<'claude'>);
   }
 
+  private appendStreamText(stream: ClaudeTextStream, content: string): void {
+    if (!content) return;
+    if (!stream.started) {
+      this.host.emit({ type: 'transcript', phase: 'started', turnId: stream.turnId, role: 'assistant', channel: 'text' });
+      stream.started = true;
+    }
+    stream.content += content;
+    this.host.emit({ type: 'transcript', phase: 'delta', turnId: stream.turnId, role: 'assistant', channel: 'text', content });
+  }
+
+  private finishStreamText(stream: ClaudeTextStream, content = stream.content): void {
+    // Complete with the canonical value. A missing partial tail is appended
+    // before completion; a corrected value replaces the live segment.
+    if (content.startsWith(stream.content)) this.appendStreamText(stream, content.slice(stream.content.length));
+    if (stream.started) this.host.emit({
+      type: 'transcript', phase: 'completed', turnId: stream.turnId,
+      role: 'assistant', channel: 'text', content,
+    });
+  }
+
+  private ingestPartial(record: Record<string, unknown>): void {
+    if (record.parent_tool_use_id || record.isSidechain === true) return;
+    const event = asRecord(record.event);
+    if (!event) return;
+    if (event.type === 'message_start') {
+      const message = asRecord(event.message);
+      this.streamingMessageId = message?.role === 'assistant' ? firstString(message.id) : null;
+      if (this.streamingMessageId) this.textStreams.set(this.streamingMessageId, new Map());
+      return;
+    }
+    const blocks = this.streamingMessageId ? this.textStreams.get(this.streamingMessageId) : undefined;
+    if (!blocks || !Number.isInteger(event.index)) return;
+    const block = asRecord(event.content_block);
+    const delta = asRecord(event.delta);
+    const text = event.type === 'content_block_start' && block?.type === 'text' ? block.text
+      : event.type === 'content_block_delta' && delta?.type === 'text_delta' ? delta.text : undefined;
+    if (typeof text !== 'string') return;
+    const index = event.index as number;
+    let stream = blocks.get(index);
+    if (!stream) {
+      stream = { turnId: this.ensureTurn(this.streamingMessageId), content: '', started: false };
+      blocks.set(index, stream);
+    }
+    this.appendStreamText(stream, text);
+  }
+
+  private reconcileStreamedRecord(record: Record<string, unknown>): Record<string, unknown> {
+    if (record.type !== 'assistant' || record.parent_tool_use_id || record.isSidechain === true) return record;
+    const message = asRecord(record.message);
+    const id = firstString(message?.id);
+    const streams = id ? this.textStreams.get(id) : undefined;
+    if (!streams?.size || !Array.isArray(message?.content)) return record;
+    // The SDK emits one canonical assistant record per completed block. They
+    // share message.id; their content indexes restart at zero in each record.
+    // Consume streamed TEXT blocks in source order, preserving tool blocks for
+    // the existing timeline parser. Identical text in two blocks is two spans.
+    const content = message.content.filter((value) => {
+      const block = asRecord(value);
+      if (block?.type !== 'text' || typeof block.text !== 'string') return true;
+      const first = streams.entries().next().value;
+      if (!first) return true;
+      const [index, stream] = first;
+      this.finishStreamText(stream, block.text);
+      streams.delete(index);
+      return false;
+    });
+    return { ...record, message: { ...message, content } };
+  }
+
+  private finishPartialText(): void {
+    for (const streams of this.textStreams.values()) {
+      for (const stream of streams.values()) this.finishStreamText(stream);
+    }
+    this.textStreams.clear();
+    this.streamingMessageId = null;
+  }
+
   /** Consume one complete Claude JSONL record. The source retains a partial
    * trailing record until its newline arrives. */
   ingestNativeLine(line: string): void {
@@ -471,6 +556,15 @@ export class ClaudeSuSessionAdapter {
       } as SuSessionEventInput<'claude'>);
       return;
     }
+
+    if (record.type === 'stream_event') {
+      this.ingestPartial(record);
+      return;
+    }
+    // An interrupted SDK response can end without a canonical assistant
+    // block. Keep the partial text and close its segment before the lifecycle.
+    if (record.type === 'result') this.finishPartialText();
+    record = this.reconcileStreamedRecord(record);
 
     // A default/alias is only a launch request. Native initialization and root
     // assistant records name the model that actually ran, including on replay.
@@ -489,7 +583,7 @@ export class ClaudeSuSessionAdapter {
       this.host.transition('compacting', 'Claude native transcript compacted');
     }
 
-    const parsed = this.parser.parseLine(line);
+    const parsed = this.parser.parseLine(JSON.stringify(record));
     for (const entry of parsed) {
       const turnId = entry.kind === 'prompt'
         ? (this.currentTurnId ??= this.nextTurnId(recordId))
@@ -592,6 +686,7 @@ export class ClaudeSuSessionAdapter {
     this.host.transition('resuming', reason, generation);
     this.runtimeValue = runtime;
     this.parser = createAgentTimelineParser();
+    this.finishPartialText();
     this.currentTurnId = null;
     this.toolNames.clear();
     this.cards.clear();
@@ -613,6 +708,7 @@ export class ClaudeSuSessionAdapter {
     exitCode?: number | null;
     signal?: string | null;
   }): void {
+    this.finishPartialText();
     this.host.reconcileRuntimeExit(input);
   }
 

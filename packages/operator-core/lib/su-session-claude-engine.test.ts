@@ -156,7 +156,7 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({ type: 'transcript', turnId: 'owner-turn-1', content: 'first reply' }));
   });
 
-  it('acknowledges a long native response before input replay or result completion', async () => {
+  it('streams a long native response before canonical replay or result completion without duplicating text', async () => {
     const p = peer({ streamOnly: true });
     const engine = open(p, { deliveryTimeoutMs: 100 });
     await engine.ready;
@@ -164,8 +164,19 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript' && event.role === 'assistant')).toBe(false);
     p.output.write({ type: 'stream_event', session_id: nativeId, parent_tool_use_id: null,
-      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'long reply finished' } } });
-    p.output.write({ type: 'assistant', session_id: nativeId, message: { content: [{ type: 'text', text: 'long reply finished' }] } });
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } });
+    p.output.write({ type: 'stream_event', session_id: nativeId, parent_tool_use_id: null,
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'long reply' } } });
+    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', phase: 'delta', turnId: 'owner-turn-1', content: 'long reply',
+    })));
+    expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript' && event.phase === 'completed')).toBe(false);
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+    p.output.write({ type: 'stream_event', session_id: nativeId, parent_tool_use_id: null,
+      event: { type: 'content_block_stop', index: 0 } });
+    // The canonical block is authoritative, including a tail missing from the
+    // partial feed. It must finish the existing segment, not append a duplicate.
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { id: 'native-long-reply', content: [{ type: 'text', text: 'long reply finished' }] } });
     p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
     await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
     expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
@@ -174,6 +185,64 @@ describe('structured Claude SU engine', () => {
     expect(engine.adapter.host.recent.map(({ event }) => event)
       .filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.phase === 'completed'))
       .toHaveLength(1);
+    expect(engine.adapter.host.recent.flatMap(({ event }) => event.type === 'transcript' && event.role === 'assistant' && event.phase === 'delta' ? [event.content] : []).join(''))
+      .toBe('long reply finished');
+  });
+
+  it('reconciles separate text blocks sharing a native message id and preserves the intervening tool', async () => {
+    const p = peer({ streamOnly: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const partial = (event: unknown, parent: string | null = null) => p.output.write({
+      type: 'stream_event', session_id: nativeId, parent_tool_use_id: parent, event,
+    });
+    const canonical = (content: unknown[]) => p.output.write({ type: 'assistant', session_id: nativeId,
+      message: { id: 'native-long-reply', content } });
+    for (const index of [0, 2]) {
+      partial({ type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
+      partial({ type: 'content_block_delta', index, delta: { type: 'text_delta', text: 'Same text.' } });
+      await vi.waitFor(() => expect(engine.adapter.host.recent.filter(({ event }) => event.type === 'transcript'
+        && event.phase === 'delta' && event.role === 'assistant')).toHaveLength(index === 0 ? 1 : 2));
+      canonical([{ type: 'text', text: 'Same text.' }]);
+      partial({ type: 'content_block_stop', index });
+      if (index === 0) {
+        canonical([{ type: 'tool_use', id: 'read-tool', name: 'Read', input: { file_path: 'README.md' } }]);
+        // A child response must not change which root block is being streamed.
+        partial({ type: 'message_start', message: { id: 'child-message', role: 'assistant' } }, 'read-tool');
+        partial({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'child text' } }, 'read-tool');
+      }
+    }
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    const events = engine.adapter.host.recent.map(({ event }) => event);
+    expect(events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.phase === 'completed'))
+      .toEqual([0, 2].map(() => expect.objectContaining({ content: 'Same text.', turnId: 'owner-turn-1' })));
+    expect(events.filter((event) => event.type === 'tool' && event.phase === 'started')).toEqual([
+      expect.objectContaining({ callId: 'read-tool', name: 'Read', turnId: 'owner-turn-1' }),
+    ]);
+    expect(events.some((event) => event.type === 'transcript' && 'content' in event && event.content === 'child text')).toBe(false);
+  });
+
+  it('preserves an interrupted partial response and clears its reconciliation state for the next owner turn', async () => {
+    const p = peer({ streamOnly: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    p.output.write({ type: 'stream_event', session_id: nativeId, parent_tool_use_id: null,
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'unfinished' } } });
+    await vi.waitFor(() => expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', phase: 'delta', content: 'unfinished',
+    })));
+    await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', phase: 'completed', turnId: 'owner-turn-1', content: 'unfinished',
+    }));
+    await engine.adapter.host.startCommand({ ...command(engine), commandId: 'next-command', turnId: 'next-turn' }).terminal;
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { id: 'native-long-reply', content: [{ type: 'text', text: 'fresh reply' }] } });
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false });
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    expect(engine.adapter.host.recent.map(({ event }) => event)).toContainEqual(expect.objectContaining({
+      type: 'transcript', phase: 'completed', turnId: 'next-turn', content: 'fresh reply',
+    }));
   });
 
   it('does not acknowledge owner input from a nested agent stream', async () => {

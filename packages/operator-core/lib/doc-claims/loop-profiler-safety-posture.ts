@@ -84,8 +84,12 @@ export function judgeProfilerSafetyPosture(args: { monitorSource: string }): Pro
 
   // (3) The saturation cap must have a FINITE numeric default. Removing it (or defaulting
   // to Infinity) re-opens exactly the deeply-blocked-loop band where the native abort lives.
-  const capMatch = code.match(/opts\.profileMaxP95Ms\s*\?\?\s*([0-9_]+)/);
-  const rawCap = capMatch ? Number(capMatch[1].replace(/_/g, '')) : NaN;
+  const capMatch = code.match(/opts\.profileMaxP95Ms\s*\?\?\s*([A-Z][A-Z0-9_]*|[0-9_]+)/);
+  const capToken = capMatch?.[1] ?? '';
+  const resolvedCap = /^[0-9_]+$/.test(capToken)
+    ? capToken
+    : code.match(new RegExp(`(?:const|let)\\s+${capToken}\\s*=\\s*([0-9_]+)`))?.[1] ?? '';
+  const rawCap = Number(resolvedCap.replace(/_/g, ''));
   const maxP95DefaultMs = Number.isFinite(rawCap) && rawCap > 0 ? rawCap : null;
   if (maxP95DefaultMs === null) {
     problems.push(

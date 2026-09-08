@@ -367,7 +367,7 @@ export async function assignActionableWorkItems(
   args: {
     workItemIds: readonly string[]; targetAgent: string; harness?: string; workspaceId?: string;
     /** Durable callers reauthorize their original request after readiness I/O. */
-    beforeMutate?: () => Promise<void>;
+    beforeMutate?: (stage: 'claim' | 'wake') => Promise<void>;
   },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemAssignment> {
@@ -385,7 +385,7 @@ export async function assignActionableWorkItems(
     toClaim.map(async ({ workItemId }) => {
       // Authorization/read failures propagate to the durable caller, rather than
       // being misclassified as an ordinary atomic claim refusal.
-      await args.beforeMutate?.();
+      await args.beforeMutate?.('claim');
       try {
         const claimed = await deps.claim(workItemId, args.targetAgent, {
           ...(args.harness ? { harness: args.harness } : {}),
@@ -564,7 +564,7 @@ export async function assignAndWakeActionableWorkItems(
      */
     wakeRetained?: boolean;
     /** Recheck the original caller immediately before claim and before wake. */
-    beforeMutate?: () => Promise<void>;
+    beforeMutate?: (stage: 'claim' | 'wake') => Promise<void>;
   },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemDispatchResult> {
@@ -596,7 +596,7 @@ export async function assignAndWakeActionableWorkItems(
             : 'no currently actionable work-items; blocked/parked descendants remain unassigned and target was not woken',
     };
   }
-  await args.beforeMutate?.();
+  await args.beforeMutate?.('wake');
   const wake = await deps.wake([target.ownerId], {
     summary: args.summary ?? `Assigned ${wakeWorkItemIds.length} actionable plan-run work-item(s)`,
     payload: {

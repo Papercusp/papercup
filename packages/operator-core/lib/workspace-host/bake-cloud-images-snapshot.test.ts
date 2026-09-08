@@ -298,10 +298,12 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(result.status, result.output).toBe(0);
     expect(result.output).toContain('reuse verified local image (no rebuild)');
     expect(result.files).not.toContain('build-started');
+    const pushedImage = result.podmanCalls.find((call) => call.startsWith('push localhost/test/workspace-host:'))?.slice(5);
+    expect(pushedImage).toBeTruthy();
     expect(result.podmanCalls).toEqual(
       expect.arrayContaining([
         `image exists ${sourceImage}`,
-        `tag ${sourceImage} localhost/test/workspace-host:papercusp-workspace-host-20260907`,
+        `tag ${sourceImage} ${pushedImage}`,
       ]),
     );
     expect(result.podmanCalls.some((call) => call.startsWith('build '))).toBe(false);

@@ -17,6 +17,7 @@ import type { SessionConfinementsPayload } from './capability-envelope/session-c
 import { evaluateSessionConfinement } from './capability-envelope/session-confinement';
 import { DEFAULT_INBOX_BODY_CAP } from './agent-tools/coordination/tools/inbox-content-bounds';
 
+const recoveryStageSchema = z.enum(['queued', 'authorize', 'screen', 'assign', 'wake', 'await-pickup']);
 const requestSchema = z.object({
   version: z.union([z.literal(1), z.literal(2)]),
   requestId: z.string().uuid(),
@@ -28,6 +29,8 @@ const requestSchema = z.object({
   requestedAt: z.string(),
   updatedAt: z.string(),
   reason: z.string().optional(),
+  /** Last observed stage, never a grant or proof that the target executed. */
+  stage: recoveryStageSchema.optional(),
   /** Only a later target-owned pickup can establish execution. */
   pickupConfirmed: z.literal(false),
   note: z.string().min(1).max(DEFAULT_INBOX_BODY_CAP).optional(),
@@ -217,7 +220,7 @@ export async function requestAdmissionRecovery(
     const unsigned: Omit<AdmissionRecoveryRequest, 'signature'> = {
       version: 2, requestId: previous?.requestId ?? randomUUID(), caller: input.caller, target: input.target,
       routineId, requestedAt: previous?.requestedAt ?? now, updatedAt: now,
-      state: 'queued', pickupConfirmed: false,
+      state: 'queued', stage: 'queued', pickupConfirmed: false,
       ...(input.note !== undefined || previous?.note !== undefined ? { note: input.note ?? previous?.note } : {}),
       ...(input.body !== undefined || previous?.body !== undefined ? { body: input.body ?? previous?.body } : {}),
     };
@@ -264,7 +267,7 @@ export async function runAdmissionRecoveries(
         // Isolate one corrupt payload; do not abort the routine or admit its item.
         await writeRequest(tx, exact, {
           ...(rawRequest && typeof rawRequest === 'object' ? rawRequest : {}),
-          state: 'held', reason: error.message, pickupConfirmed: false, updatedAt: new Date().toISOString(),
+          state: 'held', stage: 'authorize', reason: error.message, pickupConfirmed: false, updatedAt: new Date().toISOString(),
         }, rawRequest);
         return;
       }
@@ -286,31 +289,46 @@ export async function runAdmissionRecoveries(
         assertItemEligible(live, request.target);
         await deps.authorize(exact, request);
       };
+      let stage: z.infer<typeof recoveryStageSchema> = 'authorize';
       try {
         await assertAllowed();
         const item = await readItem(sql, exact);
-        if (item.admission === 'pending' || item.admission === 'unreviewed') await deps.screen(exact, assertAllowed);
+        if (item.admission === 'pending' || item.admission === 'unreviewed') {
+          stage = 'screen';
+          await deps.screen(exact, assertAllowed);
+        }
         await assertAllowed();
+        const screened = await readItem(sql, exact);
+        if (screened.admission === 'pending') {
+          throw new AdmissionRecoveryRefused('screening left the original item pending; repair its named admission hold and retry this same item');
+        }
+        stage = 'assign';
         const result = await deps.dispatch({
           workItemIds: [exact.workItemId], targetAgent: request.target,
           harness: exact.harnessSlug, workspaceId: exact.workspaceId,
           summary: request.note ?? `Resume original work item ${exact.workItemId} after admission recovery`,
           ...(request.body !== undefined ? { instructions: request.body } : {}),
           source: 'system:work-item-admission-recovery',
-          beforeMutate: assertAllowed,
+          beforeMutate: async (mutation) => {
+            stage = mutation === 'wake' ? 'wake' : 'assign';
+            await assertAllowed();
+          },
         });
         // Assignment and wake have their own durable writes. A crash here rolls back only
         // this receipt; retry retains that assignment and reuses the normal wake substrate.
-        const queued = (result.wake?.woken ?? 0) > 0;
+        // queued is authoritative when present; woken is only the older queue-count alias.
+        const queued = (result.wake?.queued ?? result.wake?.woken ?? 0) > 0;
+        stage = result.ok && queued ? 'await-pickup' : result.wake ? 'wake' : 'assign';
         await writeRequest(tx, exact, {
-          ...request, state: result.ok && queued ? 'delivered' : 'held',
-          reason: result.warning ?? (queued ? 'wake queued; target pickup remains unconfirmed' : 'dispatch did not queue a wake'),
+          ...request, state: result.ok && queued ? 'delivered' : 'held', stage,
+          reason: result.assignment?.skipped[0]?.reason ?? result.assignment?.failed[0]?.reason ?? result.warning ??
+            (queued ? 'wake queued; target pickup remains unconfirmed' : 'dispatch did not queue a wake'),
           updatedAt: new Date().toISOString(),
         }, rawRequest);
       } catch (error) {
         if (!(error instanceof AdmissionRecoveryRefused)) throw error;
         await writeRequest(tx, exact, {
-          ...request, state: 'held', reason: error.message.slice(0, 2000), updatedAt: new Date().toISOString(),
+          ...request, state: 'held', stage, reason: error.message.slice(0, 2000), updatedAt: new Date().toISOString(),
         }, rawRequest);
       }
     });

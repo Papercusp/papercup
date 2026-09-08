@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-22633331216678992",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-006",
+  "recordedAt": "2026-09-08T07:07:05.050016+00:00",
+  "rootCause": "Claude engine dropped all partial stream events after input acknowledgement; legacy transcript parser buffers partial text and repeats it alongside the completed record.",
+  "repair": "Forward SDK partial events to the existing adapter; emit immediate text deltas per native message/block, reconcile canonical per-block records, preserve tools, finish interrupted text, clear per-turn state. No new protocol surface.",
+  "verification": {
+    "before": "Three focused regressions failed before the repair because no pre-completion delta was emitted.",
+    "after": "19 Claude engine tests and 5 adapter integration tests passed.",
+    "typecheck": "Four edited TypeScript files passed scoped lint:tsc after the final edit. Other files reported outside-scope errors; no whole-project typecheck claim.",
+    "installed": "Actual installed Claude7 journey passed one selected test, 13 not selected; strict console checks with pre-existing documented optional-memory fallback handling.",
+    "scope": "Installed Linux PUI with the production operator app in an isolated test database and actual maintained Claude engine. Native runtime and PUI restarted; operator OS process was NOT restarted. Not a whole-runtime frozen-source, deployed-main, or public distribution verdict."
+  },
+  "provenance": {
+    "before": {
+      "at": "2026-09-08T07:04:04.079224+00:00",
+      "head": "7f158c1e16678a064d4fb2486f64d447f821c5e5",
+      "sources": {
+        "packages/operator-core/lib/su-session-claude-engine.ts": "ef3dd7c8f645cd359938f21012fc9bdd70e8bac303af86c343508997b31c6982",
+        "packages/operator-core/lib/su-session-claude-adapter.ts": "c69f8f8aa7789b278208efcaaa58a256ceb33a4b012b541cf76a4c3077357e41",
+        "packages/operator-core/lib/su-session-claude-engine.test.ts": "6591eb04fbb2a3d9ac62db21f4805bc250fa97597adddb0aab814b9ab8e040db",
+        "packages/operator-core/lib/su-session-claude-adapter.integration.test.ts": "141c86354c45e20e1d5b099f1ed182d780cd901a29b0c36295fff2964ab54738",
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "b672aa8654ea2a16404da193257fcea9eb875385326176475f6855e99748d0b3"
+      },
+      "binary": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7"
+    },
+    "after": {
+      "at": "2026-09-08T07:06:17.380285+00:00",
+      "head": "7f158c1e16678a064d4fb2486f64d447f821c5e5",
+      "sources": {
+        "packages/operator-core/lib/su-session-claude-engine.ts": "ef3dd7c8f645cd359938f21012fc9bdd70e8bac303af86c343508997b31c6982",
+        "packages/operator-core/lib/su-session-claude-adapter.ts": "c69f8f8aa7789b278208efcaaa58a256ceb33a4b012b541cf76a4c3077357e41",
+        "packages/operator-core/lib/su-session-claude-engine.test.ts": "6591eb04fbb2a3d9ac62db21f4805bc250fa97597adddb0aab814b9ab8e040db",
+        "packages/operator-core/lib/su-session-claude-adapter.integration.test.ts": "141c86354c45e20e1d5b099f1ed182d780cd901a29b0c36295fff2964ab54738",
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "b672aa8654ea2a16404da193257fcea9eb875385326176475f6855e99748d0b3"
+      },
+      "binary": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7"
+    }
+  },
+  "native": {
+    "identity": {
+      "agentChatId": "648ec751-abf8-4a9f-9581-83a99bee7389",
+      "advSessionId": 1,
+      "backend": "claude",
+      "nativeSessionId": "dbb72cbe-8133-496f-9fab-5b1ce0b4755e",
+      "ownerId": "su-c16c9093-7c75-4c3f-bc31-f6dac1113805",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "streamingEvidence": {
+      "turnId": "pui-turn-pui-1788851122004168368",
+      "observedAt": "2026-09-08T07:05:23.695Z",
+      "partialText": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25",
+      "visibleNumbers": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "lifecycle": "running",
+      "completed": false
+    },
+    "resumedDescriptor": {
+      "identity": {
+        "agentChatId": "648ec751-abf8-4a9f-9581-83a99bee7389",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "dbb72cbe-8133-496f-9fab-5b1ce0b4755e",
+        "ownerId": "su-c16c9093-7c75-4c3f-bc31-f6dac1113805",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "lifecycle": "ready",
+      "runtimeGeneration": 1,
+      "role": "su",
+      "model": "claude-opus-5",
+      "accountRoute": "default",
+      "carry": "warm",
+      "modes": [],
+      "capabilities": {
+        "commands": {
+          "owner_turn": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "interrupt": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "resume": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "requires the tracked Claude session UUID and a live or P-004-reconciled managed runtime"
+          },
+          "fork": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "forks must be created through the tracked launcher so they receive a new durable identity"
+          },
+          "focus": {
+            "state": "supported",
+            "implementation": "host"
+          },
+          "end": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "the managed host may refuse to close a human-attended runtime"
+          }
+        },
+        "features": {
+          "tool-events": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "interactive-cards": {
+            "state": "supported",
+            "implementation": "native"
+          },
+          "reasoning-stream": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "Claude transcript records may include thinking blocks when the native runtime exposes them"
+          },
+          "usage": {
+            "state": "conditional",
+            "implementation": "native",
+            "reason": "Claude result records carry usage/cost metadata but the v1 SU-session event contract has no usage event"
+          },
+          "compaction": {
+            "state": "conditional",
+            "implementation": "host",
+            "reason": "Claude carry uses the managed host hard-recycle path and P-004 runtime reconciliation"
+          }
+        }
+      },
+      "backendExtension": {
+        "backend": "claude",
+        "configDir": "/tmp/pcv/pui-agent-chat-e2e-lUP3gD/native-claude/su-c16c9093-7c75-4c3f-bc31-f6dac1113805",
+        "configDirSource": null
+      }
+    },
+    "intentPivotWarnings": [],
+    "configurationWarnings": [],
+    "optionalMemoryWarnings": [
+      "[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010)."
+    ]
+  },
+  "frames": [
+    "greeting",
+    "file",
+    "running",
+    "interrupted",
+    "followup",
+    "history",
+    "resumed"
+  ],
+  "logs": {
+    "/tmp/pui-p006-claude-stream-before.log": "6728f6ce8a3d3e00bbd1c629289923520d10e65f831a2e67480ca710ff9122ef",
+    "/tmp/pui-p006-claude-stream-after.log": "326417559936cd0d8b9b3f1f2eebc750c385cbeba70d8b40717cdb8c448901c5",
+    "/tmp/pui-p006-claude-stream-types.log": "bff166e898c0535f56f048f56ba93307d6445542f0d4e50e53694642b27c1175",
+    "/tmp/pui-p006-claude-installed-7.log": "92c55e07fb825890b7f88e4cf43c933115f30ad46da6c7e464cf8055718c8188",
+    "/tmp/pui-p006-claude7-source-before.json": "e58e305ca08b0939287b401057b0330f8b24f24855b746038ff3ed53229c16bc",
+    "/tmp/pui-p006-claude7-source-after.json": "987794c88e04e9acd39ea5e0395139a69656270b0c728b17a6a93cdbc28de3a4"
+  }
+}

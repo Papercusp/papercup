@@ -70,6 +70,7 @@ export const DEFAULT_HARNESS_ARGS: Record<string, unknown> = {
 export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // ── measurable with specific (non-default) args ──
   'workItems.byHarness': { harnessSlug: 'papercusp', limit: 500 },
+  'learning.dream': { potSlug: 'papercusp', view: 'metrics' },
   // plans.items takes NO required args, so it would default to `{}` — but `{}` is
   // a shape NO consumer ever requests, and measuring it overstates this read by
   // ~8x. All four live call sites filter SERVER-side: `{needsHuman:true}` (13,150 B),

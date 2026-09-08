@@ -238,10 +238,8 @@ export function startClaudeSuEngine(
               && event.event.message.id && activeInputUuid) {
               pending.get(activeInputUuid)?.resolve({ ok: true });
             }
-            // The transcript adapter consumes canonical message records. Its
-            // timeline parser would otherwise concatenate partial text and
-            // then emit that text again with the complete assistant record.
-            continue;
+            // The adapter projects partial text immediately and reconciles
+            // each canonical block without duplicating the streamed content.
           }
           adapter.ingestNativeLine(JSON.stringify(event));
           if (event.type === 'result') finishActiveTurn?.();

@@ -279,7 +279,7 @@ describe('both scope-creating seams consult the bound (anti-drift)', () => {
     // It must gate the spawn, not merely observe it.
     expect(src).toMatch(/if \(!memoryAdmission\.admit\)/);
     // And the admission must be measured against the SAME cap the scope commits.
-    expect(src).toContain('{ memoryMaxG: checkpointMemoryG }');
+    expect(src).toMatch(/memoryMaxG:\s*checkpointMemoryG/);
   });
 
   it('the MANUAL seam (release-checkpoint-launch.ts) calls admitCheckpointMemory before launching', () => {

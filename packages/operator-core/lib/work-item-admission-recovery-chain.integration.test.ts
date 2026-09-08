@@ -102,7 +102,7 @@ beforeEach(async () => {
   h.denied = false;
   h.revoked = false;
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
-  h.wake.mockReset().mockResolvedValue({ queued: 1, woken: 1, staged: 0, timedOutTargets: [] });
+  h.wake.mockReset().mockResolvedValue({ queued: 1, woken: 0, staged: 0, timedOutTargets: [] });
   h.claim.mockReset().mockImplementation(wi.claimWorkItem);
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines`;
@@ -186,7 +186,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect(await row(original.id)).toMatchObject({
       title: original.title, admission: 'admitted', taken_by: 'reviewer',
       payload: { keep: 'original instructions', _admissionRecovery: {
-        requestId: queued.request.requestId, state: 'delivered', pickupConfirmed: false,
+        requestId: queued.request.requestId, state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
       } },
     });
     expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
@@ -246,6 +246,25 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
   });
 
+  it('reports a staged wake after the real claim and reuses that claim on a same-request retry', async () => {
+    const original = await create();
+    const first = await request(original.id);
+    h.wake.mockResolvedValueOnce({ queued: 0, woken: 1, staged: 1, timedOutTargets: [] });
+    await tick();
+    expect(await row(original.id)).toMatchObject({
+      admission: 'admitted', taken_by: 'reviewer', payload: { _admissionRecovery: {
+        requestId: first.request.requestId, state: 'held', stage: 'wake', pickupConfirmed: false,
+        reason: expect.stringContaining('not required-wakeable'),
+      } },
+    });
+    expect((await request(original.id)).request.requestId).toBe(first.request.requestId);
+    await tick();
+    expect(h.claim).toHaveBeenCalledTimes(1);
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+    });
+  });
+
   it.each(['distinct', 'hold', 'revoke'] as const)(
     'runs the real model-backed screening path with a %s outcome before any claim',
     async (outcome) => {
@@ -280,7 +299,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
       expect(ledger!.detail.status).toBe(outcome === 'revoke' ? 'failed' : 'complete');
       expect(await row(original.id)).toMatchObject({
         admission: 'pending', taken_by: null,
-        payload: { _admissionRecovery: { state: 'held', pickupConfirmed: false } },
+        payload: { _admissionRecovery: { state: 'held', stage: 'screen', pickupConfirmed: false } },
       });
       expect(h.claim).not.toHaveBeenCalled();
       expect(h.wake).not.toHaveBeenCalled();

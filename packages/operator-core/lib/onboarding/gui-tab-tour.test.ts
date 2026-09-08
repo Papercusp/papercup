@@ -48,10 +48,17 @@ describe('DRIFT GUARD: GUI_TAB_TOUR vs the real ADV_TABS strip (AdvShell.tsx)', 
     expect(arrayEnd).toBeGreaterThan(arrayStart);
     const body = src.slice(arrayStart, arrayEnd);
 
+    const sharedLabels = new Map(
+      [...src.matchAll(/^\s{2}([a-z][A-Za-z0-9_]*):\s*'([^']+)'/gm)].map((match) => [match[1], match[2]]),
+    );
     const entries: Array<{ id: string; label: string }> = [];
-    const re = /\{\s*id:\s*'([^']+)',\s*label:\s*'([^']+)'/g;
+    const re = /\{\s*id:\s*'([^']+)',\s*label:\s*(?:'([^']+)'|ADV_MORE_LABELS\.([A-Za-z0-9_]+))/g;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(body)) !== null) entries.push({ id: m[1], label: m[2] });
+    while ((m = re.exec(body)) !== null) {
+      const label = m[2] ?? sharedLabels.get(m[3]);
+      expect(label, `unresolved label expression for ADV tab ${m[1]}`).toBeTruthy();
+      entries.push({ id: m[1], label: label! });
+    }
 
     expect(entries.length, 'parsed no ADV_TABS entries — formatting changed?').toBeGreaterThan(5);
     expect(GUI_TAB_TOUR.map((t) => ({ id: t.id, label: t.label }))).toEqual(entries);
