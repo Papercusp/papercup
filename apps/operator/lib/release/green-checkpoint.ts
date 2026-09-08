@@ -5265,17 +5265,25 @@ async function commitFrozenRepairQueueTransition(
  * longer the queue's head: the verdict is SUPERSEDED — the row is returned as-is (the newer
  * head is unjudged and the next run verifies it), and `onSuperseded` is told so the run can
  * log and stop treating its result as the queue's verdict. Never records a red or a green
- * against a head the row no longer carries.
+ * AS THE VERDICT for a head the row no longer carries.
+ *
+ * WI-10000741 (D-014's first clause — "records its legs"): a superseded verdict is still a
+ * measurement the suite paid for. `onSupersededRecord`, when given, is applied to the fresh
+ * row INSTEAD of returning it untouched, so the caller can append the measurement at the
+ * head it was taken (`recordFrozenRepairSupersededRed`) without moving the newer admission,
+ * its head, or the phase. Without it (the green site: a superseded green has nothing to
+ * record — the promotion proof below refuses it fail-closed) the row is returned as-is.
  */
 function verdictTransitionAtHead(
   measuredHead: string,
   reducer: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   onSuperseded: (fresh: FrozenCandidateRepairQueue) => void,
+  onSupersededRecord?: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
 ): (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue {
   return (fresh) => {
     if (fresh.repairHead !== measuredHead) {
       onSuperseded(fresh);
-      return fresh;
+      return onSupersededRecord ? onSupersededRecord(fresh) : fresh;
     }
     return reducer(fresh);
   };
@@ -10312,8 +10320,17 @@ async function runGreenCheckpointInner(
           // P-027 (D-014): the verdict is for `candidate` (this run's repairHead). If an
           // admission advanced the row while the suite ran, the red is SUPERSEDED — the row
           // keeps the newer, unjudged head and the next run verifies it; recording this red
-          // against it would overwrite the admission (the 2026-09-05 17:41Z lost update).
+          // AS THE VERDICT would overwrite the admission (the 2026-09-05 17:41Z lost update).
+          // WI-10000741: the measurement is still RECORDED at the head it was taken — a
+          // round + signature at `candidate`, phase/repairHead/admissions untouched — so the
+          // suite's hour is not discarded and the newer head still reads as awaiting
+          // verification (D-014's "records its legs" clause).
           let supersededBy = null as FrozenCandidateRepairQueue | null;
+          const supersededRedInput = {
+            failingTests: verification.failingTests,
+            signature: verification.signature,
+            signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
+          };
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
             repairQueue,
@@ -10322,22 +10339,28 @@ async function runGreenCheckpointInner(
               (fresh) =>
                 markFrozenRepairVerificationRed(fresh, {
                   repairHead: candidate,
-                  failingTests: verification.failingTests,
-                  signature: verification.signature,
-                  signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
+                  ...supersededRedInput,
                   nowMs: Date.now(),
                 }),
               (fresh) => {
                 supersededBy = fresh;
               },
+              (fresh) =>
+                recordFrozenRepairSupersededRed(fresh, {
+                  measuredHead: candidate,
+                  ...supersededRedInput,
+                  nowMs: Date.now(),
+                }),
             ),
             "repair-head-red",
           );
           if (supersededBy) {
+            const recordedRound = nextRecordedRound(repairQueue, candidate);
             deps.log(
-              `FROZEN_REPAIR_VERDICT_SUPERSEDED: red at ${candidate.slice(0, 8)} not recorded — an ` +
-                `admission advanced repairHead to ${supersededBy.repairHead.slice(0, 8)} while this ` +
-                `run judged; that head is unjudged and the next run verifies it`,
+              `FROZEN_REPAIR_VERDICT_SUPERSEDED: red at ${candidate.slice(0, 8)} recorded as ` +
+                `round ${recordedRound} at that head WITHOUT moving the row's head — an admission ` +
+                `advanced repairHead to ${supersededBy.repairHead.slice(0, 8)} while this run ` +
+                `judged; that head is unjudged and the next run verifies it`,
             );
           }
         }
