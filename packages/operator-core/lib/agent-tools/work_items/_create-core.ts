@@ -375,6 +375,18 @@ interface PlanItemCollisionRow {
   status: string;
 }
 
+interface FleetScopeDowngradeMarker {
+  requestedAssignee: string;
+  reportedBy: string;
+  fleet: string;
+  code: string;
+  at: string;
+}
+
+interface PendingAdmissionRepairRow {
+  feature_id: string;
+}
+
 function readPlanItemIdentity(raw: unknown): PlanItemIdentity | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
@@ -428,6 +440,100 @@ async function findOpenPlanItemCollision(
      ORDER BY wi.created_ts ASC NULLS LAST, wi.feature_id ASC
      LIMIT 1`;
   return rows[0] ?? null;
+}
+
+/**
+ * Repair the one create-time duplicate that the admission remedy promises to
+ * repair. The INSERT path cannot help here: exact identity is discovered before
+ * createWorkItem, so a re-file reaches this function with the existing row still
+ * pending. Keep the authorization predicates separate from the CAS predicate:
+ * an explicit fresh assignment may promote + claim atomically, while a server
+ * stamped fleet-scope downgrade may promote without granting the refused claim.
+ */
+function readFleetScopeDowngradeMarker(
+  args: CreateOneWorkItemArgs,
+  ctx: CreateOneWorkItemCtx,
+): FleetScopeDowngradeMarker | null {
+  if (args.admissionBypass !== 'bypass:explicit-assignment') return null;
+  const raw = args.payload?.fleetScopeDowngrade;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const marker = raw as Record<string, unknown>;
+  const requestedAssignee = typeof marker.requestedAssignee === 'string' ? marker.requestedAssignee.trim() : '';
+  const reportedBy = typeof marker.reportedBy === 'string' ? marker.reportedBy.trim() : '';
+  const fleet = typeof marker.fleet === 'string' ? marker.fleet.trim() : '';
+  const code = typeof marker.code === 'string' ? marker.code.trim() : '';
+  const at = typeof marker.at === 'string' ? marker.at.trim() : '';
+  // `fleetScopeDowngrade` is server-stamped by create.ts. Requiring the marker's
+  // reporter to be this request's actor prevents a caller from carrying a
+  // different agent's downgrade into an unrelated re-file.
+  if (!requestedAssignee || !reportedBy || reportedBy !== ctx.ownerId || !fleet || !code || !at) return null;
+  if (!Number.isFinite(Date.parse(at))) return null;
+  return { requestedAssignee, reportedBy, fleet, code, at };
+}
+
+async function repairPendingExactIdentityDuplicate(
+  args: CreateOneWorkItemArgs,
+  ctx: CreateOneWorkItemCtx,
+  workspaceId: string | undefined,
+  identity: AdmissionIdentity,
+  exactIdentity: Pick<SemanticDupeCandidate, 'id'>,
+): Promise<WorkItem | null> {
+  const assignee = args.assign_to?.trim() || null;
+  const downgrade = readFleetScopeDowngradeMarker(args, ctx);
+  if (!assignee && !downgrade) return null;
+  // A wildcard/unresolved workspace must never authorize a cross-workspace repair.
+  if (!workspaceId) return null;
+
+  const { sql } = getOrgPg();
+  const rows = assignee
+    ? await sql<PendingAdmissionRepairRow[]>`
+        UPDATE harness_shared.work_items
+           SET admission = 'auto',
+               admitted_at = now(),
+               admitted_by = 'bypass:explicit-assignment',
+               taken_by = ${assignee},
+               taken_at = now(),
+               updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
+               payload =
+                 (CASE WHEN jsonb_typeof(payload) = 'object' THEN payload ELSE '{}'::jsonb END)
+                 || jsonb_build_object(
+                      '_ei',
+                      (CASE WHEN jsonb_typeof(payload->'_ei') = 'object' THEN payload->'_ei' ELSE '{}'::jsonb END)
+                      || jsonb_build_object('assigned_by', ${ctx.ownerId}::text)
+                    )
+         WHERE workspace_id = ${workspaceId}
+           AND feature_id = ${exactIdentity.id}
+           AND item_kind IN ('bug', 'change', 'task')
+           AND status = 'open'
+           AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES}::text[]))
+           AND admission = 'pending'
+           AND payload->'admissionIdentity'->>'schemaVersion' = ${identity.schemaVersion}
+           AND payload->'admissionIdentity'->>'titleKey' = ${identity.titleKey}
+           AND payload->'admissionIdentity'->>'signalKey' IS NOT DISTINCT FROM ${identity.signalKey ?? null}::text
+           AND taken_by IS NULL
+           AND taken_at IS NULL
+         RETURNING feature_id`
+    : await sql<PendingAdmissionRepairRow[]>`
+        UPDATE harness_shared.work_items
+           SET admission = 'auto',
+               admitted_at = now(),
+               admitted_by = 'bypass:explicit-assignment',
+               updated_ts = (extract(epoch FROM now()) * 1000)::bigint
+         WHERE workspace_id = ${workspaceId}
+           AND feature_id = ${exactIdentity.id}
+           AND item_kind IN ('bug', 'change', 'task')
+           AND status = 'open'
+           AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES}::text[]))
+           AND admission = 'pending'
+           AND payload->'admissionIdentity'->>'schemaVersion' = ${identity.schemaVersion}
+           AND payload->'admissionIdentity'->>'titleKey' = ${identity.titleKey}
+           AND payload->'admissionIdentity'->>'signalKey' IS NOT DISTINCT FROM ${identity.signalKey ?? null}::text
+           AND taken_by IS NULL
+           AND taken_at IS NULL
+         RETURNING feature_id`;
+  const repairedId = rows[0]?.feature_id;
+  if (!repairedId) return null;
+  return (await getWorkItem(repairedId, args.harness)) ?? (await getWorkItem(repairedId));
 }
 
 export async function createOneWorkItem(
@@ -678,7 +784,7 @@ export async function createOneWorkItem(
     // report as a new canonical work item. Preserve every repeat as an occurrence
     // on the first row instead. `force:true` remains the explicit escape for genuinely
     // distinct work; DRAIN's complete-coverage contract intentionally overrides force.
-    if (exactIdentity && (!args.force || args.requireCompleteDedupCoverage)) {
+    if (exactIdentity && args.requireCompleteDedupCoverage) {
       await appendWorkItemOccurrence(
         args,
         ctx,
@@ -697,6 +803,34 @@ export async function createOneWorkItem(
           (args.requireCompleteDedupCoverage
             ? 'work that item instead; DRAIN does not admit another bug with the same normalized identity.'
             : 'work that item instead, or pass force:true if this is genuinely distinct work.'),
+        existing: { id: exactIdentity.id, state: exactIdentity.state },
+        similarOpen: [exactIdentity],
+      };
+    }
+    // The ordinary duplicate refusal is also the create-time admission-repair
+    // seam. DRAIN deliberately returned above; force still gets one repair attempt
+    // and only falls through to its existing distinct-work escape on a CAS miss.
+    if (exactIdentity) {
+      const repaired = await repairPendingExactIdentityDuplicate(args, ctx, workspaceId, identity, exactIdentity);
+      if (repaired) return { ok: true, workItem: repaired, admissionIdentity: identity, dedupCoverage };
+    }
+    if (exactIdentity && !args.force) {
+      await appendWorkItemOccurrence(
+        args,
+        ctx,
+        identity,
+        'duplicate',
+        exactIdentity.id,
+        exactIdentity.harness,
+        [exactIdentity],
+        dedupCoverage,
+      );
+      return {
+        ok: false,
+        error: 'duplicate_identity',
+        message:
+          `stable admission identity matches OPEN work-item ${exactIdentity.id} \"${exactIdentity.title}\" — ` +
+          'work that item instead, or pass force:true if this is genuinely distinct work.',
         existing: { id: exactIdentity.id, state: exactIdentity.state },
         similarOpen: [exactIdentity],
       };

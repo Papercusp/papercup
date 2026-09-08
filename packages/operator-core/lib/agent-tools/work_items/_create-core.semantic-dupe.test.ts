@@ -25,6 +25,10 @@ const occurrenceMocks = vi.hoisted(() => ({
   > => null),
 }));
 
+const sqlMocks = vi.hoisted(() => ({
+  query: vi.fn(async () => [] as Array<{ feature_id: string }>),
+}));
+
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 vi.mock('../../work-items', () => ({
   createWorkItem: vi.fn(async (input: { kind: string; title: string }) => ({
@@ -44,7 +48,10 @@ vi.mock('../_pot-scope', () => ({
   resolvePotScope: vi.fn(async () => ({ kind: 'pot', slug: 'papercusp' })),
   POT_REQUIRED_DETAIL: 'hive required',
 }));
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMocks.query }),
+}));
 vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
 vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
@@ -77,12 +84,13 @@ vi.mock('../../modes/goal-context', () => ({
 import { createOneWorkItem } from './_create-core';
 import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
-import { createWorkItem } from '../../work-items';
+import { createWorkItem, getWorkItem } from '../../work-items';
 import { assessIssueAdmissionPressure } from '../../issue-occurrence-ledger';
 
 const guardM = vi.mocked(findSemanticDupes);
 const fulltextM = vi.mocked(findFulltextLexicalDupes);
 const createM = vi.mocked(createWorkItem);
+const getM = vi.mocked(getWorkItem);
 const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
 
 const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
@@ -91,12 +99,35 @@ const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
   thresholds: { hard: 0.93, soft: 0.85 },
 });
 
+const exactIdentityCandidate = {
+  id: 'EI-9',
+  title: 'Agents file duplicate drain blockers',
+  state: 'open',
+  harness: 'papercusp',
+  similarity: 1,
+  source: 'lexical-fulltext' as const,
+};
+
+const repairedItem = {
+  id: 'EI-9',
+  kind: 'bug',
+  family: 'issue',
+  harness: 'papercusp',
+  title: exactIdentityCandidate.title,
+  summary: 'repaired',
+  state: 'open',
+} as unknown as NonNullable<Awaited<ReturnType<typeof getWorkItem>>>;
+
 beforeEach(() => {
   guardM.mockReset();
   guardM.mockResolvedValue(null);
   fulltextM.mockReset();
   fulltextM.mockResolvedValue([]);
   createM.mockClear();
+  getM.mockReset();
+  getM.mockResolvedValue(null);
+  sqlMocks.query.mockReset();
+  sqlMocks.query.mockResolvedValue([]);
   dedupEdgeMocks.persist.mockClear();
   occurrenceMocks.record.mockClear();
   occurrenceMocks.readPressure.mockReset();
@@ -381,6 +412,110 @@ describe('createOneWorkItem × semantic dupe prescreen (P-008)', () => {
         reportedTitle: 'Duplicate blockers drain agents file',
       }),
     );
+  });
+
+  it('repairs a pending exact duplicate and atomically assigns a fresh explicit target', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([exactIdentityCandidate]);
+    sqlMocks.query.mockResolvedValue([{ feature_id: 'EI-9' }]);
+    getM.mockResolvedValue(repairedItem);
+
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'Duplicate blockers drain agents file', assign_to: 'bee-7' },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: true, workItem: { id: 'EI-9' } });
+    expect(createM).not.toHaveBeenCalled();
+    expect(sqlMocks.query).toHaveBeenCalledOnce();
+    const statement = [...sqlMocks.query.mock.calls[0][0]].join(' ');
+    expect(statement).toContain("admission = 'pending'");
+    expect(statement).toContain('taken_by =');
+    expect(statement).toContain("assigned_by");
+  });
+
+  it('repairs a server-stamped fleet-scope refile without granting its refused assignment', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([exactIdentityCandidate]);
+    sqlMocks.query.mockResolvedValue([{ feature_id: 'EI-9' }]);
+    getM.mockResolvedValue(repairedItem);
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'Duplicate blockers drain agents file',
+        admissionBypass: 'bypass:explicit-assignment',
+        payload: {
+          fleetScopeDowngrade: {
+            requestedAssignee: 'bee-7',
+            reportedBy: 'me',
+            fleet: 'fixed-wave',
+            code: 'fleet_scope_violation',
+            at: '2026-09-08T22:00:00.000Z',
+          },
+        },
+      },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: true, workItem: { id: 'EI-9' } });
+    expect(createM).not.toHaveBeenCalled();
+    const statement = [...sqlMocks.query.mock.calls[0][0]].join(' ');
+    expect(statement).not.toContain('taken_by =');
+    expect(statement).toContain('taken_by IS NULL');
+  });
+
+  it('keeps an ordinary exact duplicate refusal unauthorized', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([exactIdentityCandidate]);
+
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'Duplicate blockers drain agents file' },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: 'duplicate_identity', existing: { id: 'EI-9' } });
+    expect(sqlMocks.query).not.toHaveBeenCalled();
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('keeps DRAIN refusal ahead of the repair even when assign_to is present', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([exactIdentityCandidate]);
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'Duplicate blockers drain agents file',
+        assign_to: 'bee-7',
+        requireCompleteDedupCoverage: true,
+      },
+      ctx,
+    );
+
+    expect(r).toMatchObject({ ok: false, error: 'duplicate_identity', existing: { id: 'EI-9' } });
+    expect(sqlMocks.query).not.toHaveBeenCalled();
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('preserves force distinct-work escape when the repair CAS misses', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    fulltextM.mockResolvedValue([exactIdentityCandidate]);
+
+    const r = await createOneWorkItem(
+      {
+        kind: 'bug',
+        title: 'Duplicate blockers drain agents file',
+        force: true,
+        assign_to: 'bee-7',
+        goalDedupGate: true,
+      },
+      ctx,
+    );
+
+    expect(r.ok).toBe(true);
+    expect(sqlMocks.query).toHaveBeenCalledOnce();
+    expect(createM).toHaveBeenCalledOnce();
   });
 
   it('P-001 coordination baseline: two retries preserve one known review identity without creating work', async () => {
