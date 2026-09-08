@@ -1484,6 +1484,64 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(after.acceptanceRef).toBe(`${seeded.rubricSlug}@${rubricAfter!.revision}:${before.sourceBar!.barKey}`);
   });
 
+  it('previews a missing class bind without vetting an incomplete started BAR contract', async () => {
+    const seeded = await seedBarContract('class-bind-preview-subject');
+    const before = await rubrics.getRubric(seeded.rubricSlug);
+    expect(before?.classRef).toBe('plan-class-feature-ship');
+
+    // Model the repair this lane exists for: the acceptance contract has started,
+    // but its class metadata was never persisted. The seeded fixture deliberately
+    // leaves METHOD/check fields unfinished, as a draft plan does in production.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = template_data - 'classRef'
+       WHERE workspace_id = ${seeded.workspaceId}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.rubricSlug}`;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET status = 'draft'
+       WHERE workspace_id = ${seeded.workspaceId}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.subject}`;
+    const [subject] = await db.adminSql<{ version: number }[]>`
+      SELECT version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${seeded.workspaceId}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = ${seeded.subject}`;
+
+    const preview = await rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug,
+      actorId: 'class-bind-preview-actor',
+      reason: 'Bind the plan class before spec-quality evaluation.',
+      classRef: 'plan-class-feature-ship',
+      expectedRubricRevision: before!.revision,
+      expectedSubjectPlanRevision: Number(subject!.version),
+    });
+
+    expect(preview).toMatchObject({
+      changedBars: [],
+      approvalRequired: false,
+      priorBarSetHash: before!.barSetHash,
+      nextBarSetHash: before!.barSetHash,
+      revisionMovement: {
+        rubric: { from: before!.revision, to: before!.revision! + 1 },
+        subject: { from: Number(subject!.version), to: Number(subject!.version) },
+      },
+    });
+    expect(preview!.changes).not.toContainEqual(expect.objectContaining({ kind: 'meaning' }));
+    expect((await rubrics.getRubric(seeded.rubricSlug))?.classRef).toBeUndefined();
+
+    const applied = await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug,
+      actorId: 'class-bind-preview-actor',
+      classRef: 'plan-class-feature-ship',
+      expectedRubricRevision: before!.revision,
+    });
+    expect(applied?.classRef).toBe('plan-class-feature-ship');
+  });
+
   it('advances all BAR revision pins with a METHOD edit and rolls back a late projection refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;
