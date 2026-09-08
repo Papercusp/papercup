@@ -3,8 +3,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_baseline-coord-fixture';
 import { setMode } from '../../../modes/store';
-import { readAgentObligationAgenda } from '../../../agent-obligation-reader';
+import { readAgentObligationAgenda, type AgentObligationBrief } from '../../../agent-obligation-reader';
 import orientTool from './orient';
+// Production boot registers compound folds before serving coord:orient.
+import '../../fleet/assignments';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-orient-obligations-${RUN}`;
@@ -70,16 +72,13 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     );
     const data = (result as { data: Record<string, unknown> }).data;
     expect(data.obligations, 'the recovery target must expose an agenda, not an absent/null fold').toBeTruthy();
-    const obligations = data.obligations as {
-      primary: unknown[];
-      evaluations: Array<{ obligationId: string; status: string }>;
-      detailRef: string;
-    };
+    const obligations = data.obligations as AgentObligationBrief;
     expect(obligations.evaluations.length).toBeGreaterThan(0);
+    expect(obligations.evaluations.every((entry) => typeof entry.id === 'string' && entry.id.length > 0)).toBe(true);
     expect(obligations.detailRef).toBe('coord:orient for the complete obligation agenda');
     const canonical = await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER, goalId: GOAL });
-    expect(obligations.evaluations.map((entry) => entry.obligationId).sort()).toEqual(
-      canonical.agenda.evaluations.map((entry) => entry.obligationId).sort(),
+    expect(obligations.evaluations.map((entry) => entry.id).sort()).toEqual(
+      canonical.agenda.evaluations.map((entry) => entry.id).sort(),
     );
   }, 90_000);
 });
