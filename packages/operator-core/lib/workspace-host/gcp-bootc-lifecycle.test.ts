@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   P305_LIFECYCLE_MARKER,
   P305_RELEASE_REGISTRY_NAMESPACE,
+  P305_RELEASE_REGISTRY_REPOSITORY,
   buildP305PhaseProbeScript,
   buildP305RollbackScript,
   buildP305SwitchScript,
@@ -24,7 +25,7 @@ import {
 } from '../../bin/gcp-private-vm-session.mjs';
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
-const UPDATE_REFERENCE = `${P305_RELEASE_REGISTRY_NAMESPACE}/p305-r31-update@${DIGEST}`;
+const UPDATE_REFERENCE = `${P305_RELEASE_REGISTRY_REPOSITORY}@${DIGEST}`;
 const SENTINEL = 'b'.repeat(64);
 const BASE = {
   projectId: 'active-alcove-504205-q3',
@@ -50,13 +51,14 @@ describe('P-305 lifecycle input contract', () => {
   it('requires an exact digest-pinned reference in the image policy namespace', () => {
     expect(parseP305UpdateReference(UPDATE_REFERENCE)).toEqual({
       reference: UPDATE_REFERENCE,
-      repository: `${P305_RELEASE_REGISTRY_NAMESPACE}/p305-r31-update`,
+      repository: P305_RELEASE_REGISTRY_REPOSITORY,
       digest: DIGEST,
     });
     for (const invalid of [
-      `${P305_RELEASE_REGISTRY_NAMESPACE}/p305-r31-update:latest`,
-      `registry.example.com/papercusp/p305-r31-update@${DIGEST}`,
-      `${P305_RELEASE_REGISTRY_NAMESPACE}/p305-r31-update@sha256:short`,
+      `${P305_RELEASE_REGISTRY_REPOSITORY}:latest`,
+      `registry.example.com/papercusp/workspace-host@${DIGEST}`,
+      `${P305_RELEASE_REGISTRY_REPOSITORY}@sha256:short`,
+      `${P305_RELEASE_REGISTRY_NAMESPACE}/p305-r31-update-20260907t195536z@${DIGEST}`,
     ]) {
       expect(() => parseP305UpdateReference(invalid)).toThrow(/exact digest-pinned/);
     }
@@ -176,6 +178,8 @@ describe('P-305 guest lifecycle contract', () => {
   it('keeps import, switch, both reboot boundaries, rollback and teardown in one runner', () => {
     const source = readFileSync(RUNNER_SOURCE, 'utf8');
     const ordered = [
+      'const controllerRegistry = await requireControllerRegistryReference(',
+      'objectUploaded = true',
       "['storage', 'cp'",
       "['compute', 'images', 'create'",
       "phase: 'initial'",
@@ -196,6 +200,11 @@ describe('P-305 guest lifecycle contract', () => {
       cursor = next;
     }
     expect(source).toContain('residualResourceIds.length > 0');
+    expect(source).toContain("method: 'HEAD'");
+    expect(source).toContain("response.headers.get('docker-content-digest')");
+    expect(source.indexOf('const controllerRegistry = await requireControllerRegistryReference(')).toBeLessThan(
+      source.indexOf('objectUploaded = true'),
+    );
     expect(source.indexOf('objectUploaded = true')).toBeLessThan(source.indexOf("['storage', 'cp'"));
     expect(source.indexOf('imageCreated = true')).toBeLessThan(
       source.indexOf("['compute', 'images', 'create'"),

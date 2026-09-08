@@ -33,6 +33,12 @@ const REGISTRY_PORT = 5096;
 const BOOT_BUDGET_MS = 15 * 60 * 1000;
 const SWITCH_BUDGET_MS = 60 * 60 * 1000;
 const PROBE_BUDGET_MS = 10 * 60 * 1000;
+const OCI_MANIFEST_ACCEPT = [
+  'application/vnd.oci.image.manifest.v1+json',
+  'application/vnd.oci.image.index.v1+json',
+  'application/vnd.docker.distribution.manifest.v2+json',
+  'application/vnd.docker.distribution.manifest.list.v2+json',
+].join(', ');
 
 async function hashFile(path) {
   const hash = createHash('sha256');
@@ -51,6 +57,35 @@ async function requireExactArtifact(path, expectedSha256) {
     });
   }
   return { bytes: stat.size, sha256: actualSha256 };
+}
+
+async function requireControllerRegistryReference(repository, expectedDigest) {
+  const slash = repository.indexOf('/');
+  if (slash < 1) fail('update repository does not contain a registry host and repository path');
+  const registryHost = repository.slice(0, slash);
+  const repositoryPath = repository.slice(slash + 1);
+  const manifestUrl = `http://${registryHost}/v2/${repositoryPath}/manifests/${expectedDigest}`;
+  let response;
+  try {
+    response = await fetch(manifestUrl, {
+      method: 'HEAD',
+      headers: { accept: OCI_MANIFEST_ACCEPT },
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    fail(`controller release registry preflight failed: ${error.message}`);
+  }
+  if (!response.ok) {
+    fail(`controller release registry does not contain the requested update digest (HTTP ${response.status})`);
+  }
+  const observedDigest = response.headers.get('docker-content-digest');
+  if (observedDigest !== expectedDigest) {
+    fail('controller release registry returned a different update digest', {
+      expectedDigest,
+      observedDigest,
+    });
+  }
+  return { manifestUrl, digest: observedDigest };
 }
 
 async function waitForForwardedRegistry(session, updateImageReference) {
@@ -94,6 +129,10 @@ async function deleteCloudResource(args, label) {
 async function lifecycle(input) {
   const request = normalizeP305LifecycleInput(input);
   const artifact = await requireExactArtifact(request.initialGceTarPath, request.initialGceTarSha256);
+  const controllerRegistry = await requireControllerRegistryReference(
+    request.updateRepository,
+    request.updateDigest,
+  );
 
   const suffix = randomBytes(4).toString('hex');
   const imageName = `p305-lifecycle-r21-${suffix}`;
@@ -251,6 +290,7 @@ async function lifecycle(input) {
     zone: request.zone,
     initialArtifact: { path: request.initialGceTarPath, ...artifact },
     initialImageId: imageId,
+    controllerRegistry,
     updateImageReference: request.updateImageReference,
     updateDigest: request.updateDigest,
     privateIngressOnly: session.publicIpv4Assigned === false,

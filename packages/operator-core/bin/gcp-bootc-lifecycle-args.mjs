@@ -9,12 +9,13 @@ import { requireDigest, requireText } from './gcp-ephemeral.mjs';
 
 export const P305_LIFECYCLE_SCHEMA_VERSION = 'papercusp-gcp-bootc-lifecycle-v1';
 export const P305_RELEASE_REGISTRY_NAMESPACE = '127.0.0.1:5096/papercusp';
+export const P305_RELEASE_REGISTRY_REPOSITORY = `${P305_RELEASE_REGISTRY_NAMESPACE}/workspace-host`;
 export const P305_LIFECYCLE_MARKER = 'PAPERCUSP-P305-LIFECYCLE';
 
 const VERSION_RE = /^[a-z0-9][a-z0-9._-]{0,79}$/i;
 const BUCKET_RE = /^gs:\/\/[a-z0-9][a-z0-9._-]{1,221}[a-z0-9]$/;
 const UPDATE_REFERENCE_RE =
-  /^127\.0\.0\.1:5096\/papercusp\/([a-z0-9]+(?:[._/-][a-z0-9]+)*)@sha256:([a-f0-9]{64})$/;
+  /^127\.0\.0\.1:5096\/papercusp\/workspace-host@sha256:([a-f0-9]{64})$/;
 
 function requireVersion(value, path) {
   const version = requireText(value, path);
@@ -31,13 +32,13 @@ export function parseP305UpdateReference(value, path = 'updateImageReference') {
   const match = UPDATE_REFERENCE_RE.exec(reference);
   if (!match) {
     throw new Error(
-      `${path} must be an exact digest-pinned ${P305_RELEASE_REGISTRY_NAMESPACE}/… reference`,
+      `${path} must be an exact digest-pinned ${P305_RELEASE_REGISTRY_REPOSITORY} reference`,
     );
   }
   return {
     reference,
-    repository: `${P305_RELEASE_REGISTRY_NAMESPACE}/${match[1]}`,
-    digest: `sha256:${match[2]}`,
+    repository: P305_RELEASE_REGISTRY_REPOSITORY,
+    digest: `sha256:${match[1]}`,
   };
 }
 
