@@ -69,6 +69,7 @@ const START_GATES = vi.hoisted(() => ({
   listCards: vi.fn(),
   afterQuality: vi.fn(),
 }));
+const REVISION_MOCK = vi.hoisted(() => ({ failInTransaction: false }));
 // Keep the real clause/class readers and quality evaluator. Only the unrelated
 // scorecard ledger is supplied; the hook models a policy change after preflight.
 vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
@@ -79,6 +80,25 @@ vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
       const result = await actual.evaluatePlanSpecQualityGate(input, { listCards: START_GATES.listCards });
       await START_GATES.afterQuality(result);
       return result;
+    },
+  };
+});
+vi.mock('../revisions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../revisions')>();
+  return {
+    ...actual,
+    planRevisionCapture: (...args: Parameters<typeof actual.planRevisionCapture>) => {
+      const capture = actual.planRevisionCapture(...args);
+      if (!REVISION_MOCK.failInTransaction || !capture.inTransaction) return capture;
+      return {
+        ...capture,
+        inTransaction: async () => {
+          throw new actual.PlanRevisionUnavailableError(
+            args[1],
+            new Error('simulated plan_revisions insert outage'),
+          );
+        },
+      };
     },
   };
 });
@@ -283,6 +303,7 @@ beforeEach(async () => {
   START_GATES.listCards.mockResolvedValue([]);
   START_GATES.afterQuality.mockReset();
   START_GATES.afterQuality.mockResolvedValue(undefined);
+  REVISION_MOCK.failInTransaction = false;
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
@@ -339,6 +360,24 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
 });
 
 describe('plans:start — refused approval leaves no persisted start (P-002)', () => {
+  it('rolls back draft approval when strict revision capture is unavailable', async () => {
+    await seedLegacyPlan('draft');
+    const before = await persistedStartState();
+    REVISION_MOCK.failInTransaction = true;
+
+    const refused = await runStart();
+
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toMatchObject({
+      ok: false,
+      error: 'plan_revision_unavailable',
+    });
+    expect(await persistedStartState()).toEqual(before);
+    expect(await revisionRows()).toHaveLength(0);
+    expect(START_GATES.promotion).not.toHaveBeenCalled();
+    expect(START_GATES.prediction).not.toHaveBeenCalled();
+  });
+
   it('rejects the old exact card when the persisted class changes after preflight, then starts with new-class evidence', async () => {
     await seedLegacyPlan('draft');
     const content = `${planBody('draft')}\n## Phase\n- **P-001** \`todo\` Submit an event\n`;
