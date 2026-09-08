@@ -335,17 +335,18 @@ describe('sessions:search response-door shaping', () => {
 /**
  * A PROVENANCE-FILTERED ZERO IS NOT A QUERY MISS.
  *
- * `owner_only:true` / `turn_origin:'owner-typed'` filter the PERSISTED verdict,
- * and ingest never persists `owner-typed` for a file-backed CLI row — it
- * downgrades that residual to `unenrolled-origin` rather than assert authorship
- * it cannot prove. So on a claude/omp/codex session these filters match nothing
- * BY CONSTRUCTION, and the generic "QUERY-MATCH MISS ... retry with a different
- * fragment" caveat actively steers the caller into reading a structural zero as
- * "the owner never said it" — the documented EI-13472 / WI-37419 failure, and
- * the exact inverse of the false-confirmation bug turn-origin.ts exists to kill.
+ * `owner_only:true` / `turn_origin:'owner-typed'` filter the PERSISTED verdict.
+ * Ingest keeps an uncorrelated file-backed CLI residual as
+ * `unenrolled-origin`, but a hook-authenticated prompt-origin stamp can
+ * correlate an exact row and promote it to persisted `owner-typed`. The
+ * filters are therefore sparse on CLI sessions, not structurally impossible.
+ * The generic "QUERY-MATCH MISS ... retry with a different fragment" caveat
+ * still must not make a residual zero read as "the owner never said it" — the
+ * documented EI-13472 / WI-37419 failure, and the exact inverse of the
+ * false-confirmation bug turn-origin.ts exists to kill.
  *
- * Measured before this fix: 0 `owner-typed` rows across claude/omp/codex
- * against 18,091 `unenrolled-origin` ones.
+ * The regression below keeps the caveat explicit about both the residual and
+ * hook-correlation paths so the reader description cannot drift again.
  */
 describe('sessions:search — a provenance-filtered zero must not read as a query miss', () => {
   it('explains the structural exclusion when owner_only finds nothing, and names the reachable filter', async () => {
@@ -358,6 +359,9 @@ describe('sessions:search — a provenance-filtered zero must not read as a quer
     expect(parsed.zeroHitCaveat).toMatch(/unenrolled-origin/);
     expect(parsed.zeroHitCaveat).toMatch(/owner_candidates:true/);
     expect(parsed.zeroHitCaveat).toMatch(/NOT evidence/i);
+    expect(parsed.zeroHitCaveat).toMatch(/hook-authenticated prompt-origin|hook-correlated/i);
+    expect(parsed.zeroHitCaveat).toMatch(/sparse rather than structurally impossible/i);
+    expect(parsed.zeroHitCaveat).not.toMatch(/structurally unreachable|guaranteed-empty|by construction/i);
     // NEGATIVE CONTROL: must NOT tell the caller to retry with another query
     // fragment — no fragment can ever match, which is what made the old caveat
     // worse than silence here.

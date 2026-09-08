@@ -53,26 +53,29 @@ export const searchFilterArgs = {
     .optional()
     .describe(
       "Restrict transcript hits to the PERSISTED turn-origin verdict — which is stricter than the verdict a hit DISPLAYS. " +
-      "⚠ 'owner-typed' is structurally unreachable for file-backed CLI sessions (claude/omp/codex): ingest downgrades their " +
-      "owner-typed residual to 'unenrolled-origin' because a clean CLI row proves neither owner nor machine authorship. A typed " +
-      "owner directive in a psu session is therefore stored 'unenrolled-origin', and filtering for 'owner-typed' returns zero " +
-      "rows no matter what the owner said. To find candidate owner speech use owner_candidates:true, NOT this filter.",
+      "For file-backed CLI sessions (claude/omp/codex), an uncorrelated typed prompt remains 'unenrolled-origin' because a clean " +
+      "CLI row proves neither owner nor machine authorship. A hook-authenticated prompt-origin stamp can correlate the exact row " +
+      "by source, session, prompt hash, and time (currently Claude hook stamps), upgrading it to persisted 'owner-typed'. " +
+      "This filter can therefore match exact authenticated rows but may be sparse; a zero is NOT evidence that the owner said " +
+      "nothing. For recall of residual candidates use owner_candidates:true, then read each hit before attributing it.",
     ),
   owner_only: z
     .boolean()
     .optional()
     .describe(
       "Restrict hits to turns whose authorship is PROVEN owner speech (persisted 'owner-typed' or 'owner-dialog'). High precision, " +
-      "very low recall: in a file-backed CLI session this reaches only turn-stamped owner-dialog answers (AskUserQuestion), never a " +
-      "typed directive. A zero here is NOT evidence the owner said nothing — use owner_candidates:true for that question.",
+      "very low recall: file-backed CLI typed directives remain 'unenrolled-origin' when no matching hook-authenticated " +
+      "prompt-origin stamp exists, but an exact authenticated row can be persisted as 'owner-typed'. A zero here is NOT evidence " +
+      "the owner said nothing — use owner_candidates:true to recall residual candidates.",
     ),
   owner_candidates: z
     .boolean()
     .optional()
     .describe(
       "Widen to turns that COULD be owner speech: proven owner turns PLUS 'unenrolled-origin' — the bucket a typed owner directive " +
-      "actually lands in on every claude/omp/codex session, since those sources cannot enrol their user rows. Use it for RECALL when " +
-      "owner_only returns its structural zero. " +
+      "lands in on file-backed sessions when no matching hook-authenticated prompt-origin stamp exists; exact matched rows are " +
+      "promoted to persisted 'owner-typed' and are already included by owner_only. Use it for RECALL when owner_only returns a " +
+      "sparse or residual-only result. " +
       "⚠ CANDIDATES, NOT PROOF, and the gap is large: 'unenrolled-origin' means only 'no machine envelope was found', which is also " +
       "true of machine text that never carried one. Measured 2026-08-24 over 13,917 real claude rows, at least 7,637 (55%) are " +
       "machine-shaped — Kettle/Mug system prompts, '[await-event] … fired' wake injections, '/compact …' directives, harness retry " +

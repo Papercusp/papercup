@@ -158,7 +158,11 @@ export function allowStalePlanRecoveryForMcpCall(
   toolName: string,
   args: Readonly<Record<string, unknown>> = {},
 ): boolean {
-  if (toolName === 'coord:orient') return true;
+  // These are scope-repair doors. They must remain callable when the caller's
+  // durable fleet/plan binding is stale, or the stale-scope gate removes the
+  // very tools needed to clear the bad membership. coord:orient is the compound
+  // recovery bootstrap; fleet:leave drops the stale fleet label.
+  if (toolName === 'coord:orient' || toolName === 'fleet:leave' || toolName === 'fleet:step-down') return true;
   if (toolName !== 'coord:declare-intent') return false;
 
   const plan = args.current_plan_slug;
@@ -410,10 +414,11 @@ export async function resolveInheritedHarnessScope(
     ].map((harnessSlug) => ({ source, harnessSlug, refs }));
     candidates.push(...sourceCandidates);
     if (read.stale) {
-      // coord:orient is the recovery surface for a session whose launch-bound
-      // plan was retired or moved. Let that one caller continue to a current
-      // fleet/brief binding; every ordinary resolver still fails closed here.
-      if (source === 'plan' && input.allowStalePlanFallback) continue;
+      // coord:orient / fleet:leave / explicit self-clear are recovery surfaces
+      // for a session whose launch-bound plan OR fleet was retired/moved. Let
+      // those callers continue to a current lower-precedence binding; ordinary
+      // resolvers still fail closed here.
+      if ((source === 'plan' || source === 'fleet') && input.allowStalePlanFallback) continue;
       return {
         kind: 'none',
         reason: 'stale',

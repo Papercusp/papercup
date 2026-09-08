@@ -1198,18 +1198,18 @@ interface TurnRow {
 export const UNENROLLED_ORIGIN_VERDICT = 'unenrolled-origin';
 
 /**
- * Source kinds whose `speaker='user'` rows can never carry an enrollment
- * envelope, and whose `owner-typed` residual is therefore downgraded to
- * `UNENROLLED_ORIGIN_VERDICT` below.
+ * Source kinds whose `speaker='user'` rows may arrive without an enrollment
+ * envelope, and whose uncorrelated `owner-typed` residual is therefore
+ * downgraded to `UNENROLLED_ORIGIN_VERDICT` below. A matching
+ * hook-authenticated prompt-origin stamp can promote the exact row back to
+ * `owner-typed` during insertion (the current query reads Claude stamps).
  *
  * EXPORTED because that downgrade has a consequence a READER must be told
- * about: `turn_origin:'owner-typed'` is structurally unreachable for these
- * kinds (measured 2026-08-24: 0 such rows against 18,091 `unenrolled-origin`
- * ones), so a provenance-filtered search over a CLI session returns a
- * guaranteed-empty result that looks exactly like "the owner never said it".
- * `sessions:search` derives its zero-hit caveat from this set rather than
- * restating the membership in prose, so the warning cannot drift from the
- * rule that causes it.
+ * about: the residual can remain `unenrolled-origin`, so a provenance-filtered
+ * search over a CLI session may return a sparse or zero result that looks
+ * exactly like "the owner never said it". `sessions:search` derives its
+ * zero-hit caveat from this set and describes the correlation exception rather
+ * than restating an impossible structural claim in prose.
  */
 export const FILE_BACKED_SOURCE_KINDS = new Set<SourceKind>(['claude', 'omp', 'codex']);
 

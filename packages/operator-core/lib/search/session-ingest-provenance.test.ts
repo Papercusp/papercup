@@ -100,17 +100,15 @@ describe('stampTurnProvenance', () => {
    * THE INGEST DECISION HAS A SEARCH-SIDE CONSEQUENCE, AND THIS IS THE ONLY
    * THING THAT TIES THEM TOGETHER.
    *
-   * Downgrading the residual is correct, but it silently makes
-   * `turn_origin:'owner-typed'` and `owner_only:true` UNREACHABLE for every
-   * file-backed CLI session — so the search the compaction rules prescribe for
-   * verifying a claimed owner directive returns a guaranteed zero, which reads
-   * as "the owner never said it". Measured 2026-08-24 before this guard
-   * existed: 0 `owner-typed` rows across claude/omp/codex against 18,091
-   * `unenrolled-origin` ones, and `owner_only` reachable on 30 rows in a
-   * 671,407-turn corpus.
+   * Downgrading an uncorrelated residual is correct, but it means
+   * `turn_origin:'owner-typed'` and `owner_only:true` exclude that residual on
+   * file-backed CLI sessions. The hook-authenticated prompt-origin path then
+   * promotes an exact source/session/hash/time match back to `owner-typed`, so
+   * the search filters are sparse rather than structurally unreachable.
    *
    * These tests fail if the two halves drift apart in EITHER direction — a
-   * renamed ingest verdict, or a candidate set that stops covering it.
+   * renamed ingest verdict, a candidate set that stops covering the residual,
+   * or a correlation path that no longer makes an exact owner row reachable.
    */
   it('keeps the verdict it downgrades to inside the owner-CANDIDATE set the search filters on', () => {
     // CALIBRATION: the assertion below is a loop over a set, so an empty set
@@ -264,9 +262,10 @@ describe('hook-authenticated prompt-origin correlation', () => {
     const candidate = row({
       ts: submittedAt,
       prompt_hash: hash,
-      turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
-      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
+      text: 'owner directive',
     });
+    stampTurnProvenance(candidate);
+    expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
     const machine = row({
       turn_idx: 1,
       ts: submittedAt,

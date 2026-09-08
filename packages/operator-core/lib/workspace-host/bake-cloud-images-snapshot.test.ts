@@ -362,6 +362,27 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(HOST_PREPARE_SOURCE).toContain('setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"');
   });
 
+  it('materializes named-context hardlinks before normalizing release metadata', () => {
+    const lookup = CONTAINERFILE_SOURCE.indexOf(`find "$RELEASE_DIR" -type f -exec stat -c '%i' -- {} + >/dev/null`);
+    const snapshot = CONTAINERFILE_SOURCE.indexOf(`find "$RELEASE_DIR" -type f -links +1 -print0 > "$HARDLINK_PATHS"`);
+    const freshCopy = CONTAINERFILE_SOURCE.indexOf(
+      `cp --reflink=never --preserve=mode,timestamps -- "$path" "$fresh"`,
+    );
+    const noHardlinks = CONTAINERFILE_SOURCE.indexOf(
+      `[ -z "$(find "$RELEASE_DIR" -type f -links +1 -print -quit)" ]`,
+    );
+    const normalizeOwner = CONTAINERFILE_SOURCE.indexOf(
+      'chown -R "root:${PAPERCUSP_SERVICE_GROUP}" "$RELEASE_DIR"',
+    );
+
+    expect(lookup).toBeGreaterThan(-1);
+    expect(snapshot).toBeGreaterThan(lookup);
+    expect(freshCopy).toBeGreaterThan(snapshot);
+    expect(noHardlinks).toBeGreaterThan(freshCopy);
+    expect(normalizeOwner).toBeGreaterThan(noHardlinks);
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('committed release hardlinks are five distinct 0:910/0640 inodes');
+  });
+
   it('recreates Google OS Login user state at boot instead of committing /var residue', () => {
     expect(GOOGLE_OSLOGIN_TMPFILES_SOURCE).toContain('d /var/google-users.d 0755 root root - -');
     expect(CONTAINERFILE_SOURCE).toContain(

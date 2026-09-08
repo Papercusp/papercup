@@ -289,22 +289,21 @@ export default defineTool({
     // A PROVENANCE-FILTERED ZERO IS NOT A QUERY MISS, and must never be
     // rendered as one. `turn_origin:'owner-typed'` / `owner_only:true` filter
     // the PERSISTED verdict, which is strictly more conservative than the
-    // verdict a hit DISPLAYS: for a file-backed CLI source, ingest rewrites the
-    // `owner-typed` residual to `unenrolled-origin` rather than assert
-    // authorship it cannot prove (`stampTurnProvenance`). So on a claude / omp /
-    // codex session those filters match NOTHING — not rarely, but by
-    // construction — while the same turns come back stamped `owner-typed` when
-    // the filter is absent.
+    // verdict a hit DISPLAYS: for a file-backed CLI source, ingest keeps an
+    // uncorrelated `owner-typed` residual as `unenrolled-origin` rather than
+    // assert authorship it cannot prove (`stampTurnProvenance`). A
+    // hook-authenticated prompt-origin stamp can correlate the exact source /
+    // session / prompt-hash / time tuple and promote that row back to persisted
+    // `owner-typed` (currently Claude hook stamps), so these filters are sparse
+    // on CLI sessions, not structurally impossible.
     //
     // That is the exact inverse of the failure `turn-origin.ts` was written to
     // kill. There, a loop-fire replay read as owner speech and manufactured a
-    // directive; here, a real owner directive is unreachable and its absence
-    // reads as proof it was never said. The module header names that inverse
-    // (EI-13472 / WI-37419) as its own measured failure, and the generic
-    // "QUERY-MATCH MISS ... retry with a different fragment" caveat below
-    // actively steers into it — no fragment can ever match. Measured
-    // 2026-08-24: 0 `owner-typed` rows across claude/omp/codex against 18,091
-    // `unenrolled-origin` ones; `owner_only` reached 30 rows corpus-wide.
+    // directive; here, a residual-only zero could read as proof it was never
+    // said. The module header names that inverse (EI-13472 / WI-37419) as its
+    // own measured failure, and the generic "QUERY-MATCH MISS ... retry with a
+    // different fragment" caveat below actively steers into it. The caveat
+    // must distinguish the residual path from an exact hook-correlated row.
     const provenanceFiltered =
       filters?.turnOrigin != null ||
       filters?.ownerOnly === true ||
@@ -318,11 +317,12 @@ export default defineTool({
           : `turn_origin:'${filters?.turnOrigin}'`;
       zeroHitCaveat =
         `0 hits, but you filtered on PERSISTED provenance (${which}) — this is NOT evidence that no such turn ` +
-        `exists, and retrying with a different query fragment will not help. Ingest cannot prove owner authorship ` +
-        `for ${kinds} sessions (no enrolment envelope is possible), so it stores a typed owner directive as ` +
-        `'unenrolled-origin'` +
+        `exists, and retrying with a different query fragment will not help. For ${kinds} sessions, ingest keeps a typed owner ` +
+        `directive as 'unenrolled-origin' when no enrollment or hook-authenticated prompt-origin stamp matches the same ` +
+        `source/session/prompt-hash/time tuple; an exact hook-correlated row (currently from Claude hook stamps) is promoted ` +
+        `to persisted 'owner-typed'. This makes the filter sparse rather than structurally impossible.` +
         (filters?.ownerOnly === true
-          ? ", which owner_only EXCLUDES. On a CLI session owner_only reaches only turn-stamped owner-dialog answers."
+          ? " owner_only excludes the residual, but reaches exact authenticated owner-typed rows and owner-dialog answers."
           : filters?.ownerCandidates === true
             ? ". `owner_candidates:true` is already the recall filter: it still excludes persisted " +
               "`agent-injected`, `machine-surface`, `synthetic`, and `not-user-turn` rows. A matching turn with one of " +

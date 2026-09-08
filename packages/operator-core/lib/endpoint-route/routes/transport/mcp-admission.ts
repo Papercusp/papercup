@@ -152,7 +152,9 @@ export function resetMcpAdmissionForTests(): void {
  * only for one item with the default shallow read; bulk, detail, and thread reads remain shed
  * under critical pressure. `scorecards:list` is admitted only for an exact rubric+subject audit
  * read; broad history remains shed. `rubrics:get` is admitted only for one rubric (the full
- * criteria body is required by a judge); multi-rubric reads remain shed.
+ * criteria body is required by a judge); multi-rubric reads remain shed. `work_items:checkpoint`
+ * is admitted only for a single item, because a bounded durability write is needed to preserve
+ * successor state during the pressure condition; bulk checkpoint batches remain shed.
  */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
   [
@@ -165,6 +167,7 @@ const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
 );
 const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
 const WORK_ITEMS_GET_NAME = normalizeMcpName('work_items:get');
+const WORK_ITEMS_CHECKPOINT_NAME = normalizeMcpName('work_items:checkpoint');
 const SCORECARDS_LIST_NAME = normalizeMcpName('scorecards:list');
 const RUBRICS_GET_NAME = normalizeMcpName('rubrics:get');
 const CRITICAL_SCORECARDS_LIST_MAX_ROWS = 25;
@@ -212,6 +215,34 @@ function isBoundedWorkItemsGetArgs(args: unknown): boolean {
   if (record.detail !== undefined && record.detail !== false) return false;
   if (record.threadLimit !== undefined && record.threadLimit !== 0) return false;
   return true;
+}
+
+/**
+ * A single checkpoint is the smallest durable recovery write: it preserves the
+ * successor state needed to resume after the pressure condition clears. Keep the
+ * exemption to one identified item so a bulk checkpoint request cannot turn the
+ * pressure reserve into an unbounded write lane. The checkpoint tool validates the
+ * operation-specific fields and body/check-row caps after admission.
+ */
+function isBoundedWorkItemsCheckpointArgs(args: unknown): boolean {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const record = args as { id?: unknown; items?: unknown };
+  const single =
+    typeof record.id === 'string' &&
+    record.id.trim().length > 0 &&
+    record.items === undefined;
+  if (single) return true;
+  if (record.id !== undefined || !Array.isArray(record.items) || record.items.length !== 1) {
+    return false;
+  }
+  const item = record.items[0];
+  return (
+    item !== null &&
+    typeof item === 'object' &&
+    !Array.isArray(item) &&
+    typeof (item as { id?: unknown }).id === 'string' &&
+    ((item as { id: string }).id).trim().length > 0
+  );
 }
 
 /**
@@ -279,6 +310,7 @@ function isCriticalPressureDiagnostic(toolName: unknown, args?: unknown): boolea
   if (typeof toolName !== 'string') return false;
   const normalized = normalizeMcpName(toolName);
   if (normalized === CAPABILITY_READ_NAME) return isBoundedScratchCapabilityReadArgs(args);
+  if (normalized === WORK_ITEMS_CHECKPOINT_NAME) return isBoundedWorkItemsCheckpointArgs(args);
   if (normalized === SCORECARDS_LIST_NAME) return isBoundedScorecardsListArgs(args);
   if (normalized === RUBRICS_GET_NAME) return isBoundedRubricsGetArgs(args);
   if (!CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS.has(normalized)) return false;

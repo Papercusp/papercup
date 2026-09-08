@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveSearchFilters } from './filters';
+import { resolveSearchFilters, searchFilterArgs } from './filters';
 
 // The session:'self' and owner:'self' paths never touch `sql` (only the fleet
 // branch queries), so a null stub is safe for these cases. resolveSelfSession
@@ -45,6 +45,19 @@ describe('resolveSearchFilters — session:self owner-scoping (WI-5644)', () => 
       FAKE_OWNER,
     );
     expect(filters).toMatchObject({ turnOrigin: 'owner-typed', ownerOnly: true });
+  });
+
+  it('describes hook-correlated owner-typed rows instead of claiming a structural zero', () => {
+    const description = (key: keyof typeof searchFilterArgs) =>
+      (searchFilterArgs[key] as unknown as { description?: string }).description ?? '';
+    const provenance = [description('turn_origin'), description('owner_only'), description('owner_candidates')].join('\n');
+
+    expect(provenance).toMatch(/hook-authenticated prompt-origin stamp/i);
+    expect(provenance).toMatch(/owner-typed/);
+    expect(provenance).toMatch(/unenrolled-origin/);
+    expect(provenance).toMatch(/not evidence/i);
+    expect(provenance).not.toMatch(/structurally unreachable/i);
+    expect(provenance).not.toMatch(/returns zero rows no matter what/i);
   });
 });
 

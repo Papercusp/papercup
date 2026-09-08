@@ -69,8 +69,10 @@ vi.mock('./pause-holds', () => ({
 import {
   applyFleetControl,
   classifyFleetControlInvoker,
+  FLEET_CONTROL_RECONCILER,
   FLEET_CONTROL_RESPONSE_TIMEOUT_MS,
   fleetControlCueText,
+  isReconciledEmptyFleet,
   windDownGoalFleet,
 } from './control-core';
 import windDownTool from './wind-down';
@@ -323,6 +325,27 @@ describe('fleetControlCueText (pure)', () => {
 });
 
 describe('applyFleetControl', () => {
+  it('recognizes only reconciler-owned winding-down fleets with no live members as terminal cleanup', () => {
+    expect(
+      isReconciledEmptyFleet(
+        { controlState: 'winding-down', controlBy: FLEET_CONTROL_RECONCILER },
+        [],
+      ),
+    ).toBe(true);
+    expect(
+      isReconciledEmptyFleet(
+        { controlState: 'winding-down', controlBy: callerRef.ownerId },
+        [],
+      ),
+    ).toBe(false);
+    expect(
+      isReconciledEmptyFleet(
+        { controlState: 'winding-down', controlBy: FLEET_CONTROL_RECONCILER },
+        ['live-member'],
+      ),
+    ).toBe(false);
+  });
+
   it('the fleet LEADER winds down: typed persist + fleet-scoped cue to members (self excluded)', async () => {
     getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
     membersM.mockResolvedValue(['m-1', 'm-2', callerRef.ownerId]);
@@ -441,6 +464,45 @@ describe('applyFleetControl', () => {
     expect(setControlM).not.toHaveBeenCalled();
     expect(sendM).not.toHaveBeenCalled();
     expect(membersM).not.toHaveBeenCalled();
+  });
+
+  it('does not recommend takeover for reconciler-owned winding-down cleanup with no live members', async () => {
+    getFleetM.mockResolvedValue(
+      fleet({
+        leaderOwnerId: 'su-ended-leader',
+        controlState: 'winding-down',
+        controlBy: FLEET_CONTROL_RECONCILER,
+      }),
+    );
+    membersM.mockResolvedValue([]);
+
+    const r = await applyFleetControl({} as never, 'backend', 'resume', 'owner requested resume');
+
+    expect(r).toMatchObject({
+      ok: false,
+      fleet: 'backend',
+      error: 'fleet_reconciled_terminal',
+    });
+    expect(r.message).toContain('No takeover was performed');
+    expect(r.message).not.toContain('fleet:take-leadership');
+    expect(setControlM).not.toHaveBeenCalled();
+    expect(sendM).not.toHaveBeenCalled();
+  });
+
+  it('keeps takeover guidance when a reconciler-owned fleet still has a live member', async () => {
+    getFleetM.mockResolvedValue(
+      fleet({
+        leaderOwnerId: 'su-ended-leader',
+        controlState: 'winding-down',
+        controlBy: FLEET_CONTROL_RECONCILER,
+      }),
+    );
+    membersM.mockResolvedValue(['live-member']);
+
+    const r = await applyFleetControl({} as never, 'backend', 'resume', 'owner requested resume');
+
+    expect(r).toMatchObject({ ok: false, error: 'fleet_leader_mismatch' });
+    expect(r.message).toContain('fleet:take-leadership');
   });
 
   it('refuses a stale leader control write when leadership changed after authorization', async () => {
@@ -767,6 +829,34 @@ describe('applyFleetControl', () => {
         expect.objectContaining({ key: 'fleet:backend:resume' }),
       );
       expect(r.resumePath).toMatchObject({ gate: 'fleet:backend:resume', fired: true, waiters: 2 });
+    });
+
+    it('idempotent RESUME fires a stale declared gate even when the row is already active', async () => {
+      getFleetM.mockResolvedValue(
+        fleet({
+          leaderOwnerId: callerRef.ownerId,
+          controlState: 'active',
+          controlResumeGate: 'fleet:backend:resume',
+        }),
+      );
+      const r = await applyFleetControl({} as never, 'backend', 'resume', 'owner pause lifted');
+
+      expect(r).toMatchObject({
+        ok: true,
+        controlState: 'active',
+        alreadyInState: true,
+        notified: [],
+        resumePath: { gate: 'fleet:backend:resume', fired: true, waiters: 2 },
+      });
+      expect(emitAwaitedEventM).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'fleet:backend:resume' }),
+      );
+      expect(sendM).not.toHaveBeenCalled();
+      expect(setControlM).toHaveBeenCalledWith('ws-1', 'backend', expect.objectContaining({
+        state: 'active',
+        resumeGate: null,
+        noResumePath: false,
+      }), undefined, callerRef.ownerId);
     });
 
     it('a resume whose gate fire fails reports members possibly still parked', async () => {

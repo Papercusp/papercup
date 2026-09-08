@@ -210,6 +210,8 @@ describe('resolveInheritedHarnessScope (P-006)', () => {
 describe('stale-plan MCP recovery predicate (EI-22589724741483734)', () => {
   it.each([
     ['coord:orient bootstrap', 'coord:orient', {}, true],
+    ['fleet leave recovery', 'fleet:leave', {}, true],
+    ['fleet step-down recovery alias', 'fleet:step-down', {}, true],
     ['direct omitted self-clear', 'coord:declare-intent', { intent: 'clear stale plan' }, true],
     ['direct null self-clear', 'coord:declare-intent', { intent: 'clear stale plan', current_plan_slug: null }, true],
     [
@@ -222,6 +224,7 @@ describe('stale-plan MCP recovery predicate (EI-22589724741483734)', () => {
     ['nonempty lane declaration', 'coord:declare-intent', { intent: 'claim', items: ['P-001'] }, false],
     ['invalid items value', 'coord:declare-intent', { intent: 'clear stale plan', items: null }, false],
     ['unrelated tool', 'plans:get', {}, false],
+    ['ordinary fleet mutation', 'fleet:join', { fleet: 'old-fleet' }, false],
   ])('%s → %s', (_label, toolName, args, expected) => {
     expect(allowStalePlanRecoveryForMcpCall(toolName, args)).toBe(expected);
   });
