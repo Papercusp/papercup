@@ -296,6 +296,24 @@ impl CardState {
         self.rebuild();
     }
 
+    /// SU session events describe one card change, not a full run snapshot.
+    /// Merge them before using the shared snapshot/version/focus machinery.
+    pub fn apply_delta(&mut self, mut env: SnapshotEnvelope, closed_id: Option<&str>) {
+        let mut cards = self.by_run.get(&env.run_id).cloned().unwrap_or_default();
+        for card in env.cards {
+            if let Some(existing) = cards.iter_mut().find(|c| c.correlation_id == card.correlation_id) {
+                *existing = card;
+            } else {
+                cards.push(card);
+            }
+        }
+        if let Some(id) = closed_id {
+            cards.retain(|card| card.correlation_id != id);
+        }
+        env.cards = cards;
+        self.apply_snapshot(env);
+    }
+
     /// Rebuild the flattened `cards` list (run-order, createdAt within a run)
     /// minus locally-dismissed ids, then re-bind interaction state to the head.
     fn rebuild(&mut self) {

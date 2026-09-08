@@ -31,7 +31,7 @@ export class SuNativeCards {
     const dataSchema = choices?.length
       ? z.object({ picks: z.array(z.string()).min(1).max(multiSelect ? choices.length : 1).refine((picks) => presentation.kind !== 'text'
         && new Set(picks).size === picks.length && picks.every((pick) => presentation.options.some((option) => option.id === pick)), 'Choose displayed options') })
-      : z.object({ value: z.string().min(1) });
+      : z.object({ value: z.string() });
     const card = registerCard({ workspaceId: this.workspaceId, runId: this.runId,
       spec: { prompt, dataSchema, presentation, allowDecline: true } });
     const cancel = () => { resolveCardResponse({ correlationId: card.correlationId, action: 'cancel', expectedWorkspaceId: this.workspaceId }); };

@@ -58,6 +58,14 @@ describe('native requests through the shared PUI card correlator', () => {
     expect(f.replies[1]).toEqual({ type: 'extension_ui_response', id: 'confirm', confirmed: true });
   });
 
+  it('preserves an explicitly empty OMP editor value', async () => {
+    const f = fixture();
+    f.cards.handle('omp', { type: 'extension_ui_request', id: 'editor', method: 'editor', title: 'Edit text' }, 'turn', f.reply);
+    expect(f.answer({ value: '' }).ok).toBe(true);
+    await flush();
+    expect(f.replies).toEqual([{ type: 'extension_ui_response', id: 'editor', value: '' }]);
+  });
+
   it('cancels a pending approval on interrupt without opening later questions', async () => {
     const f = fixture();
     f.cards.handle('codex', { id: 13, method: 'item/commandExecution/requestApproval', params: {} }, 'turn', f.reply);
