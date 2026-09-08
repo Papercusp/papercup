@@ -33,7 +33,7 @@ import type { SuSessionCommand, SuSessionEvent } from '@papercusp/chat-protocol'
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
-import { nativeProviderTraceOrigin } from './native-provider-trace';
+import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
@@ -859,7 +859,7 @@ beforeAll(async () => {
         });
         try {
           const response = await fetch(`${nativeProviderOrigin}${suffix}`, {
-            method: request.method, headers, body, signal: request.signal,
+            method: request.method, headers, body, signal: nativeProviderRequestSignal(request.signal),
           });
           nativeProviderEvents.push({ phase: 'headers', status: response.status,
             contentType: response.headers.get('content-type'), retryAfter: response.headers.get('retry-after'),
