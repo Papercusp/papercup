@@ -39,6 +39,7 @@ import {
   decorateLoopMonitorStates,
   decorateParkedOn,
   reconcileWakeability,
+  RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
 } from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
@@ -127,7 +128,14 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
     hasProgressingClaim: agent.claims.some((claim) => claim.activity === 'progressing'),
   }));
   const [withLiveness, pressure, repeatedRecovery] = await Promise.all([
-    reconcileWakeability(fleeted).catch(() => fleeted),
+    reconcileWakeability(
+      fleeted,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+    ).catch(() => fleeted),
     fetchContextPressure(fleeted.map((a) => a.agentId)).catch(() => new Map<string, string>()),
     readFleetRepeatedRecoveryStates(recoveryMembers).catch(() => new Map()),
   ]);
@@ -183,7 +191,14 @@ async function gatherCurrentFleetMemberObservation(
   const agents = groupByAgent(await listFleetAssignments({ fleet: fleetSlug, agent: agentId }));
   const member = agents.find((agent) => agent.fleetSlug === fleetSlug);
   if (!member) return null;
-  const [reconciled] = await reconcileWakeability([member as ObservableAgent]);
+  const [reconciled] = await reconcileWakeability(
+    [member as ObservableAgent],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+  );
   await decorateParkedOn([reconciled], (ids) => listParkedAwaitsForSubscribers(ids));
   await decorateLoopMonitorStates([reconciled]);
   return {
@@ -219,7 +234,14 @@ export async function gatherFleetAdmissionObservations(): Promise<FleetAdmission
   // manufacturing an actionable leader wake after it has left the fleet. Unknown
   // enrichment fails open: isActionableFleetObservation only excludes the exact
   // recorded + non-wakeable + claimless stand-down shape.
-  const withLiveness = await reconcileWakeability(fleeted).catch(() => fleeted);
+  const withLiveness = await reconcileWakeability(
+    fleeted,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+  ).catch(() => fleeted);
   const fleets = [...new Set(fleeted.map((agent) => agent.fleetSlug))].sort();
   return Promise.all(
     fleets.map(async (fleetSlug) => {

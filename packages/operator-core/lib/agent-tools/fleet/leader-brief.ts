@@ -57,6 +57,7 @@ import {
   listFleetsLedBy,
   projectFleetHeadcountState,
   FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+  type AgentFleetRecord,
   type FleetControlState,
   type FleetLaunchGovernorAction,
   type FleetLaunchGovernorOutcome,
@@ -94,6 +95,7 @@ import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
 import {
   reconcileWakeability,
+  RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
   decorateParkedOn,
   decorateLoopMonitorStates,
   decorateMemberVerdicts,
@@ -3562,6 +3564,47 @@ export function shouldRefreshLeaderControlForBrief(input: {
 }
 
 /**
+ * Recover the authority needed to refresh a leader's control watches after the
+ * bounded fleet-record read degrades.
+ *
+ * `getFleet` uses `undefined` as its timeout/error fallback. That value must
+ * never be interpreted as a real "no registered leader" row: doing so would
+ * suppress repair for the actual leader, while allowing the exact-await
+ * advisory below to report a false blind state. The independent
+ * `listFleetsLedBy` query can positively establish only the current caller's
+ * leadership; it cannot establish a vacant seat, so it is deliberately never
+ * used to authorize takeover. A missing/failed corroboration remains null and
+ * all leadership writes stay disabled.
+ */
+export async function recoverFleetRecordForLeaderControl(input: {
+  workspaceId: string;
+  fleetSlug: string;
+  ownerId?: string;
+  allowLeadershipWrites: boolean;
+  fleetRecordResult: { value: AgentFleetRecord | null | undefined; degraded: boolean };
+  listLedFleets?: typeof listFleetsLedBy;
+  timeoutMs?: number;
+}): Promise<AgentFleetRecord | null> {
+  if (input.fleetRecordResult.value !== undefined) return input.fleetRecordResult.value;
+  if (!input.fleetRecordResult.degraded || !input.allowLeadershipWrites || !input.ownerId) return null;
+
+  const result = await withBoundedTimeout(
+    () => (input.listLedFleets ?? listFleetsLedBy)(input.workspaceId, input.ownerId!),
+    {
+      fallback: [] as AgentFleetRecord[],
+      timeoutMs: input.timeoutMs ?? LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+      label: 'leader-brief:degraded-fleet-record-recovery',
+    },
+  );
+  if (result.degraded) return null;
+  return (
+    result.value.find(
+      (record) => record.fleetSlug === input.fleetSlug && record.leaderOwnerId === input.ownerId,
+    ) ?? null
+  );
+}
+
+/**
  * The READ half of `fleet:leader-brief` — every leg from roster through
  * decorations, alerts and the fleet-block verdict. Pure with respect to the
  * fleet registry when `allowLeadershipWrites` is false.
@@ -3684,9 +3727,22 @@ export async function buildLeaderBrief(
       label: 'leader-brief:headcountExecuting',
     },
   );
+  // A degraded `getFleet` result is not evidence of a vacant leader seat.
+  // Corroborate only positive self-leadership before repairing control; the
+  // recovery helper intentionally cannot authorize `takeFleetLeadership`.
+  const controlFleetRecord = await recoverFleetRecordForLeaderControl({
+    workspaceId,
+    fleetSlug: fleet,
+    ownerId,
+    allowLeadershipWrites,
+    fleetRecordResult,
+  });
+  const fleetRecord =
+    fleetRecordResult.value !== undefined ? fleetRecordResult.value : controlFleetRecord;
+  const fleetRecordReadAvailable = fleetRecordResult.value !== undefined || controlFleetRecord !== null;
   const headcount = projectFleetHeadcountState(
     headcountTargetResult.value,
-    fleetRecordResult.value === undefined ? undefined : (fleetRecordResult.value?.lastLaunchTransaction ?? null),
+    fleetRecordReadAvailable ? (fleetRecord?.lastLaunchTransaction ?? null) : undefined,
     headcountCurrentResult.value,
     headcountExecutingRead.value,
     {
@@ -3742,10 +3798,9 @@ export async function buildLeaderBrief(
     // Reuse the bounded fleet-record read that supplied the headcount transaction.
     // A second read could cross a launch-transaction update and make the
     // attestation block disagree with `summary.headcount` in one response.
-    const fleetRecord = fleetRecordResult.value ?? null;
     fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
     launchWorkerAttestation = compactLaunchWorkerAttestation(fleetRecord?.lastLaunchTransaction);
-    const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
+    const registeredLeader = controlFleetRecord?.leaderOwnerId ?? null;
     const leaderRow = registeredLeader ? rosterEntries.find((e) => e.agentId === registeredLeader) : undefined;
     const disposition = decideLeadershipDisposition({
       callerOwnerId: ownerId,
@@ -3792,11 +3847,11 @@ export async function buildLeaderBrief(
       shouldRefreshLeaderControlForBrief({
         disposition,
         allowLeadershipWrites,
-        hasFleetRecord: fleetRecord != null,
+        hasFleetRecord: controlFleetRecord != null,
         ownerId,
-        controlState: fleetRecord?.controlState,
+        controlState: controlFleetRecord?.controlState,
       }) &&
-      fleetRecord &&
+      controlFleetRecord &&
       // Type-level only: the guard above already requires a defined ownerId
       // (`Boolean(input.ownerId)`), but it returns a plain boolean rather than a
       // type predicate, so it cannot NARROW `ownerId` (declared `string |
@@ -3834,7 +3889,19 @@ export async function buildLeaderBrief(
   // wake can make a dead owner look `live` through recent agent_activity;
   // selecting first would bake that ghost into the census even after the
   // authoritative psu-host check marks the row ended.
-  await boundedLeaderBriefRead('reconcile-wakeability', () => reconcileWakeability(rosterEntries), rosterEntries);
+  await boundedLeaderBriefRead(
+    'reconcile-wakeability',
+    () =>
+      reconcileWakeability(
+        rosterEntries,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+      ),
+    rosterEntries,
+  );
   // Missing host is a liveness signal only for known visible members. Keep
   // this best-effort so absent roles never reinterpret bootstrapping/remote
   // rows as desktop deaths.
@@ -4183,12 +4250,12 @@ export async function buildLeaderBrief(
   // the row absent rather than reporting a fabricated zero — "0 parked" and "we
   // could not count" must never look alike here.
   const policyParked =
-    headcountCurrentResult.value == null || fleetRecordResult.value === undefined
+    headcountCurrentResult.value == null || !fleetRecordReadAvailable
       ? undefined
       : buildPolicyParkedCapacity({
           fleet,
           liveMembers: headcountCurrentResult.value.length,
-          path: resolveFleetParkResumePath(fleetRecordResult.value, Date.now()),
+          path: resolveFleetParkResumePath(fleetRecord, Date.now()),
         });
   const summary = {
     fleet,
