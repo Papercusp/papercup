@@ -593,6 +593,10 @@ export interface ScorecardGradingAudit {
   /** The meta-rubric the audit grades against (grading-integrity). */
   metaRubricRef: string;
   stampedAt: string;
+  /** The meta-rubric revision used by the auditor, when the identity was readable. */
+  rubricRevision?: number;
+  /** The meta-rubric grading-substance hash used by the auditor, when readable. */
+  criteriaHash?: string;
   /**
    * Short-lived dispatch reservation written atomically before an auditor is
    * launched. It prevents two independent queue readers from launching for the
@@ -607,6 +611,22 @@ export interface ScorecardGradingAudit {
   /** The auditor's ownerId (verified ≠ the graded card's author at emit). */
   auditor?: string;
   auditedAt?: string;
+}
+
+/** Read-time identity verdict for a grading-integrity stamp. */
+export interface ScorecardGradingAuditCurrentness {
+  state: 'current' | 'stale' | 'unknown';
+  reason:
+    | 'current'
+    | 'meta-rubric-mismatch'
+    | 'recorded-identity-missing'
+    | 'live-identity-missing'
+    | 'revision-mismatch'
+    | 'criteria-hash-mismatch';
+  recordedRevision: number | null;
+  currentRevision: number | null;
+  recordedCriteriaHash: string | null;
+  currentCriteriaHash: string | null;
 }
 
 /**
@@ -1354,6 +1374,12 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         state: g.state,
         metaRubricRef: g.metaRubricRef,
         stampedAt: g.stampedAt,
+        ...(typeof g.rubricRevision === 'number' && Number.isFinite(g.rubricRevision)
+          ? { rubricRevision: g.rubricRevision }
+          : {}),
+        ...(typeof g.criteriaHash === 'string' && g.criteriaHash.trim()
+          ? { criteriaHash: g.criteriaHash }
+          : {}),
         ...(reservationKey &&
         reservationKey.trim() &&
         reservationTimestamp &&
