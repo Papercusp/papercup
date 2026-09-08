@@ -284,9 +284,31 @@ const QUANTIFIER_RE =
  * an unobserved one. Mask the whole phrase before looking for a claim
  * quantifier, so a real broad assertion elsewhere in the same claim still
  * remains visible to the lint.
+ *
+ * `nothing about` is masked as a BIGRAM, with no verb in front of it. An
+ * earlier revision masked only `says? nothing about`, which made the lint fire
+ * on the scope-limiting language its own advisory prescribes: a writer told to
+ * narrow a claim writes `observes nothing about other peers`, and gets flagged
+ * again on the disclaimer itself. That is worse than an ordinary false
+ * positive, because it trains the writer to ignore every flag.
+ *
+ * The verb list is deliberately NOT enumerated. Re-measured against
+ * `harness_shared.carry_notes` on 2026-09-08 (146,795 note lines, 3,592
+ * re-check rows): `nothing about` occurs 29 times, and all 29 are
+ * scope-limiting — `proves nothing about what runs`, `the SERVICE env proves
+ * nothing about the RUN`, `so nothing about the live deploy ... changes`,
+ * `I verified nothing about the suite itself`, `it forbids nothing about score
+ * floors`. ZERO are breadth assertions. Of the 6 that sit in an actual check
+ * row, 2 were already masked by `says?` and 3 were unmasked false positives
+ * written by other agents. An enumerated verb set would cover today's five
+ * verbs and rot on the sixth; the bigram cannot.
+ *
+ * This narrows only the bigram: a bare `nothing` (`nothing has changed`,
+ * `nothing is running`) is the common breadth shape and remains fully visible
+ * to {@link QUANTIFIER_RE}, which is why `nothing` must stay in it.
  */
 const SCOPE_DISCLAIMER_RE =
-  /\b(?:never|not)\s+(?:[a-z][a-z'-]*\s+){0,3}by\s+me\b|\b(?:the\s+)?(?:whole|entire)\s+of\s+what\s+my\s+probe(?:'s)?\s+(?:saw|observed|checked|measured)\b|\bsays?\s+nothing\s+about\b|\b(?:was|were|is|are)\s+never\s+scoped\s+to\b|\b(?:does|do)\s+not\s+cover\b|\blimited\s+to\b|\boutside\s+(?:this|the)\s+probe\b/gi;
+  /\b(?:never|not)\s+(?:[a-z][a-z'-]*\s+){0,3}by\s+me\b|\b(?:the\s+)?(?:whole|entire)\s+of\s+what\s+my\s+probe(?:'s)?\s+(?:saw|observed|checked|measured)\b|\bnothing\s+about\b|\b(?:was|were|is|are)\s+never\s+scoped\s+to\b|\b(?:does|do)\s+not\s+cover\b|\blimited\s+to\b|\boutside\s+(?:this|the)\s+probe\b/gi;
 
 /**
  * Non-assertive claim fragments. Carry checks commonly mix a factual
