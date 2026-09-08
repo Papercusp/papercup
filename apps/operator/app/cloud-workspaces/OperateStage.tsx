@@ -535,7 +535,10 @@ function HostRow({
             ) : null}
             {activeTab === "logs" ? <LogsTab workspace={workspace} /> : null}
             {activeTab === "cost" ? <CostTab workspace={workspace} /> : null}
-            <HostedDesktopConnection workspace={workspace} showDesktop={activeTab === "desktops"} />
+            <HostedDesktopConnection
+              workspace={workspace}
+              showDesktop={activeTab === "desktops"}
+            />
           </div>
 
           <div className={styles.hostPanelFooter}>
@@ -548,7 +551,6 @@ function HostRow({
               </a>
             </Button>
           </div>
-
         </div>
       ) : null}
     </li>
