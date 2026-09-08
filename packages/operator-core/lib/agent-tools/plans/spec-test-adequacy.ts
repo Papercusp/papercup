@@ -651,6 +651,12 @@ function rerunRecipeFor(
       ...(replayEvidenceRefs.length ? { evidenceRefs: replayEvidenceRefs } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
+      // Replay the exact immutable clause snapshot that produced this grade. The
+      // evaluator accepts these fields and, with replaySnapshot, reuses the persisted
+      // currentness tuple instead of measuring mutable live bindings again.
+      specRevision: clause.revision,
+      specFingerprint: clause.contentHash,
+      replaySnapshot: true,
       // Fingerprints classify the selected bindings; the selectors above define
       // the population. Keeping those roles separate prevents a partial current[]
       // input from silently excluding an unmeasured historical binding.
