@@ -45,6 +45,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   history?: RpcFrame[];
   missingTranscript?: boolean;
   deliveryTimeoutMs?: number;
+  beforeReady?: () => Promise<void>;
 } = {}) {
   let nativePath = `/configured/${backend}/session.jsonl`;
   if (overrides.resume) {
@@ -95,6 +96,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
     startupTimeoutMs: 500,
     deliveryTimeoutMs: overrides.deliveryTimeoutMs,
+    beforeReady: overrides.beforeReady,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
@@ -110,6 +112,29 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
+  it('keeps restored history in startup until the new executor is ready', async () => {
+    const history = backend === 'codex' ? [
+      { type: 'event_msg', payload: { type: 'user_message', message: 'Saved greeting' } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Saved reply' }] } },
+      { type: 'event_msg', payload: { type: 'task_complete' } },
+    ] : [
+      { type: 'message', id: 'saved-user', message: { role: 'user', content: 'Saved greeting' } },
+      { type: 'message', id: 'saved-reply', message: { role: 'assistant', content: [{ type: 'text', text: 'Saved reply' }], stopReason: 'stop' } },
+    ];
+    let beforeReady: ReturnType<SuRpcEngine['adapter']['host']['snapshot']> | undefined;
+    const f = fixture(backend, { resume: true, history, beforeReady: async () => {
+      beforeReady = f.engine.adapter.host.snapshot();
+    } });
+    await f.engine.ready;
+    expect(beforeReady).toMatchObject({ streamReady: false, executorAttached: false,
+      descriptor: { lifecycle: expect.stringMatching(/^(starting|resuming)$/) } });
+    expect(f.engine.adapter.host.recent.map(({ event }) => event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'transcript', phase: 'completed', role: 'assistant', content: 'Saved reply' }),
+    ]));
+    expect(f.engine.adapter.host.snapshot()).toMatchObject({ streamReady: true, executorAttached: true,
+      descriptor: { lifecycle: 'ready' } });
+  });
+
   it('restores historical assistant text before accepting resumed input', async () => {
     const content = [{ type: backend === 'codex' ? 'output_text' : 'text', text: 'Saved assistant reply' }];
     const message = { role: 'assistant', content };
