@@ -4306,6 +4306,38 @@ impl App {
         self.session_picker = Some(SessionPicker::new(PickerAxis::Conversation, options));
     }
 
+    /// Keep an already-open conversation picker in sync with an asynchronous
+    /// Agent Chat load. Opening the overlay before the first list response can
+    /// legitimately produce an empty snapshot; when that response arrives the
+    /// modal must gain the saved rows instead of staying empty over a loaded
+    /// transcript. Preserve the highlighted identity across later refreshes.
+    fn refresh_open_conversation_picker(&mut self) {
+        use crate::session_config::PickerAxis;
+        let selected_id = {
+            let Some(picker) = self
+                .session_picker
+                .as_ref()
+                .filter(|picker| picker.axis == PickerAxis::Conversation)
+            else {
+                return;
+            };
+            picker
+                .options
+                .get(picker.sel)
+                .map(|option| option.id.clone())
+        };
+        self.open_conversation_picker();
+        if let (Some(selected_id), Some(picker)) = (selected_id, self.session_picker.as_mut()) {
+            if let Some(index) = picker
+                .options
+                .iter()
+                .position(|option| option.id == selected_id)
+            {
+                picker.sel = index;
+            }
+        }
+    }
+
     /// Open the model picker over the SERVER'S tier menu (`/api/agent-config`:
     /// the workspace override, else the committed baseline). If agent-config has
     /// not loaded, the menu is just the inherit row — deliberately NOT a
@@ -8612,6 +8644,7 @@ impl App {
                     self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
                     self.pending_approvals = approvals;
                     self.chat_scroll = 0;
+                    self.refresh_open_conversation_picker();
                 }
                 Action::Render
             }
@@ -12952,6 +12985,38 @@ mod tests {
         });
         assert_eq!(app.agent_chat_id.as_deref(), Some("current-chat"));
         assert_eq!(app.chat_messages[0].content, "current");
+    }
+
+    #[test]
+    fn async_agent_chat_load_populates_an_already_open_conversation_picker() {
+        let mut app = App::new();
+        app.open_conversation_picker();
+        assert!(app.session_picker.as_ref().unwrap().options.is_empty());
+
+        let harness = app.harness.clone();
+        app.update(Event::AgentChatLoaded {
+            harness,
+            chat_id: Some("saved-chat".into()),
+            role: "operator".into(),
+            load_token: app.chat_load_token,
+            summaries: vec![chat_summary_for("saved-chat")],
+            messages: vec![ChatMessage::assistant("restored")],
+            owner_turn_ids: Vec::new(),
+            approvals: Vec::new(),
+        });
+
+        let picker = app.session_picker.as_ref().expect("picker remains open");
+        assert_eq!(picker.axis, crate::session_config::PickerAxis::Conversation);
+        assert_eq!(
+            picker
+                .options
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chat:saved-chat"]
+        );
+        assert_eq!(app.agent_chat_id.as_deref(), Some("saved-chat"));
+        assert_eq!(app.chat_messages[0].content, "restored");
     }
 
     #[test]
