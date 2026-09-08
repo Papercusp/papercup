@@ -34,6 +34,7 @@ import {
   type ScorecardRetraction,
   type ScorecardRatingRubric,
   type ScorecardGradingAudit,
+  type ScorecardGradingAuditCurrentness,
   type ScorecardProvisional,
   type ScorecardVetting,
   type ScorecardReleaseGateBinding,
@@ -561,6 +562,8 @@ export interface ScorecardRow {
    * against the grading-integrity meta-rubric settles it passed/failed.
    */
   gradingAudit?: ScorecardGradingAudit;
+  /** Read-time comparison of the audit stamp with the live meta-rubric identity. */
+  gradingAuditCurrentness?: ScorecardGradingAuditCurrentness;
   /**
    * The vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004) —
    * present only on a vetting scorecard (a meta-rubric grading of an acceptance
@@ -782,6 +785,48 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
  * Re-exported here because this module's trend is its other consumer.
  */
 export { scorecardAdmissionExclusion, type ScorecardAdmissionExclusion };
+export type { ScorecardGradingAuditCurrentness };
+
+/** A settled audit is admissible only when its read-time identity is current. */
+export function settledGradingAuditIsCurrent(row: {
+  gradingAudit?: ScorecardGradingAudit;
+  gradingAuditCurrentness?: ScorecardGradingAuditCurrentness;
+}): boolean {
+  if (!row.gradingAudit) return true;
+  if (row.gradingAudit.state !== 'passed') return false;
+  // Older injected/test rows do not carry the read-time projection. Production
+  // scorecards:list always does; preserving the absent case keeps the helper
+  // compatible with pre-P-013 readers while rejecting explicit uncertainty.
+  return row.gradingAuditCurrentness?.state !== 'stale' && row.gradingAuditCurrentness?.state !== 'unknown';
+}
+
+export function classifyGradingAuditCurrentness(
+  audit: ScorecardGradingAudit,
+  liveMetaRubric: Pick<Rubric, 'rubricId' | 'revision' | 'criteriaHash'> | null,
+): ScorecardGradingAuditCurrentness {
+  const recordedRevision = audit.rubricRevision ?? null;
+  const currentRevision = liveMetaRubric?.revision ?? null;
+  const recordedCriteriaHash = audit.criteriaHash ?? null;
+  const currentCriteriaHash = liveMetaRubric?.criteriaHash ?? null;
+  const base = { recordedRevision, currentRevision, recordedCriteriaHash, currentCriteriaHash };
+  if (!liveMetaRubric) return { state: 'unknown', reason: 'live-identity-missing', ...base };
+  if (audit.metaRubricRef !== liveMetaRubric.rubricId) {
+    return { state: 'unknown', reason: 'meta-rubric-mismatch', ...base };
+  }
+  if (recordedRevision == null || recordedCriteriaHash == null) {
+    return { state: 'unknown', reason: 'recorded-identity-missing', ...base };
+  }
+  if (currentRevision == null || currentCriteriaHash == null) {
+    return { state: 'unknown', reason: 'live-identity-missing', ...base };
+  }
+  if (recordedRevision !== currentRevision) {
+    return { state: 'stale', reason: 'revision-mismatch', ...base };
+  }
+  if (recordedCriteriaHash !== currentCriteriaHash) {
+    return { state: 'stale', reason: 'criteria-hash-mismatch', ...base };
+  }
+  return { state: 'current', reason: 'current', ...base };
+}
 
 /** The projected {@link parseGradedGeneration} shape — see RunningGeneration
  *  (generation-watermark.ts) for what each field means. `bootHeadSha`/`scoutCodeHash`/
@@ -1056,7 +1101,15 @@ export interface GradingAuditRecordResult {
  */
 export async function recordGradingAudit(
   issueId: string,
-  input: { auditIssueId: string; auditor: string; verdict: 'passed' | 'failed'; at?: string },
+  input: {
+    auditIssueId: string;
+    auditor: string;
+    verdict: 'passed' | 'failed';
+    at?: string;
+    rubricRevision?: number;
+    criteriaHash?: string;
+    requireCurrentIdentity?: boolean;
+  },
   deps: {
     getIssue?: typeof getIssue;
     mergeIssuePayload?: typeof mergeIssuePayload;
@@ -1077,12 +1130,39 @@ export async function recordGradingAudit(
   if (!existing) {
     return { ok: false, issueId, error: `'${issueId}' carries no gradingAudit stamp to settle` };
   }
+  const incomingIdentitySupplied = input.rubricRevision != null || input.criteriaHash != null;
+  if (input.requireCurrentIdentity && !incomingIdentitySupplied) {
+    return {
+      ok: false,
+      issueId,
+      error: `'${issueId}' cannot be settled without the grading-integrity rubric revision and criteria hash`,
+    };
+  }
+  const recordedIdentityComplete = existing.rubricRevision != null && Boolean(existing.criteriaHash);
+  if (incomingIdentitySupplied && (input.requireCurrentIdentity || existing.state !== 'pending' || recordedIdentityComplete)) {
+    const currentness = classifyGradingAuditCurrentness(existing, {
+      rubricId: existing.metaRubricRef,
+      revision: input.rubricRevision,
+      criteriaHash: input.criteriaHash,
+    });
+    if (currentness.state !== 'current') {
+      return {
+        ok: false,
+        issueId,
+        error:
+          `'${issueId}' carries a ${currentness.state} gradingAudit stamp (${currentness.reason}); ` +
+          're-open it through the pending-audit dispatcher before settling a new audit',
+      };
+    }
+  }
   if (existing.state !== 'pending' && existing.auditIssueId === input.auditIssueId) {
     return { ok: true, issueId, gradingAudit: existing };
   }
   const settled: ScorecardGradingAudit = {
     ...existing,
     state: input.verdict,
+    ...(input.rubricRevision != null ? { rubricRevision: input.rubricRevision } : {}),
+    ...(input.criteriaHash ? { criteriaHash: input.criteriaHash } : {}),
     auditIssueId: input.auditIssueId,
     auditor: input.auditor,
     auditedAt: input.at ?? new Date().toISOString(),
@@ -1353,6 +1433,8 @@ interface ScorecardRowDb {
   created_at: string | Date;
   payload: unknown | null;
   superseded_by: string | null;
+  audit_rubric_revision: unknown;
+  audit_criteria_hash: string | null;
 }
 
 /** PG contention codes that can be retried without changing the read semantics. */
@@ -1401,6 +1483,20 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       batch = await acquireWithContentionRetry(() =>
         boundedPgReadTxn<ScorecardRowDb[]>((tx) => tx<ScorecardRowDb[]>`
     SELECT scorecard.issue_id, scorecard.created_by, scorecard.created_at, scorecard.payload,
+           (
+             SELECT audit.payload -> 'observation' -> 'rubricRevision'
+               FROM harness_shared.engineer_issues AS audit
+              WHERE audit.workspace_id = scorecard.workspace_id
+                AND audit.issue_id = scorecard.payload -> 'observation' -> 'gradingAudit' ->> 'auditIssueId'
+              LIMIT 1
+           ) AS audit_rubric_revision,
+           (
+             SELECT audit.payload -> 'observation' ->> 'criteriaHash'
+               FROM harness_shared.engineer_issues AS audit
+              WHERE audit.workspace_id = scorecard.workspace_id
+                AND audit.issue_id = scorecard.payload -> 'observation' -> 'gradingAudit' ->> 'auditIssueId'
+              LIMIT 1
+           ) AS audit_criteria_hash,
            (
              SELECT superseder.issue_id
                FROM harness_shared.engineer_issues AS superseder
@@ -1499,6 +1595,8 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // Best-effort by construction: a freshness verdict must never fail the read it rides
   // on, and an unreadable boundary degrades to `unknown`, never to a false `fresh`.
   const liveHostStartedAtMs = anyStamped ? await readLiveBoundary().catch(() => null) : null;
+  let gradingAuditRubricRead = false;
+  let gradingAuditRubric: Rubric | null = null;
 
   for (const row of rows) {
     const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
@@ -1514,6 +1612,27 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       });
     }
     const meta = rubricMeta.get(observation.rubricRef)!;
+    const auditRevision =
+      typeof row.audit_rubric_revision === 'number' && Number.isFinite(row.audit_rubric_revision)
+        ? row.audit_rubric_revision
+        : typeof row.audit_rubric_revision === 'string' && row.audit_rubric_revision.trim()
+          ? Number(row.audit_rubric_revision)
+          : null;
+    const gradingAudit = observation.gradingAudit
+      ? {
+          ...observation.gradingAudit,
+          ...(observation.gradingAudit.rubricRevision == null && auditRevision != null && Number.isFinite(auditRevision)
+            ? { rubricRevision: auditRevision }
+            : {}),
+          ...(observation.gradingAudit.criteriaHash == null && row.audit_criteria_hash
+            ? { criteriaHash: row.audit_criteria_hash }
+            : {}),
+        }
+      : undefined;
+    if (gradingAudit && !gradingAuditRubricRead) {
+      gradingAuditRubricRead = true;
+      gradingAuditRubric = await getRubric(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null);
+    }
     // Canonical READ boundary: historic `PASS`/`pass` rows project to the rubric's
     // exact scale spelling, so distributions, RLE, and direction math never split a
     // semantic rating merely because an older writer used different case.
@@ -1577,7 +1696,10 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
-      ...(observation.gradingAudit ? { gradingAudit: observation.gradingAudit } : {}),
+      ...(gradingAudit ? { gradingAudit } : {}),
+      ...(gradingAudit
+        ? { gradingAuditCurrentness: classifyGradingAuditCurrentness(gradingAudit, gradingAuditRubric) }
+        : {}),
       ...(observation.vetting ? { vetting: observation.vetting } : {}),
       ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       synthesized,
