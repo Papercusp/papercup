@@ -287,6 +287,20 @@ describe('partitionReapableTasks — the owner ruling, and proof the guard can f
 });
 
 describe('scheduleSessionEndLeaseRelease', () => {
+  it('leaves a reopened session alone without reporting a cleanup failure', async () => {
+    vi.useFakeTimers();
+    h.loadRow.mockResolvedValue({ ...ENDED, endedAt: null });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      scheduleSessionEndLeaseRelease(77, { delayMs: 25, retryDelayMs: 25, deps: deps() });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(h.loadRow).toHaveBeenCalledTimes(1);
+      expect(h.releaseLocks).not.toHaveBeenCalled();
+      expect(h.releaseWorkItems).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
   it('does not run cleanup inline with the tracked end writer', async () => {
     vi.useFakeTimers();
     scheduleSessionEndLeaseRelease(77, { delayMs: 25, deps: deps() });

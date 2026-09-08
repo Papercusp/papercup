@@ -322,7 +322,7 @@ describe('evaluatePlanSpecQualityGate', () => {
     expect(result.candidates).toEqual([
       expect.objectContaining({ classRef: 'plan-class-bugfix', verdict: 'pass' }),
     ]);
-    expect(listAcceptanceRubrics).toHaveBeenCalledWith('quality-plan');
+    expect(listAcceptanceRubrics).toHaveBeenCalledWith('quality-plan', { harnessSlug: 'papercusp', strict: true });
     expect(listCards).toHaveBeenCalledWith(
       expect.objectContaining({
         subjectRef: expect.stringContaining('spec-set:plan-class-bugfix:'),

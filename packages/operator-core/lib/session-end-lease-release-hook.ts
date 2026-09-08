@@ -296,9 +296,10 @@ function scheduleSessionEndLeaseReleaseAttempt(
   const timer = setTimeout(() => {
     void runSessionEndLeaseRelease(advSessionId, opts.deps)
       .then((result) => {
-        // An open successor is authoritative: its owner is intentionally
-        // protected for this ended row, so retrying would only add timers.
-        if (result.reason === 'owner-resumed') return;
+        // Resume can reopen the SAME row before this delayed pass, or create
+        // a successor row. Both are successful continuation, not cleanup
+        // failures, and neither should schedule another attempt or warn.
+        if (result.reason === 'owner-resumed' || result.reason === 'row-not-ended') return;
         if (result.reason === 'owner-live') {
           const maxRetries = Math.max(
             0,

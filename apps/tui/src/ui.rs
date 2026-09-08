@@ -2710,6 +2710,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .filter(|_| !app.chat_streaming)
         .and_then(|turn| turn.error.as_ref())
+        .or_else(|| app.su_connection_error.as_ref())
         .map(|error| {
             wrap_text(error, area.width.saturating_sub(2).max(1) as usize)
                 .into_iter()
@@ -3013,6 +3014,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             " Message not accepted — draft retained · Enter retries ",
             format!("> {}", app.chat_input.replace('\n', "⏎")),
             Theme::notify(),
+        )
+    } else if app.su_connection_error.is_some() {
+        (
+            " Session unavailable — Esc, then l: choose session to reconnect ",
+            format!("> {}", app.chat_input.replace('\n', "⏎")),
+            Theme::warn(),
         )
     } else if app.chat_streaming {
         (
@@ -6506,6 +6513,22 @@ mod tests {
         app.toast = Some(ui_notif("high", "Decide P-009", None));
         let text = render(&app, 90, 12);
         assert!(text.contains("N history"), "toast must advertise N: {text}");
+    }
+
+    #[test]
+    fn su_reconnect_refusal_stays_visible_without_a_pending_owner_turn() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Operator;
+        app.agent_chat_id = Some("saved-chat".into());
+        app.update(crate::event::Event::SuSessionError(
+            "The native transcript is unavailable or still being restored".into(),
+        ));
+        app.last_error = None;
+        let text = render(&app, 100, 24);
+        assert!(text.contains("native transcript is unavailable"), "{text}");
+        assert!(text.contains("choose session to reconnect"), "{text}");
+        app.reset_agent_chat_binding();
+        assert!(!render(&app, 100, 24).contains("native transcript is unavailable"));
     }
 
     #[test]

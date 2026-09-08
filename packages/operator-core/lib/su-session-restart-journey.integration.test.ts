@@ -270,8 +270,9 @@ describe('durability', () => {
       omp_thread_id: backend === 'omp' ? `native-${backend}` : null, native_id: `native-${backend}` };
     expect((await readBinding())[0]).toEqual(expected);
     expect(await persistSuSessionDescriptor(id, descriptor, WORKSPACE)).toBe(true);
-    expect(await persistSuSessionDescriptor(id, { ...descriptor,
-      identity: { ...descriptor.identity, nativeSessionId: 'different-thread' } }, WORKSPACE)).toBe(false);
+    const conflicting = structuredClone(descriptor);
+    conflicting.identity.nativeSessionId = 'different-thread';
+    expect(await persistSuSessionDescriptor(id, conflicting, WORKSPACE)).toBe(false);
     expect((await readBinding())[0]).toEqual(expected);
   });
 
