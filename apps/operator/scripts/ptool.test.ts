@@ -262,6 +262,15 @@ describe('ptool bearer-token resolution', () => {
 describe('ptool call deadlines', () => {
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-22598752399389413: coord:wake has no explicit timeoutSec and its
+    // bounded roster + target phases can legitimately approach the MCP
+    // transport floor. Cover both routes so it cannot regress to ptool's
+    // flat 30s outcome-unknown cutoff.
+    expect(timeoutForTool('coord:wake')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:wake',
+      args: { to: 'su-parked-agent', note: 'timeout mapping regression' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21863905839650704: coord:declare-intent declares no timeoutSec (bound
     // only by the flat 55s MCP_DEADLINE_MS floor), and a reporter observed the
     // flat 30s client cutoff abort the call with "mutation may have executed"
@@ -313,6 +322,14 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('plans:new')).toBe(PTOOL_PLANS_NEW_TIMEOUT_MS);
+    // EI-22701666730811258: dev:pg_query's SQL timeout does not cover proxy
+    // admission/queue dwell. Keep both transport routes above the MCP floor so
+    // a queued read returns its typed result instead of ptool's 30s cutoff.
+    expect(timeoutForTool('dev:pg_query')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'dev:pg_query',
+      args: { sql: 'SELECT 1', timeoutMs: 10_000, maxRows: 1 },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     // EI-21562635786542847: carry-respawn's 120s server budget must also
     // apply when the call is wrapped by tools:invoke.
     expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
