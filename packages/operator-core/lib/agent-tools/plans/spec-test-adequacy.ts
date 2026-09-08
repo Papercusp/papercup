@@ -591,6 +591,12 @@ function rerunRecipeFor(
   const selectedEvidenceRefs = [...new Set(selectedEvidence.map((row) => row.evidenceRef))].sort((a, b) =>
     a.localeCompare(b),
   );
+  // Preserve an explicit caller selector even when the in-memory evidence rows
+  // are empty for this clause (for example, an uncovered or legacy binding).
+  // Omitting it would widen the persisted recipe into an unfiltered replay.
+  const replayEvidenceRefs = selectedEvidenceRefs.length > 0
+    ? selectedEvidenceRefs
+    : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
   const fingerprints: SpecTestAdequacyCurrentFingerprint[] = (current ?? [])
     .filter((row) => selectedKeys.has(`${row.evidenceKind}\0${row.evidenceRef}`))
     .map((row) => ({
@@ -626,7 +632,7 @@ function rerunRecipeFor(
       // even when the caller selected it indirectly through a work item or plan
       // item. Reusing only the caller's optional evidenceRefs would let later
       // bindings silently widen a persisted scorecard's replay.
-      ...(selectedEvidenceRefs.length ? { evidenceRefs: selectedEvidenceRefs } : {}),
+      ...(replayEvidenceRefs.length ? { evidenceRefs: replayEvidenceRefs } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
       // Fingerprints classify the selected bindings; the selectors above define
