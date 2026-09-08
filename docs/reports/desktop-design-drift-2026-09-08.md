@@ -1,6 +1,6 @@
 # Desktop GUI design drift: findings, repair and prevention plan
 
-Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and evidence review updated at 10:39 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
+Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and evidence review updated at 11:10 UTC. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
 
 ## Current conclusion
 
@@ -85,11 +85,13 @@ Formal acceptance remains open. The current acceptance rubric is revision 3, wit
 
 Independent review rejected the original test-adequacy cards' freshness claims because copied fingerprint inputs did not independently measure the source. Replacement bindings 2098–2105 use the existing server measurement mechanism; all three replacement cards passed independent audit at 10:28 UTC. The UI repair work item **WI-10000654 is now done**, with entry and state proofs accepted.
 
-A later edit to the shared completion handler correctly invalidated the gate-hardening proof before WI-10000685 could close. Its focused suite passed again at 10:33 UTC: 31 tests, recorded as run `17698322`. Fresh gate card `EI-22689293844092114` is awaiting review, paused until the engineer holding that source file finishes their remaining edits. WI-10000685, P-003's formal proof and final plan acceptance remain open. This is an evidence dependency, not a newly observed portal UI failure.
+A later edit to the shared completion handler correctly invalidated the gate-hardening proof before WI-10000685 could close. After that engineer finished, the final handler passed all 31 focused tests in run `17699293`. Card `EI-22690357630226713` passed independent audit `EI-22690592842804193` while the measured files were held stable. **WI-10000685 is now done**, and that hold is released. The earlier intermediate gate cards are retained as history.
+
+P-003 is now held as WI-10000721. Its layout-proof card `EI-22690943583588666` binds the actual browser run and original-build counterexample to measured source, tests and captures; its independent audit is in progress. Final plan acceptance is still pending. The separate git-sync status does not change these current-build verification results or establish deployment of the operator-core hardening.
 
 Server measurement covers repository source, test and saved artifact bytes. It does not claim a fresh live deployment measurement; the historical browser runs retain their original build identities, and final acceptance still requires an independent actual-portal run and visual inspection. Code-truth audit 5 now resolves the source/evidence citations for all three plan items.
 
-The rubric critique is recorded at `WI-10000712#201552`, with author vetting `EI-22686582146057973`. Three weaknesses remain explicit: R-2 mixes outcome and implementation language; R-1/R-3 share some browser evidence; and the browser/manual review lacks its own structured runner binding. R-1/R-2's structured test checks run Vitest, so placing a Playwright file there would use the wrong runner. These limitations do not waive the required browser journey, visual comparison, causal report or cloud-connectivity disclosure. The broader proposal below is the place to refine this enforcement contract.
+The rubric critique is recorded at `WI-10000712#201552`. Author vetting `EI-22691141147855764` supersedes an earlier record whose integrity audit found incomplete reproduction instructions and missing explanations of how the criticized properties could be satisfied. The revised record supplies exact read probes and concrete improvement paths; its audit is pending. Three rubric weaknesses remain explicit: R-2 mixes outcome and implementation language; R-1/R-3 share some browser evidence; and the browser/manual review lacks its own structured check. R-1/R-2's structured test checks run Vitest, so placing a Playwright file there would use the wrong runner; the existing typed probe mechanism provides a possible improvement path. These limitations do not waive the required browser journey, visual comparison, causal report or cloud-connectivity disclosure. The broader proposal below is the place to refine this enforcement contract.
 
 ## Recommended prevention program
 
