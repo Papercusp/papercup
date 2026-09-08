@@ -15,7 +15,7 @@
 import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, fork, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -29,7 +29,7 @@ import { performance } from 'node:perf_hooks';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
-import type { SuSessionCommand, SuSessionEvent } from '@papercusp/chat-protocol';
+import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
@@ -1387,13 +1387,67 @@ function pendingNativeCards() {
   return scriptedEngine.events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
 }
 
+async function startOperatorProcess(port = 0) {
+  const events: SuSessionEvent[] = [];
+  const descriptors = new Map<string, SuSessionDescriptor>();
+  const diagnostics: Array<{ level: string; args: unknown[] }> = [];
+  const responses: Array<{ path: string; status: number }> = [];
+  let ready: { pid: number; instanceId: string; port: number } | undefined;
+  let startupError: Error | undefined;
+  let output = '';
+  const child = fork(path.join(__dirname, 'operator-process.mts'), [], {
+    cwd: REPO_ROOT, execArgv: ['--import', 'tsx'],
+    env: { ...process.env, PUI_OPERATOR_FIXTURE_WORKSPACE: WORKSPACE, PUI_OPERATOR_FIXTURE_PORT: String(port) },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  child.on('error', (error) => { startupError = error; });
+  for (const stream of [child.stdout, child.stderr]) stream?.on('data', (bytes: Buffer) => {
+    output = (output + redactSensitiveText(bytes.toString())).slice(-32_000);
+  });
+  const exit = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
+    events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
+    path: string; status: number }) => {
+    if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
+    if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
+    if (message.type === 'host') events.push(...message.events ?? []);
+    if (message.type === 'event' && message.event) events.push(message.event);
+    if (message.type === 'diagnostic') diagnostics.push({ level: message.level, args: message.args });
+    if (message.type === 'response') responses.push({ path: message.path, status: message.status });
+  });
+  const stop = async () => {
+    if (child.connected) child.send({ type: 'stop' });
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      const result = await Promise.race([exit, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${output}`)), 60_000);
+      })]);
+      expect(result, output).toEqual({ code: 0, signal: null });
+    } finally { clearTimeout(timer!); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
+  };
+  try {
+    await vi.waitFor(() => {
+      if (startupError) throw startupError;
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Operator fixture exited before ready: ${output}`);
+      expect(ready, output).toBeDefined();
+    }, { timeout: 120_000, interval: 100 });
+  } catch (error) { await stop().catch(() => {}); throw error; }
+  return { ...ready!, events, descriptors, diagnostics, responses, stop, output: () => output };
+}
+
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
-  test.skipIf(scriptedEngine.backend !== 'claude')('answers an actual native question through an installed PUI card', async () => {
+  test('answers an actual native question through an installed PUI card', async () => {
     const manifest = installedManifest();
     const nonce = randomUUID();
     const question = `PUI-QUESTION-${nonce}?`;
     const expected = `PUI-ANSWER-${nonce}:Change`;
-    const request = `Call your native AskUserQuestion tool exactly once. Ask ${question} with header Choice and two options in order: Keep, Change. Use multiSelect false. Wait for my answer, then reply exactly PUI-ANSWER-${nonce}:<selected label>. Do not choose an answer yourself or use another question mechanism.`;
+    const questionTool = { claude: 'AskUserQuestion', codex: 'request_user_input', omp: 'ask' }[scriptedEngine.backend];
+    if (!questionTool) throw new Error(`No native question scenario for ${scriptedEngine.backend}`);
+    const questionShape = scriptedEngine.backend === 'claude' ? 'Use multiSelect false.'
+      : 'Use question id choice, with one selection allowed.';
+    const request = `Call your native ${questionTool} tool exactly once. Ask ${question} with header Choice and two options in order: Keep, Change. ${questionShape} Wait for my answer, then reply exactly PUI-ANSWER-${nonce}:<selected label>. Do not choose an answer yourself or use another question mechanism.`;
     const pane = new PuiPane(bin, operatorPort, home);
     try {
       await openComposer(pane);
@@ -1416,23 +1470,85 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(cardReplies[0]).toMatchObject({ status: 200 });
       const chat = await waitForCorrelatedReply(request, expected);
       await pane.waitForReply(expected);
-      const start = scriptedEngine.events.find((event) => event.type === 'tool' && event.phase === 'started' && event.name === 'AskUserQuestion');
-      if (!start || start.type !== 'tool') throw new Error('No actual native question tool was observed');
+      const start = scriptedEngine.events.find((event) => event.type === 'tool' && event.phase === 'started' && event.name === questionTool);
       expect(scriptedEngine.events).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'card', phase: 'closed', correlationId: card.correlationId, resolution: 'submitted' }),
-        expect.objectContaining({ type: 'tool', phase: 'completed', callId: start.callId, isError: false }),
       ]));
+      // Codex exposes this built-in as a server request, without tool-item
+      // start/completion notifications. Claude and OMP also expose tool events.
+      if (scriptedEngine.backend !== 'codex') {
+        if (!start || start.type !== 'tool') throw new Error('No actual native question tool was observed');
+        expect(scriptedEngine.events).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'tool', phase: 'completed', callId: start.callId, isError: false }),
+        ]));
+      }
       expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
       console.info('PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
         identity: engine.adapter.host.descriptor().identity, descriptor: engine.adapter.host.descriptor(), chatId: chat.id,
         question, selected: 'Change', card, cardReplies, expected, questionFrame, answeredFrame: pane.screen(),
-        toolEvents: scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId),
+        toolEvents: start?.type === 'tool' ? scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId) : [],
       }));
     } catch (error) {
       console.info('PUI_INSTALLED_NATIVE_QUESTION_FAILURE', JSON.stringify({ ...pane.failureEvidence(), cardReplies }));
       throw error;
     } finally { await pane.stop().catch(() => {}); }
   }, 300_000);
+
+  test('restores the same native conversation after the operator OS process exits', async () => {
+    const manifest = installedManifest();
+    const greetingReply = `PUI-PROCESS-${randomUUID()}`;
+    const greeting = `Reply exactly ${greetingReply}. Do not use tools.`;
+    const first = await startOperatorProcess();
+    const pane = new PuiPane(bin, first.port, home);
+    const frames: Record<string, string> = {};
+    let saved: SuSessionDescriptor | undefined;
+    let chatId: string | undefined;
+    try {
+      await openComposer(pane);
+      pane.write(greeting); pane.enter();
+      await pane.waitForReply(greetingReply);
+      const chat = await waitForSavedTurn(greeting);
+      chatId = chat.id;
+      saved = first.descriptors.get(chatId);
+      expect(saved?.identity.backend).toBe(scriptedEngine.backend);
+      expect(saved?.identity.nativeSessionId).toBeTruthy();
+      frames.beforeRestart = pane.screen();
+    } catch (error) {
+      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: first.output(), diagnostics: first.diagnostics, screen: pane.screen() }));
+      throw error;
+    } finally { await pane.stop(); await first.stop(); }
+    // A process exit is observed before a NEW OS process binds the SAME port.
+    // No in-memory host, registry, mock or JavaScript closure crosses this seam.
+    await putViewState('Plans');
+    const second = await startOperatorProcess(first.port);
+    const resumedPane = new PuiPane(bin, second.port, home);
+    try {
+      expect(second.pid).not.toBe(first.pid);
+      expect(second.instanceId).not.toBe(first.instanceId);
+      await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      resumedPane.write('o');
+      await resumedPane.waitFor(`pot ${HARNESS} · role operator · session new`);
+      resumedPane.escape(); await resumedPane.waitFor('i type · v speak');
+      resumedPane.write('l'); await resumedPane.waitFor('Conversation — Enter select'); resumedPane.enter();
+      resumedPane.write('i'); await resumedPane.waitForReply(greetingReply);
+      frames.history = resumedPane.screen();
+      const resumedReply = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
+      resumedPane.write('Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.');
+      resumedPane.enter(); await resumedPane.waitForReply(resumedReply);
+      const resumed = second.descriptors.get(chatId!);
+      expect(resumed).toMatchObject({ identity: saved!.identity, model: saved!.model, accountRoute: saved!.accountRoute,
+        carry: saved!.carry, modes: saved!.modes, runtimeGeneration: saved!.runtimeGeneration + 1 });
+      frames.resumed = resumedPane.screen();
+      expect(second.events.some((event) => event.type === 'transcript' && event.role === 'assistant'
+        && event.phase === 'completed' && resumedReply.test(event.content ?? ''))).toBe(true);
+      console.info('PUI_OPERATOR_PROCESS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
+        first: { pid: first.pid, instanceId: first.instanceId }, second: { pid: second.pid, instanceId: second.instanceId },
+        port: second.port, saved, resumed, frames, diagnostics: [...first.diagnostics, ...second.diagnostics] }));
+    } catch (error) {
+      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: second.output(), diagnostics: second.diagnostics, screen: resumedPane.screen() }));
+      throw error;
+    } finally { await resumedPane.stop(); await second.stop(); }
+  }, 600_000);
 
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifest = installedManifest();
