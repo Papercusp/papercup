@@ -320,6 +320,7 @@ class PuiPane {
       traffic: sessionTraffic,
       commands: commandPosts.map(({ type, commandId }) => ({ type, commandId })),
       commandReplies,
+      nativeFrames: nativeFrameDiagnostics,
       engines: scriptedEngine.engines.map((engine) => {
         const descriptor = engine.adapter.host.descriptor();
         return { pid: engine.pid(), identity: descriptor.identity, lifecycle: descriptor.lifecycle,
@@ -505,6 +506,8 @@ let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
 let initializeWarnings: Array<Record<string, unknown>> = [];
 let optionalMemoryWarnings: string[] = [];
 let configurationWarnings: string[] = [];
+let nativeFrameDiagnostics: Array<Record<string, unknown>> = [];
+let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined;
 
 // Drop command frames only for deliberate acknowledgement-loss cases. All other
 // production SSE events still traverse the real HTTP connection to the PTY.
@@ -702,7 +705,20 @@ beforeAll(async () => {
       const stdio = await import('../su-session-stdio-peer');
       const startPeer = stdio.startSuStdioPeer;
       vi.spyOn(stdio, 'startSuStdioPeer').mockImplementation(async (options) => {
-        const peer = await startPeer(options);
+        const peer = await startPeer({ ...options, onMessage(frame) {
+          if (nativeFrameDiagnostics.length < 50) {
+            nativeFrameDiagnostics.push({ type: frame.type, command: frame.command,
+              method: frame.method, keys: Object.keys(frame),
+              messageRole: (frame.message as { role?: string })?.role,
+              assistantEvent: (frame.assistantMessageEvent as { type?: string })?.type });
+          }
+          options.onMessage(frame);
+        } });
+        readOmpDiagnosticState = async () => {
+          const state = await peer.request({ type: 'get_state' }, 5_000);
+          return Object.fromEntries(['sessionId', 'sessionFile', 'isStreaming', 'isCompacting',
+            'messageCount', 'queuedMessageCount', 'contextUsage'].map((key) => [key, state[key]]));
+        };
         return { ...peer, async request(...args: Parameters<typeof peer.request>) {
           const result = await peer.request(...args);
           if (args[0].type === 'get_state') {
@@ -861,6 +877,7 @@ beforeEach(async () => {
   initializeWarnings = [];
   optionalMemoryWarnings = [];
   configurationWarnings = [];
+  nativeFrameDiagnostics = [];
   if (scriptedEngine.real) {
     const error = console.error.bind(console);
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -1252,6 +1269,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const identity = structuredClone(engine.adapter.host.descriptor().identity);
       expect(identity.backend).toBe(scriptedEngine.backend);
       expect(identity.nativeSessionId).toBeTruthy();
+      expect(engine.adapter.host.descriptor().model, 'show the model that actually answered').toBeTruthy();
       if ('nativeSession' in engine) {
         expect(engine.nativeSession()).toMatchObject({ backend: scriptedEngine.backend, exactResumeSupported: true });
       }
@@ -1404,8 +1422,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'),
       }));
     } catch (cause) {
+      const nativeState = await readOmpDiagnosticState?.().catch((error: Error) => ({ stateReadError: error.message }));
       console.info('PUI_INSTALLED_REAL_ENGINE_FAILURE', JSON.stringify({
-        backend: scriptedEngine.backend, binary: bin, binarySha256, frames, ...pane.failureEvidence(),
+        backend: scriptedEngine.backend, binary: bin, binarySha256, frames, nativeState, ...pane.failureEvidence(),
       }));
       throw cause;
     } finally { await pane.stop().catch(() => {}); }
