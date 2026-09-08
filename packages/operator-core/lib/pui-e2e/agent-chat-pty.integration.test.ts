@@ -655,7 +655,7 @@ beforeAll(async () => {
   if (routedAccount) {
     await db.adminSql`
       INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
-      VALUES (${WORKSPACE}, ${JSON.stringify({ accounts: accountMetadata })}::jsonb, now())
+      VALUES (${WORKSPACE}, ${JSON.stringify({ accounts: accountMetadata })}::jsonb, ${Date.now()})
       ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
     console.info('PUI_ACCOUNT_CATALOG_DIAGNOSTIC', JSON.stringify({
       source: catalogPath, sha256: createHash('sha256').update(catalogBytes!).digest('hex'),
