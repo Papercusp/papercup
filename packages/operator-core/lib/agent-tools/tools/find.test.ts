@@ -23,6 +23,7 @@ import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import coordSend from '../coordination/tools/send';
+import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
@@ -580,6 +581,26 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(segment).toContain('field0:string');
     expect(segment).not.toContain('xxxxxxx');
     expect(segment).toMatch(/…\+\d+$/);
+  });
+
+  it('publishes the handoff open/accept constraint from the runtime validator', async () => {
+    const result = await callHandler({ query: 'coord:handoff', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'coord:handoff')?.argSchema;
+    expect(compact).toContain('constraint:$ (');
+    expect(compact).toContain('unless accept_msg_id is nonempty (accept takes precedence)');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+    for (const args of [{}, { to: ['reviewer'] }, { summary: 'Review' }, { to: ['reviewer'], summary: '' }]) {
+      const parsed = coordHandoff.args.safeParse(args);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) expect(compact).toContain(issue.message);
+      }
+    }
+    for (const args of [
+      { accept_msg_id: 'existing-handoff' },
+      { accept_msg_id: 'existing-handoff', summary: '' },
+      { to: ['reviewer'], summary: 'Review P-001 and P-002', body: 'b'.repeat(16001) },
+    ]) expect(coordHandoff.args.safeParse(args).success).toBe(true);
   });
 
   it('publishes sessions:read selector and tail constraints from the same runtime errors', async () => {
