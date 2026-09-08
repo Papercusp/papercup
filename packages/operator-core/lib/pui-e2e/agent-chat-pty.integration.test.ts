@@ -769,7 +769,8 @@ beforeAll(async () => {
               configuredServers, isStreaming: result.isStreaming, messageCount: result.messageCount,
               nativeLogs: readNativeLogs(),
               model: { id: (result.model as { id?: string })?.id,
-                provider: (result.model as { provider?: string })?.provider }, promptType: typeof result.systemPrompt,
+                provider: (result.model as { provider?: string })?.provider,
+                isOAuth: (result.model as { isOAuth?: boolean })?.isOAuth }, promptType: typeof result.systemPrompt,
               promptParts: prompt.map((part) => {
                 const text: string = typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '';
                 return { type: typeof part, keys: typeof part === 'object' && part ? Object.keys(part) : [],
@@ -796,13 +797,20 @@ beforeAll(async () => {
         const suffix = pathname.slice('/api/pui-provider-debug'.length) + requestUrl.search;
         const headers = new Headers(request.headers);
         headers.delete('host');
+        const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer();
+        const payload = body ? JSON.parse(new TextDecoder().decode(body)) : {};
+        const systemBlocks = Array.isArray(payload.system) ? payload.system : [];
         nativeProviderEvents.push({ phase: 'request', path: pathname, at: new Date().toISOString(),
           priority: headers.get('x-papercusp-priority'), owner: headers.get('x-papercusp-owner'),
-          account: headers.get('x-papercusp-account') });
+          account: headers.get('x-papercusp-account'), model: payload.model,
+          systemBlockCount: systemBlocks.length,
+          systemPrefixKinds: systemBlocks.slice(0, 3).map((block: { text?: string }) =>
+            block.text?.startsWith('x-anthropic-billing-header:') ? 'billing'
+              : block.text?.includes("You are Claude Code, Anthropic's official CLI for Claude.") ? 'claude-code' : 'other'),
+        });
         try {
           const response = await fetch(`${nativeProviderOrigin}${suffix}`, {
-            method: request.method, headers,
-            body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer(), signal: request.signal,
+            method: request.method, headers, body, signal: request.signal,
           });
           nativeProviderEvents.push({ phase: 'headers', status: response.status,
             contentType: response.headers.get('content-type'), retryAfter: response.headers.get('retry-after'),
