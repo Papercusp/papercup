@@ -1917,17 +1917,25 @@ describe('work-item admission promoter (real Postgres)', () => {
     const start = source.indexOf('export async function readWorkItemReadinessProjection');
     const end = source.indexOf('export async function readWorkItemAdmissionSnapshot', start);
     const reader = source.slice(start, end);
+    const store = readFileSync(new URL('./dbos/work-item-deps-store.ts', import.meta.url), 'utf8');
+    const helperStart = store.indexOf('export function activeWorkItemDependencyRefsSql(');
+    const helperEnd = store.indexOf('/** The issue-family endpoint kind', helperStart);
+    const dependencyReader = store.slice(helperStart, helperEnd);
 
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(reader).toContain('activeWorkItemDependencyRefsSql(sql, {');
     expect(reader).toContain('WITH active_dependency_refs AS MATERIALIZED');
-    expect(reader).toContain("blocker.harness_slug = split_part(d.blocker_ref, '#', 1)");
-    expect(reader).toContain("blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)");
+    expect(dependencyReader).toContain("blocker.harness_slug = split_part(d.blocker_ref, '#', 1)");
+    expect(dependencyReader).toContain("blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)");
     expect(reader).toContain('LEFT JOIN active_dependency_refs dependency');
     expect(reader).toContain('LEFT JOIN LATERAL jsonb_to_record');
     expect(reader).toContain('COALESCE(wi.claim_hold, FALSE)');
     expect(reader).toContain('COALESCE(wi.needs_owner_action, FALSE)');
     expect(reader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
+    expect(dependencyReader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
     expect(reader).not.toMatch(/^\s*wi\.payload,\s*$/m);
     expect(reader).not.toContain("COALESCE(s.payload, '{}'::jsonb)");
   });

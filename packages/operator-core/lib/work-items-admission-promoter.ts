@@ -31,6 +31,12 @@ import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
 import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
+import {
+  activeWorkItemDependencyRefsSql,
+  readWorkItemDependenciesForRefs,
+  repointWorkItemDependencyRefsInTransaction,
+  type StoredWorkItemDependencyRow,
+} from './dbos/work-item-deps-store';
 import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 
@@ -1050,16 +1056,7 @@ interface IncomingReferenceRow {
   source_updated_ts: string | number | null;
 }
 
-interface DependencyRow {
-  id: string | number;
-  blocked_kind: string;
-  blocked_ref: string;
-  blocker_kind: string;
-  blocker_ref: string;
-  dep_type: string;
-  satisfaction: string | null;
-  created_by: string | null;
-}
+type DependencyRow = StoredWorkItemDependencyRow;
 
 interface ReferencedStateRow {
   feature_id: string;
@@ -1202,19 +1199,10 @@ export async function readAdmissionMergeSnapshots(
      ORDER BY target.target_id, source.feature_id`;
 
   const endpointRefs = [...new Set(rows.flatMap(snapshotRefKeys))].sort();
-  const dependencies = endpointRefs.length
-    ? await sql<DependencyRow[]>`
-        SELECT d.id, d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref,
-               d.dep_type, d.satisfaction, d.created_by
-          FROM harness_shared.work_item_deps d
-         WHERE d.workspace_id = ${input.workspaceId}
-           AND d.dep_type = 'blocks'
-           AND (
-             d.blocked_ref = ANY(${endpointRefs}::text[])
-             OR d.blocker_ref = ANY(${endpointRefs}::text[])
-           )
-         ORDER BY d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref`
-    : [];
+  const dependencies = await readWorkItemDependenciesForRefs(sql, {
+    workspaceId: input.workspaceId,
+    refs: endpointRefs,
+  });
 
   const referencedIds = [
     ...new Set(
@@ -2371,47 +2359,12 @@ export async function readWorkItemReadinessProjection(opts: {
   type ProjectionRow = Record<string, number | string | null>;
   const [rows, recurrence] = await Promise.all([
     sql<ProjectionRow[]>`
-      WITH active_dependency_refs AS MATERIALIZED (
-        -- Resolve every dependency endpoint once, then join the small distinct
-        -- blocked-ref set into the workspace rollup. The old per-item EXISTS
-        -- joined through work_items with an OR plus a concatenated
-        -- harness_slug || '#' || feature_id predicate; at workspace scope that
-        -- repeated an unindexable blocker scan for every one of tens of thousands
-        -- of candidates. This is the same split-key shape established by DB
-        -- migrations 1087/1101 for the canonical claim-floor reader.
-        SELECT d.blocked_ref
-          FROM harness_shared.work_item_deps d
-          JOIN harness_shared.work_items blocker
-            ON position('#' in d.blocker_ref) = 0
-           AND blocker.workspace_id = ${opts.workspaceId}
-           AND blocker.feature_id = d.blocker_ref
-         WHERE d.workspace_id = 'default'
-           AND d.dep_type = 'blocks'
-           AND (
-             (d.satisfaction = 'success' AND blocker.status <> ALL(${successfulStates}::text[]))
-             OR (
-               d.satisfaction IS DISTINCT FROM 'success'
-               AND blocker.status <> ALL(${terminalStates}::text[])
-             )
-           )
-        UNION
-        SELECT d.blocked_ref
-          FROM harness_shared.work_item_deps d
-          JOIN harness_shared.work_items blocker
-            ON position('#' in d.blocker_ref) > 0
-           AND blocker.workspace_id = ${opts.workspaceId}
-           AND blocker.harness_slug = split_part(d.blocker_ref, '#', 1)
-           AND blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)
-         WHERE d.workspace_id = 'default'
-           AND d.dep_type = 'blocks'
-           AND (
-             (d.satisfaction = 'success' AND blocker.status <> ALL(${successfulStates}::text[]))
-             OR (
-               d.satisfaction IS DISTINCT FROM 'success'
-               AND blocker.status <> ALL(${terminalStates}::text[])
-             )
-           )
-      ), scoped_payload AS MATERIALIZED (
+      WITH active_dependency_refs AS MATERIALIZED (${activeWorkItemDependencyRefsSql(sql, {
+        itemWorkspaceId: opts.workspaceId,
+        successfulStates,
+        terminalStates,
+      })}),
+      scoped_payload AS MATERIALIZED (
         -- Detoast the large polymorphic payload once per row and retain only the
         -- four small subdocuments this projection owns. Re-reading nested paths
         -- from the full payload throughout classification was the dominant live
@@ -3379,8 +3332,6 @@ interface AdmissionMergeMutableRow {
   terminal_owner: string | null;
 }
 
-type AdmissionMergeDependencyRow = DependencyRow;
-
 interface AdmissionMergeIncomingRow {
   feature_id: string;
   see_also: string[] | null;
@@ -3417,25 +3368,6 @@ function payloadIdentityState(payloadValue: unknown): {
     watchdogSignalOrigin: jsonFieldState(ei, 'signal_origin'),
     watchdogLane: jsonFieldState(payload, 'lane'),
     admissionMergeSources: jsonFieldState(payload, 'admissionMergeSources'),
-  };
-}
-
-function repointAdmissionDependencyRef(ref: string, loserId: string, canonicalId: string, harnessSlug: string): string {
-  if (ref === loserId) return canonicalId;
-  if (ref === `${harnessSlug}#${loserId}`) return `${harnessSlug}#${canonicalId}`;
-  return ref;
-}
-
-function dependencyReceiptRow(row: AdmissionMergeDependencyRow): Record<string, unknown> {
-  return {
-    id: String(row.id),
-    blockedKind: row.blocked_kind,
-    blockedRef: row.blocked_ref,
-    blockerKind: row.blocker_kind,
-    blockerRef: row.blocker_ref,
-    depType: row.dep_type,
-    satisfaction: row.satisfaction === 'success' ? 'success' : 'settled',
-    createdBy: row.created_by ?? null,
   };
 }
 
@@ -3675,68 +3607,13 @@ async function persistApprovedAdmissionMerge(
     }
   }
 
-  const loserRefs = [input.loserId, `${input.harnessSlug}#${input.loserId}`];
-  const dependencyRows = await sql<AdmissionMergeDependencyRow[]>`
-    SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
-      FROM harness_shared.work_item_deps
-     WHERE workspace_id = ${input.workspaceId}
-       AND dep_type = 'blocks'
-       AND (blocked_ref = ANY(${loserRefs}::text[]) OR blocker_ref = ANY(${loserRefs}::text[]))
-     ORDER BY id
-     FOR UPDATE`;
-  const dependencyEdges: Array<Record<string, unknown>> = [];
-  for (const dependency of dependencyRows) {
-    const blockedRef = repointAdmissionDependencyRef(
-      dependency.blocked_ref,
-      input.loserId,
-      input.canonicalId,
-      input.harnessSlug,
-    );
-    const blockerRef = repointAdmissionDependencyRef(
-      dependency.blocker_ref,
-      input.loserId,
-      input.canonicalId,
-      input.harnessSlug,
-    );
-    const before = dependencyReceiptRow(dependency);
-    if (dependency.blocked_kind === dependency.blocker_kind && blockedRef === blockerRef) {
-      await sql`DELETE FROM harness_shared.work_item_deps WHERE id = ${dependency.id}`;
-      dependencyEdges.push({ before, after: null, targetPrior: null, disposition: 'removed-self-edge' });
-      continue;
-    }
-    const [targetPrior] = await sql<AdmissionMergeDependencyRow[]>`
-      SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
-        FROM harness_shared.work_item_deps
-       WHERE workspace_id = ${input.workspaceId}
-         AND blocked_kind = ${dependency.blocked_kind}
-         AND blocked_ref = ${blockedRef}
-         AND blocker_kind = ${dependency.blocker_kind}
-         AND blocker_ref = ${blockerRef}
-         AND dep_type = ${dependency.dep_type}
-         AND id <> ${dependency.id}
-       LIMIT 1`;
-    const [after] = await sql<AdmissionMergeDependencyRow[]>`
-      INSERT INTO harness_shared.work_item_deps
-        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
-      VALUES (${input.workspaceId}, ${dependency.blocked_kind}, ${blockedRef},
-              ${dependency.blocker_kind}, ${blockerRef}, ${dependency.dep_type},
-              ${dependency.satisfaction === 'success' ? 'success' : 'settled'}, ${dependency.created_by})
-      ON CONFLICT (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
-      DO UPDATE SET satisfaction = CASE
-        WHEN harness_shared.work_item_deps.satisfaction = 'success' OR EXCLUDED.satisfaction = 'success'
-          THEN 'success'
-        ELSE 'settled'
-      END
-      RETURNING id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by`;
-    if (!after) throw new Error(`admission dependency repoint failed for ${String(dependency.id)}`);
-    await sql`DELETE FROM harness_shared.work_item_deps WHERE id = ${dependency.id}`;
-    dependencyEdges.push({
-      before,
-      after: dependencyReceiptRow(after),
-      targetPrior: targetPrior ? dependencyReceiptRow(targetPrior) : null,
-      disposition: targetPrior ? 'merged-with-existing-edge' : 'repointed-edge',
-    });
-  }
+  const dependencyEdges = await repointWorkItemDependencyRefsInTransaction(sql, {
+    workspaceId: input.workspaceId,
+    rewrites: [
+      { from: input.loserId, to: input.canonicalId },
+      { from: `${input.harnessSlug}#${input.loserId}`, to: `${input.harnessSlug}#${input.canonicalId}` },
+    ],
+  });
 
   const occurrenceRows = await sql<AdmissionMergeOccurrenceRow[]>`
     SELECT occurrence_id, canonical_harness_slug, canonical_work_item_id
