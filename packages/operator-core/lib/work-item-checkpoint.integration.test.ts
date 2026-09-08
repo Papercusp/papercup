@@ -28,6 +28,8 @@ const { setWorkItemCheckpoint, getWorkItemCheckpoint, getWorkItemCheckpointWithM
   './work-item-checkpoint'
 );
 const { workItemScope, shortCarryHash, CARRY_NOTE_ATTESTATION_MAX_CHAIN } = await import('./carry-note');
+const { readHeldWorkItems, renderCarryBriefText } = await import('./carry-brief');
+const { readLeaderCheckpointProgress } = await import('./agent-tools/fleet/leader-brief-progress');
 
 const HARNESS = 'h1';
 
@@ -63,6 +65,9 @@ const WORK_ITEMS_DDL = `
     workspace_id text NOT NULL,
     harness_slug text NOT NULL,
     feature_id text NOT NULL,
+    title text,
+    summary text,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     status text NOT NULL DEFAULT 'open',
     item_kind text NOT NULL DEFAULT 'feature',
     taken_by text,
@@ -109,6 +114,78 @@ async function rowCount(): Promise<number> {
 }
 
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
+  it('one persisted checkpoint write updates item, carry and leader views without a loop copy (P-005)', async () => {
+    const ownerId = 'progress-fixture-owner';
+    const workspaceId = 'default';
+    const { withCarryNoteWalls, withCarryNoteChecks } = await import('./carry-note');
+    const { renderCarryDoc } = await import('./carry-doc');
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, taken_by)
+      VALUES
+        (${workspaceId}, ${HARNESS}, 'WI-progress', 'Progress', ${ownerId}),
+        (${workspaceId}, ${HARNESS}, 'WI-review', 'Independent review', ${ownerId}),
+        ('other-workspace', ${HARNESS}, 'WI-progress', 'Wrong workspace', ${ownerId})`;
+    const ref = { harness: HARNESS, workItemId: 'WI-progress', workspaceId };
+    const note = withCarryNoteWalls(withCarryNoteChecks(
+      'RETRACTED: old acceptance. Next: verify scoped source.', [{
+        id: 'source-only', claim: 'Not deployment proof', verified: 'saved-receipt', sinceMs: 1,
+      }],
+    ), [{ id: 'runtime-wall', claim: 'No restart', recheck: 'Read scope', sinceMs: 1 }]);
+    await setWorkItemCheckpoint(ref, note);
+    await setWorkItemCheckpoint({ ...ref, workItemId: 'WI-review' }, 'Independent review stays open.');
+    await setWorkItemCheckpoint({ ...ref, workspaceId: 'other-workspace' }, 'Wrong workspace must never leak.');
+    const claims = ['WI-progress', 'WI-review'].map((id) => ({
+      type: 'work-item' as const, id, active: true, harnessSlug: HARNESS,
+    } as import('./fleet/assignments').AgentClaim));
+    const leaderRead = async () => (await readLeaderCheckpointProgress(
+      [{ agentId: ownerId, claims }], workspaceId, { timeoutMs: 5_000 },
+    )).get(ownerId)!;
+    const before = await getWorkItemCheckpointWithMeta(ref);
+    const leader = await leaderRead();
+    expect(leader.status).toBe('read');
+    expect(leader.items.find((item) => item.id === 'WI-progress')).toMatchObject({
+      checkpoint: note, checkpointUpdatedAtMs: before.updatedAtMs,
+      checkpointContentHash: shortCarryHash(note), checks: 1, walls: 1,
+    });
+    const carryItems = await readHeldWorkItems(ownerId, workspaceId);
+    const brief: import('./carry-brief').CarryBrief = {
+      ownerId, workspaceId, loop: null, heldItems: JSON.parse(JSON.stringify(carryItems)),
+      directives: [], directivesTotalOpen: 0, walls: [], facts: [], awaits: [], fleet: null,
+    };
+    const doc: import('./carry-doc').CarryDoc = {
+      brief, identity: { ownerId, ownerLabel: null, workspaceId, harness: HARNESS, fleet: null, account: null },
+      sessionMode: { modes: [], loopActive: false, loopIntervalSec: null },
+      planItems: [], asks: [], tail: [],
+      continuation: { lastOwnerMessage: null, answered: true, deliberate: true, selfRequested: true },
+    };
+    for (const rendered of [renderCarryBriefText(brief), renderCarryDoc(doc)]) {
+      expect(rendered).toContain('Next: verify scoped source.');
+      expect(rendered).toContain('Independent review stays open.');
+      expect(rendered).not.toContain('Wrong workspace must never leak.');
+    }
+    expect(renderCarryDoc(doc)).toContain('BLIND WINDOW');
+    expect(renderCarryDoc(doc)).toContain('RETRACTED CLAIMS');
+    const next = 'Next: acceptance still requires independent review.';
+    await setWorkItemCheckpoint(ref, next);
+    // Fresh reads use the same persisted field, not the earlier serialized carry.
+    expect(await getWorkItemCheckpoint(ref)).toBe(next);
+    expect((await readHeldWorkItems(ownerId, workspaceId)).find((item) => item.id === 'WI-progress')?.checkpoint)
+      .toBe(next);
+    expect((await leaderRead()).items.find((item) => item.id === 'WI-progress')?.checkpoint).toBe(next);
+    expect(brief.heldItems.find((item) => item.id === 'WI-progress')?.checkpoint).toBe(note);
+    const loopCopies = await db.sql<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n FROM harness_shared.carry_notes WHERE scope LIKE 'loop:%'`;
+    expect(loopCopies[0].n).toBe(0);
+    // Reassignment after the roster snapshot cannot leak the old member's prose.
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'different-owner'
+       WHERE workspace_id = ${workspaceId} AND feature_id = 'WI-progress'`;
+    const reassigned = await leaderRead();
+    expect(reassigned.status).toBe('unknown');
+    expect(reassigned.items.map((item) => item.id)).toEqual(['WI-review']);
+  });
+
   it('distinguishes a failed metadata read from absence and recovers the same stored checkpoint', async () => {
     const ref = { harness: HARNESS, workItemId: 'WI-read-failure' };
     expect(await getWorkItemCheckpointWithMeta(ref)).toEqual({ checkpoint: null, updatedAtMs: null });

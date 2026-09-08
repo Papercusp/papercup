@@ -225,7 +225,10 @@ export function createOrientAggregateFallback(): OrientAggregateFallback {
  * retaining the aggregate-timeout markers. This is synchronous and intentionally
  * side-effect free beyond the supplied fallback, so it cannot add latency to the
  * sequential composition path. */
-export function snapshotOrientAggregate(fallback: OrientAggregateFallback, snapshot: OrientResult): void {
+export function snapshotOrientAggregate(
+  fallback: OrientAggregateFallback,
+  snapshot: Partial<OrientResult> & { recovery?: import('../compaction-recovery').CompactionRecovery },
+): void {
   Object.assign(fallback.data, snapshot, {
     status: 'unknown',
     degraded: true,
@@ -3336,19 +3339,18 @@ export default defineTool({
     // Start before composeOrient so the DB work overlaps its sequential folds.
     const runtimeModeRows = await runtimeModesPromise;
     const goalSubject = goalIdFromModes(runtimeModeRows);
-    const goalPortfolioPromise = goalSubject
+    const goalPortfolioReadPromise = goalSubject
       ? (async () => {
-          try {
-            const { readGoalPortfolioBrief } = await import('../../../goal-launch-settings');
-            return await readGoalPortfolioBrief({
-              workspaceId: orientWorkspaceId,
-              goalId: goalSubject,
-            });
-          } catch {
-            return null;
-          }
+          const { readGoalPortfolioBrief } = await import('../../../goal-launch-settings');
+          return readGoalPortfolioBrief({
+            workspaceId: orientWorkspaceId,
+            goalId: goalSubject,
+          });
         })()
       : undefined;
+    // Display can degrade to null, but the obligation provider must receive the
+    // original rejection: a fulfilled null means a measured absence of a goal.
+    const goalPortfolioPromise = goalPortfolioReadPromise?.catch(() => null);
     const goalObligationsPromise =
       goalSubject && ownerId
         ? (async () => {
@@ -3364,7 +3366,7 @@ export default defineTool({
                 // two GOAL core folds describe one snapshot rather than racing
                 // independent reads of the same mutable state.
                 deps: {
-                  goalPortfolio: async () => (goalPortfolioPromise ? await goalPortfolioPromise : null),
+                  goalPortfolio: async () => (goalPortfolioReadPromise ? await goalPortfolioReadPromise : null),
                 },
               });
               return projectAgentTurnStartObligationBrief(read.agenda);
@@ -3468,7 +3470,7 @@ export default defineTool({
     if (compactionRecoveryPromise) {
       void compactionRecoveryPromise
         .then((recovery) => {
-          if (recovery) snapshotOrientAggregate(aggregateFallback, { recovery } as OrientResult);
+          if (recovery) snapshotOrientAggregate(aggregateFallback, { recovery });
         })
         .catch(() => {
           /* the main await remains fail-soft; the fallback must stay honest */

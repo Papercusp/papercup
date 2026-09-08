@@ -264,7 +264,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(assessment).toMatchObject({
       productiveMemberCount: 22,
       deficit: 0,
-      action: 'wait',
+      action: 'none',
       spawnCount: 0,
       headcountBasis: {
         kind: 'agent-origin-execution-attested',
@@ -413,6 +413,58 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     });
   });
 
+  it('does not let unprobed legacy seats block a terminal verdict, but waits on an unverified current probe seat', () => {
+    const current = transaction(['su-current-probe'], {
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-current-probe'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-current-probe'],
+      workerAttestations: [workerAttestation('su-current-probe', true)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-current-probe'],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const live = ['su-current-probe', 'su-legacy-a', 'su-legacy-b'];
+
+    const legacyOnlyUnknown = assessFleetHeadcountGovernor({
+      target: live.length,
+      liveMemberIds: live,
+      executingMemberIds: new Set(live),
+      transaction: current,
+      now: 20_000,
+    });
+    expect(legacyOnlyUnknown).toMatchObject({
+      productiveMemberCount: live.length,
+      deficit: 0,
+      action: 'none',
+      spawnCount: 0,
+      unverifiedMemberIds: ['su-legacy-a', 'su-legacy-b'],
+      reason: 'target and productive-capacity floor are both satisfied',
+    });
+
+    current.governor!.probeOwnerIds = ['su-current-probe', 'su-new-probe'];
+    const currentProbeUnknown = assessFleetHeadcountGovernor({
+      target: live.length + 1,
+      liveMemberIds: [...live, 'su-new-probe'],
+      executingMemberIds: new Set([...live, 'su-new-probe']),
+      transaction: current,
+      now: 20_000,
+    });
+    expect(currentProbeUnknown).toMatchObject({
+      productiveMemberCount: live.length + 1,
+      deficit: 0,
+      action: 'wait',
+      spawnCount: 0,
+      unverifiedMemberIds: ['su-legacy-a', 'su-legacy-b', 'su-new-probe'],
+      reason: 'current probe members without typed worker attestation remain unknown and are never pruned',
+    });
+  });
+
   it('waits on an unverified late boot, then cancels replay when that exact member proves ready', () => {
     const slow = transaction(['su-slow']);
     const before = assessFleetHeadcountGovernor({
@@ -442,7 +494,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
     expect(after).toMatchObject({ action: 'none', spawnCount: 0, workerReadyMemberIds: ['su-slow'] });
   });
 
-  it('never prunes a live member whose typed readiness is absent', () => {
+  it('does not prune or block on a legacy live member whose typed readiness is absent', () => {
     const legacy = transaction(['su-legacy'], {
       openedMemberIds: [],
       unconfirmedMemberIds: [],
@@ -457,7 +509,7 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       now: 20_000,
     });
     expect(result).toMatchObject({
-      action: 'wait',
+      action: 'none',
       pruneCandidateIds: [],
       unverifiedMemberIds: ['su-legacy'],
     });

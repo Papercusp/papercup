@@ -185,6 +185,13 @@ export function assessFleetHeadcountGovernor(args: {
   // `wait` on every tick for the life of the transaction.
   const launchDeadlineExceededMemberIds = withinLaunchWindow ? [] : openedButNotLive;
   const currentProbeOwners = new Set(transaction?.governor?.probeOwnerIds ?? []);
+  // A preserved legacy member may be live and executing without ever having
+  // belonged to this transaction's probe cohort. Keep that member in the
+  // diagnostic `unverifiedMemberIds` list, but only a current probe seat can
+  // block a terminal verdict while its attestation is still missing.
+  const unverifiedProbeMemberIds = unverifiedMemberIds.filter((ownerId) =>
+    currentProbeOwners.has(ownerId),
+  );
   const retryable = unreadyMemberIds.filter(
     (ownerId) => currentProbeOwners.has(ownerId) && (attempts[ownerId] ?? 0) < retryLimit,
   );
@@ -303,13 +310,13 @@ export function assessFleetHeadcountGovernor(args: {
           : 'productive-capacity floor is not yet evidenced; open one canary only'),
     };
   }
-  if (unverifiedMemberIds.length > 0) {
+  if (unverifiedProbeMemberIds.length > 0) {
     return {
       ...common,
       action: 'wait',
       actionOwnerId: null,
       spawnCount: 0,
-      reason: 'live members without typed worker attestation remain unknown and are never pruned',
+      reason: 'current probe members without typed worker attestation remain unknown and are never pruned',
     };
   }
   return {
