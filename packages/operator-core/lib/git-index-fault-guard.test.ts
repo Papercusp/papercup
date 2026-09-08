@@ -190,6 +190,35 @@ describe('reporting — an undetermined run announces itself', () => {
   it('returns null for a non-index error so the caller rethrows instead of swallowing it', () => {
     expect(reportIndexFaultNotChecked(new Error('real violation'), { guard: 'x', log: () => {} })).toBeNull();
   });
+
+  // runGuardWithIndexFaultGuard wraps `main` in a SYNC try/catch. An ASYNC main returns a
+  // promise whose rejection never reaches that catch, so the wrapper silently guards NOTHING
+  // while the call site looks correctly wired — false SAFETY, which is the same failure shape
+  // as the false GREEN this work-item is about. Run in a subprocess because the guard's
+  // success path calls process.exit.
+  //
+  // The two arms differ ONLY in `async`, so a regression cannot pass this by accident.
+  for (const [shape, decl] of [
+    ['sync', 'function'],
+    ['async', 'async function'],
+  ] as const) {
+    it(`guards an ${shape} main(): index fault becomes NOT_CHECKED, never a violation-shaped exit`, () => {
+      const run = runGuardScript(
+        'node',
+        [
+          '--input-type=module',
+          '-e',
+          `import { runGuardWithIndexFaultGuard } from './scripts/lib/git-index-fault.mjs';
+           ${decl} main() { throw Object.assign(new Error('boom'), { stderr: ${JSON.stringify(REAL_INCIDENT_STDERR)} }); }
+           await runGuardWithIndexFaultGuard(main, { guard: 'async-probe' });`,
+        ],
+        { cwd: REPO_ROOT, timeoutMs: 30_000 },
+      );
+      expect(run.status, run.output).toBe(EXIT_NOT_CHECKED);
+      expect(run.status, run.output).not.toBe(1);
+      expect(run.stderr, run.output).toContain('NOT CHECKED');
+    });
+  }
 });
 
 describe('tracked-files — an unreadable index must never read as "no files"', () => {
@@ -301,11 +330,23 @@ describe('END TO END — the real guards against a real torn index', () => {
   });
 
   for (const guard of [
-    { name: 'unreachable-tier-mock', script: 'scripts/check-unreachable-tier-mock.mjs' },
-    { name: 'di-seam-arity-strands', script: 'scripts/check-di-seam-arity-strands.mjs' },
+    { name: 'unreachable-tier-mock', script: 'scripts/check-unreachable-tier-mock.mjs', args: [] as string[] },
+    { name: 'di-seam-arity-strands', script: 'scripts/check-di-seam-arity-strands.mjs', args: [] as string[] },
+    // `main()` in this one is ASYNC, which a sync try/catch around it would NOT guard: the
+    // promise rejection escapes entirely and the process dies with a raw stack and exit 1 —
+    // violation-shaped — while the call site LOOKS protected. So this row is also the
+    // regression test for the async branch of runGuardWithIndexFaultGuard.
+    //
+    // `--base HEAD` is deliberate: a bare invocation short-circuits on "no migration files
+    // given" BEFORE reaching any git enumeration, which would make this case vacuous.
+    {
+      name: 'migration-fixture-drift',
+      script: 'scripts/check-migration-fixture-drift.mjs',
+      args: ['--base', 'HEAD'],
+    },
   ]) {
     it(`${guard.name}: exits NOT_CHECKED, not a violation, when the index is torn`, () => {
-      const run = runGuardScript('node', [guard.script], {
+      const run = runGuardScript('node', [guard.script, ...guard.args], {
         cwd: REPO_ROOT,
         timeoutMs: 120_000,
         env: { ...process.env, GIT_INDEX_FILE: tornIndex },
