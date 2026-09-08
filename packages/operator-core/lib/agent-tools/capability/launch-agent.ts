@@ -791,7 +791,7 @@ export default defineTool({
           );
         }
         resumeAgent = args.agent ?? sourceAgent;
-        args.agent ??= resumeAgent ?? undefined;
+        args.agent ??= sourceAgent ?? undefined;
         args.cwd ??= target.cwd ?? undefined;
         notes.push(
           `✓ Fresh successor for ${sourceKind === 'critical-dormant' ? 'critical dormant source' : 'ended session'} ${target.sessionId} (${target.agent ?? 'agent'}) is pre-pinned to the original coord identity ${target.ownerId}; ` +
