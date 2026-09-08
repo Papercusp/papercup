@@ -48,20 +48,27 @@ const { getAcceptanceRubricForPlan, getAcceptanceRubricsForPlan, getRetiredAccep
 const evaluate = (await import('./evaluate-spec-quality')).default;
 const { readAcceptanceBarContractSnapshot } = await import('../../acceptance-bar-contract-snapshot');
 let db: OrgTestDb;
-let migration: string;
+let legacyMigration: string;
+let expandMigration: string;
+let contractMigration: string;
 
 beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
-  migration = await readFile(fileURLToPath(new URL(
-    '../../../../../libs/papercusp/libs/db/sql/1145-acceptance-subject-harness-identity.sql.DRAFT', import.meta.url,
+  const readMigration = (name: string) => readFile(fileURLToPath(new URL(
+    `../../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url,
   )), 'utf8');
-  await h.sql.unsafe(migration);
-  await h.sql.unsafe(migration); // repeat application is safe
+  legacyMigration = await readMigration('1004-acceptance-rubric-subject-uniqueness.sql');
+  expandMigration = await readMigration('1145-acceptance-subject-harness-identity.sql.DRAFT');
+  contractMigration = await readMigration('1146-acceptance-subject-harness-contract.sql.DRAFT');
 }, 120_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await h.sql`TRUNCATE harness_shared.harness_plans CASCADE`;
+  // Restore the actual legacy invariant for EVERY test. Applying CONTRACT in
+  // one case must not accidentally give an EXPAND-only test post-rollout powers.
+  await h.sql.unsafe(legacyMigration);
+  await h.sql.unsafe(expandMigration);
 });
 
 const inWorkspace = <T>(fn: () => T): T => runWithWorkspace(WS, fn);
@@ -115,7 +122,88 @@ async function persistedState() {
     FROM harness_shared.harness_plans WHERE workspace_id = ${WS} ORDER BY harness_slug, plan_slug`;
 }
 
-describe('P002 real-store metadata preflight', () => {
+describe('P002 migration phases (isolated Postgres only)', () => {
+  it('EXPAND retains old uniqueness and legacy primary-key retries without enabling cross-harness coexistence', async () => {
+    await plan(A); await plan(B); await rubric('legacy-unbound');
+    await h.sql.unsafe(expandMigration);
+    await h.sql.unsafe(expandMigration);
+    // The legacy writer does not supply subjectHarnessSlug, and upserts by the
+    // existing primary key, not the new scoped subject expression.
+    const data = { kind: 'acceptance', subjectPlan: metadataPlanSlug, classRef: 'plan-class-bugfix' };
+    const retry = () => h.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, template, template_data)
+      VALUES (${WS}, 'rubric-library', 'legacy-unbound', '', md5('retry'), 'Legacy retry', 'active', 'rubric',
+        ${JSON.stringify(data)}::text::jsonb)
+      ON CONFLICT (workspace_id, harness_slug, plan_slug)
+      DO UPDATE SET title = EXCLUDED.title, template_data = EXCLUDED.template_data
+      RETURNING plan_slug`;
+    expect(await retry()).toHaveLength(1);
+    expect(await retry()).toHaveLength(1);
+    await expect(rubric('separate-b', B)).rejects.toMatchObject({
+      code: '23505', constraint_name: 'harness_plans_one_active_acceptance_per_subject_plan',
+    });
+    expect(await h.sql`SELECT plan_slug FROM harness_shared.harness_plans
+      WHERE workspace_id = ${WS} AND template = 'rubric'`).toHaveLength(1);
+  });
+
+  it('EXPAND backfills only uniquely resolvable subjects and leaves ambiguous links unbound', async () => {
+    await plan(A); await rubric('unique-legacy');
+    await h.sql.unsafe(expandMigration);
+    expect(await inWorkspace(() => getAcceptanceRubricsForPlan(metadataPlanSlug, { harnessSlug: A, strict: true })))
+      .toEqual([expect.objectContaining({ rubricId: 'unique-legacy', subjectHarnessSlug: A })]);
+    await h.sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND plan_slug = 'unique-legacy'`;
+    await plan(B); await rubric('ambiguous-legacy');
+    await h.sql.unsafe(expandMigration);
+    const [row] = await h.sql`SELECT template_data FROM harness_shared.harness_plans
+      WHERE workspace_id = ${WS} AND plan_slug = 'ambiguous-legacy'`;
+    expect(row.template_data).not.toHaveProperty('subjectHarnessSlug');
+    expect(await inWorkspace(() => getAcceptanceRubricsForPlan(metadataPlanSlug, { harnessSlug: B, strict: true })))
+      .toEqual([]);
+  });
+
+  it('CONTRACT refuses a missing EXPAND replacement without dropping the old invariant', async () => {
+    await h.sql`DROP INDEX harness_shared.harness_plans_one_active_acceptance_per_scoped_subject`;
+    await expect(h.sql.unsafe(contractMigration)).rejects.toThrow('requires the valid scoped acceptance index');
+    await plan(A); await plan(B); await rubric('acceptance-a', A);
+    await expect(rubric('separate-b', B)).rejects.toMatchObject({
+      code: '23505', constraint_name: 'harness_plans_one_active_acceptance_per_subject_plan',
+    });
+  });
+
+  it('CONTRACT is repeatable and keeps per-harness uniqueness while enabling independent same-slug subjects', async () => {
+    await h.sql.unsafe(contractMigration);
+    await h.sql.unsafe(contractMigration);
+    await plan(A); await plan(B);
+    await rubric('acceptance-a', A); await rubric('acceptance-b', B);
+    for (const harness of [A, B]) {
+      await expect(rubric(`conflicting-${harness}`, harness)).rejects.toMatchObject({
+        code: '23505', constraint_name: 'harness_plans_one_active_acceptance_per_scoped_subject',
+      });
+    }
+    expect(await h.sql`SELECT plan_slug FROM harness_shared.harness_plans
+      WHERE workspace_id = ${WS} AND template = 'rubric'`).toHaveLength(2);
+  });
+
+  it('neither phase resurrects duplicates retired by migration 1004', async () => {
+    await h.sql.unsafe(contractMigration);
+    await plan(A); await plan(B);
+    await rubric('acceptance-a', A); await rubric('acceptance-b', B);
+    await h.sql.unsafe(legacyMigration);
+    const before = await h.sql`SELECT plan_slug, status, archived, superseded_by, version
+      FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND template = 'rubric' ORDER BY plan_slug`;
+    expect(before.filter((row) => row.archived && row.status === 'superseded')).toHaveLength(1);
+    expect(before.filter((row) => !row.archived && row.status === 'active')).toHaveLength(1);
+    await h.sql.unsafe(expandMigration);
+    await h.sql.unsafe(contractMigration);
+    expect(await h.sql`SELECT plan_slug, status, archived, superseded_by, version
+      FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND template = 'rubric' ORDER BY plan_slug`)
+      .toEqual(before);
+  });
+});
+
+describe('P002 real-store metadata preflight after CONTRACT', () => {
+  beforeEach(async () => { await h.sql.unsafe(contractMigration); });
+
   it('derives different authoritative classes for identical plan slugs and stable retry drafts without writes', async () => {
     await plan(A); await plan(B);
     await rubric('acceptance-a', A, 'plan-class-bugfix');
@@ -164,7 +252,7 @@ describe('P002 real-store metadata preflight', () => {
     await plan(A); await rubric('legacy-unbound');
     expect(await inWorkspace(() => getAcceptanceRubricsForPlan(metadataPlanSlug, { harnessSlug: A, strict: true })))
       .toEqual([expect.objectContaining({ rubricId: 'legacy-unbound' })]);
-    await h.sql.unsafe(migration);
+    await h.sql.unsafe(expandMigration);
     await expect(rubric('conflicting-a', A)).rejects.toMatchObject({ code: '23505' });
     await plan(B); await rubric('independent-b', B);
     expect(await inWorkspace(() => getAcceptanceRubricsForPlan(metadataPlanSlug, { harnessSlug: B, strict: true })))
@@ -193,7 +281,7 @@ describe('P002 real-store metadata preflight', () => {
     } finally {
       await h.sql`ALTER TABLE harness_shared.unavailable_plan_spec_clauses RENAME TO plan_spec_clauses`;
       await h.sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND plan_slug = 'duplicate-a'`;
-      await h.sql.unsafe(migration);
+      await h.sql.unsafe(expandMigration);
     }
   });
 
