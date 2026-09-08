@@ -1,9 +1,9 @@
 /** P-007: the advertised complete-agenda recovery must reach the real GOAL reader. */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_baseline-coord-fixture';
 import { setMode } from '../../../modes/store';
-import { readAgentObligationAgenda, type AgentObligationBrief } from '../../../agent-obligation-reader';
+import * as obligationReader from '../../../agent-obligation-reader';
 import orientTool from './orient';
 // Production boot registers compound folds before serving coord:orient.
 import '../../fleet/assignments';
@@ -13,6 +13,8 @@ const OWNER = `su-orient-obligations-${RUN}`;
 const GOAL = `orient-obligations-${RUN}`;
 const WS = 'default';
 let fx: BaselineCoordFixture;
+
+afterEach(() => vi.restoreAllMocks());
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
@@ -48,6 +50,10 @@ afterAll(async () => {
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
   it('returns the canonical full agenda from the production handler', async () => {
+    // Observe the real read without replacing it. A second read can legitimately
+    // have a different timeout/generation, so compare delivery to its own source.
+    const read = vi.spyOn(obligationReader, 'readAgentObligationAgenda');
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await orientTool.handler(
       {
         mode: 'monitor',
@@ -72,13 +78,26 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     );
     const data = (result as { data: Record<string, unknown> }).data;
     expect(data.obligations, 'the recovery target must expose an agenda, not an absent/null fold').toBeTruthy();
-    const obligations = data.obligations as AgentObligationBrief;
+    const obligations = data.obligations as obligationReader.AgentObligationBrief;
     expect(obligations.evaluations.length).toBeGreaterThan(0);
     expect(obligations.evaluations.every((entry) => typeof entry.id === 'string' && entry.id.length > 0)).toBe(true);
     expect(obligations.detailRef).toBe('coord:orient for the complete obligation agenda');
-    const canonical = await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER, goalId: GOAL });
-    expect(obligations.evaluations.map((entry) => entry.id).sort()).toEqual(
-      canonical.agenda.evaluations.map((entry) => entry.id).sort(),
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WS, ownerId: OWNER, goalId: GOAL }));
+    const canonical = await read.mock.results[0].value;
+    expect(obligations.evaluations).toEqual(canonical.agenda.evaluations);
+    expect(obligations.primary).toEqual(canonical.agenda.primary);
+    expect(obligations.evaluations.map((entry) => entry.ruleId)).toEqual(
+      expect.arrayContaining(['goal-plan-placement', 'goal-owner-report']),
     );
+    for (const entry of obligations.evaluations.filter((entry) => entry.status === 'unknown')) {
+      expect(entry.measurementFailure?.detail).toBeTruthy();
+      expect(entry.measurementFailure?.retry).toBeTruthy();
+    }
+    for (const [warning] of warnings.mock.calls) {
+      expect(String(warning)).toMatch(/^\[bounded-timeout\] agent-obligations:/);
+      expect(canonical.degradedSources.length).toBeGreaterThan(0);
+      expect(obligations.evaluations.some((entry) => entry.status === 'unknown')).toBe(true);
+    }
   }, 90_000);
 });
