@@ -625,7 +625,7 @@ const CARRY_SOURCE_PATTERNS: readonly {
 const CARRY_STRONG_SELECTION_ACTIONS = String.raw`(?:use|select|choose|take|derive|pin|cut|recut|base|set|treat|resolve)`;
 const CARRY_EXECUTION_ACTIONS = String.raw`(?:create|check\s*out|checkout|launch|run|test|verify|judge|evaluate)`;
 const CARRY_JUDGED_CONTEXT =
-  /\b(?:candidate|judged|canonical|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;
+  /\b(?:candidate|judged|canonical(?:\s+(?:test|verification|verdict|run))|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;
 const CARRY_NEGATION_BEFORE =
   /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
 const CARRY_RETRACTION_AFTER =
@@ -671,7 +671,7 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
 
       const directRelations = [
         new RegExp(
-          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))?|verification|verdict|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}`,
+          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|verification|verdict|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}`,
           'i',
         ),
         new RegExp(
