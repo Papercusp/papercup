@@ -163,6 +163,7 @@ export interface AdmissionMergeGuardRefusal {
     | 'terminal-canonical-without-completion'
     | 'producer-identity-mismatch'
     | 'plan-obligation-mismatch'
+    | 'outside-mutation-scope'
     | 'conditional-write-miss';
   detail: string;
 }
@@ -1908,12 +1909,26 @@ export function selectAdmissionRecurrenceCanonicals(
  *      (e.g. the embedding leg was down), so its true duplicate status is UNKNOWN
  *      and resolving it sooner shrinks that blind window.
  */
+/** Omission means the scheduled batch; an explicit empty/invalid target never widens it. */
+export function normalizeAdmissionTargetIds(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) || value.length === 0 || value.length > 100 ||
+    value.some((id) => typeof id !== 'string' || !id.trim())
+  ) {
+    throw new Error('admission targetItemIds must contain 1–100 nonempty item IDs');
+  }
+  return [...new Set((value as string[]).map((id) => id.trim()))].sort();
+}
+
 export async function readPendingBatch(
   sql: OrgSql,
   workspaceId: string,
   harnessSlug: string,
   batchSize: number,
+  targetItemIds?: readonly string[],
 ): Promise<PromoterItem[]> {
+  const targets = normalizeAdmissionTargetIds(targetItemIds);
   const rows = await sql<WorkItemRow[]>`
     SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
       FROM harness_shared.work_items
@@ -1921,6 +1936,7 @@ export async function readPendingBatch(
        AND harness_slug = ${harnessSlug}
        AND admission IN ('pending', 'unreviewed')
        AND lane IS DISTINCT FROM 'observation'
+       AND (${targets === undefined} OR feature_id = ANY(${targets ?? []}::text[]))
      ORDER BY
        (payload -> 'dedupCandidates') IS NOT NULL DESC,
        COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
@@ -1936,6 +1952,7 @@ async function readPromoterPairs(
   pending: readonly PromoterItem[],
   recentTerminalDays: number,
   nowMs: number,
+  includeOutsidePending = false,
 ): Promise<PromoterPair[]> {
   if (pending.length === 0) return [];
   const ids = pending.map((item) => item.id);
@@ -1982,7 +1999,7 @@ async function readPromoterPairs(
            AND wi.harness_slug = ${harnessSlug}
            AND wi.feature_id <> p.feature_id
            AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
-           AND (wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${ids}::text[]))
+           AND (${includeOutsidePending} OR wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${ids}::text[]))
            AND (
              NOT harness_shared.work_item_status_is_terminal(wi.status)
              OR wi.updated_ts >= ${recentCutoffMs}
@@ -3893,6 +3910,8 @@ interface PersistAdmissionPlanInput {
   plan: PromoterPlan;
   /** Exact endpoint/reference identities captured before the model call. */
   snapshots: readonly AdmissionMergeSnapshot[];
+  /** A restriction, not an authorization grant. Neighbours still participate in screening. */
+  mutationItemIds?: readonly string[];
   /** Bulk already owns the encompassing transaction (including its post-write census). */
   withinTransaction?: boolean;
   /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
@@ -4099,7 +4118,48 @@ async function persistAdmissionPlanInTransaction(
 
   const approvedDispositionIds = new Set<string>();
   const replayedIds = new Set<string>();
+  const mutationIds = normalizeAdmissionTargetIds(input.mutationItemIds);
+  const allowedIds = mutationIds === undefined ? undefined : new Set(mutationIds);
+  const scopeBlocked = new Set<string>();
+  if (allowedIds) {
+    // Screen the whole graph, but do not persist half a component: a merge
+    // updates the canonical too, and related links update BOTH endpoints.
+    const edges = [
+      ...input.plan.adjudications.map((row) => [row.a, row.b]),
+      ...input.plan.relatedPairs.map((row) => [row.a, row.b]),
+      ...input.plan.dispositions.flatMap((row) =>
+        row.action === 'merge' ? [[row.itemId, row.canonicalId]] : []),
+    ];
+    for (const id of relevantIds) if (!allowedIds.has(id)) scopeBlocked.add(id);
+    for (const row of input.plan.dispositions) {
+      if (row.action !== 'merge') continue;
+      const loser = liveById.get(row.itemId);
+      // Dependency rewrites need their own authority; this exact-item door
+      // does not grant it. Nor does it grant writes to incoming references.
+      if (loser && (loser.dependencies.length > 0 ||
+        loser.incomingSeeAlso.some((ref) => !allowedIds.has(ref.sourceId)))) {
+        scopeBlocked.add(row.itemId);
+      }
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const edge of edges) {
+        if (!edge.some((id) => scopeBlocked.has(id))) continue;
+        for (const id of edge) {
+          if (!scopeBlocked.has(id)) { scopeBlocked.add(id); changed = true; }
+        }
+      }
+    }
+    for (const id of scopeBlocked) {
+      registerRefusal(id, null, {
+        reason: 'outside-mutation-scope',
+        detail: 'screened component requires mutations outside the exact target set; no component writes authorized',
+      });
+    }
+  }
   for (const disposition of input.plan.dispositions) {
+    if (scopeBlocked.has(disposition.itemId)) continue;
     if (disposition.action === 'hold') {
       heldById.set(disposition.itemId, disposition.reason);
       const problem = snapshotIdentityProblem(
@@ -4162,6 +4222,7 @@ async function persistAdmissionPlanInTransaction(
 
   const approvedNonMergePairs = new Set<string>();
   for (const adjudication of input.plan.adjudications) {
+    if (scopeBlocked.has(adjudication.a) || scopeBlocked.has(adjudication.b)) continue;
     if (adjudication.verdict === 'r-finding-merge') continue;
     const aProblem = snapshotIdentityProblem(
       capturedById.get(adjudication.a),
@@ -4553,10 +4614,13 @@ export async function runWorkItemAdmissionPromoter(opts: {
   sql?: OrgSql;
   runId?: string;
   batchSize?: number;
+  targetItemIds?: readonly string[];
   recentTerminalDays?: number;
   model?: string;
   now?: () => number;
 }): Promise<PromoterRunResult> {
+  // Validate before opening a ledger run or touching policy/DB state.
+  const targetItemIds = normalizeAdmissionTargetIds(opts.targetItemIds);
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const startedAt = now();
@@ -4607,7 +4671,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
   let modelCostUsd: number | null = 0;
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
-    const pendingRows = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize);
+    const pendingRows = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize, targetItemIds);
     const pairRows = await readPromoterPairs(
       sql,
       opts.workspaceId,
@@ -4615,6 +4679,9 @@ export async function runWorkItemAdmissionPromoter(opts: {
       pendingRows,
       recentTerminalDays,
       startedAt,
+      // Narrowing the batch must not hide a pending twin from screening.
+      // Only the transactional mutation boundary narrows what may be written.
+      targetItemIds !== undefined,
     );
     // Capture ONE authoritative endpoint/reference identity immediately before
     // the model call. Both the prompt and the writer are bound to these exact
@@ -4678,6 +4745,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       pending,
       plan,
       snapshots: [...snapshotsById.values()],
+      mutationItemIds: targetItemIds,
     });
     const promoted = persisted.promotedIds.length;
     const merged = persisted.mergedIds.length;
@@ -4714,6 +4782,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       detail: {
         status: 'complete',
         mode: 'promoter',
+        ...(targetItemIds === undefined ? {} : { targetItemIds }),
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
         // Null is explicit unpriced coverage, never a fabricated zero-dollar call.

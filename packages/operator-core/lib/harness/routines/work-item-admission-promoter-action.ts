@@ -9,6 +9,7 @@ import {
   DEFAULT_PROMOTER_TICK_MINUTES,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
+  normalizeAdmissionTargetIds,
   WORK_ITEM_ADMISSION_FAIL_OPEN,
   WORK_ITEM_ADMISSION_PROMOTER,
   type FailOpenRunResult,
@@ -33,9 +34,23 @@ export interface AdmissionPromoterActionDeps {
   log: (message: string) => void;
 }
 
+export function admissionPromoterOptions(ctx: SystemActionCtx) {
+  const payload = ctx.payloadTemplate ?? {};
+  const targetItemIds = normalizeAdmissionTargetIds(payload.targetItemIds);
+  return {
+    workspaceId: ctx.workspaceId,
+    harnessSlug: ctx.installSlug,
+    runId: runId(WORK_ITEM_ADMISSION_PROMOTER),
+    batchSize: positiveInteger(payload.batchSize, DEFAULT_PROMOTER_BATCH_SIZE),
+    recentTerminalDays: positiveInteger(payload.recentTerminalDays, 30),
+    model: optionalModelSpec(payload.model, 'admission promoter'),
+    ...(targetItemIds === undefined ? {} : { targetItemIds }),
+  };
+}
+
 async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResult> {
   if (process.env.VITEST) throw new Error('production admission promoter must not run from a unit test');
-  const payload = ctx.payloadTemplate ?? {};
+  const options = admissionPromoterOptions(ctx);
   if (process.env.PAPERCUSP_WORK_ITEM_ADMISSION_PROMOTER === 'off') {
     throw new Error('work-item admission promoter is disabled by PAPERCUSP_WORK_ITEM_ADMISSION_PROMOTER=off');
   }
@@ -49,12 +64,7 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
   }
   const { llmCall } = await import('../../llm-testing/llm-client');
   return runWorkItemAdmissionPromoter({
-    workspaceId: ctx.workspaceId,
-    harnessSlug: ctx.installSlug,
-    runId: runId(WORK_ITEM_ADMISSION_PROMOTER),
-    batchSize: positiveInteger(payload.batchSize, DEFAULT_PROMOTER_BATCH_SIZE),
-    recentTerminalDays: positiveInteger(payload.recentTerminalDays, 30),
-    model: optionalModelSpec(payload.model, 'admission promoter'),
+    ...options,
     llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
   });
 }

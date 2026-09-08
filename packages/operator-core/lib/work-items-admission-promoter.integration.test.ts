@@ -241,6 +241,118 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  it('targets the original item without admitting an older unrelated row or another scope', async () => {
+    await seedItem({ id: 'WI-target', title: 'unique selected recovery', vector: null });
+    await seedItem({ id: 'WI-older', title: 'unrelated older work', vector: null, createdAtMs: NOW - 30_000 });
+    await seedItem({ id: 'WI-target', title: 'foreign workspace', vector: null, workspaceId: 'other' });
+    await seedItem({ id: 'WI-target', title: 'foreign harness', vector: null, harness: 'other' });
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'exact-original', sql: db.sql,
+      targetItemIds: ['WI-target'], batchSize: 1, llmCall, now: () => NOW,
+    });
+    expect(result).toMatchObject({ batchSize: 1, promoted: 1, merged: 0, held: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+    expect(await db.sql`
+      SELECT workspace_id, harness_slug, feature_id FROM harness_shared.work_items WHERE admission = 'admitted'
+    `).toEqual([{ workspace_id: WS, harness_slug: HARNESS, feature_id: 'WI-target' }]);
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_items`).toHaveLength(4);
+  });
+
+  it.each(['r-finding-merge', 'r-remedy-keep'] as const)(
+    'screens out-of-batch neighbours but refuses their mutation component (%s)', async (verdict) => {
+      await seedItem({ id: 'WI-target' });
+      await seedItem({ id: 'WI-neighbour', admission: 'unreviewed', createdAtMs: NOW - 20_000 });
+      const before = await db.sql`SELECT * FROM harness_shared.work_items ORDER BY feature_id`;
+      const llmCall = judgementCall(verdict);
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: `exact-neighbour-${verdict}`, sql: db.sql,
+        targetItemIds: ['WI-target'], llmCall, now: () => NOW,
+      });
+      expect(llmCall).toHaveBeenCalledTimes(1);
+      expect(llmCall.mock.calls[0]![0].messages[0]!.content).toContain('WI-neighbour');
+      expect(result).toMatchObject({ batchSize: 1, flaggedPairs: 1, promoted: 0, merged: 0, writerCoverageGap: [] });
+      expect(result.guardRefusals).toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: 'WI-target', reason: 'outside-mutation-scope' }),
+      ]));
+      expect(await db.sql`SELECT * FROM harness_shared.work_items ORDER BY feature_id`).toEqual(before);
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+      expect(await db.sql`SELECT 1 FROM harness_shared.coord_links`).toHaveLength(0);
+      expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+    },
+  );
+
+  it('permits a fully targeted component while retaining snapshot-drift refusal', async () => {
+    await seedItem({ id: 'WI-a' });
+    await seedItem({ id: 'WI-b' });
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'exact-component', sql: db.sql,
+      targetItemIds: ['WI-a', 'WI-b'], llmCall: judgementCall('r-finding-merge'), now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 1, merged: 1, guardRefusals: [], writerCoverageGap: [] });
+
+    await seedItem({ id: 'WI-drift', title: 'isolated drift probe', vector: null });
+    const snapshots = await readAdmissionMergeSnapshots(db.sql, {
+      workspaceId: WS, harnessSlug: HARNESS, ids: ['WI-drift'],
+    });
+    await db.sql`UPDATE harness_shared.work_items SET summary = 'changed' WHERE feature_id = 'WI-drift'`;
+    const refused = await persistAdmissionPlan(db.sql, {
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'exact-drift', modelId: 'fixture', nowMs: NOW,
+      pending: await readPendingBatch(db.sql, WS, HARNESS, 1, ['WI-drift']),
+      snapshots: [...snapshots.values()], mutationItemIds: ['WI-drift'],
+      plan: { dispositions: [{ itemId: 'WI-drift', action: 'promote' }], adjudications: [], relatedPairs: [] },
+    });
+    expect(refused.promotedIds).toEqual([]);
+    expect(refused.guardRefusals).toEqual([expect.objectContaining({ reason: 'snapshot-drift' })]);
+  });
+
+  it('does not merge a younger outside-batch loser even when the target is canonical', async () => {
+    await seedItem({ id: 'WI-target', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-outside', createdAtMs: NOW - 10_000 });
+    const before = await db.sql`SELECT * FROM harness_shared.work_items ORDER BY feature_id`;
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'exact-outside-loser', sql: db.sql,
+      targetItemIds: ['WI-target'], llmCall: judgementCall('r-finding-merge'), now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 0, merged: 0, flaggedPairs: 1, writerCoverageGap: [] });
+    expect(result.guardRefusals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'WI-target', reason: 'outside-mutation-scope' }),
+      expect.objectContaining({ itemId: 'WI-outside', reason: 'outside-mutation-scope' }),
+    ]));
+    expect(await db.sql`SELECT * FROM harness_shared.work_items ORDER BY feature_id`).toEqual(before);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+  });
+
+  it('holds a fully targeted merge whose reference rewrite would touch an outside row', async () => {
+    await seedItem({ id: 'WI-a', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-b', createdAtMs: NOW - 10_000 });
+    await seedItem({ id: 'WI-reference', title: 'unrelated reference source', vector: null });
+    await db.sql`UPDATE harness_shared.work_items SET see_also = ARRAY['WI-b'] WHERE feature_id = 'WI-reference'`;
+    const before = await db.sql`SELECT * FROM harness_shared.work_items ORDER BY feature_id`;
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'exact-outside-reference', sql: db.sql,
+      targetItemIds: ['WI-a', 'WI-b'], llmCall: judgementCall('r-finding-merge'), now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 0, merged: 0, writerCoverageGap: [] });
+    expect(result.guardRefusals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'WI-b', reason: 'outside-mutation-scope' }),
+    ]));
+    expect(await db.sql`SELECT * FROM harness_shared.work_items ORDER BY feature_id`).toEqual(before);
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+  });
+
+  it('never interprets missing or invalid exact targets as the global batch', async () => {
+    await seedItem({ id: 'WI-stays-pending', vector: null });
+    expect(await readPendingBatch(db.sql, WS, HARNESS, 20, ['WI-absent'])).toEqual([]);
+    await expect(readPendingBatch(db.sql, WS, HARNESS, 20, [])).rejects.toThrow('targetItemIds');
+    await expect(runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'invalid-targets', sql: db.sql,
+      targetItemIds: [], llmCall: vi.fn(),
+    })).rejects.toThrow('targetItemIds');
+    expect(await db.sql`SELECT 1 FROM harness_shared.admission_runs`).toHaveLength(0);
+    expect(await db.sql`SELECT admission FROM harness_shared.work_items`).toEqual([{ admission: 'pending' }]);
+  });
+
   it('previews reviewed cleanup with current readiness and preserves no-signal/insufficient evidence', async () => {
     const notReady = {
       implementationReadiness: {

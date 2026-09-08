@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ register: vi.fn(), failOpen: vi.fn() }));
+const h = vi.hoisted(() => ({ register: vi.fn(), failOpen: vi.fn(), workflowID: 'durable-promoter-test' }));
+vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { get workflowID() { return h.workflowID; } } }));
 vi.mock('./system-actions', () => ({ registerSystemAction: h.register }));
 vi.mock('../../work-items-admission-promoter', async (orig) => {
   const actual = await orig<typeof import('../../work-items-admission-promoter')>();
   return { ...actual, runWorkItemAdmissionFailOpen: h.failOpen };
 });
 
-const { makeWorkItemAdmissionFailOpenAction, makeWorkItemAdmissionPromoterAction } =
+const { admissionPromoterOptions, makeWorkItemAdmissionFailOpenAction, makeWorkItemAdmissionPromoterAction } =
   await import('./work-item-admission-promoter-action');
 const registeredNames = h.register.mock.calls.map((call) => call[0]);
 
@@ -21,6 +22,25 @@ const ctx = {
 beforeEach(() => vi.clearAllMocks());
 
 describe('work-item admission routine actions', () => {
+  it('threads exact targets and the durable workflow identity without widening the scheduled default', () => {
+    expect(admissionPromoterOptions(ctx)).not.toHaveProperty('targetItemIds');
+    expect(admissionPromoterOptions({
+      ...ctx, payloadTemplate: { targetItemIds: [' WI-2 ', 'WI-1', 'WI-2'], batchSize: 2 },
+    })).toMatchObject({
+      workspaceId: 'ws', harnessSlug: 'papercusp', runId: 'durable-promoter-test',
+      batchSize: 2, targetItemIds: ['WI-1', 'WI-2'],
+    });
+    for (const targetItemIds of [[], null, '', [''], [7], Array(101).fill('WI-1')]) {
+      expect(() => admissionPromoterOptions({ ...ctx, payloadTemplate: { targetItemIds } }))
+        .toThrow('targetItemIds');
+    }
+  });
+
+  it('retains the production unit-test guard rather than exercising live screening', async () => {
+    await expect(makeWorkItemAdmissionPromoterAction()(ctx))
+      .rejects.toThrow('production admission promoter must not run from a unit test');
+  });
+
   it('registers the LLM promoter and the independent fail-open action', () => {
     expect(registeredNames).toEqual(['work-item-admission-promoter', 'work-item-admission-fail-open']);
   });
