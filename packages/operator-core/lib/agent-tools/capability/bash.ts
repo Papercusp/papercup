@@ -285,6 +285,134 @@ function firstNonOption(tokens: readonly string[], start = 1): string | undefine
   return undefined;
 }
 
+const GIT_HISTORY_SUBCOMMANDS = new Set(['log', 'rev-list']);
+const GIT_HISTORY_EXPANSION_OPTIONS = new Set(['--all', '--reflog', '--walk-reflogs']);
+
+/**
+ * A history search that walks every ref (or a broad working-tree pickaxe) can
+ * retain a large amount of Git's object graph while it runs. capability:bash
+ * otherwise gives background jobs a deliberately generous hours-long deadline,
+ * so a missing commit bound turns one forensic typo into a resident high-RSS
+ * process. Keep this detector deliberately conservative: only the simple shell
+ * grammar already understood by splitClassifiableShell is classified, and every
+ * unknown shell form falls through to the normal timeout/sandbox path.
+ */
+export interface UnboundedGitHistorySearch {
+  excerpt: string;
+  selectors: string[];
+}
+
+function gitHistoryArgs(segment: readonly string[]): readonly string[] | null {
+  let commandIndex = 0;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[commandIndex] ?? '')) commandIndex += 1;
+  if (commandBase(segment[commandIndex] ?? '') !== 'git') return null;
+
+  let index = commandIndex + 1;
+  // Git global options may precede the subcommand. The recognized value-taking
+  // forms cover normal git -C repo log / git -c key=value log calls without
+  // treating an arbitrary option value as a subcommand.
+  while (index < segment.length) {
+    const token = segment[index]!;
+    if (
+      token === '-C' ||
+      token === '--git-dir' ||
+      token === '--work-tree' ||
+      token === '--namespace' ||
+      token === '-c'
+    ) {
+      index += 2;
+      continue;
+    }
+    if (
+      token.startsWith('-C') ||
+      token.startsWith('--git-dir=') ||
+      token.startsWith('--work-tree=') ||
+      token.startsWith('--namespace=') ||
+      token.startsWith('--exec-path=') ||
+      token.startsWith('-c')
+    ) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      index += 1;
+      continue;
+    }
+    return GIT_HISTORY_SUBCOMMANDS.has(token.toLowerCase()) ? segment.slice(index + 1) : null;
+  }
+  return null;
+}
+
+function hasBoundedGitHistoryCount(tokens: readonly string[]): boolean {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (/^-[0-9]+$/.test(token) || /^-n[0-9]+$/.test(token) || /^--max-count=[0-9]+$/.test(token)) return true;
+    if ((token === '-n' || token === '--max-count') && /^[0-9]+$/.test(tokens[index + 1] ?? '')) return true;
+  }
+  return false;
+}
+
+/**
+ * Detect a repository-history command whose revision walk has no explicit
+ * commit bound. This is a launch guard, not a shell parser: callers that need
+ * a complicated command still receive the existing timeout/process-tree
+ * confinement behavior rather than a false refusal from this advisory rule.
+ */
+export function detectUnboundedGitHistorySearch(command: string): UnboundedGitHistorySearch | null {
+  const segments = splitClassifiableShell(command);
+  if (!segments) return null;
+
+  for (const segment of segments) {
+    const historyTokens = gitHistoryArgs(segment);
+    if (!historyTokens) continue;
+
+    const separator = historyTokens.indexOf('--');
+    const optionTokens = separator >= 0 ? historyTokens.slice(0, separator) : historyTokens;
+    const selectors = optionTokens.filter((token) => {
+      if (GIT_HISTORY_EXPANSION_OPTIONS.has(token)) return true;
+      if (/^--(?:branches|remotes|tags|glob)(?:=|$)/.test(token)) return true;
+      if (/^-S(?:.+)?$/.test(token) || /^-G(?:.+)?$/.test(token)) return true;
+      return /^--(?:pickaxe-(?:all|regex|string)|grep|author|committer)(?:=|$)/.test(token);
+    });
+    if (selectors.length === 0 || hasBoundedGitHistoryCount(optionTokens)) continue;
+
+    const hasBroadPickaxeScope = selectors.some((token) =>
+      /^-S|^-G|^--pickaxe-|^--(?:grep|author|committer)/.test(token),
+    );
+    if (GIT_HISTORY_EXPANSION_OPTIONS.has(selectors[0]!) || !hasBroadPickaxeScope) {
+      return {
+        excerpt: segment.join(' ').slice(0, 240),
+        selectors,
+      };
+    }
+
+    // A pickaxe over one named file is a normal forensic operation. The broad
+    // forms are the repository root (.) or no pathspec at all.
+    const pathspecs = separator >= 0 ? historyTokens.slice(separator + 1) : [];
+    const broadPathspec =
+      separator < 0 || pathspecs.length === 0 || pathspecs.some((path) => path === '.' || path === './');
+    if (broadPathspec) {
+      return {
+        excerpt: segment.join(' ').slice(0, 240),
+        selectors,
+      };
+    }
+  }
+  return null;
+}
+
+export function formatUnboundedGitHistorySearchAdvice(diagnostic: UnboundedGitHistorySearch): string {
+  return (
+    'Refused: this repository-history search has no explicit commit bound (' +
+    diagnostic.excerpt +
+    '). Unbounded git log/rev-list ' +
+    diagnostic.selectors.join(', ') +
+    ' scans can consume host CPU and RSS for hours. Add -n/--max-count (for example: ' +
+    'git log --all -n 100 -- path/to/file) and prefer a focused path; split wider ' +
+    'forensics into bounded ref/path chunks before relaunching.'
+  );
+}
+
 function classifiesSystemctlRead(tokens: readonly string[]): boolean {
   if (tokens.some((token) => token.toLowerCase() === '--version')) return true;
   const subcommand = firstNonOption(tokens);
@@ -651,7 +779,7 @@ export default defineTool({
     // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
       'Run builds/tests/checks/scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the argument — an unmatched backtick fails before either tool runs. ' +
-      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; do not shell-background child with \`&\`/nohup/setsid/disown without \`wait\`; 4h/12h defaults.`,
+      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. Bound git history scans (\`git log --all\`, \`-S\`, \`-G\`) with \`-n\` + a focused path; unbounded refused. do not shell-background child without \`wait\`.`,
     notWhen:
       'Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.',
     chaining:
@@ -663,10 +791,7 @@ export default defineTool({
     // NOTE for whoever edits this next: `seeAlso` is NOT summed by promptWeight()
     // (tool-guidance-budget.ts — description + when + notWhen + chaining + byRole only),
     // so changing this array cannot move the prompt-weight budget in either direction.
-    seeAlso: [
-      'capability:bash_output (read a backgrounded run)',
-      'capability:git (git actions, gated as git)',
-    ],
+    seeAlso: ['capability:bash_output (read a backgrounded run)', 'capability:git (git actions, gated as git)'],
   },
   capability: 'capability:bash',
   effectForCall: classifyCapabilityBashEffect,
@@ -761,6 +886,23 @@ export default defineTool({
     // the child's misleading `spawn /usr/bin/bash ENOENT`.
     const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
     if (cwdError) throw new Error(cwdError);
+    const unboundedGitHistorySearch = detectUnboundedGitHistorySearch(command);
+    if (unboundedGitHistorySearch) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              reason: 'unbounded_git_history',
+              selectors: unboundedGitHistorySearch.selectors,
+              message: formatUnboundedGitHistorySearchAdvice(unboundedGitHistorySearch),
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     // Classify before any Git read. The overwhelmingly common command remains a
     // pure string check; only a canonical root test or candidate worktree cut
     // reaches the live marker/HEAD CAS immediately before its actual spawn.
