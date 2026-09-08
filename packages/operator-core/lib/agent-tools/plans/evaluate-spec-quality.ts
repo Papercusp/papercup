@@ -46,7 +46,7 @@ export default defineTool({
     const [planRead, clauseRead, rubricRead] = await Promise.allSettled([
       Promise.resolve().then(() => readPlanBySlug(args.slug, opts)),
       Promise.resolve().then(() => listSpecClauses({ harnessSlug, planSlug: args.slug })),
-      Promise.resolve().then(() => getAcceptanceRubricsForPlan(args.slug, { strict: true })),
+      Promise.resolve().then(() => getAcceptanceRubricsForPlan(args.slug, { harnessSlug, strict: true })),
     ]);
     const blockers: Array<{
       check: 'plan' | 'inputs' | 'class' | 'clauses';

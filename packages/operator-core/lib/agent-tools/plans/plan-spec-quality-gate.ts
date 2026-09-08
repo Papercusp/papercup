@@ -41,7 +41,7 @@ export interface PlanSpecQualityGateVerdict {
 type GateDeps = {
   listClauses?: typeof listSpecClauses;
   listCards?: typeof listScorecards;
-  listAcceptanceRubrics?: (planSlug: string) => Promise<ReadonlyArray<{ classRef?: string | null }>>;
+  listAcceptanceRubrics?: (planSlug: string, options: { harnessSlug: string; strict: true }) => Promise<ReadonlyArray<{ classRef?: string | null }>>;
 };
 
 type ClassResolution =
@@ -161,8 +161,7 @@ export async function evaluatePlanSpecQualityGate(
 ): Promise<PlanSpecQualityGateVerdict> {
   const listClauses = deps.listClauses ?? listSpecClauses;
   const listCards = deps.listCards ?? listScorecards;
-  const listAcceptanceRubrics = deps.listAcceptanceRubrics ??
-    ((planSlug: string) => getAcceptanceRubricsForPlan(planSlug, { strict: true }));
+  const listAcceptanceRubrics = deps.listAcceptanceRubrics ?? getAcceptanceRubricsForPlan;
   let clauses;
   try {
     clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
@@ -195,7 +194,7 @@ export async function evaluatePlanSpecQualityGate(
 
   let acceptanceRubrics;
   try {
-    acceptanceRubrics = await listAcceptanceRubrics(input.planSlug);
+    acceptanceRubrics = await listAcceptanceRubrics(input.planSlug, { harnessSlug: input.harnessSlug, strict: true });
   } catch (error) {
     return {
       satisfied: false,
