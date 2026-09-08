@@ -218,7 +218,9 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('capability:bash')).toBe(false);
 
       const [
-        { COORD_ROLES, WORK_ITEM_LIFECYCLE_ROLES },
+        { COORD_REPLY_ROLES, COORD_ROLES, WORK_ITEM_LIFECYCLE_ROLES },
+        { default: send },
+        { default: ack },
         { default: emit },
         { default: run },
         { default: read },
@@ -233,10 +235,13 @@ describe('loadRoleCapabilities', () => {
         { default: comment },
         { default: checkpoint },
         { default: complete },
+        { default: release },
         { default: createWorkItem },
         { default: setState },
       ] = await Promise.all([
         import('../../../agent-tools/coordination/roles.js'),
+        import('../../../agent-tools/coordination/tools/send.js'),
+        import('../../../agent-tools/coordination/tools/ack.js'),
         import('../../../agent-tools/scorecards/emit.js'),
         import('../../../agent-tools/testing/run.js'),
         import('../../../agent-tools/capability/read.js'),
@@ -251,6 +256,7 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/work_items/comment.js'),
         import('../../../agent-tools/work_items/checkpoint.js'),
         import('../../../agent-tools/work_items/complete.js'),
+        import('../../../agent-tools/work_items/release.js'),
         import('../../../agent-tools/work_items/create.js'),
         import('../../../agent-tools/work_items/set_state.js'),
       ]);
@@ -269,9 +275,12 @@ describe('loadRoleCapabilities', () => {
         comment,
         checkpoint,
         complete,
+        release,
       ]) {
         expect(tool.agentRoles).toContain('judge');
       }
+      expect(send.agentRoles).toContain('judge');
+      expect(ack.agentRoles).toContain('judge');
       for (const [name, tool] of [
         ['work_items:create', createWorkItem],
         ['work_items:set_state', setState],
@@ -279,6 +288,7 @@ describe('loadRoleCapabilities', () => {
         expect(tool.agentRoles, `${name} must stay outside judge's lifecycle lane`).not.toContain('judge');
       }
       expect(WORK_ITEM_LIFECYCLE_ROLES).toContain('judge');
+      expect(COORD_REPLY_ROLES).toContain('judge');
       expect(COORD_ROLES).not.toContain('judge');
     },
   );

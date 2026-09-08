@@ -414,6 +414,39 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       expect(payloadOf(res as never)).toMatchObject({ reason: 'positive_control_tenant_scope_required' });
       expect(pgReadQueryMock).not.toHaveBeenCalled();
     });
+
+    // EI-22633261796522656: local reporter rows can be recovered by a bounded
+    // id group. The primary and positive-control reads must both pass the same
+    // tenant guard so the handler can execute the evidence probe without the
+    // caller resorting to allowUnscoped.
+    it('executes a tenant-fenced bounded local reporter query with its positive control', async () => {
+      const sql =
+        "SELECT id, file_path, status FROM harness_shared.test_runs WHERE workspace_id = 'ws-1' " +
+        "AND harness_slug = 'h-1' AND id BETWEEN 100 AND 104 ORDER BY id";
+      const positiveControlSql =
+        "SELECT id FROM harness_shared.test_runs WHERE workspace_id = 'ws-1' " +
+        "AND harness_slug = 'h-1' AND id = 100";
+
+      const res = await pgQueryTool.handler({ sql, positiveControlSql } as never, {
+        workspaceId: 'ws-1',
+        harnessSlug: 'h-1',
+      } as never);
+
+      expect(payloadOf(res as never)).toMatchObject({ rowCount: 1 });
+      expect(pgReadQueryMock).toHaveBeenCalledWith(sql, {
+        maxRows: undefined,
+        timeoutMs: undefined,
+        positiveControlSql,
+      });
+      expect(advisoryMock).toHaveBeenNthCalledWith(1, sql, {
+        workspaceId: 'ws-1',
+        harnessSlug: 'h-1',
+      });
+      expect(advisoryMock).toHaveBeenNthCalledWith(2, positiveControlSql, {
+        workspaceId: 'ws-1',
+        harnessSlug: 'h-1',
+      });
+    });
   });
 
   // WI-6674. NOTE the mock factory spreads importOriginal() before overriding,

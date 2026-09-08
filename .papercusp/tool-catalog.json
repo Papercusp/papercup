@@ -20897,7 +20897,7 @@
           "POST"
         ]
       },
-      "description": "Preflight plan inputs, persisted acceptance class and first-class clauses together, then grade the exact spec set. Missing/invalid/unknown prerequisites return all discoverable blockers without a scorecard draft. A valid call derives class and exact fingerprint from the stores; read-only.",
+      "description": "Preflight plan inputs, persisted acceptance class and first-class clauses together, then grade the exact spec set. Missing/invalid/unknown prerequisites return all discoverable blockers without a scorecard draft. A valid call derives class and exact fingerprint from the stores; read-only. For enforcement-eligible plans, the returned draft starts a four-step activation chain: evaluate → emit the terminal scorecard → settle its independent grading-integrity audit → plans:start.",
       "capabilities": [
         "plans:read"
       ],
@@ -20958,9 +20958,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses.",
+        "when": "Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses. The terminal standard-rubric card emitted from this result remains audit-pending until a NON-AUTHOR reviewer emits its grading-integrity audit.",
         "notWhen": "Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.",
-        "chaining": "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft → plans:start. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence."
+        "chaining": "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft with terminal:true → dispatch or await the NON-AUTHOR grading-integrity reviewer → scorecards:list { rubricRef:'spec-quality', subjectRef:'<scorecardId>' } and confirm gradingAudit is settled → plans:start { slug }. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence."
       }
     },
     {
@@ -21637,9 +21637,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the plan will be started, include substantive Requirements + Design sections and canonical P-NNN item lines.",
+        "when": "Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the body includes Requirements, author canonical `**R-N — Title.** outcome` records and a Design `### Bar-to-work map for this plan` table mapping every R-N to one or more P-NNN items with evidence plane `tree`, `deployed`, or `live`; plans:new validates this before writing. If the plan will be started, include substantive Requirements + the complete Design BAR map + canonical P-NNN item lines.",
         "notWhen": "You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.",
-        "chaining": "Author-in-one: plans:new { slug, title, content }. For plans:start promotion, include substantive ## Requirements + ## Design sections and canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items."
+        "chaining": "Author-in-one: plans:new { slug, title, content }. A Requirements section is a post-epoch acceptance-BAR source and must include the exact `### Bar-to-work map for this plan` table; plans:new refuses missing/malformed rows before persistence. For plans:start promotion, include substantive ## Requirements + the complete ## Design BAR map + canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new (empty starter) → plans:set-now → plans:add-item × N → plans:set-content with the complete spec. Then plans:start to promote items to work-items."
       }
     },
     {
@@ -23769,7 +23769,7 @@
           "POST"
         ]
       },
-      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready', and that transition is refused until `plans:audit { phase:'activation' }` has recorded a complete source-conversation audit. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
+      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready', and that transition is refused until `plans:audit { phase:'activation' }` has recorded a complete source-conversation audit. For plans with first-class clauses, the spec-quality prerequisite is a visible four-step chain — `plans:evaluate-spec-quality` → terminal `scorecards:emit` → NON-AUTHOR `grading-integrity` audit settled → `plans:start`; a terminal scorecard whose audit is still pending is not start-ready. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
       "capabilities": [
         "plans:write"
       ],
@@ -23830,9 +23830,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "After re-reading the complete plan-related conversation, mapping every requirement/constraint/correction/rejected alternative/decision/acceptance condition/open question/follow-up, repairing omissions, and recording `plans:audit { phase:'activation' }` — this starts the plan's item-promotion path into work-items.",
+        "when": "After re-reading the complete plan-related conversation, mapping every requirement/constraint/correction/rejected alternative/decision/acceptance condition/open question/follow-up, repairing omissions, and recording `plans:audit { phase:'activation' }`. If the plan has first-class clauses, first complete `plans:evaluate-spec-quality` → terminal `scorecards:emit` → a different non-author reviewer emits the `grading-integrity` audit and the card reports a settled audit; only then start the plan's item-promotion path into work-items.",
         "notWhen": "The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.",
-        "chaining": "sessions:search/read (complete source conversation) → repair the draft → plans:audit { phase:'activation' } → plans:start { slug }. If an edit response carries activationAudit metadata, compare audited/current revisions and re-audit only for a material change; cosmetic-only edits do not require it."
+        "chaining": "sessions:search/read (complete source conversation) → repair the draft → plans:audit { phase:'activation' } → plans:evaluate-spec-quality { slug } → scorecards:emit the exact terminal draft → have a different non-author reviewer emit `scorecards:emit { rubricRef:'grading-integrity', terminal:true, subject:{ kind:'scorecard', ref:'<scorecardId>' }, ratings:{...} }` (the reusable dispatch recipe is in `plans:evaluate-spec-quality`) → verify the audit is settled → plans:start { slug }. If an edit response carries activationAudit metadata, compare audited/current revisions and re-audit only for a material change; cosmetic-only edits do not require it."
       }
     },
     {
@@ -32946,17 +32946,6 @@
         "mug",
         "documenter",
         "curator"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "As the resolver behind state:read { cell:\"workspace.workScope\" }, or when you only need to READ whether the workspace is confined to an allow-list of harnesses.",
-        "notWhen": "To set or clear the policy — that is workspace:work_scope { op:\"set\"|\"clear\" }.",
-        "chaining": "state:read { cell:\"workspace.workScope\" } is the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
-      }
-    }
-  ]
-}
-or"
       ],
       "profile": "engineer",
       "guidance": {

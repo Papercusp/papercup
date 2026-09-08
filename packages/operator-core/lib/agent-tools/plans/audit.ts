@@ -145,8 +145,12 @@ const argsSchema = z.object({
   ),
   repairedOmissions: z.array(z.string().min(1).max(2000)).max(100).optional(),
   rejectedOrSuperseded: z.array(z.string().min(1).max(2000)).max(100).optional(),
-  unresolvedBlockers: z.array(z.string().min(1).max(2000)).max(100).optional(),
-  summary: z.string().max(4000).optional(),
+  unresolvedBlockers: z.array(z.string().min(1).max(2000)).max(100).optional().describe(
+    'Activation phase: blockers that are still unresolved. Any nonempty array blocks activation and means nothing is recorded; do not use it for a resolved or conditional live-environment limitation. Put resolved limitations in a covered mapping and explain the condition in summary.',
+  ),
+  summary: z.string().max(4000).optional().describe(
+    'Optional audit context. For activation, use this to explain resolved conditional/live-environment limitations after mapping them to the plan; it does not make unresolvedBlockers acceptable.',
+  ),
 }).superRefine((args, ctx) => {
   if (args.phase === 'activation') {
     // Whether coverage is required depends on whether this is the first audit.
@@ -362,7 +366,7 @@ export default defineTool({
           phase: 'activation' as const,
           error: 'activation_blocked',
           message:
-            'Activation audit has unresolved blockers or open mappings. Repair/map them before ready/active; no audit was recorded.',
+            'Activation audit has unresolved blockers or open mappings. Any nonempty unresolvedBlockers list blocks and records nothing; repair/map them before ready/active. Put resolved conditional limitations in covered mappings/summary.',
           unresolvedBlockers: submittedActivation.unresolvedBlockers,
           openMappingIds: submittedActivation.mappings
             .filter((mapping) => mapping.disposition === 'open')

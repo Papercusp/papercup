@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { appendAck, resolveMessageRef } from '../messages';
-import { COORD_ROLES } from '../roles';
+import { COORD_REPLY_ROLES } from '../roles';
 import { runBulk, bulkContent } from '../../_bulk';
 
 const itemSpec = z.object({
@@ -33,7 +33,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_REPLY_ROLES],
   args: z
     .object({
       msg_id: z.string().min(1).optional().describe('single-ack shorthand: the coord msg_id'),

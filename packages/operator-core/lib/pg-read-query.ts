@@ -526,8 +526,9 @@ const CORPUS_NAMESPACED_TABLES = new Set([
  * clean-looking empty result, indistinguishable from "no failures". `source`/`commit_sha` are the
  * columns that actually discriminate a gate row, so `test_runs` is excluded from the
  * generic/override checks below and gets its own advisory ({@link buildTestRunsAdvisory}). An
- * exact run_group_id fenced by BOTH explicit tenant predicates is the separate safe case: it is
- * an intentional per-run tenant read, so it must not be rejected as an unscoped query.
+ * an exact run_group_id (or bounded row-id group) fenced by BOTH explicit tenant predicates is
+ * the separate safe case: it is an intentional per-run/local-group tenant read, so it must not
+ * be rejected as an unscoped query. Broad/partial tenant filters retain the CI warning.
  */
 const TEST_RUNS_TABLE = 'test_runs';
 
@@ -536,19 +537,25 @@ const TEST_RUNS_TABLE = 'test_runs';
  * expressed as a {@link TENANT_SCOPE_OVERRIDES} entry (those suppress on "any required column
  * mentioned"; here workspace_id/harness_slug mentioned is not enough for a broad CI read).
  * Fires whenever `test_runs` is referenced with a WHERE clause and neither `source` nor
- * `commit_sha` is mentioned, unless the query has an exact run_group_id predicate alongside both
- * workspace_id and harness_slug predicates. The latter is an explicit per-run tenant fence and
- * is safe to execute without allowUnscoped; broad/partial tenant filters retain the CI warning.
+ * `commit_sha` is mentioned, unless the query has an exact run_group_id or bounded row-id
+ * predicate alongside both workspace_id and harness_slug predicates. The latter is an explicit
+ * per-run/local-group tenant fence and is safe to execute without allowUnscoped; broad/partial
+ * tenant filters retain the CI warning.
  */
 function buildTestRunsAdvisory(stripped: string, tables: string[]): string | null {
   if (!tables.some((t) => bareTableName(t) === TEST_RUNS_TABLE)) return null;
   const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
   if (mentions('source') || mentions('commit_sha')) return null;
-  const exactTenantRunGroupFence =
+  const explicitTenantFence =
     hasTenantPredicate(stripped, 'workspace_id') &&
-    hasTenantPredicate(stripped, 'harness_slug') &&
-    hasTenantPredicate(stripped, 'run_group_id');
-  if (exactTenantRunGroupFence) return null;
+    hasTenantPredicate(stripped, 'harness_slug');
+  // A bounded reporter id range is the local equivalent of an exact run_group_id
+  // fence (EI-22633261796522656). Keep the exception narrow: `id > ...` and other
+  // broad predicates must continue to surface the CI-row NULL trap.
+  const boundedLocalGroup =
+    tables.length === 1 &&
+    (hasBoundedPredicate(stripped, 'run_group_id') || hasBoundedPredicate(stripped, 'id'));
+  if (explicitTenantFence && boundedLocalGroup) return null;
   return (
     '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter ' +
     'rows (env-derived — libs/test-config/src/admin-test-runs-reporter.ts — and stamped ONLY by the ' +
@@ -2862,6 +2869,21 @@ function hasTenantPredicate(strippedSql: string, column: string): boolean {
     `(?:=|<>|!=|>=|<=|>|<|\\bIS(?:\\s+NOT)?(?:\\s+DISTINCT\\s+FROM)?\\b|\\bIN\\s*\\(|\\bLIKE\\b|\\bILIKE\\b|\\bBETWEEN\\b)`;
   if (new RegExp(operator, 'i').test(strippedSql)) return true;
   return new RegExp(`\\bUSING\\s*\\([^)]*\\b${escaped}\\b`, 'i').test(strippedSql);
+}
+
+/**
+ * A narrow value/range predicate used for identity fences. Unlike
+ * {@link hasTenantPredicate}, this deliberately excludes open-ended comparisons
+ * (`>`, `<`, `LIKE`, `IS`, …), which would make a test-runs query look local while
+ * still selecting a broad population.
+ */
+function hasBoundedPredicate(strippedSql: string, column: string): boolean {
+  const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cast = `(?:\\s*::\\s*[A-Za-z_][A-Za-z0-9_.]*)*`;
+  return new RegExp(
+    `\\b${escaped}\\b${cast}\\s*(?:=|\\bIN\\s*\\(|\\bBETWEEN\\b)`,
+    'i',
+  ).test(strippedSql);
 }
 
 export async function buildTenantScopeAdvisory(

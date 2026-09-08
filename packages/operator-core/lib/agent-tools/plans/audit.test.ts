@@ -422,6 +422,22 @@ describe('plans:audit phase:activation', () => {
     expect(description).toContain('section: prefix is required');
   });
 
+  it('publishes the activation blocker contract on the live schema and guidance', () => {
+    const projected = lookupByMcpName('plans:audit');
+    const schema = projected?.inputSchema as {
+      properties?: {
+        unresolvedBlockers?: { description?: string };
+        summary?: { description?: string };
+      };
+    };
+    const blockerDescription = schema.properties?.unresolvedBlockers?.description;
+    const summaryDescription = schema.properties?.summary?.description;
+    expect(blockerDescription).toContain('Any nonempty array blocks activation');
+    expect(blockerDescription).toContain('nothing is recorded');
+    expect(blockerDescription).toContain('covered mapping');
+    expect(summaryDescription).toContain('resolved conditional/live-environment limitations');
+  });
+
   it('refuses a non-final main wait with an actionable item diagnostic', async () => {
     mockGetPlanRow.mockResolvedValue({
       content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Wait for green-checkpoint before continuing implementation.\n`,
@@ -945,6 +961,7 @@ describe('plans:audit phase:activation', () => {
       repairWorkItem: 'EI-ACTIVATION-REPAIR',
       repairFiling: { conditionKey: 'activation-audit:papercusp/plan-a', created: true },
     });
+    expect(result.message).toContain('Any nonempty unresolvedBlockers list blocks and records nothing');
     expect(mockRepairFiling).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'test-workspace',
       harnessSlug: 'papercusp',

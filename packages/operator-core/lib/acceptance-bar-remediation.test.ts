@@ -38,6 +38,14 @@ function warnsReadOnlyProbeCannotClear(action: string): boolean {
   return /read-only/i.test(action) && /current fingerprints/i.test(action);
 }
 
+/** The BAR revision mismatch must first distinguish stale serving code from a live guard. */
+function namesServingBuildCheck(action: string): boolean {
+  return /dev:pipeline_position/.test(action)
+    && /packages\/operator-core\/lib\/agent-tools\/plans\/with-plan-lock\.ts/.test(action)
+    && /synchronizeAcceptanceBarSubjectRevision/.test(action)
+    && /not deployed|redeploy/i.test(action);
+}
+
 // The exact pre-fix strings, kept as PERMANENT NEGATIVE CONTROLS. If a future edit reverts either
 // remediation to its old shape, the corresponding assertion below fails. They also calibrate the
 // predicates: a predicate that cannot reject these would be vacuous.
@@ -46,6 +54,8 @@ const PRE_FIX_DEPTH_MISSING =
 const PRE_FIX_INADEQUATE =
   'Run plans:evaluate-spec-test-adequacy for the mapped outcome with current fingerprints; '
   + 'fix every fail/unknown proof obligation before ship.';
+const PRE_FIX_REVISION_MISMATCH =
+  'Re-seed or amend atomically so subject and rubric revision pins agree.';
 
 describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', () => {
   it('calibration: the predicates reject the pre-fix strings', () => {
@@ -53,6 +63,7 @@ describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', (
     expect(namesEvidenceHalf(PRE_FIX_DEPTH_MISSING)).toBe(false);
     expect(warnsDeclarationAloneIsNotEnough(PRE_FIX_DEPTH_MISSING)).toBe(false);
     expect(warnsReadOnlyProbeCannotClear(PRE_FIX_INADEQUATE)).toBe(false);
+    expect(namesServingBuildCheck(PRE_FIX_REVISION_MISMATCH)).toBe(false);
   });
 
   it('proof_depth_missing names the evidence half and the code it trades into', () => {
@@ -74,6 +85,16 @@ describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', (
     expect(warnsReadOnlyProbeCannotClear(action)).toBe(true);
     // Still tells the agent what to actually run.
     expect(action).toMatch(/plans:evaluate-spec-test-adequacy/);
+  });
+
+  it('revision mismatch checks the serving build before prescribing a BAR mutation', () => {
+    const repair = nextRepair(['bar_snapshot_rubric_revision_mismatch'], []);
+    expect(repair?.code).toBe('bar_snapshot_rubric_revision_mismatch');
+    const action = repair?.action ?? '';
+
+    expect(namesServingBuildCheck(action)).toBe(true);
+    // Keep the actionable repair after the disambiguating probe.
+    expect(action).toMatch(/re-seed or amend atomically/i);
   });
 
   it('neither remediation enumerates the substantive adequacy claims', () => {

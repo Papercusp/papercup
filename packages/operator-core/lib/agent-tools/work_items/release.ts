@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
-import { COORD_ROLES } from '../coordination/roles';
+import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
 import { runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
@@ -363,7 +363,7 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES],
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-release shorthand: the work-item id'),

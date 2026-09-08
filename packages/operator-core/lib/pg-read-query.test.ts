@@ -1117,6 +1117,45 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     expect(calls).toHaveLength(0);
   });
 
+  // EI-22633261796522656: local reporter rows are sometimes recovered by their
+  // contiguous database ids rather than run_group_id. Both the primary query and
+  // its positive control carry the tenant fence, so the CI-null warning must not
+  // turn this known local group into a false refusal.
+  it('allows a bounded local reporter id group fenced by both explicit tenant predicates', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT id, file_path, status FROM harness_shared.test_runs " +
+        "WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' " +
+        'AND id BETWEEN 17630475 AND 17630479 ORDER BY id',
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the CI-null warning for an open-ended id predicate despite the tenant fence', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE workspace_id = 'papercusp-workspace' " +
+        "AND harness_slug = 'papercusp' AND id > 17630475",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('keeps the CI-null warning when another joined table supplies the bounded id predicate', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.test_runs t JOIN harness_shared.harness_plans p ON p.id = 1 ' +
+        "WHERE t.workspace_id = 'papercusp-workspace' AND t.harness_slug = 'papercusp'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
   it('is silent once the query scopes by source', async () => {
     const { sql } = stubClient([]);
     expect(

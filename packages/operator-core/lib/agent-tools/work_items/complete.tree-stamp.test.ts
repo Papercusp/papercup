@@ -62,6 +62,7 @@ import {
   completionSettlementManifest,
   completionTreeStamp,
   completionTreeStampForEvidence,
+  resolveCanonicalCompletionRoot,
 } from './complete';
 import {
   committedCloseDowngradedForUnprovenContentIdentity,
@@ -72,6 +73,59 @@ const ROOT = '/repo';
 const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 const OTHER_SHA = '0000111122223333444455556666777788889999';
 const TEMP_ROOTS: string[] = [];
+
+describe('resolveCanonicalCompletionRoot', () => {
+  it('resolves a linked worktree from its .git pointer and commondir', () => {
+    const reads: string[] = [];
+    const metadata = new Map<string, string>([
+      ['/staging/.git', 'gitdir: /canonical/.git/worktrees/staging\n'],
+      ['/canonical/.git/worktrees/staging/commondir', '../..\n'],
+    ]);
+
+    expect(
+      resolveCanonicalCompletionRoot('/staging', {
+        readFile: (absPath) => {
+          reads.push(absPath);
+          return metadata.get(absPath);
+        },
+      }),
+    ).toBe('/canonical');
+    expect(reads).toEqual(['/staging/.git', '/canonical/.git/worktrees/staging/commondir']);
+  });
+
+  it('fails open to the detected root for malformed or non-worktree metadata', () => {
+    expect(
+      resolveCanonicalCompletionRoot('/staging', {
+        readFile: (absPath) =>
+          ({
+            '/staging/.git': 'gitdir: /canonical/.git/not-a-worktree\n',
+            '/canonical/.git/not-a-worktree/commondir': '../..\n',
+          })[absPath],
+      }),
+    ).toBe('/staging');
+    expect(resolveCanonicalCompletionRoot('/repo', { readFile: () => undefined })).toBe('/repo');
+  });
+
+  it('orders the canonical checkout first while retaining the detected linked worktree', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-linked-root-order-'));
+    TEMP_ROOTS.push(workspaceRoot);
+    const canonicalRoot = join(workspaceRoot, 'canonical');
+    const detectedRoot = join(workspaceRoot, 'staging');
+    const worktreeGitDir = join(canonicalRoot, '.git', 'worktrees', 'staging');
+    mkdirSync(worktreeGitDir, { recursive: true });
+    mkdirSync(detectedRoot, { recursive: true });
+    writeFileSync(join(detectedRoot, '.git'), `gitdir: ${worktreeGitDir}\n`);
+    writeFileSync(join(worktreeGitDir, 'commondir'), '../..\n');
+
+    const roots = completionRepoRootsFromRegistry(
+      detectedRoot,
+      { projects: [] },
+      [],
+      { homeRoot: join(workspaceRoot, 'empty-home') },
+    );
+    expect(roots.slice(0, 2)).toEqual([canonicalRoot, detectedRoot]);
+  });
+});
 
 afterEach(() => {
   for (const root of TEMP_ROOTS.splice(0)) rmSync(root, { recursive: true, force: true });

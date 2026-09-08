@@ -83,14 +83,25 @@ export const COORD_ROLES = [
   // Mug's placement access.
 ] as const;
 
+// The acceptance judge is deliberately added only to the two narrow role
+// extensions below. It must stay outside COORD_ROLES: that shared set gates
+// broad coordination, placement, and work-item mutation surfaces.
+const EVIDENCE_JUDGE_ROLE = ['judge'] as const;
+
 /**
- * Work-item lifecycle writers — the general coordination roles plus the
- * evidence-only acceptance judge. Keep this separate from COORD_ROLES: adding
- * `judge` to the global coordination set would expose unrelated coordination
- * and placement/write tools, while judge only needs comment/checkpoint/complete
- * to persist its evidence.
+ * Reply/ack channel roles — general coordination roles plus the evidence-only
+ * acceptance judge. A judge may answer the peer that woke it, but does not gain
+ * the rest of coord:* merely by being able to use these reply surfaces.
  */
-export const WORK_ITEM_LIFECYCLE_ROLES = [...COORD_ROLES, 'judge'] as const;
+export const COORD_REPLY_ROLES = [...COORD_ROLES, ...EVIDENCE_JUDGE_ROLE] as const;
+
+/**
+ * Work-item lifecycle roles — the general coordination roles plus the
+ * evidence-only acceptance judge. This is intentionally separate from
+ * COORD_ROLES: judge may annotate/checkpoint/complete or release its own
+ * misplaced claim without gaining create/set_state or other broad writers.
+ */
+export const WORK_ITEM_LIFECYCLE_ROLES = [...COORD_ROLES, ...EVIDENCE_JUDGE_ROLE] as const;
 
 /**
  * EI-145 (part 2): the Queen/Mug-only PLACEMENT/steering allowlist — COORD_ROLES

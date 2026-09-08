@@ -99,7 +99,7 @@ import {
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../federation-scope';
-import { COORD_ROLES } from '../roles';
+import { COORD_REPLY_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '../../_bulk';
 import { cellTranscriptionHint } from '../../../cell-transcription-detector';
@@ -2381,7 +2381,7 @@ export default defineTool({
   argReencodings: [PREMISES_REF_OBJECT_REENCODING],
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_REPLY_ROLES],
   // EI-20186059075216845: coord:send persists through the coordination/admin
   // seams and never reads ctx.tx. Do not hold an org-app transaction open while
   // roster, federation, and wake delivery work runs; under fleet concurrency

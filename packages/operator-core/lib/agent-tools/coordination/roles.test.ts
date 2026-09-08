@@ -11,7 +11,12 @@
  * failing `role_not_allowed` for a bee-role-scoped URL with no other signal. Pin it.
  */
 import { describe, test, expect } from 'vitest';
-import { COORD_ROLES, QUEEN_PLACEMENT_ROLES, WORK_ITEM_LIFECYCLE_ROLES } from './roles';
+import {
+  COORD_REPLY_ROLES,
+  COORD_ROLES,
+  QUEEN_PLACEMENT_ROLES,
+  WORK_ITEM_LIFECYCLE_ROLES,
+} from './roles';
 
 describe('COORD_ROLES', () => {
   test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
@@ -120,6 +125,7 @@ describe('COORD_ROLES', () => {
         expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
       }
       expect(WORK_ITEM_LIFECYCLE_ROLES).toContain('judge');
+      expect(COORD_REPLY_ROLES).toContain('judge');
       expect(COORD_ROLES).not.toContain('judge');
     },
   );
@@ -139,6 +145,7 @@ describe('COORD_ROLES', () => {
       // If either role silently dropped off any of these tools' allowlists,
       // delegation would fail role_not_allowed with no other signal. Pin it.
       const { default: send } = await import('./tools/send.js');
+      const { default: ack } = await import('./tools/ack.js');
       const { default: presence } = await import('./tools/presence.js');
       const { default: wakeMode } = await import('./tools/wake-mode.js');
       const { default: orient } = await import('./tools/orient.js');
@@ -148,6 +155,9 @@ describe('COORD_ROLES', () => {
         expect(wakeMode.agentRoles, `coord:wake-mode must admit ${role}`).toContain(role);
         expect(orient.agentRoles, `coord:orient must admit ${role}`).toContain(role);
       }
+      expect(send.agentRoles, 'coord:send must admit judge for replies').toContain('judge');
+      expect(ack.agentRoles, 'coord:ack must admit judge for acknowledgements').toContain('judge');
+      expect(send.agentRoles, 'coord:send must not widen the shared role set').not.toEqual(COORD_ROLES);
     },
   );
 });
