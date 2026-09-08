@@ -13,7 +13,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 import {
   validateCriterionCheckPaths,
@@ -59,12 +59,14 @@ afterAll(() => rmSync(outside, { recursive: true, force: true }));
 const siblingWorkspace = mkdtempSync(join(tmpdir(), 'rubric-checks-sibling-workspace-'));
 const siblingAmbient = join(siblingWorkspace, 'papercusp');
 const siblingRepo = join(siblingWorkspace, 'portal');
+const siblingRepoLink = join(siblingWorkspace, 'portal-link');
 mkdirSync(join(siblingAmbient, '.git'), { recursive: true });
 writeFileSync(join(siblingAmbient, 'package.json'), JSON.stringify({ workspaces: [] }));
 mkdirSync(join(siblingRepo, '.git'), { recursive: true });
 writeFileSync(join(siblingRepo, 'package.json'), JSON.stringify({ workspaces: [] }));
 mkdirSync(join(siblingRepo, 'tests'), { recursive: true });
 writeFileSync(join(siblingRepo, 'tests', 'sibling.test.ts'), 'export {}\n');
+symlinkSync(siblingRepo, siblingRepoLink, 'dir');
 afterAll(() => rmSync(siblingWorkspace, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
@@ -797,6 +799,77 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
       expect(res.checkRuns.fuzzy).toBeUndefined();
     }
     expect(calls).toEqual([['packages/x/real.test.ts']]);
+  });
+
+  it('attributes an external-checkout file when Vitest reports the same real file relative to its run root', async () => {
+    const siblingPath = 'portal/tests/sibling.test.ts';
+    const absoluteSibling = join(siblingRepo, 'tests', 'sibling.test.ts');
+    const runner: CriterionCheckRunner = async ({ files }) => {
+      expect(files).toEqual([absoluteSibling]);
+      const byFile = {
+        'tests/sibling.test.ts': { passed: 3, failed: 0, skipped: 0, collectionFailed: false },
+      };
+      return {
+        ok: true,
+        runId: 'external-run',
+        root: siblingRepo,
+        ...totalsOf(byFile),
+        files: 1,
+        failures: [],
+        failuresTruncated: false,
+        durationMs: 10,
+        byFile,
+      } as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'external', check: testsCheck([siblingPath]) }],
+      ratings: { external: { rating: 'healthy' } },
+      root: siblingAmbient,
+      runner,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.checkRuns.external).toMatchObject({
+        files: [absoluteSibling],
+        verdict: 'pass',
+        passed: 3,
+        failed: 0,
+        runId: 'external-run',
+      });
+    }
+  });
+
+  it('attributes the external file when a symlink run root makes Vitest report a ../-escaping key', async () => {
+    const siblingPath = 'portal/tests/sibling.test.ts';
+    const absoluteSibling = join(siblingRepo, 'tests', 'sibling.test.ts');
+    const reportedPath = relative(siblingRepoLink, absoluteSibling).split(sep).join('/');
+    expect(reportedPath).toContain('../');
+    const runner: CriterionCheckRunner = async () => {
+      const byFile = {
+        [reportedPath]: { passed: 3, failed: 0, skipped: 0, collectionFailed: false },
+      };
+      return {
+        ok: true,
+        runId: 'symlink-root-run',
+        root: siblingRepoLink,
+        ...totalsOf(byFile),
+        files: 1,
+        failures: [],
+        failuresTruncated: false,
+        durationMs: 10,
+        byFile,
+      } as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'external', check: testsCheck([siblingPath]) }],
+      ratings: { external: { rating: 'healthy' } },
+      root: siblingAmbient,
+      runner,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.checkRuns.external).toMatchObject({ verdict: 'pass', passed: 3, failed: 0 });
+    }
   });
 
   it('REFUSES a pass-claiming rating the run contradicts (check_contradicted)', async () => {

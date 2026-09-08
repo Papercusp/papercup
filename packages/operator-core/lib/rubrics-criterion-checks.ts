@@ -1081,6 +1081,54 @@ function ratingClaimsPass(rating: string): boolean {
   );
 }
 
+type ReportedTestFileCounts = {
+  passed: number;
+  failed: number;
+  skipped: number;
+  collectionFailed: boolean;
+};
+
+/**
+ * Reduce the two path vocabularies around an external checkout to one file identity.
+ *
+ * A criterion admitted from the Papercusp superproject stores an absolute path in the
+ * sibling checkout. Direct Vitest runs, however, report the same file relative to the
+ * runner root (and that spelling can cross a workspace symlink). Comparing those two
+ * strings literally leaves a genuinely executed file "unreported". realpath is the
+ * authority: it proves both spellings resolve to the same live file without weakening
+ * the missing-file refusal to basename or suffix matching.
+ */
+function reportedTestFileIdentity(file: string, root: string): string {
+  const absolute = isAbsolute(file) ? resolve(file) : resolve(root, file);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    // Validation already requires planned files to exist. Keeping a normalized
+    // identity for malformed reporter keys ensures they remain unmatched/refused.
+    return absolute;
+  }
+}
+
+function indexReportedTestFiles(
+  byFile: Record<string, ReportedTestFileCounts>,
+  root: string,
+): Map<string, ReportedTestFileCounts> {
+  const indexed = new Map<string, ReportedTestFileCounts>();
+  for (const [file, counts] of Object.entries(byFile)) {
+    const identity = reportedTestFileIdentity(file, root);
+    const current = indexed.get(identity);
+    if (!current) {
+      indexed.set(identity, { ...counts });
+      continue;
+    }
+    current.passed += counts.passed;
+    current.failed += counts.failed;
+    current.skipped += counts.skipped;
+    if (counts.collectionFailed) current.collectionFailed = true;
+  }
+  return indexed;
+}
+
 /**
  * GRADING-time evaluation (called by scorecards:emit): for every RATED criterion whose
  * check is kind:'tests', re-resolve the files (refusing a stale path — D-006), RUN them
@@ -1192,10 +1240,15 @@ export async function evaluateCriterionTestChecks(input: {
     };
   }
 
+  const reportRoot = typeof run.root === 'string' ? run.root : root;
+  const byIdentity = indexReportedTestFiles(byFile, reportRoot);
+  const countsFor = (file: string): ReportedTestFileCounts | undefined =>
+    byFile[file] ?? byIdentity.get(reportedTestFileIdentity(file, reportRoot));
+
   for (const { key, files } of planned) {
     // A file the report never mentions is UNJUDGED, not passed. Without this the batch's
     // green aggregate would vouch for a file that silently failed to run at all.
-    const missing = files.filter((f) => byFile[f] === undefined);
+    const missing = files.filter((f) => countsFor(f) === undefined);
     if (missing.length > 0) {
       return {
         ok: false,
@@ -1213,7 +1266,7 @@ export async function evaluateCriterionTestChecks(input: {
     // one genuinely-running sibling file would hide the vacuous file. Every named file
     // must execute at least one test before it may support a deterministic criterion.
     const unexecuted = files.filter((f) => {
-      const counts = byFile[f]!;
+      const counts = countsFor(f)!;
       return counts.passed + counts.failed === 0;
     });
     if (unexecuted.length > 0) {
@@ -1225,7 +1278,7 @@ export async function evaluateCriterionTestChecks(input: {
           `criterion '${key}' names test file(s) that were reported but executed ZERO tests: ` +
           unexecuted
             .map((f) => {
-              const counts = byFile[f]!;
+              const counts = countsFor(f)!;
               return `${f} (${counts.skipped} skipped${counts.collectionFailed ? ', collection failed' : ''})`;
             })
             .join(', ') +
@@ -1233,8 +1286,9 @@ export async function evaluateCriterionTestChecks(input: {
           `required test configuration or bind the criterion to a non-skipping authority test, then re-emit.`,
       };
     }
-    const passed = files.reduce((n, f) => n + (byFile[f]?.passed ?? 0), 0);
-    const failed = files.reduce((n, f) => n + (byFile[f]?.failed ?? 0), 0);
+    const passed = files.reduce((n, f) => n + (countsFor(f)?.passed ?? 0), 0);
+    const failed = files.reduce((n, f) => n + (countsFor(f)?.failed ?? 0), 0);
+    const fileIdentities = new Set(files.map((f) => reportedTestFileIdentity(f, reportRoot)));
     const record: CriterionCheckRun = {
       kind: 'tests',
       files,
@@ -1246,7 +1300,10 @@ export async function evaluateCriterionTestChecks(input: {
       ...(failed > 0 && Array.isArray(run.failures)
         ? {
             failures: run.failures
-              .filter((f) => files.includes((f as { file?: string }).file ?? ''))
+              .filter((f) => {
+                const file = (f as { file?: string }).file;
+                return file !== undefined && fileIdentities.has(reportedTestFileIdentity(file, reportRoot));
+              })
               .slice(0, 10)
               .map((f) => `${(f as { file?: string }).file ?? '?'}: ${(f as { test?: string }).test ?? '?'}`),
           }
