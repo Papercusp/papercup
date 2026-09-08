@@ -2254,6 +2254,9 @@ function findOmpTranscript(root, id) {
 }
 
 function trackedCodexSessionsRoot(session, home = homedir()) {
+  // A restored session may have a configured or relocated native home. The
+  // persisted launch identity outranks the default per-adv directory layout.
+  if (session.codexHome) return join(session.codexHome, "sessions");
   if (session.id == null) return null;
   return join(
     home,
@@ -3133,7 +3136,7 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
   }
   if (session.agent === "codex") {
     // No adv row id ⇒ no tracked home to look in ⇒ genuinely unverifiable, keep.
-    if (session.id == null) return true;
+    if (session.id == null && !session.codexHome) return true;
     const sessionsRoot = trackedCodexSessionsRoot(session, home);
     // No recorded session_id is NOT unverifiable: resume runs `codex resume --last` against
     // this row's own isolated CODEX_HOME (resumeArgsFor + the CODEX_HOME pin in launchResume),

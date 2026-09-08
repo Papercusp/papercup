@@ -8651,6 +8651,21 @@ describe("sessionIsResumable — picker keeps on-disk OR DB-archived sessions (W
 
 describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit 2026-08-12, WI-38236)", () => {
   const UUID = "0123abcd-1234-5678-9abc-def012345678";
+  it("uses the saved Codex home for exact resume without restoring an unrelated default home", async () => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'pui-saved-codex-'));
+    try {
+      const sessions = join(codexHome, 'sessions', '2026', '09', '08');
+      mkdirSync(sessions, { recursive: true });
+      writeFileSync(join(sessions, `rollout-2026-09-08T00-00-00-${UUID}.jsonl`), '{}\n');
+      const rematerialize = vi.fn(async () => null);
+      const source = { id: 42, agent: 'codex', sessionId: UUID, codexHome };
+      expect(sessionHasTranscript(source, { home })).toBe(true);
+      await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+      expect(rematerialize).not.toHaveBeenCalled();
+      expect(sessionHasTranscript({ ...source, sessionId: 'different-thread' }, { home })).toBe(false);
+    } finally { rmSync(codexHome, { recursive: true, force: true }); }
+  });
+
   let home = "";
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "psu-resume-race-"));
