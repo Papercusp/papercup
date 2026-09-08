@@ -33,6 +33,7 @@ import type { SuSessionCommand, SuSessionEvent } from '@papercusp/chat-protocol'
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
+import { nativeProviderTraceOrigin } from './native-provider-trace';
 
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
@@ -726,8 +727,9 @@ beforeAll(async () => {
           const modelPath = path.join(options.env.PI_CODING_AGENT_DIR!, 'models.yml');
           const models = parseYaml(readFileSync(modelPath, 'utf8'));
           const provider = models.providers['papercusp-gateway'];
-          nativeProviderOrigin = provider.baseUrl;
-          provider.baseUrl = `${process.env.PAPERCUSP_OPERATOR_URL}/api/pui-provider-debug`;
+          const traceOrigin = `${process.env.PAPERCUSP_OPERATOR_URL}/api/pui-provider-debug`;
+          nativeProviderOrigin = nativeProviderTraceOrigin(provider.baseUrl, traceOrigin, nativeProviderOrigin);
+          provider.baseUrl = traceOrigin;
           writeFileSync(modelPath, stringifyYaml(models), { mode: 0o600 });
         }
         const readNativeLogs = () => {
