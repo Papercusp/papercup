@@ -55,7 +55,7 @@
  * minting end).
  */
 
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { eq, sql as dsql } from 'drizzle-orm';
@@ -173,7 +173,7 @@ export async function signSpawnParams(
   return { exp, sig };
 }
 
-export type VerifyResult = { ok: true } | { ok: false; reason: string };
+export type VerifyResult = { ok: true; keySha256?: string } | { ok: false; reason: string };
 
 /**
  * Verify a per-spawn URL's signature. Pass the whole URL (string or
@@ -181,7 +181,7 @@ export type VerifyResult = { ok: true } | { ok: false; reason: string };
  * log to spawn_sig_verification_failures (via `logVerificationFailure`)
  * and reject the request.
  */
-export async function verifySpawnParams(input: URL | string): Promise<VerifyResult> {
+export async function verifySpawnParams(input: URL | string, options?: { includeKeyDigest?: boolean }): Promise<VerifyResult> {
   const u = typeof input === 'string' ? new URL(input) : input;
   const sig = u.searchParams.get('sig');
   const expRaw = u.searchParams.get('exp');
@@ -209,7 +209,11 @@ export async function verifySpawnParams(input: URL | string): Promise<VerifyResu
   }
   if (provided.length !== expected.length) return { ok: false, reason: 'invalid_signature' };
   if (!timingSafeEqual(provided, expected)) return { ok: false, reason: 'invalid_signature' };
-  return { ok: true };
+  // Opt-in identity of the EXACT key verified above, not a later read that
+  // could silently bridge a concurrent rotation. Never disclose the key.
+  return options?.includeKeyDigest
+    ? { ok: true, keySha256: createHash('sha256').update(key).digest('hex') }
+    : { ok: true };
 }
 
 export interface VerificationFailureRecord {

@@ -109,6 +109,9 @@ import { maybeEmptyMappingHint } from '../../../empty-mapping-hint';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
+import {
+  admissionCredentialDigest, type AdmissionAuthorityContext, type AdmissionRecoveryAuthority,
+} from '../../../work-item-admission-authority';
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
@@ -794,6 +797,7 @@ export interface BuiltSpawnContext {
    * option (c): least privilege — no su/power grant, never spawnId/runId).
    */
   sigVerifiedSpawn?: boolean;
+  admissionRecoveryAuthority?: AdmissionRecoveryAuthority;
   /**
    * Plan-run conversation id, from `?plan_run=<uuid>` on the MCP URL.
    * Set by the plan-agent runner (plan-agent-launch-2026-05-21, P-011)
@@ -1447,6 +1451,10 @@ async function tryBuildSpawnContext(
           (headers.get('x-papercusp-model') ?? '').trim() || (url.searchParams.get('model') ?? '').trim() || null,
         planRunSessionId,
         isSuperuser: true,
+        admissionRecoveryAuthority: {
+          kind: 'superuser', credentialSha256: admissionCredentialDigest(bearer!),
+          role: roleParam ? canonicalCoordRole(roleParam) : 'operator',
+        },
         // gateBypass is computed in buildMcpToolContext from isSuperuser/isPowerUser.
         // SU callers testing the power profile pass ?profile=power (or the
         // x-papercusp-profile header — psu's per-launch --profile carrier).
@@ -1588,8 +1596,9 @@ async function tryBuildSpawnContext(
     url.searchParams.has('role') || url.searchParams.has('spawn') || url.searchParams.has('workspace');
 
   let sigVerified = false;
+  let verifiedKeySha256: string | undefined;
   if (hasSig || hasExp) {
-    const v = await verifySpawnParams(url);
+    const v = await verifySpawnParams(url, { includeKeyDigest: true });
     if (!v.ok) {
       const spawn = url.searchParams.get('spawn');
       const role = url.searchParams.get('role');
@@ -1630,6 +1639,7 @@ async function tryBuildSpawnContext(
       return { kind: 'failed', reason: `spawn_sig_${v.reason} — ${spawnSigFailureGuidance(v.reason)}` };
     }
     sigVerified = true;
+    verifiedKeySha256 = v.keySha256;
     // WI-3190: remember this spawn so a later rotation-strand is recognisable.
     recordVerifiedSpawn({
       spawn: url.searchParams.get('spawn'),
@@ -1691,6 +1701,10 @@ async function tryBuildSpawnContext(
         uiClientId: parsed.uiClientId,
         planRunSessionId,
         sigVerifiedSpawn: sigVerified,
+        ...(sigVerified && verifiedKeySha256 ? { admissionRecoveryAuthority: {
+          kind: 'signed-spawn' as const, credentialSha256: verifiedKeySha256,
+          role: canonicalCoordRole(parsed.role), expiresAtSec: Number(url.searchParams.get('exp')),
+        } } : {}),
         // Spawned agents get their tier from the per-spawn mcp.json URL
         // (context-trimming-tiers D-004; the orchestrator threads it).
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
@@ -2366,7 +2380,7 @@ async function buildMcpToolContext(
       projectionSpec || namedView ? undefined : target.skipResultDoor,
     );
   };
-  const builtCtx: UnifiedToolContext = {
+  const builtCtx: UnifiedToolContext & AdmissionAuthorityContext = {
     activateTools,
     dispatchTool,
     workspaceId: spawn.workspaceId,
@@ -2387,6 +2401,7 @@ async function buildMcpToolContext(
     callerAgent: spawn.callerAgent ?? null,
     callerModel: spawn.callerModel ?? null,
     sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
+    admissionRecoveryAuthority: spawn.admissionRecoveryAuthority,
     planRunSessionId: spawn.planRunSessionId ?? null,
     isSuperuser: spawn.isSuperuser ?? false,
     isPowerUser: spawn.isPowerUser ?? false,

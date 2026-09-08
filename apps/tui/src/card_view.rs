@@ -301,7 +301,10 @@ impl CardState {
     pub fn apply_delta(&mut self, mut env: SnapshotEnvelope, closed_id: Option<&str>) {
         let mut cards = self.by_run.get(&env.run_id).cloned().unwrap_or_default();
         for card in env.cards {
-            if let Some(existing) = cards.iter_mut().find(|c| c.correlation_id == card.correlation_id) {
+            if let Some(existing) = cards
+                .iter_mut()
+                .find(|c| c.correlation_id == card.correlation_id)
+            {
                 *existing = card;
             } else {
                 cards.push(card);

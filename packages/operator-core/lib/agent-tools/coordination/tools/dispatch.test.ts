@@ -41,7 +41,10 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     to: 'reviewer', note: 'resume original review', harness: 'papercusp',
     workItemIds: ['WI-original'], resumeAdmission: true,
   };
-  const context = { uiClientId: 'su-requester', isSuperuser: true, workspaceId: 'ws-recovery' };
+  const context = {
+    uiClientId: 'su-requester', isSuperuser: true, workspaceId: 'ws-recovery',
+    admissionRecoveryAuthority: { kind: 'superuser', role: 'operator', credentialSha256: 'a'.repeat(64) },
+  };
   const call = async (args = base, ctx = context) => {
     const output = await dispatch.handler(dispatch.args.parse(args), ctx as Parameters<typeof dispatch.handler>[1]);
     return JSON.parse((output as { content: Array<{ text: string }> }).content[0]!.text);
@@ -73,6 +76,7 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     expect(recoveryIO.request).toHaveBeenCalledWith({
       workspaceId: 'ws-recovery', harnessSlug: 'papercusp', workItemId: 'WI-original',
       caller: 'su-requester', target: 'su-reviewer',
+      authority: context.admissionRecoveryAuthority,
       note: base.note, body: 'Independent review only; no implementation',
     });
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });

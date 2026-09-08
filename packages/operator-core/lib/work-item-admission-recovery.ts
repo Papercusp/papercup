@@ -16,10 +16,14 @@ import { readOperatorState } from './operator-state-pg';
 import type { SessionConfinementsPayload } from './capability-envelope/session-confinement-store';
 import { evaluateSessionConfinement } from './capability-envelope/session-confinement';
 import { DEFAULT_INBOX_BODY_CAP } from './agent-tools/coordination/tools/inbox-content-bounds';
+import {
+  admissionAuthoritySchema, authorizeAdmissionReplay, AdmissionAuthorityRefused,
+  type AdmissionRecoveryAuthority,
+} from './work-item-admission-authority';
 
 const recoveryStageSchema = z.enum(['queued', 'authorize', 'screen', 'assign', 'wake', 'await-pickup']);
 const requestSchema = z.object({
-  version: z.union([z.literal(1), z.literal(2)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   requestId: z.string().uuid(),
   caller: z.string().min(1),
   target: z.string().min(1),
@@ -35,8 +39,11 @@ const requestSchema = z.object({
   pickupConfirmed: z.literal(false),
   note: z.string().min(1).max(DEFAULT_INBOX_BODY_CAP).optional(),
   body: z.string().max(DEFAULT_INBOX_BODY_CAP).optional(),
-}).refine((r) => r.version === 2 || (r.note === undefined && r.body === undefined), {
+  authority: admissionAuthoritySchema.optional(),
+}).refine((r) => r.version !== 1 || (r.note === undefined && r.body === undefined), {
   message: 'v1 recovery requests cannot carry unsigned instructions',
+}).refine((r) => r.version === 3 || r.authority === undefined, {
+  message: 'legacy recovery requests cannot carry unsigned authority',
 });
 export type AdmissionRecoveryRequest = z.infer<typeof requestSchema>;
 export interface AdmissionRecoveryScope {
@@ -53,7 +60,7 @@ interface RecoveryItem {
   payload: Record<string, unknown> | null;
 }
 export interface AdmissionRecoveryDeps {
-  authorize: (scope: AdmissionRecoveryScope, request: Pick<AdmissionRecoveryRequest, 'caller' | 'target'>) => Promise<void>;
+  authorize: (scope: AdmissionRecoveryScope, request: Pick<AdmissionRecoveryRequest, 'caller' | 'target' | 'authority' | 'note' | 'body'>) => Promise<void>;
   screen: (scope: AdmissionRecoveryScope, beforePersist: () => Promise<void>) => Promise<unknown>;
   dispatch: typeof assignAndWakeActionableWorkItems;
 }
@@ -63,7 +70,7 @@ export class AdmissionRecoveryRefused extends Error {}
 /** Read permissions again; the saved request is never an authorization grant. */
 export async function authorizeAdmissionRecovery(
   scope: AdmissionRecoveryScope,
-  request: Pick<AdmissionRecoveryRequest, 'caller' | 'target'>,
+  request: Pick<AdmissionRecoveryRequest, 'caller' | 'target' | 'authority' | 'note' | 'body'>,
 ): Promise<void> {
   for (const actor of new Set([request.caller, request.target])) {
     const presence = await getPresence(actor);
@@ -94,6 +101,12 @@ export async function authorizeAdmissionRecovery(
     });
     if (!permission.allowed) throw new AdmissionRecoveryRefused(`${actor}: ${permission.reason}`);
   }
+  try {
+    await authorizeAdmissionReplay(getOrgPg().sql, scope, request);
+  } catch (error) {
+    if (error instanceof AdmissionAuthorityRefused) throw new AdmissionRecoveryRefused(error.message);
+    throw error;
+  }
 }
 
 function savedRequest(item: RecoveryItem): AdmissionRecoveryRequest | null {
@@ -113,7 +126,8 @@ async function requestSignature(sql: Sql, scope: AdmissionRecoveryScope, request
   return createHmac('sha256', decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key'))
     .update(JSON.stringify([`admission-recovery-v${request.version}`, scope.workspaceId, scope.harnessSlug, scope.workItemId,
       request.requestId, request.caller, request.target, request.routineId, request.requestedAt,
-      ...(request.version === 2 ? [request.note ?? null, request.body ?? null] : [])]))
+      ...(request.version >= 2 ? [request.note ?? null, request.body ?? null] : []),
+      ...(request.version === 3 ? [request.authority ?? null] : [])]))
     .digest('hex');
 }
 
@@ -183,7 +197,7 @@ async function lockRequest(sql: Sql, scope: AdmissionRecoveryScope): Promise<boo
 
 /** One item, one durable request. No create, re-title, claim override, or screening bypass. */
 export async function requestAdmissionRecovery(
-  input: AdmissionRecoveryScope & { caller: string; target: string; note?: string; body?: string },
+  input: AdmissionRecoveryScope & { caller: string; target: string; note?: string; body?: string; authority?: AdmissionRecoveryAuthority },
   deps: Pick<AdmissionRecoveryDeps, 'authorize'> = { authorize: authorizeAdmissionRecovery },
   sql: Sql = getOrgPg().sql,
 ): Promise<{ ok: true; workItemId: string; request: AdmissionRecoveryRequest; inProgress: boolean }> {
@@ -218,9 +232,10 @@ export async function requestAdmissionRecovery(
     await deps.authorize(input, input);
     const now = new Date().toISOString();
     const unsigned: Omit<AdmissionRecoveryRequest, 'signature'> = {
-      version: 2, requestId: previous?.requestId ?? randomUUID(), caller: input.caller, target: input.target,
+      version: input.authority ? 3 : 2, requestId: previous?.requestId ?? randomUUID(), caller: input.caller, target: input.target,
       routineId, requestedAt: previous?.requestedAt ?? now, updatedAt: now,
       state: 'queued', stage: 'queued', pickupConfirmed: false,
+      ...(input.authority ? { authority: input.authority } : {}),
       ...(input.note !== undefined || previous?.note !== undefined ? { note: input.note ?? previous?.note } : {}),
       ...(input.body !== undefined || previous?.body !== undefined ? { body: input.body ?? previous?.body } : {}),
     };

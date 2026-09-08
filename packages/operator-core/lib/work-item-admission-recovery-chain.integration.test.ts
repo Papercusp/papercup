@@ -20,6 +20,10 @@ const h = vi.hoisted(() => ({
   denied: false, revoked: false,
   wake: vi.fn(), model: vi.fn(), claim: vi.fn(), dispatches: vi.fn(),
   denyPickupClaim: false,
+  kernelDenied: false, suToken: 'test-only-original-bearer-not-a-real-credential',
+}));
+vi.mock('./superuser-token', async (orig) => ({
+  ...await orig<typeof import('./superuser-token')>(), readSuperuserToken: () => h.suToken,
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...await orig<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }),
@@ -46,7 +50,7 @@ vi.mock('./projected-tool-deps', () => ({
   PROJECTED_DEPS: {
     defaultDeny: true,
     onDispatchStart: ({ toolName }: { toolName: string }) => h.dispatches(toolName),
-    kernelEnforcement: async () => h.revoked
+    kernelEnforcement: async () => h.revoked || h.kernelDenied
       ? { decision: 'deny', code: 'revoked', reason: 'target authority revoked' }
       : { decision: 'allow' },
     checkCapabilityEnvelope: async ({ toolName }: { toolName: string }) =>
@@ -96,6 +100,7 @@ await import('./agent-tools/work_items/claim');
 await import('./agent-tools/work_items/pickup');
 const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
+const { admissionCredentialDigest } = await import('./work-item-admission-authority');
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 
 let db: FreshPgDb;
@@ -136,6 +141,8 @@ beforeEach(async () => {
   h.denied = false;
   h.revoked = false;
   h.denyPickupClaim = false;
+  h.kernelDenied = false;
+  h.suToken = 'test-only-original-bearer-not-a-real-credential';
   h.dispatches.mockReset();
   h.model.mockReset().mockRejectedValue(new Error('unexpected external model call'));
   h.wake.mockReset().mockResolvedValue({ queued: 1, woken: 0, staged: 0, timedOutTargets: [] });
@@ -144,7 +151,7 @@ beforeEach(async () => {
     harness_shared.dedup_adjudications, harness_shared.admission_runs, harness_shared.routines,
     harness_shared.system_principals`;
   await db.sql`INSERT INTO harness_shared.system_principals VALUES
-    ('default', 'reviewer', '["work_items:read","work_items:write"]')`;
+    ('default', 'reviewer', '["coord:write","work_items:read","work_items:write"]')`;
   await db.sql`INSERT INTO harness_shared.routines
     (id, workspace_id, install_slug, name, target_role, trigger_config, next_fire_at)
     VALUES ('original-promoter','default','papercusp','work-item-admission-promoter',
@@ -161,6 +168,10 @@ function request(id: string) {
   return requestAdmissionRecovery({
     ...scope, workItemId: id, caller: 'requester', target: 'reviewer',
     note: 'Review original work', body: 'Report findings; do not implement.',
+    authority: {
+      kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0,
+      credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)),
+    },
   });
 }
 function dispatch(args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) {
@@ -203,6 +214,85 @@ async function pickup(id: string, role: UnifiedToolContext['role'] = 'reviewer')
 }
 
 describe('canonical original-item recovery chain (fresh PG; controlled external I/O)', () => {
+  it('requires authenticated binding instead of synthesizing a role from presence', async () => {
+    const original = await create();
+    await expect(requestAdmissionRecovery({
+      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+    })).rejects.toThrow('authenticated recovery binding missing');
+    expect((await row(original.id)).payload).not.toHaveProperty('_admissionRecovery');
+    expect(h.claim).not.toHaveBeenCalled();
+  });
+
+  it('renews role capabilities before screening and never treats signed provenance as a grant', async () => {
+    const original = await create();
+    await request(original.id);
+    await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read","work_items:write"]'`;
+    await tick();
+    expect((await row(original.id))).toMatchObject({
+      admission: 'pending', taken_by: null,
+      payload: { _admissionRecovery: { version: 3, state: 'held', stage: 'authorize',
+        reason: expect.stringContaining('coord:write') } },
+    });
+    expect(h.model).not.toHaveBeenCalled();
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('runs current kernel and inner-claim gates before the background screen', async () => {
+    const original = await create();
+    await request(original.id);
+    h.kernelDenied = true;
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      stage: 'authorize', state: 'held', reason: expect.stringContaining('revoked'),
+    });
+    h.kernelDenied = false;
+    await request(original.id);
+    h.denyPickupClaim = true;
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      stage: 'authorize', state: 'held', reason: expect.stringContaining('claim confinement'),
+    });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('holds an expired proof and a payload-spoofed role without a handler invocation', async () => {
+    const original = await create();
+    await expect(requestAdmissionRecovery({
+      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      authority: { kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 1,
+        credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)) },
+    })).rejects.toThrow('expired');
+    await request(original.id);
+    await db.sql`UPDATE harness_shared.work_items SET payload =
+      jsonb_set(payload, '{_admissionRecovery,authority,role}', '"operator"')
+      WHERE feature_id = ${original.id}`;
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      stage: 'authorize', state: 'held', reason: expect.stringContaining('provenance is invalid'),
+    });
+    expect(h.claim).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the original SU credential, not a saved bypass or a guessed provisioned role', async () => {
+    const original = await create();
+    await db.sql`TRUNCATE harness_shared.system_principals`;
+    await requestAdmissionRecovery({
+      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      authority: { kind: 'superuser', role: 'operator', credentialSha256: admissionCredentialDigest(h.suToken) },
+    });
+    h.suToken = 'test-only-rotated-bearer-not-a-real-credential';
+    await tick();
+    expect((await row(original.id))).toMatchObject({
+      admission: 'pending', taken_by: null,
+      payload: { _admissionRecovery: { state: 'held', stage: 'authorize',
+        reason: expect.stringContaining('superuser credential was revoked or rotated') } },
+    });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
   it('repairs the same pending task, narrows promotion, then requires a separate target pickup', async () => {
     const original = await create();
     const unrelated = await create('Unrelated pending work');
