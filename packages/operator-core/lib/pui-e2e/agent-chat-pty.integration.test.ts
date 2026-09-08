@@ -944,6 +944,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain('PUI-E2E startup connection interrupted');
       expect(pane.screen()).toContain(`> ${prompt}`);
       expect(commandPosts).toHaveLength(0);
       const chats = await persistedChats(db);
@@ -965,6 +966,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('Message not accepted — draft retained', { timeoutMs: 60_000 });
+      expect(pane.screen()).toMatch(/PUI-E2E engine exited during initialization|Claude event stream closed unexpectedly/);
       expect(pane.screen()).toContain(`> ${prompt}`);
       expect(pane.screen()).not.toContain('Sending — awaiting acceptance');
       expect(scriptedEngine.requests).toHaveLength(0);

@@ -5077,6 +5077,7 @@ async fn stream_su_session_events(
     };
 
     let mut terminal_seen = false;
+    let mut startup_error: Option<String> = None;
     // The host may spend 45 seconds initializing its engine and SU MCP. Keep
     // the draft pending across its starting descriptor and await a ready event.
     let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -5133,11 +5134,30 @@ async fn stream_su_session_events(
         );
         let identity_matches =
             su_turn_target_matches(&binding, &event.envelope().session, &harness, &chat_id);
+        if identity_matches {
+            match &event {
+                crate::su_session::SuSessionEvent::Error { message, .. } => {
+                    startup_error = Some(message.clone());
+                }
+                crate::su_session::SuSessionEvent::Lifecycle {
+                    state: crate::su_session::SuSessionLifecycleState::Failed,
+                    reason: Some(reason),
+                    ..
+                } if startup_error.is_none() => startup_error = Some(reason.clone()),
+                _ => {}
+            }
+        }
         let _ = tx.send(Event::SuSessionEvent(event));
         if initial_turn.is_some() && (can_send || terminal_seen || !identity_matches) {
             let pending = initial_turn.take().expect("checked pending first turn");
             if terminal_seen || !identity_matches {
-                let _ = tx.send(Event::SuTurnFailed { command_id: pending.command_id, message: "Session executor/stream is not ready for this project. Draft retained; reconnect to retry.".into(), uncertain: false });
+                let message = if identity_matches { startup_error.take() } else { None }
+                    .unwrap_or_else(|| "Session executor/stream is not ready for this project. Draft retained; reconnect to retry.".into());
+                let _ = tx.send(Event::SuTurnFailed {
+                    command_id: pending.command_id,
+                    message,
+                    uncertain: false,
+                });
             } else {
                 // Re-read the authoritative snapshot in the send path: a
                 // replayed ready event alone cannot authorize this first turn.
