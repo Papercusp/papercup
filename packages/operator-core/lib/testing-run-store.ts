@@ -120,6 +120,7 @@ const _runs = new Map<string, RunState>();
 const OUTPUT_CAP_BYTES = 16 * 1024;
 const EVICTION_MS = 60 * 60 * 1000;
 const SNAPSHOT_PERSIST_TIMEOUT_MS = 1_000;
+const TEST_RUN_PERSIST_TIMEOUT_MS = 1_000;
 /**
  * Keep timeout recovery's optional initial snapshot write well inside the
  * foreground transport margin. The detached child is launched first, so a
@@ -1463,19 +1464,31 @@ export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Prom
  * Persist per-file harness test rows to harness_shared.test_runs, stamped with
  * harness_slug + workspace_id (migration 413). Returns the number of rows
  * written. D-007 fail-soft: a DB/parse error never throws — a failed run-tab
- * ingestion must NOT break the test run. Each insert has a 1s timeout.
+ * ingestion must NOT break the test run. The count-only compatibility wrapper
+ * bounds each insert at 1s; the exact-ID variant below waits for its RETURNING
+ * result so it cannot report a false negative after a late commit.
  */
 export async function persistHarnessTestRuns(params: PersistHarnessTestRunsParams): Promise<number> {
-  return (await persistHarnessTestRunsWithIds(params)).written;
+  return (await persistHarnessTestRunsInternal(params, { timeoutMs: TEST_RUN_PERSIST_TIMEOUT_MS })).written;
 }
 
 /**
  * The ID-returning form used when a caller must bind the execution to an exact
  * spec-evidence row. Keep persistHarnessTestRuns as the count-only compatibility
- * wrapper for existing Tests-tab callers.
+ * wrapper for existing Tests-tab callers. It intentionally waits for the
+ * INSERT result: Promise.race does not cancel a timed-out query, so racing this
+ * exact-ID path can commit a row after returning `{ written: 0, ids: [] }` and
+ * make an already-persisted operational run report `ledger_write_failed`.
  */
 export async function persistHarnessTestRunsWithIds(
   params: PersistHarnessTestRunsParams,
+): Promise<PersistHarnessTestRunsResult> {
+  return persistHarnessTestRunsInternal(params);
+}
+
+async function persistHarnessTestRunsInternal(
+  params: PersistHarnessTestRunsParams,
+  options: { timeoutMs?: number } = {},
 ): Promise<PersistHarnessTestRunsResult> {
   const { harnessSlug, workspaceId, rows, runGroupId } = params;
   if (rows.length === 0) return { written: 0, ids: [] };
@@ -1496,19 +1509,25 @@ export async function persistHarnessTestRunsWithIds(
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     for (const row of rows) {
-      const inserted = await Promise.race([
-        Promise.resolve(
-          sql`
-            INSERT INTO harness_shared.test_runs
-              (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
-            VALUES
-              (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
-               ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
-            RETURNING id
-          `,
-        ),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
-      ])
+      const insert = Promise.resolve(
+        sql`
+          INSERT INTO harness_shared.test_runs
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
+          VALUES
+            (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
+             ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
+          RETURNING id
+        `,
+      );
+      const inserted = await (options.timeoutMs === undefined
+        ? insert
+        : Promise.race([
+            insert,
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('pg_insert_timeout')), options.timeoutMs),
+            ),
+          ])
+      )
         .then((result) => {
           written++;
           return result;

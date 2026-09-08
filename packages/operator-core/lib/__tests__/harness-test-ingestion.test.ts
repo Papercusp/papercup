@@ -235,6 +235,35 @@ describe('persistHarnessTestRuns', () => {
     expect(calls[0][1]).toBe('operational');
   });
 
+  it('waits for a late exact-ID insert instead of reporting a false ledger failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const sql = ((_strings: TemplateStringsArray, ..._values: unknown[]) =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve([{ id: '17700112' }]), 1_100);
+        })) as Parameters<typeof persistHarnessTestRuns>[0]['sql'];
+      let completed = false;
+      const pending = persistHarnessTestRunsWithIds({
+        harnessSlug: 'my-hive',
+        workspaceId: 'ws-42',
+        rows: [{ ...sampleRows[0], framework: 'operational' }],
+        runGroupId: 'operational:late-proof',
+        sql,
+      }).then((result) => {
+        completed = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(completed).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toEqual({ written: 1, ids: [17700112] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('is fail-soft: a throwing sql client swallows and never rejects', async () => {
     const throwingSql = (): never => {
       throw new Error('pg down');
