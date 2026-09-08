@@ -58,7 +58,6 @@ export const ALLOW_COUNTS = new Map([
   ['apps/operator/bin/substrate-sidecar.ts|path-to-file-url', 2],
   ['apps/operator/scripts/hooks/cc/pretooluse-schedule-wakeup-provenance.mjs|file-template', 1],
   ['apps/operator/scripts/onboard-launcher.mjs|file-url-to-path', 1],
-  ['apps/operator/scripts/psu-launcher.mjs|path-to-file-url', 2],
   ['apps/operator/scripts/ptool.mjs|path-to-file-url', 2],
   ['apps/operator/scripts/tutorial-runner.mjs|file-url-to-path', 1],
   ['scripts/assert-workspace-links.mjs|path-to-file-url', 2],

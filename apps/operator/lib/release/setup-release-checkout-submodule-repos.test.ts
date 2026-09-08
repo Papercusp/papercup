@@ -75,7 +75,7 @@ function cloneSubmoduleRepo(
 ): number {
   const wrapper = [
     'set -uo pipefail',
-    `source <(sed -n '/^clone_submodule_repo()/,/^}/p' "$SETUP_SCRIPT")`,
+    `source <(sed -n '/^filesystem_device()/,/^}/p; /^clone_submodule_repo()/,/^}/p' "$SETUP_SCRIPT")`,
     'clone_submodule_repo "$REL_PATH" "$SHA"',
   ].join('\n');
   const r = spawnSync('bash', ['-c', wrapper], {

@@ -5,6 +5,7 @@ import { FLAGS } from '@papercusp/flags';
 import { Moon } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
 import { Button } from '@/app/harness/Button';
+import { Table } from '@/app/harness/Table';
 import type { DreamMetrics } from '@papercusp/operator-core/lib/dream/dream-metrics';
 import type { DreamDetail, DreamHistory } from '@papercusp/operator-core/lib/dream/dream-read';
 import {
@@ -126,6 +127,7 @@ function DreamPotHistory({ potSlug, runId, setRun, cursor, setCursor, active }: 
 
 export function DreamFunnel({ metrics: m }: { metrics: DreamMetrics }) {
   const f = m.funnel, accepted = f.statuses.accepted ?? 0;
+  const phaseCosts = Object.entries(m.cost.phases).map(([phase, cost]) => ({ phase, cost }));
   return <>
     <dl className="pc-dreams__funnel" aria-label="Dream funnel">
       {Object.entries({ Attempts: m.population.attempts, 'Eligible attempts': f.eligibleAttempts,
@@ -146,9 +148,17 @@ export function DreamFunnel({ metrics: m }: { metrics: DreamMetrics }) {
       <p>Downstream outcomes: {Object.entries(m.downstream.outcomes).map(([key, n]) => `${key}: ${n}`).join(' · ') || 'Not recorded'}.</p>
       <p>Human grades: {Object.entries(m.downstream.grades).map(([key, n]) => `${key}: ${n}`).join(' · ') || 'Not recorded'}.</p>
       <p>Experiments: {m.experiments.executed} executed / {m.experiments.declaredLinks} linked · {m.experiments.missingResults} results missing · engineer time: unknown.</p>
-      <div className="pc-dreams__table"><table><caption>Model call costs by phase</caption><thead><tr><th>Phase</th><th>Known</th><th>Unresolved bound</th><th>Actual total</th></tr></thead><tbody>
-        {Object.entries(m.cost.phases).map(([phase, c]) => <tr key={phase}><th>{phase}</th><td>{money(c.knownUsd)}</td><td>{money(c.unresolvedBoundUsd)}</td><td>{money(c.actualUsd)}</td></tr>)}
-      </tbody></table></div>
+      <div className="pc-dreams__table"><Table
+        caption="Model call costs by phase"
+        columns={[
+          { key: 'phase', header: 'Phase', render: row => row.phase },
+          { key: 'known', header: 'Known', render: row => money(row.cost.knownUsd) },
+          { key: 'unresolved', header: 'Unresolved bound', render: row => money(row.cost.unresolvedBoundUsd) },
+          { key: 'actual', header: 'Actual total', render: row => money(row.cost.actualUsd) },
+        ]}
+        rows={phaseCosts}
+        getRowKey={row => row.phase}
+      /></div>
     </LearningDisclosure>
   </>;
 }
@@ -220,9 +230,16 @@ export function DreamRunDetail({ detail: d }: { detail: DreamDetail }) {
     </> : null}
     {d.assessments.map(a => <p key={a.id}>Assessment by {a.assessor}: family {a.familyId ?? 'unknown'} · novelty {a.novelty} · usefulness {a.usefulness} · maintainability {a.maintainability} · experiments {a.experimentBatteryIds.join(', ') || 'none linked'}</p>)}
     <h4>Phase charges</h4>
-    {p ? <div className="pc-dreams__table"><table><thead><tr><th>Phase / model</th><th>Status</th><th>Actual</th><th>Reserved</th></tr></thead><tbody>
-      {p.calls.map(call => <tr key={call.callId}><td>{call.phase} / {call.model}</td><td>{call.status}{call.error ? ` · ${call.error}` : ''}</td><td>{money(call.usage?.costUsd)}</td><td>{money(call.reservedUsd)}</td></tr>)}
-    </tbody></table></div> : <p>Legacy summary: generation {money(run.dreamUsage?.costUsd)} · review {money(run.reviewUsage?.costUsd)}.</p>}
+    {p ? <div className="pc-dreams__table"><Table
+      columns={[
+        { key: 'phase', header: 'Phase / model', render: call => `${call.phase} / ${call.model}` },
+        { key: 'status', header: 'Status', render: call => `${call.status}${call.error ? ` · ${call.error}` : ''}` },
+        { key: 'actual', header: 'Actual', render: call => money(call.usage?.costUsd) },
+        { key: 'reserved', header: 'Reserved', render: call => money(call.reservedUsd) },
+      ]}
+      rows={p.calls}
+      getRowKey={call => call.callId}
+    /></div> : <p>Legacy summary: generation {money(run.dreamUsage?.costUsd)} · review {money(run.reviewUsage?.costUsd)}.</p>}
     {units.length ? <LearningDisclosure label="Captured code and test evidence" defaultOpen>
       {units.flatMap(({ label, entry: { packet } }) => packet.sources.map(source => <section key={`${label}:${source.id}`} id={sourceId(run.runId, label, source.id)}>
         <h4>{label}/{source.id} · {source.path}:{source.startLine}–{source.endLine}</h4><p>Source hash: {source.sourceHash}</p><p>{source.proves}</p><pre>{source.excerpt}</pre>
