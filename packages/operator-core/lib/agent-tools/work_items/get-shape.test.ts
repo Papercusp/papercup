@@ -164,6 +164,53 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     }
   });
 
+  // EI-22659954682164298. The BODY counterpart of the test above, and the reason it
+  // exists: at the cap, `work_items:checkpoint` keeps succeeding and evicts the OLDEST
+  // content, announcing it only with a marker written into the body AFTER the loss. This
+  // envelope is the one signal that arrives while a writer can still act on it, so a
+  // shape tier dropping it under budget would restore the silent-eviction reading.
+  it('preserves checkpoint BODY headroom in both payload tiers and compact fallback', () => {
+    const checkpointBody = { chars: 31_000, cap: 32_000, remaining: 1_000 };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const normal = shapeWorkItemsGet(envelope([row({ checkpointBody })]), tier) as Envelope;
+      expect(normal.results[0].checkpointBody).toEqual(checkpointBody);
+
+      const compact = shapeWorkItemsGet(
+        envelope([row({ checkpoint: 'C'.repeat(40_000), checkpointBody })]),
+        tier,
+      ) as Envelope;
+      expect(compact.results[0].checkpointBody).toEqual(checkpointBody);
+    }
+  });
+
+  // The specific misreading this field must never produce. `checkpoint` is clipped per
+  // tier, so a reader who measured THAT string would infer generous headroom for a note
+  // that is actually at the cap and already evicting. `chars` describes the STORED note;
+  // it must stay divorced from the clipped payload on the same row.
+  it('reports BODY headroom of the STORED note, never of the clipped checkpoint payload', () => {
+    const atCap = { chars: 32_000, cap: 32_000, remaining: 0 };
+    const out = shapeWorkItemsGet(
+      envelope([row({ checkpoint: 'C'.repeat(32_000), checkpointBody: atCap })]),
+      'trimmed',
+    ) as Envelope;
+
+    const shapedCheckpoint = out.results[0].checkpoint as string;
+    expect(shapedCheckpoint.length).toBeLessThan(32_000); // the clip really happened
+    expect(out.results[0].checkpointBody).toEqual(atCap);
+    expect((out.results[0].checkpointBody as { remaining: number }).remaining).toBe(0);
+  });
+
+  // A FAILED checkpoint read must not report maximal headroom — the single most
+  // reassuring value this field can carry. `null` is the same contract
+  // `checkpointContentHash` already keeps on that leg.
+  it('passes a null BODY envelope through rather than synthesising empty-and-roomy', () => {
+    const out = shapeWorkItemsGet(
+      envelope([row({ checkpointBody: null, checkpointReadFailed: true })]),
+      'trimmed',
+    ) as Envelope;
+    expect(out.results[0].checkpointBody).toBeNull();
+  });
+
   it("keeps a large single-item checkpoint WHOLE (the post-respawn read that was broken)", () => {
     const checkpoint = "C".repeat(5_000);
     const out = shapeWorkItemsGet(envelope([row({ checkpoint })]), "trimmed") as Envelope;
