@@ -4003,8 +4003,22 @@ export async function trackGateStall(
   // The root itself is part of the fail-safe: an unresolvable integration tree yields the same
   // nulls a git error does, instead of throwing out of the tick before `.catch()` can apply.
   const stalenessRoot = candidate ? integrationRootForDiagnostic() : null;
+  // P-003 / EI-22710660172830156: an admitted repair head is a detached/synthesized commit,
+  // not a normal staging commit. Its synthetic commit metadata can carry an epoch-like date
+  // (the admission writer intentionally does not preserve the source commit timestamp), so
+  // measuring that SHA as though it were a tip candidate produces a fossil verdict for a
+  // fresh repair result. Only suppress the diagnostic when the verdict explicitly names the
+  // queue's current repairHead AND that head has moved beyond the immutable candidate. A
+  // queue whose head is still the candidate remains a normal tip measurement; ordinary tip
+  // verdicts without queue provenance are unchanged.
+  const detachedRepairHeadVerdict = Boolean(
+    candidate &&
+      snapshotQueue &&
+      snapshotQueue.repairHead === candidate &&
+      snapshotQueue.repairHead !== snapshotQueue.candidate,
+  );
   const staleness: CandidateStaleness =
-    candidate && stalenessRoot
+    candidate && stalenessRoot && !detachedRepairHeadVerdict
       ? await measureCandidateStaleness(stalenessRoot, candidate, gitRunner ?? defaultGitCheckRunner).catch(() => ({
           candidateCommittedAt: null,
           commitsBehindTip: null,
