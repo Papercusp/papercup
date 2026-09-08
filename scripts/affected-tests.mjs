@@ -1647,6 +1647,7 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // in a template check, user-layer shadowing residue) is introduced by exactly that
   // shape of commit, so the guards were unreachable from the change they guard.
   { prefix: "templates/", workspace: "@papercusp/operator-core" },
+  { prefix: "templates/", workspace: "@papercusp/deployment-driver" },
   // EI-21112293570332409. A SECOND route for the same prefix — the loop below applies
   // every matching route, it does not stop at the first, so this composes with the
   // operator-core row above rather than replacing it.
