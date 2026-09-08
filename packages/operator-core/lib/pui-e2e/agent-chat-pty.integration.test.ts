@@ -740,7 +740,7 @@ beforeAll(async () => {
           options.onMessage(frame);
         } });
         readOmpDiagnosticState = async () => {
-          const state = await peer.request({ type: 'get_state' }, 5_000)
+          const state: Record<string, unknown> = await peer.request({ type: 'get_state' }, 5_000)
             .catch((error: Error) => ({ stateReadError: error.message }));
           return { ...Object.fromEntries(['sessionId', 'sessionFile', 'isStreaming', 'isCompacting',
             'messageCount', 'queuedMessageCount', 'contextUsage', 'stateReadError'].map((key) => [key, state[key]])),
