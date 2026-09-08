@@ -726,11 +726,12 @@ export function countStuckFrontier(rows: ReadonlyArray<{ ageDays?: number; title
  * exclusion therefore matches claimDueRoutine's own PURE-loop definition
  * (`isLoop && !hasRecurrence`).
  */
-export async function readDeadRoutines(sql: Sql, overdueMs: number): Promise<DeadRoutineCensus> {
+export async function readDeadRoutines(sql: Sql, overdueMs: number, workspaceId: string): Promise<DeadRoutineCensus> {
   const rows = await sql<Array<{ name: string; overdue_total: number; scope_total: number }>>`
     WITH scope AS (
       SELECT name, next_fire_at FROM harness_shared.routines
        WHERE active = true AND next_fire_at IS NOT NULL
+         AND workspace_id = ${workspaceId}
          AND NOT ( reschedule_interval_sec IS NOT NULL
                    AND NOT jsonb_exists(trigger_config, 'cron')
                    AND NOT jsonb_exists(trigger_config, 'rrule') )
@@ -1235,7 +1236,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // EI-20258981691947730: the RELEASE install, not the Queen panel's potSlug — see
     // releaseInstallSlug() for why passing potSlug read this install as 'sb-devboard-hive'.
     const deadRoutineOverdueMs = await resolveDeadRoutineOverdueMs(sql, releaseInstallSlug(), ctx.now);
-    const deadCensus = await readDeadRoutines(sql, deadRoutineOverdueMs);
+    const deadCensus = await readDeadRoutines(sql, deadRoutineOverdueMs, ctx.ws);
     const deadRoutineNames = deadCensus.names;
     // WI-5839 / EI-18654017982759582 items 2+3: stale/unexplained PAUSED routines —
     // the complement readDeadRoutines can never see (it only looks at active=true).

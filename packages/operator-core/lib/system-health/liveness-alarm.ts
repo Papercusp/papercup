@@ -1423,7 +1423,7 @@ async function defaultReverifyDeadRoutines(ws: string, now: number): Promise<str
     // rather than a bare name list. Only the EMPTY/NON-EMPTY distinction is consumed here, and
     // `names` is empty exactly when `count` is 0 (the census returns early on zero rows), so
     // this keeps the fresh-re-read semantics byte-identical.
-    return (await readDeadRoutines(sql, overdueMs)).names;
+    return (await readDeadRoutines(sql, overdueMs, ws)).names;
   } catch {
     return null;
   }
