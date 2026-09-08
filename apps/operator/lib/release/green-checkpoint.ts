@@ -134,6 +134,7 @@ import {
   markFrozenRepairFixerFinished,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
+  recordFrozenRepairSupersededRed,
   buildFrozenRepairStatusIdentity,
   classifyRepairSignature,
   classifyRepairSignatureEntry,
@@ -5289,6 +5290,18 @@ function verdictTransitionAtHead(
   };
 }
 
+/** The round number a superseded red was just recorded as: the NEWEST convergence round at
+ * `head`. `"?"` when none exists — the transition did not persist (the row was retired
+ * mid-run, see `commitFrozenRepairQueueTransition`) or the caller's row carries no rounds. */
+function recordedRoundAt(queue: FrozenCandidateRepairQueue, head: string): string {
+  const rounds = queue.convergenceRounds ?? [];
+  for (let i = rounds.length - 1; i >= 0; i -= 1) {
+    const round = rounds[i];
+    if (round && round.head === head) return String(round.round);
+  }
+  return "?";
+}
+
 export async function verifyRepairHead(
   deps: RepairHeadVerificationDeps,
   queue: FrozenCandidateRepairQueue,
@@ -10355,10 +10368,9 @@ async function runGreenCheckpointInner(
             "repair-head-red",
           );
           if (supersededBy) {
-            const recordedRound = nextRecordedRound(repairQueue, candidate);
             deps.log(
               `FROZEN_REPAIR_VERDICT_SUPERSEDED: red at ${candidate.slice(0, 8)} recorded as ` +
-                `round ${recordedRound} at that head WITHOUT moving the row's head — an admission ` +
+                `round ${recordedRoundAt(repairQueue, candidate)} at that head WITHOUT moving the row's head — an admission ` +
                 `advanced repairHead to ${supersededBy.repairHead.slice(0, 8)} while this run ` +
                 `judged; that head is unjudged and the next run verifies it`,
             );
@@ -11585,7 +11597,9 @@ async function runGreenCheckpointInner(
         //
         // P-027 (D-014): applied to the FRESH row, and only if its repairHead is still the head
         // this suite judged — an admission that landed during the hour-long suite supersedes
-        // the verdict instead of being overwritten by it.
+        // the verdict instead of being overwritten by it. WI-10000741: superseded is NOT
+        // discarded — the measurement is recorded at `candidate` (round + signature) with the
+        // admission's head and phase left exactly as the admission set them.
         let supersededBy = null as FrozenCandidateRepairQueue | null;
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
@@ -11601,12 +11615,19 @@ async function runGreenCheckpointInner(
             (fresh) => {
               supersededBy = fresh;
             },
+            (fresh) =>
+              recordFrozenRepairSupersededRed(fresh, {
+                measuredHead: candidate,
+                ...measuredSignature,
+                nowMs: Date.now(),
+              }),
           ),
           "full-gate-red",
         );
         if (supersededBy) {
           deps.log(
-            `FROZEN_REPAIR_VERDICT_SUPERSEDED: full-gate red at ${candidate.slice(0, 8)} not recorded — ` +
+            `FROZEN_REPAIR_VERDICT_SUPERSEDED: full-gate red at ${candidate.slice(0, 8)} recorded as ` +
+              `round ${recordedRoundAt(repairQueue, candidate)} at that head WITHOUT moving the row's head — ` +
               `an admission advanced repairHead to ${supersededBy.repairHead.slice(0, 8)} while the ` +
               `suite ran; that head is unjudged and the next run verifies it`,
           );
