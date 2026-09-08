@@ -1379,6 +1379,10 @@ function installedManifest(): Record<string, unknown> {
       .toBe(manifest.companionSha256);
     return manifest;
 }
+function pendingNativeCards() {
+  const closed = new Set(scriptedEngine.events.flatMap((event) => event.type === 'card' && event.phase === 'closed' ? [event.correlationId] : []));
+  return scriptedEngine.events.flatMap((event) => event.type === 'card' && event.phase === 'opened' && !closed.has(event.card.correlationId) ? [event.card] : []);
+}
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
   test.skipIf(scriptedEngine.backend !== 'claude')('answers an actual native question through an installed PUI card', async () => {
@@ -1392,9 +1396,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await openComposer(pane);
       pane.write(request); pane.enter();
       await waitForSavedTurn(request);
-      await vi.waitFor(() => expect(scriptedEngine.engines[0]?.adapter.host.snapshot().openCards).toHaveLength(1), { timeout: 120_000, interval: 100 });
+      await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 120_000, interval: 100 });
       const engine = scriptedEngine.engines[0];
-      const card = engine.adapter.host.snapshot().openCards[0];
+      const card = pendingNativeCards()[0];
       expect(card.prompt).toBe(question);
       if (card.presentation.kind !== 'radio') throw new Error('The native question did not produce a PUI choice card');
       const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
