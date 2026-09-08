@@ -294,6 +294,14 @@ const specAdequacyCompletionSpec = z
     classRef: z
       .enum(PLAN_CLASS_RUBRIC_REFS)
       .describe('Existing plan-class standard that determines the required proof floor.'),
+    evidenceRefs: z
+      .array(z.string().trim().min(1).max(2000))
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Exact immutable evidence identities to grade. Use this to exclude superseded run-specific bindings without deleting history; include every relied-on ref across the enforced clauses.',
+      ),
     current: z
       .array(
         z
@@ -314,7 +322,7 @@ const specAdequacyCompletionSpec = z
   })
   .strict()
   .describe(
-    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy and accepts only exact current terminal scorecards whose grading audit is settled.',
+    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy over the optional exact evidenceRefs selection and accepts only exact current terminal scorecards whose grading audit is settled.',
   );
 
 /**
