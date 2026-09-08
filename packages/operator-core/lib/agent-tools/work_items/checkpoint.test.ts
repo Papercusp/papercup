@@ -47,6 +47,15 @@ vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
   readFrozenRepairMarker,
 }));
+// EI-22624970955266330: only the TURN RESOLVER is stubbed — `expandCurrentTurnSentinel`
+// stays real, so a test that asserts the sentinel was expanded is asserting the actual
+// production transform rather than a mock's echo. Defaults to null, which is what the
+// real resolver returns in a suite with no transcript, so every other test is unaffected.
+const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn(async (): Promise<{ ref: string } | null> => null));
+vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../turn-provenance/turn-ref')>()),
+  resolveCurrentTurnStamp,
+}));
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress (last_progress_at
@@ -840,6 +849,49 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const r = await one({ id: 'WI-7', checkpoint: 'first note', append: true });
       expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'first note');
       expect(r).toMatchObject({ ok: true, cleared: false });
+    });
+
+    // EI-22624970955266330: `appendBodyPreservationGuard` compared the STORED tail against
+    // the RAW submission. `[turn:self]` is expanded server-side at write time — the very
+    // thing the provenance lint on this tool instructs writers to use — so the stored tail
+    // never equalled the raw text, endsWith() was false, and the write was refused
+    // `append_body_overflow` while citing cap pressure that did not exist. Measured live
+    // before the fix: an 87-char append onto a 12,855-char note was refused, while a
+    // 290-char append with no sentinel onto a 9,754-char note was accepted — the length
+    // ordering is inverted from what a genuine cap failure would produce.
+    it('EI-22624970955266330: append:true accepts a body containing the [turn:self] sentinel (the guard compares the EXPANDED addendum)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      resolveCurrentTurnStamp.mockResolvedValueOnce({ ref: 'turn:abc123@2026-09-08T13:10:00.000Z' });
+      getWorkItemCheckpoint.mockResolvedValueOnce('prior narrative worth keeping');
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'refreshed [turn:self] — contract unchanged',
+        append: true,
+      });
+
+      expect(r).toMatchObject({ ok: true, id: 'WI-7', verified: true });
+      const stored = setWorkItemCheckpoint.mock.calls.at(-1)?.[1] as string;
+      expect(stored).toContain('prior narrative worth keeping');
+      // CALIBRATION: the sentinel must actually have been EXPANDED, or this test would
+      // pass vacuously — a run where the resolver returned null exercises none of the
+      // guard behaviour this case exists to pin.
+      expect(stored).toContain('turn:abc123@2026-09-08T13:10:00.000Z');
+      expect(stored).not.toContain('[turn:self]');
+    });
+
+    it('EI-22624970955266330 CALIBRATION: an append with NO sentinel is unaffected (the resolver is never consulted)', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      resolveCurrentTurnStamp.mockClear();
+      getWorkItemCheckpoint.mockResolvedValueOnce('prior narrative worth keeping');
+      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+
+      const r = await one({ id: 'WI-7', checkpoint: 'plain addendum, no sentinel', append: true });
+
+      expect(r).toMatchObject({ ok: true, id: 'WI-7', verified: true });
+      expect(resolveCurrentTurnStamp).not.toHaveBeenCalled();
+      expect(setWorkItemCheckpoint.mock.calls.at(-1)?.[1]).toContain('plain addendum, no sentinel');
     });
 
     it('append:true rejects a confirmed blank checkpoint (append + clear is a contradiction) without touching the store', async () => {

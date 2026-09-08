@@ -1479,6 +1479,13 @@ export default defineTool({
         // below); `null` IS the "no join attempted" signal the guard reads.
         const joinAddendum = wantsAppend && checkpoint ? checkpoint : null;
         const didAttemptJoin = joinAddendum !== null;
+        // EI-22624970955266330: what `appendBodyPreservationGuard` must compare against is
+        // the addendum AS STORED, not as submitted. `checkpointToStore` is rewritten below
+        // by write-time transforms (the `[turn:self]` sentinel expansion at minimum), so a
+        // guard that tests `storedTail.endsWith(rawSubmission)` fails an identity check it
+        // was never meant to police. Track the transformed addendum here and keep it in
+        // step with every transform applied to `checkpointToStore`.
+        let joinAddendumStored = joinAddendum;
         if (joinAddendum !== null) {
           try {
             appendPriorRaw = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
@@ -1608,6 +1615,14 @@ export default defineTool({
           checkpointToStore = expandCurrentTurnSentinel(checkpointToStore, sentinelTurn);
           currentProvenanceText =
             expandCurrentTurnSentinel(currentProvenanceText, sentinelTurn) ?? currentProvenanceText;
+          // Keep the append guard's comparison target in step with the stored bytes.
+          // Without this the sentinel is expanded in `checkpointToStore` but not in the
+          // submitted addendum, so the guard's endsWith() is false for reasons that have
+          // nothing to do with the cap — and every append containing `[turn:self]` is
+          // refused as `append_body_overflow`. That fires on exactly the writers who
+          // FOLLOW the provenance lint's instruction to use the sentinel.
+          joinAddendumStored =
+            expandCurrentTurnSentinel(joinAddendumStored, sentinelTurn) ?? joinAddendumStored;
         }
         const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
           successfulActions,
@@ -1955,13 +1970,13 @@ export default defineTool({
          * same locked prior and refuse unless the submitted body remains intact.
          */
         const appendBodyPreservationGuard: CheckpointGuard | null =
-          !wantsConfirmShrink && didAttemptJoin && joinAddendum
+          !wantsConfirmShrink && didAttemptJoin && joinAddendumStored
             ? (priorNote, priorLen) => {
                 const candidate = checksTransform?.(priorNote, checkpointToStore);
                 const candidateBody = candidate
                   ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
                   : '';
-                const submitted = joinAddendum.trim();
+                const submitted = joinAddendumStored.trim();
                 return candidateBody.endsWith(submitted)
                   ? null
                   : // EI-22072152340717849: the original wording ("retire stale legacy checks
@@ -1974,7 +1989,13 @@ export default defineTool({
                     // never evicts a check row either way, retiring rows is a SAFE separate
                     // write, and confirmShrink's real cost here is the NEW note, not the
                     // carried checks.
-                    `append_body_overflow — carried check rows alone occupy ${priorLen} of the ` +
+                    // EI-22624970955266330: `priorLen` is the CARRIED NOTE's length, not
+                    // check-row bytes. Naming it "carried check rows" sent callers to
+                    // retire rows on items that had ZERO rows (measured: an item reporting
+                    // checkpointChecks {count: 0} was told 9,747 characters of rows were in
+                    // the way). Report the measurement this actually is; carried rows are
+                    // one contributor to it, and remain the first thing worth trimming.
+                    `append_body_overflow — the carried note occupies ${priorLen} of the ` +
                       `${CHECKPOINT_CAP}-character checkpoint cap, leaving no room to preserve the submitted append ` +
                       'body. Refusing the write rather than reporting success with the new progress note silently ' +
                       'dropped. No carried check row is evicted by this refusal, or would be by proceeding past ' +
