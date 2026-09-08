@@ -5,6 +5,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { captureInvocationFriction, recoverInvocationFriction } from './invocation-friction';
 import { captureToolInvocationFriction, type CaptureDeps, type CaptureImprovementResult } from './capture-core';
 import type { EngineerIssue } from '../../issues-engineer';
+import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
@@ -42,7 +43,118 @@ const success = async (): Promise<CaptureImprovementResult> => ({
   ok: true, created: false, issue: { id: 'EI-1' } as EngineerIssue, possibleDuplicates: [],
 });
 
+/** Exercise the real correlation/promotion logic against persisted payloads.
+ * Only issue storage/tagging seams are injected; no application DB or scheduler.
+ * Read payloads back on every call so an in-memory mutation cannot fake a write. */
+function persistedCapture() {
+  const metadata = new Map<string, EngineerIssue>();
+  const occurrences: RecordIssueOccurrenceInput[] = [];
+  async function rows(workspace: string) {
+    const persisted = await db.sql`SELECT feature_id, payload FROM harness_shared.work_items
+      WHERE workspace_id=${workspace} ORDER BY feature_id`;
+    return persisted.map(row => ({ ...metadata.get(row.feature_id)!, payload: row.payload }));
+  }
+  const capture: typeof captureToolInvocationFriction = async input => {
+    const workspace = input.workspaceId;
+    const deps: CaptureDeps = {
+      searchIssues: async () => [],
+      findIssuesByWatchdogKeys: async keys => (await rows(workspace))
+        .filter(row => keys.includes(String(row.payload?.watchdogKey))),
+      // Deliberately return other contracts too: the production classifier
+      // must reject them, rather than relying on a helpful fixture filter.
+      findIssuesByToolFailureClassKeys: async () => rows(workspace),
+      createIssue: async issue => {
+        const id = `EI-${metadata.size + 1}`;
+        const row = { ...issue, id, state: 'open', signalOrigin: 'organic' } as EngineerIssue;
+        metadata.set(id, row);
+        await db.sql`INSERT INTO harness_shared.work_items
+          (workspace_id,harness_slug,feature_id,item_kind,status,payload)
+          VALUES (${workspace},${issue.scope ?? 'operator'},${id},${issue.kind ?? 'change'},'open',${db.sql.json(issue.payload as never)})`;
+        return row;
+      },
+      updateIssuePatch: async (id, patch) => {
+        metadata.set(id, { ...metadata.get(id)!, ...patch });
+        return (await rows(workspace)).find(row => row.id === id)!;
+      },
+      mergeIssuePayload: async (id, patch, opts) => {
+        const row = (await rows(workspace)).find(row => row.id === id)!;
+        const payload = { ...row.payload, ...patch };
+        for (const key of opts?.unset ?? []) delete payload[key];
+        await db.sql`UPDATE harness_shared.work_items SET payload=${db.sql.json(payload as never)}
+          WHERE workspace_id=${workspace} AND feature_id=${id}`;
+        return (await rows(workspace)).find(row => row.id === id)!;
+      },
+      recordIssueOccurrence: async occurrence => { occurrences.push(occurrence); return null; },
+      tagIssue: async () => {}, untagIssue: async () => {},
+    };
+    return captureToolInvocationFriction(input, deps);
+  };
+  async function invoke(change: {
+    workspace?: string; owner?: string; schema?: string; build?: string; tool?: string; harness?: string;
+  } = {}) {
+    const workspace = change.workspace ?? 'ws-a';
+    const tool = change.tool ?? 'coord:send';
+    const metadataJson = { frictionCapture: 'pending',
+      invalidInput: { source: 'projected-tool-registry', toolName: tool, registryRevision: change.schema ?? 'schema-one' },
+      toolFailure: { reproduced: true, hardInternal: true } };
+    const [ref] = await db.sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,coord_owner_id,tool_name,status,error_code,error_message,serving_build_sha,metadata_json)
+      VALUES (${workspace},${change.harness ?? 'papercusp'},${change.owner ?? 'su-a'},${tool},
+        'invalid-input','invalid_input','body: must be an array',${change.build ?? 'loaded-build'},
+        ${db.sql.json(metadataJson)}) RETURNING id::text`;
+    expect(await captureInvocationFriction({ id: ref.id, workspaceId: workspace }, { sql: sql(), capture })).toBe(true);
+    expect((await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations WHERE id=${ref.id}`)[0].metadata_json)
+      .toHaveProperty('frictionCapture', 'delivered');
+  }
+  return { rows, invoke, occurrences };
+}
+
 describe('R7 private PostgreSQL delivery contract', () => {
+  it('correlates actual invocation retries and promotes only an independent reporter without losing identity', async () => {
+    const f = persistedCapture();
+    await f.invoke();
+    await f.invoke();
+    const repeated = await f.rows('ws-a');
+    expect(repeated).toHaveLength(1);
+    const id = repeated[0].id;
+    expect(repeated[0]).toMatchObject({ kind: 'change', severity: 'nit', payload: {
+      lane: 'observation', toolFailureProbation: { class: 'caller', state: 'probation',
+        direct: false, reporters: ['su-a'] },
+    } });
+    expect(repeated[0].payload?.toolFailureProbation).not.toHaveProperty('report.reproduced');
+    await f.invoke({ owner: 'su-b' });
+    const promoted = await f.rows('ws-a');
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]).toMatchObject({ id, kind: 'change', payload: {
+      toolFailureProbation: { class: 'caller', state: 'promoted', reporters: ['su-a', 'su-b'] },
+      implementationReadiness: { status: 'unknown', reason: 'corroborated-tool-failure-awaiting-review' },
+    } });
+    expect(promoted[0].payload).not.toHaveProperty('lane', 'observation');
+    // A further automatic report appends evidence; it cannot downgrade the
+    // accountable row, clear its readiness, or manufacture another issue.
+    await f.invoke();
+    expect(await f.rows('ws-a')).toEqual(promoted);
+    expect(f.occurrences.filter(row => row.canonicalId === id)).toHaveLength(4);
+  });
+
+  it('keeps changed schema, loaded build, tool, harness and workspace reports separate through delivery', async () => {
+    const f = persistedCapture();
+    await f.invoke();
+    const original = (await f.rows('ws-a'))[0];
+    for (const change of [
+      { schema: 'schema-two' }, { build: 'other-build' }, { tool: 'coord:handoff' },
+      { harness: 'other-pot' }, { workspace: 'ws-b' },
+    ]) await f.invoke({ ...change, owner: 'su-b' });
+    const local = await f.rows('ws-a');
+    const other = await f.rows('ws-b');
+    expect(local).toHaveLength(5);
+    expect(other).toHaveLength(1);
+    expect(local.find(row => row.id === original.id)).toEqual(original);
+    for (const row of [...local, ...other]) expect(row.payload).toMatchObject({
+      lane: 'observation', toolFailureProbation: { state: 'probation', direct: false },
+    });
+  });
+
   it('rolls back failure, recovers below-threshold invalid calls and preserves other metadata', async () => {
     const ref = await seed();
     await expect(captureInvocationFriction(ref, { sql: sql(), capture: async () => { throw new Error('fixture failure'); } })).rejects.toThrow('fixture failure');
