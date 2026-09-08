@@ -35,6 +35,7 @@ import {
   activeWorkItemDependencyRefsSql,
   readWorkItemDependenciesForRefs,
   repointWorkItemDependencyRefsInTransaction,
+  withWorkItemDependencyAdmissionTransaction,
   type StoredWorkItemDependencyRow,
 } from './dbos/work-item-deps-store';
 import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
@@ -4265,7 +4266,9 @@ export async function persistAdmissionPlan(
   input: PersistAdmissionPlanInput,
 ): Promise<AdmissionPlanPersistenceResult> {
   if (input.withinTransaction) return persistAdmissionPlanInTransaction(sql, input);
-  return sql.begin((rawTx) => persistAdmissionPlanInTransaction(rawTx as unknown as OrgSql, input));
+  return withWorkItemDependencyAdmissionTransaction(sql, (rawTx) =>
+    persistAdmissionPlanInTransaction(rawTx as unknown as OrgSql, input),
+  );
 }
 
 class ReviewedAdmissionCleanupApplyRollback extends Error {
@@ -4340,7 +4343,7 @@ export async function applyReviewedAdmissionCleanup(
   };
 
   try {
-    return await sql.begin(async (rawTx) => {
+    return await withWorkItemDependencyAdmissionTransaction(sql, async (rawTx) => {
       const tx = rawTx as unknown as OrgSql;
       const { preview, snapshots } = await buildReviewedAdmissionCleanupPreview(tx, input, { lockRows: true });
       if (preview.previewHash !== requestedPreviewHash) {

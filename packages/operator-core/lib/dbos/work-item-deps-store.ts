@@ -582,7 +582,7 @@ export async function mutateWorkItemDependencies(
 ): Promise<WorkItemDependencyBatchResult> {
   const startedAt = performance.now();
   const sql = opts.sql ?? (getOrgPg().sql as Sql);
-  return withSerializableRetry(
+  return withWorkItemDependencyAdmissionTransaction(
     sql,
     async (tx) => {
       const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
@@ -640,6 +640,23 @@ export async function mutateWorkItemDependencies(
   );
 }
 
+/**
+ * Canonical transaction boundary for any larger writer that can mutate the
+ * dependency graph as one of its atomic side effects.
+ *
+ * Callers that already own an admission merge transaction cannot nest
+ * {@link mutateWorkItemDependencies}; wrapping their complete operation here
+ * preserves the same SERIALIZABLE + retry contract instead of validating the
+ * graph inside postgres.js's default READ COMMITTED transaction.
+ */
+export async function withWorkItemDependencyAdmissionTransaction<T>(
+  sql: Sql,
+  fn: (tx: Sql) => Promise<T>,
+  retry?: SerializableRetryOptions,
+): Promise<T> {
+  return withSerializableRetry(sql, fn, retry);
+}
+
 interface RepointDependencyRow {
   id: string | number;
   blocked_kind: string;
@@ -671,6 +688,33 @@ function repointDependencyReceipt(row: RepointDependencyRow): Record<string, unk
   };
 }
 
+function normalizeDependencyRefRewrites(
+  rewrites: readonly { from: string; to: string }[],
+): Map<string, string> {
+  const rewriteByRef = new Map<string, string>();
+  for (const rewrite of rewrites) {
+    if (
+      rewrite.from.length === 0 ||
+      rewrite.to.length === 0 ||
+      rewrite.from.trim() !== rewrite.from ||
+      rewrite.to.trim() !== rewrite.to
+    ) {
+      throw new Error('dependency ref rewrites require non-empty refs without surrounding whitespace');
+    }
+    // An identity rewrite is a true no-op. Leaving it in the map targets the
+    // existing row, upserts that same row, then deletes it by id.
+    if (rewrite.from === rewrite.to) continue;
+    const priorTarget = rewriteByRef.get(rewrite.from);
+    if (priorTarget !== undefined && priorTarget !== rewrite.to) {
+      throw new Error(
+        `conflicting dependency ref rewrites for ${rewrite.from}: ${priorTarget} and ${rewrite.to}`,
+      );
+    }
+    rewriteByRef.set(rewrite.from, rewrite.to);
+  }
+  return rewriteByRef;
+}
+
 /**
  * Repoint dependency refs inside a caller-owned canonicalization transaction.
  *
@@ -687,9 +731,14 @@ export async function repointWorkItemDependencyRefsInTransaction(
     itemWorkspaceId?: string;
     rewrites: readonly { from: string; to: string }[];
   },
+  opts: {
+    /** Injectable post-validation barrier for deterministic transaction-race coverage. */
+    beforeWrite?: () => Promise<void>;
+  } = {},
 ): Promise<WorkItemDependencyRefRewriteReceipt[]> {
   const startedAt = performance.now();
-  const rewriteByRef = new Map(input.rewrites.map((rewrite) => [rewrite.from, rewrite.to]));
+  const rewriteByRef = normalizeDependencyRefRewrites(input.rewrites);
+  if (rewriteByRef.size === 0) return [];
   const rows = await tx<RepointDependencyRow[]>`
     SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
       FROM harness_shared.work_item_deps
@@ -774,6 +823,8 @@ export async function repointWorkItemDependencyRefsInTransaction(
       policyCodes: findings.map((finding) => finding.policy.code),
     });
   }
+
+  await opts.beforeWrite?.();
 
   const receipts: WorkItemDependencyRefRewriteReceipt[] = [];
   for (const dependency of rows) {

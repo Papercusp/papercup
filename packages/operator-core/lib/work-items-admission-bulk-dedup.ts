@@ -14,6 +14,7 @@ import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { admissionIdentity } from './harness/improvements/digest';
 import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
+import { withWorkItemDependencyAdmissionTransaction } from './dbos/work-item-deps-store';
 import {
   ADMISSION_COMPONENT_FLOOR,
   lexicalHardEdges,
@@ -2040,7 +2041,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         | { census: AdmissionCensusRunResult; scopedPairsAfter: number; stage: BulkDedupStageResult }
         | undefined;
 
-      await sql.begin(async (rawTx) => {
+      await withWorkItemDependencyAdmissionTransaction(sql, async (rawTx) => {
         const tx = rawTx as unknown as OrgSql;
         const persistence = await persistAdmissionPlan(tx, {
           workspaceId: opts.workspaceId,

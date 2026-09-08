@@ -24,6 +24,11 @@ const {
   runWorkItemAdmissionPromoter,
   WORK_ITEM_ADMISSION_PROMOTER,
 } = await import('./work-items-admission-promoter');
+const {
+  WorkItemDependencyAdmissionError,
+  repointWorkItemDependencyRefsInTransaction,
+  withWorkItemDependencyAdmissionTransaction,
+} = await import('./dbos/work-item-deps-store');
 
 const WS = 'default';
 const HARNESS = 'papercusp';
@@ -253,6 +258,126 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  describe('dependency-reference rewrite transaction boundary', () => {
+    const insertDependency = async (blockedRef: string, blockerRef: string): Promise<void> => {
+      await db.sql`
+        INSERT INTO harness_shared.work_item_deps
+          (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+        VALUES (${WS}, 'issue', ${blockedRef}, 'issue', ${blockerRef}, 'blocks', 'settled', 'fixture')`;
+    };
+
+    it('runs at SERIALIZABLE and leaves identity rewrites as a true no-op', async () => {
+      await seedItem({ id: 'WI-noop-blocked', admission: 'admitted' });
+      await seedItem({ id: 'WI-noop-blocker', admission: 'admitted' });
+      await insertDependency('WI-noop-blocked', 'WI-noop-blocker');
+
+      const result = await withWorkItemDependencyAdmissionTransaction(db.sql, async (tx) => {
+        const [isolation] = await tx<Array<{ transaction_isolation: string }>>`SHOW transaction_isolation`;
+        const receipts = await repointWorkItemDependencyRefsInTransaction(tx, {
+          workspaceId: WS,
+          rewrites: [{ from: 'WI-noop-blocked', to: 'WI-noop-blocked' }],
+        });
+        return { isolation: isolation?.transaction_isolation, receipts };
+      });
+
+      expect(result).toEqual({ isolation: 'serializable', receipts: [] });
+      expect(await db.sql`
+        SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps ORDER BY id
+      `).toEqual([{ blocked_ref: 'WI-noop-blocked', blocker_ref: 'WI-noop-blocker' }]);
+    });
+
+    it('rejects conflicting rewrites before touching the stored edge', async () => {
+      await seedItem({ id: 'WI-conflict-source', admission: 'admitted' });
+      await seedItem({ id: 'WI-conflict-a', admission: 'admitted' });
+      await seedItem({ id: 'WI-conflict-b', admission: 'admitted' });
+      await insertDependency('WI-conflict-source', 'WI-conflict-a');
+
+      await expect(
+        withWorkItemDependencyAdmissionTransaction(db.sql, (tx) =>
+          repointWorkItemDependencyRefsInTransaction(tx, {
+            workspaceId: WS,
+            rewrites: [
+              { from: 'WI-conflict-source', to: 'WI-conflict-a' },
+              { from: 'WI-conflict-source', to: 'WI-conflict-b' },
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/conflicting dependency ref rewrites/);
+      expect(await db.sql`
+        SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps ORDER BY id
+      `).toEqual([{ blocked_ref: 'WI-conflict-source', blocker_ref: 'WI-conflict-a' }]);
+    });
+
+    it('rolls back sibling writes when a repoint would introduce a dependency cycle', async () => {
+      for (const id of ['WI-cycle-loser', 'WI-cycle-a', 'WI-cycle-b']) {
+        await seedItem({ id, admission: 'admitted', summary: `${id} original` });
+      }
+      await insertDependency('WI-cycle-loser', 'WI-cycle-a');
+      await insertDependency('WI-cycle-a', 'WI-cycle-b');
+
+      await expect(
+        withWorkItemDependencyAdmissionTransaction(db.sql, async (tx) => {
+          await tx`UPDATE harness_shared.work_items SET summary = 'must roll back' WHERE feature_id = 'WI-cycle-a'`;
+          return repointWorkItemDependencyRefsInTransaction(tx, {
+            workspaceId: WS,
+            rewrites: [{ from: 'WI-cycle-loser', to: 'WI-cycle-b' }],
+          });
+        }),
+      ).rejects.toBeInstanceOf(WorkItemDependencyAdmissionError);
+
+      const [item] = await db.sql<Array<{ summary: string }>>`
+        SELECT summary FROM harness_shared.work_items WHERE feature_id = 'WI-cycle-a'`;
+      expect(item?.summary).toBe('WI-cycle-a original');
+      expect(await db.sql`
+        SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps ORDER BY blocked_ref, blocker_ref
+      `).toEqual([
+        { blocked_ref: 'WI-cycle-a', blocker_ref: 'WI-cycle-b' },
+        { blocked_ref: 'WI-cycle-loser', blocker_ref: 'WI-cycle-a' },
+      ]);
+    });
+
+    it('serializes concurrent disjoint repoints that would otherwise commit a two-cycle', async () => {
+      for (const id of ['WI-race-a', 'WI-race-b', 'WI-race-loser-a', 'WI-race-loser-b']) {
+        await seedItem({ id, admission: 'admitted' });
+      }
+      await insertDependency('WI-race-loser-a', 'WI-race-a');
+      await insertDependency('WI-race-loser-b', 'WI-race-b');
+
+      let arrivals = 0;
+      let openBarrier!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        openBarrier = resolve;
+      });
+      const beforeWrite = async (): Promise<void> => {
+        arrivals += 1;
+        if (arrivals === 2) openBarrier();
+        if (arrivals <= 2) await barrier;
+      };
+      const repoint = (from: string, to: string) =>
+        withWorkItemDependencyAdmissionTransaction(db.sql, (tx) =>
+          repointWorkItemDependencyRefsInTransaction(
+            tx,
+            { workspaceId: WS, rewrites: [{ from, to }] },
+            { beforeWrite },
+          ),
+        );
+
+      const results = await Promise.allSettled([
+        repoint('WI-race-loser-a', 'WI-race-b'),
+        repoint('WI-race-loser-b', 'WI-race-a'),
+      ]);
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const [rejected] = results.filter((result) => result.status === 'rejected');
+      expect(rejected).toMatchObject({ reason: expect.any(WorkItemDependencyAdmissionError) });
+
+      const edges = await db.sql<Array<{ blocked_ref: string; blocker_ref: string }>>`
+        SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps ORDER BY blocked_ref, blocker_ref`;
+      expect(edges).toHaveLength(2);
+      const edgeKeys = new Set(edges.map((edge) => `${edge.blocked_ref}<-${edge.blocker_ref}`));
+      expect(edgeKeys.has('WI-race-a<-WI-race-b') && edgeKeys.has('WI-race-b<-WI-race-a')).toBe(false);
+    }, 60_000);
+  });
+
   it('targets the original item without admitting an older unrelated row or another scope', async () => {
     await seedItem({ id: 'WI-target', title: 'unique selected recovery', vector: null });
     await seedItem({ id: 'WI-older', title: 'unrelated older work', vector: null, createdAtMs: NOW - 30_000 });
