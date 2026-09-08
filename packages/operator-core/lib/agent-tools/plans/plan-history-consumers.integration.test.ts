@@ -25,12 +25,18 @@ const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const HARNESS = `zzz-plan-history-${RUN}`;
 const PLAN = `plan-history-consumers-${RUN}`;
 const CHILD = `WI-plan-history-${RUN}`;
+const DIRECT_GOAL_ITEM = `WI-goal-direct-${RUN}`;
+const UNRELATED_ITEM = `WI-goal-unrelated-${RUN}`;
 const FLEET = `plan-history-fleet-${RUN}`;
 const GOAL = `goal-history-consumers-${RUN}`;
 const GOAL_LESSON = 'A measured correction replaced the stale goal stop condition.';
 const CHILD_ROOT_CAUSE = 'the delivery cursor advanced before projection';
 const CHILD_LESSON =
   'Outcome: the descendant repair shipped. Root cause: the delivery cursor advanced before projection. Residue: preserve the exact recovery reference.';
+const DIRECT_GOAL_LESSON =
+  'Outcome: the direct goal repair shipped. Root cause: direct goal attachment must survive without a plan. Residue: retain direct-goal recovery.';
+const UNRELATED_LESSON =
+  'Outcome: unrelated sibling poison. Root cause: this object belongs to a different subject. Residue: never inject it.';
 
 const PLAN_CONTENT = `---
 title: Plan history consumer integration
@@ -104,15 +110,29 @@ beforeAll(async () => {
   await admin`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
-       source_plan_slug, source_plan_item_ids, payload, last_progress_at)
+       source_plan_slug, source_plan_item_ids, goal_id, payload, last_progress_at)
     VALUES
       (${fx.workspaceId}, ${HARNESS}, ${CHILD}, 'bug', 'Descendant delivery repair',
        'A completed child with a lesson the plan must inherit.', 'open', ${PLAN}, ARRAY['P-001'],
-       ${admin.json({
+       ${GOAL}, ${admin.json({
          plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS },
-       })}, now())
+       })}, now()),
+      (${fx.workspaceId}, ${HARNESS}, ${DIRECT_GOAL_ITEM}, 'bug', 'Direct goal repair',
+       'A directly attached goal item with no plan edge.', 'open', NULL, NULL, ${GOAL},
+       ${admin.json({})}, now()),
+      (${fx.workspaceId}, ${HARNESS}, ${UNRELATED_ITEM}, 'bug', 'Unrelated sibling',
+       'A same-harness item outside the goal and plan graph.', 'open', NULL, NULL, NULL,
+       ${admin.json({})}, now())
   `;
   await setWorkItemCheckpoint({ harness: HARNESS, workItemId: CHILD, workspaceId: fx.workspaceId }, CHILD_LESSON);
+  await setWorkItemCheckpoint(
+    { harness: HARNESS, workItemId: DIRECT_GOAL_ITEM, workspaceId: fx.workspaceId },
+    DIRECT_GOAL_LESSON,
+  );
+  await setWorkItemCheckpoint(
+    { harness: HARNESS, workItemId: UNRELATED_ITEM, workspaceId: fx.workspaceId },
+    UNRELATED_LESSON,
+  );
 
   const stored = await setClaimSpec(
     {
@@ -134,13 +154,17 @@ afterAll(async () => {
   await admin`
     DELETE FROM harness_shared.carry_notes
      WHERE workspace_id = ${fx.workspaceId}
-       AND scope = ${workItemCheckpointScope(HARNESS, CHILD)}
+       AND scope = ANY(${[
+         workItemCheckpointScope(HARNESS, CHILD),
+         workItemCheckpointScope(HARNESS, DIRECT_GOAL_ITEM),
+         workItemCheckpointScope(HARNESS, UNRELATED_ITEM),
+       ]})
   `.catch(() => {});
   await admin`
     DELETE FROM harness_shared.work_items
      WHERE workspace_id = ${fx.workspaceId}
        AND harness_slug = ${HARNESS}
-       AND feature_id = ${CHILD}
+       AND feature_id = ANY(${[CHILD, DIRECT_GOAL_ITEM, UNRELATED_ITEM]})
   `.catch(() => {});
   await admin`
     DELETE FROM harness_shared.cup_claim_specs
@@ -180,6 +204,8 @@ describe('bounded plan history production consumers', () => {
     };
     expect(planResult.history.status).toBe('available');
     expect(JSON.stringify(planResult.history)).toContain(CHILD_LESSON);
+    expect(JSON.stringify(planResult.history)).not.toContain(DIRECT_GOAL_LESSON);
+    expect(JSON.stringify(planResult.history)).not.toContain(UNRELATED_LESSON);
     const rawRef = planResult.history.brief.attempts.find((attempt) => attempt.rawRef.startsWith(`${CHILD}#`))?.rawRef;
     expect(rawRef).toBe(`${CHILD}#checkpoint`);
 
@@ -230,6 +256,10 @@ describe('bounded plan history production consumers', () => {
     expect(serialized).toContain(GOAL_LESSON);
     expect(serialized).toContain('Preserve the current correction');
     expect(serialized).toContain(CHILD_ROOT_CAUSE);
+    expect(serialized).toContain('direct goal attachment must survive without a plan');
+    expect(serialized).not.toContain(UNRELATED_LESSON);
+    expect(history.brief?.rawRefs.filter((ref) => ref === `${CHILD}#checkpoint`)).toHaveLength(1);
+    expect(history.brief?.rawRefs.filter((ref) => ref === `${DIRECT_GOAL_ITEM}#checkpoint`)).toHaveLength(1);
     expect(history.brief?.fanOut).toMatchObject({ truncated: false });
 
     const childRef = history.brief?.rawRefs.find((ref) => ref === `${CHILD}#checkpoint`);
