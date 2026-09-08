@@ -852,7 +852,9 @@ describe('authenticated admission binding through the real MCP handler', () => {
   });
 
   it('retains an authenticated SU power-profile restriction', async () => {
-    const result = await callTool('gatingtest:scoped', {}, superuserExtra('&workspace=ws-test&profile=power'));
+    const result = await callTool(
+      'gatingtest:scoped', {}, superuserExtra('&workspace=ws-test&harness=papercup&profile=power'),
+    );
     expect(result.isError).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(bindAdmissionAuthority(seen[0]!.ctx)?.context?.profile).toBe('power');
