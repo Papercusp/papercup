@@ -1369,8 +1369,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   });
 });
 
-describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
-  test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
+function installedManifest(): Record<string, unknown> {
     const manifestPath = process.env.PUI_INSTALL_MANIFEST
       ?? path.join(process.env.HOME!, '.papercusp', 'pui-install.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -1378,7 +1377,55 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     expect(manifest.binarySha256).toBe(binarySha256);
     expect(createHash('sha256').update(readFileSync(manifest.companionPath)).digest('hex'))
       .toBe(manifest.companionSha256);
+    return manifest;
+}
 
+describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
+  test.skipIf(scriptedEngine.backend !== 'claude')('answers an actual native question through an installed PUI card', async () => {
+    const manifest = installedManifest();
+    const nonce = randomUUID();
+    const question = `PUI-QUESTION-${nonce}?`;
+    const expected = `PUI-ANSWER-${nonce}:Change`;
+    const request = `Call your native AskUserQuestion tool exactly once. Ask ${question} with header Choice and two options in order: Keep, Change. Use multiSelect false. Wait for my answer, then reply exactly PUI-ANSWER-${nonce}:<selected label>. Do not choose an answer yourself or use another question mechanism.`;
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(request); pane.enter();
+      await waitForSavedTurn(request);
+      await vi.waitFor(() => expect(scriptedEngine.engines[0]?.adapter.host.snapshot().openCards).toHaveLength(1), { timeout: 120_000, interval: 100 });
+      const engine = scriptedEngine.engines[0];
+      const card = engine.adapter.host.snapshot().openCards[0];
+      expect(card.prompt).toBe(question);
+      if (card.presentation.kind !== 'radio') throw new Error('The native question did not produce a PUI choice card');
+      const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
+      expect(choiceIndex).toBeGreaterThanOrEqual(0);
+      await pane.waitFor(question);
+      await pane.waitFor('Change');
+      const questionFrame = pane.screen();
+      expect(scriptedEngine.events.some((event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId)).toBe(false);
+      pane.write(String(choiceIndex + 1));
+      const chat = await waitForCorrelatedReply(request, expected);
+      await pane.waitForReply(expected);
+      const start = scriptedEngine.events.find((event) => event.type === 'tool' && event.phase === 'started' && event.name === 'AskUserQuestion');
+      if (!start || start.type !== 'tool') throw new Error('No actual native question tool was observed');
+      expect(scriptedEngine.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'card', phase: 'closed', correlationId: card.correlationId, resolution: 'submitted' }),
+        expect.objectContaining({ type: 'tool', phase: 'completed', callId: start.callId, isError: false }),
+      ]));
+      expect(scriptedEngine.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+      console.info('PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
+        identity: engine.adapter.host.descriptor().identity, descriptor: engine.adapter.host.descriptor(), chatId: chat.id,
+        question, selected: 'Change', card, expected, questionFrame, answeredFrame: pane.screen(),
+        toolEvents: scriptedEngine.events.filter((event) => event.type === 'tool' && event.callId === start.callId),
+      }));
+    } catch (error) {
+      console.info('PUI_INSTALLED_NATIVE_QUESTION_FAILURE', JSON.stringify(pane.failureEvidence()));
+      throw error;
+    } finally { await pane.stop().catch(() => {}); }
+  }, 300_000);
+
+  test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
+    const manifest = installedManifest();
     const nonce = randomUUID();
     const greetingReply = `PUI-HELLO-${nonce}`;
     const greeting = `Hi. Reply with exactly ${greetingReply} and no other text.`;
