@@ -22,9 +22,16 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
   applyCodexGatewayRoute: m.codexRoute, applyOmpResumeAccountRoute: m.ompRoute,
   ompTrackedResumeEnv: () => ({ PI_CODING_AGENT_DIR: '/saved/omp', PI_CONFIG_DIR: '.saved/omp' }),
 }));
-vi.mock('./adv-sessions', () => ({ getAdvSession: m.row, readSuLaunchSpecByOwner: m.spec,
-  acquireAdvSessionResume: m.acquire, finalizeAdvSessionResume: m.finalize, releaseAdvSessionResume: m.release,
-  setAdvSessionPid: m.pid, markAdvSessionEnded: m.ended }));
+vi.mock('./adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('./adv-sessions')>()),
+  getAdvSession: m.row,
+  readSuLaunchSpecByOwner: m.spec,
+  acquireAdvSessionResume: m.acquire,
+  finalizeAdvSessionResume: m.finalize,
+  releaseAdvSessionResume: m.release,
+  setAdvSessionPid: m.pid,
+  markAdvSessionEnded: m.ended,
+}));
 vi.mock('./su-persona-render', () => ({ parseSuLaunchSpecRecord: (value: unknown) => value }));
 vi.mock('./console-launcher', () => ({ buildConsoleEnvelope: m.envelope }));
 vi.mock('./interactive-safety-floor', () => ({ checkInteractiveSafetyFloor: async () => ({ ok: true }) }));

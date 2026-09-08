@@ -76,7 +76,10 @@ vi.mock('../../workspace-registry', () => ({
 // This route imports only recordAdvSession. Spawn hydration is mocked below, so
 // importing and spreading the complete production adv-sessions module here
 // needlessly pulls its database/liveness graph into the beforeAll transform.
-vi.mock('../../adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock }));
+vi.mock('../../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../../adv-sessions')>()),
+  recordAdvSession: recordAdvSessionMock,
+}));
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('../../role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));

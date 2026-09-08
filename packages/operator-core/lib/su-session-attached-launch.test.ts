@@ -7,7 +7,12 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
-vi.mock('./adv-sessions', () => ({ getAdvSession: vi.fn(), markAdvSessionEnded: mocks.ended, setAdvSessionPid: mocks.pid }));
+vi.mock('./adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('./adv-sessions')>()),
+  getAdvSession: vi.fn(),
+  markAdvSessionEnded: mocks.ended,
+  setAdvSessionPid: mocks.pid,
+}));
 vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: vi.fn() }));
 vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host, rehydrateRegisteredSuSessionHost: mocks.rehydrate }));
 vi.mock('./su-session-resume', () => ({ prepareStructuredSuResume: mocks.resume }));

@@ -9,7 +9,10 @@ import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
 
 const mocks = vi.hoisted(() => ({ link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true) }));
-vi.mock('./adv-sessions', () => ({ setAdvSessionOmpThreadId: mocks.link }));
+vi.mock('./adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('./adv-sessions')>()),
+  setAdvSessionOmpThreadId: mocks.link,
+}));
 vi.mock('./su-session-persistence', () => ({
   bindSuSessionToAdvSession: vi.fn(async () => ({ status: 'bound' })),
   persistSuSessionDescriptor: mocks.persist, readDurableSuSession: vi.fn(), classifySuSessionRuntime: vi.fn(),
@@ -40,6 +43,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   resume?: boolean;
   history?: RpcFrame[];
   missingTranscript?: boolean;
+  deliveryTimeoutMs?: number;
 } = {}) {
   let nativePath = `/configured/${backend}/session.jsonl`;
   if (overrides.resume) {
@@ -89,6 +93,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   const engine = startSuRpcEngine(boot, binding, {
     agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
     startupTimeoutMs: 500,
+    deliveryTimeoutMs: overrides.deliveryTimeoutMs,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
@@ -319,6 +324,40 @@ it.each(['papercusp-su', 'another-server'])('uses exact native connected-server 
     await f.engine.ready;
     expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
   } else await expect(f.engine.ready).rejects.toThrow('OMP SU tools are not connected');
+});
+
+it('settles an OMP interrupt from the native idle acknowledgement when no agent_end was emitted', async () => {
+  const f = fixture('omp', { deliveryTimeoutMs: 25,
+    request: async (frame) => frame.type === 'abort' ? {} : undefined });
+  await f.engine.ready;
+  const identity = f.engine.adapter.host.descriptor().identity;
+  await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
+  await expect(f.engine.adapter.host.startCommand(command(f.engine, 'interrupt')).terminal)
+    .resolves.toMatchObject({ status: 'completed' });
+  expect(f.engine.adapter.host.descriptor().lifecycle).toBe('interrupted');
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+  expect(f.close).not.toHaveBeenCalled();
+  await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'followup')).terminal)
+    .resolves.toMatchObject({ status: 'completed' });
+  f.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Resumed reply' }] } });
+  f.emit({ type: 'agent_end' });
+  expect(f.engine.adapter.host.descriptor().identity).toEqual(identity);
+  expect(f.engine.adapter.host.recent.some(({ event }) => event.type === 'transcript'
+    && event.phase === 'completed' && event.turnId === 'owner-followup' && event.content === 'Resumed reply')).toBe(true);
+});
+
+it('makes an unacknowledged OMP interrupt visibly failed instead of leaving the session running', async () => {
+  const f = fixture('omp', { request: async (frame) => {
+    if (frame.type === 'abort') throw new Error('Native abort acknowledgement timed out');
+    return undefined;
+  } });
+  await f.engine.ready;
+  await f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn')).terminal;
+  await expect(f.engine.adapter.host.startCommand(command(f.engine, 'interrupt')).terminal)
+    .resolves.toMatchObject({ status: 'failed' });
+  expect(f.engine.adapter.host.descriptor().lifecycle).toBe('failed');
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+  expect(f.close).toHaveBeenCalledOnce();
 });
 
 it('rejects a Codex approval from a different thread before opening a card', async () => {
