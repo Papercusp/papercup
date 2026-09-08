@@ -4618,6 +4618,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
   recentTerminalDays?: number;
   model?: string;
   now?: () => number;
+  /** A request-driven recovery must renew authority after model latency, before any persistence. */
+  beforePersist?: () => Promise<void>;
 }): Promise<PromoterRunResult> {
   // Validate before opening a ledger run or touching policy/DB state.
   const targetItemIds = normalizeAdmissionTargetIds(opts.targetItemIds);
@@ -4736,6 +4738,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recurrenceItems,
       { onConflict: 'hold' },
     );
+    await opts.beforePersist?.();
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
