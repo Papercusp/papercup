@@ -560,8 +560,16 @@ export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
   await sql.unsafe(FED_ORDER_KEY_DDL);
 
   const cleanup = async () => {
+    const started = performance.now();
+    const trace = (phase: string) => {
+      if (process.env.PAPERCUSP_PG_CLEANUP_TRACE === '1')
+        process.stderr.write(`[pg-cleanup] ${prefix} ${phase} ${Math.round(performance.now() - started)}ms\n`);
+    };
+    trace('client-close-start');
     await sql.end({ timeout: 5 });
+    trace('client-close-done/drop-start');
     await db.drop();
+    trace('drop-done');
   };
 
   return { url: db.url, sql, cleanup };

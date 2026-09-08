@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// templates-mirror-sync — anti-rot guard for the PUBLIC templates mirror
+// templates-mirror-sync — anti-rot guard for the PUBLIC content mirror
 // (plan app-templates-2026-07-04 P-027; RECOVERED + re-wired by
 // template-supply-chain-repair-2026-08-10 P-006 / WI-37775).
 //
@@ -11,7 +11,7 @@
 // went on advertising a drift guard that did not exist. It is restored here,
 // canonically, with the hive->pot rename applied.
 //
-// Official template listings publish from the public mirror repo
+// Official template/rubric listings and the workspace-host bundle publish from the public mirror repo
 // (Papercusp/templates) because the Cupboard worker rejects private repos;
 // this monorepo's templates/ tree stays canonical. This script diffs the
 // canonical tree against a local clone of the mirror and either reports
@@ -21,6 +21,8 @@
 // Sync map (mirror uses a FLAT layout — template dirs at repo root):
 //   templates/<id>/**                      -> <mirror>/<id>/**
 //   templates/README.md                    -> <mirror>/README.md
+//   rubrics/<id>/**                        -> <mirror>/<id>/**
+//   content-bundles/workspace-host/**      -> <mirror>/bundles/workspace-host/**
 //   and for each VENDORED package (template-kit, pot-app-seam — WI-2891):
 //   libs/generic/<pkg>/src/**              -> <mirror>/<pkg>/src/**   (minus *.test.ts)
 //   libs/generic/<pkg>/package.json        -> <mirror>/<pkg>/package.json
@@ -37,21 +39,25 @@
 //   mirror path default: $PC_TEMPLATES_MIRROR or /tmp/pc-templates-mirror
 //   exit codes: 0 in sync (or pushed clean) · 1 drift (check mode) · 2 usage/env error
 
-import { promises as fs } from 'node:fs';
-import { join, dirname, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { promises as fs } from "node:fs";
+import { join, dirname, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const MIRROR_REMOTE = 'github.com/Papercusp/templates';
+const MIRROR_REMOTE = "github.com/Papercusp/templates";
 
 // Source-shippable packages vendored into the mirror (zero runtime deps,
 // `main: ./src/index.ts`) so builders outside papercup can file:-link them.
 // NOTE: `hive-app-seam` was renamed to `pot-app-seam`; the live mirror still
 // carries the OLD dir, which is precisely the drift this guard now reports.
-export const VENDORED = ['template-kit', 'pot-app-seam'];
+export const VENDORED = ["template-kit", "pot-app-seam"];
 
-const exists = (p) => fs.stat(p).then(() => true, () => false);
+const exists = (p) =>
+  fs.stat(p).then(
+    () => true,
+    () => false,
+  );
 
 /**
  * Recursively list files under dir as dir-relative paths (posix slashes).
@@ -62,12 +68,16 @@ const exists = (p) => fs.stat(p).then(() => true, () => false);
  */
 export async function walk(dir, { exclude = () => false } = {}) {
   const out = [];
-  const entries = await fs.readdir(dir, { recursive: true, withFileTypes: true });
+  const entries = await fs.readdir(dir, {
+    recursive: true,
+    withFileTypes: true,
+  });
   for (const e of entries) {
     if (!e.isFile()) continue;
     const abs = join(e.parentPath, e.name);
-    const rel = relative(dir, abs).split(sep).join('/');
-    if (rel.split('/').includes('node_modules') || rel.startsWith('.git/')) continue;
+    const rel = relative(dir, abs).split(sep).join("/");
+    if (rel.split("/").includes("node_modules") || rel.startsWith(".git/"))
+      continue;
     if (exclude(rel)) continue;
     out.push(rel);
   }
@@ -85,14 +95,14 @@ export async function walk(dir, { exclude = () => false } = {}) {
  *
  * @param {string} [root]
  * @param {string[]} [vendored]
- * @returns {Promise<{ expected: Map<string, string>, templateIds: string[] }>}
+ * @returns {Promise<{ expected: Map<string, string>, templateIds: string[], rubricIds: string[] }>}
  */
 export async function buildExpected(root = ROOT, vendored = VENDORED) {
   const expected = new Map();
 
-  const templatesDir = join(root, 'templates');
+  const templatesDir = join(root, "templates");
   const templateIds = (await fs.readdir(templatesDir, { withFileTypes: true }))
-    .filter((e) => e.isDirectory() && e.name !== 'node_modules')
+    .filter((e) => e.isDirectory() && e.name !== "node_modules")
     .map((e) => e.name)
     .sort();
   for (const id of templateIds) {
@@ -100,11 +110,46 @@ export async function buildExpected(root = ROOT, vendored = VENDORED) {
       expected.set(`${id}/${rel}`, join(templatesDir, id, rel));
     }
   }
-  expected.set('README.md', join(templatesDir, 'README.md'));
+  expected.set("README.md", join(templatesDir, "README.md"));
+
+  // Rubrics share this EXISTING public content mirror rather than introducing a
+  // second distribution repository. Their ids do not overlap template refs, so
+  // both self-describing kinds can remain at the mirror root — the single-segment
+  // listing_ref shape their standard Cupboard installers require.
+  const rubricsDir = join(root, "rubrics");
+  const rubricIds = (await fs.readdir(rubricsDir, { withFileTypes: true }))
+    .filter((e) => e.isDirectory() && e.name !== "node_modules")
+    .map((e) => e.name)
+    .sort();
+  for (const id of rubricIds) {
+    if (templateIds.includes(id)) {
+      const err = new Error(`template/rubric mirror ref collision: ${id}`);
+      err.exitCode = 2;
+      throw err;
+    }
+    for (const rel of await walk(join(rubricsDir, id))) {
+      expected.set(`${id}/${rel}`, join(rubricsDir, id, rel));
+    }
+  }
+
+  const workspaceHostBundle = join(
+    root,
+    "content-bundles",
+    "workspace-host",
+    "bundle.yaml",
+  );
+  if (!(await exists(workspaceHostBundle))) {
+    const err = new Error(
+      `workspace-host content bundle missing: ${workspaceHostBundle}`,
+    );
+    err.exitCode = 2;
+    throw err;
+  }
+  expected.set("bundles/workspace-host/bundle.yaml", workspaceHostBundle);
 
   for (const pkg of vendored) {
-    const pkgDir = join(root, 'libs/generic', pkg);
-    if (!(await exists(join(pkgDir, 'package.json')))) {
+    const pkgDir = join(root, "libs/generic", pkg);
+    if (!(await exists(join(pkgDir, "package.json")))) {
       // An uninitialized submodule reads as an EMPTY canonical source, which
       // would flag every vendored mirror file extraneous (and --push would
       // delete them) — refuse instead.
@@ -113,8 +158,10 @@ export async function buildExpected(root = ROOT, vendored = VENDORED) {
       err.exitCode = 2;
       throw err;
     }
-    for (const rel of await walk(join(pkgDir, 'src'), { exclude: (r) => r.endsWith('.test.ts') })) {
-      expected.set(`${pkg}/src/${rel}`, join(pkgDir, 'src', rel));
+    for (const rel of await walk(join(pkgDir, "src"), {
+      exclude: (r) => r.endsWith(".test.ts"),
+    })) {
+      expected.set(`${pkg}/src/${rel}`, join(pkgDir, "src", rel));
     }
     // Only expect a top-level file the canonical package ACTUALLY has. tsconfig.json
     // used to be added unconditionally, which was wrong in both directions for
@@ -122,12 +169,13 @@ export async function buildExpected(root = ROOT, vendored = VENDORED) {
     // `missing pot-app-seam/tsconfig.json` that no push could ever satisfy, and
     // `--push` then threw ENOENT out of fs.copyFile mid-apply — breaking the one
     // command the templates README documents for repairing the mirror.
-    for (const meta of ['package.json', 'tsconfig.json']) {
-      if (await exists(join(pkgDir, meta))) expected.set(`${pkg}/${meta}`, join(pkgDir, meta));
+    for (const meta of ["package.json", "tsconfig.json"]) {
+      if (await exists(join(pkgDir, meta)))
+        expected.set(`${pkg}/${meta}`, join(pkgDir, meta));
     }
   }
 
-  return { expected, templateIds };
+  return { expected, templateIds, rubricIds };
 }
 
 /**
@@ -140,16 +188,23 @@ export async function buildExpected(root = ROOT, vendored = VENDORED) {
 export async function buildActual(mirror, vendored = VENDORED) {
   const actual = new Set();
   const mirrorRootEntries = await fs.readdir(mirror, { withFileTypes: true });
-  const ownedTopDirs = new Set(['node_modules', '.git', '.github']);
+  const ownedTopDirs = new Set(["node_modules", ".git", ".github"]);
   for (const e of mirrorRootEntries) {
-    if (e.isDirectory() && !ownedTopDirs.has(e.name) && !vendored.includes(e.name)) {
-      for (const rel of await walk(join(mirror, e.name))) actual.add(`${e.name}/${rel}`);
+    if (
+      e.isDirectory() &&
+      !ownedTopDirs.has(e.name) &&
+      !vendored.includes(e.name)
+    ) {
+      for (const rel of await walk(join(mirror, e.name)))
+        actual.add(`${e.name}/${rel}`);
     }
   }
-  if (await exists(join(mirror, 'README.md'))) actual.add('README.md');
+  if (await exists(join(mirror, "README.md"))) actual.add("README.md");
   for (const pkg of vendored) {
     if (await exists(join(mirror, pkg))) {
-      for (const rel of await walk(join(mirror, pkg), { exclude: (r) => r === 'README.md' })) {
+      for (const rel of await walk(join(mirror, pkg), {
+        exclude: (r) => r === "README.md",
+      })) {
         actual.add(`${pkg}/${rel}`);
       }
     }
@@ -172,7 +227,10 @@ export async function computeDrift(expected, actual, mirror) {
       drift.missing.push(rel);
       continue;
     }
-    const [a, b] = await Promise.all([fs.readFile(src), fs.readFile(join(mirror, rel))]);
+    const [a, b] = await Promise.all([
+      fs.readFile(src),
+      fs.readFile(join(mirror, rel)),
+    ]);
     if (!a.equals(b)) drift.changed.push(rel);
   }
   for (const rel of actual) if (!expected.has(rel)) drift.extraneous.push(rel);
@@ -198,25 +256,38 @@ async function main(argv) {
     const [, v] = args.splice(i, 2);
     return v;
   };
-  const push = flag('--push') ?? false;
-  const mirror = opt('--mirror') ?? process.env.PC_TEMPLATES_MIRROR ?? '/tmp/pc-templates-mirror';
-  const message = opt('--message') ?? 'sync templates mirror from monorepo (templates-mirror-sync)';
+  const push = flag("--push") ?? false;
+  const mirror =
+    opt("--mirror") ??
+    process.env.PC_TEMPLATES_MIRROR ??
+    "/tmp/pc-templates-mirror";
+  const message =
+    opt("--message") ??
+    "sync templates mirror from monorepo (templates-mirror-sync)";
   if (args.length) {
-    console.error('unknown args:', args.join(' '));
+    console.error("unknown args:", args.join(" "));
     return 2;
   }
 
-  if (!(await exists(join(mirror, '.git')))) {
+  if (!(await exists(join(mirror, ".git")))) {
     console.error(`mirror clone not found at ${mirror}`);
-    console.error(`  git clone https://github.com/Papercusp/templates.git ${mirror}`);
-    console.error(`  then re-run with --mirror ${mirror} (or set PC_TEMPLATES_MIRROR)`);
+    console.error(
+      `  git clone https://github.com/Papercusp/templates.git ${mirror}`,
+    );
+    console.error(
+      `  then re-run with --mirror ${mirror} (or set PC_TEMPLATES_MIRROR)`,
+    );
     return 2;
   }
 
   let expected;
   let templateIds;
+  let rubricIds;
   try {
-    ({ expected, templateIds } = await buildExpected(ROOT, VENDORED));
+    ({ expected, templateIds, rubricIds } = await buildExpected(
+      ROOT,
+      VENDORED,
+    ));
   } catch (err) {
     console.error(err.message);
     if (err.hint) console.error(`  ${err.hint}`);
@@ -226,42 +297,49 @@ async function main(argv) {
   const actual = await buildActual(mirror, VENDORED);
   const drift = await computeDrift(expected, actual, mirror);
 
-  for (const kind of ['missing', 'changed', 'extraneous']) {
-    for (const rel of drift[kind].sort()) console.log(`${kind.padEnd(10)} ${rel}`);
+  for (const kind of ["missing", "changed", "extraneous"]) {
+    for (const rel of drift[kind].sort())
+      console.log(`${kind.padEnd(10)} ${rel}`);
   }
   console.log(
-    `[templates-mirror-sync] ${templateIds.length} template dirs + ${VENDORED.length} vendored packages + README · ` +
+    `[templates-mirror-sync] ${templateIds.length} template dirs + ${rubricIds.length} rubric dirs + workspace-host bundle + ${VENDORED.length} vendored packages + README · ` +
       `${expected.size} files expected · drift: ${drift.missing.length} missing, ` +
       `${drift.changed.length} changed, ${drift.extraneous.length} extraneous`,
   );
 
   if (driftTotal(drift) === 0) {
-    console.log('[templates-mirror-sync] mirror is IN SYNC with the canonical tree');
+    console.log(
+      "[templates-mirror-sync] mirror is IN SYNC with the canonical tree",
+    );
     return 0;
   }
 
   if (!push) {
-    console.error('[templates-mirror-sync] DRIFT — the published mirror trails the canonical tree.');
-    console.error('  apply + push with: npm run mirror:push');
+    console.error(
+      "[templates-mirror-sync] DRIFT — the published mirror trails the canonical tree.",
+    );
+    console.error("  apply + push with: npm run mirror:push");
     return 1;
   }
 
   // ---- --push: apply, commit, push
   let failed = false;
   const git = (...a) => {
-    const r = spawnSync('git', ['-C', mirror, ...a], { encoding: 'utf8' });
+    const r = spawnSync("git", ["-C", mirror, ...a], { encoding: "utf8" });
     if (r.status !== 0) {
-      console.error(`git ${a.join(' ')} failed:\n${r.stderr || r.stdout}`);
+      console.error(`git ${a.join(" ")} failed:\n${r.stderr || r.stdout}`);
       failed = true;
-      return '';
+      return "";
     }
     return r.stdout.trim();
   };
 
-  const origin = git('remote', 'get-url', 'origin');
+  const origin = git("remote", "get-url", "origin");
   if (failed) return 2;
   if (!origin.includes(MIRROR_REMOTE)) {
-    console.error(`refusing to push: origin '${origin}' is not ${MIRROR_REMOTE}`);
+    console.error(
+      `refusing to push: origin '${origin}' is not ${MIRROR_REMOTE}`,
+    );
     return 2;
   }
 
@@ -272,21 +350,25 @@ async function main(argv) {
   }
   for (const rel of drift.extraneous) await fs.rm(join(mirror, rel));
 
-  if (git('status', '--porcelain') === '') {
+  if (git("status", "--porcelain") === "") {
     if (failed) return 2;
-    console.log('[templates-mirror-sync] nothing to commit after apply');
+    console.log("[templates-mirror-sync] nothing to commit after apply");
     return 0;
   }
-  git('add', '-A');
-  git('commit', '-m', message);
-  git('push', 'origin', 'HEAD');
+  git("add", "-A");
+  git("commit", "-m", message);
+  git("push", "origin", "HEAD");
   if (failed) return 2;
-  console.log(`[templates-mirror-sync] pushed ${git('rev-parse', '--short', 'HEAD')} to ${origin}`);
+  console.log(
+    `[templates-mirror-sync] pushed ${git("rev-parse", "--short", "HEAD")} to ${origin}`,
+  );
   return 0;
 }
 
 // Run only when executed directly, so the helpers above stay importable.
-const invoked = process.argv[1] ? await fs.realpath(process.argv[1]).catch(() => process.argv[1]) : '';
+const invoked = process.argv[1]
+  ? await fs.realpath(process.argv[1]).catch(() => process.argv[1])
+  : "";
 if (invoked === fileURLToPath(import.meta.url)) {
   process.exit(await main(process.argv));
 }

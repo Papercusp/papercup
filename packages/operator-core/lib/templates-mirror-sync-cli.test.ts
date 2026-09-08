@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseBundleManifest } from './cupboard/bundle-manifest-io';
 // eslint-disable-next-line import/no-relative-packages
 import {
   VENDORED,
@@ -50,6 +51,10 @@ async function makeCanonicalRoot(root: string, vendored: string[] = VENDORED) {
   await fs.mkdir(join(root, 'templates/papercusp-ops-pots'), { recursive: true });
   await fs.writeFile(join(root, 'templates/papercusp-ops-pots/GUIDE.md'), 'guide body\n');
   await fs.writeFile(join(root, 'templates/README.md'), 'templates readme\n');
+  await fs.mkdir(join(root, 'rubrics/pot-coordination-health'), { recursive: true });
+  await fs.writeFile(join(root, 'rubrics/pot-coordination-health/rubric.json'), '{}\n');
+  await fs.mkdir(join(root, 'content-bundles/workspace-host'), { recursive: true });
+  await fs.writeFile(join(root, 'content-bundles/workspace-host/bundle.yaml'), 'name: workspace-host\n');
   for (const pkg of vendored) {
     const dir = join(root, 'libs/generic', pkg);
     await fs.mkdir(join(dir, 'src'), { recursive: true });
@@ -100,6 +105,53 @@ describe('official mobile template mirror closure', () => {
         expect(expected.has(`${ref}/${rel}`), `mirror map should publish ${ref}/${rel}`).toBe(true);
       }
     }
+  });
+});
+
+describe('workspace-host content mirror closure', () => {
+  it('maps every official rubric plus the bundle manifest onto the existing public mirror', async () => {
+    const { expected, rubricIds } = await buildExpected(REPO_ROOT, []);
+    const canonicalRubrics = (await fs.readdir(join(REPO_ROOT, 'rubrics'), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    expect(rubricIds).toEqual(canonicalRubrics);
+    for (const ref of canonicalRubrics) {
+      expect(expected.has(`${ref}/rubric.json`), `mirror map should publish ${ref}/rubric.json`).toBe(true);
+    }
+    expect(expected.has('bundles/workspace-host/bundle.yaml')).toBe(true);
+  });
+
+  it('the official bundle enumerates every blueprint, template, and rubric through existing mirrors', async () => {
+    const bundle = parseBundleManifest(
+      await fs.readFile(join(REPO_ROOT, 'content-bundles/workspace-host/bundle.yaml'), 'utf8'),
+    );
+    const dirIds = async (root: string, manifest: string) => {
+      const ids: string[] = [];
+      for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (
+          await fs.stat(join(root, entry.name, manifest)).then(
+            () => true,
+            () => false,
+          )
+        )
+          ids.push(entry.name);
+      }
+      return ids.sort();
+    };
+    const blueprints = await dirIds(join(REPO_ROOT, 'libs/papercusp/packages/harness/blueprints'), 'blueprint.yaml');
+    const templates = await dirIds(join(REPO_ROOT, 'templates'), 'template.yaml');
+    const rubrics = await dirIds(join(REPO_ROOT, 'rubrics'), 'rubric.json');
+    expect(bundle.blueprints?.map(({ id }) => id).sort()).toEqual(blueprints);
+    expect(bundle.templates?.map(({ id }) => id).sort()).toEqual(templates);
+    expect(bundle.rubrics?.map(({ id }) => id).sort()).toEqual(rubrics);
+    expect(new Set(bundle.blueprints?.map(({ githubUrl }) => githubUrl))).toEqual(
+      new Set(['https://github.com/Papercusp/blueprints']),
+    );
+    expect(new Set([...(bundle.templates ?? []), ...(bundle.rubrics ?? [])].map(({ githubUrl }) => githubUrl))).toEqual(
+      new Set(['https://github.com/Papercusp/templates']),
+    );
   });
 });
 
@@ -210,6 +262,10 @@ describe('a vendored package that ships no tsconfig.json (the pot-app-seam shape
     await fs.mkdir(join(root, 'templates/papercusp-ops-pots'), { recursive: true });
     await fs.writeFile(join(root, 'templates/papercusp-ops-pots/GUIDE.md'), 'guide body\n');
     await fs.writeFile(join(root, 'templates/README.md'), 'templates readme\n');
+    await fs.mkdir(join(root, 'rubrics/pot-coordination-health'), { recursive: true });
+    await fs.writeFile(join(root, 'rubrics/pot-coordination-health/rubric.json'), '{}\n');
+    await fs.mkdir(join(root, 'content-bundles/workspace-host'), { recursive: true });
+    await fs.writeFile(join(root, 'content-bundles/workspace-host/bundle.yaml'), 'name: workspace-host\n');
     const dir = join(root, 'libs/generic/pot-app-seam');
     await fs.mkdir(join(dir, 'src'), { recursive: true });
     await fs.writeFile(join(dir, 'package.json'), '{"name":"@papercusp/pot-app-seam"}\n');

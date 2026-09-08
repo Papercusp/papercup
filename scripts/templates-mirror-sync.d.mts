@@ -23,11 +23,12 @@ export function walk(dir: string, { exclude }?: {
  *
  * @param {string} [root]
  * @param {string[]} [vendored]
- * @returns {Promise<{ expected: Map<string, string>, templateIds: string[] }>}
+ * @returns {Promise<{ expected: Map<string, string>, templateIds: string[], rubricIds: string[] }>}
  */
 export function buildExpected(root?: string, vendored?: string[]): Promise<{
     expected: Map<string, string>;
     templateIds: string[];
+    rubricIds: string[];
 }>;
 /**
  * Enumerate the mirror's ACTUAL state over the SYNCED surface only.
