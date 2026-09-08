@@ -145,6 +145,39 @@ describe('dispatchPendingGradingAudits', () => {
     );
   });
 
+  it('selects a settled card whose audit identity is stale and forwards currentness for atomic reopening', async () => {
+    const d = deps();
+    const currentness = {
+      state: 'stale' as const,
+      reason: 'revision-mismatch' as const,
+      recordedRevision: 4,
+      currentRevision: 6,
+      recordedCriteriaHash: 'hash-old',
+      currentCriteriaHash: 'hash-new',
+    };
+    d.listScorecards.mockResolvedValue([
+      card('EI-stale-settled', {
+        gradingAudit: {
+          state: 'passed',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-09-07T00:00:00.000Z',
+          rubricRevision: 4,
+          criteriaHash: 'hash-old',
+          auditIssueId: 'EI-old-audit',
+        },
+        gradingAuditCurrentness: currentness,
+      }),
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-stale-settled'], ctx }, d);
+
+    expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-stale-settled', state: 'launched' })]);
+    expect(d.reserve).toHaveBeenCalledWith('EI-stale-settled', 'grading-audit:EI-stale-settled', {
+      workspaceId: 'ws-test',
+      currentness,
+    });
+  });
+
   it.each(['passed', 'failed'] as const)(
     'skips an explicitly requested %s target after its grading audit settled',
     async (state) => {

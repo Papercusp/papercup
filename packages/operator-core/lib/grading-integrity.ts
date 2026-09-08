@@ -21,7 +21,7 @@ import {
   type AcceptanceGraderTerminalFailureCode,
 } from './acceptance-grader';
 import { getRubric } from './rubrics';
-import { listScorecards, type ScorecardRow } from './scorecards';
+import { listScorecards, type ScorecardGradingAuditCurrentness, type ScorecardRow } from './scorecards';
 import { killTask } from './task-manager/control';
 import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
@@ -126,6 +126,8 @@ export interface GradingAuditReservationResult {
 interface GradingAuditReservationOptions {
   workspaceId?: string | null;
   now?: Date;
+  /** Currentness from scorecards:list; stale settled cards are reopened atomically. */
+  currentness?: ScorecardGradingAuditCurrentness;
 }
 
 /**
@@ -146,6 +148,27 @@ export async function reservePendingGradingAudit(
   const reservedAt = now.toISOString();
   const staleBefore = new Date(now.getTime() - GRADING_AUDIT_RESERVATION_TTL_MS).toISOString();
   const reservation = JSON.stringify({ key: reservationKey, reservedAt });
+  const reopenStale =
+    options.currentness?.state === 'stale' &&
+    options.currentness.currentRevision != null &&
+    options.currentness.currentCriteriaHash != null
+      ? {
+          recordedRevision: options.currentness.recordedRevision,
+          recordedCriteriaHash: options.currentness.recordedCriteriaHash,
+          rubricRevision: options.currentness.currentRevision,
+          criteriaHash: options.currentness.currentCriteriaHash,
+        }
+      : null;
+  const reopenedStamp = reopenStale
+    ? JSON.stringify({
+        state: 'pending',
+        metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+        rubricRevision: reopenStale.rubricRevision,
+        criteriaHash: reopenStale.criteriaHash,
+        stampedAt: now.toISOString(),
+        dispatchReservation: { key: reservationKey, reservedAt },
+      })
+    : null;
 
   return boundedOrgTxn(async (tx: OrgSql) => {
     const claimed = await tx<{ feature_id: string }[]>`
@@ -161,18 +184,52 @@ export async function reservePendingGradingAudit(
        WHERE workspace_id = ${workspaceId}
          AND feature_id = ${issueId}
          AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
-         AND payload->'observation'->'gradingAudit'->>'state' = 'pending'
          AND (
-           payload->'observation'->'gradingAudit'->'dispatchReservation' IS NULL
-           OR CASE
-                WHEN payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt'
-                     ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
-                THEN (payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
-                ELSE TRUE
-              END
+           (
+             payload->'observation'->'gradingAudit'->>'state' = 'pending'
+             AND (
+               payload->'observation'->'gradingAudit'->'dispatchReservation' IS NULL
+               OR CASE
+                    WHEN payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt'
+                         ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+                    THEN (payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt')::timestamptz < ${staleBefore}::timestamptz
+                    ELSE TRUE
+                  END
+             )
+           )
+           OR (
+             ${reopenStale ? tx`payload->'observation'->'gradingAudit'->>'state' IN ('passed', 'failed')
+               AND (
+                 payload->'observation'->'gradingAudit'->>'rubricRevision' IS NULL
+                 OR payload->'observation'->'gradingAudit'->>'rubricRevision' IS NOT DISTINCT FROM ${String(reopenStale.recordedRevision)}
+               )
+               AND (
+                 payload->'observation'->'gradingAudit'->>'criteriaHash' IS NULL
+                 OR payload->'observation'->'gradingAudit'->>'criteriaHash' IS NOT DISTINCT FROM ${reopenStale.recordedCriteriaHash}
+               )
+               AND (
+                 payload->'observation'->'gradingAudit'->>'rubricRevision' IS DISTINCT FROM ${String(reopenStale.rubricRevision)}
+                 OR payload->'observation'->'gradingAudit'->>'criteriaHash' IS DISTINCT FROM ${reopenStale.criteriaHash}
+               )` : tx`FALSE`}
+           )
          )
-      RETURNING feature_id`;
+       RETURNING feature_id`;
     if (claimed[0]) {
+      if (reopenStale && reopenedStamp) {
+        await tx`
+          UPDATE harness_shared.work_items
+             SET payload = jsonb_set(
+                   COALESCE(payload, '{}'::jsonb),
+                   '{observation,gradingAudit}',
+                   ${reopenedStamp}::jsonb,
+                   true
+                 ),
+                 origin = 'local',
+                 updated_ts = ${Date.now()}
+           WHERE workspace_id = ${workspaceId}
+             AND feature_id = ${issueId}
+             AND item_kind = ANY (ARRAY['bug', 'change', 'task'])`;
+      }
       return { status: 'claimed' as const, reservation: { key: reservationKey, reservedAt } };
     }
 
@@ -214,8 +271,10 @@ export async function releasePendingGradingAudit(
 }
 
 function currentPendingScorecard(card: ScorecardRow): boolean {
+  const audit = card.gradingAudit;
+  const staleSettled = audit !== undefined && audit.state !== 'pending' && card.gradingAuditCurrentness?.state === 'stale';
   return (
-    card.gradingAudit?.state === 'pending' &&
+    (audit?.state === 'pending' || staleSettled) &&
     !card.supersededBy &&
     !card.retracted &&
     card.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF
@@ -366,7 +425,10 @@ export async function dispatchPendingGradingAudits(
           }
         : {};
     try {
-      const reservation = await reserve(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId });
+      const reservation = await reserve(issueId, idempotencyKey, {
+        workspaceId: input.ctx.workspaceId,
+        currentness: card.gradingAuditCurrentness,
+      });
       if (reservation.status !== 'claimed') {
         receipts.push({
           issueId,
