@@ -1242,10 +1242,17 @@ bash "$(git rev-parse --show-toplevel)/scripts/reclaim-tmp-scratch-residue.sh" -
 
 `papercup-embed-sidecar.service` is the ONE supervised owner of the shared
 embedding + rerank sidecar on `127.0.0.1:3384`, plus its companion
-`papercup-embed-sidecar-watchdog.{service,timer}` (60s `/healthz` probe that
-restarts the unit if the event loop wedges) and the drop-in
+`papercup-embed-sidecar-watchdog.{service,timer}` (60s cache-bypassing `/embed`
+probe that exercises the worker and restarts the unit when the response or
+per-request inference accounting is invalid) and the drop-in
 `papercup-embed-sidecar.service.d/98-embed-concurrency.conf` (bounded embed
 concurrency: 2 slots x intraOp 4 threads = exactly the unit's 800% CPUQuota).
+
+The service cgroup accounts memory, begins reclaim at 8 GiB, hard-stops at 12
+GiB, and disallows swap (`MemoryAccounting=yes`, `MemoryHigh=8G`,
+`MemoryMax=12G`, `MemorySwapMax=0`, `OOMPolicy=kill`). The hard-limit kill is a
+failed sidecar instance, so `Restart=always` replaces it instead of leaving a
+partially alive worker behind.
 
 **Why these are here:** identical reasoning to the backup units above — these 4
 files existed ONLY as regular files in `~/.config/systemd/user/`, with no repo

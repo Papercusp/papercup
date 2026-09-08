@@ -97,6 +97,7 @@ const planItemLiveClaimReasonMock = vi.fn(async (..._args: unknown[]) => null as
 const planItemNeedsHumanContradictionMock = vi.fn(async (..._args: unknown[]) => null as unknown);
 vi.mock('./scheduler/plan-item-lane-guard', () => ({
   planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReasonMock(...args),
+  planItemLaneBlockReasonForClaimableEvent: async (..._args: unknown[]) => null,
   planItemLiveClaimReason: (...args: unknown[]) => planItemLiveClaimReasonMock(...args),
   planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradictionMock(...args),
 }));

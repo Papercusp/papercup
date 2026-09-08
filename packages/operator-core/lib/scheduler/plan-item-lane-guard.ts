@@ -570,6 +570,16 @@ export async function planItemLaneBlockReason(
   }
 }
 
+/** Lifecycle-event parity seam. Kept as a named wrapper so callers that mock the claim-time
+ * guard (for example, work-items integration fixtures) can independently control notification
+ * checks without consuming claim-time one-shot assertions. Production behavior is identical. */
+export async function planItemLaneBlockReasonForClaimableEvent(
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
+): Promise<PlanItemLaneBlock | null> {
+  return planItemLaneBlockReason(workItem);
+}
+
 export interface PlanItemLiveClaimBlock {
   reason: string;
   planSlug: string;

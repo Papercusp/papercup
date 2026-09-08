@@ -1,16 +1,22 @@
 # papercup-embed-sidecar-watchdog.service — WI-4021 (su-efc53, 2026-07-11)
 # Oneshot fired by papercup-embed-sidecar-watchdog.timer (60s cadence):
-# /healthz is answered directly by the sidecar's HTTP handler (it never queues
-# behind embed work), so a 15s timeout there means the process is wedged, not
-# busy — restart it. Clients retry within their budget, so a restart window is
+# healthz is answered directly by the sidecar's HTTP handler and can stay green
+# while the actual worker is wedged. Exercise the real /embed path, bypass the
+# LRU, and require one returned vector plus exact per-request inference
+# accounting. Clients retry within their budget, so a restart window is
 # seconds; writes park in the memory write journal in the worst case.
 [Unit]
-Description=Papercusp embed-sidecar liveness probe (restart on wedged /healthz)
+Description=Papercusp embed-sidecar worker probe (restart on failed /embed)
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/bash -c '\
+  set -o pipefail; \
   if systemctl --user is-active --quiet papercup-embed-sidecar.service; then \
-    curl -fsS --max-time 15 http://127.0.0.1:3384/healthz >/dev/null \
-      || { echo "healthz wedged — restarting papercup-embed-sidecar"; systemctl --user restart papercup-embed-sidecar.service; }; \
+    curl -fsS --max-time 15 \
+      -H "Content-Type: application/json" \
+      --data-binary "{\"model\":\"gemma\",\"kind\":\"query\",\"texts\":[\"papercup-embed-sidecar-watchdog\"],\"bypassCache\":true}" \
+      http://127.0.0.1:3384/embed \
+      | jq -e "(.vectors | arrays | length == 1 and (.[0] | arrays | length > 0)) and (.cache | .hits == 0 and .coalesced == 0 and .inferred == 1)" >/dev/null \
+      || { echo "embed worker probe failed — restarting papercup-embed-sidecar"; systemctl --user restart papercup-embed-sidecar.service; }; \
   fi'

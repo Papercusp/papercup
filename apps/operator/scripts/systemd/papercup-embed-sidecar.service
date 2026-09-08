@@ -38,9 +38,10 @@
 # throwaway /rerank before timing if this token is ever removed — otherwise the
 # first sample measures model load, not rerank.
 #
-# Companion: papercup-embed-sidecar-watchdog.timer curls /healthz every 60s
-# and restarts this unit if the event loop is wedged (healthz bypasses the
-# embed queue, so a timeout there means genuinely stuck, not busy).
+# Companion: papercup-embed-sidecar-watchdog.timer probes POST /embed every 60s
+# with cache bypass enabled and validates the returned vector + per-request
+# inference accounting. A health-only probe can stay green while the worker
+# thread is wedged, the exact failure this unit must detect under pressure.
 #
 # ROLLBACK: systemctl --user disable --now papercup-embed-sidecar
 # papercup-embed-sidecar-watchdog.timer && systemctl --user daemon-reload.
@@ -108,8 +109,14 @@ TimeoutStartSec=300
 TimeoutStopSec=10
 CPUQuota=800%
 CPUWeight=1500
+MemoryAccounting=yes
 MemoryHigh=8G
 MemoryMax=12G
+MemorySwapMax=0
+# Treat a cgroup memory-limit event as one failed sidecar instance so
+# Restart=always can replace it; do not leave a partially alive worker serving
+# requests after the OOM killer has interrupted its model allocation.
+OOMPolicy=kill
 
 [Install]
 WantedBy=default.target

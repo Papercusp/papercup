@@ -166,8 +166,11 @@ type PlanItemLaneBlockReason = (wi: WorkItem) => Promise<PlanItemLaneBlock | nul
  * work-items import cycle safe. Claimable events are best-effort notifications; the guard's
  * own fail-open contract is preserved if a plan read is unavailable. */
 async function defaultPlanItemLaneBlockReason(wi: WorkItem): Promise<PlanItemLaneBlock | null> {
-  const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
-  return planItemLaneBlockReason(wi);
+  const { planItemLaneBlockReasonForClaimableEvent } = await import('./scheduler/plan-item-lane-guard');
+  // Keep lifecycle notification fail-open when a rolling test/consumer surface has not yet
+  // projected the optional parity seam; the scheduler remains authoritative for claims.
+  if (typeof planItemLaneBlockReasonForClaimableEvent !== 'function') return null;
+  return planItemLaneBlockReasonForClaimableEvent(wi);
 }
 
 /** Avoid a plan read for the overwhelmingly common unplanned lifecycle event. The mapped
