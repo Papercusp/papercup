@@ -137,7 +137,9 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
     closing = (async () => {
       if (await waitForExit(5_000)) return;
       const result = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
-      if (!result.ok && result.error !== 'already_gone') throw new Error(`Structured engine teardown failed: ${result.error}`);
+      if (!result.ok && result.error !== 'already_gone') {
+        throw nativeFailure(`Structured engine teardown failed: ${result.error}${result.detail ? `: ${result.detail}` : ''}`);
+      }
       if (!(await waitForExit(5_000))) throw new Error('Structured engine did not exit after tracked teardown');
     })();
     return closing;

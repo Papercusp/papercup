@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 /**
  * Publish a workspace-host publication to the Cupboard artifact store.
  *
@@ -21,7 +21,7 @@
  * itself rather than declared by the caller.
  *
  * Usage:
- *   node scripts/publish-workspace-host-artifacts.mjs \
+ *   npm run release:publish-workspace-host-artifacts -- \
  *     --dir ~/.papercusp/p046-r11-workspace-host-publication \
  *     [--base https://cupboard.papercusp.com] \    # default; see DEFAULT_BASE
  *     [--token <bearer>]        # default: `gh auth token`
@@ -36,11 +36,6 @@ import { open, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import {
-  appendTaskReleaseReceipt,
-  getTask,
-  taskReleaseJournalFromDetail,
-} from '@papercusp/operator-core/lib/task-manager/store';
 
 const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
@@ -287,8 +282,7 @@ class ReleaseHttpError extends Error {
 }
 
 function fail(leg, res, payload) {
-  const detail = JSON.stringify(payload);
-  throw new ReleaseHttpError(leg, res, payload, detail);
+  throw new ReleaseHttpError(leg, res, payload);
 }
 
 function canonicalJson(value) {
@@ -329,11 +323,14 @@ export function releaseStageRequestIdentity(operationId, stage, inputHash, attem
   return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
 }
 
-const DEFAULT_RELEASE_LEDGER = {
-  getTask,
-  appendTaskReleaseReceipt,
-  taskReleaseJournalFromDetail,
-};
+async function loadDefaultReleaseLedger() {
+  const store = await import('@papercusp/operator-core/lib/task-manager/store');
+  return {
+    getTask: store.getTask,
+    appendTaskReleaseReceipt: store.appendTaskReleaseReceipt,
+    taskReleaseJournalFromDetail: store.taskReleaseJournalFromDetail,
+  };
+}
 
 function latestReceipt(receipts, requestIdentity) {
   return [...receipts]
@@ -400,7 +397,7 @@ function assertCredentialFresh(ctx) {
   }
   if (expiresAt <= ctx.now().getTime()) {
     throw new Error(
-      `release credential generation ${ctx.credentialGeneration ?? '(unreported)'} expired at ${ctx.credentialExpiresAt}`,
+      `release credential ${ctx.credentialGeneration ?? '(unreported)'} expired at ${ctx.credentialExpiresAt}`,
     );
   }
 }
@@ -475,6 +472,10 @@ export async function runJournaledMutation(ctx, args) {
     const prior = activeIdentity ? latestReceipt(receipts, activeIdentity) : null;
 
     if (prior?.state === 'committed') {
+      if (args.restore) {
+        await ctx.afterStage?.(args.stage, { resumed: true, requestIdentity: activeIdentity });
+        return args.restore(prior);
+      }
       const verified = await args.reconcile(activeIdentity);
       if (verified.state !== 'committed') {
         throw new Error(
@@ -514,18 +515,10 @@ export async function runJournaledMutation(ctx, args) {
       evidenceRefs: args.intentEvidenceRefs ?? [],
     });
 
+    let outcome;
     try {
       assertCredentialFresh(ctx);
-      const outcome = await args.mutate(requestIdentity);
-      await appendReleaseReceipt(ctx, {
-        requestIdentity,
-        stage: args.stage,
-        state: 'committed',
-        inputHash,
-        evidenceRefs: outcome.evidenceRefs ?? [],
-      });
-      await ctx.afterStage?.(args.stage, { resumed: false, requestIdentity });
-      return outcome.value;
+      outcome = await args.mutate(requestIdentity);
     } catch (error) {
       if (error instanceof ReleaseHttpError && !error.outcomeUnknown) {
         await appendReleaseReceipt(ctx, {
@@ -551,21 +544,143 @@ export async function runJournaledMutation(ctx, args) {
       }
       ({ journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId));
       receipts = matchingStageReceipts(journal, args.stage, inputHash);
+      continue;
     }
+    await appendReleaseReceipt(ctx, {
+      requestIdentity,
+      stage: args.stage,
+      state: 'committed',
+      inputHash,
+      evidenceRefs: outcome.evidenceRefs ?? [],
+    });
+    await ctx.afterStage?.(args.stage, { resumed: false, requestIdentity });
+    return outcome.value;
   }
   throw new Error(`release stage ${args.stage} exhausted reconciled attempts`);
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const token = resolveToken(args.token);
-  const auth = { Authorization: `Bearer ${token}` };
+async function parseResponse(res, leg) {
+  const payload = await body(res);
+  if (!res.ok) fail(leg, res, payload);
+  return payload;
+}
+
+function descriptorFromHead(res) {
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ReleaseHttpError('artifact HEAD', res, { error: `HTTP ${res.status}` });
+  const sha256 = res.headers.get('x-artifact-sha256');
+  const sizeBytes = Number(res.headers.get('content-length'));
+  return typeof sha256 === 'string' && /^[a-f0-9]{64}$/.test(sha256) && Number.isSafeInteger(sizeBytes)
+    ? { sha256, sizeBytes }
+    : null;
+}
+
+function releaseContext(args, deps) {
+  if (!args.taskId || !args.operationId) {
+    throw new Error(
+      'publishing requires --task-id/--operation-id or ' +
+        'PAPERCUSP_RELEASE_TASK_ID/PAPERCUSP_RELEASE_OPERATION_ID; ' +
+        'an unjournaled mutation is not resumable',
+    );
+  }
+  return {
+    taskId: args.taskId,
+    operationId: args.operationId,
+    credentialGeneration: deps.env.PAPERCUSP_RELEASE_CREDENTIAL_GENERATION?.trim() || null,
+    credentialExpiresAt: deps.env.PAPERCUSP_RELEASE_CREDENTIAL_EXPIRES_AT?.trim() || null,
+    ledger: deps.ledger,
+    now: deps.now,
+    afterStage: deps.afterStage,
+  };
+}
+
+function assertPublicationJournalIdentity(journal, manifest, plan) {
+  const source = journal.source;
+  const manifestRevision = manifest?.artifact?.buildManifest?.source?.revision;
+  if (
+    !source ||
+    typeof source !== 'object' ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(String(source.sha ?? '')) ||
+    !source.gitlinks ||
+    typeof source.gitlinks !== 'object' ||
+    Array.isArray(source.gitlinks) ||
+    Object.keys(source.gitlinks).length === 0 ||
+    !Object.values(source.gitlinks).every((sha) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(String(sha)))
+  ) {
+    throw new Error('release journal must pin the exact source SHA and a non-empty gitlink map');
+  }
+  if (typeof manifestRevision !== 'string' || manifestRevision !== source.sha) {
+    throw new Error(
+      `release journal source ${source.sha} does not match manifest source ${manifestRevision ?? '(missing)'}`,
+    );
+  }
+  const identity = journal.artifactIdentity;
+  const manifestVersion = manifest?.artifact?.release?.version ?? manifest?.artifact?.image?.version;
+  const exactDigest = identity && typeof identity === 'object'
+    ? identity.bundleSha256
+    : undefined;
+  const logicalIdentityMatches =
+    identity &&
+    typeof identity === 'object' &&
+    identity.sourceSha === source.sha &&
+    typeof identity.version === 'string' &&
+    identity.version === manifestVersion;
+  if (
+    !identity ||
+    typeof identity !== 'object' ||
+    !(exactDigest === plan.sha256 || (exactDigest === undefined && logicalIdentityMatches))
+  ) {
+    throw new Error(
+      `release journal artifact identity must pin bundleSha256 ${plan.sha256} ` +
+        'or the manifest\'s exact source/version identity',
+    );
+  }
+}
+
+async function headArtifact(ctx, deps, url, expected, requestIdentity) {
+  const res = await request(
+    url,
+    { method: 'HEAD' },
+    4,
+    `reconcile ${requestIdentity}`,
+    deps.fetch,
+    deps.sleep,
+  );
+  if (res.status === 404) return { state: 'absent', evidenceRefs: [`provider:absent:${requestIdentity}`] };
+  const descriptor = descriptorFromHead(res);
+  if (!descriptor) return { state: 'unknown', evidenceRefs: [`provider:unreadable:${requestIdentity}`] };
+  if (descriptor.sha256 !== expected.sha256 || descriptor.sizeBytes !== expected.sizeBytes) {
+    throw new Error(
+      `provider artifact conflicts at ${url}: ${descriptor.sha256}/${descriptor.sizeBytes} ` +
+        `!= ${expected.sha256}/${expected.sizeBytes}`,
+    );
+  }
+  return {
+    state: 'committed',
+    value: descriptor,
+    evidenceRefs: [`provider:head:${expected.sha256}:${expected.sizeBytes}`],
+  };
+}
+
+export async function publishWorkspaceHostArtifacts(args, injected = {}) {
+  const deps = {
+    fetch: injected.fetch ?? globalThis.fetch,
+    sleep: injected.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    ledger: injected.ledger ?? null,
+    env: injected.env ?? process.env,
+    now: injected.now ?? (() => new Date()),
+    log: injected.log ?? console.log,
+    afterStage: injected.afterStage,
+  };
+  if (!args.planOnly && !deps.ledger) deps.ledger = await loadDefaultReleaseLedger();
+  const log = deps.log;
+  const ctx = args.planOnly ? null : releaseContext(args, deps);
   const bundlePath = join(args.dir, 'server.tgz');
 
-  console.log('=== [1/6] hash bundle + build part plan ===');
+  log('=== [1/6] hash bundle + build part plan ===');
   const plan = await hashAndPlan(bundlePath);
-  console.log(`  bundle sha256 ${plan.sha256}`);
-  console.log(`  bytes ${plan.size}  parts ${plan.parts.length} x ${PART_BYTES}B`);
+  log(`  bundle sha256 ${plan.sha256}`);
+  log(`  bytes ${plan.size}  parts ${plan.parts.length} x ${PART_BYTES}B`);
 
   // The manifest is the release's own claim about which bytes it describes.
   // Uploading a bundle whose digest disagrees with it would publish a manifest
@@ -591,40 +706,120 @@ async function main() {
       );
     }
   }
-  console.log(`  manifest bundle claim MATCHES (files.bundle + artifact.release)`);
+  log(`  manifest bundle claim MATCHES (files.bundle + artifact.release)`);
 
   const root = `${args.base}/admin/artifacts/workspace-host/sha256/${plan.sha256}`;
   const mp = `${root}/server.tgz/multipart`;
 
-  if (args.planOnly) {
-    const probe = await request(`${args.base}/admin/reports`, { headers: auth }, 4, 'credential preflight');
-    console.log(`  credential preflight: HTTP ${probe.status} (200 expected)`);
-    console.log('PLAN_ONLY=1 — no writes performed');
-    return;
+  // Resolve the bearer at the latest possible boundary. Hash/manifest validation
+  // is credential-free, and an expired/invalid credential should not be held in
+  // memory during that potentially long preflight.
+  const token = resolveToken(args.token);
+  const auth = { Authorization: `Bearer ${token}` };
+  if (ctx && !ctx.credentialGeneration) {
+    ctx.credentialGeneration =
+      `github-token-sha256:${createHash('sha256').update(token, 'utf8').digest('hex')}`;
   }
 
-  console.log('=== [2/6] initiate multipart ===');
-  const initRes = await request(mp, {
-    method: 'POST',
-    headers: {
-      ...auth,
-      'content-type': 'application/json',
-      'x-artifact-sha256': plan.sha256,
-      'x-artifact-size': String(plan.size),
+  if (args.planOnly) {
+    const probe = await request(
+      `${args.base}/admin/reports`,
+      { headers: auth },
+      4,
+      'credential preflight',
+      deps.fetch,
+      deps.sleep,
+    );
+    log(`  credential preflight: HTTP ${probe.status} (200 expected)`);
+    log('PLAN_ONLY=1 — no writes performed');
+    return { planOnly: true, plan };
+  }
+
+  // A plan-only invocation deliberately works without a task row; every write
+  // below is journaled and therefore requires the context.
+  const release = ctx;
+  const { journal: openingJournal } = await readReleaseJournal(
+    release.ledger,
+    release.taskId,
+    release.operationId,
+  );
+  assertPublicationJournalIdentity(openingJournal, manifest, plan);
+
+  log('=== [2/6] initiate multipart ===');
+  const init = await runJournaledMutation(release, {
+    stage: 'publish.multipart.initiate',
+    input: { bundleSha256: plan.sha256, sizeBytes: plan.size, parts: plan.parts },
+    intentEvidenceRefs: [`bundle:sha256:${plan.sha256}`],
+    mutate: async (requestIdentity) => {
+      const res = await request(
+        mp,
+        {
+          method: 'POST',
+          headers: {
+            ...auth,
+            'content-type': 'application/json',
+            'x-artifact-sha256': plan.sha256,
+            'x-artifact-size': String(plan.size),
+            'x-operation-id': requestIdentity,
+          },
+          body: JSON.stringify({ parts: plan.parts }),
+        },
+        1,
+        'initiate multipart',
+        deps.fetch,
+        deps.sleep,
+      );
+      const payload = await parseResponse(res, 'initiate');
+      return {
+        value: payload,
+        evidenceRefs: [
+          payload.deduped ? `provider:bundle:${plan.sha256}` : `provider:multipart:${requestIdentity}`,
+        ],
+      };
     },
-    body: JSON.stringify({ parts: plan.parts }),
-  }, 4, 'initiate multipart');
-  const init = await body(initRes);
-  if (!initRes.ok) fail('initiate', initRes, init);
+    reconcile: async (requestIdentity) => {
+      const statusUrl =
+        `${mp}?uploadId=${encodeURIComponent(requestIdentity)}` +
+        '&partNumber=1';
+      const res = await request(
+        statusUrl,
+        { method: 'GET', headers: auth },
+        4,
+        'reconcile multipart initiation',
+        deps.fetch,
+        deps.sleep,
+      );
+      if (res.status === 404) return { state: 'absent' };
+      const payload = await parseResponse(res, 'reconcile initiate');
+      return {
+        state: 'committed',
+        value: payload.completed === true
+          ? { ...payload, deduped: true }
+          : {
+              ok: true,
+              uploadId: requestIdentity,
+              operationId: requestIdentity,
+              partCount: plan.parts.length,
+              deduped: false,
+              resumed: true,
+            },
+        evidenceRefs: [
+          payload.completed === true
+            ? `provider:bundle:${plan.sha256}`
+            : `provider:multipart:${requestIdentity}`,
+        ],
+      };
+    },
+  });
 
   let uploaded = [];
   if (init.deduped) {
-    console.log('  bundle already stored (deduped) — skipping part upload');
+    log('  bundle already stored (deduped) — skipping part upload');
   } else {
     const uploadId = init.uploadId;
-    console.log(`  uploadId ${uploadId}  partCount ${init.partCount}`);
+    log(`  uploadId ${uploadId}  partCount ${init.partCount}`);
 
-    console.log('=== [3/6] upload parts ===');
+    log('=== [3/6] upload parts ===');
     const results = new Array(plan.parts.length);
     let cursor = 0;
     let done = 0;
@@ -634,28 +829,76 @@ async function main() {
         if (index >= plan.parts.length) return;
         const part = plan.parts[index];
         const buf = await readPart(bundlePath, part.partNumber);
-        const res = await request(
-          `${mp}/parts/${part.partNumber}?uploadId=${encodeURIComponent(uploadId)}`,
-          {
-            method: 'PUT',
-            headers: {
-              ...auth,
-              'content-type': 'application/octet-stream',
-              'content-length': String(part.sizeBytes),
-              'x-part-sha256': part.sha256,
-              'x-part-size': String(part.sizeBytes),
-            },
-            body: buf,
+        const payload = await runJournaledMutation(release, {
+          stage: `publish.multipart.part.${part.partNumber}`,
+          input: { bundleSha256: plan.sha256, uploadId, ...part },
+          intentEvidenceRefs: [`part:sha256:${part.sha256}:${part.sizeBytes}`],
+          mutate: async () => {
+            const res = await request(
+              `${mp}/parts/${part.partNumber}?uploadId=${encodeURIComponent(uploadId)}`,
+              {
+                method: 'PUT',
+                headers: {
+                  ...auth,
+                  'content-type': 'application/octet-stream',
+                  'content-length': String(part.sizeBytes),
+                  'x-part-sha256': part.sha256,
+                  'x-part-size': String(part.sizeBytes),
+                },
+                body: buf,
+              },
+              1,
+              `part ${part.partNumber}`,
+              deps.fetch,
+              deps.sleep,
+            );
+            const value = await parseResponse(res, `part ${part.partNumber}`);
+            return {
+              value,
+              evidenceRefs: [`provider:multipart:${uploadId}:part:${part.partNumber}:${value.etag}`],
+            };
           },
-          4,
-          `part ${part.partNumber}`,
-        );
-        const payload = await body(res);
-        if (!res.ok) fail(`part ${part.partNumber}`, res, payload);
+          reconcile: async () => {
+            const statusUrl =
+              `${mp}?uploadId=${encodeURIComponent(uploadId)}` +
+              `&partNumber=${part.partNumber}`;
+            const res = await request(
+              statusUrl,
+              { method: 'GET', headers: auth },
+              4,
+              `reconcile part ${part.partNumber}`,
+              deps.fetch,
+              deps.sleep,
+            );
+            if (res.status === 404) return { state: 'absent' };
+            const value = await parseResponse(res, `reconcile part ${part.partNumber}`);
+            if (value.completed === true) {
+              return {
+                state: 'committed',
+                value: { completed: true },
+                evidenceRefs: [`provider:bundle:${plan.sha256}`],
+              };
+            }
+            if (value.state === 'committed') {
+              return {
+                state: 'committed',
+                value,
+                evidenceRefs: [`provider:multipart:${uploadId}:part:${part.partNumber}:${value.etag}`],
+              };
+            }
+            if (value.state === 'absent') return { state: 'absent' };
+            return { state: 'unknown', evidenceRefs: [`provider:multipart:${uploadId}:part:${part.partNumber}:intent`] };
+          },
+        });
+        if (payload.completed === true) {
+          throw new Error(
+            `bundle ${plan.sha256} completed concurrently; restart to reconcile from initiation`,
+          );
+        }
         results[index] = { partNumber: part.partNumber, etag: payload.etag };
         done += 1;
         if (done % 8 === 0 || done === plan.parts.length) {
-          console.log(`  ${done}/${plan.parts.length} parts uploaded`);
+          log(`  ${done}/${plan.parts.length} parts uploaded`);
         }
       }
     };
@@ -664,61 +907,170 @@ async function main() {
     );
     uploaded = results;
 
-    console.log('=== [4/6] complete multipart ===');
-    const compRes = await request(`${mp}/complete?uploadId=${encodeURIComponent(uploadId)}`, {
-      method: 'POST',
-      headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ parts: uploaded }),
-    }, 4, 'complete multipart');
-    const comp = await body(compRes);
-    if (!compRes.ok) fail('complete', compRes, comp);
-    console.log(`  stored sha256 ${comp.sha256 ?? '(unreported)'} bytes ${comp.bytes ?? '?'}`);
+    log('=== [4/6] complete multipart ===');
+    const comp = await runJournaledMutation(release, {
+      stage: 'publish.multipart.complete',
+      input: { bundleSha256: plan.sha256, uploadId, parts: uploaded },
+      intentEvidenceRefs: uploaded.map((part) => `part:${part.partNumber}:${part.etag}`),
+      mutate: async () => {
+        const res = await request(
+          `${mp}/complete?uploadId=${encodeURIComponent(uploadId)}`,
+          {
+            method: 'POST',
+            headers: { ...auth, 'content-type': 'application/json' },
+            body: JSON.stringify({ parts: uploaded }),
+          },
+          1,
+          'complete multipart',
+          deps.fetch,
+          deps.sleep,
+        );
+        const value = await parseResponse(res, 'complete');
+        return { value, evidenceRefs: [`provider:bundle:${plan.sha256}`] };
+      },
+      restore: () => ({ sha256: plan.sha256, bytes: plan.size, deduped: true }),
+      reconcile: async () => {
+        const statusUrl =
+          `${mp}?uploadId=${encodeURIComponent(uploadId)}` +
+          '&partNumber=1';
+        const res = await request(
+          statusUrl,
+          { method: 'GET', headers: auth },
+          4,
+          'reconcile multipart completion',
+          deps.fetch,
+          deps.sleep,
+        );
+        if (res.status === 404) return { state: 'absent' };
+        const value = await parseResponse(res, 'reconcile multipart completion');
+        return value.completed === true
+          ? {
+              state: 'committed',
+              value: { sha256: plan.sha256, bytes: plan.size, deduped: true },
+              evidenceRefs: [`provider:bundle:${plan.sha256}`],
+            }
+          : { state: 'absent', evidenceRefs: [`provider:multipart:${uploadId}:incomplete`] };
+      },
+    });
+    log(`  stored sha256 ${comp.sha256 ?? plan.sha256} bytes ${comp.bytes ?? plan.size}`);
   }
 
-  console.log('=== [5/6] upload minisig + manifest, then finalize ===');
+  log('=== [5/6] upload minisig + manifest, then finalize ===');
   for (const name of ['server.tgz.minisig', 'manifest.json']) {
     const bytes = name === 'manifest.json' ? manifestRaw : await readFile(join(args.dir, name));
     if (bytes.byteLength > DIRECT_MAX[name]) {
       throw new Error(`${name} is ${bytes.byteLength}B, over the ${DIRECT_MAX[name]}B cap`);
     }
     const sha = createHash('sha256').update(bytes).digest('hex');
-    const res = await request(`${root}/${name}`, {
-      method: 'PUT',
-      headers: {
-        ...auth,
-        'content-length': String(bytes.byteLength),
-        'x-artifact-sha256': sha,
-        'x-artifact-size': String(bytes.byteLength),
+    const put = async () => {
+      const res = await request(
+        `${root}/${name}`,
+        {
+          method: 'PUT',
+          headers: {
+            ...auth,
+            'content-length': String(bytes.byteLength),
+            'x-artifact-sha256': sha,
+            'x-artifact-size': String(bytes.byteLength),
+          },
+          body: bytes,
+        },
+        1,
+        `upload ${name}`,
+        deps.fetch,
+        deps.sleep,
+      );
+      const value = await parseResponse(res, name);
+      return { value, evidenceRefs: [`provider:artifact:${name}:${sha}:${bytes.byteLength}`] };
+    };
+    const payload = await runJournaledMutation(release, {
+      stage: `publish.direct.${name}`,
+      input: { bundleSha256: plan.sha256, name, sha256: sha, sizeBytes: bytes.byteLength },
+      intentEvidenceRefs: [`artifact:sha256:${sha}:${bytes.byteLength}`],
+      mutate: put,
+      restore: () => ({ ok: true, deduped: true }),
+      // The route's PUT is create-only and checks the exact content descriptor
+      // before touching R2. Replaying it is the route's reconciliation read: a
+      // prior acceptance returns deduped:true with zero provider writes.
+      reconcile: async () => {
+        const outcome = await put();
+        return { state: 'committed', ...outcome };
       },
-      body: bytes,
-    }, 4, `upload ${name}`);
-    const payload = await body(res);
-    if (!res.ok) fail(name, res, payload);
-    console.log(`  ${name}: ${payload.deduped ? 'deduped' : 'stored'} ${sha} (${bytes.byteLength}B)`);
+    });
+    log(`  ${name}: ${payload.deduped ? 'deduped' : 'stored'} ${sha} (${bytes.byteLength}B)`);
   }
 
-  const finRes = await request(`${root}/finalize`, { method: 'POST', headers: auth }, 4, 'finalize');
-  const fin = await body(finRes);
-  if (!finRes.ok) fail('finalize', finRes, fin);
-  console.log(`  finalized manifestSha256 ${fin.manifestSha256}${fin.deduped ? ' (deduped)' : ''}`);
+  const expectedManifestSha = createHash('sha256').update(manifestRaw).digest('hex');
+  const pub = `${args.base}/artifacts/workspace-host/sha256/${plan.sha256}/server.tgz`;
+  const fin = await runJournaledMutation(release, {
+    stage: 'publish.finalize',
+    input: { bundleSha256: plan.sha256, manifestSha256: expectedManifestSha },
+    intentEvidenceRefs: [`manifest:sha256:${expectedManifestSha}`],
+    restore: () => ({ manifestSha256: expectedManifestSha, deduped: true }),
+    mutate: async () => {
+      const res = await request(
+        `${root}/finalize`,
+        { method: 'POST', headers: auth },
+        1,
+        'finalize',
+        deps.fetch,
+        deps.sleep,
+      );
+      const value = await parseResponse(res, 'finalize');
+      if (value.manifestSha256 !== expectedManifestSha) {
+        throw new Error(
+          `finalize returned manifest ${value.manifestSha256}, expected ${expectedManifestSha}`,
+        );
+      }
+      return { value, evidenceRefs: [`provider:finalization:${expectedManifestSha}`] };
+    },
+    reconcile: async (requestIdentity) => {
+      const verified = await headArtifact(
+        release,
+        deps,
+        pub,
+        { sha256: plan.sha256, sizeBytes: plan.size },
+        requestIdentity,
+      );
+      return verified.state === 'committed'
+        ? {
+            ...verified,
+            value: { manifestSha256: expectedManifestSha, deduped: true },
+            evidenceRefs: [...verified.evidenceRefs, `provider:finalization:${expectedManifestSha}`],
+          }
+        : verified;
+    },
+  });
+  log(`  finalized manifestSha256 ${fin.manifestSha256}${fin.deduped ? ' (deduped)' : ''}`);
 
   // Finalize returning ok is the store's claim; a public HEAD is the
   // independent check that the object a consumer would fetch actually exists.
-  console.log('=== [6/6] verify the PUBLIC object is reachable ===');
-  const pub = `${args.base}/artifacts/workspace-host/sha256/${plan.sha256}/server.tgz`;
-  const headRes = await request(pub, { method: 'HEAD' }, 4, 'public HEAD');
+  log('=== [6/6] verify the PUBLIC object is reachable ===');
+  const headRes = await request(
+    pub,
+    { method: 'HEAD' },
+    4,
+    'public HEAD',
+    deps.fetch,
+    deps.sleep,
+  );
   const len = headRes.headers.get('content-length');
   if (!headRes.ok) throw new Error(`public HEAD failed: HTTP ${headRes.status}`);
   if (len !== null && Number(len) !== plan.size) {
     throw new Error(`public object is ${len}B, expected ${plan.size}B`);
   }
-  console.log(`  public HEAD ${headRes.status}, content-length ${len ?? '(absent)'}`);
+  log(`  public HEAD ${headRes.status}, content-length ${len ?? '(absent)'}`);
 
-  console.log('');
-  console.log(`PUBLISH_VERDICT=PASS`);
-  console.log(`BUNDLE_SHA256=${plan.sha256}`);
-  console.log(`BUNDLE_BYTES=${plan.size}`);
-  console.log(`PUBLIC_URL=${pub}`);
+  log('');
+  log(`PUBLISH_VERDICT=PASS`);
+  log(`BUNDLE_SHA256=${plan.sha256}`);
+  log(`BUNDLE_BYTES=${plan.size}`);
+  log(`PUBLIC_URL=${pub}`);
+  return { plan, publicUrl: pub, manifestSha256: expectedManifestSha };
+}
+
+async function main() {
+  return publishWorkspaceHostArtifacts(parseArgs(process.argv.slice(2)));
 }
 
 if (isCliEntry(import.meta.url)) {

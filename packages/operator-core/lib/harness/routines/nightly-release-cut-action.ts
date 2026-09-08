@@ -77,9 +77,20 @@ export function readDesktopVersionAtSource(sourceRoot: string, sourceSha: string
 
 /** Every gitlink in the exact superproject tree, keyed by repository-relative path. */
 export function readSourceGitlinks(sourceRoot: string, sourceSha: string): Record<string, string> {
+  const gitmodules = execFileSync(
+    'git',
+    ['-C', sourceRoot, 'show', `${sourceSha}:.gitmodules`],
+    { encoding: 'utf8' },
+  );
+  const paths = [...gitmodules.matchAll(/^\s*path\s*=\s*(.+?)\s*$/gm)]
+    .map((match) => match[1])
+    .sort((left, right) => left.localeCompare(right));
+  if (paths.length === 0 || new Set(paths).size !== paths.length) {
+    throw new Error(`source ${sourceSha} has no unique committed .gitmodules paths`);
+  }
   const output = execFileSync(
     'git',
-    ['-C', sourceRoot, 'ls-tree', '-r', '--full-tree', sourceSha],
+    ['-C', sourceRoot, 'ls-tree', sourceSha, '--', ...paths],
     { encoding: 'utf8' },
   );
   const gitlinks: Record<string, string> = {};
@@ -87,8 +98,9 @@ export function readSourceGitlinks(sourceRoot: string, sourceSha: string): Recor
     const match = /^160000 commit ([0-9a-f]{40}|[0-9a-f]{64})\t(.+)$/.exec(line);
     if (match) gitlinks[match[2]] = match[1];
   }
-  if (Object.keys(gitlinks).length === 0) {
-    throw new Error(`source ${sourceSha} has no committed gitlinks`);
+  const missing = paths.filter((entry) => !Object.hasOwn(gitlinks, entry));
+  if (missing.length > 0) {
+    throw new Error(`source ${sourceSha} has non-gitlink submodule path(s): ${missing.join(', ')}`);
   }
   return Object.fromEntries(Object.entries(gitlinks).sort(([left], [right]) => left.localeCompare(right)));
 }

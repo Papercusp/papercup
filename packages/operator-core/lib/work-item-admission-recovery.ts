@@ -12,6 +12,9 @@ import { WORK_ITEM_ADMISSION_PROMOTER } from './work-items-admission-promoter';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { getModes } from './modes/store';
 import { AUDIT_MODE, auditModeMutationDenyReason } from './capability-envelope/audit-mode-guard';
+import { readOperatorState } from './operator-state-pg';
+import type { SessionConfinementsPayload } from './capability-envelope/session-confinement-store';
+import { evaluateSessionConfinement } from './capability-envelope/session-confinement';
 
 const requestSchema = z.object({
   version: z.literal(1),
@@ -62,6 +65,22 @@ export async function authorizeAdmissionRecovery(
     if ((await getModes(scope.workspaceId, actor)).some((mode) => mode.mode === AUDIT_MODE)) {
       throw new AdmissionRecoveryRefused(auditModeMutationDenyReason({ toolName: 'work_items:claim', ownerId: actor }));
     }
+    // A system routine must not launder a session's launch-declared denial.
+    // Reuse the canonical state/evaluator, with a fresh read rather than its UI cache.
+    const confinements = await readOperatorState<SessionConfinementsPayload>(
+      'operator_session_confinements', scope.workspaceId, { fresh: true },
+    );
+    const confinement = confinements?.sessions?.[actor];
+    if (confinement) {
+      const expiry = Date.parse(confinement.expiresAt);
+      if (!Number.isFinite(expiry)) throw new AdmissionRecoveryRefused(`${actor}: confinement expiry is invalid`);
+      if (expiry > Date.now()) {
+        for (const toolName of actor === request.caller ? ['coord:dispatch', 'work_items:claim'] : ['work_items:claim']) {
+          const verdict = evaluateSessionConfinement({ toolName, confinement: confinement.confinement });
+          if (!verdict.allowed) throw new AdmissionRecoveryRefused(`${actor}: ${verdict.reason}`);
+        }
+      }
+    }
     const permission = await authorizeWorkItemDispatch({
       workItemId: scope.workItemId, target: actor, harness: scope.harnessSlug, workspaceId: scope.workspaceId,
     });
@@ -71,7 +90,10 @@ export async function authorizeAdmissionRecovery(
 
 function savedRequest(item: RecoveryItem): AdmissionRecoveryRequest | null {
   const value = item.payload?._admissionRecovery;
-  return value == null ? null : requestSchema.parse(value);
+  if (value == null) return null;
+  const parsed = requestSchema.safeParse(value);
+  if (!parsed.success) throw new AdmissionRecoveryRefused('malformed original-item recovery request; retry through the authorized request door');
+  return parsed.data;
 }
 
 /** Payload is caller-writable on feature creation. Bind provenance to the existing
@@ -126,12 +148,21 @@ async function assertRoutineActive(sql: Sql, scope: AdmissionRecoveryScope, id?:
   return rows[0]!.id;
 }
 
-async function writeRequest(sql: Sql, scope: AdmissionRecoveryScope, request: AdmissionRecoveryRequest): Promise<void> {
-  await sql`
+/** Advisory locks serialize our consumers, not other writers of the public payload.
+ * Compare the complete saved request so an old worker cannot overwrite a replacement. */
+async function writeRequest(
+  sql: Sql, scope: AdmissionRecoveryScope, request: Record<string, unknown>, expected: unknown,
+): Promise<boolean> {
+  const rows = await sql`
     UPDATE harness_shared.work_items
-       SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{_admissionRecovery}', ${sql.json(request)}, true)
+       SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{_admissionRecovery}',
+         ${sql.typed(JSON.stringify(request), 25)}::jsonb, true)
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-       AND feature_id = ${scope.workItemId}`;
+       AND feature_id = ${scope.workItemId}
+       AND COALESCE(payload->'_admissionRecovery', 'null'::jsonb) =
+         ${sql.typed(JSON.stringify(expected ?? null), 25)}::jsonb
+     RETURNING feature_id`;
+  return rows.length === 1;
 }
 
 async function lockRequest(sql: Sql, scope: AdmissionRecoveryScope): Promise<boolean> {
@@ -156,8 +187,13 @@ export async function requestAdmissionRecovery(
     const locked = await lockRequest(tx, input);
     const item = await readItem(tx, input);
     assertItemEligible(item, input.target);
-    const previous = savedRequest(item);
-    if (previous) await verifyRequest(tx, input, previous);
+    const rawPrevious = item.payload?._admissionRecovery;
+    // This is a NEW authorized request, not replay by the routine. A rotated key or
+    // malformed public payload must not permanently wedge the original item.
+    // Well-formed requests retain their exact identity and actor binding; only this
+    // fresh authorization path may re-sign them with the current key.
+    const parsed = requestSchema.safeParse(rawPrevious);
+    const previous = parsed.success ? parsed.data : null;
     if (previous && (previous.caller !== input.caller || previous.target !== input.target)) {
       throw new AdmissionRecoveryRefused(`existing recovery belongs to ${previous.caller} for ${previous.target}`);
     }
@@ -175,7 +211,9 @@ export async function requestAdmissionRecovery(
       state: 'queued', pickupConfirmed: false,
     };
     const request = { ...unsigned, signature: await requestSignature(tx, input, unsigned) };
-    await writeRequest(tx, input, request);
+    if (!await writeRequest(tx, input, request, rawPrevious)) {
+      throw new AdmissionRecoveryRefused('original recovery changed during registration; retry this same item');
+    }
     if (request.state === 'queued') {
       // Queueing and acceleration commit together. The routine engine still owns its fire.
       const updated = await tx`
@@ -203,14 +241,34 @@ export async function runAdmissionRecoveries(
     await sql.begin(async (rawTx) => {
       const tx = rawTx as unknown as Sql;
       if (!await lockRequest(tx, exact)) return;
-      const request = savedRequest(await readItem(tx, exact));
-      if (!request || request.state !== 'queued') return;
+      const original = await readItem(tx, exact);
+      const rawRequest = original.payload?._admissionRecovery;
+      let request: AdmissionRecoveryRequest;
+      try {
+        const parsed = savedRequest(original);
+        if (!parsed || parsed.state !== 'queued') return;
+        request = parsed;
+      } catch (error) {
+        if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+        // Isolate one corrupt payload; do not abort the routine or admit its item.
+        await writeRequest(tx, exact, {
+          ...(rawRequest && typeof rawRequest === 'object' ? rawRequest : {}),
+          state: 'held', reason: error.message, pickupConfirmed: false, updatedAt: new Date().toISOString(),
+        }, rawRequest);
+        return;
+      }
       const assertAllowed = async () => {
         await verifyRequest(sql, exact, request);
         await assertRoutineActive(sql, exact, request.routineId);
         const live = await readItem(sql, exact);
         const current = savedRequest(live);
-        if (current?.requestId !== request.requestId || current.caller !== request.caller || current.target !== request.target) {
+        // SQL jsonb equality ignores object-key ordering, unlike JSON.stringify.
+        const [same] = await sql<{ unchanged: boolean }[]>`
+          SELECT COALESCE(payload->'_admissionRecovery', 'null'::jsonb) =
+            ${sql.typed(JSON.stringify(rawRequest ?? null), 25)}::jsonb AS unchanged
+            FROM harness_shared.work_items WHERE workspace_id = ${exact.workspaceId}
+              AND harness_slug = ${exact.harnessSlug} AND feature_id = ${exact.workItemId}`;
+        if (!current || !same?.unchanged) {
           throw new AdmissionRecoveryRefused('original recovery identity changed');
         }
         await verifyRequest(sql, exact, current);
@@ -235,12 +293,12 @@ export async function runAdmissionRecoveries(
           ...request, state: result.ok && queued ? 'delivered' : 'held',
           reason: result.warning ?? (queued ? 'wake queued; target pickup remains unconfirmed' : 'dispatch did not queue a wake'),
           updatedAt: new Date().toISOString(),
-        });
+        }, rawRequest);
       } catch (error) {
         if (!(error instanceof AdmissionRecoveryRefused)) throw error;
         await writeRequest(tx, exact, {
           ...request, state: 'held', reason: error.message.slice(0, 2000), updatedAt: new Date().toISOString(),
-        });
+        }, rawRequest);
       }
     });
   }

@@ -108,6 +108,7 @@
     "leaks:ratchet": "tsx scripts/leak-ratchet.ts",
     "stats:proof": "tsx scripts/stats-proof.ts",
     "audit:dark-flags": "tsx scripts/audit-dark-flags-live-state.ts",
+    "release:publish-workspace-host-artifacts": "tsx scripts/publish-workspace-host-artifacts.mjs",
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
     "tokens:check": "node design-tokens/tokens-check.mjs",
     "design:evidence-report": "tsx packages/operator-core/lib/design-compare/report-cli.ts --mode=report --work=design-evidence-report/captures",

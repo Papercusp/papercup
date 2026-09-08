@@ -29,6 +29,7 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup());
 beforeEach(async () => {
   authorize.mockReset().mockResolvedValue(undefined);
+  await db.sql`UPDATE harness_shared.operator_secrets SET value_b64 = ${Buffer.alloc(32, 42).toString('base64')}`;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.routines`;
   await db.sql`
     INSERT INTO harness_shared.work_items(workspace_id,harness_slug,feature_id,payload)
@@ -70,6 +71,71 @@ describe('original-item durable admission recovery', () => {
     expect((await current()).payload).toMatchObject({ keep: 'original', _admissionRecovery: { state: 'queued' } });
     const [routine] = await db.sql`SELECT next_fire_at <= now() AS due FROM harness_shared.routines`;
     expect(routine!.due).toBe(true);
+  });
+
+  it('first-request races converge on the original item without a replacement task', async () => {
+    const attempts = await Promise.allSettled(Array.from({ length: 6 }, () => requestAdmissionRecovery(input, { authorize }, db.sql)));
+    const committed = attempts.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+    expect(committed.length).toBeGreaterThan(0);
+    for (const attempt of attempts) {
+      if (attempt.status === 'rejected') expect(attempt.reason.message).toContain('retry this same item');
+    }
+    const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(new Set([...committed, retry].map((r) => r.request.requestId)).size).toBe(1);
+    const [count] = await db.sql`SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(count!.n).toBe(1);
+  });
+
+  it('isolates a malformed queued request and permits fresh authorized repair on the same item', async () => {
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = jsonb_set(payload, '{_admissionRecovery}', '{"state":"queued","signature":"bad"}')`;
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.screen).not.toHaveBeenCalled();
+    expect(d.dispatch).not.toHaveBeenCalled();
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'held', pickupConfirmed: false, reason: expect.stringContaining('malformed'),
+    });
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+    expect((await current()).payload.keep).toBe('original');
+  });
+
+  it('key rotation denies automatic replay but a fresh authorized retry re-signs the same requestId', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await db.sql`UPDATE harness_shared.operator_secrets SET value_b64 = ${Buffer.alloc(32, 43).toString('base64')}`;
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.screen).not.toHaveBeenCalled();
+    expect(d.dispatch).not.toHaveBeenCalled();
+    expect((await current()).payload._admissionRecovery.state).toBe('held');
+    const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(retry.request.requestId).toBe(first.request.requestId);
+    expect(retry.request.signature).not.toBe(first.request.signature);
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['before-persist', 'after-dispatch'])('preserves a concurrently replaced request %s', async (phase) => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const replace = async () => {
+      await db.sql`UPDATE harness_shared.work_items
+        SET payload = jsonb_set(payload, '{_admissionRecovery,reason}', '"external replacement"')`;
+    };
+    const d = deps();
+    if (phase === 'before-persist') {
+      d.screen = vi.fn(async (_scope, beforePersist) => { await replace(); await beforePersist(); });
+    } else {
+      const dispatch = d.dispatch;
+      d.dispatch = vi.fn(async (args) => { const result = await dispatch(args); await replace(); return result; });
+    }
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect((await current()).payload._admissionRecovery).toMatchObject({ state: 'queued', reason: 'external replacement' });
+    if (phase === 'before-persist') {
+      expect(d.dispatch).not.toHaveBeenCalled();
+      expect((await current()).admission).toBe('pending');
+    }
   });
 
   it.each(['missing', 'paused', 'wrong-role', 'one-shot'])('refuses a %s routine without persisting a request', async (mode) => {

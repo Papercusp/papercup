@@ -3,7 +3,7 @@
  * P-002 / D-002). The in-process `call` is mocked (we assert WHICH sub-tools run with
  * WHAT args + how their results fold into the dispatch report), so no PG / no live pump.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   composeDispatch,
   finalizePilotDispatchReceipt,
@@ -13,6 +13,17 @@ import {
 import dispatch from './dispatch';
 import type { HydratableRef, HydratedRef } from '../ref-hydrate';
 import type { RefResolvers } from '../ref-hydrate-resolve';
+import { AdmissionRecoveryRefused } from '../../../work-item-admission-recovery';
+
+const recoveryIO = vi.hoisted(() => ({ request: vi.fn(), target: vi.fn() }));
+vi.mock('../../../work-item-admission-recovery', async (original) => ({
+  ...await original<typeof import('../../../work-item-admission-recovery')>(),
+  requestAdmissionRecovery: recoveryIO.request,
+}));
+vi.mock('../actionable-work-item-dispatch', async (original) => ({
+  ...await original<typeof import('../actionable-work-item-dispatch')>(),
+  resolveStableAgentTarget: recoveryIO.target,
+}));
 
 // WI-4165 item-body hydration touches the real PG-backed plan store
 // (getPlanRow) when no `deps.hydrateRefs` override is injected. Mock it at
@@ -24,6 +35,65 @@ vi.mock('../../plans/source', () => ({
   getPlanRow: vi.fn(async () => null),
   planItemsForRow: vi.fn(() => []),
 }));
+
+describe('public original-item recovery door (handler wiring, mocked recovery I/O)', () => {
+  const base = {
+    to: 'reviewer', note: 'resume original review', harness: 'papercusp',
+    workItemIds: ['WI-original'], resumeAdmission: true,
+  };
+  const context = { uiClientId: 'su-requester', isSuperuser: true, workspaceId: 'ws-recovery' };
+  const call = async (args = base, ctx = context) => {
+    const output = await dispatch.handler(dispatch.args.parse(args), ctx as Parameters<typeof dispatch.handler>[1]);
+    return JSON.parse((output as { content: Array<{ text: string }> }).content[0]!.text);
+  };
+  beforeEach(() => {
+    recoveryIO.request.mockReset().mockResolvedValue({
+      ok: true, workItemId: 'WI-original', inProgress: false,
+      request: { state: 'queued', pickupConfirmed: false },
+    });
+    recoveryIO.target.mockReset().mockResolvedValue({ ownerId: 'su-reviewer', present: true });
+  });
+
+  it('requires one exact scoped item and excludes the pilot and plan-item paths', () => {
+    expect(dispatch.args.safeParse(base).success).toBe(true);
+    for (const change of [
+      { harness: undefined }, { workItemIds: [] }, { workItemIds: ['WI-1', 'WI-2'] },
+      { items: ['P-001'] }, { pilotBinding: { itemId: 'WI-original', bindingReceiptId: 'binding' } },
+    ]) {
+      expect(dispatch.args.safeParse({ ...base, ...change }).success).toBe(false);
+    }
+  });
+
+  it('derives caller/workspace from authenticated context and resolves the existing stable recipient', async () => {
+    expect(dispatch.args.safeParse({ ...base, caller: 'spoofed', workspaceId: 'wrong' }).success).toBe(false);
+    const result = await call();
+    expect(recoveryIO.target).toHaveBeenCalledWith({
+      targetAgent: 'reviewer', workspaceId: 'ws-recovery', harness: 'papercusp',
+    });
+    expect(recoveryIO.request).toHaveBeenCalledWith({
+      workspaceId: 'ws-recovery', harnessSlug: 'papercusp', workItemId: 'WI-original',
+      caller: 'su-requester', target: 'su-reviewer',
+    });
+    expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
+  });
+
+  it('returns an original-item remedy, not replacement or pickup, on authority refusal', async () => {
+    recoveryIO.request.mockRejectedValue(new AdmissionRecoveryRefused('member override denied original item'));
+    const result = await call();
+    expect(result).toMatchObject({
+      ok: false, error: 'admission_recovery_refused', workItemId: 'WI-original',
+      responsibleActor: 'su-requester', pickupConfirmed: false,
+      reason: 'member override denied original item', nextAction: expect.stringContaining('retry this same item'),
+    });
+  });
+
+  it('does not enqueue without a concrete authenticated workspace or hide infrastructure errors', async () => {
+    expect(await call(base, { ...context, workspaceId: '' })).toMatchObject({ ok: false, pickupConfirmed: false });
+    expect(recoveryIO.request).not.toHaveBeenCalled();
+    recoveryIO.request.mockRejectedValue(new Error('database unavailable'));
+    await expect(call()).rejects.toThrow('database unavailable');
+  });
+});
 
 /** A mock InnerCall: records every (name,args) and returns a per-tool canned reply. */
 function mockCall(replies: Record<string, unknown | ((args: any) => unknown)>) {
