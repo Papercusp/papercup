@@ -190,6 +190,7 @@ import {
   truncateCarryField,
   withCarryNoteChecks,
   withCarryNoteWalls,
+  CHECKPOINT_BODY_CAP_CHARS,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { describeUnreadRun } from '../../carry-note-unread-run';
@@ -551,8 +552,15 @@ function enforceFrozenWorkItemCarry<T extends string | null | undefined>(text: T
   return text;
 }
 
-/** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
-const CHECKPOINT_CAP = 32000;
+/**
+ * Hard cap on a stored checkpoint (matches the `checkpoint` arg's max).
+ *
+ * EI-22659954682164298: now sourced from `carry-note.ts` rather than duplicated
+ * here, so the READ side (`work_items:get`'s `checkpointBody`) reports headroom
+ * against the same number this writer enforces. A second literal would have let
+ * the two drift silently, and the reader's whole job is to be trusted.
+ */
+const CHECKPOINT_CAP = CHECKPOINT_BODY_CAP_CHARS;
 const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
 
 /**

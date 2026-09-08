@@ -172,6 +172,26 @@ export const CARRY_NOTE_CHECKS_HEADING = 'Checks';
 export const CARRY_NOTE_MAX_CHECKS = 12;
 
 /**
+ * Hard cap on a STORED checkpoint body, in characters (EI-22659954682164298).
+ *
+ * This is the storage bound `work_items:checkpoint` enforces on the note it
+ * persists, NOT a display budget: an append that would overflow it trims the
+ * OLDEST content first and leaves a marker at the head of what survives. That
+ * asymmetry is why this constant has to be readable from the READ side too.
+ * `CARRY_NOTE_MAX_CHECKS` above gives check ROWS a pre-emptive headroom readout
+ * (`checkpointChecks {count, cap, remaining}`), so a writer can see saturation
+ * BEFORE writing; the body had no counterpart, and its only notice of eviction
+ * was written into the body AFTER the content was already gone — a warning that
+ * can never be acted on, only mourned.
+ *
+ * Deliberately NOT named `checkpointChars`: `get-shape.ts` already uses that
+ * name (and `checkpointCharsPerRow`) for the per-tier DISPLAY CLIP budget, a
+ * different quantity. Collapsing a display budget and a storage cap onto one
+ * name is the same class of error this constant exists to close.
+ */
+export const CHECKPOINT_BODY_CAP_CHARS = 32000;
+
+/**
  * SOFT caps on a carried row's sub-fields (WI-7264). These bound what gets
  * re-injected into EVERY future wake, so they stay tight — but they are enforced by
  * TRUNCATION, not rejection. The schema keeps a much looser hard `.max()` as a

@@ -37,6 +37,7 @@ import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../.
 import { shapeWorkItemsGet } from "./get-shape";
 import {
   CARRY_NOTE_MAX_CHECKS,
+  CHECKPOINT_BODY_CAP_CHARS,
   sanitizeCarryRowId,
   splitCarryNoteChecks,
   shortCarryHash,
@@ -240,6 +241,7 @@ type WorkItemsGetSourceSelection = { paths: string[] };
 const SOURCE_TOP_LEVEL_ROOTS = new Set(['ok', 'counts', 'read', '_shapeNote']);
 const SOURCE_ROW_ROOTS = new Set([
   'ok', 'id', 'availability', 'workItem', 'holder', 'checkpoint', 'checkpointChecks',
+  'checkpointBody',
   'checkpointAgeMs', 'checkpointUpdatedAtMs', 'checkpointContentHash', 'checkpointRetractions',
   'checkpointReadFailed', 'checkpointFreshness', 'checkpointStale', 'checkpointBgJobWarning',
   'priorWork', 'priorWorkWarning', 'completion', 'hasCompletionEvidence', 'completionFreshness',
@@ -289,6 +291,38 @@ type CheckpointCheckIdentity = { id?: string; claim: string };
  * cheap and disclose an incomplete identity list rather than pretending the
  * count and rows are the same measurement.
  */
+/**
+ * EI-22659954682164298 — BODY headroom, the missing sibling of `checkpointChecks`.
+ *
+ * Check ROWS get a pre-emptive readout (`{ count, cap, remaining }`), so a writer
+ * can see saturation BEFORE it writes. The stored BODY had none: an append that
+ * overflows `CHECKPOINT_BODY_CAP_CHARS` trims the OLDEST content first and the only
+ * notice is a marker written into the head of the body AFTER the loss. A warning
+ * that arrives only after the content is gone cannot be acted on, so this reports
+ * the same three numbers for the body and closes the asymmetry.
+ *
+ * MUST be computed from the UNCLIPPED stored string, at the read seam — for exactly
+ * the reason `checkpointContentHash` is (EI-21379898054596220). The `checkpoint`
+ * field a caller receives is clipped per shape tier, so measuring THAT would report
+ * the display budget's length and understate real usage, which is worse than
+ * reporting nothing: it would read as reassuring headroom the writer does not have.
+ *
+ * The value itself already exists elsewhere — `park.ts` emits `stored?.length` on
+ * the PARK path — it simply never reached this reader.
+ */
+function checkpointBodyHeadroom(stored: string | null): {
+  chars: number;
+  cap: number;
+  remaining: number;
+} {
+  const chars = stored?.length ?? 0;
+  return {
+    chars,
+    cap: CHECKPOINT_BODY_CAP_CHARS,
+    remaining: Math.max(0, CHECKPOINT_BODY_CAP_CHARS - chars),
+  };
+}
+
 function checkpointCheckIdentities(checks: readonly CheckEntry[]): {
   rows: CheckpointCheckIdentity[];
   rowsTruncated?: { shown: number; total: number };
@@ -474,7 +508,7 @@ export default defineTool({
     returns:
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
-      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` — check-row capacity in the checkpoint ({ count, cap, remaining }); `null` means the checkpoint read failed, while count 0 means the read succeeded and no check rows are stored.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
+      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointBody?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` / `checkpointBody` — remaining capacity in the checkpoint: check ROWS ({ count, cap, remaining }) and the stored BODY ({ chars, cap, remaining }). `null` on either means the checkpoint read FAILED (count 0 / chars 0 means the read succeeded and nothing is stored). Read `checkpointBody.remaining` BEFORE an `append:true` write: at the cap the write keeps succeeding and silently evicts the OLDEST content, and its only notice is a marker written into the body AFTER the loss — so this is the only signal that arrives in time to act on. `chars` measures the STORED note, not the `checkpoint` string returned here, which is clipped per shape tier.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
       "With `checksOnly:true`, `checkpointChecks` also carries `rows:[{ id?, claim }]` and optional `rowsTruncated`; these are the exact caller-facing identities accepted by `work_items:checkpoint.retireIds`, without loading the checkpoint narrative or other enrichments.\\n\\n",
     notWhen: 'Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).',
     chaining: 'work_items:list → work_items:get { ids:[…] } for detail on the ones you care about.',
@@ -606,7 +640,7 @@ export default defineTool({
     const needsCheckpointStale = sourceSelectionWants(sourceSelection, 'checkpointStale');
     const needsCheckpoint = sourceSelectionWants(
       sourceSelection,
-      'checkpoint', 'checkpointChecks', 'checkpointAgeMs', 'checkpointUpdatedAtMs',
+      'checkpoint', 'checkpointChecks', 'checkpointBody', 'checkpointAgeMs', 'checkpointUpdatedAtMs',
       'checkpointContentHash', 'checkpointRetractions', 'checkpointReadFailed', 'checkpointBgJobWarning',
     ) || needsPriorWork || needsCitedFacts || needsCheckpointFreshness || needsCheckpointStale;
     const needsPlanItemBlocked = sourceSelectionWants(sourceSelection, 'planItemBlocked');
@@ -723,6 +757,11 @@ export default defineTool({
               id,
               __checksOnly: true as const,
               checkpointChecks: null,
+              // null, not a zero-headroom envelope: a FAILED read measured nothing.
+              // Reporting `{ chars: 0, remaining: cap }` here would be the same lie
+              // `checkpointContentHash: null` exists to avoid on this leg — maximal
+              // headroom is the single most reassuring value this field can carry.
+              checkpointBody: null,
               checkpointAgeMs: null,
               checkpointUpdatedAtMs: null,
               checkpointContentHash: null,
@@ -744,6 +783,7 @@ export default defineTool({
               remaining: Math.max(0, CARRY_NOTE_MAX_CHECKS - checks.length),
               ...identities,
             },
+            checkpointBody: checkpointBodyHeadroom(checkpointRead.checkpoint),
             checkpointAgeMs: checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null,
             checkpointUpdatedAtMs,
             checkpointContentHash: checkpointRead.checkpoint === null ? null : shortCarryHash(checkpointRead.checkpoint),
@@ -808,6 +848,10 @@ export default defineTool({
                 checkpoint: r.checkpoint,
                 updatedAtMs: r.updatedAtMs,
                 checkpointChecks: { count, cap: CARRY_NOTE_MAX_CHECKS, remaining: CARRY_NOTE_MAX_CHECKS - count },
+                // EI-22659954682164298: the BODY counterpart of the row headroom above,
+                // measured on `r.checkpoint` for the same reason the hash below is — this
+                // is the last point at which the UNCLIPPED stored note is in hand.
+                checkpointBody: checkpointBodyHeadroom(r.checkpoint),
                 // EI-21379898054596220: hash the STORED note here, at the read seam,
                 // before anything downstream can clip or re-render it. A successor
                 // verifying a compaction handoff needs the SAME digest the write
@@ -826,13 +870,16 @@ export default defineTool({
               checkpoint: null,
               updatedAtMs: null,
               checkpointChecks: null,
+              // Same contract as `checkpointChecks`/`checkpointContentHash` on this leg:
+              // a failed read reports nothing rather than maximal headroom.
+              checkpointBody: null,
               // A FAILED read must not hand back a hash — `null` here is
               // indistinguishable from "never checkpointed" on its own, which is
               // exactly what `checkpointReadFailed` disambiguates for every other
               // field on this leg.
               checkpointContentHash: null,
               readFailed: true as const,
-            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointContentHash: null, readFailed: false as const }),
+            })) : Promise.resolve({ checkpoint: null, updatedAtMs: null, checkpointChecks: null, checkpointBody: null, checkpointContentHash: null, readFailed: false as const }),
           needsPlanItemBlocked ? planItemLaneBlockReason(workItem).catch(() => null) : Promise.resolve(null),
           needsClaimCollision ? planItemClaimCollision(workItem).catch(() => null) : Promise.resolve(null),
           // WI-40825: has the linked plan item been REWRITTEN since this
@@ -855,6 +902,7 @@ export default defineTool({
           checkpoint,
           updatedAtMs: checkpointUpdatedAtMs,
           checkpointChecks,
+          checkpointBody,
           checkpointContentHash,
           readFailed: checkpointReadFailed,
         } = checkpointRead;
@@ -1058,6 +1106,7 @@ export default defineTool({
           ...(decorated?.holder ? { holder: decorated.holder } : {}),
           checkpoint,
           checkpointChecks,
+          checkpointBody,
           checkpointAgeMs,
           checkpointUpdatedAtMs,
           checkpointContentHash,

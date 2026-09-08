@@ -531,6 +531,12 @@ function compactSingleRow(
     ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
     checkpoint: clip(checkpoint, checkpointCap),
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
+    // EI-22659954682164298: a BOUNDEDNESS MARKER on the stored note, so it survives
+    // every tier for the same reason `threadLimitClamped` above does — and with extra
+    // force here, because the line above CLIPS. A reader handed a clipped checkpoint
+    // with no body headroom cannot tell a display budget from a storage cap, which is
+    // precisely the confusion that let a note sit AT the cap silently evicting.
+    ...(r.checkpointBody !== undefined ? { checkpointBody: r.checkpointBody } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     // EI-21379898054596220: 12 chars, and the ONLY field that stays true when the line
@@ -866,6 +872,9 @@ function projectRow(
     // compacted, so a tier artifact cannot be read as a real absence.
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
+    // EI-22659954682164298 — see the sibling projection above. Kept at every tier for
+    // the same reason, and conditional for the same reason.
+    ...(r.checkpointBody !== undefined ? { checkpointBody: r.checkpointBody } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
     // EI-21379898054596220 — see the sibling projection above. Kept at every tier for
@@ -941,6 +950,7 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
           ok: row.ok ?? true,
           id: row.id ?? null,
           checkpointChecks: checks ?? null,
+          ...(row.checkpointBody !== undefined ? { checkpointBody: row.checkpointBody } : {}),
           checkpointAgeMs: row.checkpointAgeMs ?? null,
           checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
           ...(row.checkpointContentHash !== undefined
@@ -962,6 +972,7 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
         ok: row.ok ?? true,
         id: row.id ?? null,
         checkpointChecks: { ...checkEnvelope, rows },
+        ...(row.checkpointBody !== undefined ? { checkpointBody: row.checkpointBody } : {}),
         checkpointAgeMs: row.checkpointAgeMs ?? null,
         checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
         ...(row.checkpointContentHash !== undefined

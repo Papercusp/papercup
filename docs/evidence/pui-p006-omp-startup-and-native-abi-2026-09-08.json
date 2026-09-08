@@ -1,0 +1,262 @@
+{
+  "recordedAt": "2026-09-08T03:54:16.710Z",
+  "sourceHashes": {
+    "packages/operator-core/lib/su-session-rpc-engine.ts": "ce08fe2b3a06718a47d215af5350cae390c801b712357124cb4590dfc7f4fab2",
+    "packages/operator-core/lib/su-session-rpc-engine.test.ts": "ac733d6734b428bcb150b8fa3d556ae4b908565148bf8e9b511987563c82468b",
+    "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "7f8d9675d0e7ce29508661e1164e94ca152cb595674d8ca0e9ca1f9a1a405d29",
+    "packages/operator-core/lib/native-addon-preflight.ts": "92749444d7e576d728b7ad55dbe7de9f16116f845d214045bd0261a6cfe9571c",
+    "packages/operator-core/lib/native-addon-preflight.test.ts": "ea4413fbc63e66b0d5e27760550baa081580779dbe6e25110239d17b883fb32b"
+  },
+  "logHashes": {
+    "/tmp/pui-p006-omp-installed-8.log": "c4022ba44ef90d1645aa83bce365437289e6bc0151f9a89f6d6a77940370d333",
+    "/tmp/pui-p006-omp-installed-9.log": "5e51674f8ff2576e6482be4ed43e157d6761c0c199266ad3f510e3e2dbce1181",
+    "/tmp/pui-p006-omp-installed-10.log": "9c8e53b04770443241613bfd1a01c2c586f6118dbcce606053792aa3fbb5bc63",
+    "/tmp/pui-p006-omp-installed-11.log": "49fa71d9e214d6d47bdbe41669f73721cafe4b095cfc2763ddb391e84f614bb3",
+    "/tmp/pui-p006-omp-installed-12.log": "165c0c651f1b8d40d2dced371c335681fc85e6178630c13cdf33448c759b67cc",
+    "/tmp/pui-p006-omp-readiness-wait-tests-3.log": "0c0692132444a92e81a6a402c78897e8661ae6f213586bf99ee49419594e4363",
+    "/tmp/pui-p006-native-addon-lazy-before.log": "727cc5a31245fa6cfead7980091eb94b6bf8cd5edfd5a13636dc61887189dd96",
+    "/tmp/pui-p006-native-addon-lazy-after.log": "3bbc6181da99e666b458b8c28b5bc2852688370a34dd0f9246a306b06257593c",
+    "/tmp/pui-p006-omp-types-scoped.log": "525c1c5e4db5116af5788c2b90779ecb12d305c44dfe168fe2c5582543fcf052"
+  },
+  "binarySha256": "40a1d68f9a560601a26450ffe06d3f6323aef6106f75aefe077c25d936b518a7",
+  "omp11": {
+    "readinessSnapshots": [
+      [],
+      [],
+      [],
+      [],
+      [
+        "### papercusp"
+      ],
+      [
+        "### papercusp"
+      ],
+      [
+        "### papercusp"
+      ],
+      [
+        "### papercusp"
+      ],
+      [
+        "### papercusp",
+        "### papercusp-su"
+      ]
+    ],
+    "identity": {
+      "agentChatId": "4ce0b6c4-d49c-470b-9bab-b53d9a72edb1",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07f1a-a1b7-70a8-84a2-16e0429543ab",
+      "ownerId": "su-79384902-7cf3-4fdc-9f71-a849ece32e09",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:40:55.372Z"
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "at": "2026-09-08T03:41:27.965Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:41:28.447Z"
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "at": "2026-09-08T03:42:00.507Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:42:01.363Z"
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "at": "2026-09-08T03:42:33.213Z"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:42:35.200Z"
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "at": "2026-09-08T03:42:52.409Z"
+      }
+    ],
+    "frameTypes": [
+      "ready",
+      "extension_ui_request",
+      "available_commands_update",
+      "notice",
+      "available_commands_update",
+      "notice",
+      "available_commands_update",
+      "agent_start",
+      "extension_ui_request",
+      "turn_start",
+      "message_start",
+      "message_end",
+      "message_start",
+      "message_end"
+    ],
+    "isStreaming": true
+  },
+  "omp12": {
+    "readinessSnapshots": [
+      [],
+      [],
+      [],
+      [],
+      [
+        "### papercusp-su"
+      ]
+    ],
+    "identity": {
+      "agentChatId": "9fd1137d-b0f3-4b6d-a7aa-cacbb93c79b6",
+      "advSessionId": 1,
+      "backend": "omp",
+      "nativeSessionId": "01a07f1f-3ea3-7506-b80c-cdf6ad6d76c8",
+      "ownerId": "su-749a9494-e5cd-49e2-8714-5d033f1a7ed4",
+      "workspaceId": "pui-agent-chat-e2e",
+      "harnessSlug": "papercusp"
+    },
+    "providerEvents": [
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:45:54.550Z",
+        "priority": "interactive",
+        "owner": null,
+        "account": null
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "retryAfter": null,
+        "at": "2026-09-08T03:46:27.019Z",
+        "errorBody": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"},\"request_id\":\"req_011CeqHYbN2j58GGfyVtDTex\"}"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:46:27.508Z",
+        "priority": "interactive",
+        "owner": null,
+        "account": null
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "retryAfter": null,
+        "at": "2026-09-08T03:46:59.787Z",
+        "errorBody": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"},\"request_id\":\"req_011CeqHb1TBUvNPzcNTTxw1n\"}"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:47:00.557Z",
+        "priority": "interactive",
+        "owner": null,
+        "account": null
+      },
+      {
+        "phase": "headers",
+        "status": 429,
+        "contentType": "application/json",
+        "retryAfter": null,
+        "at": "2026-09-08T03:47:32.488Z",
+        "errorBody": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"},\"request_id\":\"req_011CeqHdSDkgpYfV1GcTNjRY\"}"
+      },
+      {
+        "phase": "request",
+        "path": "/api/pui-provider-debug/v1/messages",
+        "at": "2026-09-08T03:47:34.014Z",
+        "priority": "interactive",
+        "owner": null,
+        "account": null
+      }
+    ],
+    "frameTypes": [
+      "ready",
+      "extension_ui_request",
+      "available_commands_update",
+      "notice",
+      "available_commands_update",
+      "agent_start",
+      "extension_ui_request",
+      "turn_start",
+      "message_start",
+      "message_end",
+      "message_start",
+      "message_end",
+      "available_commands_update"
+    ],
+    "isStreaming": true
+  },
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "item": "P-006 / WI-10000428",
+  "findings": {
+    "ompReadiness": {
+      "workItem": "EI-22655052453427393",
+      "rootCause": "OMP 18.0.3 MCPManager returns after a 250ms startup budget while pending connections continue. The PUI engine previously treated its first get_state snapshot as the final connection verdict.",
+      "fix": "Wait for positive SU connection evidence within the existing 45s startup deadline; keep input unavailable and pin the native identity across snapshots. Back off get_state reads from 100ms to 1000ms.",
+      "verified": "RPC 37 tests pass. Actual installed OMP11 with an explicit 3500ms fixture MCP initialize delay shows absent SU, generic papercusp only, then papercusp-su, and subsequently accepts the first greeting.",
+      "limitation": "The full OMP11 greeting journey failed later on provider 429 retries; this is startup evidence only."
+    },
+    "sqlitePreflight": {
+      "workItems": [
+        "EI-22663256506806763",
+        "EI-22661358077367945"
+      ],
+      "rootCause": "The current shell resolves Node22/ABI127 although the repository requires Node>=25 and the installed addon targets ABI141. The existing preflight only imported the better-sqlite3 wrapper; binding load is lazy until database construction.",
+      "fix": "Use required Node25 for verification. Existing preflight now opens an in-memory database, executes SELECT 1, and closes it even when the query throws.",
+      "verified": "Two new regression tests fail before the fix; all 20 preflight tests pass afterward on Node25. A real Node22 invocation of the repaired preflight returns ok:false with the ABI mismatch; a Node25 SQLite query succeeds."
+    },
+    "ompGreeting": {
+      "workItem": "EI-22659285243048839",
+      "confirmed": "Native OMP issues real provider HTTP requests; the configured gateway returns repeated Anthropic rate_limit_error 429 responses, while OMP keeps retrying without assistant content.",
+      "unknown": "Why the upstream rejects these specific requests remains unresolved. The empty per-owner gateway ledger does not establish absence of requests: the copied global model registry omits the x-papercusp-owner header.",
+      "attributionWorkItem": "EI-22663779667665027",
+      "warningWorkItem": "EI-22662451852499659"
+    }
+  },
+  "validation": {
+    "rpc": "37 passed",
+    "lazySqliteBefore": "2 failed as expected",
+    "nativeAddonAfter": "20 passed",
+    "scopedTypes": "5 named TypeScript files clean; exit0, scope=files, stamp 2026-09-08T03:48:45.844Z",
+    "rejectedTypeEvidence": "/tmp/pui-p006-omp-types.log used unsupported spaced --files arguments and ran baseline scope=all. It is not scoped-clean evidence.",
+    "nativeRuns": "OMP8–12 full journeys failed; OMP11 independently proves delayed MCP startup recovery. Runs11/12 use a fixture-only transparent provider proxy; run11 additionally delays MCP initialize.",
+    "testCorrection": "The second RPC regression run initially called internal startCommand before native identity binding. The corrected test uses production acceptCommand and proves refusal without poisoning initialization."
+  },
+  "externalSource": {
+    "release": "https://github.com/can1357/oh-my-pi/releases/tag/v18.0.3",
+    "npm": "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/18.0.3",
+    "sourceCache": "/tmp/pui-omp18-source-mQToxF",
+    "note": "Published 18.0.3 source was read because the separately installed global TypeScript package is17.3.5; no installed OMP runtime or global configuration was changed."
+  },
+  "remaining": [
+    "Resolve native OMP provider429s and restore successful greeting/tools/resume acceptance.",
+    "Add correct owner attribution to copied OMP gateway model configuration without changing global credentials or model/account selection; inspect existing shared omp-gateway-config builder first.",
+    "Resolve or account for the optional intent-pivot embedding fallback independently from provider failures.",
+    "P006 still requires actual approvals, real operator OS restart, all-engine nondefault scope/modes/carry/tasks and exact-spec audits.",
+    "Continue P007 onward and full P016 under approved AUTO/self; P015 retains explicit public-publication approval.",
+    "Historical teardown, incremental Claude text and earlier staging/DB residuals remain open with their prior evidence."
+  ]
+}
