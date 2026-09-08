@@ -1545,7 +1545,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(saved?.identity.nativeSessionId).toBeTruthy();
       frames.beforeRestart = pane.screen();
     } catch (error) {
-      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: first.output(), diagnostics: first.diagnostics, screen: pane.screen() }));
+      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: first.output(), diagnostics: first.diagnostics,
+        descriptors: [...first.descriptors.values()], events: first.events.slice(-30),
+        readiness: first.readiness.slice(-10), responses: first.responses.slice(-20), screen: pane.screen() }));
       throw error;
     } finally { await pane.stop(); await first.stop(); }
     expect(first.shutdownStages).toContain('embedding-workers-stopped');
@@ -1579,6 +1581,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         diagnostics: [...first.diagnostics, ...second.diagnostics] }));
     } catch (error) {
       console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: second.output(), diagnostics: second.diagnostics,
+        descriptors: [...second.descriptors.values()], events: second.events.slice(-30), responses: second.responses.slice(-20),
         frames, readiness: second.readiness, screen: resumedPane.screen() }));
       throw error;
     } finally { await resumedPane.stop(); await second.stop(); }
