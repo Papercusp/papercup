@@ -888,6 +888,66 @@ describe('affected-tests: prose-vector live-schema guard (EI-20820551755839769)'
 });
 
 /**
+ * WI-2141163 — the real-Postgres resource-governor queue recurrence suite must be
+ * selected by the local affected-tests path. The ordinary operator-core task is
+ * unit-layer and excludes `*.integration.test.ts`; the broad integration flag is
+ * opt-in and has no local green-checkpoint caller. This focused route is the
+ * recurrence guard, and its config assertions keep the later agent-mcp cleanup
+ * from moving the only recurring integration file back to zero coverage.
+ */
+describe('affected-tests: resource-governor queue integration guard (WI-2141163)', () => {
+  const SCRIPT = 'test:integration:resource-governor-queue';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+  const QUEUE_TEST_PATH = 'packages/operator-core/lib/resource-governor/queue.integration.test.ts';
+  const QUEUE_SOURCE_PATH = 'packages/operator-core/lib/resource-governor/queue.ts';
+  const ADMISSION_SOURCE_PATH = 'packages/operator-core/lib/resource-governor/admission.ts';
+  const MIGRATION_PATH = `${MIGRATION_SQL_DIR}/986-resource-governor-work-item-queue-identity.sql`;
+  const UNRELATED_RESOURCE_PATH = 'packages/operator-core/lib/resource-governor/controller.ts';
+
+  it.each([QUEUE_TEST_PATH, QUEUE_SOURCE_PATH, ADMISSION_SOURCE_PATH, MIGRATION_PATH, 'libs/papercusp'])(
+    'attaches the focused queue integration task for a contract input: %s',
+    (changedPath) => {
+      const out = dryTasks(changedPath);
+      expect(out, 'the operator-core unit task should still be selected for the changed contract input').toContain(
+        `${HOST_WORKSPACE} :: test`,
+      );
+      expect(
+        out,
+        `${changedPath} can change durable queue behavior or its schema; the focused real-Postgres ` +
+          'recurrence suite must run without requiring the broad --integration sweep',
+      ).toContain(TASK);
+    },
+  );
+
+  it('does NOT attach for an unrelated resource-governor source file', () => {
+    expect(
+      dryTasks(UNRELATED_RESOURCE_PATH),
+      'the focused queue venue must not become an all-resource-governor integration tax',
+    ).not.toContain(TASK);
+  });
+
+  it('keeps the focused script declared with the integration config and exact queue test', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const command = pkg.scripts?.[SCRIPT];
+    expect(command, `missing ${HOST_WORKSPACE} script ${SCRIPT}`).toBeTruthy();
+    expect(command).toContain('vitest.integration.config.ts');
+    expect(command).toContain('lib/resource-governor/queue.integration.test.ts');
+    expect(command).not.toContain('--passWithNoTests');
+  });
+
+  it('keeps agent-mcp unit and integration configs disjoint after the caller is wired', () => {
+    const unitConfig = readFileSync(resolve(REPO_ROOT, 'packages/agent-mcp/vitest.config.ts'), 'utf8');
+    const integrationConfig = readFileSync(resolve(REPO_ROOT, 'packages/agent-mcp/vitest.integration.config.ts'), 'utf8');
+    expect(unitConfig).toContain("include: ['src/**/*.test.ts']");
+    expect(unitConfig).toContain("exclude: ['src/**/*.integration.test.ts']");
+    expect(integrationConfig).toContain("layer: 'integration'");
+    expect(integrationConfig).toContain("include: ['src/**/*.integration.test.ts']");
+  });
+});
+
+/**
  * WI-38351 — the SAME class as the forward-compat guard above, on the SAME corpus, found
  * the same way: `lint:migrations` was a gate-only lint, so the author of a bad migration
  * saw a green `npm run test:affected` and the fleet learned about it hours later as a red

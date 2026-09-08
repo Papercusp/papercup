@@ -4,6 +4,7 @@ import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-con
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
+    exclude: ['src/**/*.integration.test.ts'],
     environment: 'node',
     // Registers Papercusp's capability→tier policy (plan P-012) for every test
     // file, mirroring production where importing @papercusp/agent-mcp activates

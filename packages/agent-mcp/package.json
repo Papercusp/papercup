@@ -21,6 +21,7 @@
   },
   "scripts": {
     "test": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "typecheck": "node ../../scripts/lint-tsc-agent-mcp.mjs",
     "build": "tsc -p tsconfig.build.json"
   },
