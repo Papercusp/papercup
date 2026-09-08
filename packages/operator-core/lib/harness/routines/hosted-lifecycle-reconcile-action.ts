@@ -40,9 +40,7 @@ export interface HostedLifecycleReconcileActionDeps {
   log: (message: string) => void;
 }
 
-export function makeHostedLifecycleReconcileAction(
-  overrides: Partial<HostedLifecycleReconcileActionDeps> = {},
-) {
+export function makeHostedLifecycleReconcileAction(overrides: Partial<HostedLifecycleReconcileActionDeps> = {}) {
   const deps: HostedLifecycleReconcileActionDeps = {
     reconcile: (workspaceId) => reconcileHostedLifecycleJobs(workspaceId),
     log: (message) => console.log(`[${HOSTED_LIFECYCLE_RECONCILE}] ${message}`),
@@ -50,14 +48,22 @@ export function makeHostedLifecycleReconcileAction(
   };
   return async (ctx: SystemActionCtx): Promise<void> => {
     const out = await deps.reconcile(ctx.workspaceId);
-    const touched = out.recoveryPending.length + out.orphaned.length + out.exhausted.length;
+    const touched = out.recoveryPending.length + out.orphaned.length + out.exhausted.length + out.spend.due;
     // Quiet by design when a tick found nothing to advance — the healthy steady state is every
     // queued/running operation heartbeating, and a per-tick line for that is pure noise.
     if (touched === 0) return;
     deps.log(
       `${ctx.workspaceId}: recoveryPending=${out.recoveryPending.length} ` +
         `orphaned=${out.orphaned.length} exhausted=${out.exhausted.length} ` +
-        `notified=${out.notifications.length}`,
+        `notified=${out.notifications.length} spendDue=${out.spend.due} ` +
+        `spendAttempted=${out.spend.attempted} spendObserved=${out.spend.observed} ` +
+        `spendSettled=${out.spend.settled} spendRetryable=${out.spend.retryable} ` +
+        `spendSkipped=${out.spend.skipped} spendErrors=${out.spend.errors.length}` +
+        (out.spend.errors.length > 0
+          ? ` errors=[${out.spend.errors
+              .map((error) => `${error.hostId}/${error.runId ?? 'unknown'}:${error.reason}`)
+              .join(',')}]`
+          : ''),
     );
   };
 }

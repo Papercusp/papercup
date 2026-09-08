@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  HOSTED_LIFECYCLE_SPEND_RECONCILE_BATCH_LIMIT,
+  HOSTED_LIFECYCLE_SPEND_RETRY_BASE_MS,
   HostedLifecycleAdmissionError,
   admitHostedLifecycleJob,
   readHostedLifecycleSupportDiagnostics,
@@ -16,6 +18,7 @@ function fakeTransaction(handler: QueryHandler) {
       const text = strings.join('?').replace(/\s+/g, ' ').trim();
       return Promise.resolve(handler(text, values));
     }) as unknown as Sql;
+    tag.json = ((value: unknown) => value) as Sql['json'];
     return fn(tag);
   };
 }
@@ -54,6 +57,27 @@ const directory = {
   idle_stop_after_minutes: 60,
 };
 
+const deferredSpendSignal = () => ({
+  kind: 'workspace-host-canary-cost-evidence-v1',
+  runId: 'r4-canary',
+  budgetEvidenceRef: 'gcp://billing/budgets/workspace-host-canary',
+  preRunZeroBaseline: {
+    cents: 0,
+    observedAt: '2026-09-08T00:00:00.000Z',
+    providerEvidenceRef: 'gcp://billing/baseline-zero',
+  },
+  cumulative: [],
+  lateObservedSpend: [],
+  completion: { completedAt: '2026-09-08T01:00:00.000Z' },
+  spendSettlement: {
+    status: 'deferred',
+    actorId: 'operator:test',
+    reason: 'provider export is delayed',
+    procedureRef: 'runbook://workspace-host/gcp/deferred-spend-reconciliation-v1',
+    reconcileAfter: '2026-09-08T01:30:00.000Z',
+  },
+});
+
 afterEach(() => setHostedLifecycleStoreHooks(null));
 
 describe('hosted lifecycle store', () => {
@@ -72,7 +96,9 @@ describe('hosted lifecycle store', () => {
     });
 
     await expect(admitHostedLifecycleJob(baseInput)).resolves.toMatchObject({
-      operationId: 'op-1', created: true, organizationId: 'org-a',
+      operationId: 'op-1',
+      created: true,
+      organizationId: 'org-a',
       decision: { allowed: true, projectedMonthlyCents: 3200 },
     });
     expect(queries.filter((query) => query.includes('pg_advisory_xact_lock'))).toHaveLength(2);
@@ -97,18 +123,27 @@ describe('hosted lifecycle store', () => {
 
   it('marks orphaned work and uses replay-safe notifications', async () => {
     const notify = vi.fn(async (_input: { dedupeKey: string }) => ({
-      recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true,
+      recordId: 1,
+      deduped: false,
+      mobileDelivered: true,
+      desktopDelivered: true,
     }));
     setHostedLifecycleStoreHooks({
       notify,
       transaction: fakeTransaction((text) => {
         if (text.includes('FOR UPDATE OF operation')) {
-          return [{
-            ...directory,
-            operation_id: 'orphan-1', host_id: 'host-a', action: 'repair', status: 'running',
-            heartbeat_at: '2026-08-28T00:00:00Z', operation_updated_at: '2026-08-28T00:00:00Z',
-            recovery_attempts: 0,
-          }];
+          return [
+            {
+              ...directory,
+              operation_id: 'orphan-1',
+              host_id: 'host-a',
+              action: 'repair',
+              status: 'running',
+              heartbeat_at: '2026-08-28T00:00:00Z',
+              operation_updated_at: '2026-08-28T00:00:00Z',
+              recovery_attempts: 0,
+            },
+          ];
         }
         return [];
       }),
@@ -129,14 +164,24 @@ describe('hosted lifecycle store', () => {
         if (text.includes('FOR UPDATE OF operation')) {
           return [
             {
-              operation_id: 'stale-orphan-1', host_id: 'host-a', action: 'repair', status: 'running',
-              heartbeat_at: '2026-08-28T01:50:00Z', operation_updated_at: '2026-08-28T01:50:00Z',
-              recovery_attempts: 0, customer_workspace_id: 'customer-a',
+              operation_id: 'stale-orphan-1',
+              host_id: 'host-a',
+              action: 'repair',
+              status: 'running',
+              heartbeat_at: '2026-08-28T01:50:00Z',
+              operation_updated_at: '2026-08-28T01:50:00Z',
+              recovery_attempts: 0,
+              customer_workspace_id: 'customer-a',
             },
             {
-              operation_id: 'stale-orphan-2', host_id: 'host-a', action: 'restart', status: 'running',
-              heartbeat_at: '2026-08-28T01:50:00Z', operation_updated_at: '2026-08-28T01:50:00Z',
-              recovery_attempts: 3, customer_workspace_id: 'customer-a',
+              operation_id: 'stale-orphan-2',
+              host_id: 'host-a',
+              action: 'restart',
+              status: 'running',
+              heartbeat_at: '2026-08-28T01:50:00Z',
+              operation_updated_at: '2026-08-28T01:50:00Z',
+              recovery_attempts: 3,
+              customer_workspace_id: 'customer-a',
             },
           ];
         }
@@ -147,7 +192,9 @@ describe('hosted lifecycle store', () => {
     const result = await reconcileHostedLifecycleJobs('control-a', new Date('2026-08-28T02:00:00Z'));
     expect(result.recoveryPending).toEqual(['stale-orphan-1']);
     expect(result.exhausted).toEqual(['stale-orphan-2']);
-    const recoveryUpdates = queries.filter((query) => query.includes('UPDATE harness_shared.workspace_host_operations'));
+    const recoveryUpdates = queries.filter((query) =>
+      query.includes('UPDATE harness_shared.workspace_host_operations'),
+    );
     expect(recoveryUpdates).toHaveLength(2);
     expect(recoveryUpdates.every((query) => query.includes('orphaned_at = NULL'))).toBe(true);
   });
@@ -160,23 +207,28 @@ describe('hosted lifecycle store', () => {
   // customer-derived column absent — it must still classify.
   it('classifies a BYOC operation that has NO customer_workspaces row (customer_workspace_id NULL)', async () => {
     const notify = vi.fn(async (_input: { dedupeKey: string; title: string; body: string }) => ({
-      recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true,
+      recordId: 1,
+      deduped: false,
+      mobileDelivered: true,
+      desktopDelivered: true,
     }));
     setHostedLifecycleStoreHooks({
       notify,
       transaction: fakeTransaction((text) => {
         if (text.includes('FOR UPDATE OF operation')) {
-          return [{
-            operation_id: 'byoc-orphan-1',
-            host_id: 'p046-canary-14',
-            action: 'restart',
-            status: 'running',
-            heartbeat_at: null,
-            operation_updated_at: '2026-08-28T00:00:00Z',
-            recovery_attempts: 0,
-            customer_workspace_id: null,
-            provider_target: 'gcp',
-          }];
+          return [
+            {
+              operation_id: 'byoc-orphan-1',
+              host_id: 'p046-canary-14',
+              action: 'restart',
+              status: 'running',
+              heartbeat_at: null,
+              operation_updated_at: '2026-08-28T00:00:00Z',
+              recovery_attempts: 0,
+              customer_workspace_id: null,
+              provider_target: 'gcp',
+            },
+          ];
         }
         return [];
       }),
@@ -247,13 +299,92 @@ describe('hosted lifecycle store', () => {
     expect(queries.some((query) => query.includes('active_lifecycle_jobs'))).toBe(false);
   });
 
+  it('persists an explicit bounded retry without replacing the deferral or unrelated signals', async () => {
+    const signal = deferredSpendSignal();
+    const unrelated = { kind: 'quota-snapshot', remaining: 8 };
+    const updates: unknown[][] = [];
+    const candidateQueryValues: unknown[][] = [];
+    const readGcpBilling = vi.fn(async () => ({
+      status: 'retryable' as const,
+      retryable: true as const,
+      reason: 'missing-config' as const,
+    }));
+    setHostedLifecycleStoreHooks({
+      transaction: fakeTransaction((text, values) => {
+        if (text.includes('jsonb_array_elements(host.cost_signals)')) {
+          candidateQueryValues.push(values);
+          return [
+            {
+              host_id: 'host-r4',
+              connection_id: 'connection-r4',
+              signal_ordinal: 2,
+              cost_signal: signal,
+            },
+          ];
+        }
+        if (text.includes('FOR UPDATE OF host')) {
+          return [{ connection_id: 'connection-r4', cost_signals: [unrelated, signal] }];
+        }
+        if (text.startsWith('UPDATE harness_shared.workspace_hosts')) {
+          updates.push(values);
+          return [];
+        }
+        return [];
+      }),
+      readConnection: async () => ({
+        id: 'connection-r4',
+        target: 'gcp',
+        status: 'connected',
+        connection: {
+          target: 'gcp',
+          cloudCredentialRef: { kind: 'cloud', ref: 'gcloud://active-user' },
+          provider: { projectId: 'project-r4' },
+        },
+      }),
+      readGcpBilling,
+    });
+
+    const now = new Date('2026-09-08T02:00:00.000Z');
+    const result = await reconcileHostedLifecycleJobs('control-a', now);
+
+    expect(result.spend).toMatchObject({
+      due: 1,
+      attempted: 1,
+      observed: 0,
+      settled: 0,
+      retryable: 1,
+      skipped: 0,
+      errors: [{ hostId: 'host-r4', runId: 'r4-canary', reason: 'missing-config' }],
+    });
+    expect(readGcpBilling).toHaveBeenCalledWith({
+      descriptor: undefined,
+      runId: 'r4-canary',
+      usageStartAt: '2026-09-08T00:00:00.000Z',
+      usageEndAt: '2026-09-08T01:00:00.000Z',
+    });
+    expect(candidateQueryValues[0]).toContain(HOSTED_LIFECYCLE_SPEND_RECONCILE_BATCH_LIMIT);
+    expect(updates).toHaveLength(1);
+    const written = updates[0]![0] as Array<Record<string, unknown>>;
+    expect(written[0]).toEqual(unrelated);
+    expect(written[1]).toMatchObject({
+      spendSettlement: signal.spendSettlement,
+      spendReconciliation: {
+        status: 'retryable',
+        attempts: 1,
+        reason: 'missing-config',
+        nextAttemptAt: new Date(now.getTime() + HOSTED_LIFECYCLE_SPEND_RETRY_BASE_MS).toISOString(),
+      },
+    });
+  });
+
   it('projects bounded support diagnostics from the canonical writer fields', async () => {
     setHostedLifecycleStoreHooks({
       transaction: fakeTransaction((text) => {
         if (text.includes("count(*) FILTER (WHERE status = 'queued')")) {
           return [{ queued: 2, running: 1, stuck: 1, orphaned: 1, exhausted: 0 }];
         }
-        if (text.includes('SELECT id, host_id, action')) return [{ id: 'op-1', cost_estimate_ref: 'gcp://catalog/e2-small' }];
+        if (text.includes('SELECT id, host_id, action'))
+          return [{ id: 'op-1', cost_estimate_ref: 'gcp://catalog/e2-small' }];
         return [];
       }),
     });

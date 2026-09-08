@@ -41,6 +41,15 @@ const idle: HostedLifecycleReconciliationResult = {
   orphaned: [],
   exhausted: [],
   notifications: [],
+  spend: {
+    due: 0,
+    attempted: 0,
+    observed: 0,
+    settled: 0,
+    retryable: 0,
+    skipped: 0,
+    errors: [],
+  },
 };
 
 const withWork: HostedLifecycleReconciliationResult = {
@@ -48,6 +57,15 @@ const withWork: HostedLifecycleReconciliationResult = {
   orphaned: ['op-orphan-1', 'op-orphan-2'],
   exhausted: [],
   notifications: ['hosted-lifecycle:ws:op-orphan-1:orphaned', 'hosted-lifecycle:ws:op-orphan-2:orphaned'],
+  spend: {
+    due: 0,
+    attempted: 0,
+    observed: 0,
+    settled: 0,
+    retryable: 0,
+    skipped: 0,
+    errors: [],
+  },
 };
 
 const ctx = (workspaceId = 'ws-123') => ({
@@ -87,7 +105,8 @@ describe('hosted-lifecycle-reconcile system action', () => {
 
     expect(log).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(
-      'p046-isolated: recoveryPending=1 orphaned=2 exhausted=0 notified=2',
+      'p046-isolated: recoveryPending=1 orphaned=2 exhausted=0 notified=2 spendDue=0 ' +
+        'spendAttempted=0 spendObserved=0 spendSettled=0 spendRetryable=0 spendSkipped=0 spendErrors=0',
     );
   });
 
@@ -102,7 +121,44 @@ describe('hosted-lifecycle-reconcile system action', () => {
 
     await action(ctx('ws'));
 
-    expect(log).toHaveBeenCalledWith('ws: recoveryPending=0 orphaned=0 exhausted=1 notified=1');
+    expect(log).toHaveBeenCalledWith(
+      'ws: recoveryPending=0 orphaned=0 exhausted=1 notified=1 spendDue=0 ' +
+        'spendAttempted=0 spendObserved=0 spendSettled=0 spendRetryable=0 spendSkipped=0 spendErrors=0',
+    );
+  });
+
+  it('logs bounded spend counts and retry reasons even when no lifecycle operation changed', async () => {
+    const log = vi.fn();
+    const action = makeHostedLifecycleReconcileAction({
+      reconcile: async () => ({
+        ...idle,
+        spend: {
+          due: 1,
+          attempted: 1,
+          observed: 0,
+          settled: 0,
+          retryable: 1,
+          skipped: 0,
+          errors: [
+            {
+              hostId: 'host-r4',
+              runId: 'r4',
+              reason: 'missing-config',
+              retryAt: '2026-09-08T02:05:00.000Z',
+            },
+          ],
+        },
+      }),
+      log,
+    });
+
+    await action(ctx('ws'));
+
+    expect(log).toHaveBeenCalledWith(
+      'ws: recoveryPending=0 orphaned=0 exhausted=0 notified=0 spendDue=1 ' +
+        'spendAttempted=1 spendObserved=0 spendSettled=0 spendRetryable=1 spendSkipped=0 ' +
+        'spendErrors=1 errors=[host-r4/r4:missing-config]',
+    );
   });
 
   it('a failing sweep THROWS so the routines engine records last_error', async () => {

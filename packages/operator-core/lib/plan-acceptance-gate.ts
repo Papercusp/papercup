@@ -242,6 +242,8 @@ export interface PlanAcceptanceGateVerdict {
 }
 
 export interface PlanAcceptanceGateOpts {
+  /** Subject harness, distinct from the acceptance rubric's storage harness. */
+  harnessSlug?: string;
   /** Freshly measured fingerprints for the original requirements' bound proof. */
   current?: import('./agent-tools/plans/spec-evidence-store').EvidenceCurrentInput[];
   /**
@@ -413,8 +415,17 @@ export async function evaluatePlanAcceptanceGate(
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
-       LIMIT 1`;
-    const row = rows.find((r) => r.plan_slug === planSlug);
+         AND (${opts.harnessSlug ?? null}::text IS NULL OR harness_slug = ${opts.harnessSlug ?? null})
+       LIMIT 2`;
+    const subjects = rows.filter((r) => r.plan_slug === planSlug &&
+      (!opts.harnessSlug || r.harness_slug === opts.harnessSlug));
+    if (subjects.length > 1 || (opts.harnessSlug && subjects.length === 0)) {
+      return {
+        satisfied: false, code: 'acceptance_bar_contract_not_ready',
+        message: `plan '${planSlug}' subject identity is ${subjects.length > 1 ? 'ambiguous; supply its harness' : 'unavailable in the requested harness'}. No acceptance contract was selected.`,
+      };
+    }
+    const row = subjects[0];
     planHarnessSlug = row?.harness_slug ?? null;
     planContent = row?.content ?? null;
     if (row?.template === RUBRIC_TEMPLATE_NAME) return { satisfied: true, skipped: 'rubric-template-plan' };
@@ -432,7 +443,9 @@ export async function evaluatePlanAcceptanceGate(
     // gate only while the plan is NOT yet shipped (shouldEvaluateAcceptanceGate), so
     // the early exit cannot weaken a real ship — it only stops the read from lying.
     if (row?.status === 'shipped') {
-      const retired = await getRetiredAcceptanceRubricsForPlan(planSlug);
+      const retired = await getRetiredAcceptanceRubricsForPlan(planSlug, {
+        ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+      });
       const rubricId = retired[0]?.rubricId;
       return {
         satisfied: true,
@@ -463,9 +476,10 @@ export async function evaluatePlanAcceptanceGate(
       const hasRequirements = splitPlanSections(planContent ?? '').some(
         (section) => section.heading.trim().toLowerCase() === 'requirements' && section.body.trim().length > 0,
       );
-      const expectedApplicable = hasRequirements || rows.some((r) => r.plan_slug === planSlug && r.acceptance_bar_epoch != null);
+      const expectedApplicable = hasRequirements || row?.acceptance_bar_epoch != null;
       const barLifecycle = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'ship', {
         expectedApplicable,
+        ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
         ...(opts.current ? { current: opts.current } : {}),
       });
       nonCodeItemProofs = barLifecycle.nonCodeItemProofs ?? [];
@@ -496,6 +510,7 @@ export async function evaluatePlanAcceptanceGate(
         deferredBarShipRefusal = refusal;
         const preGrading = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'pre-grading', {
           expectedApplicable: true,
+          ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
         });
         if (!preGrading.satisfied) return refusal;
         requireCurrentBarGrading = gradingStale;
@@ -848,7 +863,9 @@ export async function evaluatePlanAcceptanceGate(
     };
   }
 
-  const rubrics = await getAcceptanceRubricsForPlan(planSlug);
+  const rubrics = await getAcceptanceRubricsForPlan(planSlug, {
+    ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
+  });
   if (rubrics.length === 0) {
     return {
       satisfied: false,

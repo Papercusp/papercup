@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import {
+  appendWorkspaceHostSpendObservation,
+  evaluateWorkspaceHostSpendFinality,
+  type WorkspaceHostSpendFinality,
+  type WorkspaceHostSpendObservation,
+} from '@papercusp/deployment-driver';
 import type { Sql } from 'postgres';
 import { notifyAttentionOnce } from '../attention-notify';
 import {
@@ -13,14 +19,27 @@ import {
   type HostedLifecyclePolicy,
   type HostedLifecycleRiskTier,
 } from './hosted-lifecycle-policy';
+import {
+  createGcpBillingExportReader,
+  type GcpBillingExportReadInput,
+  type GcpBillingExportReadResult,
+  type GcpBillingExportRetryReason,
+} from './gcp-api-client';
+import { readWorkspaceHostConnection, type StoredWorkspaceHostConnection } from './observability-store';
 
 type TxRunner = <T>(workspaceId: string, fn: (tx: Sql) => Promise<T>) => Promise<T>;
 type Notify = typeof notifyAttentionOnce;
+type ReadConnection = typeof readWorkspaceHostConnection;
+type ReadGcpBilling = (input: GcpBillingExportReadInput) => Promise<GcpBillingExportReadResult>;
+
+const defaultGcpBillingReader = createGcpBillingExportReader();
 
 interface HostedLifecycleStoreHooks {
   transaction?: TxRunner;
   notify?: Notify;
   uuid?: () => string;
+  readConnection?: ReadConnection;
+  readGcpBilling?: ReadGcpBilling;
 }
 
 function hooks(): HostedLifecycleStoreHooks {
@@ -47,6 +66,18 @@ function notify(input: Parameters<Notify>[0]): ReturnType<Notify> {
 
 function uuid(): string {
   return (hooks().uuid ?? randomUUID)();
+}
+
+function connection(
+  workspaceId: string,
+  connectionId: string,
+  tx?: Sql,
+): Promise<StoredWorkspaceHostConnection | null> {
+  return (hooks().readConnection ?? readWorkspaceHostConnection)(workspaceId, connectionId, tx);
+}
+
+function readGcpBilling(input: GcpBillingExportReadInput): Promise<GcpBillingExportReadResult> {
+  return (hooks().readGcpBilling ?? ((next) => defaultGcpBillingReader.read(next)))(input);
 }
 
 function required(value: string, name: string): string {
@@ -121,9 +152,7 @@ function policyFrom(row: DirectoryRow, override?: Partial<HostedLifecyclePolicy>
   return {
     tenantConcurrencyLimit: row.tenant_concurrency_limit,
     providerConcurrencyLimit: row.provider_concurrency_limit,
-    monthlyBudgetCents: row.monthly_lifecycle_budget_cents == null
-      ? null
-      : Number(row.monthly_lifecycle_budget_cents),
+    monthlyBudgetCents: row.monthly_lifecycle_budget_cents == null ? null : Number(row.monthly_lifecycle_budget_cents),
     idleStopAfterMinutes: row.idle_stop_after_minutes,
     approvalRequiredAt: 'high',
     stuckAfterMs: 5 * 60_000,
@@ -213,11 +242,11 @@ export async function admitHostedLifecycleJob(
       active_provider_jobs: 0,
       committed_monthly_cents: 0,
     };
-    const billingOwner = input.billingOwner ?? (
-      row.billing_owner_kind && row.billing_owner_id
+    const billingOwner =
+      input.billingOwner ??
+      (row.billing_owner_kind && row.billing_owner_id
         ? { kind: row.billing_owner_kind, id: row.billing_owner_id }
-        : null
-    );
+        : null);
     if (!billingOwner) throw new Error('hosted_lifecycle_billing_owner_required');
 
     const decision = evaluateHostedLifecycleAdmission(
@@ -239,12 +268,9 @@ export async function admitHostedLifecycleJob(
     );
     if (!decision.allowed) throw new HostedLifecycleAdmissionError(decision);
 
-    const approvedBy = input.approvalStatus === 'approved'
-      ? required(input.approvedByPrincipalId ?? '', 'approved_by')
-      : null;
-    const approvedAt = input.approvalStatus === 'approved'
-      ? required(input.approvedAt ?? '', 'approved_at')
-      : null;
+    const approvedBy =
+      input.approvalStatus === 'approved' ? required(input.approvedByPrincipalId ?? '', 'approved_by') : null;
+    const approvedAt = input.approvalStatus === 'approved' ? required(input.approvedAt ?? '', 'approved_at') : null;
     const inserted = await tx<Array<{ id: string }>>`
       INSERT INTO harness_shared.workspace_host_operations (
         workspace_id, id, host_id, action, status, percent, message, request,
@@ -353,13 +379,437 @@ export interface HostedLifecycleReconciliationResult {
   orphaned: string[];
   exhausted: string[];
   notifications: string[];
+  spend: HostedLifecycleSpendReconciliationSummary;
+}
+
+export const HOSTED_LIFECYCLE_SPEND_RECONCILE_BATCH_LIMIT = 20;
+export const HOSTED_LIFECYCLE_SPEND_STABILITY_WINDOW_MS = 30 * 60_000;
+export const HOSTED_LIFECYCLE_SPEND_RETRY_BASE_MS = 5 * 60_000;
+export const HOSTED_LIFECYCLE_SPEND_RETRY_MAX_MS = 6 * 60 * 60_000;
+
+type JsonObject = Record<string, unknown>;
+
+type HostedLifecycleSpendFinalityReason = Extract<WorkspaceHostSpendFinality, { status: 'pending' }>['reason'];
+
+export type HostedLifecycleSpendReconciliationReason =
+  | GcpBillingExportRetryReason
+  | HostedLifecycleSpendFinalityReason
+  | 'invalid-signal'
+  | 'connection-not-found'
+  | 'unsupported-provider'
+  | 'history-invalid';
+
+export interface HostedLifecycleSpendReconciliationError {
+  hostId: string;
+  runId: string | null;
+  reason: HostedLifecycleSpendReconciliationReason;
+  retryAt: string;
+}
+
+export interface HostedLifecycleSpendReconciliationSummary {
+  due: number;
+  attempted: number;
+  observed: number;
+  settled: number;
+  retryable: number;
+  skipped: number;
+  errors: HostedLifecycleSpendReconciliationError[];
+}
+
+interface DeferredSpendCandidateRow {
+  host_id: string;
+  connection_id: string;
+  signal_ordinal: number;
+  cost_signal: unknown;
+}
+
+interface DeferredSpendCandidateBase {
+  hostId: string;
+  connectionId: string;
+  signalOrdinal: number;
+  signal: JsonObject;
+  identity: string;
+  version: string;
+  attempts: number;
+  runId: string | null;
+}
+
+interface DeferredSpendCandidate extends DeferredSpendCandidateBase {
+  runId: string;
+  usageStartAt: string;
+  usageEndAt: string;
+}
+
+interface SpendHostRow {
+  connection_id: string;
+  cost_signals: unknown[];
+}
+
+interface SpendSignalPatch {
+  spendObservations?: readonly WorkspaceHostSpendObservation[];
+  spendReconciliation: JsonObject;
+}
+
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function timestamp(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function reconciliationAttempts(signal: JsonObject): number {
+  const state = isObject(signal.spendReconciliation) ? signal.spendReconciliation : null;
+  return Number.isSafeInteger(state?.attempts) && Number(state?.attempts) >= 0 ? Number(state?.attempts) : 0;
+}
+
+function spendSignalIdentity(signal: JsonObject): string {
+  return JSON.stringify({
+    kind: signal.kind ?? null,
+    runId: signal.runId ?? null,
+    spendSettlement: signal.spendSettlement ?? null,
+  });
+}
+
+function spendSignalVersion(signal: JsonObject): string {
+  return JSON.stringify({
+    spendObservations: signal.spendObservations ?? null,
+    spendReconciliation: signal.spendReconciliation ?? null,
+  });
+}
+
+function candidateBase(row: DeferredSpendCandidateRow): DeferredSpendCandidateBase {
+  const signal = isObject(row.cost_signal) ? row.cost_signal : {};
+  return {
+    hostId: row.host_id,
+    connectionId: row.connection_id,
+    signalOrdinal: Number(row.signal_ordinal),
+    signal,
+    identity: spendSignalIdentity(signal),
+    version: spendSignalVersion(signal),
+    attempts: reconciliationAttempts(signal),
+    runId: typeof signal.runId === 'string' && signal.runId.trim() !== '' ? signal.runId : null,
+  };
+}
+
+function parseDeferredSpendCandidate(base: DeferredSpendCandidateBase): DeferredSpendCandidate | null {
+  const settlement = isObject(base.signal.spendSettlement) ? base.signal.spendSettlement : null;
+  const completion = isObject(base.signal.completion) ? base.signal.completion : null;
+  const baseline = isObject(base.signal.preRunZeroBaseline) ? base.signal.preRunZeroBaseline : null;
+  const reconcileAfter = timestamp(settlement?.reconcileAfter);
+  const usageStartAt = timestamp(baseline?.observedAt);
+  const usageEndAt = timestamp(completion?.completedAt);
+  if (
+    settlement?.status !== 'deferred' ||
+    !reconcileAfter ||
+    !base.runId ||
+    !usageStartAt ||
+    !usageEndAt ||
+    Date.parse(usageEndAt) <= Date.parse(usageStartAt)
+  ) {
+    return null;
+  }
+  return { ...base, runId: base.runId, usageStartAt, usageEndAt };
+}
+
+function connectionVersion(value: StoredWorkspaceHostConnection | null): string {
+  return JSON.stringify(
+    value === null
+      ? null
+      : {
+          id: value.id,
+          target: value.target,
+          status: value.status,
+          connection: value.connection,
+        },
+  );
+}
+
+function retryDelayMs(attempt: number, minimumMs = 0): number {
+  const exponent = Math.min(20, Math.max(0, attempt - 1));
+  const exponential = Math.min(
+    HOSTED_LIFECYCLE_SPEND_RETRY_MAX_MS,
+    HOSTED_LIFECYCLE_SPEND_RETRY_BASE_MS * 2 ** exponent,
+  );
+  return Math.max(exponential, minimumMs);
+}
+
+function retryAt(now: Date, attempt: number, minimumMs = 0): string {
+  return new Date(now.getTime() + retryDelayMs(attempt, minimumMs)).toISOString();
+}
+
+function retryPatch(
+  base: DeferredSpendCandidateBase,
+  reason: HostedLifecycleSpendReconciliationReason,
+  now: Date,
+  minimumMs = 0,
+): { patch: SpendSignalPatch; error: HostedLifecycleSpendReconciliationError } {
+  const attempts = base.attempts + 1;
+  const nextAttemptAt = retryAt(now, attempts, minimumMs);
+  return {
+    patch: {
+      spendReconciliation: {
+        schemaVersion: 'workspace-host-spend-reconciliation-v1',
+        status: 'retryable',
+        attempts,
+        lastAttemptAt: now.toISOString(),
+        nextAttemptAt,
+        reason,
+      },
+    },
+    error: { hostId: base.hostId, runId: base.runId, reason, retryAt: nextAttemptAt },
+  };
+}
+
+function findCurrentSignalIndex(signals: readonly unknown[], candidate: DeferredSpendCandidateBase): number {
+  const matches = (value: unknown): boolean =>
+    isObject(value) &&
+    spendSignalIdentity(value) === candidate.identity &&
+    spendSignalVersion(value) === candidate.version;
+  const preferred = candidate.signalOrdinal - 1;
+  if (preferred >= 0 && preferred < signals.length && matches(signals[preferred])) return preferred;
+  const indexes = signals.flatMap((value, index) => (matches(value) ? [index] : []));
+  return indexes.length === 1 ? indexes[0]! : -1;
+}
+
+async function applySpendSignalPatch(
+  workspaceId: string,
+  candidate: DeferredSpendCandidateBase,
+  patch: SpendSignalPatch,
+  expectedConnectionVersion?: string,
+): Promise<'applied' | 'stale'> {
+  return transaction(workspaceId, async (tx) => {
+    const rows = await tx<SpendHostRow[]>`
+      SELECT host.connection_id, host.cost_signals
+      FROM harness_shared.workspace_hosts host
+      WHERE host.workspace_id = ${workspaceId}
+        AND host.id = ${candidate.hostId}
+      FOR UPDATE OF host`;
+    const row = rows[0];
+    if (!row || row.connection_id !== candidate.connectionId || !Array.isArray(row.cost_signals)) {
+      return 'stale';
+    }
+    if (expectedConnectionVersion !== undefined) {
+      const currentConnection = await connection(workspaceId, candidate.connectionId, tx);
+      if (connectionVersion(currentConnection) !== expectedConnectionVersion) return 'stale';
+    }
+    const index = findCurrentSignalIndex(row.cost_signals, candidate);
+    if (index < 0) return 'stale';
+    const currentSignal = row.cost_signals[index];
+    if (!isObject(currentSignal)) return 'stale';
+    const costSignals = row.cost_signals.map((signal, signalIndex) =>
+      signalIndex === index ? { ...currentSignal, ...patch } : signal,
+    );
+    await tx`
+      UPDATE harness_shared.workspace_hosts
+      SET cost_signals = ${tx.json(costSignals as never)}, updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND id = ${candidate.hostId}`;
+    return 'applied';
+  });
+}
+
+async function readDueSpendCandidates(workspaceId: string, now: Date): Promise<DeferredSpendCandidateRow[]> {
+  return transaction(
+    workspaceId,
+    async (tx) => tx<DeferredSpendCandidateRow[]>`
+    SELECT
+      host.id AS host_id,
+      host.connection_id,
+      signal.ordinality::int AS signal_ordinal,
+      signal.value AS cost_signal
+    FROM harness_shared.workspace_hosts host
+    CROSS JOIN LATERAL jsonb_array_elements(host.cost_signals)
+      WITH ORDINALITY AS signal(value, ordinality)
+    WHERE host.workspace_id = ${workspaceId}
+      AND signal.value->>'kind' = 'workspace-host-canary-cost-evidence-v1'
+      AND signal.value->'spendSettlement'->>'status' = 'deferred'
+      AND CASE
+        WHEN pg_input_is_valid(
+          signal.value->'spendSettlement'->>'reconcileAfter',
+          'timestamp with time zone'
+        ) THEN (signal.value->'spendSettlement'->>'reconcileAfter')::timestamptz
+          <= ${now.toISOString()}::timestamptz
+        ELSE true
+      END
+      AND coalesce(signal.value->'spendReconciliation'->>'status', '') <> 'settled'
+      AND (
+        signal.value->'spendReconciliation'->>'nextAttemptAt' IS NULL
+        OR CASE
+          WHEN pg_input_is_valid(
+            signal.value->'spendReconciliation'->>'nextAttemptAt',
+            'timestamp with time zone'
+          ) THEN (signal.value->'spendReconciliation'->>'nextAttemptAt')::timestamptz
+            <= ${now.toISOString()}::timestamptz
+          ELSE true
+        END
+      )
+    ORDER BY
+      CASE
+        WHEN pg_input_is_valid(
+          signal.value->'spendSettlement'->>'reconcileAfter',
+          'timestamp with time zone'
+        ) THEN (signal.value->'spendSettlement'->>'reconcileAfter')::timestamptz
+        ELSE '-infinity'::timestamptz
+      END,
+      host.updated_at,
+      host.id,
+      signal.ordinality
+    LIMIT ${HOSTED_LIFECYCLE_SPEND_RECONCILE_BATCH_LIMIT}`,
+  );
+}
+
+async function reconcileDeferredSpend(
+  workspaceId: string,
+  now: Date,
+): Promise<HostedLifecycleSpendReconciliationSummary> {
+  const rows = await readDueSpendCandidates(workspaceId, now);
+  const out: HostedLifecycleSpendReconciliationSummary = {
+    due: rows.length,
+    attempted: 0,
+    observed: 0,
+    settled: 0,
+    retryable: 0,
+    skipped: 0,
+    errors: [],
+  };
+
+  for (const row of rows) {
+    const base = candidateBase(row);
+    const candidate = parseDeferredSpendCandidate(base);
+    out.attempted += 1;
+    if (!candidate) {
+      const retry = retryPatch(base, 'invalid-signal', now);
+      const applied = await applySpendSignalPatch(workspaceId, base, retry.patch);
+      if (applied === 'stale') {
+        out.skipped += 1;
+        continue;
+      }
+      out.retryable += 1;
+      out.errors.push(retry.error);
+      continue;
+    }
+
+    const selectedConnection = await connection(workspaceId, candidate.connectionId);
+    const selectedConnectionVersion = connectionVersion(selectedConnection);
+    let read: GcpBillingExportReadResult;
+    if (!selectedConnection) {
+      const retry = retryPatch(candidate, 'connection-not-found', now);
+      const applied = await applySpendSignalPatch(workspaceId, candidate, retry.patch, selectedConnectionVersion);
+      if (applied === 'stale') {
+        out.skipped += 1;
+        continue;
+      }
+      out.retryable += 1;
+      out.errors.push(retry.error);
+      continue;
+    }
+    if (selectedConnection.target !== 'gcp' || selectedConnection.connection.target !== 'gcp') {
+      const retry = retryPatch(candidate, 'unsupported-provider', now);
+      const applied = await applySpendSignalPatch(workspaceId, candidate, retry.patch, selectedConnectionVersion);
+      if (applied === 'stale') {
+        out.skipped += 1;
+        continue;
+      }
+      out.retryable += 1;
+      out.errors.push(retry.error);
+      continue;
+    }
+    // The provider read is deliberately outside every database transaction. A BigQuery request can
+    // outlive a routine tick's ordinary SQL latency by orders of magnitude; holding the host lock
+    // across it would serialize unrelated observation writers and turn a provider stall into a DB
+    // stall. The locked write below re-reads both the connection and signal version instead.
+    read = await readGcpBilling({
+      descriptor: selectedConnection.connection.provider?.billingExport,
+      runId: candidate.runId,
+      usageStartAt: candidate.usageStartAt,
+      usageEndAt: candidate.usageEndAt,
+    });
+    if (read.status === 'retryable') {
+      const retry = retryPatch(candidate, read.reason, now);
+      const applied = await applySpendSignalPatch(workspaceId, candidate, retry.patch, selectedConnectionVersion);
+      if (applied === 'stale') {
+        out.skipped += 1;
+        continue;
+      }
+      out.retryable += 1;
+      out.errors.push(retry.error);
+      continue;
+    }
+
+    let history: readonly WorkspaceHostSpendObservation[];
+    let finality: WorkspaceHostSpendFinality;
+    try {
+      const prior = candidate.signal.spendObservations ?? [];
+      if (!Array.isArray(prior)) throw new Error('spend observation history is not an array');
+      history = appendWorkspaceHostSpendObservation(prior as WorkspaceHostSpendObservation[], read.observation);
+      finality = evaluateWorkspaceHostSpendFinality(history, HOSTED_LIFECYCLE_SPEND_STABILITY_WINDOW_MS);
+    } catch {
+      const retry = retryPatch(candidate, 'history-invalid', now);
+      const applied = await applySpendSignalPatch(workspaceId, candidate, retry.patch, selectedConnectionVersion);
+      if (applied === 'stale') {
+        out.skipped += 1;
+        continue;
+      }
+      out.retryable += 1;
+      out.errors.push(retry.error);
+      continue;
+    }
+
+    const attempts = candidate.attempts + 1;
+    const spendReconciliation: JsonObject =
+      finality.status === 'settled'
+        ? {
+            schemaVersion: 'workspace-host-spend-reconciliation-v1',
+            status: 'settled',
+            attempts,
+            lastAttemptAt: now.toISOString(),
+            settledAt: now.toISOString(),
+            finality,
+          }
+        : {
+            schemaVersion: 'workspace-host-spend-reconciliation-v1',
+            status: 'retryable',
+            attempts,
+            lastAttemptAt: now.toISOString(),
+            nextAttemptAt: retryAt(now, attempts, Math.max(0, finality.requiredStableWindowMs - finality.stableForMs)),
+            reason: finality.reason,
+            finality,
+          };
+    const applied = await applySpendSignalPatch(
+      workspaceId,
+      candidate,
+      { spendObservations: history, spendReconciliation },
+      selectedConnectionVersion,
+    );
+    if (applied === 'stale') {
+      out.skipped += 1;
+      continue;
+    }
+    out.observed += 1;
+    if (finality.status === 'settled') {
+      out.settled += 1;
+    } else {
+      out.retryable += 1;
+      out.errors.push({
+        hostId: candidate.hostId,
+        runId: candidate.runId,
+        reason: finality.reason,
+        retryAt: String(spendReconciliation.nextAttemptAt),
+      });
+    }
+  }
+  return out;
 }
 
 /**
- * Classify stale work and emit replay-safe owner notices, for EVERY workspace-host lifecycle
- * operation — BYOC-connection operations included, not only hosted/customer ones.
+ * Classify stale work, emit replay-safe owner notices, then reconcile a bounded batch of due spend
+ * deferrals. The two phases intentionally use separate short transactions; provider billing reads
+ * happen between candidate selection and an optimistic, locked whole-array write.
  *
- * ⛔ THIS SWEEP READS `workspace_host_operations` AND NOTHING ELSE. IT USED TO INNER-JOIN
+ * Stale-operation classification covers EVERY workspace-host lifecycle operation — BYOC-connection
+ * operations included, not only hosted/customer ones.
+ *
+ * ⛔ THE STALE-OPERATION SELECT READS `workspace_host_operations` AND NOTHING ELSE. IT USED TO INNER-JOIN
  * `customer_workspaces`, AND THAT MADE IT BLIND TO THE EXACT FAILURE IT EXISTS FOR (WI-2143803).
  * An operation created through the BYOC `/api/workspace-hosts/action` route carries
  * `customer_workspace_id = NULL`, so an inner join to `customer_workspaces` eliminated every one
@@ -412,7 +862,19 @@ export async function reconcileHostedLifecycleJobs(
   const notices: Array<{ key: string; title: string; body: string; operationId: string }> = [];
   const result = await transaction(required(workspaceId, 'workspace_id'), async (tx) => {
     const out: HostedLifecycleReconciliationResult = {
-      recoveryPending: [], orphaned: [], exhausted: [], notifications: [],
+      recoveryPending: [],
+      orphaned: [],
+      exhausted: [],
+      notifications: [],
+      spend: {
+        due: 0,
+        attempted: 0,
+        observed: 0,
+        settled: 0,
+        retryable: 0,
+        skipped: 0,
+        errors: [],
+      },
     };
     const jobs = await tx<ReconciliationRow[]>`
       SELECT
@@ -427,12 +889,16 @@ export async function reconcileHostedLifecycleJobs(
       FOR UPDATE OF operation`;
 
     for (const job of jobs) {
-      const health = classifyHostedLifecycleJob({
-        status: job.status,
-        heartbeatAt: job.heartbeat_at == null ? null : String(job.heartbeat_at),
-        updatedAt: String(job.operation_updated_at),
-        recoveryAttempts: job.recovery_attempts,
-      }, RECONCILIATION_POLICY, now.getTime());
+      const health = classifyHostedLifecycleJob(
+        {
+          status: job.status,
+          heartbeatAt: job.heartbeat_at == null ? null : String(job.heartbeat_at),
+          updatedAt: String(job.operation_updated_at),
+          recoveryAttempts: job.recovery_attempts,
+        },
+        RECONCILIATION_POLICY,
+        now.getTime(),
+      );
       if (health === 'healthy' || health === 'terminal') continue;
       if (health === 'stuck') {
         await tx`
@@ -492,6 +958,7 @@ export async function reconcileHostedLifecycleJobs(
     });
     result.notifications.push(notice.key);
   }
+  result.spend = await reconcileDeferredSpend(workspaceId, now);
   return result;
 }
 

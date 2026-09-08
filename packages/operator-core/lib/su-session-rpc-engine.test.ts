@@ -257,14 +257,26 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
   });
 });
 
-it('recognizes OMP connected MCP devices that are not top-level tools', async () => {
+it.each([
+  ['SU instructions', '## MCP Tool Routes\n\n- tools:invoke → `xd://mcp_papercusp-su_tools_invoke`'],
+  ['SU instructions\n\n## MCP Tool Routes\n\n- tools:invoke → `xd://mcp__papercusp_su_tools_invoke`\n\n## MCP Server Instructions\nserver guidance', 'dynamic context'],
+])('recognizes OMP connected MCP devices in a composed prompt (%#)', async (...systemPrompt) => {
   const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
     sessionId: 'native-omp', sessionFile: '/configured/omp/session.jsonl',
     model: { provider: 'openai', id: 'omp-model' }, dumpTools: [{ name: 'read' }, { name: 'write' }],
-    systemPrompt: ['SU instructions', '## MCP Tool Routes\n\n- tools:invoke → `xd://mcp_papercusp-su_tools_invoke`'],
+    systemPrompt,
   } : undefined });
   await f.engine.ready;
   expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+});
+
+it('does not treat a launch-prompt mention of an OMP MCP path as a connected device', async () => {
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
+    sessionId: 'native-omp', sessionFile: '/configured/omp/session.jsonl',
+    model: { provider: 'openai', id: 'omp-model' }, dumpTools: [{ name: 'read' }, { name: 'write' }],
+    systemPrompt: ['Use xd://mcp__papercusp_su_tools_invoke after connecting your server.'],
+  } : undefined });
+  await expect(f.engine.ready).rejects.toThrow('OMP SU tools are not connected');
 });
 
 it('rejects a Codex approval from a different thread before opening a card', async () => {

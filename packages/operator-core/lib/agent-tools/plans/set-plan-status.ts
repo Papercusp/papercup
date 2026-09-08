@@ -46,6 +46,7 @@ import {
 } from '../../acceptance-grader';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
+import { resolvePlanScope } from './source';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
@@ -406,10 +407,18 @@ export default defineTool({
         // must never be SILENT.
         let citationDeployment: CitationDeployment | undefined;
         if (shouldEvaluateAcceptanceGate(status, args.expectedCurrent)) {
+          // Match withPlanLock's member → Hive-home resolution. The caller's
+          // harness can name a member, while the subject row lives at its home.
+          const subjectScope = await resolvePlanScope({
+            harnessSlug,
+            ...((sctx as { workspaceId?: string }).workspaceId
+              ? { workspaceId: (sctx as { workspaceId?: string }).workspaceId } : {}),
+          });
           // EI-22181490624100467 — this is the ONE caller that asks for the citation
           // deployment probe. It is a rare write, unlike the sync resolver and the
           // grading sweep which call this same gate on hot/periodic paths.
           const gate = await evaluatePlanAcceptanceGate(slug, {
+            harnessSlug: subjectScope.harnessSlug,
             probeCitationDeployment: true,
             ...(args.current ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
@@ -641,7 +650,9 @@ export default defineTool({
         let acceptanceRubricRetired: string | null = null;
         if (status === 'shipped' && result.value.changed) {
           const id = resolveAgentIdentity(ctx);
-          acceptanceRubricRetired = await retireAcceptanceRubricForPlan(slug, id.ownerId);
+          acceptanceRubricRetired = await retireAcceptanceRubricForPlan(slug, id.ownerId, {
+            harnessSlug: result.scope.harnessSlug,
+          });
         }
 
         let learningsObservation:

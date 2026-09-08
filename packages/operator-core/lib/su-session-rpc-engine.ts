@@ -362,10 +362,12 @@ export function startSuRpcEngine(
       const toolNames = Array.isArray(state.dumpTools) ? state.dumpTools.map((tool) => string(object(tool).name)) : [];
       // OMP's current runtime mounts connected MCP tools as xd:// devices;
       // dumpTools lists only top-level tools. The separate generated mapping
-      // block comes from its live MCP route registry, not the launch config.
+      // section comes from its live MCP route registry. OMP can join it into
+      // the base prompt string instead of returning a separate array entry.
       const mountedRoutes = (Array.isArray(state.systemPrompt) ? state.systemPrompt : [])
-        .filter((part): part is string => typeof part === 'string' && part.startsWith('## MCP Tool Routes\n'))
-        .flatMap((part) => part.match(/xd:\/\/[^`\s]+/g) ?? []);
+        .filter((part): part is string => typeof part === 'string')
+        .flatMap((part) => part.split(/^## MCP Tool Routes\r?$/m).slice(1))
+        .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/xd:\/\/[^`\s]+/g) ?? []);
       const suRoute = mountedRoutes.some((route) => /papercusp[-_]su/i.test(route));
       if (!toolNames.some((name) => /papercusp/i.test(name)) && !suRoute) {
         throw new Error(`OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'}; mounted: ${mountedRoutes.slice(0, 8).join(', ') || 'none'})`);

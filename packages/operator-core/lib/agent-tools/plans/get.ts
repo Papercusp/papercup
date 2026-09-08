@@ -1073,7 +1073,7 @@ export default defineTool({
             // discoverable from the plan itself. Absent = not yet authored (it is
             // authored POST-implementation, D-007; the ship gate names the recipe).
             const [acceptanceRubric, latestAudit] = await Promise.all([
-              getAcceptanceRubricForPlan(row.planSlug)
+              getAcceptanceRubricForPlan(row.planSlug, { harnessSlug: row.harnessSlug })
                 .then((r) =>
                   r
                     ? {
