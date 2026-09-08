@@ -43,6 +43,47 @@ import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+const queueIdentityFields = {
+  /** The frozen queue snapshot the caller read before building this admission. */
+  expectedCandidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/).optional(),
+  expectedRepairHead: z.string().regex(/^[0-9a-fA-F]{40,64}$/).optional(),
+  expectedUpdatedAtMs: z.number().int().nonnegative().optional(),
+};
+type QueueIdentityArgs = {
+  expectedCandidate?: string;
+  expectedRepairHead?: string;
+  expectedUpdatedAtMs?: number;
+};
+type QueueIdentity = {
+  expectedCandidate: string;
+  expectedRepairHead: string;
+  expectedUpdatedAtMs: number;
+};
+
+/**
+ * The identity tuple is optional for backwards-compatible reads/dry-runs, but it is never
+ * partially meaningful. The schema rejects partial tuples; this runtime helper keeps direct
+ * handler calls equally fail-closed when a caller bypasses the parser in a unit test.
+ */
+function readQueueIdentity(args: QueueIdentityArgs): QueueIdentity | null {
+  const fields: Array<keyof QueueIdentityArgs> = [
+    'expectedCandidate',
+    'expectedRepairHead',
+    'expectedUpdatedAtMs',
+  ];
+  const supplied = fields.filter((field) => args[field] !== undefined);
+  if (supplied.length === 0) return null;
+  if (supplied.length !== fields.length) {
+    throw new Error(
+      'release:repair-queue admit expectedCandidate, expectedRepairHead, and expectedUpdatedAtMs must be supplied together',
+    );
+  }
+  return {
+    expectedCandidate: args.expectedCandidate!,
+    expectedRepairHead: args.expectedRepairHead!,
+    expectedUpdatedAtMs: args.expectedUpdatedAtMs!,
+  };
+}
 const argsSchema = z.preprocess(
   (value) => {
     // The read branch has no arguments. Treat an omitted op on an otherwise
@@ -61,6 +102,7 @@ const argsSchema = z.preprocess(
       paths: z.array(z.string().min(1)).min(1).max(50),
       reason: z.string().min(8).max(2000).optional(),
       confirm: z.boolean().optional(),
+      ...queueIdentityFields,
       /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
       includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
       /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
@@ -72,6 +114,7 @@ const argsSchema = z.preprocess(
       paths: z.array(z.string().min(1)).min(1).max(50),
       reason: z.string().min(8).max(2000).optional(),
       confirm: z.boolean().optional(),
+      ...queueIdentityFields,
       includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
       wholeBlob: z.boolean().optional(),
     }),
@@ -112,7 +155,25 @@ const argsSchema = z.preprocess(
       reason: z.string().min(8).max(2000),
       confirm: z.boolean().optional(),
     }),
-  ]),
+  ]).superRefine((value, refinementCtx) => {
+    if (value.op !== 'admit' && value.op !== 'converge') return;
+    const fields: Array<keyof QueueIdentityArgs> = [
+      'expectedCandidate',
+      'expectedRepairHead',
+      'expectedUpdatedAtMs',
+    ];
+    const supplied = fields.filter((field) => value[field] !== undefined).length;
+    if (supplied === 0 || supplied === fields.length) return;
+    for (const field of fields) {
+      if (value[field] === undefined) {
+        refinementCtx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: 'expectedCandidate, expectedRepairHead, and expectedUpdatedAtMs must be supplied together',
+        });
+      }
+    }
+  }),
 );
 
 export type FrozenRepairFixerAuthorizationStatus =
@@ -335,7 +396,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, admit onto, claim-leg{leg} (take one manifest row; claims its paths), or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.',
+    'Inspect, admit onto, claim-leg{leg} (take one manifest row; claims its paths), or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths, expectedCandidate?, expectedRepairHead?, expectedUpdatedAtMs?} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. The optional expected* fields are an all-or-none queue snapshot; a stale tuple is refused before building, and a confirmed tuple also guards the queue-row write with expectedUpdatedAtMs. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.',
   capability: 'operator:write',
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
@@ -354,9 +415,9 @@ export default defineTool({
     notWhen:
       'Do not pass harness or workspace: workspace-global, target derived internally. admit is path-exact — never name paths you did not fix to "catch up" to the tip. Never retire a live/unknown fixer, an active dispatch reservation, ready-to-verify work, or merely to make the gate move. Never re-cut a fresh candidate for a phantom red. Does not launch a checkpoint or deploy.',
     chaining:
-      'Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
+      'Landing a fix: get → admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs} (dry run) → verdict would-admit + proof → re-call confirm:true with the same complete tuple → admitted, phase ready-to-verify; a stale tuple is refused before any build and the confirmed queue write is version-CAS guarded, while the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
     returns:
-      "{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, dryRun?, judgedSha?, nextAction? }. get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | admission-incomplete (P-004: an admitted TS/JS file imports a relative path that resolves to nothing at the proved commit — missing[] names each {from, specifier, wanted, tried, atProbeRef}, admitCommand is the same admit widened by exactly those paths; the tip is never widened for you) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
+      "{ ok, op, verdict?, repairQueue?, repairQueueRead?, callerAuthorization?, admitted?, dryRun?, judgedSha?, nextAction? }. get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | exact_queue_identity_mismatch (the complete expectedCandidate/expectedRepairHead/expectedUpdatedAtMs tuple is stale; no admission is built) | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | admission-incomplete (P-004: an admitted TS/JS file imports a relative path that resolves to nothing at the proved commit — missing[] names each {from, specifier, wanted, tried, atProbeRef}, admitCommand is the same admit widened by exactly those paths; the tip is never widened for you) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
@@ -579,6 +640,36 @@ export default defineTool({
           ...base,
         });
       }
+      const dryRun = args.confirm !== true;
+      const expectedQueueIdentity = readQueueIdentity(args);
+      if (
+        expectedQueueIdentity &&
+        (
+          queue.candidate !== expectedQueueIdentity.expectedCandidate ||
+          queue.repairHead !== expectedQueueIdentity.expectedRepairHead ||
+          queue.updatedAtMs !== expectedQueueIdentity.expectedUpdatedAtMs
+        )
+      ) {
+        return json({
+          ok: false,
+          admitted: false,
+          refused: true,
+          dryRun,
+          verdict: 'refused',
+          reason: 'exact_queue_identity_mismatch',
+          detail:
+            'The queue changed after the caller read it; no admission was built. Re-read with op:get and retry with the complete expectedCandidate/expectedRepairHead/expectedUpdatedAtMs tuple.',
+          judgedSha: queue.repairHead,
+          currentQueueIdentity: {
+            candidate: queue.candidate,
+            repairHead: queue.repairHead,
+            updatedAtMs: queue.updatedAtMs,
+          },
+          expectedQueueIdentity,
+          containment: containmentAt(queue.repairHead),
+          ...base,
+        });
+      }
       // EI-22208176411693669: assessFrozenRepairFixerAuthorization above already routes
       // an isSuperuser caller to 'not-applicable' (never 'authorized-delegate') because
       // the SU-bearer transport carries no verified per-spawn signature regardless of its
@@ -599,7 +690,6 @@ export default defineTool({
         );
       }
       const identity = readIdentity(ctx);
-      const dryRun = args.confirm !== true;
       // P-020 (D-008 layers 2–3): HUNK-EXACT by default. The source the primitive admits from
       // is a synthesised commit = repairHead + ONLY the caller's ledgered hunks per path, so a
       // peer's concurrent work in the same file never rides in. `wholeBlob:true` (with a
@@ -814,7 +904,13 @@ export default defineTool({
       }
       let persisted = true;
       try {
-        await writeFrozenCandidateRepairQueue(inspected.target, next);
+        if (expectedQueueIdentity) {
+          await writeFrozenCandidateRepairQueue(inspected.target, next, {
+            expectedUpdatedAtMs: expectedQueueIdentity.expectedUpdatedAtMs,
+          });
+        } else {
+          await writeFrozenCandidateRepairQueue(inspected.target, next);
+        }
       } catch {
         persisted = false;
       }

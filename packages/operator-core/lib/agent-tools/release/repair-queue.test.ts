@@ -164,6 +164,22 @@ describe('release:repair-queue', () => {
     expect(tool.effectForCall?.({ op: 'admit', confirm: true } as never)).toBe('write');
   });
 
+  it('accepts the complete queue identity tuple on admit/converge and rejects partial tuples', () => {
+    const identity = {
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+    };
+    expect(tool.args.safeParse({ op: 'admit', paths: ['lib/red.test.ts'], ...identity }).success).toBe(true);
+    expect(tool.args.safeParse({ op: 'converge', paths: ['lib/red.test.ts'], ...identity }).success).toBe(true);
+    for (const missing of Object.keys(identity) as Array<keyof typeof identity>) {
+      const partial = { ...identity };
+      delete partial[missing];
+      expect(tool.args.safeParse({ op: 'admit', paths: ['lib/red.test.ts'], ...partial }).success).toBe(false);
+      expect(tool.args.safeParse({ op: 'converge', paths: ['lib/red.test.ts'], ...partial }).success).toBe(false);
+    }
+  });
+
   it('get exposes one normalized queue and never advertises retire for a recoverable one', async () => {
     const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
     expect(result).toMatchObject({
@@ -333,6 +349,36 @@ describe('release:repair-queue', () => {
     expect(mocks.retract).not.toHaveBeenCalled();
   });
 
+  it('rejects a stale expected queue identity before reading the edit ledger or building an admission', async () => {
+    const result = body(
+      await tool.handler(
+        {
+          op: 'admit',
+          paths: ['lib/red.test.ts'],
+          expectedCandidate: queue.candidate,
+          expectedRepairHead: 'd'.repeat(40),
+          expectedUpdatedAtMs: queue.updatedAtMs,
+        } as never,
+        { role: 'su' } as never,
+      ),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      admitted: false,
+      refused: true,
+      reason: 'exact_queue_identity_mismatch',
+      currentQueueIdentity: {
+        candidate: queue.candidate,
+        repairHead: queue.repairHead,
+        updatedAtMs: queue.updatedAtMs,
+      },
+    });
+    expect(mocks.ledger).not.toHaveBeenCalled();
+    expect(mocks.hunkExact).not.toHaveBeenCalled();
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
   it('confirm:true publishes, marks the queue ADMITTED (repairHead moved, phase ready-to-verify, ledger entry), persists and audits', async () => {
     mocks.admit.mockReturnValue(admissionOf(true));
     const result = body(
@@ -369,6 +415,27 @@ describe('release:repair-queue', () => {
     // The audit row names the admission, never a tip.
     const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
     expect(auditDetails).toMatchObject({ op: 'admit', from: queue.repairHead, to: NEW_HEAD, paths: ['lib/red.test.ts'], persisted: true });
+  });
+
+  it('forwards expectedUpdatedAtMs to the queue writer on a confirmed CAS-guarded admission', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    const identity = {
+      expectedCandidate: queue.candidate,
+      expectedRepairHead: queue.repairHead,
+      expectedUpdatedAtMs: queue.updatedAtMs,
+    };
+    const result = body(
+      await tool.handler(
+        { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, ...identity } as never,
+        { role: 'su' } as never,
+      ),
+    );
+    expect(result).toMatchObject({ ok: true, admitted: true, persisted: true });
+    expect(mocks.write).toHaveBeenCalledWith(
+      { workspaceId: 'ws-1', installSlug: 'papercusp' },
+      expect.objectContaining({ repairHead: NEW_HEAD }),
+      { expectedUpdatedAtMs: queue.updatedAtMs },
+    );
   });
 
   it('a queue-row write failure RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
