@@ -9,7 +9,7 @@ import {
   evidenceCurrentInputSchema,
   type EvidenceCurrentInput,
 } from './spec-evidence-store';
-import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { evaluateSpecTestAdequacy, latestLogicalEvidence, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 
 const evaluatorBuildSchema = z
@@ -233,8 +233,17 @@ export default defineTool({
         current: (() => {
           const merged = new Map<string, EvidenceCurrentInput>();
           for (const input of current ?? []) merged.set(`${input.evidenceKind}\0${input.evidenceRef}`, input);
+          // The grade selects the newest append of each exact-clause binding.
+          // Its replay must use that SAME measurement, not an older recipe that
+          // happens to appear later in the newest-first evidence history.
+          const selected = new Set(latestLogicalEvidence(allEvidence.filter((row) =>
+            row.planSlug === clause.planSlug &&
+            row.specId === clause.specId &&
+            row.specRevision === clause.revision &&
+            row.specFingerprint === clause.contentHash,
+          )));
           for (const row of allEvidence) {
-            if (row.serverMeasurement?.status !== 'measured') continue;
+            if (!selected.has(row) || row.serverMeasurement?.status !== 'measured') continue;
             merged.set(
               `${row.evidenceKind}\0${row.evidenceRef}`,
               row.serverMeasurement.current,

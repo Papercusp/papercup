@@ -250,6 +250,57 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     );
   });
 
+  it.each(['newest-first', 'oldest-first'])('pins the latest logical binding measurement in a replay (%s)', async (order) => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const binding = (id: number, sourceFingerprint: string) => ({
+      id,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+      fingerprints: {
+        sourceFingerprint,
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: 42,
+      details: { adequacy: { falsifiable: true, testLayer: 'integration', outcome: 'pass', executed: true } },
+      createdAt: `2026-09-07T00:0${id}:00.000Z`,
+      currentness: { overall: 'current', provenance: 'server-measured', staleReasons: [], unknownReasons: [] },
+      serverMeasurement: {
+        status: 'measured',
+        current: {
+          evidenceKind: 'test',
+          evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+          sourceFingerprint,
+          testFingerprint: 'sha256:test',
+        },
+      },
+    });
+    const rows = [
+      binding(2, 'sha256:latest-recipe'),
+      binding(1, 'sha256:obsolete-recipe'),
+      { ...binding(3, 'sha256:other-clause'), specId: 'SPEC-OTHER' },
+    ];
+    listEvidence.mockResolvedValue((order === 'newest-first' ? rows : [...rows].reverse()) as never);
+
+    const result = await call({
+      harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship',
+      workItemIds: ['WI-123'], specIds: ['SPEC-001'],
+    });
+    expect(result.rows[0].ratings.freshness.rating).toBe('pass');
+    const recipe = result.rows[0].scorecardDraft.rerunRecipe;
+    expect(recipe.current.fingerprints).toHaveLength(1);
+    expect(recipe.args.current).toEqual(recipe.current.fingerprints);
+    expect(recipe.current.fingerprints[0].sourceFingerprint).toBe('sha256:latest-recipe');
+  });
+
   it('keeps an unfiltered plan with no eligible clauses as a valid empty read', async () => {
     listEvidence.mockResolvedValue([]);
     listClauses.mockResolvedValue([]);
