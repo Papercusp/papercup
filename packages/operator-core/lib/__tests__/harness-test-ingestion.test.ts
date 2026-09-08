@@ -22,6 +22,7 @@ vi.mock('../event-loop-lag-monitor', async (importOriginal) => ({
 import {
   parseVitestJsonForHarnessRows,
   persistHarnessTestRuns,
+  persistHarnessTestRunsWithIds,
   isLikelySaturationArtifact,
   type HarnessTestFileRow,
 } from '../testing-run-store';
@@ -105,8 +106,20 @@ describe('parseVitestJsonForHarnessRows', () => {
 
   it('handles multiple files in one report', () => {
     const json = report([
-      { name: `${ROOT}/a.test.ts`, status: 'passed', startTime: 0, endTime: 1, assertionResults: [{ status: 'passed' }] },
-      { name: `${ROOT}/nested/b.test.ts`, status: 'failed', startTime: 0, endTime: 2, assertionResults: [{ status: 'failed', failureMessages: ['boom'] }] },
+      {
+        name: `${ROOT}/a.test.ts`,
+        status: 'passed',
+        startTime: 0,
+        endTime: 1,
+        assertionResults: [{ status: 'passed' }],
+      },
+      {
+        name: `${ROOT}/nested/b.test.ts`,
+        status: 'failed',
+        startTime: 0,
+        endTime: 2,
+        assertionResults: [{ status: 'failed', failureMessages: ['boom'] }],
+      },
     ]);
     const rows = parseVitestJsonForHarnessRows(json, ROOT);
     expect(rows.map((r) => r.filePath)).toEqual(['a.test.ts', 'nested/b.test.ts']);
@@ -158,7 +171,7 @@ describe('persistHarnessTestRuns', () => {
     });
     expect(written).toBe(2);
     expect(calls).toHaveLength(2);
-    // Value order: filePath, 'vitest', status, durationMs, startedAt, finishedAt,
+    // Value order: filePath, framework (vitest default), status, durationMs, startedAt, finishedAt,
     // outputTail, runGroupId, source, branch, commit, harness_slug, workspace_id,
     // loop_lag_p95_ms, rss_mb
     const first = calls[0];
@@ -199,6 +212,27 @@ describe('persistHarnessTestRuns', () => {
     });
     expect(written).toBe(0);
     expect(calls).toHaveLength(0);
+  });
+
+  it('returns inserted numeric IDs and preserves an explicit operational framework', async () => {
+    let nextId = 70;
+    const calls: unknown[][] = [];
+    const sql = ((_strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      nextId += 1;
+      return Promise.resolve([{ id: String(nextId) }]);
+    }) as Parameters<typeof persistHarnessTestRuns>[0]['sql'];
+
+    const result = await persistHarnessTestRunsWithIds({
+      harnessSlug: 'my-hive',
+      workspaceId: 'ws-42',
+      rows: [{ ...sampleRows[0], framework: 'operational' }],
+      runGroupId: 'operational:proof',
+      sql,
+    });
+
+    expect(result).toEqual({ written: 1, ids: [71] });
+    expect(calls[0][1]).toBe('operational');
   });
 
   it('is fail-soft: a throwing sql client swallows and never rejects', async () => {

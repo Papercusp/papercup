@@ -25,11 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
-import {
-  captureWorktreeSnapshot,
-  computeWorktreeDirty,
-  type WorktreeGitSnapshot,
-} from './testing-worktree';
+import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
   beginSyncEnrolment,
@@ -237,7 +233,8 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return false;
   const startedAt = new Date(persistedSnapshot.startedAt).toISOString();
-  const finishedAt = persistedSnapshot.finishedAt === null ? null : new Date(persistedSnapshot.finishedAt).toISOString();
+  const finishedAt =
+    persistedSnapshot.finishedAt === null ? null : new Date(persistedSnapshot.finishedAt).toISOString();
   let query: PromiseLike<unknown>;
   try {
     query = sql`
@@ -465,10 +462,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   return { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped };
 }
 
-function launchPreparedRun(
-  prepared: PreparedRun,
-  opts: { persistInitialSnapshot: boolean },
-): RunSnapshot {
+function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot: boolean }): RunSnapshot {
   const { snapshot, cwd, worktreeBefore, childEnv, taskSpec, enrolment, scopeCgroupPath, wrapped } = prepared;
   let enrolmentFinished = false;
   const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
@@ -497,13 +491,11 @@ function launchPreparedRun(
     snapshot.output = e instanceof Error ? e.message : String(e);
     _runs.set(snapshot.runId, { snapshot, proc: null, cwd, worktreeBefore });
     void persistRunSnapshot(snapshot);
-    finishEnrolment(
-      {
-        state: 'exited',
-        exitCode: null,
-        exitReason: `spawn error: ${e instanceof Error ? e.message : String(e)}`,
-      },
-    );
+    finishEnrolment({
+      state: 'exited',
+      exitCode: null,
+      exitReason: `spawn error: ${e instanceof Error ? e.message : String(e)}`,
+    });
     return snapshot;
   }
 
@@ -519,13 +511,11 @@ function launchPreparedRun(
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
     void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
-    finishEnrolment(
-      {
-        state: 'exited',
-        exitCode: null,
-        exitReason: `spawn error: ${e.message}`,
-      },
-    );
+    finishEnrolment({
+      state: 'exited',
+      exitCode: null,
+      exitReason: `spawn error: ${e.message}`,
+    });
   });
   proc.on('close', (code) => {
     state.snapshot.exitCode = code;
@@ -596,11 +586,7 @@ export async function startRunDurable(
  *
  * D-007 fail-soft: every error swallowed, never throws.
  */
-async function persistFallbackRow(
-  s: RunSnapshot,
-  worktreeBefore: WorktreeGitSnapshot,
-  cwd: string,
-): Promise<void> {
+async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSnapshot, cwd: string): Promise<void> {
   if (s.kind === 'vitest' || s.kind === 'playwright' || s.kind === 'cargo') return;
   if (s.kind === 'admin-suite') return;
   if (s.status === 'running') return;
@@ -622,7 +608,9 @@ async function persistFallbackRow(
     try {
       const ctx = await resolveGitContext();
       branch = ctx.branch;
-    } catch { /* fail-soft */ }
+    } catch {
+      /* fail-soft */
+    }
     // The post-run snapshot is the only commit attribution that corresponds
     // to the run's close-time tree. resolveGitContext() is cached for display
     // metadata and must not reintroduce the torn-read hazard here.
@@ -655,8 +643,12 @@ async function persistFallbackRow(
            ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
-    ]).catch(() => { /* swallow — D-007 */ });
-  } catch { /* swallow — D-007 */ }
+    ]).catch(() => {
+      /* swallow — D-007 */
+    });
+  } catch {
+    /* swallow — D-007 */
+  }
 }
 
 export function getRun(runId: string): RunSnapshot | null {
@@ -747,6 +739,8 @@ export function listRuns(limit = 50): RunSnapshot[] {
 export interface HarnessTestFileRow {
   /** Worktree-root-relative POSIX path — matches the panel's history query key. */
   filePath: string;
+  /** Executor family recorded in test_runs.framework. Vitest remains the default. */
+  framework?: 'vitest' | 'playwright' | 'node' | 'shell' | 'cargo' | 'operational';
   status: 'pass' | 'fail' | 'skip' | 'error';
   durationMs: number | null;
   startedAt: Date;
@@ -785,10 +779,7 @@ function relToRootPosix(absPath: string, rootAbs: string): string {
  * Pure + defensive: malformed JSON or an unexpected shape yields []. A
  * non-vitest report (no `testResults`) likewise yields [] — best-effort skip.
  */
-export function parseVitestJsonForHarnessRows(
-  jsonText: string,
-  rootAbs: string,
-): HarnessTestFileRow[] {
+export function parseVitestJsonForHarnessRows(jsonText: string, rootAbs: string): HarnessTestFileRow[] {
   let parsed: { testResults?: VitestJsonFile[] };
   try {
     parsed = JSON.parse(jsonText) as { testResults?: VitestJsonFile[] };
@@ -808,9 +799,7 @@ export function parseVitestJsonForHarnessRows(
     } else if (f.status === 'passed') {
       // A file vitest marks "passed" whose every test was skipped/todo is a
       // skip row, not a pass — surface that distinctly in the history chip.
-      const hasReal = asserts.some(
-        (a) => a.status !== 'skipped' && a.status !== 'pending' && a.status !== 'todo',
-      );
+      const hasReal = asserts.some((a) => a.status !== 'skipped' && a.status !== 'pending' && a.status !== 'todo');
       status = asserts.length > 0 && !hasReal ? 'skip' : 'pass';
     } else if (f.status === 'skipped' || f.status === 'pending' || f.status === 'todo') {
       status = 'skip';
@@ -976,9 +965,7 @@ export function parseFailureDetailsSidecar(jsonText: string, rootAbs: string): T
     if (!entry || typeof entry !== 'object') continue;
     const value = entry as Record<string, unknown>;
     if (typeof value.file !== 'string' || !value.file || typeof value.test !== 'string' || !value.test) continue;
-    const file = isAbsolute(value.file)
-      ? relToRootPosix(value.file, rootAbs)
-      : value.file.replaceAll('\\', '/');
+    const file = isAbsolute(value.file) ? relToRootPosix(value.file, rootAbs) : value.file.replaceAll('\\', '/');
     const detail: TestFailureDetail = { file, test: value.test };
     for (const field of ['message', 'actual', 'expected'] as const) {
       const text = stringifyFailureDetail(value[field]);
@@ -1028,8 +1015,14 @@ export function distillVitestRun(
   const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
   const maxMessageChars = opts?.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
   const empty: DistilledTestRun = {
-    passed: 0, failed: 0, skipped: 0, files: 0,
-    failures: [], failuresTruncated: false, durationMs: null, byFile: {},
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    files: 0,
+    failures: [],
+    failuresTruncated: false,
+    durationMs: null,
+    byFile: {},
   };
 
   let parsed: { testResults?: VitestJsonFile[] };
@@ -1065,14 +1058,20 @@ export function distillVitestRun(
       if (a.status === 'failed') {
         out.failed += 1;
         bucket.failed += 1;
-      const message = (Array.isArray(a.failureMessages) ? a.failureMessages : [])
-          .find((m): m is string => typeof m === 'string' && m.trim().length > 0);
+        const message = (Array.isArray(a.failureMessages) ? a.failureMessages : []).find(
+          (m): m is string => typeof m === 'string' && m.trim().length > 0,
+        );
         if (out.failures.length < maxFailures) {
-          out.failures.push(enrichFailure({
-            file,
-            test: (a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)',
-            message: (message ?? '(no failure message reported)').trim().slice(0, maxMessageChars),
-          }, detailByKey.get(`${file}\u0000${(a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)'}`)));
+          out.failures.push(
+            enrichFailure(
+              {
+                file,
+                test: (a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)',
+                message: (message ?? '(no failure message reported)').trim().slice(0, maxMessageChars),
+              },
+              detailByKey.get(`${file}\u0000${(a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)'}`),
+            ),
+          );
         } else {
           out.failuresTruncated = true;
         }
@@ -1094,14 +1093,19 @@ export function distillVitestRun(
       bucket.failed += 1;
       bucket.collectionFailed = true;
       if (out.failures.length < maxFailures) {
-        out.failures.push(enrichFailure({
-          file,
-          test: COLLECTION_FAILURE_TEST,
-          message: (typeof f.message === 'string' && f.message.trim()
-            ? f.message.trim()
-            : '(no failure message reported)'
-          ).slice(0, maxMessageChars),
-        }, detailByKey.get(`${file}\u0000${COLLECTION_FAILURE_TEST}`)));
+        out.failures.push(
+          enrichFailure(
+            {
+              file,
+              test: COLLECTION_FAILURE_TEST,
+              message: (typeof f.message === 'string' && f.message.trim()
+                ? f.message.trim()
+                : '(no failure message reported)'
+              ).slice(0, maxMessageChars),
+            },
+            detailByKey.get(`${file}\u0000${COLLECTION_FAILURE_TEST}`),
+          ),
+        );
       } else {
         out.failuresTruncated = true;
       }
@@ -1127,14 +1131,17 @@ export function distillVitestRun(
  * the router runs groups SEQUENTIALLY (a max would under-report a multi-group run); it
  * stays null only when every group reported null.
  */
-export function mergeDistilledRuns(
-  runs: DistilledTestRun[],
-  opts?: { maxFailures?: number },
-): DistilledTestRun {
+export function mergeDistilledRuns(runs: DistilledTestRun[], opts?: { maxFailures?: number }): DistilledTestRun {
   const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
   const merged: DistilledTestRun = {
-    passed: 0, failed: 0, skipped: 0, files: 0,
-    failures: [], failuresTruncated: false, durationMs: null, byFile: {},
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    files: 0,
+    failures: [],
+    failuresTruncated: false,
+    durationMs: null,
+    byFile: {},
   };
   let sawDuration = false;
   let durationTotal = 0;
@@ -1249,11 +1256,12 @@ export function boundTestRunPayload<E extends Record<string, unknown>>(
   envelope: E,
   run: DistilledTestRun,
   opts?: { maxBytes?: number },
-): E & DistilledTestRun & {
-  failuresReturned?: number;
-  failuresOmitted?: number;
-  truncationNote?: string;
-} {
+): E &
+  DistilledTestRun & {
+    failuresReturned?: number;
+    failuresOmitted?: number;
+    truncationNote?: string;
+  } {
   const budget = opts?.maxBytes ?? TESTING_RUN_MAX_PAYLOAD_BYTES;
 
   const build = (failures: DistilledTestFailure[], truncated: boolean) => {
@@ -1278,7 +1286,10 @@ export function boundTestRunPayload<E extends Record<string, unknown>>(
 
   // Lever 1 — shrink every message, preserving the full list of WHICH tests failed.
   for (const chars of MESSAGE_BUDGET_LADDER) {
-    const candidate = build(run.failures.map((f) => clampFailureMessage(f, chars)), true);
+    const candidate = build(
+      run.failures.map((f) => clampFailureMessage(f, chars)),
+      true,
+    );
     if (payloadBytes(candidate) <= budget) return candidate;
   }
 
@@ -1327,17 +1338,73 @@ export interface PersistHarnessTestRunsParams {
   sql?: SqlLike;
 }
 
+export interface PersistHarnessTestRunsResult {
+  written: number;
+  ids: number[];
+}
+
+export interface HarnessTestRunIdQuery {
+  harnessSlug: string;
+  workspaceId: string;
+  runGroupId: string;
+  filePath?: string;
+  sql?: SqlLike;
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+/**
+ * Resolve the numeric execution-ledger rows for one exact, tenant-scoped run
+ * group. This is the shared readback seam for testing:run and the operational
+ * recorder; callers never have to hand-query test_runs to obtain bindable IDs.
+ */
+export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Promise<number[]> {
+  try {
+    let sql = params.sql;
+    if (!sql) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      sql = getOrgPg().sql as unknown as SqlLike;
+    }
+    const rows = await sql`
+      SELECT id
+        FROM harness_shared.test_runs
+       WHERE workspace_id = ${params.workspaceId}
+         AND harness_slug = ${params.harnessSlug}
+         AND run_group_id = ${params.runGroupId}
+         AND (${params.filePath ?? null}::text IS NULL OR file_path = ${params.filePath ?? null})
+       ORDER BY id`;
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => positiveSafeInteger((row as { id?: unknown })?.id))
+      .filter((id): id is number => id !== null);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Persist per-file harness test rows to harness_shared.test_runs, stamped with
  * harness_slug + workspace_id (migration 413). Returns the number of rows
  * written. D-007 fail-soft: a DB/parse error never throws — a failed run-tab
  * ingestion must NOT break the test run. Each insert has a 1s timeout.
  */
-export async function persistHarnessTestRuns(
+export async function persistHarnessTestRuns(params: PersistHarnessTestRunsParams): Promise<number> {
+  return (await persistHarnessTestRunsWithIds(params)).written;
+}
+
+/**
+ * The ID-returning form used when a caller must bind the execution to an exact
+ * spec-evidence row. Keep persistHarnessTestRuns as the count-only compatibility
+ * wrapper for existing Tests-tab callers.
+ */
+export async function persistHarnessTestRunsWithIds(
   params: PersistHarnessTestRunsParams,
-): Promise<number> {
+): Promise<PersistHarnessTestRunsResult> {
   const { harnessSlug, workspaceId, rows, runGroupId } = params;
-  if (rows.length === 0) return 0;
+  if (rows.length === 0) return { written: 0, ids: [] };
   const source = params.source ?? 'admin-ui';
   const branch = params.branch ?? null;
   const commit = params.commit ?? null;
@@ -1347,6 +1414,7 @@ export async function persistHarnessTestRuns(
   // row would be noise without adding signal.
   const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
   let written = 0;
+  const ids: number[] = [];
   try {
     let sql = params.sql;
     if (!sql) {
@@ -1354,36 +1422,47 @@ export async function persistHarnessTestRuns(
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     for (const row of rows) {
-      await Promise.race([
+      const inserted = await Promise.race([
         Promise.resolve(
           sql`
             INSERT INTO harness_shared.test_runs
               (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
             VALUES
-              (${row.filePath}, ${'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
+              (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
                ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
+            RETURNING id
           `,
         ),
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
       ])
-        .then(() => {
+        .then((result) => {
           written++;
+          return result;
         })
         .catch(() => {
           /* swallow — D-007 */
+          return null;
         });
+      const id = Array.isArray(inserted)
+        ? positiveSafeInteger((inserted[0] as { id?: unknown } | undefined)?.id)
+        : null;
+      if (id !== null) ids.push(id);
     }
   } catch {
     /* swallow — D-007 */
   }
-  return written;
+  return { written, ids };
 }
 
 /** INTERNAL — test-only. Wipe the store. */
 export function _resetTestingRunStore(): void {
   for (const s of _runs.values()) {
     if (s.proc && !s.proc.killed) {
-      try { s.proc.kill('SIGKILL'); } catch { /* swallow */ }
+      try {
+        s.proc.kill('SIGKILL');
+      } catch {
+        /* swallow */
+      }
     }
   }
   _runs.clear();

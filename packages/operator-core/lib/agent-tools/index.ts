@@ -699,6 +699,7 @@ import './db/next_migration';
 import './testing/prune_orphan_runs';
 import './testing/flakiness';
 import './testing/run';
+import './testing/record-run';
 import './testing/run-status';
 import './testing/runs';
 import './testing/verdict-diff';
