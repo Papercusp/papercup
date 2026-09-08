@@ -430,6 +430,29 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it("tools:invoke wrapping capability:read is classified readonly", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:read",
+            args: { file_path: "papercusp://scratch/ws/tools:invoke/run/result.md" },
+          },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
   it("tools:invoke wrapping a mutator remains keyed", () => {
     const body = Buffer.from(
       JSON.stringify({

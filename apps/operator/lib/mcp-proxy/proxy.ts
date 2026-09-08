@@ -728,6 +728,8 @@ function recordedRpcMethods(messages: readonly unknown[]): string[] {
  * performs no writes (no PG mutations, no fs writes outside tmp, no external sends).
  */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  // filesystem reads are side-effect-free, including result-door scratch pages
+  "capability:read",
   // build/type diagnostics (the reported failure: scoped tsc runs are pure reads)
   "build:typecheck",
   // dev observability reads
