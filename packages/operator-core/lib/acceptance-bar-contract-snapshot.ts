@@ -1323,6 +1323,7 @@ async function defaultReadPlanItems(
     SELECT item_id, status
       FROM harness_shared.plan_items
      WHERE workspace_id = ${plan.workspaceId}
+       AND harness_slug = ${plan.harnessSlug}
        AND plan_slug = ${plan.planSlug}
      ORDER BY seq
      LIMIT ${ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT + 1}`;

@@ -2438,7 +2438,9 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // yet and are validated by seedAcceptanceBarsInTransaction instead.
   if (kind === 'acceptance' && stored?.barContract?.adoptionEpoch != null && input.subjectPlan) {
     const { readAndEvaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
-    const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(input.subjectPlan, 'pre-start');
+    const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(input.subjectPlan, 'pre-start', {
+      harnessSlug: input.subjectHarnessSlug,
+    });
     if (!lifecycle.satisfied) {
       throw new Error(
         `invalid_args: proposeRubric: acceptance_bar_contract_not_ready — ${
@@ -2969,7 +2971,7 @@ function amendmentDate(): string {
 async function resolveAcceptanceSubjectScope(
   workspaceId: string,
   subjectPlan: string,
-  preferredHarness: string,
+  subjectHarnessSlug?: string,
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
   const { sql } = getOrgPg();
   const rows = await sql<{ harness_slug: string }[]>`
@@ -2977,7 +2979,8 @@ async function resolveAcceptanceSubjectScope(
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId}
        AND plan_slug = ${subjectPlan}
-     ORDER BY (harness_slug = ${preferredHarness}) DESC, updated_at DESC NULLS LAST
+       AND ${subjectHarnessSlug ? sql`harness_slug = ${subjectHarnessSlug}` : sql`TRUE`}
+     ORDER BY harness_slug
      LIMIT 2`;
   if (rows.length === 0) {
     throw new Error(`invalid_args: acceptance BAR amendment subject plan '${subjectPlan}' was not found`);
@@ -3107,12 +3110,13 @@ async function amendAcceptanceBarRubric(
   rubricScope: { workspaceId: string; harnessSlug: string },
   preview = false,
 ): Promise<AcceptanceAmendmentResult | null> {
-  const subjectPlanHint = (await getRubric(input.rubricId))?.subjectPlan;
+  const rubricHint = await getRubric(input.rubricId);
+  const subjectPlanHint = rubricHint?.subjectPlan;
   if (!subjectPlanHint) return null;
   const subjectScope = await resolveAcceptanceSubjectScope(
     rubricScope.workspaceId,
     subjectPlanHint,
-    rubricScope.harnessSlug,
+    rubricHint?.subjectHarnessSlug,
   );
   const txResult = await withAcceptanceBarAmendmentTransaction(
     {
@@ -3142,7 +3146,8 @@ async function amendAcceptanceBarRubric(
       const subjectRow = subjectRows[0];
       if (!rubricRow || !subjectRow) return null;
       const stored = rubricFromLockedPlan(input.rubricId, rubricRow.content, rubricRow.template_data, rubricScope);
-      if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint) return null;
+      if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint ||
+          (stored.subjectHarnessSlug && stored.subjectHarnessSlug !== subjectScope.harnessSlug)) return null;
 
       // An explicit replay token identifies the original request, including its
       // approval receipt. Handle retries before CAS and re-applying append text.
@@ -3349,7 +3354,9 @@ async function amendAcceptanceBarRubric(
         diffAcceptanceBarContractSnapshots,
       } = await import('./acceptance-bar-contract-snapshot');
       const { evaluateAcceptanceBarLifecycle } = await import('./acceptance-bar-lifecycle-evaluator');
-      const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint);
+      const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint, {}, {
+        harnessSlug: subjectScope.harnessSlug,
+      });
       if (
         preview &&
         (snapshot.completeness.truncated ||
