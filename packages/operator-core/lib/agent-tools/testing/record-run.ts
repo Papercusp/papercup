@@ -9,12 +9,12 @@
  * exact numeric row IDs that plans:bind-spec-evidence accepts.
  */
 
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { runGit } from '../../harness/docs/git-runner';
 import {
   findHarnessTestRunIds,
   persistHarnessTestRunsWithIds,
@@ -67,7 +67,11 @@ type RecordContext = {
 };
 
 export interface RecordOperationalRunDeps {
-  inspectEvidence: (root: string, filePath: string, expectedSha256: string) => CommittedOperationalEvidence;
+  inspectEvidence: (
+    root: string,
+    filePath: string,
+    expectedSha256: string,
+  ) => CommittedOperationalEvidence | Promise<CommittedOperationalEvidence>;
   findIds: typeof findHarnessTestRunIds;
   persist: (params: PersistHarnessTestRunsParams) => Promise<PersistHarnessTestRunsResult>;
 }
@@ -83,13 +87,10 @@ function insideRoot(root: string, candidate: string): boolean {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 
-function gitOutput(root: string, args: string[]): Buffer {
-  return execFileSync('git', args, {
-    cwd: root,
-    encoding: 'buffer',
-    timeout: 3_000,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
+async function gitOutput(root: string, args: string[]): Promise<Buffer> {
+  const result = await runGit(args, root);
+  if (result.code !== 0) throw new Error('git_command_failed');
+  return Buffer.from(result.stdout, 'utf8');
 }
 
 export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvidenceArtifact {
@@ -109,11 +110,11 @@ export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvid
 }
 
 /** Validate that the artifact bytes are exactly those stored at the caller tree's HEAD. */
-export function inspectCommittedOperationalEvidence(
+export async function inspectCommittedOperationalEvidence(
   root: string,
   filePath: string,
   expectedSha256: string,
-): CommittedOperationalEvidence {
+): Promise<CommittedOperationalEvidence> {
   const normalized = filePath.replace(/\\/g, '/');
   if (
     isAbsolute(normalized) ||
@@ -131,9 +132,9 @@ export function inspectCommittedOperationalEvidence(
   const bytes = readFileSync(absolute);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (sha256 !== expectedSha256) throw new Error('evidence_sha256_mismatch');
-  const headBytes = gitOutput(realRoot, ['show', `HEAD:${normalized}`]);
+  const headBytes = await gitOutput(realRoot, ['show', `HEAD:${normalized}`]);
   if (!headBytes.equals(bytes)) throw new Error('evidence_not_committed');
-  const commit = gitOutput(realRoot, ['rev-parse', 'HEAD']).toString('utf8').trim();
+  const commit = (await gitOutput(realRoot, ['rev-parse', 'HEAD'])).toString('utf8').trim();
   if (!/^[a-f0-9]{40}$/i.test(commit)) throw new Error('evidence_commit_unreadable');
 
   return {
@@ -174,7 +175,7 @@ export async function recordOperationalRun(
 
   let evidence: CommittedOperationalEvidence;
   try {
-    evidence = deps.inspectEvidence(resolveAgentWorkspaceRoot(ctx), args.evidenceFile, args.expectedSha256);
+    evidence = await deps.inspectEvidence(resolveAgentWorkspaceRoot(ctx), args.evidenceFile, args.expectedSha256);
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'evidence_unreadable' };
   }

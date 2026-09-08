@@ -40,7 +40,8 @@ function deps(overrides: Partial<RecordOperationalRunDeps> = {}): RecordOperatio
 
 describe('testing:record-run', () => {
   it('derives a pass, persists through the shared writer, and returns numeric IDs', async () => {
-    const d = deps();
+    const inspectEvidence = vi.fn(async () => EVIDENCE);
+    const d = deps({ inspectEvidence });
     const result = await recordOperationalRun(
       { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
       { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() },
@@ -48,6 +49,7 @@ describe('testing:record-run', () => {
     );
 
     expect(result).toMatchObject({ ok: true, alreadyRecorded: false, status: 'pass', testRunIds: [77] });
+    expect(inspectEvidence).toHaveBeenCalledTimes(1);
     expect(d.persist).toHaveBeenCalledWith(
       expect.objectContaining({
         harnessSlug: 'papercusp',
