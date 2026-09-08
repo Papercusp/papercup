@@ -2781,6 +2781,7 @@ async function completeOne(
           existing.payload && typeof existing.payload === 'object'
             ? (existing.payload as Record<string, unknown>).designReferences
             : undefined,
+        workScope: { planSlug: existing.sourcePlanSlug, planItemIds: existing.sourcePlanItemIds },
         evaluate: async (featureId) => {
           const verbDeps = await designCompareDepsFor(harnessSlug);
           return evaluateFeatureDesignGate(
