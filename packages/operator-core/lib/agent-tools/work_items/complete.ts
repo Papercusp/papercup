@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { existsSync, readdirSync, type Dirent } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { HARVESTED_COORD_NOTES_RULE } from '../../harness/improvements/observation-title-guidance';
@@ -839,7 +839,7 @@ async function typecheckCommandsForFiles(files: string[]): Promise<string> {
   const fallback =
     `npm run lint:tsc -- --files=${files.join(',')}  (files outside packages/operator-core need ` +
     `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json)`;
-  const root = detectPapercupRoot();
+  const root = completionRoot();
   if (!root) return fallback;
 
   const gates = await siblingTypecheckGates(root);
@@ -909,6 +909,72 @@ export interface CompletionPathProbe {
   repoRoots?: Array<string | null>;
   exists?: (absPath: string) => boolean;
   siblings?: (absDir: string) => string[];
+}
+
+/** Injectable read seam for resolving a linked worktree's canonical checkout. */
+export interface CanonicalCompletionRootProbe {
+  readFile?: (absPath: string) => string | undefined;
+}
+
+/**
+ * Resolve the canonical checkout behind a linked worktree without spawning Git.
+ *
+ * A staging operator may detect its linked `papercusp-staging` checkout, while the
+ * completion probes must inspect the canonical `papercusp` tree. Git records that
+ * relationship in the worktree's `.git` pointer and its gitdir `commondir` file:
+ * `.git -> gitdir: <canonical>/.git/worktrees/<name>` and `commondir -> ../..`.
+ * The common directory's parent is the canonical repository root.
+ *
+ * Malformed or unreadable metadata keeps the detected root. This advisory resolver is
+ * deliberately fail-open, bounded to two small metadata reads, and spawn-free because
+ * completion is a fleet-wide hot path.
+ */
+export function resolveCanonicalCompletionRoot(
+  detectedRoot: string | null | undefined,
+  probe: CanonicalCompletionRootProbe = {},
+): string | null {
+  if (!detectedRoot) return null;
+  const root = nodePath.resolve(detectedRoot);
+  const readFile =
+    probe.readFile ??
+    ((absPath: string) => {
+      try {
+        return readFileSync(absPath, 'utf8');
+      } catch {
+        return undefined;
+      }
+    });
+
+  try {
+    const dotGit = readFile(nodePath.join(root, '.git'))?.trim();
+    if (!dotGit) return root;
+    const gitdir = /^gitdir:\s*(.+)$/.exec(dotGit)?.[1]?.trim();
+    if (!gitdir || /[\r\n]/.test(gitdir)) return root;
+
+    const gitDir = nodePath.resolve(root, gitdir);
+    const commondir = readFile(nodePath.join(gitDir, 'commondir'))?.trim();
+    if (!commondir || /[\r\n]/.test(commondir)) return root;
+
+    const commonDir = nodePath.resolve(gitDir, commondir);
+    const worktreeRelative = nodePath.relative(commonDir, gitDir);
+    if (
+      nodePath.basename(commonDir) !== '.git' ||
+      !worktreeRelative ||
+      worktreeRelative.startsWith('..' + nodePath.sep) ||
+      nodePath.isAbsolute(worktreeRelative) ||
+      worktreeRelative.split(nodePath.sep)[0] !== 'worktrees'
+    ) {
+      return root;
+    }
+    return nodePath.dirname(commonDir);
+  } catch {
+    return root;
+  }
+}
+
+/** Runtime completion root; linked worktrees resolve to their canonical checkout. */
+function completionRoot(): string | null {
+  return resolveCanonicalCompletionRoot(detectPapercupRoot());
 }
 
 /** Injectable filesystem seams for the workspace-qualified external-app repair hint. */
@@ -1040,7 +1106,7 @@ export function unresolvedPathsInCompletion(
   // the two would silently fall back to detection and judge paths against the wrong tree —
   // the same absent-vs-explicitly-empty conflation this whole check exists to catch.
   const rawRoots =
-    'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : detectPapercupRoot()];
+    'repoRoots' in probe ? probe.repoRoots : ['repoRoot' in probe ? probe.repoRoot : completionRoot()];
   const repoRoots = [
     ...new Set(
       (rawRoots ?? [])
@@ -1147,7 +1213,13 @@ export function completionRepoRootsFromRegistry(
   opts: { homeRoot?: string } = {},
 ): string[] {
   const roots = new Set<string>();
-  if (primaryRoot) roots.add(nodePath.resolve(primaryRoot));
+  const detectedRoot = primaryRoot ? nodePath.resolve(primaryRoot) : null;
+  const canonicalRoot = resolveCanonicalCompletionRoot(detectedRoot);
+  if (canonicalRoot) roots.add(nodePath.resolve(canonicalRoot));
+  // Keep the detected worktree as a secondary candidate: its runtime checkout may still
+  // own an independently declared path, while canonical-first ordering fixes completion
+  // evidence that was observed through a linked staging service.
+  if (detectedRoot && detectedRoot !== canonicalRoot) roots.add(detectedRoot);
   for (const project of registry.projects) {
     const contentPath = resolveHarnessContentPath(registry, project.slug);
     if (contentPath) roots.add(nodePath.resolve(contentPath));
@@ -1215,9 +1287,10 @@ async function completionRepoRootsForWorkspace(
     // This is an advisory check on an already-recorded completion. Registry trouble must never
     // make the completion fail; preserve the primary root while retaining independently
     // discovered Hive/path roots so an external completion is not silently stamped as Papercusp.
+    const canonicalPrimaryRoot = resolveCanonicalCompletionRoot(primaryRoot);
     return [
       ...new Set(
-        [primaryRoot, ...additionalRoots]
+        [canonicalPrimaryRoot, primaryRoot, ...additionalRoots]
           .filter((root): root is string => Boolean(root))
           .map((root) => nodePath.resolve(root)),
       ),
@@ -1580,7 +1653,7 @@ export function preExistingChangedPathsInCompletion(
   const claimedPaths = completionClaimsTargetPaths(itemPaths, completion);
   if (claimedPaths.length === 0) return undefined;
 
-  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
+  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : completionRoot();
   if (!repoRoot) return undefined;
   let fallbackTimes: Map<string, number | null> | undefined;
   if (!probe.lastCommitAt) {
@@ -3113,7 +3186,7 @@ async function completeOne(
             .map((value) => (value ? Date.parse(String(value)) : NaN))
             .filter((ms) => Number.isFinite(ms))
             .reduce<number | undefined>((earliest, ms) => (earliest === undefined ? ms : Math.min(earliest, ms)), undefined),
-          { repoRoots: registeredRepoRoots ?? [detectPapercupRoot()].filter((r): r is string => r !== null) },
+          { repoRoots: registeredRepoRoots ?? [completionRoot()].filter((r): r is string => r !== null) },
         )
       : undefined;
 
@@ -3150,7 +3223,7 @@ async function completeOne(
           // fall back to the primary checkout the way `unresolvedPathsInCompletion` does —
           // otherwise the citation check would sit permanently unjudgeable on the closes
           // that resolve cleanly, which is most of them.
-          probe: { repoRoots: registeredRepoRoots ?? [detectPapercupRoot()] },
+          probe: { repoRoots: registeredRepoRoots ?? [completionRoot()] },
         })
       : undefined;
 
@@ -3163,7 +3236,7 @@ async function completeOne(
     const declared = completionEvidenceForGate?.claims;
     if (!declared?.length) return undefined;
     try {
-      const root = registeredRepoRoots?.[0] ?? detectPapercupRoot();
+      const root = registeredRepoRoots?.[0] ?? completionRoot();
       if (!root) return undefined;
       return evaluateCompletionClaims(declared, repoSourceReader(root));
     } catch {
@@ -3327,6 +3400,7 @@ async function completeOne(
     ? registeredRepoRoots
       ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
       : completionTreeStamp({
+          repoRoot: completionRoot(),
           filesChanged: completionEvidenceBeforeStamp.filesChanged,
           filesDeleted: completionEvidenceBeforeStamp.filesDeleted,
         })
