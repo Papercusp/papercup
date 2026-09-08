@@ -102,6 +102,7 @@ async function grade(harness: string) {
     harnessSlug: harness, workspaceId: WS, log: () => {}, signal: new AbortController().signal,
     progress: () => {}, emit: () => {},
   } as never));
+  if (!('data' in result)) throw new Error('evaluate handler returned no structured data');
   return result.data as Record<string, any>;
 }
 
@@ -189,6 +190,18 @@ describe('P002 real-store metadata preflight', () => {
 
   it('persists explicit subject scope and preserves it on re-proposal after another harness adopts the slug', async () => {
     await plan(A);
+    // The canonical writer validates the class through the real rubric reader.
+    // Seed that prerequisite in the private DB rather than mocking validation.
+    const classData = { kind: 'standard', characteristic: 'plan-acceptance',
+      ratingScale: ['pass', 'fail', 'unknown'],
+      criteria: [{ key: 'regression', title: 'Regression',
+        model: 'The reported behavior is covered by a regression test.',
+        method: 'Run the named regression and its negative control.',
+        driftMarkers: 'The negative control no longer fails.' }] };
+    await h.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, template, template_data)
+      VALUES (${WS}, 'rubric-library', 'plan-class-bugfix', '', md5('plan-class-bugfix'),
+        'Bugfix class', 'active', 'rubric', ${JSON.stringify(classData)}::text::jsonb)`;
     const input = { rubricId: 'scoped-proposal', kind: 'acceptance' as const,
       subjectPlan: metadataPlanSlug, subjectHarnessSlug: A, classRef: 'plan-class-bugfix',
       characteristic: 'plan-acceptance', title: 'Scoped proposal', criteria: [] };
