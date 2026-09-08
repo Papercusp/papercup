@@ -567,14 +567,9 @@ async function openComposer(pane: PuiPane): Promise<void> {
 }
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
-  return waitForPersistedChat(db, (chat) => chat.transcript.some((turn) => turn.role === 'user' && turn.content === content));
-}
-
-async function waitForCorrelatedReply(prompt: string, reply: string | RegExp): Promise<PersistedChat> {
-  // The chat table stores accepted command receipts. Assistant text belongs to
-  // the native transcript, exposed through the real adapter's SU event stream.
-  const chat = await waitForPersistedChat(db, (candidate) => {
-    if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === prompt)) return true;
+  return waitForPersistedChat(db, (candidate) => {
+    if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === content)) return true;
+    if (!scriptedEngine.real) return false;
     const refusedLaunch = sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400);
     if (refusedLaunch) throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
     // A resumed conversation deliberately retains its stopped predecessor in
@@ -586,7 +581,13 @@ async function waitForCorrelatedReply(prompt: string, reply: string | RegExp): P
       throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
     }
     return false;
-  }, 120_000);
+  }, scriptedEngine.real ? 120_000 : 15_000);
+}
+
+async function waitForCorrelatedReply(prompt: string, reply: string | RegExp): Promise<PersistedChat> {
+  // The chat table stores accepted command receipts. Assistant text belongs to
+  // the native transcript, exposed through the real adapter's SU event stream.
+  const chat = await waitForSavedTurn(prompt);
   const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
   if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
   await vi.waitFor(() => expect(scriptedEngine.events).toEqual(expect.arrayContaining([
