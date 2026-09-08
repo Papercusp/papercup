@@ -642,6 +642,10 @@ function rerunRecipeFor(
       ...(harness !== undefined ? { harness } : {}),
       slug: clause.planSlug,
       classRef,
+      evaluatorBuild: {
+        sha: evaluatorBuild.sha,
+        version: evaluatorBuild.version,
+      },
       specIds: [clause.specId],
       ...(selection?.workItemIds?.length ? { workItemIds: [...selection.workItemIds] } : {}),
       // The recipe must replay the exact evidence population the evaluator graded,
@@ -810,10 +814,9 @@ export function evaluateSpecTestAdequacy(input: {
   // must never share one evidence sentence, or an auditor reads "bound negative control" when
   // only an attestation exists. Branch the template on which basis is actually present.
   const boundMutationOrCounterexample = evidence.filter((row) => {
-    const details = detailsOf(row);
     return (
       (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-      SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
+      isSuccessfulExecutableEvidence(row)
     );
   });
   const exactMutationOrCounterexample = exactEvidence.filter(
@@ -831,15 +834,17 @@ export function evaluateSpecTestAdequacy(input: {
         }
       : attestedFalsifiableOnly.length > 0
         ? {
-            rating: 'pass',
+            rating: 'unknown',
             evidence: evidenceWithBindings(
-              `Attested falsifiable by binder on ${attestedFalsifiableOnly.length} binding(s); ${
+              `Binder-attested falsifiable=true on ${attestedFalsifiableOnly.length} binding(s) is insufficient to demonstrate red capability for ${clauseIdentity(clause)}; ${
                 exactMutationOrCounterexample.length > 0
                   ? `${exactMutationOrCounterexample.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
                   : `no mutation or counterexample binding is bound for ${clauseIdentity(clause)}.`
               }`,
               attestedFalsifiableOnly,
             ),
+            suggestion:
+              'Bind a successful ledger-backed mutation or counterexample result; falsifiable=true metadata alone is insufficient.',
           }
         : booleanRating(evidence, (d) => d.falsifiable, {
           pass: `A bound proof explicitly demonstrates falsifiability for ${clauseIdentity(clause)}.`,
