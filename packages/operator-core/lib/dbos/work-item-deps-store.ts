@@ -640,6 +640,265 @@ export async function mutateWorkItemDependencies(
   );
 }
 
+interface RepointDependencyRow {
+  id: string | number;
+  blocked_kind: string;
+  blocked_ref: string;
+  blocker_kind: string;
+  blocker_ref: string;
+  dep_type: 'blocks';
+  satisfaction: DependencySatisfaction | null;
+  created_by: string | null;
+}
+
+export interface WorkItemDependencyRefRewriteReceipt {
+  readonly before: Record<string, unknown>;
+  readonly after: Record<string, unknown> | null;
+  readonly targetPrior: Record<string, unknown> | null;
+  readonly disposition: 'removed-self-edge' | 'merged-with-existing-edge' | 'repointed-edge';
+}
+
+function repointDependencyReceipt(row: RepointDependencyRow): Record<string, unknown> {
+  return {
+    id: String(row.id),
+    blockedKind: row.blocked_kind,
+    blockedRef: row.blocked_ref,
+    blockerKind: row.blocker_kind,
+    blockerRef: row.blocker_ref,
+    depType: row.dep_type,
+    satisfaction: row.satisfaction === 'success' ? 'success' : 'settled',
+    createdBy: row.created_by ?? null,
+  };
+}
+
+/**
+ * Repoint dependency refs inside a caller-owned canonicalization transaction.
+ *
+ * Admission merges must update work-item identity, occurrence receipts and the
+ * dependency graph atomically, so they cannot use the standalone transaction
+ * opened by mutateWorkItemDependencies. This facade keeps every raw table write
+ * in the store, locks the affected rows, applies the same endpoint/graph/lifecycle
+ * admission checks, and returns the before/after rows needed for reversal.
+ */
+export async function repointWorkItemDependencyRefsInTransaction(
+  tx: Sql,
+  input: {
+    workspaceId: string;
+    itemWorkspaceId?: string;
+    rewrites: readonly { from: string; to: string }[];
+  },
+): Promise<WorkItemDependencyRefRewriteReceipt[]> {
+  const startedAt = performance.now();
+  const rewriteByRef = new Map(input.rewrites.map((rewrite) => [rewrite.from, rewrite.to]));
+  const rows = await tx<RepointDependencyRow[]>`
+    SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
+      FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${input.workspaceId}
+       AND dep_type = 'blocks'
+       AND (blocked_ref = ANY(${[...rewriteByRef.keys()]}::text[])
+         OR blocker_ref = ANY(${[...rewriteByRef.keys()]}::text[]))
+     ORDER BY id
+     FOR UPDATE`;
+  if (rows.length === 0) return [];
+
+  const current = await loadStoredDependencyEdges(tx, input.workspaceId);
+  const candidateByKey = new Map(current.map((edge) => [storedEdgeKey(edge), edge]));
+  const lockMutations: WorkItemDependencyMutation[] = [];
+  for (const row of rows) {
+    const before: StoredDependencyEdge = {
+      blocked: { kind: row.blocked_kind, ref: row.blocked_ref },
+      blocker: { kind: row.blocker_kind, ref: row.blocker_ref },
+      satisfaction: row.satisfaction === 'success' ? 'success' : 'settled',
+      createdBy: row.created_by,
+    };
+    candidateByKey.delete(storedEdgeKey(before));
+    lockMutations.push({ op: 'remove', blocked: before.blocked, blocker: before.blocker });
+    const blocked = { ...before.blocked, ref: rewriteByRef.get(before.blocked.ref) ?? before.blocked.ref };
+    const blocker = { ...before.blocker, ref: rewriteByRef.get(before.blocker.ref) ?? before.blocker.ref };
+    if (dependencyIdentityKey(blocked) === dependencyIdentityKey(blocker)) continue;
+    assertDepEndpointRefForm(blocked, 'blocked');
+    assertDepEndpointRefForm(blocker, 'blocker');
+    const targetPrior = candidateByKey.get(storedEdgeKey({ blocked, blocker }));
+    const after: StoredDependencyEdge = {
+      blocked,
+      blocker,
+      satisfaction:
+        targetPrior?.satisfaction === 'success' || before.satisfaction === 'success' ? 'success' : 'settled',
+      createdBy: targetPrior?.createdBy ?? before.createdBy,
+    };
+    candidateByKey.set(storedEdgeKey(after), after);
+    lockMutations.push({
+      op: 'add',
+      blocked,
+      blocker,
+      satisfaction: after.satisfaction,
+      createdBy: after.createdBy ?? undefined,
+    });
+  }
+
+  const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
+  await lockDependencyMutationEndpoints(tx, itemWorkspaceId, lockMutations);
+  const candidate = sortedStoredEdges(candidateByKey.values());
+  const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
+    ...current,
+    ...candidate,
+  ]);
+  const beforeAnalysis = analyseStoredEdges(nodes, current);
+  const afterAnalysis = analyseStoredEdges(nodes, candidate);
+  const findings = newlyRejectedFindings(
+    beforeAnalysis,
+    afterAnalysis,
+    current,
+    candidate,
+    outOfScopeIdentityKeys,
+  );
+  const lifecycleConflicts = newlyActiveDependantConflicts(current, candidate, lifecycleRows);
+  if (lifecycleConflicts.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('active-dependant-unreconciled')!,
+      cycles: [],
+      endpointDefects: [],
+      stranded: [],
+      lifecycleConflicts,
+    });
+  }
+  if (findings.length > 0) {
+    throw new WorkItemDependencyAdmissionError(findings, beforeAnalysis, afterAnalysis, {
+      ...dependencyGraphPerformanceTelemetry({
+        operation: 'mutation',
+        durationMs: performance.now() - startedAt,
+        nodes: afterAnalysis.verdicts.length,
+        edges: candidate.length,
+      }),
+      event: 'dependency-mutation-rejected',
+      policyCodes: findings.map((finding) => finding.policy.code),
+    });
+  }
+
+  const receipts: WorkItemDependencyRefRewriteReceipt[] = [];
+  for (const dependency of rows) {
+    const blockedRef = rewriteByRef.get(dependency.blocked_ref) ?? dependency.blocked_ref;
+    const blockerRef = rewriteByRef.get(dependency.blocker_ref) ?? dependency.blocker_ref;
+    const before = repointDependencyReceipt(dependency);
+    if (dependency.blocked_kind === dependency.blocker_kind && blockedRef === blockerRef) {
+      await tx`DELETE FROM harness_shared.work_item_deps WHERE id = ${dependency.id}`;
+      receipts.push({ before, after: null, targetPrior: null, disposition: 'removed-self-edge' });
+      continue;
+    }
+    const [targetPrior] = await tx<RepointDependencyRow[]>`
+      SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
+        FROM harness_shared.work_item_deps
+       WHERE workspace_id = ${input.workspaceId}
+         AND blocked_kind = ${dependency.blocked_kind}
+         AND blocked_ref = ${blockedRef}
+         AND blocker_kind = ${dependency.blocker_kind}
+         AND blocker_ref = ${blockerRef}
+         AND dep_type = ${dependency.dep_type}
+         AND id <> ${dependency.id}
+       LIMIT 1`;
+    const [after] = await tx<RepointDependencyRow[]>`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES (${input.workspaceId}, ${dependency.blocked_kind}, ${blockedRef},
+              ${dependency.blocker_kind}, ${blockerRef}, ${dependency.dep_type},
+              ${dependency.satisfaction === 'success' ? 'success' : 'settled'}, ${dependency.created_by})
+      ON CONFLICT (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      DO UPDATE SET satisfaction = CASE
+        WHEN harness_shared.work_item_deps.satisfaction = 'success' OR EXCLUDED.satisfaction = 'success'
+          THEN 'success'
+        ELSE 'settled'
+      END
+      RETURNING id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by`;
+    if (!after) throw new Error(`dependency repoint failed for ${String(dependency.id)}`);
+    await tx`DELETE FROM harness_shared.work_item_deps WHERE id = ${dependency.id}`;
+    receipts.push({
+      before,
+      after: repointDependencyReceipt(after),
+      targetPrior: targetPrior ? repointDependencyReceipt(targetPrior) : null,
+      disposition: targetPrior ? 'merged-with-existing-edge' : 'repointed-edge',
+    });
+  }
+  return receipts;
+}
+
+export interface StoredWorkItemDependencyRow {
+  id: string | number;
+  blocked_kind: string;
+  blocked_ref: string;
+  blocker_kind: string;
+  blocker_ref: string;
+  dep_type: string;
+  satisfaction: string | null;
+  created_by: string | null;
+}
+
+/** Canonical bounded dependency-row reader for snapshot/reversal consumers. */
+export async function readWorkItemDependenciesForRefs(
+  sql: Sql,
+  input: { workspaceId: string; refs: readonly string[] },
+): Promise<StoredWorkItemDependencyRow[]> {
+  const refs = [...new Set(input.refs.filter(Boolean))].sort();
+  if (refs.length === 0) return [];
+  return sql<StoredWorkItemDependencyRow[]>`
+    SELECT d.id, d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref,
+           d.dep_type, d.satisfaction, d.created_by
+      FROM harness_shared.work_item_deps d
+     WHERE d.workspace_id = ${input.workspaceId}
+       AND d.dep_type = 'blocks'
+       AND (d.blocked_ref = ANY(${refs}::text[]) OR d.blocker_ref = ANY(${refs}::text[]))
+     ORDER BY d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref`;
+}
+
+/**
+ * Shared active-blocked-ref projection for workspace readiness summaries.
+ * Keeping both endpoint-family legs here prevents an owner-facing projection
+ * from drifting away from the dependency store's canonical blocking semantics.
+ */
+export function activeWorkItemDependencyRefsSql(
+  sql: Sql,
+  input: {
+    itemWorkspaceId: string;
+    successfulStates: readonly string[];
+    terminalStates: readonly string[];
+    edgeWorkspaceId?: string;
+  },
+) {
+  const edgeWorkspaceId = input.edgeWorkspaceId ?? DEFAULT_COORD_WORKSPACE;
+  return sql`
+    SELECT d.blocked_ref
+      FROM harness_shared.work_item_deps d
+      JOIN harness_shared.work_items blocker
+        ON position('#' in d.blocker_ref) = 0
+       AND blocker.workspace_id = ${input.itemWorkspaceId}
+       AND blocker.feature_id = d.blocker_ref
+     WHERE d.workspace_id = ${edgeWorkspaceId}
+       AND d.dep_type = 'blocks'
+       AND (
+         (d.satisfaction = 'success' AND blocker.status <> ALL(${input.successfulStates}::text[]))
+         OR (
+           d.satisfaction IS DISTINCT FROM 'success'
+           AND blocker.status <> ALL(${input.terminalStates}::text[])
+         )
+       )
+    UNION
+    SELECT d.blocked_ref
+      FROM harness_shared.work_item_deps d
+      JOIN harness_shared.work_items blocker
+        ON position('#' in d.blocker_ref) > 0
+       AND blocker.workspace_id = ${input.itemWorkspaceId}
+       AND blocker.harness_slug = split_part(d.blocker_ref, '#', 1)
+       AND blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)
+     WHERE d.workspace_id = ${edgeWorkspaceId}
+       AND d.dep_type = 'blocks'
+       AND (
+         (d.satisfaction = 'success' AND blocker.status <> ALL(${input.successfulStates}::text[]))
+         OR (
+           d.satisfaction IS DISTINCT FROM 'success'
+           AND blocker.status <> ALL(${input.terminalStates}::text[])
+         )
+       )`;
+}
+
 /** The issue-family endpoint kind, the counterpart of FEATURE_KIND for this table. */
 const ISSUE_ENDPOINT_KIND = 'issue';
 

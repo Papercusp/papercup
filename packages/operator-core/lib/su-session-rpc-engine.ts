@@ -105,7 +105,9 @@ export function startSuRpcEngine(
       agentHome, ompThreadId: '', exactResumeSupported: false, missingReason: 'OMP is initializing' };
     args = [...suLaunchArgs('omp', { promptFile: boot.promptFile, coordExtPath: boot.coordExtPath,
       injectHookPath: resolveOmpInjectHookPath('omp'), allowNativeLsp: env.PAPERCUSP_OMP_NATIVE_LSP === '1' }).args,
-      ...modelArgsFor('omp', selectedModel), '--mode', 'rpc'];
+      // rpc-ui keeps structured stdio and installs OMP's native question
+      // callbacks. Plain rpc deliberately omits that interactive capability.
+      ...modelArgsFor('omp', selectedModel), '--mode', 'rpc-ui'];
     if (native.backend === 'omp' && native.ompThreadId) args.push('--resume', native.ompThreadId);
   }
   if (!options.peerFactory) applyGithubTokenEnv(env);

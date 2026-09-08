@@ -287,6 +287,61 @@ describe('detectScopeOverreach — the advisory lint', () => {
     expect(detectScopeOverreach(narrowing)).toEqual([]);
   });
 
+  // The lint's advisory tells a writer to narrow an over-broad claim. When it
+  // masked only `says? nothing about`, the narrowed row was flagged AGAIN on the
+  // disclaimer itself, which trains the writer to ignore every flag. These are
+  // the verbs the corpus actually carries in front of `nothing about` (measured
+  // 2026-09-08: 29/29 occurrences scope-limiting, zero breadth assertions), and
+  // they are here so the fix is not silently narrowed back to one verb.
+  it('does NOT flag a scope disclaimer written with any verb before "nothing about"', () => {
+    const disclaimed = [
+      'It observes nothing about other peers, nothing about plan decisions.',
+      'Grep the BUNDLE — the source proves nothing about what runs.',
+      'I verified nothing about the suite itself.',
+      'Their SPEND ruling stands; my finding changes nothing about it.',
+      'It forbids nothing about score floors.',
+      'The default path is byte-for-byte historical, so nothing about the live deploy changes.',
+    ].map((claim) => ({
+      claim,
+      recheck: "coord:inbox { from:'su-8b9d39ca', limit:6 }",
+      verified: 'read at 07:35Z',
+    }));
+
+    expect(detectScopeOverreach(disclaimed)).toEqual([]);
+  });
+
+  // Calibration control, from the corpus: this is the SAME disclaimer plus an
+  // independent second quantifier ("produced no test evidence"). The mask must
+  // blank only the bigram and leave the neighbouring `no` visible — if this
+  // stops flagging, the mask is swallowing whole clauses and the clean cases
+  // above would pass for the wrong reason.
+  it('leaves a second quantifier visible when a claim also carries a "nothing about" disclaimer', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'I verified nothing about the suite itself and produced no test evidence.',
+          recheck: "coord:inbox { from:'su-8b9d39ca', limit:6 }",
+          verified: 'read at 07:35Z',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'no' }]);
+  });
+
+  // Second calibration control: the mask must narrow the BIGRAM only. A bare
+  // `nothing` is the common breadth shape, so if this stops flagging, the
+  // disclaimer mask (or QUANTIFIER_RE) has been loosened too far.
+  it('still flags a bare "nothing" breadth claim that is not followed by "about"', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'Nothing has changed in the repair queue since the freeze.',
+          recheck: "coord:inbox { from:'su-8b9d39ca', limit:6 }",
+          verified: 'read at 07:35Z',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'Nothing' }]);
+  });
+
   it('still flags a broad assertion that shares a row with a scope disclaimer', () => {
     expect(
       detectScopeOverreach([

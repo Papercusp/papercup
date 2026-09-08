@@ -14,6 +14,7 @@
  */
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { z } from 'zod';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   DesignGateUnavailableError,
@@ -76,7 +77,20 @@ export interface DesignEvidenceGateDeps {
   readonly evaluate: (featureId: string) => Promise<FeatureDesignGateResult>;
   readonly isEnabled?: () => Promise<boolean>;
   readonly isEnforcing?: () => Promise<boolean>;
+  /** Persist on the work item's existing payload when an approved design is a deliverable. */
+  readonly requiredReferences?: unknown;
 }
+
+const requiredReferencesSchema = z
+  .array(
+    z
+      .object({
+        featureId: z.string().trim().min(1),
+        referenceId: z.string().trim().min(1),
+      })
+      .strict(),
+  )
+  .max(32);
 
 async function flagOrFalse(read: () => Promise<boolean>): Promise<boolean> {
   try {
@@ -92,36 +106,57 @@ async function flagOrFalse(read: () => Promise<boolean>): Promise<boolean> {
 /**
  * Evaluate the design-evidence obligation for a work-item being closed.
  *
- * Candidate features are tried in order and the FIRST applicable one decides.
- * A feature with no ratified reference contributes nothing rather than
- * short-circuiting to "not applicable" — otherwise a work-item whose plan slug
- * happens to carry no references would exempt itself from an obligation
- * genuinely recorded under its own id.
+ * Every candidate contributes its obligations. A passing plan reference or an
+ * advisory comparison must not hide a failing item reference. Explicit reference
+ * requirements also prevent a missing ratification from becoming "not applicable".
  */
 export async function designEvidenceCompletionGate(
   candidates: readonly string[],
   deps: DesignEvidenceGateDeps,
 ): Promise<DesignEvidenceGateOutcome> {
   const enabled = await flagOrFalse(
-    deps.isEnabled ??
-      (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE, activeWorkspaceId()) as Promise<boolean>),
+    deps.isEnabled ?? (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE, activeWorkspaceId()) as Promise<boolean>),
   );
-  if (!enabled || candidates.length === 0) return { status: 'not-applicable' };
+  if (!enabled) return { status: 'not-applicable' };
 
   const enforced = await flagOrFalse(
-    deps.isEnforcing ??
-      (() =>
-        getFlag(FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING, activeWorkspaceId()) as Promise<boolean>),
+    deps.isEnforcing ?? (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING, activeWorkspaceId()) as Promise<boolean>),
   );
 
-  for (const featureId of candidates) {
+  const declared = requiredReferencesSchema.safeParse(deps.requiredReferences ?? []);
+  if (!declared.success) {
+    return {
+      status: 'unavailable',
+      enforced,
+      report:
+        'design-evidence gate: payload.designReferences must be an array of { featureId, referenceId } obligations; no design check was skipped.',
+    };
+  }
+  const featureIds = [...new Set([...candidates, ...declared.data.map((ref) => ref.featureId)])];
+  const reports: string[] = [];
+  const failures: Array<{ featureId: string; referenceIds: string[]; enforced: boolean }> = [];
+  const unavailable: string[] = [];
+  for (const featureId of featureIds) {
     try {
       const result = await deps.evaluate(featureId);
-
+      const missing = declared.data.filter(
+        (ref) =>
+          ref.featureId === featureId &&
+          !result.references.some(
+            (reference) => reference.referenceId === ref.referenceId && reference.verdict.applicable,
+          ),
+      );
+      if (missing.length) {
+        const referenceIds = missing.map((ref) => ref.referenceId);
+        failures.push({ featureId, referenceIds, enforced });
+        reports.push(
+          `design '${featureId}': required reference(s) ${referenceIds.join(', ')} are not actively ratified. Register the approved image with design-phase.ratify_reference; absence is not a waiver.`,
+        );
+      }
       if (!result.applicable) continue;
-
+      reports.push(`design '${featureId}': ${renderFeatureDesignGate(result) ?? ''}`);
       if (result.satisfied) {
-        return { status: 'satisfied', report: renderFeatureDesignGate(result) ?? '' };
+        continue;
       }
       // P-011/D-023: the flag says enforcement is ON; it does not say this
       // particular comparison was measured on a machine the threshold speaks for.
@@ -133,34 +168,37 @@ export async function designEvidenceCompletionGate(
       //
       // The refusal is driven by that subset rather than by `blocking` so an
       // unenforceable reference can never suppress a calibrated failure beside it.
-      return {
-        status: 'unsatisfied',
+      failures.push({
         enforced: enforced && result.enforceableBlocking.length > 0,
         featureId,
-        blockingReferenceIds: result.blocking.map((b) => b.referenceId),
-        report: renderFeatureDesignGate(result) ?? '',
-      };
+        referenceIds: result.blocking.map((b) => b.referenceId),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof DesignGateUnavailableError) {
-        return {
-          status: 'unavailable',
-          enforced,
-          report: `design-evidence gate could not establish an obligation for '${featureId}': ${message}`,
-        };
+        unavailable.push(`design-evidence gate could not establish an obligation for '${featureId}': ${message}`);
+        continue;
       }
       // Keep D-006's rollout contract and the enforcement flip on one policy
       // value. The completion caller must not guess here: this adapter has
       // already read the real flag, so an unexpected evaluator/renderer fault
       // reports while rollout is report-only and refuses once enforcement is on.
-      return {
-        status: 'unavailable',
-        enforced,
-        report: `design-evidence gate failed unexpectedly for '${featureId}': ${message}`,
-      };
+      unavailable.push(`design-evidence gate failed unexpectedly for '${featureId}': ${message}`);
     }
   }
-
+  const report = [...reports, ...unavailable].join('\n\n');
+  // A known enforced failure remains a failure even if another lookup is unavailable.
+  if (failures.some((failure) => failure.enforced) || (failures.length && !unavailable.length)) {
+    return {
+      status: 'unsatisfied',
+      enforced: failures.some((failure) => failure.enforced),
+      featureId: failures[0].featureId,
+      blockingReferenceIds: [...new Set(failures.flatMap((failure) => failure.referenceIds))],
+      report,
+    };
+  }
+  if (unavailable.length) return { status: 'unavailable', enforced, report };
+  if (reports.length) return { status: 'satisfied', report };
   return { status: 'not-applicable' };
 }
 

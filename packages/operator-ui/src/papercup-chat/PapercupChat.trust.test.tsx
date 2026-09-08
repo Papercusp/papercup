@@ -327,7 +327,7 @@ describe('PapercupChat — the view over a controller', () => {
     expect(screen.getByText(`${kind} question`)).toBeTruthy();
   });
 
-  it('renders an open persisted ask-choice card and routes its answer with the owning turn identity', () => {
+  it.each(['owner', 'public'] as const)('restores a persisted card and routes its answer with the owning turn identity on %s', (hostTrust) => {
     const answerPersistedCard = vi.fn(async () => {});
     const turn: ChatTurn = {
       id: 'persisted-card-turn',
@@ -338,17 +338,29 @@ describe('PapercupChat — the view over a controller', () => {
       tools: [
         {
           name: 'chat:ask_choice',
-          input: { question: 'Persisted question?', options: [{ id: 'a', label: 'Persisted A' }] },
+          input: { question: 'Persisted question?', options: JSON.stringify([{ id: 'a', label: 'Persisted A' }]) },
         },
       ],
     };
-    render(<PapercupChat chat={controller({ turns: [turn], answerPersistedCard })} hostTrust="owner" />);
+    render(<PapercupChat chat={controller({ turns: [turn], answerPersistedCard })} hostTrust={hostTrust} />);
     screen.getByText('Persisted A').click();
     expect(answerPersistedCard).toHaveBeenCalledWith({
       turn,
       toolIndex: 0,
       picks: [{ option_id: 'a', label: 'Persisted A' }],
     });
+  });
+
+  it('keeps a saved public card inert when the host supplies no answer capability', () => {
+    const turn: ChatTurn = {
+      id: 'read-only-card', seq: 42, role: 'assistant', text: '', createdAt: Date.now(),
+      tools: [{ name: 'chat:ask_choice', input: {
+        question: 'Read-only question?', options: [{ id: 'a', label: 'Unavailable choice' }],
+      } }],
+    };
+    render(<PapercupChat chat={controller({ turns: [turn], answerPersistedCard: null })} hostTrust="public" />);
+    expect(screen.getByText('Read-only question?')).toBeTruthy();
+    expect(screen.queryByText('Unavailable choice')).toBeNull();
   });
 
   it('renders a persisted declined card as settled history, not an answerable duplicate', () => {

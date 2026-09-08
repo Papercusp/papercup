@@ -26,8 +26,7 @@ const attachCompletionEvidenceToSettledItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
-  attachCompletionEvidenceToSettledItem: (...a: unknown[]) =>
-    attachCompletionEvidenceToSettledItem(...a),
+  attachCompletionEvidenceToSettledItem: (...a: unknown[]) => attachCompletionEvidenceToSettledItem(...a),
   setWorkItemClaimHold: (...a: unknown[]) => setWorkItemClaimHold(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
   mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
@@ -86,12 +85,7 @@ import {
 import { FLAGS } from '@papercusp/flags';
 import type { CaptureEnvironment, ThresholdPolicy } from '../../design-compare/contract';
 import { createInMemoryReferenceStore } from '../../design-compare/reference-store';
-import {
-  type VerbCaller,
-  type VerbDeps,
-  compareRenderVerb,
-  ratifyReferenceVerb,
-} from '../../design-compare/verbs';
+import { type VerbCaller, type VerbDeps, compareRenderVerb, ratifyReferenceVerb } from '../../design-compare/verbs';
 import { calibrationRenderHost } from '../../design-compare/enforceability';
 import complete from './complete';
 
@@ -207,10 +201,7 @@ describe('designFeatureCandidates', () => {
    * from a gate that always passes.
    */
   it('checks the plan slug as well as the work-item id', () => {
-    expect(designFeatureCandidates({ id: 'WI-1', sourcePlanSlug: 'my-plan' })).toEqual([
-      'my-plan',
-      'WI-1',
-    ]);
+    expect(designFeatureCandidates({ id: 'WI-1', sourcePlanSlug: 'my-plan' })).toEqual(['my-plan', 'WI-1']);
   });
 
   it('de-duplicates and tolerates a missing plan slug', () => {
@@ -257,6 +248,80 @@ describe('applicability', () => {
     });
     expect(seen).toEqual(['plan', 'WI-1']);
     expect(outcome.status).toBe('unsatisfied');
+  });
+
+  it('does not let a passing plan reference hide a failing item reference', async () => {
+    const evaluate = vi.fn(async (id: string) => (id === 'plan' ? SATISFIED : UNSATISFIED));
+    const outcome = await designEvidenceCompletionGate(['plan', 'WI-1'], { evaluate, isEnabled: on, isEnforcing: on });
+    expect(evaluate.mock.calls.map(([id]) => id)).toEqual(['plan', 'WI-1']);
+    expect(outcome).toMatchObject({ status: 'unsatisfied', enforced: true, featureId: 'WI-1' });
+    expect('report' in outcome && outcome.report).toContain("design 'WI-1'");
+  });
+
+  it('does not let an advisory plan failure hide an enforceable item failure', async () => {
+    const outcome = await designEvidenceCompletionGate(['plan', 'WI-1'], {
+      evaluate: async (id) => (id === 'plan' ? UNSATISFIED_UNENFORCEABLE : UNSATISFIED),
+      isEnabled: on,
+      isEnforcing: on,
+    });
+    expect(outcome).toMatchObject({ status: 'unsatisfied', enforced: true });
+    expect('report' in outcome && outcome.report).toContain("design 'plan'");
+    expect('report' in outcome && outcome.report).toContain("design 'WI-1'");
+  });
+
+  it('checks a declared approved reference even outside the item and plan candidates', async () => {
+    const evaluate = vi.fn(async () => NOT_APPLICABLE);
+    const outcome = await designEvidenceCompletionGate(['WI-1'], {
+      evaluate,
+      isEnabled: on,
+      isEnforcing: on,
+      requiredReferences: [{ featureId: 'original-design', referenceId: 'option-b' }],
+    });
+    expect(evaluate.mock.calls).toHaveLength(2);
+    expect(outcome).toMatchObject({ status: 'unsatisfied', enforced: true, blockingReferenceIds: ['option-b'] });
+    expect('report' in outcome && outcome.report).toContain('not actively ratified');
+  });
+
+  it('does not satisfy an explicit reference with a different passing reference', async () => {
+    const outcome = await designEvidenceCompletionGate(['plan'], {
+      evaluate: async () => SATISFIED,
+      isEnabled: on,
+      isEnforcing: on,
+      requiredReferences: [{ featureId: 'plan', referenceId: 'option-b' }],
+    });
+    expect(outcome).toMatchObject({ status: 'unsatisfied', enforced: true, blockingReferenceIds: ['option-b'] });
+  });
+
+  it('accepts a declared reference only when that exact active reference passes', async () => {
+    const outcome = await designEvidenceCompletionGate(['plan'], {
+      evaluate: async () => SATISFIED,
+      isEnabled: on,
+      isEnforcing: on,
+      requiredReferences: [{ featureId: 'plan', referenceId: 'ref-a' }],
+    });
+    expect(outcome.status).toBe('satisfied');
+  });
+
+  it('refuses malformed design obligations instead of dropping them', async () => {
+    const outcome = await designEvidenceCompletionGate(['plan'], {
+      evaluate: async () => NOT_APPLICABLE,
+      isEnabled: on,
+      isEnforcing: on,
+      requiredReferences: [{ featureId: 'plan' }],
+    });
+    expect(outcome).toMatchObject({ status: 'unavailable', enforced: true });
+  });
+
+  it('does not let a passing reference hide an unavailable later obligation', async () => {
+    const outcome = await designEvidenceCompletionGate(['plan', 'WI-1'], {
+      evaluate: async (id) => {
+        if (id === 'plan') return SATISFIED;
+        throw new Error('store offline');
+      },
+      isEnabled: on,
+      isEnforcing: on,
+    });
+    expect(outcome).toMatchObject({ status: 'unavailable', enforced: true });
   });
 });
 
@@ -561,11 +626,14 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
       assumptions: 'none',
       completion: { summary: 'implemented the ratified surface', tests: '5 green' },
     });
-    const res = (await complete.handler(args as never, {
-      uiClientId: 'su-tester',
-      isSuperuser: true,
-      workspaceId: 'default',
-    } as never)) as { data: { results: { ok: boolean; id: string; error?: string }[] } };
+    const res = (await complete.handler(
+      args as never,
+      {
+        uiClientId: 'su-tester',
+        isSuperuser: true,
+        workspaceId: 'default',
+      } as never,
+    )) as { data: { results: { ok: boolean; id: string; error?: string }[] } };
     return res.data.results[0]!;
   }
 
@@ -608,8 +676,8 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     // Only the two design-evidence flags are on. Every OTHER flag stays off, so
     // an unrelated gate cannot be the thing refusing and be mistaken for this one.
     getFlag.mockReset();
-    getFlag.mockImplementation(async (flag: string) =>
-      flag === FLAGS.DESIGN_EVIDENCE_GATE || flag === FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING,
+    getFlag.mockImplementation(
+      async (flag: string) => flag === FLAGS.DESIGN_EVIDENCE_GATE || flag === FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING,
     );
     designCompareDepsFor.mockReset();
   });

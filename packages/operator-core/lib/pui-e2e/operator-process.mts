@@ -5,10 +5,17 @@
 import { createAdaptorServer } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { app } from '../../../../apps/operator/bin/host-app';
-import { getRegisteredSuSessionHost, type SuSessionHost } from '../su-session-host';
-import { getAdvSession } from '../adv-sessions';
-import { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } from '@papercusp/chat-protocol';
+import { createRequire } from 'node:module';
+import type { SuSessionHost } from '../su-session-host';
+
+// These workspace TypeScript entrypoints are CommonJS under tsx. Resolve
+// their exports with Node's CJS loader rather than relying on named-export
+// inference across an ESM child-process entrypoint.
+const require = createRequire(import.meta.url);
+const { app } = require('../../../../apps/operator/bin/host-app') as typeof import('../../../../apps/operator/bin/host-app');
+const { getRegisteredSuSessionHost } = require('../su-session-host') as typeof import('../su-session-host');
+const { getAdvSession } = require('../adv-sessions') as typeof import('../adv-sessions');
+const { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } = require('@papercusp/chat-protocol') as typeof import('@papercusp/chat-protocol');
 
 if (!process.send || !process.env.PUI_OPERATOR_FIXTURE_WORKSPACE
   || process.env.PAPERCUSP_WORKSPACE_ID !== process.env.PUI_OPERATOR_FIXTURE_WORKSPACE
@@ -80,11 +87,11 @@ async function stop(): Promise<void> {
     }
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    const { drainDetached } = await import('../detached-imports');
+    const { drainDetached } = require('../detached-imports') as typeof import('../detached-imports');
     await drainDetached();
-    const { stopInvalidationListener } = await import('../sync-sse');
+    const { stopInvalidationListener } = require('../sync-sse') as typeof import('../sync-sse');
     await stopInvalidationListener();
-    const dbOrg = await import('@papercusp/db-org');
+    const dbOrg = require('@papercusp/db-org') as typeof import('@papercusp/db-org');
     await dbOrg._resetForTests();
     send({ type: 'stopped', pid: process.pid, instanceId });
     process.exit(0);

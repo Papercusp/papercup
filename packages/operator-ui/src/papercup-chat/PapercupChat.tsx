@@ -449,7 +449,9 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
     }
     const args = askChoiceArgsFromToolCall(call);
     if (!args) return;
-    const canAnswer = isOwner && !call.answered && !!answerPersistedCard;
+    // Public hosts supply an ownership-checked adapter too. Markdown trust
+    // must not disable that capability when replaying the same saved card.
+    const canAnswer = !call.answered && !!answerPersistedCard;
     cards.push(
       <div key={`ask-${ti}`} className="pc-chat__card">
         <AskChoiceCard
