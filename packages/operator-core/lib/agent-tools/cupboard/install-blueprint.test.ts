@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import tool from './install-blueprint';
 import { gateInstallDoor } from '../../cupboard/install-door-gate-io';
 import { installBlueprintFromCupboard } from '../../cupboard/install-blueprint-io';
+import type { BlueprintReleaseRecord } from '../../cupboard/blueprint-release';
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 vi.mock('../../cupboard/install-door-gate-io', () => ({ gateInstallDoor: vi.fn() }));
@@ -9,6 +10,18 @@ vi.mock('../../cupboard/install-blueprint-io', () => ({ installBlueprintFromCupb
 
 const mockGate = vi.mocked(gateInstallDoor);
 const mockInstall = vi.mocked(installBlueprintFromCupboard);
+
+const releaseRecord = (version: string): BlueprintReleaseRecord => ({
+  schemaVersion: 1,
+  id: 'identity',
+  version,
+  contentHash: 'a'.repeat(64),
+  artifactContentHash: 'b'.repeat(64),
+  source: 'repo',
+  installedAtMs: 0,
+  slots: ['domain'],
+  pins: [],
+});
 
 async function call(args: Record<string, unknown>) {
   const result = await (
@@ -30,12 +43,12 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
       ok: true,
       result: {
         operation: 'rollback',
-        record: { id: 'identity', version: '1.0.0' },
+        record: releaseRecord('1.0.0'),
         installedTo: '/blueprints/identity',
-        diff: { promptText: [], burnKnobs: [] },
+        diff: { fromContentHash: null, toContentHash: 'a'.repeat(64), promptText: [], burnKnobs: [] },
         activationRequired: true,
       },
-    } as never);
+    });
 
     const result = await call({ operation: 'rollback', blueprintId: 'identity', targetVersion: '1.0.0' });
 
@@ -62,15 +75,15 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
       ok: true,
       result: {
         operation: 'uninstall',
-        removed: { id: 'identity', version: '2.0.0' },
+        removed: releaseRecord('2.0.0'),
         retained: [
-          { id: 'identity', version: '1.0.0' },
-          { id: 'identity', version: '2.0.0' },
+          releaseRecord('1.0.0'),
+          releaseRecord('2.0.0'),
         ],
-        diff: { promptText: [], burnKnobs: [] },
+        diff: { fromContentHash: 'a'.repeat(64), toContentHash: null, promptText: [], burnKnobs: [] },
         activationRequired: true,
       },
-    } as never);
+    });
 
     const result = await call({ operation: 'uninstall', blueprintId: 'identity' });
 
@@ -88,6 +101,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         ok: true,
         id: 'identity',
         version: '2.0.0',
+        description: null,
         abstract: true,
         source: 'repo',
         installedTo: '/blueprints/identity',
@@ -95,11 +109,20 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         depCheck: null,
         operation: 'update',
         release: { version: '2.0.0', contentHash: `sha256:${'a'.repeat(64)}`, packageContentHash: 'b'.repeat(64) },
-        diff: { promptText: [{ path: 'identity/prompts/p.md', patch: '-old\n+new' }], burnKnobs: [] },
+        diff: {
+          fromContentHash: null,
+          toContentHash: 'a'.repeat(64),
+          promptText: [{ path: 'identity/prompts/p.md', beforeHash: null, afterHash: 'a'.repeat(64), patch: '-old\n+new' }],
+          burnKnobs: [],
+        },
         activationPreflight: { ok: true, candidate: { id: 'identity', slots: ['domain'] }, conflicts: [] },
         capabilityGrants: {
           ok: true,
-          requirements: [{ classRef: 'crm.email@1.0.0', state: 'choosable' }],
+          requirements: [{ classRef: 'crm.email@1.0.0', optional: false, state: 'choosable' }],
+          satisfied: [],
+          missingRequired: [],
+          requiresChoice: [],
+          missingOptional: [],
           selected: [{
             classRef: 'crm.email@1.0.0',
             providerPackage: 'acme-crm',
@@ -111,14 +134,20 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         },
         capabilityProviderReview: {
           ok: true,
-          roots: [{ providerPackage: 'acme-crm', providerVersion: '2.0.0', status: 'installed' }],
+          roots: [{
+            providerPackage: 'acme-crm', providerVersion: '2.0.0', status: 'installed',
+            classRefs: ['crm.email@1.0.0'], kind: 'plugin', listingId: null,
+          }],
           units: [],
+          stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+          advisory: [],
+          rounds: 0,
         },
         capabilityProviderInstalls: null,
         pluginInstalls: [],
         blueprintInstalls: [],
       },
-    } as never);
+    });
 
     const result = await call({
       operation: 'update',
