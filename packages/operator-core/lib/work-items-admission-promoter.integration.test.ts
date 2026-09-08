@@ -185,6 +185,18 @@ beforeEach(async () => {
     harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
 });
 
+it('renews request authorization after model work and before any admission mutation', async () => {
+  await seedItem({ id: 'WI-auth-target' });
+  await expect(runWorkItemAdmissionPromoter({
+    workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, runId: 'recovery-revoked',
+    targetItemIds: ['WI-auth-target'],
+    llmCall: vi.fn(async () => { throw new Error('no neighbour needs a model'); }),
+    beforePersist: async () => { throw new Error('caller authorization revoked'); },
+  })).rejects.toThrow('caller authorization revoked');
+  const [row] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-auth-target'`;
+  expect(row!.admission).toBe('pending');
+});
+
 async function seedItem(input: {
   id: string;
   title?: string;

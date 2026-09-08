@@ -63,6 +63,40 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
     }
   }
   const { llmCall } = await import('../../llm-testing/llm-client');
+  const { authorizeAdmissionRecovery, runAdmissionRecoveries } = await import('../../work-item-admission-recovery');
+  const { assignAndWakeActionableWorkItems } = await import('../../agent-tools/coordination/actionable-work-item-dispatch');
+  const recoveryRuns: PromoterRunResult[] = [];
+  const recovered = await runAdmissionRecoveries({ workspaceId: ctx.workspaceId, harnessSlug: ctx.installSlug }, {
+    authorize: authorizeAdmissionRecovery,
+    dispatch: assignAndWakeActionableWorkItems,
+    screen: async (scope, beforePersist) => {
+      const result = await runWorkItemAdmissionPromoter({
+        ...options,
+        runId: `${options.runId}:recovery:${scope.workItemId}`,
+        targetItemIds: [scope.workItemId],
+        beforePersist,
+        llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
+      });
+      recoveryRuns.push(result);
+      return result;
+    },
+  });
+  // A request-accelerated fire must not also accelerate writes to unrelated items.
+  // The routine engine has already retained its ordinary recurring cadence.
+  if (recovered > 0) return recoveryRuns.reduce<PromoterRunResult>((total, run) => ({
+    ...total,
+    batchSize: total.batchSize + run.batchSize, flaggedPairs: total.flaggedPairs + run.flaggedPairs,
+    promoted: total.promoted + run.promoted, merged: total.merged + run.merged, held: total.held + run.held,
+    modelCalled: total.modelCalled || run.modelCalled, tokensIn: total.tokensIn + run.tokensIn,
+    tokensOut: total.tokensOut + run.tokensOut,
+    censusBefore: recoveryRuns[0]!.censusBefore, censusAfter: run.censusAfter,
+    guardRefusals: [...(total.guardRefusals ?? []), ...(run.guardRefusals ?? [])],
+    writerCoverageGap: [...total.writerCoverageGap, ...run.writerCoverageGap],
+  }), {
+    runId: options.runId, batchSize: 0, flaggedPairs: 0, promoted: 0, merged: 0, held: 0,
+    modelCalled: false, tokensIn: 0, tokensOut: 0, censusBefore: 0, censusAfter: 0,
+    guardRefusals: [], writerCoverageGap: [],
+  });
   return runWorkItemAdmissionPromoter({
     ...options,
     llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
