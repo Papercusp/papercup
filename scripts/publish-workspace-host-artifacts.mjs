@@ -36,6 +36,12 @@ import { open, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import {
+  releaseStageInputHash,
+  releaseStageRequestIdentity,
+} from './lib/release-task-journal.ts';
+
+export { releaseStageInputHash, releaseStageRequestIdentity };
 
 const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
@@ -283,44 +289,6 @@ class ReleaseHttpError extends Error {
 
 function fail(leg, res, payload) {
   throw new ReleaseHttpError(leg, res, payload);
-}
-
-function canonicalJson(value) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('release stage identity contains a non-finite number');
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (!value || typeof value !== 'object') {
-    throw new Error('release stage identity contains a non-JSON value');
-  }
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => {
-      if (entry === undefined) throw new Error(`release stage identity field '${key}' is undefined`);
-      return `${JSON.stringify(key)}:${canonicalJson(entry)}`;
-    })
-    .join(',')}}`;
-}
-
-export function releaseStageInputHash(value) {
-  return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
-}
-
-/** Stable UUIDv4-shaped identity accepted by the workspace-host multipart API. */
-export function releaseStageRequestIdentity(operationId, stage, inputHash, attempt = 0) {
-  const hex = createHash('sha256')
-    .update(`${operationId}\u0000${stage}\u0000${inputHash}\u0000${attempt}`, 'utf8')
-    .digest('hex')
-    .slice(0, 32)
-    .split('');
-  hex[12] = '4';
-  hex[16] = ['8', '9', 'a', 'b'][Number.parseInt(hex[16], 16) % 4];
-  const raw = hex.join('');
-  return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
 }
 
 async function loadDefaultReleaseLedger() {
