@@ -1626,9 +1626,23 @@ export default defineTool({
     // text + cap each agent's `queued` work-list (head + `load` are what placement
     // reads; the full tail is reachable via a narrower { agent }/{ plan } query).
     // Internal callers + the UI read the data layer (groupByAgent) directly — unaffected.
-    let agentsOut = boundRowField(agents, 'intent', 280, 14_000);
-    agentsOut = boundListField(agentsOut, 'queued', 8);
-    const { kept: boundedAgents, truncated: agentsTruncated } = trimToByteBudget(agentsOut, 22_000);
+    //
+    // An explicit full payload is the framework's escape hatch from custom shaping.
+    // The generic payload-tier dispatcher skips its shaper and hard ceiling for that
+    // request, so this handler must not silently discard rows before the dispatcher
+    // sees them (EI-22689299009865134). A full context tier is equivalent here: it is
+    // the session-level form of the same caller-selected detail request.
+    const tierCtx = ctx as {
+      contextTier?: 'trimmed' | 'standard' | 'full';
+      payloadTierOverride?: 'trimmed' | 'standard' | 'full';
+    };
+    const explicitFullRequest =
+      tierCtx.payloadTierOverride === 'full' || tierCtx.contextTier === 'full';
+    let agentsOut = explicitFullRequest ? agents : boundRowField(agents, 'intent', 280, 14_000);
+    if (!explicitFullRequest) agentsOut = boundListField(agentsOut, 'queued', 8);
+    const { kept: boundedAgents, truncated: agentsTruncated } = explicitFullRequest
+      ? { kept: agentsOut, truncated: false }
+      : trimToByteBudget(agentsOut, 22_000);
     // Self-identification overlay: top-level `self` names the caller's own
     // ownerId, and the caller's own agent row (keyed by `agentId`) is stamped
     // `isSelf:true`, so a reader of "who's on what" can tell which agent is
