@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   codexContextConfigArgs,
   codexContextConfigToml,
@@ -1869,6 +1870,59 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(readFileSync(agentPath("sess1", "models.db"), "utf8")).toBe(
       "BINARYREGISTRY",
     );
+  });
+
+  it.each(["models.yml", "models.json"])("attributes copied %s gateway requests to the session without changing routes", (file) => {
+    const registry = {
+      providers: {
+        "papercusp-gateway": {
+          baseUrl: "http://127.0.0.1:8788",
+          apiKey: "papercusp-gateway",
+          headers: { "X-Papercusp-Owner": "su-old", "x-papercusp-account": "chosen-account", "x-papercusp-priority": "interactive" },
+          models: [{ id: "claude-sonnet-4-6", contextWindow: 123456, headers: { "x-papercusp-owner": "su-old-model", "x-custom": "keep" } }],
+        },
+        anthropic: { baseUrl: "https://api.anthropic.com", headers: { "x-custom": "direct" }, models: [{ id: "claude-opus-4-8" }] },
+      },
+    };
+    const source = file.endsWith(".json") ? JSON.stringify(registry) : "# Keep this registry comment\n" + stringifyYaml(registry);
+    writeFileSync(join(home, ".omp", "agent", file), source);
+    expect(writeOmpSessionConfigDir("attributed", { clientId: "su-current" }, home)).toBe(relDir("attributed"));
+    const copy = readFileSync(agentPath("attributed", file), "utf8");
+    const actual = file.endsWith(".json") ? JSON.parse(copy) : parseYaml(copy);
+    const expected = structuredClone(registry);
+    const headers = expected.providers["papercusp-gateway"].headers as Record<string, string>;
+    delete headers["X-Papercusp-Owner"];
+    headers["x-papercusp-owner"] = "su-current";
+    expected.providers["papercusp-gateway"].models[0].headers["x-papercusp-owner"] = "su-current";
+    expect(actual).toEqual(expected);
+    if (file.endsWith(".yml")) expect(copy).toContain("# Keep this registry comment");
+    expect(readFileSync(join(home, ".omp", "agent", file), "utf8")).toBe(source);
+  });
+
+  it("attributes legacy JSON gateway model entries and leaves direct models intact", () => {
+    const registry = { models: [
+      { provider: "papercusp-gateway", id: "claude-sonnet-4-6", headers: { "x-papercusp-account": "chosen-account" } },
+      { provider: "anthropic", id: "claude-opus-4-8" },
+    ] };
+    writeFileSync(join(home, ".omp", "agent", "models.json"), JSON.stringify(registry));
+    writeOmpSessionConfigDir("legacy", { clientId: "su-current" }, home);
+    const actual = JSON.parse(readFileSync(agentPath("legacy", "models.json"), "utf8"));
+    expect(actual.models[0]).toEqual({ ...registry.models[0], headers: {
+      "x-papercusp-account": "chosen-account", "x-papercusp-owner": "su-current",
+    } });
+    expect(actual.models[1]).toEqual(registry.models[1]);
+  });
+
+  it("attributes authoritative bootstrap YAML without replacing its chosen model or account", () => {
+    const registry = { providers: { "papercusp-gateway": {
+      baseUrl: "http://127.0.0.1:8788/v1", api: "openai-responses",
+      headers: { "x-papercusp-account": "codex-pin" }, models: [{ id: "gpt-5.6-terra" }],
+    } } };
+    writeOmpSessionConfigDir("bootstrap", { clientId: "su-current", modelsYml: stringifyYaml(registry) }, home);
+    expect(parseYaml(readFileSync(agentPath("bootstrap", "models.yml"), "utf8")))
+      .toEqual({ providers: { "papercusp-gateway": { ...registry.providers["papercusp-gateway"],
+        headers: { "x-papercusp-account": "codex-pin", "x-papercusp-owner": "su-current" },
+      } } });
   });
 
   // xai-oauth (and other modern OMP logins) live in agent.db auth_credentials —
