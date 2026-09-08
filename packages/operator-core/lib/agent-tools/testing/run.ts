@@ -188,7 +188,15 @@ export function buildDetachedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
 }): SpawnRequest {
-  const vitestArgs = opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : [];
+  // An explicit Vitest reporter replaces the reporters declared by the workspace config.
+  // Detached recovery does not need the foreground JSON report, but it MUST retain the
+  // admin ledger reporter so a green recovery still writes durable testRunIds for evidence
+  // binding. Mirror the foreground path's existence check for non-standard Papercusp roots.
+  const adminReporterPath = join(opts.root, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+  const vitestArgs = [
+    ...(existsSync(adminReporterPath) ? [`--reporter=${adminReporterPath}`] : []),
+    ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
+  ];
   const env: NodeJS.ProcessEnv = {
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
@@ -572,23 +580,19 @@ function parseProcField(text: string, field: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function procStatus(pid: number): { parentPid: number | null; rssBytes: number | null } | null {
+async function procStatus(pid: number): Promise<{ rssBytes: number | null } | null> {
   try {
-    const text = readFileSync(`/proc/${pid}/status`, 'utf8');
-    const parentRaw = parseProcField(text, 'PPid');
+    const text = await readFile(`/proc/${pid}/status`, 'utf8');
     const rssKb = parseProcField(text, 'VmHWM') ?? parseProcField(text, 'VmRSS');
-    return {
-      parentPid: parentRaw === null ? null : Math.floor(parentRaw),
-      rssBytes: rssKb === null ? null : rssKb * 1024,
-    };
+    return { rssBytes: rssKb === null ? null : rssKb * 1024 };
   } catch {
     return null;
   }
 }
 
-function procCpuMicros(pid: number): number | null {
+async function procCpuMicros(pid: number): Promise<number | null> {
   try {
-    const text = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const text = await readFile(`/proc/${pid}/stat`, 'utf8');
     const endOfCommand = text.lastIndexOf(')');
     if (endOfCommand < 0) return null;
     const fields = text
@@ -608,60 +612,70 @@ function procCpuMicros(pid: number): number | null {
   }
 }
 
-function processTreePids(rootPid: number): number[] {
-  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) return [rootPid];
-  const children = new Map<number, number[]>();
-  let entries: Dirent<string>[];
+async function procChildren(pid: number): Promise<number[]> {
   try {
-    entries = readdirSync('/proc', { withFileTypes: true, encoding: 'utf8' });
+    const text = await readFile(`/proc/${pid}/task/${pid}/children`, 'utf8');
+    return text
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number)
+      .filter((childPid) => Number.isInteger(childPid) && childPid > 0);
   } catch {
-    return [rootPid];
+    return [];
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    const pid = Number(entry.name);
-    const status = procStatus(pid);
-    if (status?.parentPid !== null && status?.parentPid !== undefined) {
-      const siblings = children.get(status.parentPid) ?? [];
-      siblings.push(pid);
-      children.set(status.parentPid, siblings);
-    }
-  }
+}
+
+async function processTreePids(rootPid: number): Promise<number[]> {
+  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) return [rootPid];
   const result = [rootPid];
   for (let index = 0; index < result.length; index += 1) {
-    const descendants = children.get(result[index]) ?? [];
+    const descendants = await procChildren(result[index]);
     for (const pid of descendants) if (!result.includes(pid)) result.push(pid);
   }
   return result;
 }
 
+async function procFileDescriptors(pid: number): Promise<number | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    return (await readdir(`/proc/${pid}/fd`)).length;
+  } catch {
+    return null;
+  }
+}
+
 /** Read a fail-soft aggregate snapshot for a child and its descendants. */
-export function readTestProcessResourceSnapshot(pid: number): TestProcessResourceSnapshot {
-  const pids = processTreePids(pid);
+export async function readTestProcessResourceSnapshot(pid: number): Promise<TestProcessResourceSnapshot> {
+  const pids = await processTreePids(pid);
   let cpuMicros = 0;
   let rssBytes = 0;
   let fileDescriptors = 0;
   let cpuMeasured = false;
   let rssMeasured = false;
   let fdMeasured = false;
-  for (const childPid of pids) {
-    const cpu = procCpuMicros(childPid);
-    if (cpu !== null) {
-      cpuMicros += cpu;
+  const snapshots = await Promise.all(
+    pids.map(async (childPid) => {
+      const [cpu, status, descriptors] = await Promise.all([
+        procCpuMicros(childPid),
+        procStatus(childPid),
+        procFileDescriptors(childPid),
+      ]);
+      return { cpu, rssBytes: status?.rssBytes ?? null, descriptors };
+    }),
+  );
+  for (const snapshot of snapshots) {
+    if (snapshot.cpu !== null) {
+      cpuMicros += snapshot.cpu;
       cpuMeasured = true;
     }
-    const status = procStatus(childPid);
-    if (status?.rssBytes !== null && status?.rssBytes !== undefined) {
-      rssBytes += status.rssBytes;
+    if (snapshot.rssBytes !== null) {
+      rssBytes += snapshot.rssBytes;
       rssMeasured = true;
     }
-    if (process.platform === 'linux') {
-      try {
-        fileDescriptors += readdirSync(`/proc/${childPid}/fd`).length;
-        fdMeasured = true;
-      } catch {
-        /* process can exit between the status and fd reads */
-      }
+    if (snapshot.descriptors !== null) {
+      fileDescriptors += snapshot.descriptors;
+      fdMeasured = true;
     }
   }
   return {
@@ -673,8 +687,16 @@ export function readTestProcessResourceSnapshot(pid: number): TestProcessResourc
 
 export interface TestProcessDemandSampler {
   attach(pid: number | null | undefined): void;
-  sample(): void;
-  stop(extra?: Partial<ResourceDemand>): ResourceDemand;
+  sample(): Promise<void>;
+  stop(extra?: Partial<ResourceDemand>): Promise<ResourceDemand>;
+}
+
+type TestProcessResourceSnapshotReader = (
+  pid: number,
+) => TestProcessResourceSnapshot | PromiseLike<TestProcessResourceSnapshot>;
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return typeof value === 'object' && value !== null && typeof (value as PromiseLike<T>).then === 'function';
 }
 
 /**
@@ -685,7 +707,7 @@ export interface TestProcessDemandSampler {
  */
 export function createTestProcessDemandSampler(
   planned: ResourceDemand,
-  readSnapshot: (pid: number) => TestProcessResourceSnapshot = readTestProcessResourceSnapshot,
+  readSnapshot: TestProcessResourceSnapshotReader = readTestProcessResourceSnapshot,
   now: () => number = Date.now,
 ): TestProcessDemandSampler {
   let pid: number | null = null;
@@ -699,15 +721,10 @@ export function createTestProcessDemandSampler(
   let lastAt: number | null = null;
   let cpuWeight: number | null = null;
   let stoppedDemand: ResourceDemand | null = null;
+  let sampling: Promise<void> | null = null;
+  let stopPromise: Promise<ResourceDemand> | null = null;
 
-  const sample = (): void => {
-    if (stopped || pid === null) return;
-    let snapshot: TestProcessResourceSnapshot;
-    try {
-      snapshot = readSnapshot(pid);
-    } catch {
-      return;
-    }
+  const applySnapshot = (snapshot: TestProcessResourceSnapshot): void => {
     const at = now();
     if (snapshot.rssBytes !== null && Number.isFinite(snapshot.rssBytes)) {
       peakRss = peakRss === null ? snapshot.rssBytes : Math.max(peakRss, snapshot.rssBytes);
@@ -730,11 +747,34 @@ export function createTestProcessDemandSampler(
     }
   };
 
+  const sample = (): Promise<void> => {
+    if (stopped || pid === null) return Promise.resolve();
+    if (sampling) return sampling;
+    const samplePid = pid;
+    let result: TestProcessResourceSnapshot | PromiseLike<TestProcessResourceSnapshot>;
+    try {
+      result = readSnapshot(samplePid);
+    } catch {
+      return Promise.resolve();
+    }
+    if (!isPromiseLike(result)) {
+      applySnapshot(result);
+      return Promise.resolve();
+    }
+    const inFlight = Promise.resolve(result).then(applySnapshot, () => undefined);
+    let tracked: Promise<void>;
+    tracked = inFlight.finally(() => {
+      if (sampling === tracked) sampling = null;
+    });
+    sampling = tracked;
+    return tracked;
+  };
+
   return {
     attach(nextPid: number | null | undefined): void {
       if (stopped || !Number.isInteger(nextPid) || (nextPid as number) <= 0) return;
       pid = nextPid as number;
-      sample();
+      void sample();
       // One sampler is armed per governed test process, so the timer is
       // `instanced` (each arm coexists and the inventory aggregates them into
       // one row). It is `must-sample`: procfs has no push source for a live
@@ -748,19 +788,23 @@ export function createTestProcessDemandSampler(
       );
     },
     sample,
-    stop(extra = {}): ResourceDemand {
-      if (stoppedDemand) return stoppedDemand;
-      if (!stopped) sample();
-      stopped = true;
-      timer?.stop();
-      timer = null;
-      stoppedDemand = {
-        cpuWeight: extra.cpuWeight ?? cpuWeight ?? planned.cpuWeight ?? 1,
-        memoryBytes: extra.memoryBytes ?? peakRss ?? planned.memoryBytes,
-        diskBytes: extra.diskBytes ?? planned.diskBytes,
-        fileDescriptors: extra.fileDescriptors ?? peakFds ?? planned.fileDescriptors,
-      };
-      return stoppedDemand;
+    stop(extra = {}): Promise<ResourceDemand> {
+      if (stoppedDemand) return Promise.resolve(stoppedDemand);
+      if (stopPromise) return stopPromise;
+      stopPromise = (async () => {
+        if (!stopped) await sample();
+        stopped = true;
+        timer?.stop();
+        timer = null;
+        stoppedDemand = {
+          cpuWeight: extra.cpuWeight ?? cpuWeight ?? planned.cpuWeight ?? 1,
+          memoryBytes: extra.memoryBytes ?? peakRss ?? planned.memoryBytes,
+          diskBytes: extra.diskBytes ?? planned.diskBytes,
+          fileDescriptors: extra.fileDescriptors ?? peakFds ?? planned.fileDescriptors,
+        };
+        return stoppedDemand;
+      })();
+      return stopPromise;
     },
   };
 }
@@ -1030,6 +1074,21 @@ function runTestProcess(
         // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
         // router and every child/grandchild it spawned — instead of just the router itself.
         const sampler = createTestProcessDemandSampler(plannedDemand);
+        let timer: NodeJS.Timeout | null = null;
+        let onAbort: (() => void) | null = null;
+        const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
+          if (settled) return;
+          settled = true;
+          if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          if (onAbort) signal?.removeEventListener('abort', onAbort);
+          void sampler.stop({ diskBytes: outputBytes }).then(
+            (actualDemand) => resolve({ ...outcome, actualDemand }),
+            () => resolve({ ...outcome, actualDemand: plannedDemand }),
+          );
+        };
         let child: ChildProcess;
         try {
           child = spawn(command, [...commandArgs, ...args], {
@@ -1047,7 +1106,6 @@ function runTestProcess(
             aborted: false,
             spawnError,
             output: `[spawn-error] ${spawnError}`,
-            actualDemand: sampler.stop({ diskBytes: 0 }),
           });
           return;
         }
@@ -1070,11 +1128,11 @@ function runTestProcess(
           killGroup('SIGTERM');
           setTimeout(() => killGroup('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
         };
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           timedOut = true;
           killGroupWithFallback();
         }, timeoutMs);
-        const onAbort = () => {
+        onAbort = () => {
           if (settled) return;
           aborted = true;
           // code:run owns the signal passed to inner dispatches. If its worker deadline
@@ -1093,16 +1151,6 @@ function runTestProcess(
         };
         child.stdout?.on('data', append);
         child.stderr?.on('data', append);
-        const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
-          resolve({
-            ...outcome,
-            actualDemand: sampler.stop({ diskBytes: outputBytes }),
-          });
-        };
         child.on('error', (e) => {
           spawnError = e.message;
           finish({

@@ -42,6 +42,7 @@ import runTool, {
   parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
+  readTestProcessResourceSnapshot,
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
@@ -219,21 +220,22 @@ describe('governed test-process admission (P-003)', () => {
     });
   });
 
-  it('records peak child observations as measured actual demand', () => {
+  it('records peak child observations as measured actual demand without blocking on async reads', async () => {
     let now = 1_000;
     let sample = { cpuMicros: 100, rssBytes: 10, fileDescriptors: 4 };
     const sampler = createTestProcessDemandSampler(
       buildTestProcessDemand({ fileCount: 1 }),
-      () => sample,
+      async () => sample,
       () => now,
     );
     sampler.attach(42);
+    await sampler.sample();
     now = 2_000;
     sample = { cpuMicros: 1_500_100, rssBytes: 30, fileDescriptors: 8 };
-    sampler.sample();
+    await sampler.sample();
     now = 3_000;
     sample = { cpuMicros: 3_000_100, rssBytes: 20, fileDescriptors: 6 };
-    expect(sampler.stop({ diskBytes: 123 })).toEqual({
+    await expect(sampler.stop({ diskBytes: 123 })).resolves.toEqual({
       cpuWeight: 1.5,
       memoryBytes: 30,
       diskBytes: 123,
@@ -241,12 +243,20 @@ describe('governed test-process admission (P-003)', () => {
     });
     // A stopped sampler is idempotent and cannot restart a timer or overwrite
     // the close-time measurement.
-    expect(sampler.stop({ diskBytes: 999 })).toEqual({
+    await expect(sampler.stop({ diskBytes: 999 })).resolves.toEqual({
       cpuWeight: 1.5,
       memoryBytes: 30,
       diskBytes: 123,
       fileDescriptors: 8,
     });
+  });
+
+  it('reads the process resource snapshot asynchronously from the live process tree', async () => {
+    const pending = readTestProcessResourceSnapshot(process.pid);
+    expect(pending).toBeInstanceOf(Promise);
+
+    const snapshot = await pending;
+    expect(Object.values(snapshot).every((metric) => metric === null || typeof metric === 'number')).toBe(true);
   });
 
   it('cancels timeout/abort/signal-only exits but releases real red exits', () => {
@@ -738,9 +748,9 @@ describe('testing:run (integration)', () => {
     expect(shouldResolveHarnessTestRunIds({ ok: true })).toBe(true);
   });
 
-  it('builds a fresh store-backed router request without the foreground report path', () => {
+  it('builds a fresh store-backed router request with the admin ledger reporter but without the foreground report path', () => {
     const request = buildDetachedTestRunRequest({
-      root: '/repo',
+      root: REPO_ROOT,
       files: ['packages/example.test.ts'],
       testNamePattern: 'suite > --focused test',
       workspaceId: 'papercusp-workspace',
@@ -750,13 +760,14 @@ describe('testing:run (integration)', () => {
     expect(request).toMatchObject({
       kind: 'vitest',
       command: process.execPath,
-      cwd: '/repo',
+      cwd: REPO_ROOT,
       filePath: 'packages/example.test.ts',
     });
     expect(request.args).toEqual([
-      '/repo/scripts/test-files.mjs',
+      join(REPO_ROOT, 'scripts', 'test-files.mjs'),
       'packages/example.test.ts',
       '--',
+      `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
       '--testNamePattern=suite > --focused test',
     ]);
     expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
