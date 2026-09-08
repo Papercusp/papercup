@@ -198,6 +198,8 @@ export interface SpecTestAdequacyRerunRecipe {
     harness?: string;
     slug: string;
     classRef: string;
+    /** Pin the evaluator build used to produce this replay recipe. */
+    evaluatorBuild?: SpecTestAdequacyEvaluatorBuild;
     specIds: string[];
     /** Preserve the evidence-population selector used by the original evaluation. */
     workItemIds?: string[];
@@ -1268,6 +1270,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(recipeHarness ? { harness: recipeHarness } : {}),
           slug: selection.planSlug,
           classRef: recipe.classRef as string,
+          ...(evaluatorBuild ? { evaluatorBuild } : {}),
           specIds: [selection.specId],
           ...(workItemIds ? { workItemIds } : {}),
           ...(evidenceRefs ? { evidenceRefs } : {}),

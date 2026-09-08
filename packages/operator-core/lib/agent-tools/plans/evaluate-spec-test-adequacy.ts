@@ -10,6 +10,18 @@ import {
   type EvidenceCurrentInput,
 } from './spec-evidence-store';
 import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { getBuildInfo, type BuildInfo } from '../../build-info';
+
+const evaluatorBuildSchema = z
+  .object({
+    sha: z.string().trim().min(1).max(256).nullable(),
+    version: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+function evaluatorBuildDiff(recorded: BuildInfo, live: BuildInfo): boolean {
+  return recorded.sha !== live.sha || recorded.version !== live.version;
+}
 
 /**
  * Exported so a scorecard's `rerunRecipe.args` can be validated against the REAL
@@ -23,6 +35,8 @@ export const argsSchema = z.object({
   classRef: z
     .enum(PLAN_CLASS_RUBRIC_REFS)
     .describe('Existing plan-class standard rubric referenced by the plan acceptance rubric.'),
+  /** Build identity recorded by a rerun recipe; used to surface evaluator drift. */
+  evaluatorBuild: evaluatorBuildSchema.optional(),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
@@ -86,6 +100,12 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    const liveEvaluatorBuild = getBuildInfo();
+    const recordedEvaluatorBuild = args.evaluatorBuild;
+    const evaluatorBuildDrift =
+      recordedEvaluatorBuild && evaluatorBuildDiff(recordedEvaluatorBuild, liveEvaluatorBuild)
+        ? { recorded: recordedEvaluatorBuild, live: liveEvaluatorBuild }
+        : undefined;
     const current =
       args.current === undefined
         ? undefined
@@ -115,6 +135,8 @@ export default defineTool({
         data: {
           ok: false,
           error: 'evidence_selection_hit_limit',
+          evaluatorBuild: liveEvaluatorBuild,
+          ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
           count: allEvidence.length,
           limit: evidenceLimit,
           remedy: 'Narrow workItemIds/specIds/evidenceRefs or raise limit; a capped evidence set cannot produce an adequacy verdict.',
@@ -132,6 +154,8 @@ export default defineTool({
         data: {
           ok: false,
           error: 'selection_empty',
+          evaluatorBuild: liveEvaluatorBuild,
+          ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
           slug: args.slug,
           harnessSlug,
           classRef: args.classRef,
@@ -172,6 +196,8 @@ export default defineTool({
         data: {
           ok: false,
           error: 'selection_empty',
+          evaluatorBuild: liveEvaluatorBuild,
+          ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
           slug: args.slug,
           harnessSlug,
           classRef: args.classRef,
@@ -227,6 +253,8 @@ export default defineTool({
     return {
       data: {
         ok: true,
+        evaluatorBuild: liveEvaluatorBuild,
+        ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
         slug: args.slug,
         harnessSlug,
         classRef: args.classRef,

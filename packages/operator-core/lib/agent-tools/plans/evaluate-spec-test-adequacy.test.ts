@@ -16,6 +16,9 @@ vi.mock('./spec-evidence-store', async (original) => ({
   ...(await original<typeof import('./spec-evidence-store')>()),
   listSpecEvidence: vi.fn(),
 }));
+vi.mock('../../build-info', () => ({
+  getBuildInfo: vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' })),
+}));
 
 import tool from './evaluate-spec-test-adequacy';
 import { listSpecClauses } from './spec-clauses-store';
@@ -92,6 +95,47 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
 
     expect(result).toMatchObject({ ok: true, count: 1 });
     expect(result.rows).toHaveLength(1);
+  });
+
+  it('echoes the live evaluator build and reports drift for a pinned older replay', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      includeDraft: true,
+      evaluatorBuild: { sha: 'repaired-evaluator-sha', version: '1.2.2' },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      evaluatorBuild: { sha: 'live-evaluator-sha', version: '1.2.3' },
+      evaluatorBuildDrift: {
+        recorded: { sha: 'repaired-evaluator-sha', version: '1.2.2' },
+        live: { sha: 'live-evaluator-sha', version: '1.2.3' },
+      },
+    });
+  });
+
+  it('does not report evaluator drift when the replay pin matches the live build', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      includeDraft: true,
+      evaluatorBuild: { sha: 'live-evaluator-sha', version: '1.2.3' },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      evaluatorBuild: { sha: 'live-evaluator-sha', version: '1.2.3' },
+    });
+    expect(result).not.toHaveProperty('evaluatorBuildDrift');
   });
 
   it('preserves exact work-item, evidence-ref, and plan-item selectors in the emitted rerun recipe', async () => {
