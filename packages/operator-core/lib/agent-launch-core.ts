@@ -557,7 +557,9 @@ export function buildAgentLaunchCommand(opts: {
   // to synthesize the platform default; callers must supply a model or explicitly
   // pass modelSource='configured-default'. The resolver also rejects Spark before
   // a terminal opens.
-  const codexSelection = opts.agent?.trim() === 'codex' && (opts.mode === 'fresh' || Boolean(composedModelSpec))
+  const codexSelection =
+    opts.agent?.trim() === 'codex' &&
+    (opts.mode === 'fresh' || Boolean(composedModelSpec) || opts.modelSource === 'configured-default')
     ? resolveCodexModelSelection(composedModelSpec, {
         source: opts.modelSource ?? 'explicit',
       })
