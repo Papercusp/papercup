@@ -42,6 +42,7 @@ import {
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
+  recoverFleetRecordForLeaderControl,
   readLeaderBriefFleetMetrics,
   readLeaderBriefLaneHealth,
   readLeaderAnnouncedGates,
@@ -584,6 +585,71 @@ describe('leader-brief leadership refresh boundary (EI-21355781180893454)', () =
         controlState: 'active',
       }),
     ).toBe(false);
+  });
+});
+
+describe('leader-brief degraded fleet-record control recovery (EI-22668285442179217)', () => {
+  const selfLedRecord = {
+    fleetSlug: 'alpha',
+    leaderOwnerId: 'leader-1',
+    controlState: 'active',
+  };
+
+  it('recovers positive self-leadership from the independent led-fleets read', async () => {
+    const listLedFleets = vi.fn(async () => [selfLedRecord]);
+
+    await expect(
+      recoverFleetRecordForLeaderControl({
+        workspaceId: 'ws-1',
+        fleetSlug: 'alpha',
+        ownerId: 'leader-1',
+        allowLeadershipWrites: true,
+        fleetRecordResult: { value: undefined, degraded: true },
+        listLedFleets: listLedFleets as never,
+      }),
+    ).resolves.toBe(selfLedRecord);
+    expect(listLedFleets).toHaveBeenCalledWith('ws-1', 'leader-1');
+  });
+
+  it('does not turn degraded absence into takeover authority', async () => {
+    const listLedFleets = vi.fn(async () => [{ ...selfLedRecord, leaderOwnerId: 'another-leader' }]);
+
+    await expect(
+      recoverFleetRecordForLeaderControl({
+        workspaceId: 'ws-1',
+        fleetSlug: 'alpha',
+        ownerId: 'leader-1',
+        allowLeadershipWrites: true,
+        fleetRecordResult: { value: undefined, degraded: true },
+        listLedFleets: listLedFleets as never,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('does not perform corroboration or writes for viewers or a measured empty read', async () => {
+    const listLedFleets = vi.fn(async () => [selfLedRecord]);
+
+    await expect(
+      recoverFleetRecordForLeaderControl({
+        workspaceId: 'ws-1',
+        fleetSlug: 'alpha',
+        ownerId: 'leader-1',
+        allowLeadershipWrites: false,
+        fleetRecordResult: { value: undefined, degraded: true },
+        listLedFleets: listLedFleets as never,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      recoverFleetRecordForLeaderControl({
+        workspaceId: 'ws-1',
+        fleetSlug: 'alpha',
+        ownerId: 'leader-1',
+        allowLeadershipWrites: true,
+        fleetRecordResult: { value: null, degraded: false },
+        listLedFleets: listLedFleets as never,
+      }),
+    ).resolves.toBeNull();
+    expect(listLedFleets).not.toHaveBeenCalled();
   });
 });
 
