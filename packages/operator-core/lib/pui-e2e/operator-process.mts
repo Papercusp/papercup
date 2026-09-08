@@ -12,24 +12,31 @@ import type { SuSessionHost } from '../su-session-host';
 // their exports with Node's CJS loader rather than relying on named-export
 // inference across an ESM child-process entrypoint.
 const require = createRequire(import.meta.url);
-const { app } = require('../../../../apps/operator/bin/host-app') as typeof import('../../../../apps/operator/bin/host-app');
+const { app } =
+  require('../../../../apps/operator/bin/host-app') as typeof import('../../../../apps/operator/bin/host-app');
 const { getRegisteredSuSessionHost } = require('../su-session-host') as typeof import('../su-session-host');
 const { getAdvSession } = require('../adv-sessions') as typeof import('../adv-sessions');
-const { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } = require('@papercusp/chat-protocol') as typeof import('@papercusp/chat-protocol');
+const { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } =
+  require('@papercusp/chat-protocol') as typeof import('@papercusp/chat-protocol');
 
-if (!process.send || !process.env.PUI_OPERATOR_FIXTURE_WORKSPACE
-  || process.env.PAPERCUSP_WORKSPACE_ID !== process.env.PUI_OPERATOR_FIXTURE_WORKSPACE
-  || !process.env.HARNESS_ADMIN_DATABASE_URL) {
+if (
+  !process.send ||
+  !process.env.PUI_OPERATOR_FIXTURE_WORKSPACE ||
+  process.env.PAPERCUSP_WORKSPACE_ID !== process.env.PUI_OPERATOR_FIXTURE_WORKSPACE ||
+  !process.env.HARNESS_ADMIN_DATABASE_URL
+) {
   throw new Error('The PUI operator fixture requires IPC and an explicitly isolated workspace/database');
 }
 const workspaceId = process.env.PUI_OPERATOR_FIXTURE_WORKSPACE;
 const observed = new Set<SuSessionHost>();
 const instanceId = randomUUID();
-const send = (message: unknown) => { if (process.connected) process.send!(message); };
+const send = (message: unknown) => {
+  if (process.connected) process.send!(message);
+};
 for (const level of ['warn', 'error'] as const) {
   const original = console[level].bind(console);
   console[level] = (...args: unknown[]) => {
-    send({ type: 'diagnostic', level, args: args.map((arg) => arg instanceof Error ? arg.message : arg) });
+    send({ type: 'diagnostic', level, args: args.map((arg) => (arg instanceof Error ? arg.message : arg)) });
     original(...args);
   };
 }
@@ -43,32 +50,66 @@ function observe(agentChatId: string, harnessSlug: string): void {
     for await (const { event } of host.subscribe()) {
       send({ type: 'event', descriptor: host.descriptor(), event });
     }
-  })().catch((error) => { console.error('PUI fixture observation failed', error); });
+  })().catch((error) => {
+    console.error('PUI fixture observation failed', error);
+  });
 }
 
-const server = createAdaptorServer({ fetch: async (request, env) => {
-  const pathname = new URL(request.url).pathname;
-  const tracksReadiness = pathname.includes('/su-session');
-  const before = tracksReadiness ? [...observed].map((host) => host.snapshot()) : undefined;
-  const requestedAt = new Date().toISOString();
-  const launch = request.method === 'POST' && pathname === '/api/adv/sessions/launch-su'
-    ? await request.clone().json() as { agent_chat_id: string; harness_slug: string } : null;
-  const response = await app.fetch(request, env);
-  if (launch) observe(launch.agent_chat_id, launch.harness_slug);
-  if (tracksReadiness) {
-    const body = !pathname.endsWith('/events') ? await response.clone().json().catch(() => undefined) : undefined;
-    send({ type: 'readiness', path: pathname, method: request.method, requestedAt, respondedAt: new Date().toISOString(),
-      status: response.status, before, after: [...observed].map((host) => host.snapshot()), body });
-  }
-  if (pathname.endsWith('/su-session/commands')) {
-    for (const host of observed) {
-      const row = await getAdvSession(host.descriptor().identity.advSessionId);
-      send({ type: 'host-state', descriptor: host.descriptor(), pid: row?.pid ?? null });
+function observeSuSessionPath(pathname: string): void {
+  const match = pathname.match(/^\/api\/harness\/([^/]+)\/agent-chats\/([^/]+)\/su-session(?:\/|$)/);
+  if (!match) return;
+  observe(decodeURIComponent(match[2]), decodeURIComponent(match[1]));
+}
+
+const server = createAdaptorServer({
+  fetch: async (request, env) => {
+    const pathname = new URL(request.url).pathname;
+    const tracksReadiness = pathname.includes('/su-session');
+    // A streamed launch returns before async bootstrap registers its host, so
+    // the launch-response hook below can legitimately see nothing. The PUI's
+    // first canonical snapshot/event request is the request-driven rendezvous:
+    // attach the observer there instead of polling the registry.
+    if (tracksReadiness) observeSuSessionPath(pathname);
+    const before = tracksReadiness ? [...observed].map((host) => host.snapshot()) : undefined;
+    const requestedAt = new Date().toISOString();
+    const launch =
+      request.method === 'POST' && pathname === '/api/adv/sessions/launch-su'
+        ? ((await request.clone().json()) as { agent_chat_id: string; harness_slug: string })
+        : null;
+    const response = await app.fetch(request, env);
+    if (launch) observe(launch.agent_chat_id, launch.harness_slug);
+    if (tracksReadiness) {
+      // Rehydration may itself occur while handling the snapshot request.
+      observeSuSessionPath(pathname);
+      const body = !pathname.endsWith('/events')
+        ? await response
+            .clone()
+            .json()
+            .catch(() => undefined)
+        : undefined;
+      send({
+        type: 'readiness',
+        path: pathname,
+        method: request.method,
+        requestedAt,
+        respondedAt: new Date().toISOString(),
+        status: response.status,
+        before,
+        after: [...observed].map((host) => host.snapshot()),
+        body,
+      });
     }
-  }
-  if (launch || pathname.endsWith('/card-response')) send({ type: 'response', path: pathname, status: response.status });
-  return response;
-} });
+    if (pathname.endsWith('/su-session/commands')) {
+      for (const host of observed) {
+        const row = await getAdvSession(host.descriptor().identity.advSessionId);
+        send({ type: 'host-state', descriptor: host.descriptor(), pid: row?.pid ?? null });
+      }
+    }
+    if (launch || pathname.endsWith('/card-response'))
+      send({ type: 'response', path: pathname, status: response.status });
+    return response;
+  },
+});
 await new Promise<void>((resolve, reject) => {
   server.once('error', reject);
   server.listen(Number(process.env.PUI_OPERATOR_FIXTURE_PORT ?? 0), '127.0.0.1', resolve);
@@ -86,8 +127,14 @@ async function stop(): Promise<void> {
   try {
     for (const host of observed) {
       if (!host.snapshot().terminal) {
-        const command = { schema: SU_SESSION_SCHEMA, protocolVersion: SU_SESSION_PROTOCOL_VERSION,
-          type: 'end', commandId: randomUUID(), issuedAt: new Date().toISOString(), target: host.descriptor().identity };
+        const command = {
+          schema: SU_SESSION_SCHEMA,
+          protocolVersion: SU_SESSION_PROTOCOL_VERSION,
+          type: 'end',
+          commandId: randomUUID(),
+          issuedAt: new Date().toISOString(),
+          target: host.descriptor().identity,
+        };
         const dispatch = await host.acceptCommand(command);
         const terminal = await dispatch.terminal;
         if (terminal.status !== 'completed') throw new Error(`Native end refused: ${JSON.stringify(terminal)}`);
@@ -101,12 +148,18 @@ async function stop(): Promise<void> {
     await stopInvalidationListener();
     // Explicit process.exit skips beforeExit, so the embedding workers need
     // their normal per-environment teardown before Node unloads ONNX.
-    const { shutdownLocalEmbedder, getWorkerState } = require('@papercusp/memory') as typeof import('@papercusp/memory');
-    const { shutdownLocalReranker, getRerankWorkerState } = require('@papercusp/rerank') as typeof import('@papercusp/rerank');
+    const { shutdownLocalEmbedder, getWorkerState } =
+      require('@papercusp/memory') as typeof import('@papercusp/memory');
+    const { shutdownLocalReranker, getRerankWorkerState } =
+      require('@papercusp/rerank') as typeof import('@papercusp/rerank');
     await Promise.all([shutdownLocalEmbedder(), shutdownLocalReranker()]);
     const [esmMemory, esmRerank] = await Promise.all([import('@papercusp/memory'), import('@papercusp/rerank')]);
-    const workers = { cjsEmbed: getWorkerState(), esmEmbed: esmMemory.getWorkerState(),
-      cjsRerank: getRerankWorkerState(), esmRerank: esmRerank.getRerankWorkerState() };
+    const workers = {
+      cjsEmbed: getWorkerState(),
+      esmEmbed: esmMemory.getWorkerState(),
+      cjsRerank: getRerankWorkerState(),
+      esmRerank: esmRerank.getRerankWorkerState(),
+    };
     if (Object.values(workers).some((worker) => worker.alive || worker.pendingCount > 0)) {
       throw new Error(`Embedding worker survived cross-loader shutdown: ${JSON.stringify(workers)}`);
     }
@@ -120,6 +173,12 @@ async function stop(): Promise<void> {
     process.exit(1);
   }
 }
-process.on('message', (message: { type?: string }) => { if (message.type === 'stop') void stop(); });
-process.on('SIGTERM', () => { void stop(); });
-process.on('disconnect', () => { void stop(); });
+process.on('message', (message: { type?: string }) => {
+  if (message.type === 'stop') void stop();
+});
+process.on('SIGTERM', () => {
+  void stop();
+});
+process.on('disconnect', () => {
+  void stop();
+});

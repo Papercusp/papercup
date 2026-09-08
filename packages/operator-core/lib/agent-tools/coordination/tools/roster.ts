@@ -32,7 +32,10 @@ import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { readIdentity } from '../../locks/identity';
 import { COORD_ROLES } from '../roles';
 import { listFleetAssignments, groupByAgent, orphanedClaims, stalledClaims } from '../../../fleet/assignments';
-import { reconcileWakeability } from '../../fleet/assignments';
+import {
+  reconcileWakeability,
+  RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+} from '../../fleet/assignments';
 import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
 import { PRESENCE_TIER_CAPS, shapeCoordPresence } from './presence-shape';
@@ -403,7 +406,14 @@ export default defineTool({
       // (best-effort, like that tool), BEFORE the alive-filter so a dead-warm
       // claimless agent is excluded rather than shown as alive.
       const grouped = groupByAgent(rows);
-      await reconcileWakeability(grouped).catch(() => {});
+      await reconcileWakeability(
+        grouped,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+      ).catch(() => {});
       const agents = grouped.filter(
         (g) => args.include_stale || g.claims.length > 0 || g.alive,
       );

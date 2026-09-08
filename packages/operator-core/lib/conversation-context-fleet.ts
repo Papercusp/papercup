@@ -16,6 +16,7 @@ import {
   decorateMemberVerdicts,
   decorateParkedOn,
   reconcileWakeability,
+  RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
   type MemberVerdict,
 } from './agent-tools/fleet/assignments';
 import type { ContextPressureBucket } from './agent-tools/coordination/context-pressure';
@@ -78,7 +79,15 @@ export interface FleetContextDependencies {
 const DEFAULT_DEPS: FleetContextDependencies = {
   listAssignments: listFleetAssignments,
   groupAssignments: groupByAgent,
-  reconcileWakeability,
+  reconcileWakeability: (agents) =>
+    reconcileWakeability(
+      agents,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+    ),
   decorateParkedOn,
   decorateContextPressure,
   decorateMemberVerdicts,

@@ -40,6 +40,7 @@ import {
   type CoverageLevel,
 } from '../../plan-item-coverage';
 import type { WakeMode } from '../coordination/wake-mode';
+import { ACTIVITY_DEAD_MS } from '../coordination/presence-wakeability';
 import type { SessionState, WakeabilitySignals } from '../coordination/presence-wakeability';
 import type { ContextPressureBucket } from '../coordination/context-pressure';
 import type { UnansweredDirectedSummary } from '../coordination/unanswered-directed';
@@ -220,6 +221,53 @@ describe('reconcileWakeability (EI-6077)', () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
     const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    expect(out.sessionState).toBe('parked');
+    expect(out.alive).toBe(true);
+  });
+
+  it('EI-22674977242712134: hydrated psu-host authority preserves an activity-dead parked member', async () => {
+    const owner = 'su-pty-activity-dead';
+    const agent = baseAgent({
+      agentId: owner,
+      alive: true,
+      heartbeatAt: new Date().toISOString(),
+    });
+    const fetchFn = fakeFetch({
+      [owner]: {
+        wakeable: true,
+        liveTurn: false,
+        lastActivityMs: Date.now() - ACTIVITY_DEAD_MS - 1,
+      },
+    });
+    const [out] = await reconcileWakeability(
+      [agent],
+      fetchFn,
+      async () => new Set(),
+      async () => new Map(),
+      async () => new Set(),
+      {
+        hydratePresence: true,
+        psuHostPositiveAuthority: true,
+        fetchPresenceFn: async (ids) => {
+          expect(ids).toEqual([owner]);
+          return new Map([
+            [
+              owner,
+              {
+                heartbeatAt: new Date().toISOString(),
+                stale: false,
+                host: 'fixture-host',
+                pid: null,
+                source: 'psu',
+                agentRole: 'su',
+              },
+            ],
+          ]);
+        },
+        findHostFn: (id) => (id === owner ? { ownerId: id } : null),
+      },
+    );
+
     expect(out.sessionState).toBe('parked');
     expect(out.alive).toBe(true);
   });

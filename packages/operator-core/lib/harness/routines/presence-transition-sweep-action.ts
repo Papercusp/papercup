@@ -32,7 +32,10 @@
 
 import { moduleEvaluationCount, pinModuleState } from '@papercusp/module-singleton';
 import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../fleet/assignments';
-import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
+import {
+  reconcileWakeability,
+  RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+} from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import {
   detectPresenceEdges,
@@ -101,7 +104,14 @@ export async function gatherPresenceObservations(): Promise<PresenceObservation[
   // Best-effort: a degraded liveness read must produce UNKNOWN fields, never a
   // thrown sweep. An unknown never fires (the detector only fires on a crossing
   // INTO a known alert state), so a degraded read is silent, not a false alarm.
-  const withLiveness = await reconcileWakeability(agents).catch(() => agents);
+  const withLiveness = await reconcileWakeability(
+    agents,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+  ).catch(() => agents);
   return withLiveness.map((a) => ({
     agentId: a.agentId,
     sessionState: a.sessionState ?? null,
@@ -116,7 +126,14 @@ async function gatherCurrentPresenceObservation(
   const agents = groupByAgent(await listFleetAssignments({ agent: agentId }));
   const subject = agents.find((agent) => agent.agentId === agentId);
   if (!subject) return null;
-  const [reconciled] = await reconcileWakeability([subject as ObservableAgent]);
+  const [reconciled] = await reconcileWakeability(
+    [subject as ObservableAgent],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+  );
   return { sessionState: reconciled?.sessionState ?? null };
 }
 

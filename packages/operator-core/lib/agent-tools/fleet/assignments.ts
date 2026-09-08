@@ -21,6 +21,7 @@ import {
   type SessionState,
   type WakeabilitySignals,
 } from '../coordination/presence-wakeability';
+import { listPresence, type PresenceRecord } from '../coordination/presence';
 import {
   fetchSelfWake,
   isStrandedMember,
@@ -28,6 +29,7 @@ import {
   type SelfWakeSource,
 } from '../coordination/presence-selfwake';
 import { deriveVerdict } from '../coordination/liveness-oracle';
+import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
@@ -273,6 +275,45 @@ export function agentPlansFromLiveCoverage(
  * wakeability fetcher — no PG needed. Mutates `agents` in place and returns them;
  * a `fetchWakeabilityFn` rejection propagates — the caller decides best-effort.
  */
+type ReconcilePresence = Pick<
+  PresenceRecord,
+  'heartbeatAt' | 'stale' | 'host' | 'pid' | 'source' | 'agentRole'
+>;
+
+export interface ReconcileWakeabilityOptions {
+  /** Fetch presence-row liveness fields in one owner-scoped batch. */
+  hydratePresence?: boolean;
+  /** Enable the positive psu-host rescue for known non-cup roles. */
+  psuHostPositiveAuthority?: boolean;
+  /** Injectable batch presence read for PG-free tests and bounded callers. */
+  fetchPresenceFn?: (ownerIds: string[]) => Promise<Map<string, ReconcilePresence>>;
+  /** Injectable local psu-host lookup for PG-free tests. */
+  findHostFn?: (ownerId: string) => unknown | null;
+}
+
+/** Production roster readers all need the same presence-backed psu-host leg. */
+export const RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS: ReconcileWakeabilityOptions = {
+  hydratePresence: true,
+  psuHostPositiveAuthority: true,
+};
+
+const fetchReconcilePresence: ReconcileWakeabilityOptions['fetchPresenceFn'] = async (ownerIds) => {
+  const rows = await listPresence({ ownerIds });
+  return new Map(
+    rows.map((row) => [
+      row.ownerId,
+      {
+        heartbeatAt: row.heartbeatAt,
+        stale: row.stale,
+        host: row.host,
+        pid: row.pid,
+        source: row.source,
+        agentRole: row.agentRole,
+      },
+    ]),
+  );
+};
+
 export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; wakeable?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
@@ -285,9 +326,13 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
   /** Positive session-log death evidence. A current recorded-live successor
    *  remains authoritative when both sets contain an owner. */
   fetchEndedRecordedFn: (ownerIds: string[]) => Promise<Set<string>> = endedRecordedOwnerIds,
+  options: ReconcileWakeabilityOptions = {},
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
   const ownerIds = agents.map((a) => a.agentId);
+  const presence = options.hydratePresence
+    ? await (options.fetchPresenceFn ?? fetchReconcilePresence)(ownerIds).catch(() => new Map())
+    : new Map<string, ReconcilePresence>();
   const [wakeability, recordedLive, selfWake, recordedEnded] = await Promise.all([
     fetchWakeabilityFn(ownerIds),
     fetchRecordedLiveFn(ownerIds),
@@ -298,6 +343,7 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
     if (!w) continue; // no signal (e.g. a federated peer) — leave heartbeat-only alive, sessionState unset.
+    const p = presence.get(a.agentId);
     // Unification P-003: ONE derivation via the shared liveness oracle — the
     // recorded rescue, the zombie-await hardStale ceiling and the claims-held
     // suspect classification are all inside deriveVerdict now, identical to
@@ -305,15 +351,24 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
     const v = deriveVerdict(
       {
         ownerId: a.agentId,
-        heartbeatAt: a.heartbeatAt,
-        stale: !a.alive,
+        heartbeatAt: p?.heartbeatAt ?? a.heartbeatAt,
+        stale: p?.stale ?? !a.alive,
+        host: p?.host,
+        pid: p?.pid,
+        source: p?.source,
+        agentRole: p?.agentRole,
         claimsHeld: a.load > 0,
       },
       w,
       recordedLive,
       nowMs,
       undefined,
-      undefined,
+      {
+        enabled: options.psuHostPositiveAuthority === true,
+        negative: false,
+        positive: options.psuHostPositiveAuthority === true,
+        findHostFn: options.findHostFn ?? findLiveHost,
+      },
       selfWake.get(a.agentId),
       recordedEnded,
     );

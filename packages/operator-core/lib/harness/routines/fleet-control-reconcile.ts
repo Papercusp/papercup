@@ -233,7 +233,10 @@ export async function defaultFleetControlReconcileDeps(
     },
     sessionStates: async (ownerIds: string[]) => {
       const { listFleetAssignments } = await import('../../fleet/assignments');
-      const { reconcileWakeability } = await import('../../agent-tools/fleet/assignments');
+      const {
+        reconcileWakeability,
+        RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+      } = await import('../../agent-tools/fleet/assignments');
       const wanted = new Set(ownerIds);
       type Row = { agentId: string; sessionState?: SessionState | null };
       // `agentId` is nullable on AgentAssignment; a row without one identifies nobody, so it
@@ -241,7 +244,14 @@ export async function defaultFleetControlReconcileDeps(
       const rows = (await listFleetAssignments({})).filter(
         (a) => a.agentId != null && wanted.has(a.agentId),
       );
-      const reconciled = (await reconcileWakeability(rows as never)) as unknown as Row[];
+      const reconciled = (await reconcileWakeability(
+        rows as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+      )) as unknown as Row[];
       const out = new Map<string, SessionState | null>();
       for (const r of reconciled) out.set(r.agentId, r.sessionState ?? null);
       return out;

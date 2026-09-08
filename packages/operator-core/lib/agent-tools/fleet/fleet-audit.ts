@@ -30,7 +30,10 @@ import {
 } from '../coordination/unanswered-directed';
 import { COORD_ROLES } from '../coordination/roles';
 import { compactLaunchWorkerAttestation, type LeaderBriefLaunchWorkerAttestation } from './leader-brief';
-import { reconcileWakeability } from './assignments';
+import {
+  reconcileWakeability,
+  RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+} from './assignments';
 
 export const FLEET_AUDIT_DEFAULT_LIMIT = 20;
 export const FLEET_AUDIT_MAX_LIMIT = 50;
@@ -531,7 +534,14 @@ export async function readFleetAudit(
     assignmentGroups = groupByAgent(rows).filter((group) => ownerIds.includes(group.agentId));
     wakeGroups = assignmentGroups.map((group) => ({ ...group, claims: [...group.claims], queued: [...group.queued] }));
     try {
-      await (deps.reconcile ?? reconcileWakeability)(wakeGroups);
+      await (deps.reconcile ?? reconcileWakeability)(
+        wakeGroups,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        RECONCILE_WAKEABILITY_PRODUCTION_OPTIONS,
+      );
     } catch {
       wakeGroups = null;
       wakeReason = 'wakeability-read-failed';
