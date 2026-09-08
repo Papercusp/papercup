@@ -90,6 +90,7 @@ import {
 } from "@papercusp/scheduled-registry";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
+import type { FleetLogsGcResult } from "@papercusp/operator-core/lib/fleet-logs-gc";
 import {
   DEPENDENCY_PREBUILD_WAIT_MS,
   awaitDependencyPrebuildState,
@@ -15791,6 +15792,10 @@ export function realCheckpointDeps(
   prewarmedDependencyGeneration?: PrewarmedCheckpointDependencyGeneration,
   /** Stable identity transported by the scheduled or detached launcher. */
   gateFireId: string | undefined = gateFireIdFromEnv(),
+  /** EI-22642378999251872: focused-test seam for the existing bounded fleet-log GC. */
+  reclaimDiskHeadroomOverride?: () =>
+    | FleetLogsGcResult
+    | Promise<FleetLogsGcResult>,
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -15820,6 +15825,13 @@ export function realCheckpointDeps(
       // workspace root, backups, or operator-configured paths; sampling only
       // os.tmpdir() makes those consumers invisible to admission control.
       return sampleDiskSnapshots(watchedPaths());
+    });
+  const reclaimCheckpointDisk =
+    reclaimDiskHeadroomOverride ??
+    (async (): Promise<FleetLogsGcResult> => {
+      const { runFleetLogsGc } =
+        await import("@papercusp/operator-core/lib/fleet-logs-gc");
+      return runFleetLogsGc();
     });
   const checkpointDiskPolicy = async (): Promise<DiskInfraFaultPolicy> => {
     const { diskPolicyFromEnv } =
@@ -16347,24 +16359,44 @@ export function realCheckpointDeps(
     async checkDiskHeadroom() {
       const { detectCriticalWriteHeadroom, diskPolicyFromEnv } =
         await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
-      const snapshots = await sampleCheckpointDisk();
-      if (snapshots.length === 0) {
+      const policy = diskPolicyFromEnv();
+      const gib = 1024 ** 3;
+      const describe = (snapshots: CheckpointDiskSnapshot[]) =>
+        snapshots
+          .map(
+            (snapshot) =>
+              `${snapshot.path} ${(snapshot.freeBytes / gib).toFixed(1)} GiB free ` +
+              `(${(snapshot.freePct * 100).toFixed(2)}%), ` +
+              `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
+          )
+          .join("; ");
+      const describeBreaches = (snapshots: CheckpointDiskSnapshot[]) =>
+        detectCriticalWriteHeadroom(snapshots, policy)
+          .map(
+            (breach) =>
+              `${breach.path} ${breach.kinds.join("+")} breaches the standing ` +
+              "critical write headroom floor",
+          )
+          .join("; ");
+
+      let before: CheckpointDiskSnapshot[];
+      try {
+        before = await sampleCheckpointDisk();
+      } catch (error) {
         return {
           ok: false,
           summary:
-            "watched filesystem statfs produced no readable snapshots; refusing a full-suite write workload",
+            `watched filesystem statfs failed (${error instanceof Error ? error.message : error}); ` +
+            "refusing a full-suite write workload without running cleanup on an unmeasured target",
         };
       }
-      const policy = diskPolicyFromEnv();
-      const gib = 1024 ** 3;
-      const measured = snapshots
-        .map(
-          (snapshot) =>
-            `${snapshot.path} ${(snapshot.freeBytes / gib).toFixed(1)} GiB free ` +
-            `(${(snapshot.freePct * 100).toFixed(2)}%), ` +
-            `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
-        )
-        .join("; ");
+      if (before.length === 0) {
+        return {
+          ok: false,
+          summary:
+            "watched filesystem statfs produced no readable snapshots; refusing a full-suite write workload without running cleanup on an unmeasured target",
+        };
+      }
       // The standing WARNING floor is an early human-cleanup signal, not a hard
       // write-admission boundary. On a multi-terabyte shared filesystem, requiring
       // its percentage floor can reject a checkpoint with hundreds of GiB free.
@@ -16373,19 +16405,73 @@ export function realCheckpointDeps(
       // turning a warning-only condition into an indefinitely red release gate.
       // Evaluate every watched filesystem, because any one shared backing volume
       // can exhaust while the others remain healthy.
-      const breaches = detectCriticalWriteHeadroom(snapshots, policy);
-      if (breaches.length === 0) return { ok: true, summary: measured };
-      const breachDetails = breaches
-        .map(
-          (breach) =>
-            `${breach.path} ${breach.kinds.join("+")} breaches the standing ` +
-            "critical write headroom floor",
-        )
-        .join("; ");
+      const beforeBreaches = detectCriticalWriteHeadroom(before, policy);
+      if (beforeBreaches.length === 0)
+        return { ok: true, summary: describe(before) };
+
+      // EI-22642378999251872: the old path returned immediately and spent one singleton fire per
+      // hour rediscovering the same breach. Reuse the existing age+bytes-bounded fleet-log GC
+      // exactly once, then measure again. No loop, no broad deletion surface, and no cleanup at
+      // all when statfs itself is unknown.
+      let reclamationSummary: string;
+      try {
+        const reclaimed = await reclaimCheckpointDisk();
+        const scanned = reclaimed.dirs.reduce(
+          (sum, dir) => sum + dir.scanned,
+          0,
+        );
+        const removed = reclaimed.dirs.reduce(
+          (sum, dir) => sum + dir.removedByAge + dir.removedByCeiling,
+          0,
+        );
+        const bytesFreed = reclaimed.dirs.reduce(
+          (sum, dir) => sum + dir.bytesFreed,
+          0,
+        );
+        const errors = reclaimed.dirs.reduce(
+          (sum, dir) => sum + dir.errors.length,
+          0,
+        );
+        reclamationSummary =
+          `bounded fleet-log GC scanned ${scanned} file(s), removed ${removed}, freed ` +
+          `${(bytesFreed / gib).toFixed(2)} GiB${errors ? `, with ${errors} error(s)` : ""}`;
+      } catch (error) {
+        reclamationSummary = `bounded fleet-log GC failed safely (${error instanceof Error ? error.message : error})`;
+      }
+
+      let after: CheckpointDiskSnapshot[];
+      try {
+        after = await sampleCheckpointDisk();
+      } catch (error) {
+        return {
+          ok: false,
+          summary:
+            `${describeBreaches(before)}; initial measurement: ${describe(before)}; ` +
+            `${reclamationSummary}; post-cleanup statfs failed (${error instanceof Error ? error.message : error})`,
+        };
+      }
+      if (after.length === 0) {
+        return {
+          ok: false,
+          summary:
+            `${describeBreaches(before)}; initial measurement: ${describe(before)}; ` +
+            `${reclamationSummary}; post-cleanup statfs produced no readable snapshots`,
+        };
+      }
+      const afterBreaches = detectCriticalWriteHeadroom(after, policy);
+      if (afterBreaches.length === 0) {
+        return {
+          ok: true,
+          summary:
+            `automatic headroom recovery succeeded; initial measurement: ${describe(before)}; ` +
+            `${reclamationSummary}; after cleanup: ${describe(after)}`,
+        };
+      }
       return {
         ok: false,
         summary:
-          `${breachDetails}; measured all watched filesystems: ${measured}; ` +
+          `${describeBreaches(after)}; initial measurement: ${describe(before)}; ` +
+          `${reclamationSummary}; after cleanup: ${describe(after)}; ` +
           `floor is ${(policy.criticalFreeBytesMin / gib).toFixed(1)} GiB and ` +
           `${(policy.criticalFreePctMin * 100).toFixed(2)}% bytes, ` +
           `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes`,
