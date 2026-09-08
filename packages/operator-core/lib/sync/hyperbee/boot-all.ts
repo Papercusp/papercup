@@ -1878,6 +1878,27 @@ export interface GitServingAdvertisement {
 /** One bounded pass per existing owner heartbeat, sharing each workspace's
  * registry/hive reads. Remote handles ask the actual sidecar on its existing
  * status RPC; their cached boot-time announce identity is never authoritative. */
+/**
+ * WI-10000734 — the pass MUST finish well inside GIT_SERVING_LEASE_MS (30s).
+ *
+ * Each entry's `getGitServingCapability` MINTS a capability that stamps
+ * `issuedAtMs = now()` at its own moment, but the whole batch is published only
+ * once the pass ends. A SERIAL pass therefore burns the lease of everything it
+ * minted early. Measured 2026-09-08 on this box: ~70 entries, pass duration
+ * ~94s (mints spanning 90s-184s before read) against the 30s lease, so 43 of 43
+ * published capabilities were already expired on arrival and pot-git serving was
+ * PERMANENTLY unavailable. That failed ref-announce's buildSigrefs, froze
+ * `ref_announce.replayFloors`, made integrator-tick reject every member snapshot
+ * ("waiting for verified ref announcement"), froze hive canonical `refs/hive/staging`
+ * and therefore `origin/staging` for ~5h with ~99 commits stranded and all fleet
+ * promotion blocked.
+ *
+ * It degraded by SCALE, not by an event: the pass was ~20s when written and grew
+ * past the lease as pot count grew, so it is a cliff any host re-reaches. Keep the
+ * per-entry mints parallel, and do not reintroduce an await inside a serial loop here.
+ */
+const GIT_SERVING_MINT_CONCURRENCY = 8;
+
 export async function listGitServingCapabilities(): Promise<GitServingAdvertisement[]> {
   const [{ loadHarnessRegistry }, { getHiveBySlug }, { canonicalRepoKey }] = await Promise.all([
     import('../../harness-registry'), import('../../hive-store'), import('../pot-git/repo-identity'),
@@ -1885,30 +1906,52 @@ export async function listGitServingCapabilities(): Promise<GitServingAdvertisem
   const out: GitServingAdvertisement[] = [];
   for (const workspaceId of new Set([...handles.values()].map(h => h.workspaceId))) {
     const entries = (await loadHarnessRegistry(workspaceId)).projects;
-    const hives = new Map<string, string | null>();
-    for (const entry of entries) {
+    // Plan first — every skip below is pure, so the awaited work that follows is
+    // exactly the independent per-entry part and nothing else.
+    const planned = entries.flatMap((entry) => {
       const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-      if (!potHomeSlug) continue;
+      if (!potHomeSlug) return [];
       const candidates = [...new Set([entry.slug, potHomeSlug])]
         .map(slug => handles.get(key(workspaceId, slug))).filter((h): h is BootedHarnessHandle => Boolean(h));
-      if (candidates.length === 0) continue;
-      if (!hives.has(potHomeSlug)) hives.set(potHomeSlug, (await getHiveBySlug(workspaceId, potHomeSlug))?.pubkeyBase64 ?? null);
-      const hiveId = hives.get(potHomeSlug);
-      if (!hiveId) continue;
-      const request: GitServingRequest = { workspaceId, installSlug: entry.slug, potHomeSlug,
-        scope: { hive_id: hiveId, repo_key: canonicalRepoKey(entry) } };
-      let state: GitServingState = gitServingUnavailable('unknown', 'owner supplies no serving capability');
-      for (const handle of candidates) {
-        try {
-          const answer = validateGitServingState(await handle.getGitServingCapability?.(request), request);
-          if (answer.status === 'ready') { state = answer; break; }
-          if (state.status === 'unknown') state = answer;
-        } catch (error) {
-          if (state.status === 'unknown') state = gitServingUnavailable('unknown', error instanceof Error ? error.message : String(error));
+      if (candidates.length === 0) return [];
+      return [{ entry, potHomeSlug, candidates }];
+    });
+    // Resolve each DISTINCT pot's hive id once, up front. The previous
+    // `if (!hives.has(slug))` memo was only safe because the pass was serial; a
+    // check-then-await memo races under parallelism and would issue duplicate
+    // reads. Resolving up front keeps the one-read-per-pot property without it.
+    const hiveIds = new Map<string, string | null>(
+      await mapWithConcurrency(
+        [...new Set(planned.map(p => p.potHomeSlug))],
+        GIT_SERVING_MINT_CONCURRENCY,
+        async (slug) => [slug, (await getHiveBySlug(workspaceId, slug))?.pubkeyBase64 ?? null] as [string, string | null],
+      ),
+    );
+    // mapWithConcurrency is order-preserving, so `out` keeps registry order.
+    const minted = await mapWithConcurrency(
+      planned,
+      GIT_SERVING_MINT_CONCURRENCY,
+      async ({ entry, potHomeSlug, candidates }): Promise<GitServingAdvertisement | null> => {
+        const hiveId = hiveIds.get(potHomeSlug);
+        if (!hiveId) return null;
+        const request: GitServingRequest = { workspaceId, installSlug: entry.slug, potHomeSlug,
+          scope: { hive_id: hiveId, repo_key: canonicalRepoKey(entry) } };
+        let state: GitServingState = gitServingUnavailable('unknown', 'owner supplies no serving capability');
+        // Candidates stay SEQUENTIAL: this is a first-ready fallback, not a fan-out,
+        // and it must not mint from a second handle once one has answered ready.
+        for (const handle of candidates) {
+          try {
+            const answer = validateGitServingState(await handle.getGitServingCapability?.(request), request);
+            if (answer.status === 'ready') { state = answer; break; }
+            if (state.status === 'unknown') state = answer;
+          } catch (error) {
+            if (state.status === 'unknown') state = gitServingUnavailable('unknown', error instanceof Error ? error.message : String(error));
+          }
         }
-      }
-      out.push({ request, state });
-    }
+        return { request, state };
+      },
+    );
+    for (const advertisement of minted) if (advertisement) out.push(advertisement);
   }
   return out;
 }
