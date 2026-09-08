@@ -51,11 +51,19 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
 import { EXIT_NOT_CHECKED } from './lib/not-checked.mjs';
+import { runGuardWithIndexFaultGuard, withGitIndexFaultRetry } from './lib/git-index-fault.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+// EI-22703095921400106: a torn `.git/index` on the shared staging tree made this call throw
+// `fatal: .git/index: index file smaller than expected`, which the affected runner read as a
+// LINT VIOLATION rather than "the instrument could not read the repository". Retry the
+// known-transient index fault (git-sync repairs it), then surrender as NOT CHECKED — never as a
+// finding. Every other git error still propagates untouched.
 function git(args) {
-  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return withGitIndexFaultRetry(() =>
+    execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+  );
 }
 
 /** Tracked .ts/.tsx source files, excluding tests/dist/node_modules/generated output. */
@@ -247,5 +255,5 @@ function main() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  runGuardWithIndexFaultGuard(main, { guard: 'di-seam-arity-strands' });
 }

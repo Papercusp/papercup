@@ -3773,6 +3773,20 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     script: "lint:no-unreachable-tier-mock",
     hostSuiteRatchet:
       "packages/operator-core/lib/unreachable-tier-mock-guard.test.ts",
+    // EI-22703095921400106. NARROWER than the strand-family entries above, and for a different
+    // reason: this guard's subject is the whole tracked tree, never a working diff, so it can
+    // NEVER exit 2 for "examined nothing". Its ONLY EXIT_NOT_CHECKED path is a repository-index
+    // fault — `git ls-files` failing with `index file smaller than expected` after
+    // scripts/lib/git-index-fault.mjs has already retried a torn `.git/index` and it stayed
+    // unreadable. MEASURED (affected run 471374-afdaa22b, 2026-09-08T14:14Z): the index was 0
+    // bytes while git-sync was active, this guard and lint:di-seam-arity-strands both died, and
+    // the runner reported them as failing lints against innocent code.
+    //
+    // So gating on it means gating the fleet's promotions on whether a shared-tree index write
+    // happened to tear mid-read. An instrument that could not look must not red the gate — and
+    // it must not silently pass either, which is why the guard prints a loud NOT CHECKED banner
+    // rather than exiting 0.
+    notCheckedIsNonGating: true,
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
   },
   {
