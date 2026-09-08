@@ -87,6 +87,7 @@ interface RunResult {
   failures?: Array<{ file: string; test: string; message: string; actual?: string; expected?: string }>;
   failuresTruncated?: boolean;
   durationMs?: number | null;
+  testRunIds?: number[];
 }
 
 async function body(p: ReturnType<typeof call>): Promise<RunResult> {
@@ -252,7 +253,9 @@ describe('governed test-process admission (P-003)', () => {
     expect(classifyTestProcessOutcome({ ...base, timedOut: true })).toMatchObject({ kind: 'cancel' });
     expect(classifyTestProcessOutcome({ ...base, aborted: true })).toMatchObject({ kind: 'cancel' });
     expect(classifyTestProcessOutcome({ ...base, code: null, signal: 'SIGTERM' })).toMatchObject({ kind: 'cancel' });
-    expect(classifyTestProcessOutcome({ ...base, code: 1, output: 'worker exited before dispatch' })).toMatchObject({ kind: 'cancel' });
+    expect(classifyTestProcessOutcome({ ...base, code: 1, output: 'worker exited before dispatch' })).toMatchObject({
+      kind: 'cancel',
+    });
     expect(classifyTestProcessOutcome({ ...base, code: 1, actualDemand: { memoryBytes: 7 } })).toEqual({
       kind: 'release',
       actualDemand: { memoryBytes: 7 },
@@ -427,7 +430,9 @@ describe('testing:run (integration)', () => {
       failures: [],
       byFile: { [NODE_TEST_TARGET]: { passed: 2, failed: 0, skipped: 0, collectionFailed: false } },
     });
-    expect(parseRouterTestResult('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed', [NODE_TEST_TARGET])).toBeNull();
+    expect(
+      parseRouterTestResult('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed', [NODE_TEST_TARGET]),
+    ).toBeNull();
   });
 
   it('requires a finished zero-exit progress line before treating a terminal marker as complete', () => {
@@ -461,9 +466,11 @@ describe('testing:run (integration)', () => {
       reason: 'admission-starved',
     });
     expect(parseRouterNotMeasuredMarker('TEST_FILE_ROUTE_ERROR requested=1 matched=0')).toBeNull();
-    expect(parseRouterNotMeasuredMarker(
-      'TEST_FILE_NOT_MEASURED requested=2 executed=0 matched=2 measuredFiles=1 status=not-measured reason=admission-starved',
-    )).toBeNull();
+    expect(
+      parseRouterNotMeasuredMarker(
+        'TEST_FILE_NOT_MEASURED requested=2 executed=0 matched=2 measuredFiles=1 status=not-measured reason=admission-starved',
+      ),
+    ).toBeNull();
   });
 
   it('returns structured actual/expected values for a real failing assertion', async () => {
@@ -486,14 +493,16 @@ describe('testing:run (integration)', () => {
 
       expect(out.ok).toBe(false);
       expect(out.failed).toBe(1);
-      expect(out.failures).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          file: relativeFixture,
-          test: 'preserves the assertion values',
-          actual: expect.stringContaining('service_select'),
-          expected: expect.stringContaining('service_select'),
-        }),
-      ]));
+      expect(out.failures).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file: relativeFixture,
+            test: 'preserves the assertion values',
+            actual: expect.stringContaining('service_select'),
+            expected: expect.stringContaining('service_select'),
+          }),
+        ]),
+      );
     } finally {
       await rm(absoluteFixture, { force: true });
     }
@@ -528,14 +537,17 @@ describe('testing:run (integration)', () => {
     }
 
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ file_path: string; status: string; harness_slug: string | null; workspace_id: string | null }>>`
-      SELECT file_path, status, harness_slug, workspace_id
+    const rows = await sql<
+      Array<{ id: string; file_path: string; status: string; harness_slug: string | null; workspace_id: string | null }>
+    >`
+      SELECT id, file_path, status, harness_slug, workspace_id
       FROM harness_shared.test_runs
       WHERE run_group_id = ${out.runId}
     `;
     expect(rows).toEqual(
       expect.arrayContaining([
         {
+          id: expect.anything(),
           file_path: GREEN_TARGET,
           status: 'pass',
           harness_slug: 'papercusp',
@@ -543,13 +555,11 @@ describe('testing:run (integration)', () => {
         },
       ]),
     );
+    expect(out.testRunIds).toEqual(expect.arrayContaining(rows.map((row) => Number(row.id)).filter(Number.isFinite)));
   }, 180_000);
 
   it('accepts a workspace-relative test path and expands it before routing', async () => {
-    const out = await body(call(
-      { files: [OPERATOR_CORE_RELATIVE_GREEN_TARGET] },
-      { projectDir: REPO_ROOT },
-    ));
+    const out = await body(call({ files: [OPERATOR_CORE_RELATIVE_GREEN_TARGET] }, { projectDir: REPO_ROOT }));
 
     expect(out.ok).toBe(true);
     expect(out.failed).toBe(0);

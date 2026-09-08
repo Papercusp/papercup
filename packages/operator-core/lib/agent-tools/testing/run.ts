@@ -71,6 +71,7 @@ import {
   captureWorktreeSnapshot,
   computeWorktreeDirty,
   distillVitestRun,
+  findHarnessTestRunIds,
   mergeDistilledRuns,
   parseFailureDetailsSidecar,
   parseVitestJsonForHarnessRows,
@@ -519,19 +520,20 @@ export interface TestProcessAdmissionDemandOptions {
  * process/fd overhead explicit because a Vitest run includes the router,
  * worker pool, report files, and pipes in addition to the named test file.
  */
-export function buildTestProcessDemand(
-  options: TestProcessAdmissionDemandOptions = {},
-): ResourceDemand {
+export function buildTestProcessDemand(options: TestProcessAdmissionDemandOptions = {}): ResourceDemand {
   const fileCount = Number.isFinite(options.fileCount) ? Math.max(1, Math.floor(options.fileCount!)) : 1;
-  const memoryBytes = Number.isFinite(options.memoryBytes) && options.memoryBytes! > 0
-    ? Math.floor(options.memoryBytes!)
-    : TEST_PROCESS_DEFAULT_MEMORY_BYTES;
-  const diskBytes = Number.isFinite(options.diskBytes) && options.diskBytes! > 0
-    ? Math.floor(options.diskBytes!)
-    : TEST_PROCESS_DEFAULT_DISK_BYTES;
-  const fileDescriptors = Number.isFinite(options.fileDescriptors) && options.fileDescriptors! > 0
-    ? Math.floor(options.fileDescriptors!)
-    : TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS + fileCount;
+  const memoryBytes =
+    Number.isFinite(options.memoryBytes) && options.memoryBytes! > 0
+      ? Math.floor(options.memoryBytes!)
+      : TEST_PROCESS_DEFAULT_MEMORY_BYTES;
+  const diskBytes =
+    Number.isFinite(options.diskBytes) && options.diskBytes! > 0
+      ? Math.floor(options.diskBytes!)
+      : TEST_PROCESS_DEFAULT_DISK_BYTES;
+  const fileDescriptors =
+    Number.isFinite(options.fileDescriptors) && options.fileDescriptors! > 0
+      ? Math.floor(options.fileDescriptors!)
+      : TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS + fileCount;
   return {
     // CPU weight is relative residency, so one router/Vitest process reserves
     // one unit regardless of how many exact files it batches.
@@ -577,7 +579,10 @@ function procCpuMicros(pid: number): number | null {
     const text = readFileSync(`/proc/${pid}/stat`, 'utf8');
     const endOfCommand = text.lastIndexOf(')');
     if (endOfCommand < 0) return null;
-    const fields = text.slice(endOfCommand + 2).trim().split(/\s+/);
+    const fields = text
+      .slice(endOfCommand + 2)
+      .trim()
+      .split(/\s+/);
     // After the comm/state fields, procfs exposes utime at index 11 and stime
     // at index 12. Linux's user HZ is normally 100; retain the raw tick scale
     // if a non-standard value cannot be discovered, since the sampler only
@@ -770,7 +775,9 @@ export function classifyTestProcessOutcome(outcome: TestProcessOutcome): Governe
   if (outcome.timedOut) return { kind: 'cancel', reason: 'test process timed out before a verdict was produced' };
   if (outcome.aborted) return { kind: 'cancel', reason: 'test process was aborted before a verdict was produced' };
   if (outcome.spawnError) return { kind: 'cancel', reason: `test process spawn failed: ${outcome.spawnError}` };
-  if (/TEST_FILE_WATCHDOG|TEST_FILE_ROUTE_ERROR|worker\s+(?:exited|crash)|TasksMax|SIG(?:TERM|KILL)/i.test(outcome.output)) {
+  if (
+    /TEST_FILE_WATCHDOG|TEST_FILE_ROUTE_ERROR|worker\s+(?:exited|crash)|TasksMax|SIG(?:TERM|KILL)/i.test(outcome.output)
+  ) {
     return { kind: 'cancel', reason: 'test worker/route exited without a trustworthy verdict' };
   }
   if (outcome.code === null || outcome.signal) {
@@ -805,10 +812,10 @@ export type TestFilesCoreResult =
         | 'invalid_root'
         | 'ambiguous_workspace_path'
         | 'aborted'
-      | 'timeout'
-      | 'route_error'
+        | 'timeout'
+        | 'route_error'
         | 'not_measured'
-      | 'no_report'
+        | 'no_report'
         | 'name_filter_no_match'
         | 'all_tests_skipped';
       hint?: string;
@@ -827,7 +834,7 @@ export type TestFilesCoreResult =
       executed?: number;
       matched?: number;
       measuredFiles?: 0;
-  };
+    };
 
 /**
  * EI-21909191824649521: a run that COLLECTED tests and executed NONE of them produced no
@@ -859,7 +866,7 @@ function zeroExecutedRefusal(
     hint:
       `all ${run.skipped} collected test(s) were SKIPPED and NONE executed, so NOTHING was ` +
       'verified — this is NOT a pass, and `failed: 0` here is not evidence. The file is ' +
-      'typically env-gated (`describe.skipIf` / `it.skip`): set the suite\'s env var to actually ' +
+      "typically env-gated (`describe.skipIf` / `it.skip`): set the suite's env var to actually " +
       'run it, or record the check as NOT EXECUTED.',
   };
 }
@@ -975,114 +982,124 @@ function runTestProcess(
       metadata: { command, timeoutMs, fileCount, processKind: 'test-run' },
       settle: (outcome) => classifyTestProcessOutcome(outcome),
     },
-    async (admissionContext) => new Promise((resolve) => {
-    let output = '';
-    let outputBytes = 0;
-    let timedOut = false;
-    let aborted = false;
-    let spawnError: string | undefined;
-    let settled = false;
-    // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
-    // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
-    // `detached: true` — so that vitest process inherits THIS process's process group
-    // rather than becoming reparented on its own. Killing only `child` (the router) by
-    // its own pid terminates the router but leaves vitest running as an ORPHAN: Unix
-    // never cascade-kills a process's children just because the parent died. That
-    // orphan then keeps executing (and holding forks) for the suite's real duration,
-    // invisible to the caller, who was told `error:'timeout'` and reasonably assumes
-    // nothing is still running. Following the tool's own "re-run it detached" hint then
-    // launches a SECOND concurrent run of the same suite.
-    //
-    // Fix: spawn the router `detached: true` so it becomes the leader of a NEW process
-    // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
-    // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
-    // router and every child/grandchild it spawned — instead of just the router itself.
-    const sampler = createTestProcessDemandSampler(plannedDemand);
-    let child: ChildProcess;
-    try {
-      child = spawn(command, [...commandArgs, ...args], {
-        cwd,
-        env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
-    } catch (error) {
-      spawnError = error instanceof Error ? error.message : String(error);
-      resolve({
-        code: null,
-        signal: null,
-        timedOut: false,
-        aborted: false,
-        spawnError,
-        output: `[spawn-error] ${spawnError}`,
-        actualDemand: sampler.stop({ diskBytes: 0 }),
-      });
-      return;
-    }
-    sampler.attach(child.pid);
-    const killGroup = (signal: NodeJS.Signals) => {
-      if (!child.pid) return;
-      try {
-        process.kill(-child.pid, signal);
-      } catch {
-        // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
-        // to at least killing the router itself so we never silently no-op.
+    async (admissionContext) =>
+      new Promise((resolve) => {
+        let output = '';
+        let outputBytes = 0;
+        let timedOut = false;
+        let aborted = false;
+        let spawnError: string | undefined;
+        let settled = false;
+        // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
+        // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
+        // `detached: true` — so that vitest process inherits THIS process's process group
+        // rather than becoming reparented on its own. Killing only `child` (the router) by
+        // its own pid terminates the router but leaves vitest running as an ORPHAN: Unix
+        // never cascade-kills a process's children just because the parent died. That
+        // orphan then keeps executing (and holding forks) for the suite's real duration,
+        // invisible to the caller, who was told `error:'timeout'` and reasonably assumes
+        // nothing is still running. Following the tool's own "re-run it detached" hint then
+        // launches a SECOND concurrent run of the same suite.
+        //
+        // Fix: spawn the router `detached: true` so it becomes the leader of a NEW process
+        // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
+        // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
+        // router and every child/grandchild it spawned — instead of just the router itself.
+        const sampler = createTestProcessDemandSampler(plannedDemand);
+        let child: ChildProcess;
         try {
-          child.kill(signal);
-        } catch {
-          /* already gone */
+          child = spawn(command, [...commandArgs, ...args], {
+            cwd,
+            env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true,
+          });
+        } catch (error) {
+          spawnError = error instanceof Error ? error.message : String(error);
+          resolve({
+            code: null,
+            signal: null,
+            timedOut: false,
+            aborted: false,
+            spawnError,
+            output: `[spawn-error] ${spawnError}`,
+            actualDemand: sampler.stop({ diskBytes: 0 }),
+          });
+          return;
         }
-      }
-    };
-    const killGroupWithFallback = () => {
-      killGroup('SIGTERM');
-      setTimeout(() => killGroup('SIGKILL'), 5000).unref();
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killGroupWithFallback();
-    }, timeoutMs);
-    const onAbort = () => {
-      if (settled) return;
-      aborted = true;
-      // code:run owns the signal passed to inner dispatches. If its worker deadline
-      // fires while this router is blocked in spawnSync-backed Vitest, the router must
-      // terminate the same process group as its own timeout path; otherwise the inner
-      // suite survives after the outer wrapper has returned (EI-20949515346526475).
-      killGroupWithFallback();
-    };
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener('abort', onAbort, { once: true });
-    // Cap retained diagnostics — the router's own output is a fallback for the
-    // error paths, never the success path's payload.
-    const append = (b: Buffer) => {
-      outputBytes += b.byteLength;
-      output = (output + b.toString('utf8')).slice(-8192);
-    };
-    child.stdout?.on('data', append);
-    child.stderr?.on('data', append);
-    const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve({
-        ...outcome,
-        actualDemand: sampler.stop({ diskBytes: outputBytes }),
-      });
-    };
-    child.on('error', (e) => {
-      spawnError = e.message;
-      finish({ code: null, signal: null, timedOut, aborted, spawnError, output: `${output}\n[spawn-error] ${e.message}` });
-    });
-    child.on('close', (code, closeSignal) => finish({
-      code,
-      signal: closeSignal ?? null,
-      timedOut,
-      aborted,
-      output,
-    }));
-    }),
+        sampler.attach(child.pid);
+        const killGroup = (signal: NodeJS.Signals) => {
+          if (!child.pid) return;
+          try {
+            process.kill(-child.pid, signal);
+          } catch {
+            // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
+            // to at least killing the router itself so we never silently no-op.
+            try {
+              child.kill(signal);
+            } catch {
+              /* already gone */
+            }
+          }
+        };
+        const killGroupWithFallback = () => {
+          killGroup('SIGTERM');
+          setTimeout(() => killGroup('SIGKILL'), 5000).unref();
+        };
+        const timer = setTimeout(() => {
+          timedOut = true;
+          killGroupWithFallback();
+        }, timeoutMs);
+        const onAbort = () => {
+          if (settled) return;
+          aborted = true;
+          // code:run owns the signal passed to inner dispatches. If its worker deadline
+          // fires while this router is blocked in spawnSync-backed Vitest, the router must
+          // terminate the same process group as its own timeout path; otherwise the inner
+          // suite survives after the outer wrapper has returned (EI-20949515346526475).
+          killGroupWithFallback();
+        };
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
+        // Cap retained diagnostics — the router's own output is a fallback for the
+        // error paths, never the success path's payload.
+        const append = (b: Buffer) => {
+          outputBytes += b.byteLength;
+          output = (output + b.toString('utf8')).slice(-8192);
+        };
+        child.stdout?.on('data', append);
+        child.stderr?.on('data', append);
+        const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          resolve({
+            ...outcome,
+            actualDemand: sampler.stop({ diskBytes: outputBytes }),
+          });
+        };
+        child.on('error', (e) => {
+          spawnError = e.message;
+          finish({
+            code: null,
+            signal: null,
+            timedOut,
+            aborted,
+            spawnError,
+            output: `${output}\n[spawn-error] ${e.message}`,
+          });
+        });
+        child.on('close', (code, closeSignal) =>
+          finish({
+            code,
+            signal: closeSignal ?? null,
+            timedOut,
+            aborted,
+            output,
+          }),
+        );
+      }),
   );
 }
 
@@ -1153,7 +1170,8 @@ export function parseRouterTestResult(
   files: readonly string[] = [],
   opts: { maxFailures?: number } = {},
 ): DistilledTestRun | null {
-  const markerRe = /^TEST_FILE_RESULT\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+status=(passed|failed)\b[^\r\n]*$/gm;
+  const markerRe =
+    /^TEST_FILE_RESULT\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+status=(passed|failed)\b[^\r\n]*$/gm;
   let marker: RegExpExecArray | null = null;
   for (const match of output.matchAll(markerRe)) marker = match;
   if (!marker) return null;
@@ -1185,10 +1203,7 @@ export function parseRouterTestResult(
   const reportedFailed = summaryValue('fail');
   if (tests === null || passed === null || reportedFailed === null || tests < 1) return null;
 
-  const skipped =
-    (summaryValue('skipped') ?? 0) +
-    (summaryValue('todo') ?? 0) +
-    (summaryValue('cancelled') ?? 0);
+  const skipped = (summaryValue('skipped') ?? 0) + (summaryValue('todo') ?? 0) + (summaryValue('cancelled') ?? 0);
   const durationMatch = /^(?:\s*)(?:ℹ|#)?\s*duration_ms\s+([0-9]+(?:\.[0-9]+)?)\s*$/gm;
   let durationMs: number | null = null;
   for (const match of output.matchAll(durationMatch)) durationMs = Math.max(0, Math.round(Number(match[1])));
@@ -1211,9 +1226,7 @@ export function parseRouterTestResult(
   }
 
   const byFile =
-    files.length === 1 && executed === 1
-      ? { [files[0]!]: { passed, failed, skipped, collectionFailed: false } }
-      : {};
+    files.length === 1 && executed === 1 ? { [files[0]!]: { passed, failed, skipped, collectionFailed: false } } : {};
   return {
     passed,
     failed,
@@ -1264,11 +1277,7 @@ export function parseRouterTerminalCompletion(output: string): RouterTerminalCom
   let finishedLine: string | null = null;
   for (const match of output.matchAll(/^TEST_FILE_PROGRESS[^\r\n]*$/gm)) {
     const line = match[0];
-    if (
-      /\bstate=finished\b/.test(line) &&
-      /\bexitStatus=0\b/.test(line) &&
-      /\bsignal=none\b/.test(line)
-    ) {
+    if (/\bstate=finished\b/.test(line) && /\bexitStatus=0\b/.test(line) && /\bsignal=none\b/.test(line)) {
       finishedLine = line;
     }
   }
@@ -1425,10 +1434,7 @@ export async function runTestFilesCore(opts: {
   // the sibling checkout's own Vitest config instead of trying to run the path from
   // the ambient Papercusp tree.
   const requestedPaths = normalizeTestFilePaths(opts.files, opts.root);
-  const root = checkoutRootForTestFiles(
-    requestedPaths.ok ? requestedPaths.files : opts.files,
-    opts.root,
-  );
+  const root = checkoutRootForTestFiles(requestedPaths.ok ? requestedPaths.files : opts.files, opts.root);
   const runId = randomUUID();
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
@@ -1453,10 +1459,7 @@ export async function runTestFilesCore(opts: {
         `session's harness/project is registered.`,
     };
   }
-  const pathResolution = normalizeTestFilePaths(
-    requestedPaths.ok ? requestedPaths.files : opts.files,
-    root,
-  );
+  const pathResolution = normalizeTestFilePaths(requestedPaths.ok ? requestedPaths.files : opts.files, root);
   if (!pathResolution.ok) {
     return {
       ok: false,
@@ -1503,12 +1506,8 @@ export async function runTestFilesCore(opts: {
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
-      ...(opts.harnessSlug && opts.harnessSlug !== '*'
-        ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug }
-        : {}),
-      ...(opts.workspaceId && opts.workspaceId !== '*'
-        ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId }
-        : {}),
+      ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
+      ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     };
     // `testing:run` can itself be invoked from the repository's pc-heavy
     // wrapper. That wrapper exports a one-shot readiness/finalization marker
@@ -1633,7 +1632,8 @@ export async function runTestFilesCore(opts: {
         root,
         error: 'timeout',
         timeoutMs,
-        hint: `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
+        hint:
+          `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
           detachedRecoveryHint({ runId: detachedRunId, durable: detachedDurable }) +
           detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
@@ -1660,13 +1660,8 @@ export async function runTestFilesCore(opts: {
     // Name-filter and all-skipped refusals intentionally retain their report so
     // the typed branches below can explain the vacuous run. Every other exit-2
     // result has no trustworthy report and remains the existing route_error.
-    const hasReportBackedRefusal = /^(?:TEST_FILE_NAME_FILTER_NO_MATCH|TEST_FILE_ALL_SKIPPED)\b/m.test(
-      outcome.output,
-    );
-    if (
-      (outcome.code === ROUTER_EXIT_ROUTE_ERROR && !hasReportBackedRefusal) ||
-      outcome.code === null
-    ) {
+    const hasReportBackedRefusal = /^(?:TEST_FILE_NAME_FILTER_NO_MATCH|TEST_FILE_ALL_SKIPPED)\b/m.test(outcome.output);
+    if ((outcome.code === ROUTER_EXIT_ROUTE_ERROR && !hasReportBackedRefusal) || outcome.code === null) {
       return { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) };
     }
 
@@ -1709,7 +1704,10 @@ export async function runTestFilesCore(opts: {
       if (routerResult) {
         const executedNothing = zeroExecutedRefusal(routerResult, { runId, root });
         if (executedNothing) return executedNothing;
-        return boundTestRunPayload({ ok: routerResult.failed === 0 && outcome.code === 0, runId, root }, routerResult) as TestFilesCoreResult;
+        return boundTestRunPayload(
+          { ok: routerResult.failed === 0 && outcome.code === 0, runId, root },
+          routerResult,
+        ) as TestFilesCoreResult;
       }
       // Exit 1 with no report is the REFUSED false-green (the router bailed
       // before running anything) — the one case where "no results" is the
@@ -1927,7 +1925,19 @@ export default defineTool({
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
-    const surfacedResult = { ...result, rootSource: rootSelection.source };
+    const testRunIds =
+      ctx.workspaceId && ctx.workspaceId !== '*' && ctx.harnessSlug && ctx.harnessSlug !== '*'
+        ? await findHarnessTestRunIds({
+            workspaceId: ctx.workspaceId,
+            harnessSlug: ctx.harnessSlug,
+            runGroupId: result.runId,
+          })
+        : null;
+    const surfacedResult = {
+      ...result,
+      ...(testRunIds === null ? {} : { testRunIds }),
+      rootSource: rootSelection.source,
+    };
     if (result.ok === false && result.error === 'timeout') {
       return {
         data: {
