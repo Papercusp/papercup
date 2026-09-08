@@ -68,9 +68,13 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   boundTestRunPayload,
+  captureWorktreeSnapshot,
+  computeWorktreeDirty,
   distillVitestRun,
   mergeDistilledRuns,
   parseFailureDetailsSidecar,
+  parseVitestJsonForHarnessRows,
+  persistHarnessTestRuns,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
   startRun,
   startRunDurable,
@@ -102,25 +106,15 @@ const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-
 const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
 
 /**
- * Resolve the ledger reporter independently of the checkout that owns the
- * requested tests. A sibling/external Vitest checkout legitimately has no
- * Papercusp `libs/test-config` tree, but `testing:run` still promises to stamp
- * execution-ledger rows for the workspace/harness supplied by the caller.
- *
- * Prefer a checkout-local reporter when one exists so another managed Hive can
- * carry its own compatible implementation. Otherwise use the operator's
- * packaged reporter: it is deliberately self-contained and derives the tested
- * repository from Vitest's cwd, so loading it by absolute path does not make it
- * attribute the run to the Papercusp checkout.
+ * A managed Papercusp checkout owns a Vitest reporter that records its run.
+ * An independent sibling checkout generally does not; in that case the
+ * operator must ingest the JSON report itself after the child exits. Loading
+ * Papercusp's TypeScript reporter into the foreign Vitest process is not a
+ * reliable fallback: its package resolution and fail-soft database connection
+ * both belong to a different checkout.
  */
-export function resolveAdminTestRunsReporterPath(
-  testRoot: string,
-  operatorRoot = REPO_ROOT,
-): string | null {
-  const local = join(testRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
-  if (existsSync(local)) return local;
-  const packaged = join(operatorRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
-  return existsSync(packaged) ? packaged : null;
+export function shouldIngestVitestLedgerInProcess(testRoot: string): boolean {
+  return !existsSync(join(testRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH));
 }
 
 const DETACHED_INSPECT_TEST_HINT =
@@ -1477,6 +1471,9 @@ export async function runTestFilesCore(opts: {
     };
   }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const ingestLedgerInProcess =
+    Boolean(opts.workspaceId && opts.harnessSlug) && shouldIngestVitestLedgerInProcess(root);
+  const ledgerWorktreeBefore = ingestLedgerInProcess ? captureWorktreeSnapshot(root) : null;
 
   // EI-21051590601555185: this tool runs inside the long-lived operator process, so it does not
   // pass through scripts/test-files.mjs before creating its private report directory. Apply the
@@ -1491,8 +1488,8 @@ export async function runTestFilesCore(opts: {
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
     // the workspace config. Keep the admin ledger reporter in the same invocation, otherwise
     // testing:run returns correct counts but silently records no harness_shared.test_runs rows.
-    const adminReporterPath = resolveAdminTestRunsReporterPath(root);
-    if (adminReporterPath) vitestArgs.push(`--reporter=${adminReporterPath}`);
+    const adminReporterPath = join(root, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+    if (existsSync(adminReporterPath)) vitestArgs.push(`--reporter=${adminReporterPath}`);
     // WI-39830: the JOINED form, never `['-t', pattern]`. Split across two argv entries,
     // vitest's CAC parser reads any `-`-prefixed pattern as a new OPTION instead of as `-t`'s
     // value and dies with an opaque CACError — which makes every test in this repo whose name
@@ -1731,6 +1728,26 @@ export async function runTestFilesCore(opts: {
       reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails })),
       { maxFailures: opts.maxFailures },
     );
+
+    // External Vitest checkouts have no Papercusp reporter to write the
+    // workspace-scoped execution ledger. Reuse the Tests-tab ingestion
+    // primitives over the exact JSON reports we already distilled; the write
+    // happens in the operator process, where the database handle is known, and
+    // only when no child reporter exists so a managed checkout cannot double-
+    // record the same run group.
+    if (ingestLedgerInProcess && ledgerWorktreeBefore && opts.workspaceId && opts.harnessSlug) {
+      const ledgerWorktreeAfter = captureWorktreeSnapshot(root);
+      const rows = reportTexts.flatMap((text) => parseVitestJsonForHarnessRows(text, root));
+      await persistHarnessTestRuns({
+        harnessSlug: opts.harnessSlug,
+        workspaceId: opts.workspaceId,
+        rows,
+        runGroupId: runId,
+        source: 'local',
+        commit: ledgerWorktreeAfter.commit,
+        worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),
+      });
+    }
 
     // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING, yet every
     // test is merely SKIPPED and vitest exits 0 — so this used to return a green.
