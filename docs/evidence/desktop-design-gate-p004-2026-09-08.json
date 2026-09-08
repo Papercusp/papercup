@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "plan": "design-acceptance-journey-enforcement-2026-09-08",
+  "workItemId": "WI-10000756",
+  "specRef": "AUTO-BAR-R-4-P-004@3",
+  "specFingerprint": "5b58935f59e40973596a111b97b9d9144ef99366294a5c839f2ddb68f6c0bad0",
+  "status": "implementation-verified-independent-audit-pending",
+  "testGroup": "design-gate-p004-final-20260908",
+  "testedCommit": "65c41bf2ee20af822127400c84f1c09ae1f6d4d4",
+  "testRuns": {
+    "acceptance": 17717417,
+    "completion": 17717421,
+    "shipment": 17717418,
+    "featureAggregation": 17717419,
+    "pluginBridge": 17717420
+  },
+  "testCounts": {
+    "acceptance": 24,
+    "completion": 50,
+    "shipment": 81,
+    "featureAggregation": 14,
+    "pluginBridge": 12,
+    "total": 181
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=<the named changed core TypeScript files>",
+    "latestRunStamp": "2026-09-08T20:59:27.706Z",
+    "result": "named changed files clean; this is not a whole-repository typecheck claim"
+  },
+  "canary": {
+    "originalJourney": "docs/evidence/desktop-design-journey-p002-2026-09-08.json#original",
+    "originalTestRunId": 17712295,
+    "repairedTestRunId": 17713845,
+    "renderMatrix": "docs/evidence/desktop-render-matrix-p003-2026-09-08/reviewed-matrix.json",
+    "renderTestRunId": 17714647,
+    "originalOutcome": "Loaded shell lacks the Desktop workspace; the reused failure remains a blocking journey.",
+    "repairedOutcome": "All recorded navigation scenarios and all 20 reviewed state captures satisfy the contract in the isolated acceptance fixture.",
+    "limits": [
+      "No new browser session was claimed by these enforcement tests.",
+      "Current source/build/other identity files and the browser-ledger reader are controlled test inputs. Saved browser outcomes and PNGs are reused unchanged.",
+      "Real portal canary remains disconnected; fixture viewer controls do not establish real cloud/video/input.",
+      "The browser ledger is a file-level corroboration, not independent per-scenario measurement.",
+      "This is current-tree implementation verification, not operator release or final rollout."
+    ]
+  },
+  "negativeControls": [
+    {
+      "scenario": "desktop.gate.failed-late-obligation",
+      "mutation": "earlier candidate passes, last journey fails",
+      "expectedReason": "journey-failed",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    },
+    {
+      "scenario": "desktop.gate.missing-proof",
+      "mutation": "remove only ready-narrow-dark from the reviewed matrix",
+      "expectedReason": "missing-case-evidence",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    },
+    {
+      "scenario": "desktop.gate.missing-registration",
+      "mutation": "remove the exact approved work-item binding",
+      "expectedReason": "approval-binding-missing",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    },
+    {
+      "scenario": "desktop.gate.repaired",
+      "mutation": "complete repaired proof set passes; removing all observations refuses",
+      "expectedReason": "missing-case-evidence",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    },
+    {
+      "scenario": "desktop.gate.stale-build",
+      "mutation": "change the current manifest build revisions after proof",
+      "expectedReason": "stale-build",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    },
+    {
+      "scenario": "desktop.gate.stale-source",
+      "mutation": "change the independently measured source file after proof",
+      "expectedReason": "stale-source",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    },
+    {
+      "scenario": "desktop.gate.wrong-target",
+      "mutation": "keep correct component captures and change actual navigation target",
+      "expectedReason": "wrong-target",
+      "pairedPositive": "The same isolated case first checks the complete repaired proof set."
+    }
+  ],
+  "additionalControls": [
+    "independent test/fixture/rubric/environment/served-build fingerprint mutations",
+    "missing acceptance descriptor",
+    "missing implementing work-item registration",
+    "replaced reference and modified approval-contract bytes",
+    "invalid capture hash",
+    "fixture connectivity and placeholder-as-ready",
+    "non-browser run cited as browser evidence",
+    "missing persisted entry scenario",
+    "test fingerprint must include the cited browser test"
+  ],
+  "measurement": {
+    "schemaVersion": 1,
+    "kind": "repo-files",
+    "sourcePaths": [
+      "packages/operator-core/lib/design-compare/acceptance.ts",
+      "packages/operator-core/lib/design-compare/feature-gate.ts",
+      "packages/operator-core/lib/design-compare/ratification.ts",
+      "packages/operator-core/lib/design-compare/render-matrix.ts",
+      "packages/operator-core/lib/design-compare/contract.ts",
+      "packages/operator-core/lib/design-compare/verbs.ts",
+      "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts",
+      "packages/operator-core/lib/plan-acceptance-gate.ts",
+      "libs/papercusp/plugins/design-phase/papercusp.json",
+      "docs/evidence/desktop-design-journey-p002-2026-09-08.json",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/reviewed-matrix.json",
+      "scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-narrow-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-narrow-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-desktop-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-desktop-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-narrow-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-narrow-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-desktop-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-desktop-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-narrow-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-narrow-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-desktop-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-desktop-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-narrow-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-narrow-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-desktop-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-desktop-dark.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-narrow-light.png",
+      "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-narrow-dark.png"
+    ],
+    "testPaths": [
+      "packages/operator-core/lib/design-compare/acceptance.test.ts",
+      "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.test.ts",
+      "packages/operator-core/lib/plan-acceptance-gate.test.ts",
+      "packages/operator-core/lib/design-compare/feature-gate.test.ts",
+      "packages/operator-core/lib/design-phase-plugin-bridge.test.ts"
+    ]
+  },
+  "hashes": {
+    "packages/operator-core/lib/design-compare/acceptance.ts": "d593886ac34f7377e95c1432ea26230b0b4768fc74717ac0af56cca213011f0d",
+    "packages/operator-core/lib/design-compare/feature-gate.ts": "645ef9a1508259ce21585260281daf1b0db2477fb0624317534f4477bd75266b",
+    "packages/operator-core/lib/design-compare/ratification.ts": "211f062f4179097a2a6d375cbe55c4a7d752ca25d71db6f2d1367546e85c8d34",
+    "packages/operator-core/lib/design-compare/render-matrix.ts": "dcce51ff91ad35d086b37fb4b6c356c83858dd72e17001a3519483cd362cc785",
+    "packages/operator-core/lib/design-compare/contract.ts": "27ce662a0f24752ce17f7fdbf949b9106ccf226304e49a0026d43a1f2fb4ebba",
+    "packages/operator-core/lib/design-compare/verbs.ts": "01e6af8a733fe555316b3065f99f8cef04b3c8c7ba5dbb139c5a5317c2c96e5c",
+    "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts": "62a8fe69df33287a7061540a5c9650749c307304abf407ad157e1f62040e9d0d",
+    "packages/operator-core/lib/plan-acceptance-gate.ts": "6ae646c269887163b537a94968b710d0589039696932f9d59b732054bc3e7176",
+    "libs/papercusp/plugins/design-phase/papercusp.json": "9f4162b905f485da9d5ff7c9ad0aec0ac8b0d16e93fbdc685ca06ffb6ad2757b",
+    "packages/operator-core/lib/design-compare/acceptance.test.ts": "108c35a6c0f1d03da0f4f268b11ac2156be1120e70c2eb7aca4c1a19af791679",
+    "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.test.ts": "42d32b4fb6cb62a7a98873cba308aaa7b0fbed8bbda2d89b3d2eeeabfb93d253",
+    "packages/operator-core/lib/plan-acceptance-gate.test.ts": "9e0d35f6d929608348943108d98124aedeab946c7eacac2d72933f9caa115212",
+    "packages/operator-core/lib/design-compare/feature-gate.test.ts": "b8617c7c7a044522af992222dff6175033ad83052daaba9177ecff3e8c1488ad",
+    "packages/operator-core/lib/design-phase-plugin-bridge.test.ts": "fdca5e715236ab3e1acb9c7ea29836a054a5f1fda35da0d0b61a894d0ca671e1"
+  },
+  "reproduce": "PAPERCUSP_HARNESS_SLUG=papercusp PAPERCUSP_TEST_RUN_GROUP=<unique> npm run test:file -- packages/operator-core/lib/design-compare/acceptance.test.ts packages/operator-core/lib/design-compare/feature-gate.test.ts packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.test.ts packages/operator-core/lib/plan-acceptance-gate.test.ts packages/operator-core/lib/design-phase-plugin-bridge.test.ts"
+}
