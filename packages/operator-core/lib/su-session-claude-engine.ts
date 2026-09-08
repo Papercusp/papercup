@@ -134,6 +134,10 @@ export function startClaudeSuEngine(
   const systemPrompt = readFileSync(boot.promptFile, 'utf8');
   const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
   delete env.PAPERCUSP_TTY;
+  // The per-session SessionStart hook otherwise mistakes the SDK initialize
+  // channel for a dropped argv prompt and injects the full parked playbook as
+  // additionalContext on every start/resume.
+  env.PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED = '1';
   env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE = '1';
   env.DISABLE_AUTOUPDATER = '1';
   env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();

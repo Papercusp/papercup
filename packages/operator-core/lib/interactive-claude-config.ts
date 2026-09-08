@@ -271,6 +271,13 @@ function ppidOf(pid) {
 }
 
 function argvIntact() {
+  // Structured PUI engines deliver the full custom prompt through the Agent
+  // SDK initialize channel, which deliberately has no argv flag. Treat that
+  // explicit ownership marker as intact so this argv-recovery hook does not
+  // persist a second full playbook into the native conversation on every
+  // fresh start and exact resume. The compact continuity anchor below is
+  // independent and still runs for source=compact.
+  if (process.env.PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED === '1') return true;
   const chain = [];
   if (process.env.PSU_RECOVER_TEST_CHAIN) {
     try { chain.push(...JSON.parse(process.env.PSU_RECOVER_TEST_CHAIN)); } catch {}

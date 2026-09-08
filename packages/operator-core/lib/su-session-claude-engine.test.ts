@@ -121,6 +121,7 @@ describe('structured Claude SU engine', () => {
     expect(p.options()?.systemPrompt).toEqual({
       type: 'custom', prompt: readFileSync(promptFile, 'utf8'), snapshot: true,
     });
+    expect(p.options()?.env?.PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED).toBe('1');
     expect(p.options()?.extraArgs).not.toHaveProperty('system-prompt-file');
     expect(beforeReady).toMatchObject({ streamReady: false, executorAttached: false,
       descriptor: { lifecycle: expect.stringMatching(/^(starting|resuming)$/) } });
@@ -161,6 +162,7 @@ describe('structured Claude SU engine', () => {
     expect(p.options()?.systemPrompt).toEqual({
       type: 'custom', prompt: readFileSync(promptFile, 'utf8'), snapshot: true,
     });
+    expect(p.options()?.env?.PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED).toBe('1');
     expect(p.options()?.extraArgs).not.toHaveProperty('system-prompt-file');
     expect(p.options()?.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent', 'Workflow']));
     expect(p.prompts).toHaveLength(0);

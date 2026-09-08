@@ -462,13 +462,13 @@ describe('WI-3280: SessionStart playbook recovery', () => {
     ['node', '/mnt/c/x/psu.mjs'],
   ];
 
-  function runHook(configDir: string, chain: string[][]): string {
+  function runHook(configDir: string, chain: string[][], env: Record<string, string> = {}): string {
     return execFileSync(process.execPath, [join(configDir, RECOVER_HOOK)], {
       encoding: 'utf8',
       input: '{"session_id":"random-new-id","source":"startup"}',
       // PAPERCUSP_SID cleared: the test process's own psu identity would
       // otherwise mismatch the seeded intent sid and fire the P-007 rebind leg.
-      env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain), PAPERCUSP_SID: '' },
+      env: { ...process.env, PSU_RECOVER_TEST_CHAIN: JSON.stringify(chain), PAPERCUSP_SID: '', ...env },
     });
   }
 
@@ -522,6 +522,11 @@ describe('WI-3280: SessionStart playbook recovery', () => {
   it('hook is SILENT when the claude ancestor still carries --system-prompt-file', () => {
     const configDir = seedWithPlaybook('su-rec4');
     expect(runHook(configDir, INTACT_CHAIN)).toBe('');
+  });
+
+  it('hook is SILENT when a structured engine manages the system prompt outside argv', () => {
+    const configDir = seedWithPlaybook('su-rec-sdk');
+    expect(runHook(configDir, DROPPED_CHAIN, { PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED: '1' })).toBe('');
   });
 
   it('hook injects the playbook when the claude ancestor lost its argv (the VM shape)', () => {
@@ -782,6 +787,20 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
     expect(ctx).toContain('A pot is the offline-first data substrate');
     expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
     expect(ctx.indexOf('SESSION RECOVERED')).toBeLessThan(ctx.indexOf('POST-COMPACTION CONTINUITY ANCHOR'));
+  });
+
+  it('compact source with an SDK-managed prompt skips duplicate playbook recovery but keeps the anchor', async () => {
+    const configDir = seedWithPlaybook('su-cmp-sdk');
+    const out = JSON.parse(
+      await runHookAsync(configDir, DROPPED_CHAIN, '{"session_id":"x","source":"compact"}', {
+        PAPERCUSP_OPERATOR_URL: DEAD_OPERATOR,
+        PAPERCUSP_CLAUDE_SYSTEM_PROMPT_MANAGED: '1',
+      }),
+    );
+    const ctx = out.hookSpecificOutput.additionalContext as string;
+    expect(ctx).not.toContain('SESSION RECOVERED');
+    expect(ctx).not.toContain('A pot is the offline-first data substrate');
+    expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
   });
 
   it('compact source with NO parked playbook (raw dir): the anchor still lands', async () => {
