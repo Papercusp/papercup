@@ -8,6 +8,8 @@
  * launch. Ordinary staging edits, focused tests, and explicit repair admission
  * are outside the governed operation set by design.
  */
+import { basename, isAbsolute, relative, resolve } from 'node:path';
+import { atomizePipeline } from '../bash-substitution/atomize';
 import { readFrozenRepairMarker, type FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 
 export interface FrozenLineageIdentity {
@@ -237,6 +239,340 @@ export function renderFrozenLineagePolicyRefusal(verdict: FrozenLineagePolicyVer
 
 export const FROZEN_CANDIDATE_LINEAGE_VIOLATION = 'frozen_candidate_lineage_violation' as const;
 
+export type FrozenLineageShellCommandKind = 'canonical-root-test' | 'candidate-worktree-cut';
+
+export interface FrozenLineageShellCommandClassification {
+  kind: FrozenLineageShellCommandKind;
+  operation: Extract<FrozenLineageOperation, 'candidate-selection' | 'canonical-verification'>;
+  selectionSource: FrozenLineageSelectionSource;
+  /** Effective cwd of the governed atom when it is statically knowable. */
+  checkoutCwd: string | null;
+  /** The caller-supplied worktree ref, when this is a candidate cut. */
+  selectedRef?: string;
+}
+
+export interface FrozenLineageShellCommandInput {
+  command: string;
+  cwd: string;
+}
+
+export interface FrozenLineageShellCommandProbe {
+  /** Inject one stable marker for a pure test. */
+  marker?: FrozenRepairEditMarker | null;
+  /** Production/default is the live marker read; a sequence makes CAS races testable. */
+  readMarker?: () => FrozenRepairEditMarker | null;
+  /** The handler supplies the shared sidecar-backed Git HEAD reader. */
+  readCheckoutHead?: (cwd: string) => Promise<string | null>;
+  /** The handler supplies its existing fail-soft realpath seam. */
+  canonicalizePath?: (path: string) => string;
+}
+
+export interface FrozenLineageShellCommandVerdict {
+  allowed: boolean;
+  reason: FrozenLineagePolicyAllowReason | FrozenLineagePolicyRefusalReason | 'operation-not-governed';
+  classification: FrozenLineageShellCommandClassification | null;
+  policy: FrozenLineagePolicyVerdict | null;
+}
+
+function shellWords(atom: string): string[] | null {
+  const words: string[] = [];
+  let word = '';
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let started = false;
+
+  const push = () => {
+    if (!started) return;
+    words.push(word);
+    word = '';
+    started = false;
+  };
+
+  for (const ch of atom) {
+    if (escaped) {
+      word += ch;
+      started = true;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && quote !== "'") {
+      escaped = true;
+      started = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else word += ch;
+      started = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      push();
+      continue;
+    }
+    word += ch;
+    started = true;
+  }
+  if (escaped || quote) return null;
+  push();
+  return words;
+}
+
+function literalPath(token: string | undefined, from: string | null): string | null {
+  if (!token || token === '-' || token.startsWith('~') || /[$`*?[\]{}()]/.test(token)) return null;
+  if (isAbsolute(token)) return resolve(token);
+  return from ? resolve(from, token) : null;
+}
+
+function commandName(token: string | undefined): string {
+  return basename((token ?? '').replace(/^[({]+/, ''));
+}
+
+function cdTarget(atom: string, cwd: string | null): string | null | undefined {
+  const words = shellWords(atom);
+  if (!words || commandName(words[0]) !== 'cd') return undefined;
+  const operands = words.slice(1).filter((word) => word !== '--');
+  if (operands.length !== 1) return null;
+  return literalPath(operands[0], cwd);
+}
+
+function peelHeavyWrapper(words: string[]): string[] {
+  let out = words;
+  if (commandName(out[0]) === 'bash' && commandName(out[1]) === 'pc-heavy.sh') out = out.slice(2);
+  else if (commandName(out[0]) === 'pc-heavy.sh') out = out.slice(1);
+  while (out[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(out[0])) out = out.slice(1);
+  return out;
+}
+
+function canonicalRootTestCwd(atom: string, cwd: string | null): string | null | undefined {
+  const parsed = shellWords(atom);
+  if (!parsed) return null;
+  const words = peelHeavyWrapper(parsed);
+  const head = commandName(words[0]);
+
+  if (head === 'node' && words[1]?.replace(/^\.\//, '') === 'scripts/affected-tests.mjs') return cwd;
+  if (head !== 'npm') return undefined;
+
+  let effectiveCwd = cwd;
+  let index = 1;
+  let workspaceScoped = false;
+  while (index < words.length && words[index]!.startsWith('-')) {
+    const option = words[index]!;
+    if (option === '--workspace' || option === '-w' || option === '--workspaces' || option.startsWith('--workspace=')) {
+      workspaceScoped = true;
+      index += option.includes('=') || option === '--workspaces' ? 1 : 2;
+      continue;
+    }
+    if (option === '--prefix') {
+      effectiveCwd = literalPath(words[index + 1], effectiveCwd);
+      index += 2;
+      continue;
+    }
+    if (option.startsWith('--prefix=')) {
+      effectiveCwd = literalPath(option.slice('--prefix='.length), effectiveCwd);
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  if (workspaceScoped) return undefined;
+
+  const verb = words[index];
+  let script: string | undefined;
+  if (verb === 'test' || verb === 't') script = 'test';
+  else if (verb === 'run' || verb === 'run-script') script = words[index + 1];
+  if (!script) return undefined;
+
+  const canonicalScripts = new Set([
+    'test',
+    'test:affected',
+    'test:affected:integration',
+    'test:all',
+    'test:all:integration',
+  ]);
+  return canonicalScripts.has(script) ? effectiveCwd : undefined;
+}
+
+function gitWorktreeAdd(atom: string, cwd: string | null): { cwd: string | null; ref: string } | null {
+  const parsed = shellWords(atom);
+  if (!parsed) return null;
+  const words = peelHeavyWrapper(parsed);
+  if (commandName(words[0]) !== 'git') return null;
+
+  let gitCwd = cwd;
+  let index = 1;
+  while (index < words.length && words[index] !== 'worktree') {
+    const option = words[index]!;
+    if (option === '-C') {
+      gitCwd = literalPath(words[index + 1], gitCwd);
+      index += 2;
+      continue;
+    }
+    if (option.startsWith('-C') && option.length > 2) {
+      gitCwd = literalPath(option.slice(2), gitCwd);
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  if (words[index] !== 'worktree' || words[index + 1] !== 'add') return null;
+
+  const positional: string[] = [];
+  const optionsWithValue = new Set(['-b', '-B', '--orphan', '--reason']);
+  for (let cursor = index + 2; cursor < words.length; cursor += 1) {
+    const token = words[cursor]!;
+    if (optionsWithValue.has(token)) {
+      cursor += 1;
+      continue;
+    }
+    if (token.startsWith('--reason=') || token.startsWith('--orphan=') || /^-[bB].+/.test(token)) continue;
+    if (token.startsWith('-')) continue;
+    positional.push(token);
+  }
+  if (positional.length === 0) return null;
+  return { cwd: gitCwd, ref: positional[1] ?? 'HEAD' };
+}
+
+function sourceForWorktreeRef(ref: string): FrozenLineageSelectionSource {
+  const normalized = ref.trim();
+  if (/^(?:refs\/heads\/|refs\/remotes\/origin\/|origin\/)?staging(?:[~^].*)?$/i.test(normalized)) return 'staging';
+  if (/integration[_-]?branch|PAPERCUSP_INTEGRATION_BRANCH/i.test(normalized)) return 'integration-branch';
+  if (/^(?:HEAD|@)(?:[~^@].*)?$/i.test(normalized)) return 'current-head';
+  return normalized ? 'caller-selected-sha' : 'unknown';
+}
+
+/**
+ * Pure shell classification. It deliberately runs before marker/Git reads so
+ * ordinary commands, focused tests, and explicit repair admission stay on the
+ * zero-probe hot path.
+ */
+export function classifyFrozenLineageShellCommand(
+  input: FrozenLineageShellCommandInput,
+): FrozenLineageShellCommandClassification | null {
+  const parts = atomizePipeline(input.command);
+  let effectiveCwd: string | null = resolve(input.cwd);
+  let pendingCd: { before: string | null; target: string | null } | null = null;
+
+  for (const part of parts) {
+    if (pendingCd) {
+      if (part.sepBefore === '&&') effectiveCwd = pendingCd.target;
+      else if (part.sepBefore === '||' || part.sepBefore === '|') effectiveCwd = pendingCd.before;
+      else effectiveCwd = pendingCd.before === pendingCd.target ? pendingCd.before : null;
+      pendingCd = null;
+    }
+
+    const target = cdTarget(part.atom, effectiveCwd);
+    if (target !== undefined) {
+      pendingCd = { before: effectiveCwd, target };
+      continue;
+    }
+
+    const cut = gitWorktreeAdd(part.atom, effectiveCwd);
+    if (cut) {
+      return {
+        kind: 'candidate-worktree-cut',
+        operation: 'candidate-selection',
+        selectionSource: sourceForWorktreeRef(cut.ref),
+        checkoutCwd: cut.cwd,
+        selectedRef: cut.ref,
+      };
+    }
+
+    const testCwd = canonicalRootTestCwd(part.atom, effectiveCwd);
+    if (testCwd !== undefined) {
+      return {
+        kind: 'canonical-root-test',
+        operation: 'canonical-verification',
+        selectionSource: 'effective-checkout-head',
+        checkoutCwd: testCwd,
+      };
+    }
+  }
+  return null;
+}
+
+function pathInside(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/** Evaluate one already-classified shell command with a live identity/HEAD CAS. */
+export async function evaluateFrozenLineageShellCommand(
+  classification: FrozenLineageShellCommandClassification | null,
+  governedRoot: string,
+  probe: FrozenLineageShellCommandProbe = {},
+): Promise<FrozenLineageShellCommandVerdict> {
+  if (!classification) {
+    return { allowed: true, reason: 'operation-not-governed', classification: null, policy: null };
+  }
+
+  const canonicalize = probe.canonicalizePath ?? resolve;
+  const root = canonicalize(governedRoot);
+  const checkoutCwd = classification.checkoutCwd ? canonicalize(classification.checkoutCwd) : null;
+  const inGovernedTree = checkoutCwd ? pathInside(root, checkoutCwd) : null;
+  const applies =
+    classification.kind === 'canonical-root-test'
+      ? checkoutCwd === null || checkoutCwd === root
+      : inGovernedTree !== false;
+  if (!applies) {
+    return { allowed: true, reason: 'operation-not-governed', classification, policy: null };
+  }
+
+  const hasInjectedMarker = Object.prototype.hasOwnProperty.call(probe, 'marker');
+  const readMarker = hasInjectedMarker ? () => probe.marker ?? null : (probe.readMarker ?? readFrozenRepairMarker);
+  const expectedMarker = readMarker();
+  if (!expectedMarker) {
+    const policy = evaluateFrozenLineagePolicy(
+      { operation: classification.operation, selectionSource: classification.selectionSource },
+      { marker: null },
+    );
+    return { allowed: true, reason: policy.reason, classification, policy };
+  }
+
+  const checkoutHead =
+    classification.selectionSource === 'effective-checkout-head' && checkoutCwd && probe.readCheckoutHead
+      ? await probe.readCheckoutHead(checkoutCwd)
+      : null;
+  const policy = evaluateFrozenLineagePolicy(
+    {
+      operation: classification.operation,
+      selectionSource: classification.selectionSource,
+      checkoutHead,
+      expectedIdentity: frozenLineageIdentityFromMarker(expectedMarker),
+    },
+    { marker: readMarker() },
+  );
+  return { allowed: policy.allowed, reason: policy.reason, classification, policy };
+}
+
+export function renderFrozenLineageShellCommandRefusal(verdict: FrozenLineageShellCommandVerdict): string | null {
+  if (verdict.allowed || !verdict.classification || !verdict.policy || verdict.policy.allowed) return null;
+  const detail = renderFrozenLineagePolicyRefusal(verdict.policy);
+  return `${FROZEN_CANDIDATE_LINEAGE_VIOLATION} — blocked ${verdict.classification.kind}. ${detail}`;
+}
+
+export function frozenLineageShellCommandViolationPayload(verdict: FrozenLineageShellCommandVerdict) {
+  if (verdict.allowed || !verdict.classification || !verdict.policy || verdict.policy.allowed) return null;
+  return {
+    ok: false as const,
+    error: FROZEN_CANDIDATE_LINEAGE_VIOLATION,
+    errorCode: FROZEN_CANDIDATE_LINEAGE_VIOLATION,
+    commandKind: verdict.classification.kind,
+    unsafeSource: verdict.policy.selectionSource,
+    ...(verdict.classification.selectedRef ? { selectedRef: verdict.classification.selectedRef } : {}),
+    liveIdentity: verdict.policy.liveIdentity,
+    checkoutHead: verdict.policy.checkoutHead,
+    reason: verdict.policy.reason,
+    sanctionedRoute: verdict.policy.sanctionedRoute,
+    message: renderFrozenLineageShellCommandRefusal(verdict),
+  };
+}
+
 export type FrozenLineageCarrySurface =
   | 'work-item-checkpoint'
   | 'loop-checkpoint'
@@ -286,8 +622,7 @@ const CARRY_SOURCE_PATTERNS: readonly {
   { source: 'staging', pattern: String.raw`\b(?:origin\/)?staging(?:\s+(?:tip|head))?\b` },
 ];
 
-const CARRY_STRONG_SELECTION_ACTIONS =
-  String.raw`(?:use|select|choose|take|derive|pin|cut|recut|base|set|treat|resolve)`;
+const CARRY_STRONG_SELECTION_ACTIONS = String.raw`(?:use|select|choose|take|derive|pin|cut|recut|base|set|treat|resolve)`;
 const CARRY_EXECUTION_ACTIONS = String.raw`(?:create|check\s*out|checkout|launch|run|test|verify|judge|evaluate)`;
 const CARRY_JUDGED_CONTEXT =
   /\b(?:candidate|judged|canonical|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;

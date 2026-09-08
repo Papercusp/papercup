@@ -6090,6 +6090,9 @@ for item in (result.get('content') or []):
 if not inner:
     allow()
 
+if isinstance(inner.get('frozenLineageDenyReason'), str) and inner.get('frozenLineageDenyReason'):
+    deny(inner['frozenLineageDenyReason'])
+
 if isinstance(inner.get('goalModeEditDenyReason'), str) and inner.get('goalModeEditDenyReason'):
     deny(inner['goalModeEditDenyReason'])
 

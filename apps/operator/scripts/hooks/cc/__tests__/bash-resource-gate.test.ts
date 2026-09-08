@@ -5885,6 +5885,21 @@ describe('substitution verdict handling', () => {
     });
   });
 
+  it('surfaces the actionable frozen-lineage refusal before generic resource-block prose', () => {
+    const message =
+      'frozen_candidate_lineage_violation — candidate=ccc, repairHead=rrr, queueRevision=42; use repairHead/admit.';
+    setReply({
+      decision: 'block',
+      matched: [],
+      frozenLineageDenyReason: message,
+    });
+    const out = run();
+    const hook = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain(message);
+    expect(hook.permissionDecisionReason).not.toContain('resource-gate:');
+  });
+
   it('does not mark a Git read as a tracked mutation', () => {
     setReply({ decision: 'allow', matched: [], goalModeEditDenyReason: null });
     expectAllow(runGate(bashCmd('git status', { cwd: REPO_ROOT }), {

@@ -58,6 +58,13 @@ import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { readHeldWorkItems } from '../../carry-brief';
 import { listLiveTasks } from '../../task-manager/store';
+import {
+  classifyFrozenLineageShellCommand,
+  evaluateFrozenLineageShellCommand,
+  frozenLineageShellCommandViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
+import { repoHeadSha } from '../../harness/docs/git-runner';
+import { resolveCapabilityIntegrationRoot } from './base-dir';
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -331,10 +338,7 @@ export default defineTool({
     // NOTE for whoever edits this next: `seeAlso` is NOT summed by promptWeight()
     // (tool-guidance-budget.ts — description + when + notWhen + chaining + byRole only),
     // so changing this array cannot move the prompt-weight budget in either direction.
-    seeAlso: [
-      'capability:bash_output (read a backgrounded run)',
-      'capability:git (git actions, gated as git)',
-    ],
+    seeAlso: ['capability:bash_output (read a backgrounded run)', 'capability:git (git actions, gated as git)'],
   },
   capability: 'capability:bash',
   requirePrincipal: false,
@@ -428,6 +432,21 @@ export default defineTool({
     // the child's misleading `spawn /usr/bin/bash ENOENT`.
     const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
     if (cwdError) throw new Error(cwdError);
+    // Classify before any Git read. The overwhelmingly common command remains a
+    // pure string check; only a canonical root test or candidate worktree cut
+    // reaches the live marker/HEAD CAS immediately before its actual spawn.
+    const frozenLineageRoot = resolveCapabilityIntegrationRoot();
+    const frozenLineageCommand = frozenLineageRoot
+      ? classifyFrozenLineageShellCommand({ command, cwd: realpathSoft(cwd) })
+      : null;
+    const frozenLineageRefusal = async () => {
+      if (!frozenLineageRoot) return null;
+      const verdict = await evaluateFrozenLineageShellCommand(frozenLineageCommand, frozenLineageRoot, {
+        readCheckoutHead: repoHeadSha,
+        canonicalizePath: realpathSoft,
+      });
+      return frozenLineageShellCommandViolationPayload(verdict);
+    };
     if (args.run_in_background) {
       const untrackedBackgrounding = detectUntrackedShellBackgrounding(command);
       if (untrackedBackgrounding) {
@@ -580,6 +599,13 @@ export default defineTool({
 
     if (args.run_in_background) {
       const provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null);
+      const frozenRefusal = await frozenLineageRefusal();
+      if (frozenRefusal) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
+          isError: true,
+        };
+      }
       const job = startBackground(
         {
           command: command,
@@ -648,6 +674,14 @@ export default defineTool({
             }),
           },
         ],
+      };
+    }
+
+    const frozenRefusal = await frozenLineageRefusal();
+    if (frozenRefusal) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
+        isError: true,
       };
     }
 

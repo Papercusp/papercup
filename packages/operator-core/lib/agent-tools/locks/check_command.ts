@@ -12,20 +12,21 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
-import {
-  matchCommandToSubstitutions,
-  strongestTier,
-  type SubstitutionMatch,
-} from '../../bash-substitution/match';
+import { matchCommandToSubstitutions, strongestTier, type SubstitutionMatch } from '../../bash-substitution/match';
 import { recordFiresDetached } from '../../bash-substitution/fires';
-import {
-  attachInvokeEnvelopes,
-  type InvokeEnvelope,
-} from '../../bash-substitution/invoke-envelope';
+import { attachInvokeEnvelopes, type InvokeEnvelope } from '../../bash-substitution/invoke-envelope';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
 import { readFileLockIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
 import { checkGoalModeEditGuard } from './goal-mode-edit-guard';
+import { isAbsolute, resolve } from 'node:path';
+import {
+  classifyFrozenLineageShellCommand,
+  evaluateFrozenLineageShellCommand,
+  frozenLineageShellCommandViolationPayload,
+} from '../../release/frozen-lineage-execution-policy';
+import { repoHeadSha } from '../../harness/docs/git-runner';
+import { realpathSoft, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
 
 /**
  * The bash→tool substitution verdict (plan bash-to-tool-substitution-2026-07-26,
@@ -81,7 +82,7 @@ async function substitutionVerdict(
 export default defineTool({
   name: 'locks:check_command',
   description:
-    'Full verdict for a raw shell command: (a) does it touch a named resource with an exclusive (restart/migration) in flight — decision (allow | warn | block) + matched resources; and (b) does a bash→tool substitution rule claim it — substitutions[] + substitutionTier (observe | advise | deny). The one call a raw-Bash gate makes.',
+    'Full verdict for a raw shell command: named-resource holds, frozen-lineage bypasses, and bash→tool substitutions. The one call a raw-Bash gate makes.',
   guidance: {
     when: 'A hook (or you) wants to know, before running a command, whether it collides with an in-flight exclusive hold OR has a tool that should serve it instead.',
     notWhen: 'Acquiring a named-resource lock — use locks:acquire_resource. File edits — use locks:acquire.',
@@ -98,19 +99,30 @@ export default defineTool({
   args: z.object({
     command: z.string().min(1).max(32000),
     cwd: z.string().max(4096).optional(),
-    tracked_mutation: z.boolean().optional().describe(
-      'Hook-derived verdict: this shell command structurally mutates at least one tracked file. ' +
-      'When true, apply the same GOAL-mode never-implement gate as a native Edit/Write claim.',
-    ),
+    tracked_mutation: z
+      .boolean()
+      .optional()
+      .describe(
+        'Hook-derived verdict: this shell command structurally mutates at least one tracked file. ' +
+          'When true, apply the same GOAL-mode never-implement gate as a native Edit/Write claim.',
+      ),
   }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
-    const workspaceId =
-      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    const frozenLineageRoot = resolveCapabilityIntegrationRoot();
+    const commandCwd = args.cwd
+      ? realpathSoft(isAbsolute(args.cwd) ? args.cwd : resolve(frozenLineageRoot ?? process.cwd(), args.cwd))
+      : (frozenLineageRoot ?? process.cwd());
+    // Pure classification precedes every Git read. Ordinary commands therefore
+    // retain the original hot-path cost and semantics.
+    const frozenLineageCommand = frozenLineageRoot
+      ? classifyFrozenLineageShellCommand({ command: args.command, cwd: commandCwd })
+      : null;
 
     // Both questions about the same command, concurrently — the caller is a
     // gate on the hot path and the two reads are independent.
-    const [verdict, substitution, goalModeEditDenyReason] = await Promise.all([
+    const [verdict, substitution, goalModeEditDenyReason, frozenLineageVerdict] = await Promise.all([
       checkBashCommand({ command: args.command, coordinationDomain, ownerId }),
       substitutionVerdict(args.command, workspaceId, ownerId ?? null, args.cwd),
       args.tracked_mutation && ownerId
@@ -120,7 +132,16 @@ export default defineTool({
             intent: 'PreToolUse:BashTrackedMutation',
           })
         : Promise.resolve(null),
+      frozenLineageRoot
+        ? evaluateFrozenLineageShellCommand(frozenLineageCommand, frozenLineageRoot, {
+            readCheckoutHead: repoHeadSha,
+            canonicalizePath: realpathSoft,
+          })
+        : Promise.resolve(null),
     ]);
+    const frozenLineageViolation = frozenLineageVerdict
+      ? frozenLineageShellCommandViolationPayload(frozenLineageVerdict)
+      : null;
 
     return {
       content: [
@@ -129,8 +150,11 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             ...verdict,
+            ...(frozenLineageViolation ? { decision: 'block' as const } : {}),
             ...substitution,
             goalModeEditDenyReason,
+            frozenLineage: frozenLineageVerdict,
+            frozenLineageDenyReason: frozenLineageViolation?.message ?? null,
           }),
         },
       ],

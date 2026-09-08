@@ -19,6 +19,17 @@ vi.mock('./resource-command-match', () => ({ checkBashCommand: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws') }));
 vi.mock('../../bash-substitution/registry', () => ({ getSubstitutionRows: vi.fn() }));
 vi.mock('./goal-mode-edit-guard', () => ({ checkGoalModeEditGuard: vi.fn() }));
+const frozenM = vi.hoisted(() => ({
+  classify: vi.fn(),
+  evaluate: vi.fn(),
+  payload: vi.fn(),
+}));
+vi.mock('../../release/frozen-lineage-execution-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/frozen-lineage-execution-policy')>()),
+  classifyFrozenLineageShellCommand: frozenM.classify,
+  evaluateFrozenLineageShellCommand: frozenM.evaluate,
+  frozenLineageShellCommandViolationPayload: frozenM.payload,
+}));
 
 import { checkBashCommand } from './resource-command-match';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
@@ -58,29 +69,46 @@ beforeEach(() => {
   vi.clearAllMocks();
   rowsM.mockResolvedValue([]);
   goalEditM.mockResolvedValue(null);
+  frozenM.classify.mockReturnValue(null);
+  frozenM.evaluate.mockResolvedValue({
+    allowed: true,
+    reason: 'operation-not-governed',
+    classification: null,
+    policy: null,
+  });
+  frozenM.payload.mockReturnValue(null);
 });
 
 describe('locks:check_command handler', () => {
   it('forwards command + identity and spreads the verdict', async () => {
     checkM.mockResolvedValue({ decision: 'block', matched: ['dev-server'] } as never);
     const out = (await tool.handler({ command: 'systemctl restart papercup' } as never, {} as never)) as Out;
-    expect(checkM).toHaveBeenCalledWith({ command: 'systemctl restart papercup', coordinationDomain: 'dom', ownerId: 'me' });
+    expect(checkM).toHaveBeenCalledWith({
+      command: 'systemctl restart papercup',
+      coordinationDomain: 'dom',
+      ownerId: 'me',
+    });
     expect(body(out)).toMatchObject({ ok: true, decision: 'block', matched: ['dev-server'] });
   });
 
   it('passes an allow verdict through', async () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
-    expect(body((await tool.handler({ command: 'ls' } as never, {} as never)) as Out)).toMatchObject({ ok: true, decision: 'allow' });
+    expect(body((await tool.handler({ command: 'ls' } as never, {} as never)) as Out)).toMatchObject({
+      ok: true,
+      decision: 'allow',
+    });
   });
 
   it('applies the existing GOAL edit guard to a hook-confirmed tracked Bash mutation', async () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
     goalEditM.mockResolvedValue('GOAL mode: you never implement');
 
-    const out = body((await tool.handler(
-      { command: 'git mv old.ts new.ts', tracked_mutation: true } as never,
-      { workspaceId: 'ws-live' } as never,
-    )) as Out);
+    const out = body(
+      (await tool.handler(
+        { command: 'git mv old.ts new.ts', tracked_mutation: true } as never,
+        { workspaceId: 'ws-live' } as never,
+      )) as Out,
+    );
 
     expect(goalEditM).toHaveBeenCalledWith({
       workspaceId: 'ws-live',
@@ -96,6 +124,34 @@ describe('locks:check_command handler', () => {
     expect(goalEditM).not.toHaveBeenCalled();
     expect(out.goalModeEditDenyReason).toBeNull();
   });
+
+  it('turns a frozen-lineage refusal into the blocking hook verdict and preserves its actionable reason', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    const classification = {
+      kind: 'canonical-root-test',
+      operation: 'canonical-verification',
+      selectionSource: 'effective-checkout-head',
+      checkoutCwd: '/repo',
+    };
+    const frozenVerdict = {
+      allowed: false,
+      reason: 'checkout-head-mismatch',
+      classification,
+      policy: { allowed: false },
+    };
+    const message =
+      'frozen_candidate_lineage_violation — candidate=ccc, repairHead=rrr, queueRevision=42; use repairHead/admit.';
+    frozenM.classify.mockReturnValue(classification);
+    frozenM.evaluate.mockResolvedValue(frozenVerdict);
+    frozenM.payload.mockReturnValue({ message });
+
+    const out = body((await tool.handler({ command: 'npm test', cwd: '/repo' } as never, {} as never)) as Out);
+    expect(out).toMatchObject({
+      decision: 'block',
+      frozenLineageDenyReason: message,
+      frozenLineage: frozenVerdict,
+    });
+  });
 });
 
 describe('substitution verdict fold (P-015)', () => {
@@ -103,9 +159,7 @@ describe('substitution verdict fold (P-015)', () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
     rowsM.mockResolvedValue([sedRow]);
 
-    const out = body((await tool.handler(
-      { command: "cd /repo && sed -n '1,40p' a.ts" } as never, {} as never,
-    )) as Out);
+    const out = body((await tool.handler({ command: "cd /repo && sed -n '1,40p' a.ts" } as never, {} as never)) as Out);
 
     expect(out.substitutionTier).toBe('advise');
     expect(out.substitutions).toHaveLength(1);
@@ -152,10 +206,9 @@ describe('substitution verdict fold (P-015)', () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
     rowsM.mockResolvedValue([dependencyRow]);
 
-    const out = body((await tool.handler(
-      { command: 'npm install', cwd: '/tmp/wi204040-scratch' } as never,
-      {} as never,
-    )) as Out);
+    const out = body(
+      (await tool.handler({ command: 'npm install', cwd: '/tmp/wi204040-scratch' } as never, {} as never)) as Out,
+    );
 
     expect(out.substitutions).toEqual([]);
     expect(out.substitutionTier).toBeNull();
@@ -165,10 +218,9 @@ describe('substitution verdict fold (P-015)', () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
     rowsM.mockResolvedValue([dependencyRow]);
 
-    const out = body((await tool.handler(
-      { command: 'npm install', cwd: fileLockCoordinationDomain() } as never,
-      {} as never,
-    )) as Out);
+    const out = body(
+      (await tool.handler({ command: 'npm install', cwd: fileLockCoordinationDomain() } as never, {} as never)) as Out,
+    );
 
     expect(out.substitutions).toHaveLength(1);
     expect(out.substitutionTier).toBe('deny');

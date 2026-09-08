@@ -1,20 +1,21 @@
-import { describe, expect, it } from 'vitest';
-import {
-  assessFrozenLineageLaunchCas,
-  type FrozenRepairQueuePreflight,
-} from './checkpoint-required-ancestor';
+import { describe, expect, it, vi } from 'vitest';
+import { assessFrozenLineageLaunchCas, type FrozenRepairQueuePreflight } from './checkpoint-required-ancestor';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 import {
   compareFrozenLineageIdentity,
+  classifyFrozenLineageShellCommand,
   detectUnsafeFrozenCarryInstruction,
+  evaluateFrozenLineageShellCommand,
   evaluateFrozenLineagePolicy,
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
+  frozenLineageShellCommandViolationPayload,
   frozenLineageIdentityFromMarker,
   frozenLineageIdentityMatches,
   isUnsafeFrozenCandidateSource,
   renderFrozenLineageCarryRefusal,
   renderFrozenLineagePolicyRefusal,
+  renderFrozenLineageShellCommandRefusal,
   type FrozenLineageIdentity,
 } from './frozen-lineage-execution-policy';
 
@@ -40,9 +41,7 @@ const identity = (overrides: Partial<FrozenLineageIdentity> = {}): FrozenLineage
   ...overrides,
 });
 
-const launchPreflight = (
-  overrides: Partial<FrozenRepairQueuePreflight> = {},
-): FrozenRepairQueuePreflight => ({
+const launchPreflight = (overrides: Partial<FrozenRepairQueuePreflight> = {}): FrozenRepairQueuePreflight => ({
   proceed: true,
   reason: 'clear',
   candidate: REPAIR_HEAD,
@@ -219,6 +218,127 @@ describe('frozen lineage execution policy', () => {
   });
 });
 
+describe('frozen lineage shell-command policy', () => {
+  const ROOT = '/repo/papercusp';
+
+  it.each([
+    ['npm test', 'canonical-root-test', 'effective-checkout-head'],
+    ['npm run test:affected -- --changed-paths=a.ts', 'canonical-root-test', 'effective-checkout-head'],
+    ['node scripts/affected-tests.mjs --integration', 'canonical-root-test', 'effective-checkout-head'],
+    ['git worktree add --detach /tmp/candidate staging', 'candidate-worktree-cut', 'staging'],
+    ['git -C /repo/papercusp worktree add --detach /tmp/candidate HEAD', 'candidate-worktree-cut', 'current-head'],
+  ] as const)('classifies %s as %s from %s', (command, kind, selectionSource) => {
+    expect(classifyFrozenLineageShellCommand({ command, cwd: ROOT })).toMatchObject({ kind, selectionSource });
+  });
+
+  it.each([
+    'npm run test:file -- packages/operator-core/lib/a.test.ts',
+    'npx vitest run packages/operator-core/lib/a.test.ts',
+    'ptool release:repair-queue --json - <<JSON\n{"op":"admit","paths":["a.ts"]}\nJSON',
+    'git status --short',
+  ])('keeps focused/ordinary/repair work outside the governed set: %s', (command) => {
+    expect(classifyFrozenLineageShellCommand({ command, cwd: ROOT })).toBeNull();
+  });
+
+  it('distinguishes package-local npm test from a root test after a literal cd', async () => {
+    const classification = classifyFrozenLineageShellCommand({
+      command: 'cd packages/operator-core && npm test',
+      cwd: ROOT,
+    });
+    const readMarker = vi.fn(() => marker());
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    expect(classification).toMatchObject({
+      kind: 'canonical-root-test',
+      checkoutCwd: `${ROOT}/packages/operator-core`,
+    });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, { readMarker, readCheckoutHead }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'operation-not-governed' });
+    expect(readMarker).not.toHaveBeenCalled();
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary commands on the zero-marker, zero-Git hot path', async () => {
+    const readMarker = vi.fn(() => marker());
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    await expect(
+      evaluateFrozenLineageShellCommand(null, ROOT, { readMarker, readCheckoutHead }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'operation-not-governed' });
+    expect(readMarker).not.toHaveBeenCalled();
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+
+  it('refuses a canonical root test whose effective checkout is not repairHead', async () => {
+    const classification = classifyFrozenLineageShellCommand({ command: 'npm test', cwd: ROOT });
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    const verdict = await evaluateFrozenLineageShellCommand(classification, ROOT, {
+      marker: marker(),
+      readCheckoutHead,
+    });
+    expect(verdict).toMatchObject({ allowed: false, reason: 'checkout-head-mismatch' });
+    expect(readCheckoutHead).toHaveBeenCalledOnce();
+    expect(renderFrozenLineageShellCommandRefusal(verdict)).toContain(`repairHead=${REPAIR_HEAD}`);
+    expect(frozenLineageShellCommandViolationPayload(verdict)).toMatchObject({
+      ok: false,
+      error: 'frozen_candidate_lineage_violation',
+      commandKind: 'canonical-root-test',
+      unsafeSource: 'effective-checkout-head',
+      checkoutHead: CANDIDATE,
+    });
+  });
+
+  it('allows a canonical root test only at the exact live repairHead', async () => {
+    const classification = classifyFrozenLineageShellCommand({ command: 'npm run test:affected', cwd: ROOT });
+    await expect(
+      evaluateFrozenLineageShellCommand(classification, ROOT, {
+        marker: marker(),
+        readCheckoutHead: async () => REPAIR_HEAD,
+      }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'repair-head-match' });
+  });
+
+  it('refuses a staging worktree cut without paying for a Git HEAD probe', async () => {
+    const classification = classifyFrozenLineageShellCommand({
+      command: 'git worktree add --detach /tmp/candidate staging',
+      cwd: ROOT,
+    });
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    const verdict = await evaluateFrozenLineageShellCommand(classification, ROOT, {
+      marker: marker(),
+      readCheckoutHead,
+    });
+    expect(verdict).toMatchObject({ allowed: false, reason: 'unsafe-candidate-source' });
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+    expect(frozenLineageShellCommandViolationPayload(verdict)).toMatchObject({
+      commandKind: 'candidate-worktree-cut',
+      unsafeSource: 'staging',
+      selectedRef: 'staging',
+    });
+  });
+
+  it('fails closed when the marker identity changes during the HEAD probe', async () => {
+    const classification = classifyFrozenLineageShellCommand({ command: 'npm test', cwd: ROOT });
+    const markers = [marker(), marker({ repairHead: 's'.repeat(40), updatedAtMs: REVISION + 1 })];
+    const verdict = await evaluateFrozenLineageShellCommand(classification, ROOT, {
+      readMarker: () => markers.shift() ?? null,
+      readCheckoutHead: async () => REPAIR_HEAD,
+    });
+    expect(verdict).toMatchObject({ allowed: false, reason: 'queue-identity-mismatch' });
+    expect(verdict.policy).toMatchObject({ mismatchedIdentityFields: ['repairHead', 'queueRevision'] });
+  });
+
+  it('allows the moving-tip regime when no frozen marker exists', async () => {
+    const readCheckoutHead = vi.fn(async () => CANDIDATE);
+    await expect(
+      evaluateFrozenLineageShellCommand(classifyFrozenLineageShellCommand({ command: 'npm test', cwd: ROOT }), ROOT, {
+        marker: null,
+        readCheckoutHead,
+      }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'no-frozen-queue' });
+    expect(readCheckoutHead).not.toHaveBeenCalled();
+  });
+});
+
 describe('frozen lineage launch CAS', () => {
   it('allows only an exact second-read identity at the selected repairHead', () => {
     expect(assessFrozenLineageLaunchCas(identity(), launchPreflight(), REPAIR_HEAD)).toMatchObject({
@@ -338,7 +458,7 @@ describe('frozen lineage carry policy', () => {
     expect(rendered).toContain(`candidate=${CANDIDATE}`);
     expect(rendered).toContain(`repairHead=${REPAIR_HEAD}`);
     expect(rendered).toContain(`queueRevision=${REVISION}`);
-    expect(rendered).toContain("source");
+    expect(rendered).toContain('source');
     expect(rendered).toContain("release:repair-queue { op:'admit', paths:[...] }");
     expect(frozenLineageCarryViolationPayload(verdict)).toMatchObject({
       ok: false,
