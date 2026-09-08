@@ -46,6 +46,15 @@ const buildLaunchSpecMock = vi.fn(async (_input: any) => ({
   promptFile: '/prompts/papercusp-su-engineer.tools.md',
   mcpUrl: 'http://localhost:3070/api/mcp?superuser=1&workspace=default',
   mcpJsonContents: '{}',
+  stack: _input.stack ?? [],
+}));
+const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
+  promptText: input.promptText,
+  stack: input.stack ?? [],
+  specificationArtifact: {},
+  specificationRevision: 'a'.repeat(64),
+  stateRevision: input.stateRevision ?? 'b'.repeat(64),
+  compositionSource: 'compatibility' as const,
 }));
 // writeSuCodexHome RECEIVES the bearer (that's the legitimate server-side
 // sink). It returns only file paths — never echoes the token back out.
@@ -102,8 +111,11 @@ vi.mock('./adv-sessions', async (orig) => ({ ...(await orig<typeof import('./adv
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
   recordSuLaunchSpec: vi.fn(async () => true),
 }));
-vi.mock('./role-launch-spec', () => ({
+vi.mock('./role-launch-spec', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./role-launch-spec')>()),
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
+  compileLaunchSpecificationArtifact: (...args: unknown[]) =>
+    compileLaunchSpecificationArtifactMock(...(args as [any])),
 }));
 vi.mock('./role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),

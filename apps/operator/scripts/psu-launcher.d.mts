@@ -1146,6 +1146,10 @@ export function rewriteModelsJsonFields(jsonText: any, bareId: any, fields: any)
 /** The OMP session's DEFAULT model id (config.yml `modelRoles.default`), or null. Used to
  *  compute the model tier when the launch didn't pass an explicit --model. Exported for tests. */
 export function ompDefaultModel(home?: string): string | null;
+/** Resolve a structured session's model without substituting its provider or account.
+ * A copied native default is still a real selection: validate it before the
+ * legacy config writer can repair a retired model by choosing a gateway. */
+export function resolveOmpSessionModel(model: any, accountRoute?: string, home?: string): string | null;
 /** Append `?tools=<names>` to every papercusp `/api/mcp` server URL in an OMP mcp.json that
  *  doesn't already carry one, so the superuser MCP advertises ONLY the core spine (weak-model
  *  trim). Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the

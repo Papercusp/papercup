@@ -29,6 +29,7 @@ import {
   parkRoleScopedMcpJson,
   ompDefaultModelAdvisory,
   ompDefaultModel,
+  resolveOmpSessionModel,
   writeOmpSessionConfigDir,
   linkOmpAgentDb,
   applyOmpToolsAllowlist,
@@ -1295,6 +1296,36 @@ describe("parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak g
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
     expect(existsSync(mcp())).toBe(false);
     expect(existsSync(parked())).toBe(true);
+  });
+});
+
+describe("resolveOmpSessionModel (structured account fidelity)", () => {
+  it("rejects an inherited retired or gateway default before per-session materialization", () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-omp-model-route-"));
+    try {
+      const agent = join(home, ".omp", "agent");
+      mkdirSync(agent, { recursive: true });
+      for (const model of ["openrouter/stealth/ox-alpha", "papercusp-gateway/claude-sonnet-4-6"]) {
+        const config = `modelRoles:\n  default: ${model}\n`;
+        writeFileSync(join(agent, "config.yml"), config);
+        expect(() => resolveOmpSessionModel(null, "default", home)).toThrow(/retired|default.*gateway/i);
+        expect(readFileSync(join(agent, "config.yml"), "utf8")).toBe(config);
+        expect(existsSync(join(home, ".papercusp", "su-omp-homes"))).toBe(false);
+      }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.each(["auto", "named-account"])("preserves a selected gateway model for %s", (route) => {
+    expect(resolveOmpSessionModel("papercusp-gateway/claude-opus-4-8:high", route))
+      .toBe("papercusp-gateway/claude-opus-4-8:high");
+  });
+
+  it("preserves a selected direct model and rejects an explicit retired model", () => {
+    expect(resolveOmpSessionModel("openai-codex/gpt-5.6-terra:xhigh", "default"))
+      .toBe("openai-codex/gpt-5.6-terra:xhigh");
+    expect(() => resolveOmpSessionModel("stealth/ox-alpha:max", "auto")).toThrow(/retired/);
+    expect(() => resolveOmpSessionModel("papercusp-gateway/claude-sonnet-4-6", "default"))
+      .toThrow(/default.*gateway/i);
   });
 });
 

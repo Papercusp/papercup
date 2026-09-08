@@ -62,6 +62,31 @@ vi.mock('../../work-items', async (importOriginal) => ({
   CLAIM_STATES_ALLOWLIST: ['open', 'failing'],
 }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
+vi.mock('../../work-scope-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-scope-policy')>()),
+  gateWorkScope: vi.fn(async () => ({ allowed: true })),
+}));
+// The recipe assertion starts at the post-preflight MISS payload. Pin the
+// coordination readers so this unit test does not consult live fleet/lock state
+// before it reaches that branch.
+vi.mock('../coordination/context-pressure', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/context-pressure')>()),
+  fetchContextPressure: vi.fn(async () => new Map()),
+  resolveContextPressureRecoveryPath: vi.fn(async () => null),
+}));
+vi.mock('../locks/live-lock-paths', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../locks/live-lock-paths')>()),
+  liveLockedPaths: vi.fn(async () => []),
+}));
+vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/fleet-scope-admission')>()),
+  reconcileFleetScopeClaims: vi.fn(async () => ({ scope: null, quarantinedIds: [] })),
+}));
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/presence')>()),
+  getPresence: vi.fn(async () => null),
+  writePresence: vi.fn(async () => undefined),
+}));
 // EI-16057: the harness-existence gate (checked on every miss) resolves `harness` against
 // the registry — stub it so the miss this test drives falls through to the idle-recipe
 // advice path it's actually pinning, not the (also-real) harness_not_found branch.
@@ -105,7 +130,7 @@ describe('P-006 idle-loop recipe pin (composable-event-awaits-2026-07-11)', () =
     const res = (await getNext.handler({ harness: 'h' } as never, ctx)) as { content: Array<{ text: string }> };
     const out = JSON.parse(res.content[0].text);
     expect(out.ok).toBe(false);
-    expect(out.advice).toBe(IDLE_PULL_MISS_ADVICE);
+    expect(out.advice, JSON.stringify(out)).toBe(IDLE_PULL_MISS_ADVICE);
   });
 
   it('the default loop wake template parks an idle self-puller on the standing watch (no empty-wake spinning)', () => {

@@ -553,6 +553,15 @@ async function openComposer(pane: PuiPane): Promise<void> {
     pane.enter();
     await pane.waitFor(`backend ${['Claude', 'Codex', 'OMP'][selection]}`);
   }
+  if (scriptedEngine.real && process.env.PUI_REAL_ACCOUNT) {
+    const account = process.env.PUI_REAL_ACCOUNT;
+    if (!['auto', 'default'].includes(account)) throw new Error('PUI_REAL_ACCOUNT must be auto or default');
+    pane.write('a');
+    await pane.waitFor('Account route — Enter select');
+    if (account === 'default') pane.write('j');
+    pane.enter();
+    await pane.waitFor(`account ${account}`);
+  }
   pane.write('i');
 }
 
@@ -1369,6 +1378,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(identity.backend).toBe(scriptedEngine.backend);
       expect(identity.nativeSessionId).toBeTruthy();
       expect(engine.adapter.host.descriptor().model, 'show the model that actually answered').toBeTruthy();
+      expect(engine.adapter.host.descriptor().accountRoute).toBe(process.env.PUI_REAL_ACCOUNT ?? 'default');
       if ('nativeSession' in engine) {
         expect(engine.nativeSession()).toMatchObject({ backend: scriptedEngine.backend, exactResumeSupported: true });
       }

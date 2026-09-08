@@ -7,7 +7,8 @@ const m = vi.hoisted(() => ({
   codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
 }));
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
-vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
+  resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
   buildResumeEnv: (row: any, opts: any) => ({ PAPERCUSP_SID: row.coordOwnerId,
     PAPERCUSP_ADV_SESSION_ID: String(row.id), ...opts.accountEnv.env }),
   codexThreadWriterHolder: () => ({ held: false, reason: 'no-lock-file' }),
@@ -101,6 +102,16 @@ describe('structured exact resume preparation', () => {
     await expect(prepareStructuredSuResume(valid)).rejects.toThrow('live host');
     expect(m.acquire).not.toHaveBeenCalled();
     expect(m.account).not.toHaveBeenCalled();
+  });
+
+  it('refuses a saved OMP default/gateway mismatch without switching provider or touching credentials', async () => {
+    const saved = fixture('omp');
+    saved.descriptor!.model = 'papercusp-gateway/claude-sonnet-4-6';
+    saved.descriptor!.accountRoute = 'default';
+    await expect(prepareStructuredSuResume(saved)).rejects.toThrow(/default.*gateway/i);
+    expect(m.acquire).not.toHaveBeenCalled();
+    expect(m.account).not.toHaveBeenCalled();
+    expect(m.ompRoute).not.toHaveBeenCalled();
   });
 
   it('refuses an unknown liveness witness or a competing lease', async () => {

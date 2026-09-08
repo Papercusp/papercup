@@ -702,7 +702,7 @@ describe('spawnAgentInHarness — forced session id for claude bees (P-016 / D-0
   });
 
   it('mints NO session id for the codex backend (codex resumes by CODEX_HOME rollout)', async () => {
-    vi.stubEnv('AGENT_CMD', 'codex exec');
+    vi.stubEnv('AGENT_CMD', 'codex exec --model gpt-5.6-sol');
     try {
       const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
       expect(res.ok).toBe(true);
@@ -797,7 +797,7 @@ describe('spawnAgentInHarness — backend-aware gateway account routing', () => 
   });
 
   it('passes the resolved Codex backend to the shared gateway env helper and carries only the returned Codex account id', async () => {
-    vi.stubEnv('AGENT_CMD', 'codex exec');
+    vi.stubEnv('AGENT_CMD', 'codex exec --model gpt-5.6-sol');
     vi.mocked(resolveSpawnGatewayEnv).mockResolvedValue({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
     try {
       const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });

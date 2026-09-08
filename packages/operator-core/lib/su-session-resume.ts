@@ -10,6 +10,7 @@ import {
   ensureResumeTranscriptPresent, isClaudeConfigDirLaunchReady, isCodexHomeLaunchReady,
   normalizeArgvProbeResumeLocalLivenessEvidence, normalizeCodexResumeLocalLivenessEvidence,
   ompTrackedResumeEnv, rehealResumeCodexAuth, rehealResumeCredentials, sessionProcessHolder, tryRematerializeFromArchive,
+  resolveOmpSessionModel,
 } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import {
   acquireAdvSessionResume, finalizeAdvSessionResume, getAdvSession, markAdvSessionEnded,
@@ -32,6 +33,9 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
   if (!saved?.identity.nativeSessionId || !record.ownerId || !record.backend) {
     throw new Error('Reconnect requires a saved native session and SU identity');
   }
+  // Legacy descriptors can say default although a copied model used the
+  // gateway. Do not turn that into a different, unauthenticated provider.
+  if (record.backend === 'omp' && saved.model) resolveOmpSessionModel(saved.model, saved.accountRoute);
   const row = await getAdvSession(record.advSessionId);
   if (!row || row.coordOwnerId !== record.ownerId || row.workspaceId !== record.workspaceId
     || row.agent !== record.backend || saved.identity.advSessionId !== row.id

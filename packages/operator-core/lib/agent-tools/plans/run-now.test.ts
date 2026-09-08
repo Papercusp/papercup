@@ -23,6 +23,10 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
 vi.mock('../../harness/routines/plan-run-action', () => ({ runScheduledPlanFire: vi.fn() }));
+vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
+  readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+}));
 
 import { getPlanRow } from './source';
 import { runScheduledPlanFire } from '../../harness/routines/plan-run-action';

@@ -8,7 +8,7 @@ import type { SuSessionJsonValue } from '@papercusp/chat-protocol';
 import {
   applyGithubTokenEnv, assertLaunchPersona, modelArgsFor, ompCoreToolNames,
   ompResponsesCompatibilityEnv, recordSessionOwner, resolveOmpInjectHookPath,
-  sanitizeInheritedEnv, suLaunchArgs, writeOmpSessionConfigDir,
+  resolveOmpSessionModel, sanitizeInheritedEnv, suLaunchArgs, writeOmpSessionConfigDir,
 } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { splitModelSpec } from './agent-config-constants';
 import { setAdvSessionOmpThreadId } from './adv-sessions';
@@ -88,7 +88,7 @@ export function startSuRpcEngine(
       else args.push(modelArgs[index]);
     }
   } else {
-    selectedModel = env.PAPERCUSP_OMP_MODEL_SELECTOR || selectedModel;
+    selectedModel = resolveOmpSessionModel(env.PAPERCUSP_OMP_MODEL_SELECTOR || selectedModel, options.accountRoute);
     const configDir = options.nativeSession?.backend === 'omp' && options.nativeSession.agentHome
       ? null : writeOmpSessionConfigDir(binding.advSessionId, {
         discoveryOff: true, toolsAllowlist: ompCoreToolNames(env), model: selectedModel,
@@ -417,8 +417,13 @@ export function startSuRpcEngine(
       actualModel = [string(model.provider), string(model.id)].filter(Boolean).join('/');
     }
     if (!actualModel) throw new Error('Native engine did not identify its selected model');
+    if (backend === 'omp') resolveOmpSessionModel(actualModel, options.accountRoute);
     const requested = splitModelSpec(selectedModel).model;
     if (backend === 'codex' && requested && actualModel !== requested) throw new Error(`Codex selected ${actualModel}, expected ${requested}`);
+    if (backend === 'omp' && requested && actualModel !== requested
+      && (requested.includes('/') || !actualModel.endsWith(`/${requested}`))) {
+      throw new Error(`OMP selected ${actualModel}, expected ${requested}`);
+    }
     const descriptor = host.descriptor();
     host.emit({ type: 'session', descriptor: { ...descriptor, model: actualModel,
       capabilities: { ...descriptor.capabilities, features: { ...descriptor.capabilities.features,

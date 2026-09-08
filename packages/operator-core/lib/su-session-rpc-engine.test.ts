@@ -19,7 +19,8 @@ vi.mock('./su-session-persistence', () => ({
 }));
 vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3170' }));
 vi.mock('./su-session-stdio-peer', () => ({ startSuStdioPeer: vi.fn() }));
-vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
+  resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
   assertLaunchPersona: vi.fn(), sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
   ompCoreToolNames: () => ['tools:invoke'], ompResponsesCompatibilityEnv: () => ({}), recordSessionOwner: vi.fn(),
@@ -261,6 +262,23 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       .resolves.toMatchObject({ status: 'refused' });
     expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
   });
+});
+
+it('refuses an OMP gateway model reported under the default account before inference', async () => {
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
+    sessionId: 'native-omp', model: { provider: 'papercusp-gateway', id: 'claude-sonnet-4-6' },
+    dumpTools: [{ name: 'mcp__papercusp_su__coord_whoami' }],
+  } : undefined });
+  await expect(f.engine.ready).rejects.toThrow(/default.*gateway/i);
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+  expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
+});
+
+it('refuses an OMP native model substitution before sending an owner turn', async () => {
+  const f = fixture('omp', { model: 'another-model' });
+  await expect(f.engine.ready).rejects.toThrow('OMP selected openai/another-model, expected openai/omp-model');
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+  expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
 });
 
 it.each([

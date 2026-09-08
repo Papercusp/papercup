@@ -4013,6 +4013,24 @@ export function ompDefaultModel(home = homedir()) {
   }
 }
 
+/** Resolve a structured session's model without substituting its provider or account.
+ * A copied native default is still a real selection: validate it before the
+ * legacy config writer can repair a retired model by choosing a gateway. */
+export function resolveOmpSessionModel(model, accountRoute = "default", home = homedir()) {
+  const selected = String(model || ompDefaultModel(home) || "").trim();
+  if (!selected) return null;
+  if (OMP_OX_ALPHA_MODEL_RE.test(selected)) {
+    throw new Error(`OMP model '${selected}' is retired; choose a supported model before starting this session.`);
+  }
+  const route = String(accountRoute || "default").trim().toLowerCase();
+  if ((route === "default" || route === "system") && /^papercusp-gateway\//i.test(selected)) {
+    throw new Error(
+      `OMP default account cannot use gateway model '${selected}'; choose auto or a named gateway account, or choose a direct-provider model.`,
+    );
+  }
+  return selected;
+}
+
 /** Append `?tools=<names>` to every papercusp `/api/mcp` server URL in an OMP mcp.json that
  *  doesn't already carry one, so the superuser MCP advertises ONLY the core spine (weak-model
  *  trim). Pure string→string (uses URL/searchParams so colons/commas are encoded exactly the

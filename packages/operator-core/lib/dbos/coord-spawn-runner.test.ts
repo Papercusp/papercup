@@ -64,7 +64,7 @@ test('claude backend → all voters + advocate spawn in PARALLEL', async () => {
 });
 
 test('codex backend → PARALLEL (per-spawn CODEX_HOME isolates config)', async () => {
-  process.env.AGENT_CMD = 'codex exec';
+  process.env.AGENT_CMD = 'codex exec --model gpt-5.6-sol';
   await coordSpawnRunner(SPECS, OPTS);
   expect(spawnState.maxLive).toBe(3);
 });

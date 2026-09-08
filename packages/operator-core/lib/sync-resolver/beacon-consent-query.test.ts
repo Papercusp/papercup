@@ -40,6 +40,7 @@ describe('hive.beaconConsent named query (WI-4137)', () => {
     );
     expect(queryNamesForTriggerEvent('harness_shared.pot_settings.changed', { harness_slug: 'acme-hive' })).toEqual([
       'hive.steering',
+      'learning.dream',
       { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
     ]);
   });

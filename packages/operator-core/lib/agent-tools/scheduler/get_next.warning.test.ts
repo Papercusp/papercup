@@ -34,6 +34,31 @@ vi.mock('../../work-item-claim-lease-wiring', () => ({
   workItemClaimLeaseEnabled: mocks.workItemClaimLeaseEnabled,
   leaseClaimedWorkItem: mocks.leaseClaimedWorkItem,
 }));
+vi.mock('../../work-scope-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-scope-policy')>()),
+  gateWorkScope: vi.fn(async () => ({ allowed: true })),
+}));
+// This file asserts the default-spec warning after a successful claim. Keep the
+// newly widened coordination preflight hermetic so it cannot reach the live org
+// database before the mocked claim path runs.
+vi.mock('../coordination/context-pressure', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/context-pressure')>()),
+  fetchContextPressure: vi.fn(async () => new Map()),
+  resolveContextPressureRecoveryPath: vi.fn(async () => null),
+}));
+vi.mock('../locks/live-lock-paths', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../locks/live-lock-paths')>()),
+  liveLockedPaths: vi.fn(async () => []),
+}));
+vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/fleet-scope-admission')>()),
+  reconcileFleetScopeClaims: vi.fn(async () => ({ scope: null, quarantinedIds: [] })),
+}));
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/presence')>()),
+  getPresence: vi.fn(async () => null),
+  writePresence: vi.fn(async () => undefined),
+}));
 
 import getNextTool from './get_next';
 
@@ -66,7 +91,7 @@ describe('scheduler:get_next default-spec warning (EI-8579)', () => {
 
     const out = await callGetNext();
 
-    expect(out.ok).toBe(true);
+    expect(out.ok, JSON.stringify(out)).toBe(true);
     expect(out.warning).toContain('DEFAULT_CLAIM_SPEC');
     expect(out.warning).toContain('scheduler:set_claim_spec');
   });
@@ -81,7 +106,7 @@ describe('scheduler:get_next default-spec warning (EI-8579)', () => {
 
       const out = await callGetNext();
 
-      expect(out.ok).toBe(true);
+      expect(out.ok, JSON.stringify(out)).toBe(true);
       expect(out.warning).toBeUndefined();
     }
   });

@@ -23,6 +23,10 @@ vi.mock('../_harness-scope', async (orig) => ({
 }));
 vi.mock('./source', () => ({ getPlanRow: vi.fn() }));
 vi.mock('../../harness/routines/arm-plan-schedule', () => ({ armPlanSchedule: vi.fn() }));
+vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
+  readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+}));
 
 import { getFlag } from '@papercusp/flags/server';
 import { configurePlanAdmissionPolicySource } from './plan-admission-gate';
