@@ -530,8 +530,18 @@ async function waitForSavedTurn(content: string): Promise<PersistedChat> {
 async function waitForCorrelatedReply(prompt: string, reply: string): Promise<PersistedChat> {
   // The chat table stores accepted command receipts. Assistant text belongs to
   // the native transcript, exposed through the real adapter's SU event stream.
-  const chat = await waitForPersistedChat(db, (candidate) => candidate.transcript.some(
-    (turn) => turn.role === 'user' && turn.content === prompt), 120_000);
+  const chat = await waitForPersistedChat(db, (candidate) => {
+    if (candidate.transcript.some((turn) => turn.role === 'user' && turn.content === prompt)) return true;
+    const refusedLaunch = sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su' && Number(entry.status) >= 400);
+    if (refusedLaunch) throw new Error(`Native launch refused: ${String(refusedLaunch.error ?? refusedLaunch.status)}`);
+    const failed = scriptedEngine.engines.find((engine) => engine.adapter.host.snapshot().terminal);
+    if (failed) {
+      const diagnostics = failed.adapter.host.recent.map(({ event }) => event)
+        .filter((event) => event.type === 'error' || event.type === 'lifecycle').slice(-5);
+      throw new Error(`Native engine stopped before the owner turn was saved: ${JSON.stringify(diagnostics)}`);
+    }
+    return false;
+  }, 120_000);
   const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
   if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
   await vi.waitFor(() => expect(scriptedEngine.events).toEqual(expect.arrayContaining([
