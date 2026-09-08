@@ -6047,6 +6047,7 @@ export async function dispatchReleaseFixer(
     !candidateSnapshotMatchesDispatch(candidateSnapshot, {
       candidate,
       failingTests,
+      repairQueue,
     })
   ) {
     console.log(
