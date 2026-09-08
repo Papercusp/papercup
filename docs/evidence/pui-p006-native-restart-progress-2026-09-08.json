@@ -1,0 +1,329 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-09-08T11:42:30.374004+00:00",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "workItem": "EI-22681984426245850",
+  "parent": "WI-10000428",
+  "repairEvidence": {
+    "path": "docs/evidence/pui-p006-view-composer-and-reply-repairs-2026-09-08.json",
+    "sha256": "02c8dd294dfa3a69ef0517c33f54bd37b977ae022ce2d44c0a96e25631b42dd7",
+    "bytes": 12487
+  },
+  "sourceSnapshots": [
+    {
+      "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+      "sha256": "1447d0582c22d9fc6a90da6e7acc0037d1a2dc9573eb69aa199913c0a3ecbac8",
+      "bytes": 95497
+    },
+    {
+      "path": "packages/operator-core/lib/su-session-claude-engine.ts",
+      "sha256": "9ea5de30e6558ae0d4d19a97ebe4717fd8fd2275edae728e317924f46b7d9051",
+      "bytes": 17710
+    }
+  ],
+  "native9": {
+    "omp": {
+      "status": "FAILED",
+      "log": {
+        "path": "/tmp/pui-p006-omp-operator-restart-9.log",
+        "sha256": "561b7d2da132ab440f7b4763a7f1fac23c382f234cb59f16a89c4260569b136f",
+        "bytes": 49830
+      },
+      "stages": [
+        {
+          "type": "ready",
+          "pid": 3429801,
+          "instanceId": "91e69aca-facd-4a71-921e-ffaf46594d57",
+          "at": "2026-09-08T11:16:43.688Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 3429801,
+          "instanceId": "91e69aca-facd-4a71-921e-ffaf46594d57",
+          "at": "2026-09-08T11:17:28.297Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 3429801,
+          "instanceId": "91e69aca-facd-4a71-921e-ffaf46594d57",
+          "at": "2026-09-08T11:17:28.317Z"
+        },
+        {
+          "type": "ready",
+          "pid": 3525607,
+          "instanceId": "f5d60c35-5a98-4934-baf0-0ddcaff116ff",
+          "at": "2026-09-08T11:17:54.525Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 3525607,
+          "instanceId": "f5d60c35-5a98-4934-baf0-0ddcaff116ff",
+          "at": "2026-09-08T11:19:58.985Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 3525607,
+          "instanceId": "f5d60c35-5a98-4934-baf0-0ddcaff116ff",
+          "at": "2026-09-08T11:19:58.994Z"
+        }
+      ],
+      "provenance": "UNKNOWN complete import graph; router reports HEAD moved and named fixture unchanged.",
+      "frameNames": [
+        "beforeRestart"
+      ],
+      "screen": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌ Presence 1/1 ──────────────┐\n│No messages yet — press i to talk to this agent, or s to choose a role/session.                                       ││◐ omp        (active — see… │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                             ┌ Conversation — Enter select · Esc close ───────────────────────────────────────────────┐│                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             └────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n│                                                                                                                      ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n┌ Composer — i type · v speak · j/k scroll ────────────────────────────────────────────────────────────────────────────┐│                            │\n│pot papercusp · role operator · session new · backend Claude · model server default · effort model/default            ││                            │\n│account default · mode manual · op http://127.0.0.1:38625 · http · ws pui-agent-chat-e2e · store pg-39fd1f7ffdbd      ││                            │\n│v0.0.1 · chat workspace:pui-agent-chat-e2e                                                                            ││                            │\n│press i to talk · v PTT · V realtime voice                                                                            ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────┘\n⊙ all pots · pui · op http://127.0.0.1:38625 · http · ws pui-agent-chat-e2e · store pg-39fd1f7ffdbd · v0.0.1 · chat workspace:pui-agent-chat-e2?:help",
+      "diagnostics": [],
+      "responses": [],
+      "descriptors": [],
+      "events": [],
+      "beforeRestartFrame": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌ Presence 1/1 ──────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 16                                                                       ││● omp        (active — see… │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                              ││                            │\n│  reconciliation: attached                                                                                            ││                            │\n│you                                                                                                                   ││                            │\n│Reply exactly PUI-PROCESS-784abc4d-9b0e-4f49-9602-c0b7966a7102. Do not use tools.                                     ││                            │\n│                                                                                                                      ││                            │\n│agent                                                                                                                 ││                            │\n│PUI-PROCESS-784abc4d-9b0e-4f49-9602-c0b7966a7102                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n┌ Message — Enter send · ↑↓ history · Esc cancel ──────────────────────────────────────────────────────────────────────┐│                            │\n│SU · omp · adv 1 · chat 1a473371-0a4 · waiting-for-owner · pot papercusp · role operator                              ││                            │\n│>                                                                                                                     ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────┘\n⊙ all pots · pui · op http://127.0.0.1:38625 · http · ws pui-agent-chat-e2e · store pg-39fd1f7ffdbd · v0.0.1 · chat workspace:pui-agent-chat-e2?:help",
+      "observed": "First greeting and operator restart reached; second pane has no history, descriptors/events or resumed inference."
+    },
+    "claude": {
+      "status": "FAILED",
+      "log": {
+        "path": "/tmp/pui-p006-claude-operator-restart-9.log",
+        "sha256": "394f975974fa8ec96cec9712c0c8989b12de7b53d1fb310e1b307545e7ea06ee",
+        "bytes": 71018
+      },
+      "stages": [
+        {
+          "type": "ready",
+          "pid": 3429465,
+          "instanceId": "b6b4ee5b-3973-43d5-9ba4-b82ae82e0b7c",
+          "at": "2026-09-08T11:16:43.681Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 3429465,
+          "instanceId": "b6b4ee5b-3973-43d5-9ba4-b82ae82e0b7c",
+          "at": "2026-09-08T11:18:54.030Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 3429465,
+          "instanceId": "b6b4ee5b-3973-43d5-9ba4-b82ae82e0b7c",
+          "at": "2026-09-08T11:18:54.037Z"
+        }
+      ],
+      "provenance": "UNKNOWN complete import graph; router reports HEAD moved and named fixture unchanged.",
+      "frameNames": [],
+      "screen": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌ Presence 1/1 ──────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 10                                                                       ││● claude     su             │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                              ││                            │\n│  reconciliation: attached                                                                                            ││                            │\n│  engine_delivery_unknown: Claude did not acknowledge this saved turn; reconcile delivery before retrying             ││                            │\n│you                                                                                                                   ││                            │\n│Reply exactly PUI-PROCESS-0764831c-c449-4b80-ac60-c5e2bd186158. Do not use tools.                                     ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n┌ Message — Enter send · ↑↓ history · Esc cancel ──────────────────────────────────────────────────────────────────────┐│                            │\n│SU · claude · adv 1 · chat 27ea4015-eed · waiting-for-owner · pot papercusp · role operator                           ││                            │\n│>                                                                                                                     ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────┘\n⊙ all pots · pui · op http://127.0.0.1:44015 · http · ws pui-agent-chat-e2e · store pg-6fbd72903150 · v0.0.1 · chat workspace:pui-agent-chat-e2?:help",
+      "diagnostics": [
+        {
+          "level": "error",
+          "args": [
+            "(node:3429465) [CLAUDE_SDK_CAN_USE_TOOL_SHADOWED] Warning: canUseTool will not be invoked: permissionMode 'bypassPermissions' auto-approves every tool call (except explicit deny rules) before the callback is consulted. To gate every tool call, use a PreToolUse hook instead.\n(Use `node --trace-warnings ...` to show where the warning was created)"
+          ]
+        },
+        {
+          "level": "warn",
+          "args": [
+            "[mcp-initialize-stage]",
+            {
+              "traceId": "8bc66696-d99b-4311-bdc9-9a8b048b1c55",
+              "pid": 3429465,
+              "outcome": "timeout",
+              "stages": {
+                "sdkMs": 0,
+                "spawnContextMs": 1,
+                "userLookupMs": 967,
+                "preludeMs": null,
+                "enrichmentMs": 2500,
+                "totalMs": 2501
+              }
+            }
+          ]
+        },
+        {
+          "level": "warn",
+          "args": [
+            "[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010)."
+          ]
+        }
+      ],
+      "responses": [
+        {
+          "path": "/api/adv/sessions/launch-su",
+          "status": 200
+        }
+      ],
+      "descriptors": [
+        {
+          "identity": {
+            "agentChatId": "27ea4015-eedb-4b91-9d13-e66158398934",
+            "advSessionId": 1,
+            "backend": "claude",
+            "nativeSessionId": "10a1e4ec-222a-403c-9c95-9d6584e2fc71",
+            "ownerId": "su-0cdb1658-7149-42a4-ac3f-97fd30dddf9e",
+            "workspaceId": "pui-agent-chat-e2e",
+            "harnessSlug": "papercusp"
+          },
+          "lifecycle": "waiting-for-owner",
+          "runtimeGeneration": 0,
+          "model": "claude-opus-5[1m]",
+          "accountRoute": "auto",
+          "carry": "warm",
+          "modes": []
+        }
+      ],
+      "events": [
+        {
+          "type": "session",
+          "sequence": 1,
+          "at": "2026-09-08T11:16:52.527Z"
+        },
+        {
+          "type": "lifecycle",
+          "state": "ready",
+          "reason": "Claude structured stream, SU tools and command executor attached",
+          "sequence": 2,
+          "at": "2026-09-08T11:17:06.255Z"
+        },
+        {
+          "type": "command_result",
+          "commandType": "owner_turn",
+          "status": "accepted",
+          "sequence": 3,
+          "at": "2026-09-08T11:17:06.279Z"
+        },
+        {
+          "type": "lifecycle",
+          "state": "running",
+          "reason": "owner turn accepted",
+          "sequence": 4,
+          "at": "2026-09-08T11:17:06.280Z"
+        },
+        {
+          "type": "session",
+          "sequence": 5,
+          "at": "2026-09-08T11:17:08.972Z"
+        },
+        {
+          "type": "transcript",
+          "phase": "started",
+          "turnId": "pui-turn-pui-1788866206547147771",
+          "role": "system",
+          "sequence": 6,
+          "at": "2026-09-08T11:17:08.977Z"
+        },
+        {
+          "type": "transcript",
+          "phase": "delta",
+          "turnId": "pui-turn-pui-1788866206547147771",
+          "role": "system",
+          "content": "requesting",
+          "sequence": 7,
+          "at": "2026-09-08T11:17:08.977Z"
+        },
+        {
+          "type": "transcript",
+          "phase": "completed",
+          "turnId": "pui-turn-pui-1788866206547147771",
+          "role": "system",
+          "content": "requesting",
+          "sequence": 8,
+          "at": "2026-09-08T11:17:08.977Z"
+        },
+        {
+          "type": "lifecycle",
+          "state": "waiting-for-owner",
+          "reason": "Claude did not acknowledge this saved turn; reconcile delivery before retrying",
+          "sequence": 9,
+          "at": "2026-09-08T11:17:36.281Z"
+        },
+        {
+          "type": "command_result",
+          "commandType": "owner_turn",
+          "status": "refused",
+          "refusal": {
+            "code": "engine_delivery_unknown",
+            "message": "Claude did not acknowledge this saved turn; reconcile delivery before retrying",
+            "retryable": false
+          },
+          "sequence": 10,
+          "at": "2026-09-08T11:17:36.427Z"
+        }
+      ],
+      "beforeRestartFrame": null,
+      "observed": "First owner turn refused after30s without userUUID/rootassistant-start acknowledgement; requesting is system status, no assistant reply."
+    },
+    "codex": {
+      "status": "FAILED",
+      "log": {
+        "path": "/tmp/pui-p006-codex-operator-restart-9.log",
+        "sha256": "d5f5cd602ea556b65b8dfd62bc3931d75904189cc58be5a9dc177c4bef51b7b0",
+        "bytes": 49861
+      },
+      "stages": [
+        {
+          "type": "ready",
+          "pid": 3476208,
+          "instanceId": "a93f66ea-63c9-4c68-863c-53bef14021fb",
+          "at": "2026-09-08T11:17:11.880Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 3476208,
+          "instanceId": "a93f66ea-63c9-4c68-863c-53bef14021fb",
+          "at": "2026-09-08T11:17:54.809Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 3476208,
+          "instanceId": "a93f66ea-63c9-4c68-863c-53bef14021fb",
+          "at": "2026-09-08T11:17:54.825Z"
+        },
+        {
+          "type": "ready",
+          "pid": 3558520,
+          "instanceId": "d77e4a69-8838-49df-83ae-89ee0d408ac4",
+          "at": "2026-09-08T11:18:16.707Z"
+        },
+        {
+          "type": "shutdown-stage",
+          "stage": "embedding-workers-stopped",
+          "pid": 3558520,
+          "instanceId": "d77e4a69-8838-49df-83ae-89ee0d408ac4",
+          "at": "2026-09-08T11:20:21.246Z"
+        },
+        {
+          "type": "stopped",
+          "pid": 3558520,
+          "instanceId": "d77e4a69-8838-49df-83ae-89ee0d408ac4",
+          "at": "2026-09-08T11:20:21.255Z"
+        }
+      ],
+      "provenance": "UNKNOWN complete import graph; router reports HEAD moved and named fixture unchanged.",
+      "frameNames": [
+        "beforeRestart"
+      ],
+      "screen": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌ Presence 1/1 ──────────────┐\n│No messages yet — press i to talk to this agent, or s to choose a role/session.                                       ││◐ codex      su             │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                             ┌ Conversation — Enter select · Esc close ───────────────────────────────────────────────┐│                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             │                                                                                        ││                            │\n│                             └────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n│                                                                                                                      ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n┌ Composer — i type · v speak · j/k scroll ────────────────────────────────────────────────────────────────────────────┐│                            │\n│pot papercusp · role operator · session new · backend Claude · model server default · effort model/default            ││                            │\n│account default · mode manual · op http://127.0.0.1:37923 · http · ws pui-agent-chat-e2e · store pg-a20a353191a5      ││                            │\n│v0.0.1 · chat workspace:pui-agent-chat-e2e                                                                            ││                            │\n│press i to talk · v PTT · V realtime voice                                                                            ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────┘\n⊙ all pots · pui · op http://127.0.0.1:37923 · http · ws pui-agent-chat-e2e · store pg-a20a353191a5 · v0.0.1 · chat workspace:pui-agent-chat-e2?:help",
+      "diagnostics": [],
+      "responses": [],
+      "descriptors": [],
+      "events": [],
+      "beforeRestartFrame": "  h:Overview  │  1:Agent Chat  │  2:Inbox (22)  │  3:Plans  │  4:Fleet  │  s:Sessions  │  5:Pots  │  6:Docs  │  7:Testing  │  8:Config  │  m:Memory  │\n┌ Agent Chat ──────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌ Presence 1/1 ──────────────┐\n│SU session · waiting-for-owner · adv 1 · seq 35                                                                       ││● codex      su             │\n│  Ctrl+X interrupt · R resume · K fork · F focus · E end                                                              ││                            │\n│  reconciliation: attached                                                                                            ││                            │\n│you                                                                                                                   ││                            │\n│Reply exactly PUI-PROCESS-f176ece8-8357-49dd-87e9-deaf5d296100. Do not use tools.                                     ││                            │\n│                                                                                                                      ││                            │\n│agent                                                                                                                 ││                            │\n│PUI-PROCESS-f176ece8-8357-49dd-87e9-deaf5d296100                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n│                                                                                                                      ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                            │\n┌ Message — Enter send · ↑↓ history · Esc cancel ──────────────────────────────────────────────────────────────────────┐│                            │\n│SU · codex · adv 1 · chat 13246f03-83c · waiting-for-owner · pot papercusp · role operator                            ││                            │\n│>                                                                                                                     ││                            │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘└────────────────────────────┘\n⊙ all pots · pui · op http://127.0.0.1:37923 · http · ws pui-agent-chat-e2e · store pg-a20a353191a5 · v0.0.1 · chat workspace:pui-agent-chat-e2?:help",
+      "observed": "First greeting and operator restart reached; second pane has no history, descriptors/events or resumed inference."
+    }
+  },
+  "native10": {
+    "backend": "codex",
+    "status": "RUNNING_AT_CAPTURE",
+    "sessionId": 30848,
+    "log": "/tmp/pui-p006-codex-operator-restart-10.log",
+    "change": "Verify saved chatId is in the actual conversation picker and move highlight until its hint matches before Enter; capture picker and selected row. The prior wrong-row hypothesis is not established yet."
+  },
+  "typecheck10": {
+    "status": "RUNNING_AT_CAPTURE",
+    "sessionId": 77547,
+    "log": "/tmp/pui-p006-restart-selection-types.log",
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+  },
+  "remaining": "Own EI-22693136093588911 Claude acknowledgement/native request diagnosis; finish actual all3 OS restart/resumed inference and full P006 scope/tools/modes/tasks/context/carry, Codex Plan/questions/approvals and exact-spec audits; continue entire16-item plan/fullP016. P015 public publication approval retained. No implementation fanout or LIVE_GATE_OPS.",
+  "provenanceLimits": "Point-in-time source snapshots only. Native9 tested fixture is the immutable repair artifact snapshot; current fixture source includes subsequent native10 selection checks. All native9 tests failed, and native10 is not a verdict yet."
+}

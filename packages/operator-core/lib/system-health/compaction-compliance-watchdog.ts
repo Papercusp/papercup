@@ -712,6 +712,41 @@ async function tagWatchdogContinuation(ownerId: string, note: string): Promise<s
   }
 }
 
+/**
+ * Flush the state that a watchdog-owned carry boundary would otherwise strand.
+ * The watchdog cannot afford the deliberate P-016 bounce: at the soft/force
+ * threshold it is already deciding the cut, and the current session may not
+ * receive another model turn before the host replaces it. `mode:'forced'`
+ * therefore writes the bounded mechanical fallback on its first tripwire,
+ * while the agent-requested session:request-compaction path leaves the default
+ * refuse-once ladder untouched.
+ */
+async function mechanicalPreflushForWatchdog(
+  ownerId: string,
+  ownerLabel: string,
+  workspaceId: string,
+): Promise<void> {
+  try {
+    const { runFlushGate } = await import('../enforcement-gate-io');
+    const nowMs = Date.now();
+    await runFlushGate({
+      boundary: 'compaction',
+      mode: 'forced',
+      ownerId,
+      workspaceId: workspaceId ?? '*',
+      sessionId: ownerId,
+      sinceIso: new Date(nowMs - 30 * 60_000).toISOString(),
+      journalNote:
+        `The compaction watchdog is cutting ${ownerLabel} on a context threshold; ` +
+        `mechanically flush stale state before the carry-respawn.`,
+      nowMs,
+    });
+  } catch {
+    // The gate is fail-soft by contract; a missing/failed preflush must not
+    // strand the watchdog's existing retry/backstop.
+  }
+}
+
 /** Which arm of `min(limit × 1.3, window − margin | limit × 1.2)` produced forceAt —
  *  the note must name the bound that actually bound (a fixed "≈ 1.3 × soft limit"
  *  gloss renders false math whenever the window cap wins, e.g. "~190k ≈ 1.3 × 400k";
@@ -963,6 +998,8 @@ async function maybeCarryRespawn(
     }
     if (!transcriptPath) return false;
 
+    await mechanicalPreflushForWatchdog(ownerId, ownerLabel, workspaceId);
+
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
     const spec = await buildOwnerRespawnLaunchSpec(ownerId, {
       effectiveWindowTokens,
@@ -1145,6 +1182,7 @@ async function maybeForceRespawn(
         (ref?.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
         newestTranscriptUnderOwner(ownerId);
     }
+    await mechanicalPreflushForWatchdog(ownerId, ownerLabel, workspaceId);
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
     const spec = transcriptPath
       ? await buildOwnerRespawnLaunchSpec(ownerId, {

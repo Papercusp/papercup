@@ -136,3 +136,28 @@ describe('listTasks taskId filter', () => {
     expect(text()).not.toContain('task_id =');
   });
 });
+
+describe('listTasks exact systemd identity filters', () => {
+  it('pushes the exact scope unit below the result limit', async () => {
+    const { sql, calls, text } = recordingSql();
+    const scopeUnit = 'papercup-green-checkpoint-manual-1fxzuva.service';
+
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, limit: 2000, scopeUnit }, sql);
+
+    expect(text()).toContain('scope_unit = ?');
+    expect(text()).toContain("detail #>> '{terminalProvenance,scopeUnit}' = ?");
+    expect(calls.flatMap((c) => c.args)).toContain(scopeUnit);
+    expect(text()).not.toContain(scopeUnit);
+  });
+
+  it('pushes the exact terminal InvocationID below the result limit', async () => {
+    const { sql, calls, text } = recordingSql();
+    const invocationId = '8c91f74d2e6a4bbf90f44a71d142d095';
+
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, limit: 2000, invocationId }, sql);
+
+    expect(text()).toContain("detail #>> '{terminalProvenance,invocationId}' = ?");
+    expect(calls.flatMap((c) => c.args)).toContain(invocationId);
+    expect(text()).not.toContain(invocationId);
+  });
+});

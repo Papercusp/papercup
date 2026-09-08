@@ -39,6 +39,7 @@ const {
   writePresenceMock,
   clearEstimateMock,
   codexProvenanceMock,
+  runFlushGateMock,
 } = vi.hoisted(() => ({
   clearEstimateMock: vi.fn(async () => {}),
   // EI-21595542328480968: where a codex reading came from. Default null = "not codex /
@@ -99,6 +100,7 @@ const {
   })),
   resolveSelfSessionMock: vi.fn(async () => null as null | { filePath: string; sourceKind: string }),
   writePresenceMock: vi.fn(async () => {}),
+  runFlushGateMock: vi.fn(async () => ({ verdict: 'clear' as const, tripwires: [] })),
 }));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
@@ -149,6 +151,9 @@ vi.mock('../carry-respawn', () => ({
 }));
 vi.mock('../search/self-session', () => ({
   resolveSelfSession: resolveSelfSessionMock,
+}));
+vi.mock('../enforcement-gate-io', () => ({
+  runFlushGate: runFlushGateMock,
 }));
 // The spawn-record honor leg lazily imports the tier menu — pin a small one so
 // the test never reads the real workspace agent-config.
@@ -856,6 +861,9 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
       systemPromptAddendum: 'deterministic carry',
       ownerId: 'hot',
     });
+    expect(runFlushGateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ boundary: 'compaction', mode: 'forced', ownerId: 'hot' }),
+    );
   });
 
   it('re-limits from Codex telemetry and opens a null-firstPrompt carry on a real continuation turn (WI-39942)', async () => {
@@ -995,6 +1003,18 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
       expect.objectContaining({
         buildOpts: expect.objectContaining({ boundaryDeliberate: false }),
       }),
+    );
+    expect(runFlushGateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        boundary: 'compaction',
+        mode: 'forced',
+        ownerId: 'hot',
+        workspaceId: '*',
+        sessionId: 'hot',
+      }),
+    );
+    expect(runFlushGateMock.mock.invocationCallOrder[0]).toBeLessThan(
+      buildOwnerRespawnMock.mock.invocationCallOrder[0]!,
     );
     // Unknown window (no spec resolvable) ⇒ the overshoot bound set forceAt — the
     // note must name THAT, not claim "≈ 1.3 ×" (false math; owner 2026-07-05).

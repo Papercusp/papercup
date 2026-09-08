@@ -673,6 +673,26 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
 
     expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.uncertainEvidence).toBe(1);
   });
+
+  it('does not let uncertain evidence from a superseded spec revision poison current proof', () => {
+    const input = fixture(1);
+    const evidence = input.evidence.rows[0]!;
+    evidence.specRevision += 1;
+    evidence.currentness = {
+      ...evidence.currentness,
+      overall: 'stale',
+      comparisonSupplied: true,
+      dimensions: {
+        ...evidence.currentness.dimensions,
+        spec: 'stale',
+        environment: 'unknown',
+      },
+      staleReasons: ['spec-stale'],
+      unknownReasons: ['environment-current-fingerprint-not-supplied'],
+    };
+
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.uncertainEvidence).toBe(0);
+  });
 });
 
 /**

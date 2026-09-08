@@ -140,6 +140,26 @@ describe('runFlushGate ladder', () => {
     expect(await wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(false);
   });
 
+  it('forced mode writes the mechanical fallback on the first tripwire and never refuses', async () => {
+    const out = await runFlushGate({
+      boundary: 'compaction',
+      mode: 'forced',
+      ownerId: 'su-forced',
+      workspaceId: '*',
+      sessionId: 'su-forced',
+      sinceIso: new Date(NOW).toISOString(),
+      brief: unflushedBrief(),
+      nowMs: NOW,
+      // Hermetic: keep the held item live so the snapshot tripwire is retained.
+      getWorkItemStateFn: async () => ({ state: 'wip' }),
+    });
+
+    expect(out.verdict).toBe('mechanical-fallback');
+    expect(out.tripwires[0]?.kind).toBe('missing-checkpoint');
+    expect(out.fallback).toBeDefined();
+    expect(await wasRecentlyRefused('compaction', 'su-forced', NOW)).toBe(false);
+  });
+
   it('retires a stale marker when the boundary comes back clean (flush happened)', async () => {
     await markRefused('compaction', 'su-e', NOW);
     const out = await runFlushGate({

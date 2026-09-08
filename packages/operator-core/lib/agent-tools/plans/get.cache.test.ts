@@ -70,6 +70,7 @@ const M = vi.hoisted(() => {
     row: {
       workspaceId: 'ws-get',
       planSlug: slug,
+      content: `---\nslug: ${slug}\n---\n\n## Items\n\n- **P-001** \`todo\` first item\n`,
       harnessSlug: 'papercup',
       version: 1,
       promotePolicy: null,

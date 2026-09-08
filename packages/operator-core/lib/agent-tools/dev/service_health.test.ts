@@ -76,6 +76,7 @@ import {
   BG_HOST_BOOT_GRACE_SEC,
   bgHostWatchdogOwnership,
   BG_HOST_WATCHDOG_UNIT,
+  type SupervisionStatusEntryWithRecency,
 } from "./service_health";
 
 /** Fixed clock for the transport-block tests — the summarizer windows on it. */
@@ -217,8 +218,7 @@ describe("dev:service_health handler", () => {
         note: "connection refused",
       },
     ]);
-    supervisionM.mockReturnValueOnce([
-      {
+    const activatingSupervision: SupervisionStatusEntryWithRecency = {
         name: "staging-api",
         layer: "systemd-user",
         autoRestart: true,
@@ -230,8 +230,8 @@ describe("dev:service_health handler", () => {
         flapObserved: true,
         activeState: "activating",
         healthy: true,
-      },
-    ]);
+    };
+    supervisionM.mockReturnValueOnce([activatingSupervision]);
 
     const b = body((await tool.handler({} as never, {} as never)) as Out);
 

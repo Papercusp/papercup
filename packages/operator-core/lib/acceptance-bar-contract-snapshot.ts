@@ -1018,7 +1018,10 @@ export function projectAcceptanceBarContractSnapshot(
         // here made `bar_snapshot_proof_uncertain` fire on EVERY bound row — which, since the
         // empty-evidence case already raises `bar_snapshot_proof_missing`, left the ship gate
         // with no satisfiable state at all. Only a reader that actually ASKED can be uncertain.
-        uncertainEvidence: evidence.filter((row) => {
+        // Only evidence for the current exact spec cohort can make the current proof
+        // uncertain. Historical rows remain in `history`, but a superseded revision
+        // with an unmeasurable legacy dimension must not poison newer complete proof.
+        uncertainEvidence: currentEvidence.filter((row) => {
           const currentness = (
             row as {
               currentness?: { overall?: string; dimensions?: Record<string, string>; comparisonSupplied?: boolean };

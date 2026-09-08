@@ -529,6 +529,10 @@ export interface ListTasksFilter {
   coordOwnerId?: string;
   /** Match one exact task-ledger row by its durable task id. */
   taskId?: string;
+  /** Match one exact systemd scope/service unit before the result limit is applied. */
+  scopeUnit?: string;
+  /** Match one exact systemd InvocationID stored in terminal provenance. */
+  invocationId?: string;
   workItemId?: string;
   rootTaskId?: string;
   /** Native Claude/Codex session id recorded after bootstrap. */
@@ -606,6 +610,12 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
        ${filter.coordOwnerId ? sql`AND detail ->> 'coordOwnerId' = ${filter.coordOwnerId}` : sql``}
        ${filter.taskId ? sql`AND task_id = ${filter.taskId}` : sql``}
+       ${
+         filter.scopeUnit
+           ? sql`AND (scope_unit = ${filter.scopeUnit} OR detail #>> '{terminalProvenance,scopeUnit}' = ${filter.scopeUnit})`
+           : sql``
+       }
+       ${filter.invocationId ? sql`AND detail #>> '{terminalProvenance,invocationId}' = ${filter.invocationId}` : sql``}
        ${filter.workItemId ? sql`AND work_item_id = ${filter.workItemId}` : sql``}
        ${filter.rootTaskId ? sql`AND root_task_id = ${filter.rootTaskId}` : sql``}
        ${filter.sessionId ? sql`AND session_id = ${filter.sessionId}` : sql``}

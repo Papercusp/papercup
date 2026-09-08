@@ -97,6 +97,134 @@ describe('processes:list structured output', () => {
     expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-to-kill' }));
   });
 
+  it('accepts an exact scopeUnit selector for a live systemd unit', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    vi.mocked(listTasks).mockClear();
+    const scopeUnit = 'papercup-green-checkpoint-manual-1fxzuva.service';
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { scopeUnit, includeEnded: true, limit: 2000 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-scope-unit-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ scopeUnit, limit: 2000 }));
+  });
+
+  it('accepts an exact InvocationID selector for terminal provenance', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    vi.mocked(listTasks).mockClear();
+    const invocationId = '8c91f74d2e6a4bbf90f44a71d142d095';
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { invocationId, includeEnded: true },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-invocation-id-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ invocationId }));
+  });
+
+  it('returns only the exact live systemd group when scopeUnit is selected', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    const scopeUnit = 'papercup-green-checkpoint-manual-1fxzuva.service';
+    vi.mocked(listTasks).mockResolvedValueOnce([]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { alive: 0, stranded: 0, endedUnobserved: 0, unaccounted: 1, foreign: 1, verifierScope: 0 },
+      result: {
+        alive: [],
+        stranded: [],
+        endedUnobserved: [],
+        unaccounted: [
+          { cgroupPath: `/user.slice/${scopeUnit}`, scopeUnit, pids: [101, 102], sampleCmdline: 'checkpoint target' },
+        ],
+        abandonedWindow: [],
+        consoleWindow: [],
+        verifierScope: [],
+        foreign: [
+          { cgroupPath: '/user.slice/other.service', scopeUnit: 'other.service', pids: [201], sampleCmdline: 'other' },
+        ],
+        overdue: [],
+        tooYoung: [],
+      },
+      scan: { processes: 3, foreignTruncated: false },
+      degraded: false,
+      touched: 0,
+      strandedCount: 0,
+      endedUnobservedCount: 0,
+      unaccountedPersisted: 0,
+      residueCleared: 0,
+    } as never);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { scopeUnit, live: true, includeEnded: true, limit: 2000 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-exact-live-unit-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      live: { exactScopeUnitMatches: Array<Record<string, unknown>> };
+    };
+    expect(structured.live.exactScopeUnitMatches).toEqual([
+      {
+        kind: 'unaccounted',
+        cgroupPath: `/user.slice/${scopeUnit}`,
+        scopeUnit,
+        pids: [101, 102],
+        sample: 'checkpoint target',
+      },
+    ]);
+  });
+
   it('overlays dry-run terminal reconciliation verdicts without mutating ledger rows', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');

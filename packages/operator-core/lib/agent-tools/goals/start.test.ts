@@ -19,6 +19,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../../console-spawn';
 import type { GoalPortfolioBrief } from '../../goal-launch-settings';
+import type { GoalHistoryContext } from '../../prior-attempt-context';
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -274,10 +275,19 @@ describe('goals:start — the happy path', () => {
 
   it('reads goal history in the production handler and injects it into the kickoff env', async () => {
     const priorAttempts = await import('../../prior-attempt-context');
-    const readHistory = vi.spyOn(priorAttempts, 'readGoalHistoryContext').mockResolvedValueOnce({
+    const history: GoalHistoryContext = {
       status: 'available',
       brief: {
+        schemaVersion: 'prior-attempt-brief-v1',
+        status: 'available',
+        target: { kind: 'goal', ref: 'resolved-at-runtime' },
+        fanOut: { admitted: 0, total: 0, cap: 24, truncated: false },
+        degradedSources: [],
+        omittedDescendants: [],
+        omittedDescendantsTruncated: false,
         fingerprint: 'goal-start-handler-history-fingerprint',
+        authority: [],
+        residue: [],
         attempts: [
           {
             authority: 'checkpoint',
@@ -286,9 +296,23 @@ describe('goals:start — the happy path', () => {
             text: 'PRODUCTION HANDLER HISTORY MARKER',
           },
         ],
+        rawRefs: ['goal-history#production-handler-proof'],
+        protectedRefs: { authority: [], residue: [] },
+        omission: {
+          omittedRecords: 0,
+          omittedByAuthority: {},
+          omittedRefs: [],
+          omittedRefsTruncated: false,
+          sourceCount: 1,
+          deduplicatedCount: 1,
+          truncated: false,
+        },
+        estimatedTokens: 40,
+        serializedChars: 160,
       },
       recovery: { tool: 'goals:get', args: { id: 'resolved-at-runtime', detail: 'full' } },
-    });
+    };
+    const readHistory = vi.spyOn(priorAttempts, 'readGoalHistoryContext').mockResolvedValueOnce(history);
 
     try {
       const res = await call();
