@@ -700,6 +700,229 @@ export async function getTask(taskId: string, inject?: Sql): Promise<TaskRow | n
   return rows[0] ? toRow(rows[0]) : null;
 }
 
+// ── Restart-safe release receipts ──────────────────────────────────────────
+
+export const TASK_RELEASE_JOURNAL_SCHEMA_VERSION = 1 as const;
+
+export type TaskReleaseReceiptState = 'intent' | 'unknown' | 'committed' | 'refused';
+
+export interface TaskReleaseReceiptInput {
+  /** Identity of the whole immutable release run. */
+  operationId: string;
+  /** One-use identity of this exact outward request/reconciliation. */
+  requestIdentity: string;
+  stage: string;
+  state: TaskReleaseReceiptState;
+  /** Digest of every input that makes this stage result reusable. */
+  inputHash: string;
+  evidenceRefs?: readonly string[];
+  credentialGeneration?: string | null;
+  credentialExpiresAt?: string | null;
+  recordedAt?: string;
+}
+
+export interface TaskReleaseReceipt extends Omit<TaskReleaseReceiptInput, 'evidenceRefs'> {
+  sequence: number;
+  evidenceRefs: string[];
+}
+
+export interface TaskReleaseJournal {
+  schemaVersion: typeof TASK_RELEASE_JOURNAL_SCHEMA_VERSION;
+  operationId: string;
+  cursor: number;
+  receipts: TaskReleaseReceipt[];
+  [key: string]: unknown;
+}
+
+export type AppendTaskReleaseReceiptResult =
+  | { ok: true; journal: TaskReleaseJournal; receipt: TaskReleaseReceipt }
+  | {
+      ok: false;
+      reason:
+        | 'task_not_found'
+        | 'journal_missing'
+        | 'operation_identity_mismatch'
+        | 'cursor_mismatch'
+        | 'request_identity_conflict'
+        | 'invalid_transition'
+        | 'cas_conflict';
+      journal: TaskReleaseJournal | null;
+    };
+
+function boundedReceiptString(value: unknown, field: string, max: number): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) {
+    throw new Error(`task-manager: release receipt ${field} must be a non-empty string <= ${max} characters`);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`task-manager: release receipt ${field} contains control characters`);
+  }
+  return value;
+}
+
+function releaseReceiptFromUnknown(value: unknown): TaskReleaseReceipt | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(raw.sequence) ||
+    (raw.sequence as number) < 0 ||
+    typeof raw.operationId !== 'string' ||
+    typeof raw.requestIdentity !== 'string' ||
+    typeof raw.stage !== 'string' ||
+    !['intent', 'unknown', 'committed', 'refused'].includes(String(raw.state)) ||
+    typeof raw.inputHash !== 'string' ||
+    typeof raw.recordedAt !== 'string' ||
+    !Array.isArray(raw.evidenceRefs) ||
+    !raw.evidenceRefs.every((entry) => typeof entry === 'string')
+  ) return null;
+  return raw as unknown as TaskReleaseReceipt;
+}
+
+/** Parse only a complete journal. A malformed/missing chain is unknown, never empty-success. */
+export function taskReleaseJournalFromDetail(
+  detail: Record<string, unknown> | null | undefined,
+): TaskReleaseJournal | null {
+  const raw = detail?.release;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  if (
+    value.schemaVersion !== TASK_RELEASE_JOURNAL_SCHEMA_VERSION ||
+    typeof value.operationId !== 'string' ||
+    !Number.isSafeInteger(value.cursor) ||
+    (value.cursor as number) < 0 ||
+    !Array.isArray(value.receipts)
+  ) return null;
+  const receipts = value.receipts.map(releaseReceiptFromUnknown);
+  if (receipts.some((receipt) => receipt === null) || receipts.length !== value.cursor) return null;
+  for (let index = 0; index < receipts.length; index += 1) {
+    if (receipts[index]!.sequence !== index) return null;
+  }
+  return { ...value, receipts: receipts as TaskReleaseReceipt[] } as TaskReleaseJournal;
+}
+
+function normalizeReleaseReceipt(
+  expectedCursor: number,
+  input: TaskReleaseReceiptInput,
+): TaskReleaseReceipt {
+  if (!Number.isSafeInteger(expectedCursor) || expectedCursor < 0) {
+    throw new Error('task-manager: expected release receipt cursor must be a non-negative safe integer');
+  }
+  const evidenceRefs = [...(input.evidenceRefs ?? [])];
+  if (evidenceRefs.length > 64) {
+    throw new Error('task-manager: a release receipt accepts at most 64 evidence references');
+  }
+  for (const ref of evidenceRefs) boundedReceiptString(ref, 'evidenceRefs[]', 1000);
+  const recordedAt = input.recordedAt ?? new Date().toISOString();
+  if (!Number.isFinite(Date.parse(recordedAt))) {
+    throw new Error('task-manager: release receipt recordedAt must be an ISO timestamp');
+  }
+  return {
+    sequence: expectedCursor,
+    operationId: boundedReceiptString(input.operationId, 'operationId', 256),
+    requestIdentity: boundedReceiptString(input.requestIdentity, 'requestIdentity', 256),
+    stage: boundedReceiptString(input.stage, 'stage', 160),
+    state: input.state,
+    inputHash: boundedReceiptString(input.inputHash, 'inputHash', 256),
+    evidenceRefs,
+    credentialGeneration:
+      input.credentialGeneration == null
+        ? null
+        : boundedReceiptString(input.credentialGeneration, 'credentialGeneration', 256),
+    credentialExpiresAt:
+      input.credentialExpiresAt == null
+        ? null
+        : boundedReceiptString(input.credentialExpiresAt, 'credentialExpiresAt', 128),
+    recordedAt: new Date(recordedAt).toISOString(),
+  };
+}
+
+/**
+ * Atomically append one transition to `task_ledger.detail.release`.
+ *
+ * The cursor is the compare-and-swap boundary. The SQL additionally enforces
+ * the request transition graph so two resumed children cannot both spend one
+ * request identity or advance an `unknown` outcome without reconciliation.
+ */
+export async function appendTaskReleaseReceipt(
+  taskId: string,
+  expectedCursor: number,
+  input: TaskReleaseReceiptInput,
+  inject?: Sql,
+): Promise<AppendTaskReleaseReceiptResult> {
+  const sql = sqlOf(inject);
+  const receipt = normalizeReleaseReceipt(expectedCursor, input);
+  const receiptJson = JSON.stringify(receipt);
+  const rows = await sql<Array<{ release: unknown }>>`
+    UPDATE harness_shared.task_ledger
+       SET detail = jsonb_set(
+                      jsonb_set(
+                        detail,
+                        '{release,receipts}',
+                        (detail #> '{release,receipts}') || ${receiptJson}::text::jsonb,
+                        false
+                      ),
+                      '{release,cursor}',
+                      to_jsonb(${expectedCursor + 1}::integer),
+                      false
+                    ),
+           updated_at = now()
+     WHERE task_id = ${taskId}
+       AND jsonb_typeof(detail -> 'release') = 'object'
+       AND detail #>> '{release,schemaVersion}' = ${String(TASK_RELEASE_JOURNAL_SCHEMA_VERSION)}
+       AND detail #>> '{release,operationId}' = ${receipt.operationId}
+       AND jsonb_typeof(detail #> '{release,receipts}') = 'array'
+       AND (detail #>> '{release,cursor}') ~ '^[0-9]+$'
+       AND (detail #>> '{release,cursor}')::integer = ${expectedCursor}
+       AND NOT EXISTS (
+             SELECT 1
+               FROM jsonb_array_elements(detail #> '{release,receipts}') prior
+              WHERE prior ->> 'requestIdentity' = ${receipt.requestIdentity}
+                AND (
+                  prior ->> 'stage' <> ${receipt.stage}
+                  OR prior ->> 'inputHash' <> ${receipt.inputHash}
+                  OR prior ->> 'operationId' <> ${receipt.operationId}
+                )
+           )
+       AND CASE
+             WHEN ${receipt.state} = 'intent' THEN NOT EXISTS (
+               SELECT 1 FROM jsonb_array_elements(detail #> '{release,receipts}') prior
+                WHERE prior ->> 'requestIdentity' = ${receipt.requestIdentity}
+             )
+             WHEN ${receipt.state} = 'unknown' THEN (
+               SELECT prior ->> 'state'
+                 FROM jsonb_array_elements(detail #> '{release,receipts}') WITH ORDINALITY AS p(prior, ordinal)
+                WHERE prior ->> 'requestIdentity' = ${receipt.requestIdentity}
+                ORDER BY ordinal DESC LIMIT 1
+             ) = 'intent'
+             ELSE (
+               SELECT prior ->> 'state'
+                 FROM jsonb_array_elements(detail #> '{release,receipts}') WITH ORDINALITY AS p(prior, ordinal)
+                WHERE prior ->> 'requestIdentity' = ${receipt.requestIdentity}
+                ORDER BY ordinal DESC LIMIT 1
+             ) IN ('intent', 'unknown')
+           END
+     RETURNING detail -> 'release' AS release
+  `;
+  const appended = taskReleaseJournalFromDetail({ release: rows[0]?.release });
+  if (appended) return { ok: true, journal: appended, receipt };
+
+  const current = await getTask(taskId, sql);
+  if (!current) return { ok: false, reason: 'task_not_found', journal: null };
+  const journal = taskReleaseJournalFromDetail(current.detail);
+  if (!journal) return { ok: false, reason: 'journal_missing', journal: null };
+  if (journal.operationId !== receipt.operationId) {
+    return { ok: false, reason: 'operation_identity_mismatch', journal };
+  }
+  if (journal.cursor !== expectedCursor) return { ok: false, reason: 'cursor_mismatch', journal };
+  const matching = journal.receipts.filter((prior) => prior.requestIdentity === receipt.requestIdentity);
+  if (matching.some((prior) =>
+    prior.stage !== receipt.stage || prior.inputHash !== receipt.inputHash || prior.operationId !== receipt.operationId
+  )) return { ok: false, reason: 'request_identity_conflict', journal };
+  if (matching.length > 0 || receipt.state !== 'intent') {
+    return { ok: false, reason: 'invalid_transition', journal };
+  }
+  return { ok: false, reason: 'cas_conflict', journal };
+}
+
 /** Persist a budget accepted by systemd for a live task. Omitted fields retain
  * their current ledger values so a CPU-only retune cannot erase MemoryMax. */
 export interface TaskLimitUpdate {

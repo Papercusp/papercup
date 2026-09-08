@@ -42,6 +42,7 @@ import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-
 import { closeTask, markSpawned, registerTask } from './store';
 import {
   deriveUserManagerRoot,
+  isValidTaskId,
   newTaskId,
   scopeCgroupRelPath,
   scopeUnitForTask,
@@ -57,6 +58,13 @@ export interface ManagedSpawnOptions {
   /** Force confinement off (tests, or a caller that knows it is unsupported). */
   confine?: boolean;
   workspaceId?: string;
+  /**
+   * Caller-minted durable identity. A release coordinator that must persist its
+   * task id before the child starts uses this seam to bind the task ledger,
+   * cgroup name, and child environment to one identity. Omit for the ordinary
+   * managedSpawn-owned identity.
+   */
+  taskId?: string;
   /** Injected for tests. */
   spawnFn?: typeof spawn;
   fs?: CgroupFs;
@@ -232,7 +240,12 @@ export async function managedSpawn(
 ): Promise<ManagedSpawnResult> {
   const spawnFn = opts.spawnFn ?? spawn;
   const fs = opts.fs ?? nodeCgroupFs;
-  const taskId = newTaskId();
+  const taskId = opts.taskId ?? newTaskId();
+  if (!isValidTaskId(taskId)) {
+    throw new Error(
+      `task-manager: invalid caller taskId ${JSON.stringify(taskId)} — must match /^[0-9a-z]{4,64}$/`,
+    );
+  }
 
   // WI-6499 — the master switch. OFF ⇒ a plain spawn: no scope, no ledger row,
   // no exit wiring. Byte-identical to what this seam's callers did before the

@@ -157,6 +157,128 @@ describe('agent-session native-id binding (EI-21268871278252116)', () => {
   });
 });
 
+describe('restart-safe release receipt journal (BYOC P-005)', () => {
+  const operationId = 'release-op-20260908';
+  const inputHash = 'a'.repeat(64);
+
+  async function releaseTask(taskId = 'releasetask01') {
+    return store.registerTask(
+      {
+        class: 'deploy',
+        title: 'workspace-host release',
+        argv: ['release'],
+        launchedBy: 'test',
+        detail: {
+          release: {
+            schemaVersion: 1,
+            operationId,
+            source: { sha: 'b'.repeat(40), gitlinks: { desktop: 'c'.repeat(40) } },
+            artifactIdentity: { sha256: inputHash },
+            credential: { generation: 'generation-7', expiresAt: '2026-09-08T06:00:00.000Z' },
+            cursor: 0,
+            receipts: [],
+          },
+        },
+      },
+      { taskId, workspaceId: WS },
+    );
+  }
+
+  function receipt(
+    state: store.TaskReleaseReceiptState,
+    over: Partial<store.TaskReleaseReceiptInput> = {},
+  ): store.TaskReleaseReceiptInput {
+    return {
+      operationId,
+      requestIdentity: 'multipart-init-01',
+      stage: 'publish.multipart.initiate',
+      state,
+      inputHash,
+      evidenceRefs: ['manifest:sha256:' + inputHash],
+      credentialGeneration: 'generation-7',
+      credentialExpiresAt: '2026-09-08T06:00:00.000Z',
+      recordedAt: '2026-09-08T04:00:00.000Z',
+      ...over,
+    };
+  }
+
+  it('persists intent -> unknown -> reconciled commit without losing immutable release identity', async () => {
+    await releaseTask();
+    await expect(store.appendTaskReleaseReceipt('releasetask01', 0, receipt('intent'))).resolves.toMatchObject({ ok: true });
+    await expect(store.appendTaskReleaseReceipt('releasetask01', 1, receipt('unknown'))).resolves.toMatchObject({ ok: true });
+    await expect(
+      store.appendTaskReleaseReceipt('releasetask01', 2, receipt('committed', {
+        evidenceRefs: ['provider-ledger:multipart-init-01'],
+      })),
+    ).resolves.toMatchObject({ ok: true });
+
+    const task = await store.getTask('releasetask01');
+    const journal = store.taskReleaseJournalFromDetail(task?.detail);
+    expect(journal).toMatchObject({
+      operationId,
+      cursor: 3,
+      source: { sha: 'b'.repeat(40), gitlinks: { desktop: 'c'.repeat(40) } },
+      artifactIdentity: { sha256: inputHash },
+      credential: { generation: 'generation-7' },
+    });
+    expect(journal?.receipts.map(({ sequence, state }) => ({ sequence, state }))).toEqual([
+      { sequence: 0, state: 'intent' },
+      { sequence: 1, state: 'unknown' },
+      { sequence: 2, state: 'committed' },
+    ]);
+  });
+
+  it('fails closed on cursor races, operation reuse, and advance-without-intent', async () => {
+    await releaseTask();
+    expect((await store.appendTaskReleaseReceipt('releasetask01', 0, receipt('intent'))).ok).toBe(true);
+
+    await expect(
+      store.appendTaskReleaseReceipt('releasetask01', 0, receipt('unknown')),
+    ).resolves.toMatchObject({ ok: false, reason: 'cursor_mismatch' });
+    await expect(
+      store.appendTaskReleaseReceipt('releasetask01', 1, receipt('intent', {
+        stage: 'publish.multipart.part.1',
+      })),
+    ).resolves.toMatchObject({ ok: false, reason: 'request_identity_conflict' });
+    await expect(
+      store.appendTaskReleaseReceipt('releasetask01', 1, receipt('committed', {
+        requestIdentity: 'never-intended',
+      })),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid_transition' });
+
+    const journal = store.taskReleaseJournalFromDetail((await store.getTask('releasetask01'))?.detail);
+    expect(journal?.cursor).toBe(1);
+    expect(journal?.receipts).toHaveLength(1);
+  });
+
+  it('lets only one concurrent child win the same receipt cursor', async () => {
+    await releaseTask();
+    const outcomes = await Promise.all([
+      store.appendTaskReleaseReceipt('releasetask01', 0, receipt('intent')),
+      store.appendTaskReleaseReceipt('releasetask01', 0, receipt('intent', {
+        requestIdentity: 'multipart-init-02',
+      })),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([
+      expect.objectContaining({ reason: 'cursor_mismatch' }),
+    ]);
+  });
+
+  it('treats a malformed or receipt-count-mismatched chain as unavailable, never empty success', async () => {
+    await releaseTask();
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_set(detail, '{release,cursor}', '1'::jsonb)
+       WHERE task_id = 'releasetask01'
+    `;
+    expect(store.taskReleaseJournalFromDetail((await store.getTask('releasetask01'))?.detail)).toBeNull();
+    await expect(
+      store.appendTaskReleaseReceipt('releasetask01', 1, receipt('intent')),
+    ).resolves.toMatchObject({ ok: false, reason: 'journal_missing' });
+  });
+});
+
 describe('P-012 terminal provenance writer', () => {
   async function liveTask(
     taskId: string,
