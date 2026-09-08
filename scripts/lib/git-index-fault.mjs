@@ -209,11 +209,22 @@ export function reportIndexFaultNotChecked(error, { guard, log = console.error }
  * @returns {T}
  */
 export function runGuardWithIndexFaultGuard(main, { guard } = {}) {
-  try {
-    return main();
-  } catch (error) {
+  const settle = (error) => {
     const code = reportIndexFaultNotChecked(error, { guard });
     if (code === null) throw error;
     process.exit(code);
+  };
+  try {
+    const result = main();
+    // An ASYNC main returns a promise, and its rejection NEVER reaches the sync catch below.
+    // Without this branch a caller wiring up an async guard gets a raw stack trace and exit 1
+    // — the violation-shaped exit this module exists to prevent — while the call site LOOKS
+    // protected. That is silent false-safety: the failure is invisible at the point where
+    // someone would notice it. Measured on check-migration-fixture-drift.mjs, whose main() is
+    // async (EI-22703095921400106).
+    if (result && typeof result.then === 'function') return result.then(undefined, settle);
+    return result;
+  } catch (error) {
+    return settle(error);
   }
 }
