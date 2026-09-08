@@ -16,15 +16,22 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
 import plansAudit from '../plans/audit';
+import bindSpecEvidence from '../plans/bind-spec-evidence';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
 import coordSend from '../coordination/tools/send';
+import sessionsRead from '../sessions/read';
 import { DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
+import {
+  ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
+  ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
+  RootCauseVerificationSchema,
+} from '../../coord-lifecycle/records';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -508,6 +515,50 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('publishes the validator-owned successful-close predicate and contrast rule on shorthand and bulk paths', async () => {
+    const result = await callHandler({ query: 'work_items:complete', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'work_items:complete')?.argSchema;
+
+    for (const path of ['completion.rootCauseVerification', 'items[].completion.rootCauseVerification']) {
+      expect(compact).toContain(`constraint:${path} (`);
+    }
+    expect(compact).toContain(`state=${ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.join('|')}) => required`);
+    expect(compact).toContain('successful bug/capability-gap close');
+    expect(compact).toContain('hypothesis!=alternativeHypothesis');
+    expect(compact).toContain(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT);
+    expect(compact).toContain('assumptions?');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+
+    const evidence = {
+      hypothesis: 'the cache returns stale data',
+      alternativeHypothesis: 'the writer persisted incorrect data',
+      distinguishingTest: 'if H1 then fresh reads succeed; if H2 then fresh reads fail',
+      testResult: 'fresh reads succeeded before the fix',
+    };
+    expect(RootCauseVerificationSchema.safeParse(evidence).success).toBe(true);
+    // The example teaches a reliable form, not a new literal-only parser.
+    expect(RootCauseVerificationSchema.safeParse({
+      ...evidence,
+      distinguishingTest: 'If the cache is stale, fresh reads succeed; if the writer is wrong, fresh reads fail',
+    }).success).toBe(true);
+    expect(RootCauseVerificationSchema.safeParse({
+      ...evidence,
+      alternativeHypothesis: evidence.hypothesis,
+    }).success).toBe(false);
+    const sameObservable = RootCauseVerificationSchema.safeParse({
+      ...evidence,
+      distinguishingTest: 'if H1 then fresh reads fail; if H2 then fresh reads fail',
+    });
+    expect(sameObservable.success).toBe(false);
+    if (!sameObservable.success) {
+      expect(sameObservable.error.issues[0]?.message).toContain(ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT);
+    }
+    expect(RootCauseVerificationSchema.safeParse({
+      ...evidence,
+      distinguishingTest: 'tests pass after the fix',
+    }).success).toBe(false);
+  });
+
   it('bounds a verbose nested-fields segment so nesting stays readable (EI-21490971340666010)', () => {
     const manyFields: Record<string, unknown> = {};
     for (let i = 0; i < 40; i += 1) {
@@ -529,6 +580,37 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(segment).toContain('field0:string');
     expect(segment).not.toContain('xxxxxxx');
     expect(segment).toMatch(/…\+\d+$/);
+  });
+
+  it('publishes sessions:read selector and tail constraints from the same runtime errors', async () => {
+    const result = await callHandler({ query: 'sessions:read', limit: 1 });
+    const compact = result.hits.find((hit) => hit.tool === 'sessions:read')?.argSchema;
+    expect(compact).toContain('constraint:$ (');
+    expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
+    for (const args of [
+      {},
+      { ref: 'session_turn:codex:sess:4', session: 'sess' },
+      { ref: 'session_turn:codex:sess:4', around: 4 },
+      { session: 'sess', tail: 2, order: 'desc' },
+      { session: 'sess', tail: 2, limit: 2 },
+    ]) {
+      const parsed = sessionsRead.args.safeParse(args);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) expect(compact).toContain(issue.message);
+      }
+    }
+    for (const args of [
+      { session: 'sess', tail: 2 },
+      { session: 'sess', order: 'desc', limit: 2 },
+      { ref: 'session_turn:codex:sess:4', context: 3, tail: 2 },
+      { ref: 'session_turn:codex:sess:4', text_offset: 1_500, text_limit: 1_500 },
+    ]) {
+      expect(sessionsRead.args.safeParse(args).success).toBe(true);
+    }
+    // No search-only mode/query alias or permissive unknown-key behavior.
+    expect(sessionsRead.args.safeParse({ session: 'sess', mode: 'verbatim' }).success).toBe(false);
+    expect(compact).not.toContain('mode?:');
   });
 
   it('keeps nested descriptions when a block fits the budget', () => {
@@ -716,6 +798,27 @@ describe('handler — graceful degrade + result shape', () => {
     expect(hit).toBeDefined();
     expect(hit?.returns).toBeNull();
     expect(hit?.returnsSource).toBeNull();
+  });
+
+  it('honors an explicit full payload tier for the complete argument schema', async () => {
+    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
+    const compact = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
+    const full = await callHandler(
+      { query: 'plans:bind-spec-evidence', limit: 1 },
+      { payloadTierOverride: 'full' },
+    );
+    const compactSchema = compact.hits[0]?.argSchema ?? '';
+    const fullSchema = full.hits[0]?.argSchema ?? '';
+
+    expect(compact.hits[0]?.tool).toBe('plans:bind-spec-evidence');
+    expect(full.hits[0]?.tool).toBe('plans:bind-spec-evidence');
+    expect(compactSchema).toContain('…+');
+    expect(fullSchema).not.toContain('…+');
+    expect(fullSchema.length).toBeGreaterThan(compactSchema.length);
+    expect(fullSchema).toContain('fixtureFingerprint?');
+    expect(fullSchema).toContain('rubricFingerprint?');
+    expect(fullSchema).toContain('environmentFingerprint?');
+    expect(fullSchema).toContain('observedAt?');
   });
 });
 
