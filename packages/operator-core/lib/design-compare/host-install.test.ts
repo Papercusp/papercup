@@ -52,6 +52,8 @@ describe('approved reference byte measurement', () => {
     const env = { viewport: { width: 1, height: 1 }, deviceScaleFactor: 1, browser: 'chromium', theme: 'light', fontSet: 'fixture', state: 'disconnected' };
     const caller = { actorId: 'test-reviewer', role: 'reviewer' };
     const deps: VerbDeps = {
+      // This test isolates materialization; rollout admission has its own real-reader suite.
+      rolloutAdmission: async () => ({ satisfied: true, reason: 'controlled-admission' }),
       harnessSlug: 'test', store: createInMemoryReferenceStore(), now: () => 1000,
       clock: () => '2026-09-08T00:00:00.000Z', materializeReferenceImage: filesystemReferenceMaterializer,
       comparison: {

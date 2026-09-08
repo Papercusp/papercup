@@ -53,6 +53,7 @@ import {
 } from './contract';
 import type { PngDimensions } from './png-header';
 import { validateRatification } from './ratification';
+import { readDesignRolloutAdmission, type RolloutScope, type RolloutAdmission } from './rollout';
 import type {
   DesignApprovalScope,
   DesignReferenceBinding,
@@ -178,6 +179,8 @@ export type ReferenceImageMaterializer = (
 } | { readonly error: string }>;
 
 export interface VerbDeps {
+  /** Host-owned admission seam; omitted in production uses the durable policy reader. */
+  readonly rolloutAdmission?: (scope: RolloutScope) => Promise<RolloutAdmission>;
   /**
    * The harness these verbs are bound to.
    *
@@ -322,6 +325,11 @@ export async function ratifyReferenceVerb(
       if (errors.length) return { ok: false, code: 'validation-failed', detail: errors.map(e => e.message).join('; '), errors };
       const mismatch = await verifyApprovedImage(input.image, input.contentSha256, deps);
       if (mismatch) return mismatch;
+      const scope = { harnessSlug: deps.harnessSlug, featureId: input.featureId,
+        referenceId: input.referenceId, contentSha256: input.contentSha256,
+        approval: candidate.approval, actorId: caller.actorId };
+      const rollout = await (deps.rolloutAdmission?.(scope) ?? readDesignRolloutAdmission(scope, { now: deps.now() }));
+      if (!rollout.satisfied) return refuse('validation-failed', rollout.reason);
     }
     const outcome = await ratifyReference(deps.store, {
       scope: scopeFor(deps, input.featureId, input.referenceId),

@@ -94,7 +94,7 @@ export async function readWorkItemResume(item: ResumeItem, deps: ResumeDeps = {
   freshness: getWorkItemCheckpointFreshness,
   evidence: listSpecEvidence,
 }) {
-  const ref = { harness: item.harness, workItemId: item.id };
+  const ref = { harness: item.harness ?? null, workItemId: item.id };
   const [checkpoint, freshness, evidence] = await Promise.all([
     deps.checkpoint(ref).catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true })),
     deps.freshness(ref).catch(() => ({ verdict: 'unknown', reason: 'dependency read failed' })),

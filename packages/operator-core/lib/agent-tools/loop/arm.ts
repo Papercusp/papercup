@@ -349,6 +349,12 @@ function shortOwnerLabel(id: string): string {
  */
 const FRESH_LOOP_DEFAULT_CARRY = 'warm' as const;
 
+// The shared carry-surface lint also uses `manual-owner-tag` for an unbracketed
+// `owner directive` noun phrase. loop:arm's replay guard is narrower: it exists
+// to stop a literal `[owner:…]` tag from laundering a goal into owner speech,
+// not to reject ordinary prose that happens to discuss ownership or directives.
+const BRACKETED_OWNER_TAG_RE = /\[\s*owner\b\s*[:=\-]?\s*[^\]]+\]/i;
+
 /** Normalize free text for a loose goal-containment check (case/whitespace-insensitive). */
 function normalizeLoopText(s: string): string {
   return String(s ?? '')
@@ -1025,7 +1031,10 @@ export default defineTool({
     // placeholders and same-line [turn:…] anchors. Refuse before any claim or
     // routine materialization so an invalid goal cannot create a doomed loop.
     const goalProvenance = lintCarrySurfaceProvenance(goal);
-    if (goalProvenance.matches.some(({ kind }) => kind === 'manual-owner-tag')) {
+    const unverifiedOwnerTagMatches = goalProvenance.matches.filter(
+      ({ kind, line }) => kind === 'manual-owner-tag' && BRACKETED_OWNER_TAG_RE.test(line),
+    );
+    if (unverifiedOwnerTagMatches.length > 0) {
       return {
         content: [
           {
@@ -1037,7 +1046,7 @@ export default defineTool({
                 'Refusing to arm: the loop goal contains a bare [owner:…] tag without a verifiable [turn:…] anchor. ' +
                 'Loop goals replay as machine-injected user text, not owner turns. Replace the tag with [self-imposed], ' +
                 '[inferred], or [peer:…], or cite the actual human turn as [turn:<session>@<timestamp>] and verify its provenance before arming.',
-              matches: goalProvenance.matches.filter(({ kind }) => kind === 'manual-owner-tag'),
+              matches: unverifiedOwnerTagMatches,
             }),
           },
         ],

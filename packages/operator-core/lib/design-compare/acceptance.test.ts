@@ -150,7 +150,7 @@ async function feature(): Promise<FeatureDesignGateResult> {
   const imageBytes = readFileSync(imagePath);
   const env = matrix.contract.cases[0].environment;
   const verbDeps = {
-    harnessSlug: 'fixture', store, now: () => Date.now(), clock: () => new Date().toISOString(),
+    harnessSlug: 'papercusp', store, now: () => Date.now(), clock: () => new Date().toISOString(),
     materializeReferenceImage: async () => ({ path: imagePath, contentSha256: sha(imageBytes) }),
     comparison: { provider: { engine: { engine: 'unused', engineVersion: '1' }, compare: async () => { throw new Error('illustrative reference cannot use a pixel comparison'); } } },
   };
@@ -163,7 +163,7 @@ async function feature(): Promise<FeatureDesignGateResult> {
     provenance: { source: 'upload', sourceRef: matrix.referencePath }, approval,
   }, caller, verbDeps);
   expect(ratified.ok).toBe(true);
-  return evaluateFeatureDesignGate({ harnessSlug: 'fixture', featureId: reference.featureId }, {
+  return evaluateFeatureDesignGate({ harnessSlug: 'papercusp', featureId: reference.featureId }, {
     store, verbDeps, caller, acceptanceRoot: root, readAcceptanceRun: readRun,
   });
 }

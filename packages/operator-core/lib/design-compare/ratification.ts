@@ -41,6 +41,13 @@ export interface DesignApprovalScope {
   readonly planSlug: string;
   readonly planItemIds: readonly string[];
   readonly targetRoute: string;
+  /** New adoption outside the desktop pilot requires an independently reviewed policy. */
+  readonly rollout?: {
+    readonly schemaVersion: 1;
+    readonly policyPath: string;
+    readonly policySha256: string;
+    readonly reviewCardRef: string;
+  };
   readonly adaptations?: readonly { readonly reason: string; readonly approvalRef: string }[];
   /** Adopt the journey/state gate by pinning its reviewed contract bytes. */
   readonly acceptance?: {
@@ -58,6 +65,11 @@ export const designApprovalScopeSchema = z.object({
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(40)
     .refine(ids => new Set(ids).size === ids.length, 'implementing items must be unique'),
   targetRoute: z.string().regex(/^\/(?!\/)/, 'targetRoute must be an application route'),
+  rollout: z.object({
+    schemaVersion: z.literal(1), policyPath: z.string().trim().min(1),
+    policySha256: z.string().regex(/^[0-9a-f]{64}$/),
+    reviewCardRef: z.string().regex(/^EI-\d+$/),
+  }).strict().optional(),
   adaptations: z.array(z.object({
     reason: z.string().trim().min(1), approvalRef: z.string().trim().min(1),
   }).strict()).max(32).optional(),

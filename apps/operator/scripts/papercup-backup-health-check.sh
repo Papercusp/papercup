@@ -54,7 +54,7 @@
 #
 # Usage: papercup-backup-health-check.sh
 # Env:
-#   BACKUP_DUMP_DIR      (default /mnt/data/Backup/db-dumps) — where the dumps land
+#   BACKUP_DUMP_DIR      (default /mnt/backup/db-dumps) — where the dumps land
 #   BACKUP_ARTIFACTS     (default "pg/papercusp-state pg/papercusp-transcript pg/restart") — space-separated dump artifacts
 #                                                              (relative to BACKUP_DUMP_DIR) that
 #                                                              MUST stay fresh. These are the
@@ -125,9 +125,9 @@ fi
 # and exit path are untouched — only the FILING is withheld, so a test still gets the truth.
 # BACKUP_ALERT_FORCE=1 files anyway, for the rare case a non-default threshold should.
 if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
-   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ] || [ -n "${BACKUP_VOLUME_WARN_PCT+x}" ] || [ -n "${BACKUP_VOLUME_FLOOR_PCT+x}" ] || [ -n "${BACKUP_TMPDIR_MAX_ENTRIES+x}" ]; } \
+   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ] || [ -n "${BACKUP_VOLUME_WARN_PCT+x}" ] || [ -n "${BACKUP_VOLUME_FLOOR_PCT+x}" ] || [ -n "${BACKUP_TMPDIR_MAX_ENTRIES+x}" ] || [ -n "${PC_BACKUP_MIN_FREE_GB+x}" ] || [ -n "${PC_BACKUP_SPACE_SAFETY+x}" ]; } \
    && [ "${BACKUP_NO_FILE:-0}" != 1 ]; then
-  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT/BACKUP_VOLUME_WARN_PCT/BACKUP_VOLUME_FLOOR_PCT/BACKUP_TMPDIR_MAX_ENTRIES) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
+  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT/BACKUP_VOLUME_WARN_PCT/BACKUP_VOLUME_FLOOR_PCT/BACKUP_TMPDIR_MAX_ENTRIES/PC_BACKUP_MIN_FREE_GB/PC_BACKUP_SPACE_SAFETY) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
   BACKUP_NO_FILE=1
 fi
 
@@ -210,6 +210,14 @@ BACKUP_BLOAT_MIB_PER_ROW="${BACKUP_BLOAT_MIB_PER_ROW:-8}"
 BACKUP_VOLUME_PATH="${BACKUP_VOLUME_PATH:-$BACKUP_DUMP_DIR}"
 BACKUP_VOLUME_WARN_PCT="${BACKUP_VOLUME_WARN_PCT:-92}"
 BACKUP_VOLUME_FLOOR_PCT="${BACKUP_VOLUME_FLOOR_PCT:-2}"
+# Keep the capacity alarm in the producer's units. papercusp-db-backup.sh uses
+# these exact defaults to refuse a dump when free space is below
+# `last_dump_size * PC_BACKUP_SPACE_SAFETY% + PC_BACKUP_MIN_FREE_GB`; a separate
+# percentage-only alarm can therefore fire too late as databases grow or the
+# volume is resized. The env seam is intentional: the systemd producer and this
+# probe can be pinned together for a deliberate host-specific policy.
+PC_BACKUP_MIN_FREE_GB="${PC_BACKUP_MIN_FREE_GB:-120}"
+PC_BACKUP_SPACE_SAFETY="${PC_BACKUP_SPACE_SAFETY:-140}"
 # Colon-separated. /tmp/pcv is the TMPDIR libs/test-config/src/vitest-config.ts FORCES for
 # every test process, which is why it is watched explicitly and not merely as part of /tmp:
 # it is a subdirectory, so a count of /tmp's top level cannot see inside it. That exact blind
@@ -608,8 +616,31 @@ This probe is detection-only; it never rewrites, deletes, or restarts anything."
   fi
 }
 
+largest_recent_dump_gb() {
+  local artifact path size_kb size_gb largest=0
+  for artifact in $BACKUP_ARTIFACTS; do
+    path="$BACKUP_DUMP_DIR/$artifact"
+    [ -e "$path" ] || continue
+    size_kb="$(du -sk "$path" 2>/dev/null | awk 'NR == 1 { print $1; exit }')"
+    [[ "$size_kb" =~ ^[0-9]+$ ]] || continue
+    size_gb=$(( size_kb / 1048576 ))
+    [ "$size_gb" -gt "$largest" ] && largest="$size_gb"
+  done
+  printf '%s\n' "$largest"
+}
+
+backup_required_free_gb() {
+  local largest_dump_gb="${1:-}" required_dump_gb
+  [[ "$largest_dump_gb" =~ ^[0-9]+$ ]] || return 1
+  [[ "$PC_BACKUP_MIN_FREE_GB" =~ ^[0-9]+$ ]] || return 1
+  [[ "$PC_BACKUP_SPACE_SAFETY" =~ ^[0-9]+$ ]] || return 1
+  required_dump_gb=$(( largest_dump_gb * PC_BACKUP_SPACE_SAFETY / 100 ))
+  printf '%s\n' "$(( PC_BACKUP_MIN_FREE_GB + required_dump_gb ))"
+}
+
 check_backup_volume_headroom() {
   local df_line="" disk_pct="" total_kb="" avail_kb="" floor_kb="" trend="" red_marker=""
+  local largest_dump_gb="" required_free_gb="" required_free_kb=""
   if [ -e "$BACKUP_VOLUME_PATH" ]; then
     df_line="$(df -Pk "$BACKUP_VOLUME_PATH" 2>/dev/null | tail -n1)"
     disk_pct="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%' | tail -n1)"
@@ -626,27 +657,35 @@ check_backup_volume_headroom() {
      || ! [[ "$avail_kb" =~ ^[0-9]+$ ]] \
      || ! [[ "$BACKUP_VOLUME_WARN_PCT" =~ ^[0-9]+$ ]] \
      || ! [[ "$BACKUP_VOLUME_FLOOR_PCT" =~ ^[0-9]+$ ]] \
+     || ! [[ "$PC_BACKUP_MIN_FREE_GB" =~ ^[0-9]+$ ]] \
+     || ! [[ "$PC_BACKUP_SPACE_SAFETY" =~ ^[0-9]+$ ]] \
      || [ "$BACKUP_VOLUME_WARN_PCT" -gt 100 ] 2>/dev/null \
      || [ "$BACKUP_VOLUME_FLOOR_PCT" -ge 100 ] 2>/dev/null; then
-    log "SKIP backup-volume probe: invalid usage/size/threshold (usage='$disk_pct', total_kb='$total_kb', avail_kb='$avail_kb', warn='$BACKUP_VOLUME_WARN_PCT', floor='$BACKUP_VOLUME_FLOOR_PCT')."
+    log "SKIP backup-volume probe: invalid usage/size/threshold (usage='$disk_pct', total_kb='$total_kb', avail_kb='$avail_kb', warn='$BACKUP_VOLUME_WARN_PCT', floor='$BACKUP_VOLUME_FLOOR_PCT', min_free_gb='$PC_BACKUP_MIN_FREE_GB', safety_pct='$PC_BACKUP_SPACE_SAFETY')."
     return 0
   fi
 
+  largest_dump_gb="$(largest_recent_dump_gb)"
+  required_free_gb="$(backup_required_free_gb "$largest_dump_gb")" || {
+    log "SKIP backup-volume probe: could not derive the producer's required free-space threshold (largest_dump_gb='$largest_dump_gb', min_free_gb='$PC_BACKUP_MIN_FREE_GB', safety_pct='$PC_BACKUP_SPACE_SAFETY')."
+    return 0
+  }
+  required_free_kb=$(( required_free_gb * 1048576 ))
   floor_kb=$(( total_kb * BACKUP_VOLUME_FLOOR_PCT / 100 ))
   trend="$(disk_trend_line "$avail_kb" backup-volume-history "$floor_kb" "${BACKUP_VOLUME_FLOOR_PCT}% FLOOR")"
-  log "Backup-volume usage at $BACKUP_VOLUME_PATH: ${disk_pct}% (warn ${BACKUP_VOLUME_WARN_PCT}%, admission floor ${BACKUP_VOLUME_FLOOR_PCT}% free) | ${trend}"
+  log "Backup-volume usage at $BACKUP_VOLUME_PATH: ${disk_pct}% (warn ${BACKUP_VOLUME_WARN_PCT}%, producer-fit threshold ${required_free_gb} GiB = ${largest_dump_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}% + ${PC_BACKUP_MIN_FREE_GB} GiB floor, admission floor ${BACKUP_VOLUME_FLOOR_PCT}% free) | ${trend}"
 
   red_marker="$STATE_DIR/backup-volume-red-ei-filed"
-  if [ "$disk_pct" -ge "$BACKUP_VOLUME_WARN_PCT" ]; then
+  if [ "$disk_pct" -ge "$BACKUP_VOLUME_WARN_PCT" ] || [ "$avail_kb" -lt "$required_free_kb" ]; then
     local host title body
     host="$(hostname 2>/dev/null || echo unknown-host)"
     # Keep changing measurements out of the title so repeated samples dedupe.
     title="Backup repository volume above capacity warning threshold on ${host}"
-    body="WI-39596 durable backup-volume detector: the filesystem containing '$BACKUP_VOLUME_PATH' is ${disk_pct}% used (warn ${BACKUP_VOLUME_WARN_PCT}%) with a ${BACKUP_VOLUME_FLOOR_PCT}% free-space admission floor.
+    body="WI-39596 durable backup-volume detector: the filesystem containing '$BACKUP_VOLUME_PATH' is ${disk_pct}% used with ${avail_kb} KiB free. The producer-fit threshold is ${required_free_gb} GiB (${largest_dump_gb} GiB largest recent dump x ${PC_BACKUP_SPACE_SAFETY}% + ${PC_BACKUP_MIN_FREE_GB} GiB floor); the coarse percentage backstop is ${BACKUP_VOLUME_WARN_PCT}% used and the admission floor is ${BACKUP_VOLUME_FLOOR_PCT}% free.
 
 ${trend}
 
-This volume holds both /mnt/data/Backup/db-dumps and the Kopia repository. Hourly compressed logical-dump rewrites previously generated multi-GiB unique uploads that could outrun daily full maintenance. D-003 keeps the hourly RPO but makes pg_dump output uncompressed so Kopia is the single zstd/deduplication layer.
+This volume holds the database dump artifacts under '$BACKUP_DUMP_DIR'. The Kopia repository may be on a separate volume and is a separate capacity domain; this alarm follows the volume the producer actually writes.
 
 ACTION: read the measured trend first. If it is still shrinking, compare consecutive Kopia upload bytes and full-maintenance receipts; do not attribute growth from mtime or a single du snapshot. A mitigation/reclamation does not close WI-39596 until consecutive post-change dump/snapshot cycles show bounded growth.
 
@@ -1161,10 +1200,25 @@ if [ "${1:-}" = "--self-test" ]; then
   cat >"$selftest_df_bin/df" <<'EOF'
 #!/usr/bin/env bash
 target="${2:-/self-test-fixture}"
+total_kb="${SELFTEST_DF_TOTAL_KB:-1000000000}"
+avail_kb="${SELFTEST_DF_AVAIL_KB:-500000000}"
+used_kb=$((total_kb - avail_kb))
+capacity="${SELFTEST_DF_CAPACITY:-50%}"
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
-printf 'self-test-fixture 1000000000 500000000 500000000 50%% %s\n' "$target"
+printf 'self-test-fixture %s %s %s %s %s\n' "$total_kb" "$used_kb" "$avail_kb" "$capacity" "$target"
 EOF
   chmod +x "$selftest_df_bin/df"
+  selftest_du_bin="$t/du-bin"
+  mkdir -p "$selftest_du_bin"
+  cat >"$selftest_du_bin/du" <<'EOF'
+#!/usr/bin/env bash
+# The production helper asks only for the first size field. Returning a fixture
+# size lets the regression test exercise the producer-fit predicate without
+# allocating a multi-gigabyte directory in the shared checkout.
+target="${@: -1}"
+printf '%s %s\n' "${SELFTEST_DUMP_SIZE_KB:-0}" "$target"
+EOF
+  chmod +x "$selftest_du_bin/du"
   selftest_avail_kb=500000000
   # Compute each synthetic timestamp immediately before its case. A single timestamp
   # captured here made the expected 5 GiB/h rate drift below the assertion while a
@@ -1340,7 +1394,7 @@ EOF
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
-        PATH="$selftest_df_bin:$PATH" \
+        PATH="$selftest_du_bin:$selftest_df_bin:$PATH" \
         "$@" bash "$self" 2>&1 >/dev/null)"
     note_shell_errors "$out"
     [ -f "$t/state/backup-volume-red-ei-filed" ] && got_marker=yes
@@ -1364,6 +1418,14 @@ EOF
         100 no "" "Backup-volume usage" BACKUP_NO_FILE=1
   check_backup_volume "backup volume red: marker set" \
         0 yes "" "Backup-volume usage" BACKUP_ALERT_FORCE=1
+  # 23. THE INCIDENT ITSELF: the producer skips a 73 GiB dump at 122 GiB free,
+  #     while 92% used has not fired yet. The alarm must follow the producer's
+  #     120 GiB floor + 140% last-dump estimate and file here.
+  check_backup_volume "producer-fit dead zone: largest dump triggers before 92%" \
+        92 yes "" "producer-fit threshold 222 GiB" \
+        BACKUP_ALERT_FORCE=1 SELFTEST_DF_TOTAL_KB=1348468736 \
+        SELFTEST_DF_AVAIL_KB=127926272 SELFTEST_DF_CAPACITY=91% \
+        SELFTEST_DUMP_SIZE_KB=76546048
   check_backup_volume "backup trend with no baseline: refuses an ETA" \
         100 no "" "no prior sample yet" BACKUP_NO_FILE=1
   check_backup_volume "backup trend falling: counts down to the 2% floor" \

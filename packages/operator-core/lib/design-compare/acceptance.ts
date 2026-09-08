@@ -105,7 +105,7 @@ export function evaluateDesignAcceptance(
 }
 
 /** Confine artifact reads to the harness, including symlinks, and bound each read. */
-async function artifactBytes(root: string, path: string): Promise<Buffer> {
+export async function artifactBytes(root: string, path: string): Promise<Buffer> {
   const normalized = paths.element.parse(path);
   const canonicalRoot = await realpath(root);
   const canonical = await realpath(resolve(canonicalRoot, normalized));

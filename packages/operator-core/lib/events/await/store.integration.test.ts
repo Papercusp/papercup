@@ -505,6 +505,21 @@ describe('await-event store (PG)', () => {
     expect(stored[0].superseded_at).not.toBeNull();
   });
 
+  it('exposes a cancelled current generation only for stale-pin diagnostics', async () => {
+    const eventKey = 'gate:cancelled-generation-diagnostic';
+    const announcement = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET cancelled_at = now()
+       WHERE id = ${announcement.id}
+    `;
+
+    expect(await findAnnouncementsForKey(eventKey)).toEqual([]);
+    expect((await findAnnouncementsForKey(eventKey, { includeCancelled: true })).map((row) => row.id)).toEqual([
+      announcement.id,
+    ]);
+  });
+
   it('retirement clears the matching event blocker and restores an auto-blocked issue', async () => {
     const eventKey = 'gate:announcement-retire-reconciles-blocker';
     const announcement = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
