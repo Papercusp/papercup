@@ -149,7 +149,9 @@ describe('startRun', () => {
     taskManagerMocks.begin.mockReturnValueOnce(enrolment);
     taskManagerMocks.scopePath.mockReturnValueOnce('/user.slice/papercusp.slice/pc-task-confined.scope');
 
-    const snap = store.startRun(req({ label: 'a'.repeat(400), command: 'node', args: ['worker.js'] }));
+    const snap = store.startRun(
+      req({ label: 'a'.repeat(400), command: 'node', args: ['worker.js'], runtimeMaxSec: 900 }),
+    );
     const beginOrder = taskManagerMocks.begin.mock.invocationCallOrder[0]!;
     const spawnOrder = spawnMock.mock.invocationCallOrder[0]!;
     const completeOrder = taskManagerMocks.complete.mock.invocationCallOrder[0]!;
@@ -162,6 +164,7 @@ describe('startRun', () => {
         title: 'a'.repeat(300),
         argv: ['node', 'worker.js'],
         cwd: '/tmp',
+        runtimeMaxSec: 900,
         launchedBy: 'testing-run-store',
         detail: { runId: snap.runId, kind: 'vitest' },
       }),
@@ -185,6 +188,7 @@ describe('startRun', () => {
       class: 'test-run',
       argv: ['node', 'worker.js'],
       cwd: '/tmp',
+      runtimeMaxSec: 900,
       launchedBy: 'testing-run-store',
       detail: { runId: snap.runId, kind: 'vitest' },
     }), 4242);

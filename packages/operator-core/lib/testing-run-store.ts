@@ -442,6 +442,12 @@ export interface SpawnRequest {
   cwd?: string;
   /** Environment values supplied by the caller for the child process. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Durable wall-clock ceiling for the task-manager scope. Detached recovery
+   * must carry its requested timeout into systemd so an operator restart cannot
+   * leave the child and its running snapshot alive indefinitely.
+   */
+  runtimeMaxSec?: number | null;
 }
 
 /**
@@ -523,6 +529,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     title: req.label.slice(0, 300),
     argv: [req.command, ...req.args],
     cwd,
+    runtimeMaxSec: req.runtimeMaxSec,
     launchedBy: 'testing-run-store',
     detail: { runId, kind: req.kind },
   };
