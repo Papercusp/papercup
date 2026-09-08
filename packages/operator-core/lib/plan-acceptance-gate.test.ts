@@ -226,6 +226,32 @@ describe('grading-recruitment unfinished-item exception', () => {
 });
 
 describe('evaluatePlanAcceptanceGate', () => {
+  it('never borrows a shipped or exempt twin when the subject slug is ambiguous', async () => {
+    mockPg.mockReturnValue(sqlReturning([
+      { plan_slug: 'same-slug', harness_slug: 'a', status: 'shipped', template: 'rubric' },
+      { plan_slug: 'same-slug', harness_slug: 'b', status: 'ready' },
+    ]));
+    expect(await evaluatePlanAcceptanceGate('same-slug')).toMatchObject({
+      satisfied: false, code: 'acceptance_bar_contract_not_ready',
+    });
+    expect(mockRubrics).not.toHaveBeenCalled();
+    expect(await evaluatePlanAcceptanceGate('same-slug', { harnessSlug: 'b' })).toMatchObject({
+      satisfied: false, code: 'acceptance_rubric_missing',
+    });
+    expect(mockRubrics).toHaveBeenCalledWith('same-slug', { harnessSlug: 'b' });
+    expect(mockBarLifecycle).toHaveBeenCalledWith('same-slug', 'ship', expect.objectContaining({ harnessSlug: 'b' }));
+  });
+
+  it('refuses an unresolved explicit subject instead of reading another harness rubric', async () => {
+    mockPg.mockReturnValue(sqlReturning([
+      { plan_slug: 'same-slug', harness_slug: 'a', status: 'shipped' },
+    ]));
+    expect(await evaluatePlanAcceptanceGate('same-slug', { harnessSlug: 'b' })).toMatchObject({
+      satisfied: false, code: 'acceptance_bar_contract_not_ready',
+    });
+    expect(mockRubrics).not.toHaveBeenCalled();
+  });
+
   it('flag OFF → satisfied, skipped:flag-off (no rubric read at all)', async () => {
     mockFlag.mockResolvedValue(false);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
