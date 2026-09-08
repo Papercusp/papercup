@@ -14,12 +14,73 @@ vi.mock('./effort-thread', async (original) => ({
 }));
 
 import {
+  buildBoundedPriorAttemptBrief,
   collectPriorAttempts,
+  compilePriorAttempts,
   getContainmentRollupBrief,
   readGoalHistoryContext,
   readPlanHistoryContext,
   resolvePriorAttemptRefs,
 } from './prior-attempt-context';
+
+describe('current authority scenario matrix', () => {
+  it('serializes current spec, decision, correction, completion and ownership before stale carry', () => {
+    const brief = buildBoundedPriorAttemptBrief(
+      compilePriorAttempts([
+        {
+          scope: 'goal-wide',
+          authority: 'checkpoint',
+          rawRef: 'goal-history#stale-carry',
+          text: 'STALE CARRY: use the obsolete stop condition and prior owner.',
+        },
+        {
+          scope: 'goal-wide',
+          authority: 'lifecycle',
+          rawRef: 'WI-1#lifecycle:ownership',
+          text: 'CURRENT OWNERSHIP: transferred to su-current.',
+        },
+        {
+          scope: 'goal-wide',
+          authority: 'verified-completion',
+          rawRef: 'WI-1#completion',
+          text: 'CURRENT COMPLETION: the obsolete attempt is finished.',
+        },
+        {
+          scope: 'goal-wide',
+          authority: 'retraction',
+          rawRef: 'goal:goal-history#comment:correction',
+          text: 'CORRECTION: retract the obsolete premise.',
+        },
+        {
+          scope: 'plan-wide',
+          authority: 'plan-decision',
+          rawRef: 'plan-history#D-002',
+          text: 'CURRENT DECISION: preserve the corrected route.',
+        },
+        {
+          scope: 'same-spec',
+          authority: 'current-spec',
+          rawRef: 'plan-history#SPEC-001@2',
+          text: 'CURRENT SPEC: stale carry never overrides canonical state.',
+        },
+      ]),
+    );
+    expect(brief).not.toBeNull();
+    const serialized = JSON.stringify(brief);
+    const stale = serialized.indexOf('STALE CARRY');
+    expect(stale).toBeGreaterThan(0);
+    for (const current of [
+      'CURRENT SPEC',
+      'CURRENT DECISION',
+      'CORRECTION',
+      'CURRENT COMPLETION',
+      'CURRENT OWNERSHIP',
+    ]) {
+      expect(serialized.indexOf(current), current).toBeGreaterThanOrEqual(0);
+      expect(serialized.indexOf(current), current).toBeLessThan(stale);
+    }
+  });
+});
 
 const target = { kind: 'plan' as const, ref: 'plan-history', harness: 'papercusp' };
 function tree(count = 2): ContainmentTree {
@@ -77,22 +138,24 @@ function dependencies() {
       }),
     ),
     goalHistoryByIds: vi.fn(
-      async (_input: { workspaceId: string; goalId: string; ids: readonly string[] }): Promise<GoalHistoryEntry[]> => [],
+      async (_input: {
+        workspaceId: string;
+        goalId: string;
+        ids: readonly string[];
+      }): Promise<GoalHistoryEntry[]> => [],
     ),
   };
 }
 beforeEach(() => {
   reads.tree.mockReset().mockResolvedValue(tree());
-  reads.thread
-    .mockReset()
-    .mockResolvedValue([
-      {
-        id: 'own-1',
-        body: 'Outcome: preserve the plan lesson.',
-        created_ts: '2026-09-07T00:00:00Z',
-        author_id: 'su-test',
-      },
-    ]);
+  reads.thread.mockReset().mockResolvedValue([
+    {
+      id: 'own-1',
+      body: 'Outcome: preserve the plan lesson.',
+      created_ts: '2026-09-07T00:00:00Z',
+      author_id: 'su-test',
+    },
+  ]);
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -230,7 +293,10 @@ describe('goal history production projection', () => {
     expect(serialized).toContain('preserve the plan lesson');
     expect(serialized).toContain('WI-1 repaired the original defect');
     expect(history.brief?.fanOut).toMatchObject({ total: 25, truncated: true });
-    expect(reads.tree).toHaveBeenCalledWith(goalTarget, expect.objectContaining({ direction: 'down', maxDescendants: 24 }));
+    expect(reads.tree).toHaveBeenCalledWith(
+      goalTarget,
+      expect.objectContaining({ direction: 'down', maxDescendants: 24 }),
+    );
     expect(history.recovery).toEqual({ tool: 'goals:get', args: { id: goalTarget.ref, detail: 'full' } });
   });
 
@@ -245,13 +311,16 @@ describe('goal history production projection', () => {
       fanOut: { admitted: 0, total: 0, cap: 24, truncated: false },
       descended: true,
     });
-    const entries = Array.from({ length: 27 }, (_, i): GoalHistoryEntry => ({
-      id: `goal-row-${i + 1}`,
-      kind: 'evidence',
-      author: 'su-goal',
-      at: new Date(Date.UTC(2026, 8, 7, 0, 0, 27 - i)).toISOString(),
-      summary: `goal evidence ${i + 1}`,
-    }));
+    const entries = Array.from(
+      { length: 27 },
+      (_, i): GoalHistoryEntry => ({
+        id: `goal-row-${i + 1}`,
+        kind: 'evidence',
+        author: 'su-goal',
+        at: new Date(Date.UTC(2026, 8, 7, 0, 0, 27 - i)).toISOString(),
+        summary: `goal evidence ${i + 1}`,
+      }),
+    );
     const deps = dependencies();
     deps.goalHistory.mockImplementation(async ({ limit = 25 }: { limit?: number }) => ({
       entries: entries.slice(0, limit),
@@ -275,19 +344,13 @@ describe('goal history production projection', () => {
       omittedRefsTruncated: false,
     });
     expect(history.brief?.omission.omittedRefs.map((entry) => entry.rawRef)).toEqual(
-      expect.arrayContaining([
-        'goal:goal-history#history:goal-row-26',
-        'goal:goal-history#history:goal-row-27',
-      ]),
+      expect.arrayContaining(['goal:goal-history#history:goal-row-26', 'goal:goal-history#history:goal-row-27']),
     );
 
     const recovered = await resolvePriorAttemptRefs(
       {
         target: goalTarget,
-        rawRefs: [
-          'goal:goal-history#history:goal-row-20',
-          'goal:goal-history#history:goal-row-27',
-        ],
+        rawRefs: ['goal:goal-history#history:goal-row-20', 'goal:goal-history#history:goal-row-27'],
       },
       deps as never,
     );

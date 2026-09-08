@@ -238,8 +238,10 @@ const AUTHORITY_RANK: Record<PriorAttemptAuthority, number> = {
   retraction: 2,
   'spec-revision': 3,
   'verified-completion': 4,
-  checkpoint: 5,
-  lifecycle: 6,
+  // Ownership/lifecycle is authoritative state about who may act now. It must
+  // precede a checkpoint carrying a prior holder or stale continuation route.
+  lifecycle: 5,
+  checkpoint: 6,
   'release-provenance': 7,
   comment: 8,
 };

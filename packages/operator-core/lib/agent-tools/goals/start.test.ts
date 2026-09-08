@@ -315,8 +315,10 @@ describe('goals:start — the happy path', () => {
       },
     });
 
-    const goalCommand = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
-    const drainCommand = (spawnHeadlessMock.mock.calls[1][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
+    const goalCommand = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope
+      .greetingCmd;
+    const drainCommand = (spawnHeadlessMock.mock.calls[1][0] as { envelope: { greetingCmd: string } }).envelope
+      .greetingCmd;
     for (const command of [goalCommand, drainCommand]) {
       expect(command).toContain('--model=sonnet:xhigh');
       expect(command).toContain('--account=default');
@@ -531,12 +533,12 @@ describe('the kickoff brief', () => {
       headcount: { total: 2, fleet: null },
     },
     budget: {
-    budgetCents: null,
-    spentCents: null,
-    spentCentsAt: null,
-    spentCentsSource: null,
-    budgetWindowSec: null,
-  },
+      budgetCents: null,
+      spentCents: null,
+      spentCentsAt: null,
+      spentCentsSource: null,
+      budgetWindowSec: null,
+    },
     tripwires: [],
     pending: { blenderIdeas: 0, acceptanceRubric: null },
     continuity: { checkpoint: null, lastOwnerReportAt: null },
@@ -555,7 +557,18 @@ describe('the kickoff brief', () => {
   it('puts current goal authority before the bounded own/descendant history', () => {
     const history = {
       status: 'available',
-      brief: { fingerprint: 'goal-history-fingerprint', fanOut: { admitted: 2, total: 2, cap: 24, truncated: false } },
+      brief: {
+        fingerprint: 'goal-history-fingerprint',
+        fanOut: { admitted: 2, total: 2, cap: 24, truncated: false },
+        attempts: [
+          {
+            authority: 'checkpoint',
+            scope: 'goal-wide',
+            rawRef: 'goal-history#stale-carry',
+            text: 'STALE CARRY: use the obsolete stop condition.',
+          },
+        ],
+      },
       recovery: { tool: 'goals:get', args: { id: 'g-1', detail: 'full' } },
     } as never;
     const brief = buildGoalKickoffBrief({
@@ -569,6 +582,9 @@ describe('the kickoff brief', () => {
     expect(brief).toContain('goal-history-fingerprint');
     expect(brief.indexOf('KILL THIS IF — the current stop condition')).toBeLessThan(
       brief.indexOf('GOAL HISTORY — own and bounded descendant evidence'),
+    );
+    expect(brief.indexOf('KILL THIS IF — the current stop condition')).toBeLessThan(
+      brief.indexOf('STALE CARRY: use the obsolete stop condition.'),
     );
   });
 
