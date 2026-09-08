@@ -1393,16 +1393,39 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
     });
 
-    it('does not read cgroups until the environment proves the exact authority and root', async () => {
+    it('does not read environments until the cgroup proves the exact checkpoint unit', async () => {
+      const readEnvironment = vi.fn((pid: number) =>
+        pid === 100 ? env({ PAPERCUSP_GATE_VERDICT_HARNESS: '' }) : env(),
+      );
       const readCgroup = vi.fn(() => `0::${checkpointCgroupPath}\n`);
       const reading = await probe({
         listPids: () => [100, 200],
-        readEnvironment: (pid) => (pid === 100 ? env({ PAPERCUSP_GATE_VERDICT_HARNESS: '' }) : env()),
+        readEnvironment,
         readCgroup,
       });
       expect(reading.active).toBe(true);
-      expect(readCgroup).toHaveBeenCalledTimes(1);
+      expect(readEnvironment).toHaveBeenCalledTimes(2);
+      expect(readCgroup).toHaveBeenCalledTimes(2);
+      expect(readCgroup).toHaveBeenCalledWith(100);
       expect(readCgroup).toHaveBeenCalledWith(200);
+    });
+
+    it('ignores an unrelated PID environment timeout after its cgroup excludes it', async () => {
+      const unrelatedCgroup = '0::/user.slice/user-1000.slice/user@1000.service/agent.scope\n';
+      const readEnvironment = vi.fn((pid: number) => {
+        if (pid === 100) return new Promise<string>(() => {});
+        return env();
+      });
+      const reading = probe({
+        listPids: () => [100, 200],
+        readEnvironment,
+        readCgroup: (pid) => (pid === 100 ? unrelatedCgroup : `0::${checkpointCgroupPath}\n`),
+        totalTimeoutMs: 100,
+        perReadTimeoutMs: 5,
+      });
+      await expect(reading).resolves.toMatchObject({ active: true, probeFailed: false, pid: 200 });
+      expect(readEnvironment).toHaveBeenCalledTimes(1);
+      expect(readEnvironment).toHaveBeenCalledWith(200);
     });
 
     it('returns UNKNOWN when one procfs read exceeds its per-read deadline', async () => {

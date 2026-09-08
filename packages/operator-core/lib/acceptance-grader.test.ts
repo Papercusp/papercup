@@ -6,6 +6,7 @@ import {
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
+  isAcceptanceGradingRequestForPlan,
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
 } from './acceptance-grader';
@@ -82,6 +83,50 @@ describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
 
     expect(readVettingCritics).toHaveBeenCalledWith('acceptance-ship-the-thing', 2);
     expect(result).toEqual(['su-author', 'su-shipper', 'su-work-item-critic', 'su-second-critic']);
+  });
+});
+
+describe('isAcceptanceGradingRequestForPlan', () => {
+  it('matches a non-lineage acceptance grade when the plan slug is in the title', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        {
+          title: 'Independent acceptance grade (non-lineage): plan ship-the-thing',
+          summary: 'Run scorecards:emit for the plan.',
+        },
+        'ship-the-thing',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches an acceptance-grading request when the plan slug is in the summary', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        {
+          title: 'Please take this delegated task',
+          summary: 'Acceptance-grading request for plan ship-the-thing; use scorecards:emit.',
+        },
+        'ship-the-thing',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not match an unrelated task that mentions the plan', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        { title: 'Implement ship-the-thing follow-up', summary: 'Fix the remaining plan item.' },
+        'ship-the-thing',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not match a grading request for another plan', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        { title: 'Independent acceptance grade for another-plan', summary: 'Use scorecards:emit.' },
+        'ship-the-thing',
+      ),
+    ).toBe(false);
   });
 });
 
@@ -719,6 +764,75 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     // Each of these is a distinct cost a re-route would have paid. The middle two
     // are the expensive ones: opening the cascade WAKES a fresh independent grader,
     // and D-009 independence makes that pool non-replenishable.
+    expect(discover).not.toHaveBeenCalled();
+    expect(openCascade).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('an open acceptance-grading task suppresses duplicate dispatch (EI-22678191183363422)', async () => {
+    const launch = freshLaunch();
+    const discover = vi.fn();
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-must-not-open', woke: 1 }));
+    const listWork = vi.fn(async () => [
+      {
+        id: 'WI-grading-open',
+        kind: 'task',
+        state: 'open',
+        title: 'Independent acceptance grade: plan ship-the-thing',
+        summary: 'Use scorecards:emit as the non-lineage grader.',
+      },
+    ]);
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      listWork: listWork as never,
+      discover: discover as never,
+      openCascade: openCascade as never,
+    });
+
+    expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-grading-open' });
+    expect(listWork).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'task', notTerminal: true, q: 'ship-the-thing' }),
+    );
+    expect(discover).not.toHaveBeenCalled();
+    expect(openCascade).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('a blocked acceptance-grading task suppresses duplicate dispatch while unrelated plan work does not', async () => {
+    const launch = freshLaunch();
+    const openCascade = vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 }));
+    const discover = vi.fn(async () => ({
+      verdict: 'assigned' as const,
+      graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+      routing: { selection: { min: 1, max: 2, selected: [] } },
+      excluded: [],
+    }));
+    const listWork = vi.fn(async () => [
+      {
+        id: 'WI-unrelated',
+        kind: 'task',
+        state: 'blocked',
+        title: 'Implement ship-the-thing follow-up',
+        summary: 'The plan still needs a code change.',
+      },
+      {
+        id: 'WI-grading-blocked',
+        kind: 'task',
+        state: 'blocked',
+        title: 'Delegated task',
+        summary: 'Acceptance-grading request for plan ship-the-thing; scorecards:emit is required.',
+      },
+    ]);
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      listWork: listWork as never,
+      discover: discover as never,
+      openCascade: openCascade as never,
+    });
+
+    expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-grading-blocked' });
     expect(discover).not.toHaveBeenCalled();
     expect(openCascade).not.toHaveBeenCalled();
     expect(launch).not.toHaveBeenCalled();

@@ -1,6 +1,6 @@
 # Desktop GUI design drift: findings, repair and prevention plan
 
-Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and the repaired meta-vetting record has now passed independent audit. The overnight AUTO grant is limited to the specific desktop GUI repair. The wider prevention program is a proposal for morning review.
+Prepared for Avi on 8 September 2026; portal verification completed at 09:05 UTC and the repaired meta-vetting record has passed independent audit. Avi subsequently approved the prevention program for start-to-finish implementation and designated this desktop repair as its first canary, recorded in `design-acceptance-journey-enforcement-2026-09-08#D-001`.
 
 ## Current conclusion
 
@@ -95,9 +95,9 @@ Server measurement covers repository source, test and saved artifact bytes. Hist
 
 The rubric critique is recorded at `WI-10000712#201552`. Author vetting `EI-22691141147855764` supersedes an earlier record whose integrity audit found incomplete reproduction instructions and missing explanations of how the criticized properties could be satisfied. The revised record supplies exact read probes and concrete improvement paths. Independent audit `EI-22692975457751030` passed after replaying the rubric, critique, decisions and durable browser/gate evidence; review item `WI-10000717` is done. This audit establishes the integrity of the vetting record. Final plan acceptance still belongs to the separate eligible grader. Three rubric weaknesses remain explicit: R-2 mixes outcome and implementation language; R-1/R-3 share some browser evidence; and the browser/manual review lacks its own structured check. R-1/R-2's structured test checks run Vitest, so placing a Playwright file there would use the wrong runner; the existing typed probe mechanism provides a possible improvement path. These limitations do not waive the required browser journey, visual comparison, causal report or cloud-connectivity disclosure. The broader proposal below is the place to refine this enforcement contract.
 
-## Recommended prevention program
+## Approved prevention program
 
-The proposed plan is **design-acceptance-journey-enforcement-2026-09-08 — Bind approved UI designs to navigation and shipment evidence**. It is intentionally draft. I recommend the following order:
+The approved plan is **design-acceptance-journey-enforcement-2026-09-08 — Bind approved UI designs to navigation and shipment evidence**. Its source-conversation activation audit is recorded. It remains in draft until the independent spec-quality integrity prerequisite passes; implementation has not started. The first scorecard reproduced the expected verdicts but failed independent audit because its evidence omitted measuring stores and executable probes. Replacement `EI-22702225943362317` preserves the evaluator's full per-criterion evidence and requires a new independent audit. The implementation order is:
 
 | Stage | Change | Acceptance check |
 | --- | --- | --- |
@@ -118,6 +118,6 @@ A pixel threshold alone will not solve this incident. Comparing an illustrative 
 
 The practical rule I recommend is: **no UI approval lives only in prose, and no UI completion relies only on a component test or a hand-picked screenshot.** The approved reference, actual entry route, required state matrix and current build evidence should be visible together in the plan's acceptance record. Reference changes and exceptions should be deliberate, versioned and reviewed, never silently regenerated from the drifting implementation.
 
-## Overnight scope
+## Current scope
 
-I am continuing directly in this session with AUTO mode registered. The recurring loop was stopped after the live repair. Independent acceptance has passed; author signoff and formal plan closure are being completed. The stop condition is formal closure of the verified specific desktop layout/navigation repair and an updated report. The broader prevention plan remains for your morning review. Cloud credentials, initialization and provider lifecycle operations retain their existing separate approval boundaries.
+I am continuing directly with AUTO mode registered under Avi's expanded authorization. Independent acceptance of the desktop repair has passed. The prevention program must distinguish the original broken entry from the repaired portal at each enforcement stage, then independently grade that canary before final closeout. Existing repair evidence is retained; new UI or cloud work requires a demonstrated defect within the approved scope. Cloud credentials, initialization and provider lifecycle operations retain their existing separate approval boundaries.

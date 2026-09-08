@@ -1116,8 +1116,8 @@ export const CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS = 250;
 
 /**
  * Keep the /proc census fast enough for the one-second launch budget without creating one
- * outstanding filesystem operation per process on a busy host. The environment pass is the
- * broad phase; cgroup and process-start reads only run for authority/root matches.
+ * outstanding filesystem operation per process on a busy host. The cgroup pass is the broad
+ * phase; environment and process-start reads only run for authority/root matches.
  */
 export const CHECKPOINT_PROCESS_AUTHORITY_SCAN_CONCURRENCY = 384;
 
@@ -1302,12 +1302,6 @@ export async function readCheckpointProcessAuthorityCheap(
   const scanConcurrency = Number.isFinite(requestedConcurrency)
     ? Math.max(1, Math.floor(requestedConcurrency))
     : CHECKPOINT_PROCESS_AUTHORITY_SCAN_CONCURRENCY;
-  // The real broad environment pass is already backed by async fs reads that return null for
-  // disappearing proc entries. Give those reads the global deadline instead of a short
-  // per-entry timer: a queued libuv read can briefly exceed the per-read budget simply because
-  // the census has many bounded workers. Injected readers retain the short seam timeout used by
-  // reliability tests and non-default callers.
-  const environmentTimeoutMs = deps.readEnvironment === undefined ? totalTimeoutMs : perReadTimeoutMs;
   const deadlineMs = Date.now() + totalTimeoutMs;
   const remainingMs = () => deadlineMs - Date.now();
   const readBounded = <T>(operation: () => ProbeAwaitable<T>, timeoutBudgetMs = perReadTimeoutMs) => {
@@ -1333,9 +1327,27 @@ export async function readCheckpointProcessAuthorityCheap(
     | { status: 'ok'; match: ProcessAuthorityMatch | null }
     | { status: 'failed'; detail: string };
   const scanPid = async (pid: number): Promise<ProcessAuthorityScan> => {
-    // Environment is the cheap authority/root filter. Do not touch cgroup files for the
-    // thousands of unrelated processes on a busy host.
-    const environment = await readBounded(() => readEnvironment(pid), environmentTimeoutMs);
+    // The cgroup is the OS-owned authority boundary. Read it before the inherited environment
+    // so an unrelated PID whose /proc/<pid>/environ read is delayed cannot consume the census
+    // budget or turn an otherwise-idle gate into an indeterminate reading.
+    const cgroup = await readBounded(() => readCgroup(pid), totalTimeoutMs);
+    if (cgroup.status !== 'ok') {
+      return {
+        status: 'failed',
+        detail: probeReadFailureDetail(`cgroup read for pid ${pid}`, cgroup),
+      };
+    }
+    const rawCgroup = cgroup.value;
+    if (rawCgroup === null) return { status: 'ok', match: null };
+    const cgroupPath = unifiedCgroupPath(rawCgroup);
+    if (!cgroupPath || !checkpointCgroupContainsUnit(cgroupPath, expectedCheckpointUnit)) {
+      return { status: 'ok', match: null };
+    }
+
+    // Only a process in the exact checkpoint unit can be authoritative. Its inherited env is
+    // now a candidate-specific read, so a delayed unrelated /proc environment entry is ignored
+    // while a failed candidate read still fails closed.
+    const environment = await readBounded(() => readEnvironment(pid));
     if (environment.status !== 'ok') {
       return {
         status: 'failed',
@@ -1350,20 +1362,6 @@ export async function readCheckpointProcessAuthorityCheap(
     const integrationRoot = (env.get('PAPERCUSP_INTEGRATION_ROOT') ?? '').trim();
     if (!workspace || !harness || !integrationRoot) return { status: 'ok', match: null };
     if (path.resolve(integrationRoot) !== expectedRoot) return { status: 'ok', match: null };
-
-    const cgroup = await readBounded(() => readCgroup(pid));
-    if (cgroup.status !== 'ok') {
-      return {
-        status: 'failed',
-        detail: probeReadFailureDetail(`cgroup read for pid ${pid}`, cgroup),
-      };
-    }
-    const rawCgroup = cgroup.value;
-    if (rawCgroup === null) return { status: 'ok', match: null };
-    const cgroupPath = unifiedCgroupPath(rawCgroup);
-    if (!cgroupPath || !checkpointCgroupContainsUnit(cgroupPath, expectedCheckpointUnit)) {
-      return { status: 'ok', match: null };
-    }
 
     const start = await readBounded(() => readProcessStartMs(pid));
     if (start.status !== 'ok') {

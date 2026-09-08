@@ -21576,7 +21576,7 @@
           "POST"
         ]
       },
-      "description": "Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `content` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.",
+      "description": "Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.",
       "capabilities": [
         "plans:write"
       ],
@@ -21637,9 +21637,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the body includes Requirements, author canonical `**R-N — Title.** outcome` records and a Design `### Bar-to-work map for this plan` table mapping every R-N to one or more P-NNN items with evidence plane `tree`, `deployed`, or `live`; plans:new validates this before writing. If the plan will be started, include substantive Requirements + the complete Design BAR map + canonical P-NNN item lines.",
-        "notWhen": "You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.",
-        "chaining": "Author-in-one: plans:new { slug, title, content }. A Requirements section is a post-epoch acceptance-BAR source and must include the exact `### Bar-to-work map for this plan` table; plans:new refuses missing/malformed rows before persistence. For plans:start promotion, include substantive ## Requirements + the complete ## Design BAR map + canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new (empty starter) → plans:set-now → plans:add-item × N → plans:set-content with the complete spec. Then plans:start to promote items to work-items."
+        "when": "Starting a plan: plans:new { slug, title, content }. Pass markdown with ## Requirements and ## Design; Requirements need canonical R-N rows plus a Design ### Bar-to-work map for this plan mapping each to P-NNN and evidence plane tree, deployed, or live. The tool validates this before writing. See /internal/docs/spec/plan-format.",
+        "notWhen": "Editing an existing plan? Use plans:set-content / set-now / add-decision / add-item. Never create one by writing docs/plans/*.md; use this tool.",
+        "chaining": "One-shot: plans:new { slug, title, content } writes the body. Include ### Bar-to-work map for this plan with | bar | implementing plan items | evidence plane | and canonical P-NNN item lines. A startable plan needs Requirements + complete BAR map + items, then plans:start. Incremental: plans:new → plans:set-now/add-item → plans:set-content → plans:start."
       }
     },
     {
@@ -23769,7 +23769,7 @@
           "POST"
         ]
       },
-      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready', and that transition is refused until `plans:audit { phase:'activation' }` has recorded a complete source-conversation audit. For plans with first-class clauses, the spec-quality prerequisite is a visible four-step chain — `plans:evaluate-spec-quality` → terminal `scorecards:emit` → NON-AUTHOR `grading-integrity` audit settled → `plans:start`; a terminal scorecard whose audit is still pending is not start-ready. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
+      "description": "Approve a plan and promote its open items to claimable work-items. A draft moves to ready only after `plans:audit { phase:'activation' }`; plans with first-class clauses also require the spec-quality chain and a settled non-author `grading-integrity` audit. Re-starting is a no-op. Runs a plan-start consult and may return `consult_available`; override with `consulted` + `consult_reason`.",
       "capabilities": [
         "plans:write"
       ],
@@ -23830,9 +23830,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "After re-reading the complete plan-related conversation, mapping every requirement/constraint/correction/rejected alternative/decision/acceptance condition/open question/follow-up, repairing omissions, and recording `plans:audit { phase:'activation' }`. If the plan has first-class clauses, first complete `plans:evaluate-spec-quality` → terminal `scorecards:emit` → a different non-author reviewer emits the `grading-integrity` audit and the card reports a settled audit; only then start the plan's item-promotion path into work-items.",
-        "notWhen": "The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.",
-        "chaining": "sessions:search/read (complete source conversation) → repair the draft → plans:audit { phase:'activation' } → plans:evaluate-spec-quality { slug } → scorecards:emit the exact terminal draft → have a different non-author reviewer emit `scorecards:emit { rubricRef:'grading-integrity', terminal:true, subject:{ kind:'scorecard', ref:'<scorecardId>' }, ratings:{...} }` (the reusable dispatch recipe is in `plans:evaluate-spec-quality`) → verify the audit is settled → plans:start { slug }. If an edit response carries activationAudit metadata, compare audited/current revisions and re-audit only for a material change; cosmetic-only edits do not require it."
+        "when": "After auditing the complete plan conversation and recording `plans:audit { phase:'activation' }`. For first-class clauses, finish `plans:evaluate-spec-quality` → terminal `scorecards:emit` → independent `grading-integrity` audit before starting.",
+        "notWhen": "The plan is already started; use plans:pause or plans:set-run-status.",
+        "chaining": "Audit → `plans:audit { phase:'activation' }` → `plans:evaluate-spec-quality { slug }` → terminal `scorecards:emit` → non-author `grading-integrity` audit → verify it is settled → `plans:start { slug }`. Re-audit after material edits; cosmetic edits do not require it. See `/internal/docs/system/plan-inputs`."
       }
     },
     {

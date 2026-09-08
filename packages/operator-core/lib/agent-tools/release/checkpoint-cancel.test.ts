@@ -28,6 +28,10 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
   operatorHomeHarnessSlug: mocks.operatorHomeHarnessSlug,
 }));
+vi.mock('../../harness/routines/hive-release-env', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/routines/hive-release-env')>()),
+  resolveCheckpointRouting: mocks.resolveCheckpointRouting,
+}));
 vi.mock('../../release-deploy-launch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release-deploy-launch')>()),
   integrationRoot: mocks.integrationRoot,
@@ -105,7 +109,7 @@ describe('release:checkpoint-cancel registration', () => {
     expect(registered, 'release:checkpoint-cancel missing from the agent-tools barrel').toBeTruthy();
     expect(registered).toMatchObject({
       capabilities: ['operator:write'],
-      agentRoles: expect.arrayContaining(['su', 'operator', 'release-fixer', 'release-manager']),
+      agentRoles: expect.arrayContaining(['worker', 'operator', 'release-fixer', 'release-manager']),
       expose: { mcp: { name: 'release:checkpoint-cancel' } },
     });
   });

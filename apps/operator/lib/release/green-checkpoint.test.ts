@@ -165,6 +165,7 @@ import {
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
   FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
+  frozenRepairHeadAwaitsVerification,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 import type { TickFreezeObservation } from "@papercusp/operator-core/lib/release/freeze-disposition";
@@ -969,20 +970,31 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
 
     expect(calls).toContain(`setup:${frozen.slice(0, 7)}`);
     expect(result.candidate).toBe(frozen);
-    // The admission SURVIVED: the row still carries the peer's head and its ledger entry, stays
-    // ready-to-verify (the newer head is unjudged), and no red round was appended for the head
-    // the run measured. The write-back that used to clobber it never happened.
+    // The admission SURVIVED: the row still carries the peer's head and its ledger entry and
+    // stays ready-to-verify (the newer head is unjudged). The write-back that used to clobber
+    // it never happened: no write ever moved repairHead back to `frozen` or the phase to
+    // awaiting-fixer.
     expect(cell.queue?.repairHead).toBe(admitted);
     expect(cell.queue?.admissions).toHaveLength(1);
     expect(cell.queue?.phase).toBe("ready-to-verify");
-    expect(cell.queue?.convergenceRounds ?? []).toEqual([]);
-    expect(transitions).toContain("unchanged");
     expect(
-      writes.some((w) => w.repairHead === frozen && w.phase === "awaiting-fixer"),
+      writes.some((w) => w.repairHead === frozen || w.phase === "awaiting-fixer"),
     ).toBe(false);
+    // WI-10000741 (D-014 "records its legs"): the suite's red is RECORDED at the head it
+    // measured — a round at `frozen`, never one at the admitted head, so the admitted head
+    // still reads as awaiting verification — instead of being discarded with the run.
+    expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen]);
+    expect(cell.queue?.failingTests).toEqual(["lib/broken.test.ts"]);
     expect(
-      logs.some((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED")),
+      cell.queue?.signature?.every((entry) => entry.measuredHead === frozen),
     ).toBe(true);
+    expect(cell.queue && frozenRepairHeadAwaitsVerification(cell.queue)).toBe(true);
+    expect(transitions).toContain("written");
+    expect(transitions).not.toContain("unchanged");
+    const superseded = logs.find((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED"));
+    expect(superseded).toBeDefined();
+    expect(superseded).toContain(`recorded as round 1`);
+    expect(superseded).not.toContain("not recorded");
   });
 
   it("P-027 CONTROL: with no mid-run admission the same run records its red at exactly the head it judged", async () => {

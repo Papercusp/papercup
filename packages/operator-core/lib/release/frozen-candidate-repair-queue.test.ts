@@ -25,6 +25,7 @@ import {
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   recordFrozenRepairLegMeasurement,
+  recordFrozenRepairSupersededRed,
   parseFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueueRead,
   summarizeFrozenRepairConvergence,
@@ -1907,5 +1908,114 @@ describe('P-005 attempt refunds for unproductive infrastructure fixer deaths', (
         { ...DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS, maxFreeRetries: -1 },
       ),
     ).toThrow(/maxFreeRetries/);
+  });
+});
+
+describe('WI-10000741 / D-014 — a red measured behind a mid-suite admission is RECORDED, not discarded', () => {
+  /**
+   * The row as the gate re-reads it AFTER an hour-long suite that judged `C`: while the suite
+   * ran, a peer admitted a fix through `release:repair-queue { op:'admit' }`, so the persisted
+   * row's repairHead is C1 (ready-to-verify, one ledger entry) — the run's red is for a head
+   * the row no longer carries.
+   */
+  function admittedDuringSuite(): FrozenCandidateRepairQueue {
+    return markFrozenRepairAdmitted(
+      { ...fresh(), phase: 'ready-to-verify', attempts: 1, fixerSpawnId: 'spawn-1' },
+      {
+        atMs: T0 + 500,
+        actor: 'su-peer',
+        source: { ref: 'staging', sha: C1 },
+        fromRepairHead: C,
+        toRepairHead: C1,
+        paths: ['lib/a.ts'],
+        unchanged: [],
+        blobs: {},
+      },
+    );
+  }
+
+  it('appends a convergence round AT THE MEASURED HEAD with the fresh failing-set size', () => {
+    const queue = admittedDuringSuite();
+    const next = recordFrozenRepairSupersededRed(queue, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      nowMs: T0 + 1_000,
+    });
+    expect(next.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000 },
+    ]);
+    expect(next.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    expect(next.signature?.map((entry) => entry.id)).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    // Every signature entry says WHERE it was measured — the superseded head, never the newer one.
+    expect(next.signature?.every((entry) => entry.measuredHead === C)).toBe(true);
+    expect(next.updatedAtMs).toBe(T0 + 1_000);
+  });
+
+  it("leaves everything the admission owns untouched: phase, repairHead, admissions, fixer fields, attempts", () => {
+    const queue = admittedDuringSuite();
+    const next = recordFrozenRepairSupersededRed(queue, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 1_000,
+    });
+    expect(next.phase).toBe('ready-to-verify');
+    expect(next.repairHead).toBe(C1);
+    expect(next.admissions).toEqual(queue.admissions);
+    expect(next.admissions).toHaveLength(1);
+    expect(next.fixerSpawnId).toBe(queue.fixerSpawnId);
+    expect(next.attempts).toBe(queue.attempts);
+    expect(next.candidate).toBe(C);
+    // The CONTROL: the same measurement recorded as the row's own verdict DOES move the phase —
+    // that is the difference between "record the legs" and "overwrite the admission".
+    const asVerdict = markFrozenRepairVerificationRed(
+      { ...queue, repairHead: C },
+      { repairHead: C, failingTests: ['lib/a.test.ts'], nowMs: T0 + 1_000 },
+    );
+    expect(asVerdict.phase).toBe('awaiting-fixer');
+    expect(next.phase).not.toBe(asVerdict.phase);
+  });
+
+  it('the newer head still reads as AWAITING verification — the recorded round is at the old head, not at it', () => {
+    const queue = admittedDuringSuite();
+    expect(frozenRepairHeadAwaitsVerification(queue)).toBe(true);
+    const next = recordFrozenRepairSupersededRed(queue, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 1_000,
+    });
+    expect(frozenRepairHeadAwaitsVerification(next)).toBe(true);
+    expect(next.convergenceRounds?.some((round) => round.head === C1)).toBe(false);
+  });
+
+  it('the recorded round feeds the convergence summary like any other red', () => {
+    const queue = admittedDuringSuite();
+    const next = recordFrozenRepairSupersededRed(queue, {
+      measuredHead: C,
+      failingTests: [],
+      nowMs: T0 + 1_000,
+    });
+    const summary = summarizeFrozenRepairConvergence(next, T0 + 2_000);
+    expect(summary.admissionRounds).toBe(2);
+    expect(summary.failingFirst).toBe(1);
+    expect(summary.failingNow).toBe(0);
+  });
+
+  it('refuses a head that is NOT superseded — that verdict belongs to markFrozenRepairVerificationRed', () => {
+    const queue = { ...fresh(), phase: 'ready-to-verify' as const };
+    expect(queue.repairHead).toBe(C);
+    expect(() =>
+      recordFrozenRepairSupersededRed(queue, { measuredHead: C, failingTests: ['lib/a.test.ts'], nowMs: T0 + 1 }),
+    ).toThrow(/not superseded/);
+  });
+
+  it('refuses a blank measured head and a bad timestamp', () => {
+    const queue = admittedDuringSuite();
+    expect(() =>
+      recordFrozenRepairSupersededRed(queue, { measuredHead: '  ', failingTests: [], nowMs: T0 + 1 }),
+    ).toThrow(/measuredHead/);
+    expect(() =>
+      recordFrozenRepairSupersededRed(queue, { measuredHead: C, failingTests: [], nowMs: Number.NaN }),
+    ).toThrow(/nowMs/);
   });
 });

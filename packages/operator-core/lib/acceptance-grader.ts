@@ -9,7 +9,7 @@ import { areAcceptanceLineageRelated } from './acceptance-author-identity';
 import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
-import { listWorkItems } from './work-items';
+import { listWorkItems, type WorkItem } from './work-items';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
 // Manual citation checks must use the same subject tree as the frozen audit, and
 // the fresh-judge prompt and the assigned-grader briefs must say so identically —
@@ -32,6 +32,37 @@ type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
  */
 export const ACCEPTANCE_GRADING_SWEEP_ACTOR = 'system:acceptance-grading-sweep';
 
+/**
+ * A task can be a grading request without carrying source-plan provenance: the
+ * delegated request path historically stored the plan slug in its prose. Keep
+ * this detector deliberately narrow so a normal task that merely belongs to a
+ * plan cannot suppress independent acceptance grading.
+ */
+const ACCEPTANCE_GRADING_REQUEST_MARKERS = [
+  /\bacceptance[-\s]+(?:grading|grader|grade)\b/i,
+  /\bnon[-\s]?implementer[-\s]+grader\b/i,
+  /\bscorecards\s*:\s*emit\b/i,
+] as const;
+
+function containsPlanSlug(text: string, planSlug: string): boolean {
+  const escaped = planSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'i').test(text);
+}
+
+/** Pure identity predicate for a delegated, non-terminal acceptance-grading task. */
+export function isAcceptanceGradingRequestForPlan(
+  workItem: Pick<WorkItem, 'title' | 'summary'>,
+  planSlug: string,
+): boolean {
+  const normalizedPlanSlug = planSlug.trim();
+  if (!normalizedPlanSlug) return false;
+  const text = `${workItem.title ?? ''}\n${workItem.summary ?? ''}`;
+  return (
+    containsPlanSlug(text, normalizedPlanSlug) &&
+    ACCEPTANCE_GRADING_REQUEST_MARKERS.some((marker) => marker.test(text))
+  );
+}
+
 /** One entry of the assigned grader MENU, with its selection provenance. */
 export type AssignedGrader = {
   ownerId: string;
@@ -52,6 +83,8 @@ export type AcceptanceGraderLifecycle = {
    * a success, not a failure: re-routing a decided grading burns a non-replenishable
    * independent grader. */
   state: 'launched' | 'deduped' | 'failed' | 'assigned' | 'settled';
+  /** Existing task/request that made a fresh acceptance dispatch unnecessary. */
+  existingWorkItemId?: string;
   idempotencyKey: string;
   label: string;
   launch?: unknown;
@@ -1033,6 +1066,41 @@ export async function resolveAcceptanceGrader(
       if (settlement?.settled) {
         return { state: 'settled', idempotencyKey: '', label: '', settlement };
       }
+
+      // A delegated acceptance-grading request can be a plain `task` whose
+      // source_plan_slug is NULL. The plan slug is therefore searched in the
+      // bounded title/summary population, then the pure identity predicate
+      // rejects ordinary plan tasks that merely mention the same slug.
+      let existingGradingRequest: WorkItem | undefined;
+      try {
+        const candidates = await (deps.listWork ?? listWorkItems)({
+          harness: plan.row.harnessSlug,
+          kind: 'task',
+          notTerminal: true,
+          q: planSlug,
+          limit: 100,
+        });
+        existingGradingRequest = candidates.find((candidate) =>
+          isAcceptanceGradingRequestForPlan(candidate, planSlug),
+        );
+      } catch (err) {
+        // This read is a duplicate guard, not a prerequisite for grading. A
+        // transient listing failure must remain fail-open like the settlement
+        // read above, while still leaving an operator-visible breadcrumb.
+        console.warn(
+          `[acceptance-grader] in-flight grading-request guard failed for plan ${planSlug}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (existingGradingRequest) {
+        return {
+          state: 'deduped',
+          idempotencyKey: '',
+          label: '',
+          existingWorkItemId: existingGradingRequest.id,
+        };
+      }
+
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
         // Opening the cascade is BEST-EFFORT in exactly the way the single wake

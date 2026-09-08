@@ -108,7 +108,7 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'release-fixer', 'release-manager'],
   args: z.object({
     attemptId: z.string().min(1).max(256).describe('the exact logical qualification attempt id currently owning the detached runner'),
     unit: z
