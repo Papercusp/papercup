@@ -42,6 +42,7 @@ import runTool, {
   parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
+  resolveAdminTestRunsReporterPath,
   selectTestFileRoot,
 } from '../run';
 import { cancelRun, getRun } from '../../../testing-run-store';
@@ -292,6 +293,31 @@ describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
         files: ['src/db.integration.test.ts'],
       },
     ]);
+  });
+});
+
+describe('resolveAdminTestRunsReporterPath', () => {
+  it('uses the operator-packaged ledger reporter for an external checkout', async () => {
+    const externalRoot = await makeScratchTestCheckout('papercusp-testing-run-external-reporter-');
+
+    expect(resolveAdminTestRunsReporterPath(externalRoot, REPO_ROOT)).toBe(
+      join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts'),
+    );
+  });
+
+  it('prefers a managed checkout own reporter and fails closed when neither exists', async () => {
+    const managedRoot = await makeScratchTestCheckout('papercusp-testing-run-local-reporter-');
+    const localReporter = join(managedRoot, 'libs/test-config/src/admin-test-runs-reporter.ts');
+    await mkdir(dirname(localReporter), { recursive: true });
+    await writeFile(localReporter, 'export default class Reporter {}\n');
+
+    expect(resolveAdminTestRunsReporterPath(managedRoot, REPO_ROOT)).toBe(localReporter);
+    expect(resolveAdminTestRunsReporterPath(managedRoot, join(managedRoot, 'missing-operator-root'))).toBe(
+      localReporter,
+    );
+
+    await rm(localReporter);
+    expect(resolveAdminTestRunsReporterPath(managedRoot, join(managedRoot, 'missing-operator-root'))).toBeNull();
   });
 });
 

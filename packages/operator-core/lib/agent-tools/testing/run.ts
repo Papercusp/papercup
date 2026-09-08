@@ -101,6 +101,28 @@ const MAX_TIMEOUT_MS = 900_000;
 const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
 const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
 
+/**
+ * Resolve the ledger reporter independently of the checkout that owns the
+ * requested tests. A sibling/external Vitest checkout legitimately has no
+ * Papercusp `libs/test-config` tree, but `testing:run` still promises to stamp
+ * execution-ledger rows for the workspace/harness supplied by the caller.
+ *
+ * Prefer a checkout-local reporter when one exists so another managed Hive can
+ * carry its own compatible implementation. Otherwise use the operator's
+ * packaged reporter: it is deliberately self-contained and derives the tested
+ * repository from Vitest's cwd, so loading it by absolute path does not make it
+ * attribute the run to the Papercusp checkout.
+ */
+export function resolveAdminTestRunsReporterPath(
+  testRoot: string,
+  operatorRoot = REPO_ROOT,
+): string | null {
+  const local = join(testRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+  if (existsSync(local)) return local;
+  const packaged = join(operatorRoot, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
+  return existsSync(packaged) ? packaged : null;
+}
+
 const DETACHED_INSPECT_TEST_HINT =
   "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
   'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only). If this run returns a detachedRunId, poll it with testing:run-status { runId }. ';
@@ -1469,8 +1491,8 @@ export async function runTestFilesCore(opts: {
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
     // the workspace config. Keep the admin ledger reporter in the same invocation, otherwise
     // testing:run returns correct counts but silently records no harness_shared.test_runs rows.
-    const adminReporterPath = join(root, ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH);
-    if (existsSync(adminReporterPath)) vitestArgs.push(`--reporter=${adminReporterPath}`);
+    const adminReporterPath = resolveAdminTestRunsReporterPath(root);
+    if (adminReporterPath) vitestArgs.push(`--reporter=${adminReporterPath}`);
     // WI-39830: the JOINED form, never `['-t', pattern]`. Split across two argv entries,
     // vitest's CAC parser reads any `-`-prefixed pattern as a new OPTION instead of as `-t`'s
     // value and dies with an opaque CACError — which makes every test in this repo whose name
