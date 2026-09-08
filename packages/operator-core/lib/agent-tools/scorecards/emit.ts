@@ -329,6 +329,12 @@ type SpecTestAdequacyReplayRow = {
   ratings?: unknown;
 };
 
+type SpecTestAdequacyEvaluatorBuild = z.infer<typeof specTestAdequacyEvaluatorBuildSchema>;
+
+function isSameEvaluatorBuild(a: SpecTestAdequacyEvaluatorBuild, b: SpecTestAdequacyEvaluatorBuild): boolean {
+  return a.sha === b.sha && a.version === b.version;
+}
+
 /**
  * `ctx.dispatchTool` returns a ToolResult, while in-process test seams commonly
  * return the already-unwrapped evaluator payload. Accept both forms and decode
@@ -388,11 +394,23 @@ async function validateSpecTestAdequacyReplay(
   );
   if (submittedPasses.length === 0) return undefined;
 
+  // New recipes carry the pin in both the human-readable recipe and the exact
+  // evaluator args. Historical cards may only have the former, so thread that
+  // pin into the replay call when the args predate the pin. Without this fallback
+  // a repaired evaluator cannot tell that it is replaying an older card.
+  const recordedEvaluatorBuild = parsedRecipe.data.evaluatorBuild ?? parsedRecipe.data.args.evaluatorBuild;
+  const replayArgs = {
+    ...parsedRecipe.data.args,
+    ...(recordedEvaluatorBuild && !parsedRecipe.data.args.evaluatorBuild
+      ? { evaluatorBuild: recordedEvaluatorBuild }
+      : {}),
+  };
+
   let replay: unknown;
   try {
     replay = unwrapSpecTestAdequacyReplay(
       await dispatchTool('plans:evaluate-spec-test-adequacy', {
-        ...parsedRecipe.data.args,
+        ...replayArgs,
         payloadTier: 'full',
       }),
     );
@@ -409,6 +427,8 @@ async function validateSpecTestAdequacyReplay(
     ok?: unknown;
     rows?: unknown;
     error?: unknown;
+    evaluatorBuild?: unknown;
+    evaluatorBuildDrift?: unknown;
   } : null;
   if (payload?.ok === false) {
     return {
@@ -417,6 +437,37 @@ async function validateSpecTestAdequacyReplay(
         `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator replay refused: ` +
         `${typeof payload.error === 'string' ? payload.error : 'unknown evaluator error'}; no pass-like rating was persisted`,
     };
+  }
+  if (recordedEvaluatorBuild) {
+    const drift = payload?.evaluatorBuildDrift;
+    if (drift && typeof drift === 'object' && !Array.isArray(drift)) {
+      return {
+        code: 'invalid_spec_test_adequacy_binding',
+        error:
+          `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot certify replay across evaluator-build drift: ` +
+          `${JSON.stringify(drift)}; re-run the card with the recorded evaluator build or explicitly re-grade it; ` +
+          'no pass-like rating was persisted',
+      };
+    }
+    const liveEvaluatorBuild = payload?.evaluatorBuild;
+    if (!liveEvaluatorBuild || typeof liveEvaluatorBuild !== 'object' || Array.isArray(liveEvaluatorBuild)) {
+      return {
+        code: 'invalid_spec_test_adequacy_binding',
+        error:
+          `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator replay did not return its live evaluatorBuild; ` +
+          'build identity is required to certify a pinned replay; no pass-like rating was persisted',
+      };
+    }
+    const parsedLiveBuild = specTestAdequacyEvaluatorBuildSchema.safeParse(liveEvaluatorBuild);
+    if (!parsedLiveBuild.success || !isSameEvaluatorBuild(recordedEvaluatorBuild, parsedLiveBuild.data)) {
+      return {
+        code: 'invalid_spec_test_adequacy_binding',
+        error:
+          `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator replay changed build identity ` +
+          `(recorded=${JSON.stringify(recordedEvaluatorBuild)}, live=${JSON.stringify(liveEvaluatorBuild)}); ` +
+          'no pass-like rating was persisted',
+      };
+    }
   }
   const rows = Array.isArray(payload?.rows) ? payload.rows as SpecTestAdequacyReplayRow[] : [];
   const selection = parsedRecipe.data.selection;
