@@ -13,6 +13,10 @@ export const GOAL_AMENDMENT_ACTION = 'goal:amendment';
 /** Durable provenance for goal mutations performed outside a dispatched goal session. */
 export const GOAL_WRITE_ACTION = 'goal:write';
 export const GOAL_HISTORY_LIMIT = 100;
+/** Raw ids retained beyond an inline history page so a bounded projection can
+ * disclose and later recover what it omitted. Kept separate from the entry
+ * limit: ids are cheap, but their bodies are not. */
+export const GOAL_HISTORY_OMITTED_REF_LIMIT = 200;
 
 export interface GoalFieldChange {
   field: string;
@@ -53,6 +57,16 @@ export interface GoalHistoryEntry {
   refs?: string[];
   writeKind?: string;
   actorClass?: string;
+}
+
+export interface GoalHistoryRead {
+  entries: GoalHistoryEntry[];
+  truncated: boolean;
+  limit: number;
+  /** Stable audit-log ids beyond `entries`, newest-first and independently bounded. */
+  omittedEntryIds: string[];
+  /** True when even the cheap omitted-id page could not name the whole tail. */
+  omittedEntryIdsTruncated: boolean;
 }
 
 /** Add one field only when its persisted semantic value really moved. */
@@ -162,8 +176,12 @@ function historyEntry(row: GoalHistoryRow): GoalHistoryEntry {
 export async function readGoalHistory(
   sql: GoalSqlTag,
   input: { workspaceId: string; goalId: string; limit?: number },
-): Promise<{ entries: GoalHistoryEntry[]; truncated: boolean; limit: number }> {
+): Promise<GoalHistoryRead> {
   const limit = Math.max(1, Math.min(input.limit ?? GOAL_HISTORY_LIMIT, GOAL_HISTORY_LIMIT));
+  // One bounded read supplies both bodies for the inline page and cheap stable ids
+  // for its tail. The +1 is the exhaustion sentinel: without it, an exactly-full
+  // ref page is indistinguishable from a complete one.
+  const fetchLimit = limit + GOAL_HISTORY_OMITTED_REF_LIMIT + 1;
   const rows = await sql<GoalHistoryRow[]>`
     SELECT id, ts, actor, action, details
       FROM harness_shared.audit_log
@@ -171,11 +189,36 @@ export async function readGoalHistory(
        AND subject = ${input.goalId}
        AND action = ANY(${[GOAL_AMENDMENT_ACTION, GOAL_EVIDENCE_ACTION, GOAL_WRITE_ACTION]}::text[])
      ORDER BY ts DESC, id DESC
-     LIMIT ${limit + 1}
+     LIMIT ${fetchLimit}
   `;
+  const omittedEntryIds = rows
+    .slice(limit, limit + GOAL_HISTORY_OMITTED_REF_LIMIT)
+    .map((row) => row.id);
   return {
     entries: rows.slice(0, limit).map(historyEntry),
     truncated: rows.length > limit,
     limit,
+    omittedEntryIds,
+    omittedEntryIdsTruncated: rows.length > limit + omittedEntryIds.length,
   };
+}
+
+/** Exact bounded drill-down for raw goal-history refs. The audit log is append-only,
+ * so an id remains a stable source even after newer rows move it outside a page. */
+export async function readGoalHistoryEntriesByIds(
+  sql: GoalSqlTag,
+  input: { workspaceId: string; goalId: string; ids: readonly string[] },
+): Promise<GoalHistoryEntry[]> {
+  const ids = [...new Set(input.ids.filter((id) => typeof id === 'string' && id.trim()))].slice(0, 20);
+  if (!ids.length) return [];
+  const rows = await sql<GoalHistoryRow[]>`
+    SELECT id, ts, actor, action, details
+      FROM harness_shared.audit_log
+     WHERE workspace_id = ${input.workspaceId}
+       AND subject = ${input.goalId}
+       AND id = ANY(${ids}::text[])
+       AND action = ANY(${[GOAL_AMENDMENT_ACTION, GOAL_EVIDENCE_ACTION, GOAL_WRITE_ACTION]}::text[])
+     ORDER BY ts DESC, id DESC
+  `;
+  return rows.map(historyEntry);
 }

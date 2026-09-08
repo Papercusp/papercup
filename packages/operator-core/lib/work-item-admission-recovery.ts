@@ -15,9 +15,10 @@ import { AUDIT_MODE, auditModeMutationDenyReason } from './capability-envelope/a
 import { readOperatorState } from './operator-state-pg';
 import type { SessionConfinementsPayload } from './capability-envelope/session-confinement-store';
 import { evaluateSessionConfinement } from './capability-envelope/session-confinement';
+import { DEFAULT_INBOX_BODY_CAP } from './agent-tools/coordination/tools/inbox-content-bounds';
 
 const requestSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   requestId: z.string().uuid(),
   caller: z.string().min(1),
   target: z.string().min(1),
@@ -29,6 +30,10 @@ const requestSchema = z.object({
   reason: z.string().optional(),
   /** Only a later target-owned pickup can establish execution. */
   pickupConfirmed: z.literal(false),
+  note: z.string().min(1).max(DEFAULT_INBOX_BODY_CAP).optional(),
+  body: z.string().max(DEFAULT_INBOX_BODY_CAP).optional(),
+}).refine((r) => r.version === 2 || (r.note === undefined && r.body === undefined), {
+  message: 'v1 recovery requests cannot carry unsigned instructions',
 });
 export type AdmissionRecoveryRequest = z.infer<typeof requestSchema>;
 export interface AdmissionRecoveryScope {
@@ -103,8 +108,9 @@ async function requestSignature(sql: Sql, scope: AdmissionRecoveryScope, request
     SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key'`;
   if (!key) throw new AdmissionRecoveryRefused('operator signing key unavailable; recovery was not authorized');
   return createHmac('sha256', decodeOperatorSecretKey(key.value_b64, 'spawn-signing-key'))
-    .update(JSON.stringify(['admission-recovery-v1', scope.workspaceId, scope.harnessSlug, scope.workItemId,
-      request.requestId, request.caller, request.target, request.routineId, request.requestedAt]))
+    .update(JSON.stringify([`admission-recovery-v${request.version}`, scope.workspaceId, scope.harnessSlug, scope.workItemId,
+      request.requestId, request.caller, request.target, request.routineId, request.requestedAt,
+      ...(request.version === 2 ? [request.note ?? null, request.body ?? null] : [])]))
     .digest('hex');
 }
 
@@ -174,7 +180,7 @@ async function lockRequest(sql: Sql, scope: AdmissionRecoveryScope): Promise<boo
 
 /** One item, one durable request. No create, re-title, claim override, or screening bypass. */
 export async function requestAdmissionRecovery(
-  input: AdmissionRecoveryScope & { caller: string; target: string },
+  input: AdmissionRecoveryScope & { caller: string; target: string; note?: string; body?: string },
   deps: Pick<AdmissionRecoveryDeps, 'authorize'> = { authorize: authorizeAdmissionRecovery },
   sql: Sql = getOrgPg().sql,
 ): Promise<{ ok: true; workItemId: string; request: AdmissionRecoveryRequest; inProgress: boolean }> {
@@ -199,6 +205,9 @@ export async function requestAdmissionRecovery(
     }
     if (!locked) {
       if (!previous) throw new AdmissionRecoveryRefused('original-item recovery is being registered; retry this same item');
+      if ((input.note !== undefined && input.note !== previous.note) || (input.body !== undefined && input.body !== previous.body)) {
+        throw new AdmissionRecoveryRefused('original recovery is in progress; retry this same item to update its instructions');
+      }
       return { ok: true as const, workItemId: input.workItemId, request: previous, inProgress: true };
     }
     const routineId = await assertRoutineActive(tx, input, previous?.routineId);
@@ -206,11 +215,13 @@ export async function requestAdmissionRecovery(
     await deps.authorize(input, input);
     const now = new Date().toISOString();
     const unsigned: Omit<AdmissionRecoveryRequest, 'signature'> = {
-      version: 1, requestId: previous?.requestId ?? randomUUID(), caller: input.caller, target: input.target,
+      version: 2, requestId: previous?.requestId ?? randomUUID(), caller: input.caller, target: input.target,
       routineId, requestedAt: previous?.requestedAt ?? now, updatedAt: now,
       state: 'queued', pickupConfirmed: false,
+      ...(input.note !== undefined || previous?.note !== undefined ? { note: input.note ?? previous?.note } : {}),
+      ...(input.body !== undefined || previous?.body !== undefined ? { body: input.body ?? previous?.body } : {}),
     };
-    const request = { ...unsigned, signature: await requestSignature(tx, input, unsigned) };
+    const request = requestSchema.parse({ ...unsigned, signature: await requestSignature(tx, input, unsigned) });
     if (!await writeRequest(tx, input, request, rawPrevious)) {
       throw new AdmissionRecoveryRefused('original recovery changed during registration; retry this same item');
     }
@@ -283,8 +294,10 @@ export async function runAdmissionRecoveries(
         const result = await deps.dispatch({
           workItemIds: [exact.workItemId], targetAgent: request.target,
           harness: exact.harnessSlug, workspaceId: exact.workspaceId,
-          summary: `Resume original work item ${exact.workItemId} after admission recovery`,
+          summary: request.note ?? `Resume original work item ${exact.workItemId} after admission recovery`,
+          ...(request.body !== undefined ? { instructions: request.body } : {}),
           source: 'system:work-item-admission-recovery',
+          beforeMutate: assertAllowed,
         });
         // Assignment and wake have their own durable writes. A crash here rolls back only
         // this receipt; retry retains that assignment and reuses the normal wake substrate.

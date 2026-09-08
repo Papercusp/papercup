@@ -366,6 +366,62 @@ describe('production dispatch authority wiring', () => {
 });
 
 describe('assignAndWakeActionableWorkItems', () => {
+  it('preserves authenticated instructions in the wake rather than dropping them after assignment', async () => {
+    const d = deps();
+    await assignAndWakeActionableWorkItems({
+      workItemIds: ['WI-original'], targetAgent: 'reviewer',
+      summary: 'Review original item', instructions: 'Independent review only; no source changes.',
+    }, d);
+    expect(d.wake).toHaveBeenCalledWith(['reviewer'], expect.objectContaining({
+      summary: 'Review original item',
+      payload: { kind: 'actionable-work-item-dispatch', workItemIds: ['WI-original'], instructions: 'Independent review only; no source changes.' },
+    }));
+  });
+  it('rechecks the original durable caller after target resolution and readiness, before claiming', async () => {
+    let authorized = true;
+    const d = deps({
+      observe: vi.fn(async (id) => {
+        authorized = false;
+        return { item: workItem(id), available: true, claimedBy: null };
+      }),
+    });
+    const beforeMutate = vi.fn(async () => { if (!authorized) throw new Error('original caller revoked'); });
+    await expect(assignAndWakeActionableWorkItems({
+      workItemIds: ['WI-original'], targetAgent: 'reviewer', beforeMutate,
+    }, d)).rejects.toThrow('original caller revoked');
+    expect(d.claim).not.toHaveBeenCalled();
+    expect(d.wake).not.toHaveBeenCalled();
+  });
+
+  it('retains committed assignment but stops before wake if original authorization changes during claim', async () => {
+    let authorized = true;
+    const d = deps({
+      claim: vi.fn(async (id, assignee) => {
+        authorized = false;
+        return workItem(id, 'open', assignee);
+      }),
+    });
+    const beforeMutate = vi.fn(async () => { if (!authorized) throw new Error('original caller revoked'); });
+    await expect(assignAndWakeActionableWorkItems({
+      workItemIds: ['WI-original'], targetAgent: 'reviewer', beforeMutate,
+    }, d)).rejects.toThrow('original caller revoked');
+    expect(d.claim).toHaveBeenCalledTimes(1);
+    expect(d.wake).not.toHaveBeenCalled();
+    expect(beforeMutate).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks authorization for retained work before spending another wake', async () => {
+    const d = deps({
+      observe: vi.fn(async (id) => ({ item: workItem(id, 'wip', 'reviewer'), available: false, claimedBy: 'reviewer' })),
+    });
+    await expect(assignAndWakeActionableWorkItems({
+      workItemIds: ['WI-original'], targetAgent: 'reviewer',
+      beforeMutate: async () => { throw new Error('retained request revoked'); },
+    }, d)).rejects.toThrow('retained request revoked');
+    expect(d.claim).not.toHaveBeenCalled();
+    expect(d.wake).not.toHaveBeenCalled();
+  });
+
   it('persists the stable name while waking the live session that adopted it', async () => {
     const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
     const wake = vi.fn(async (owners: readonly string[]) => ({

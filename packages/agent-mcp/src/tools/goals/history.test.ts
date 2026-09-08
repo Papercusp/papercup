@@ -4,9 +4,11 @@ import {
   GOAL_AMENDMENT_ACTION,
   GOAL_EVIDENCE_ACTION,
   GOAL_WRITE_ACTION,
+  GOAL_HISTORY_OMITTED_REF_LIMIT,
   addGoalFieldChange,
   appendGoalHistory,
   readGoalHistory,
+  readGoalHistoryEntriesByIds,
   type GoalFieldChange,
 } from './history';
 
@@ -138,11 +140,34 @@ describe('goal history — append-only audit store', () => {
       ],
       truncated: true,
       limit: 2,
+      omittedEntryIds: ['a1'],
+      omittedEntryIdsTruncated: false,
     });
     expect(calls[0]!.sql).toContain('FROM harness_shared.audit_log');
     expect(calls[0]!.params).toContain('papercusp-workspace');
     expect(calls[0]!.params).toContain('goal-1');
-    expect(calls[0]!.params).toContain(3);
+    expect(calls[0]!.params).toContain(2 + GOAL_HISTORY_OMITTED_REF_LIMIT + 1);
+  });
+
+  it('recovers exact omitted history ids without depending on their page rank', async () => {
+    selectedRows = [
+      {
+        id: 'a-old',
+        ts: 1000,
+        actor: 'blender',
+        action: GOAL_EVIDENCE_ACTION,
+        details: { kind: 'evidence', summary: 'old but still addressable' },
+      },
+    ];
+    const entries = await readGoalHistoryEntriesByIds(makeSql(), {
+      workspaceId: 'ws',
+      goalId: 'goal-1',
+      ids: ['a-old'],
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ id: 'a-old', summary: 'old but still addressable' });
+    expect(calls[0]!.sql).toContain('id = ANY');
+    expect(calls[0]!.params).toContainEqual(['a-old']);
   });
 
   it('records and projects a system goal:write with actor class', async () => {
@@ -171,6 +196,8 @@ describe('goal history — append-only audit store', () => {
     }];
     const history = await readGoalHistory(makeSql(), { workspaceId: 'ws', goalId: 'goal-1' });
     expect(history.entries[0]).toMatchObject({ kind: 'write', writeKind: 'holder-respawn-pause', actorClass: 'holder-agent-respawner' });
+    expect(history.omittedEntryIds).toEqual([]);
+    expect(history.omittedEntryIdsTruncated).toBe(false);
     expect(calls[0]!.params[2]).toContain(GOAL_WRITE_ACTION);
   });
 });

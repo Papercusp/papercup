@@ -14,7 +14,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const rowsets = vi.hoisted(() => ({ queue: [] as unknown[][], calls: 0 }));
+const rowsets = vi.hoisted(() => ({
+  queue: [] as unknown[][],
+  calls: 0,
+  queries: [] as Array<{ sql: string; params: unknown[] }>,
+}));
 const sql = vi.hoisted(() => vi.fn());
 const commentWorkItem = vi.hoisted(() => vi.fn());
 const setCarryNoteWithPrior = vi.hoisted(() => vi.fn());
@@ -28,11 +32,15 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 vi.mock('./pg-read-query', async (orig) => ({
   ...(await orig<typeof import('./pg-read-query')>()),
-  boundedPgReadTxn: async () => {
+  boundedPgReadTxn: async (read: (tx: unknown) => Promise<unknown>) => {
     rowsets.calls += 1;
     const next = rowsets.queue.shift();
     if (next === undefined) throw new Error('rowset queue exhausted');
-    return next;
+    const tx = (strings: TemplateStringsArray, ...params: unknown[]) => {
+      rowsets.queries.push({ sql: strings.join('?'), params });
+      return Promise.resolve(next);
+    };
+    return read(tx);
   },
 }));
 
@@ -68,6 +76,7 @@ const WS = 'ws-effort-test';
 function queue(...sets: unknown[][]): void {
   rowsets.queue = sets;
   rowsets.calls = 0;
+  rowsets.queries = [];
 }
 
 function itemRows(n: number, planSlug: string, opts: { withCheckpoint?: number } = {}) {
@@ -261,6 +270,28 @@ describe('descendant fan-out cap and disclosure (P-019 / D-008)', () => {
     // A goal's plans sit one hop away; its items two.
     expect(tree.descendants[0].depth).toBe(1);
     expect(tree.descendants[3].depth).toBe(2);
+  });
+
+  it('reads beyond the plan cap before declaring a goal fan-out complete', async () => {
+    const plans = Array.from({ length: DESCENDANT_FANOUT_CAP + 1 }, (_, i) => ({
+      plan_slug: `p${i}`,
+      harness_slug: 'papercusp',
+      goal_id: 'goal-9',
+      title: `plan ${i}`,
+    }));
+    queue(plans, []);
+    const tree = await resolveContainmentTree(
+      { kind: 'goal', ref: 'goal-9' },
+      { workspaceId: WS, direction: 'down' },
+    );
+    expect(tree.descendants).toHaveLength(DESCENDANT_FANOUT_CAP);
+    expect(tree.fanOut).toMatchObject({ total: DESCENDANT_FANOUT_CAP + 1, truncated: true });
+    expect(tree.omittedDescendants).toEqual([
+      { kind: 'plan', ref: `p${DESCENDANT_FANOUT_CAP}`, harness: 'papercusp' },
+    ]);
+    expect(rowsets.queries[0]!.params).toContain(
+      DESCENDANT_FANOUT_CAP + OMITTED_DESCENDANT_REF_CAP + 1,
+    );
   });
 
   it('honours a caller-supplied cap but never lets it reach zero', async () => {

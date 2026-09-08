@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   AdmissionRecoveryRefused, requestAdmissionRecovery, runAdmissionRecoveries,
@@ -61,6 +62,47 @@ function deps(overrides: Partial<AdmissionRecoveryDeps> = {}): AdmissionRecovery
 }
 
 describe('original-item durable admission recovery', () => {
+  it('persists and signs the original bounded dispatch instructions across retries', async () => {
+    const first = await requestAdmissionRecovery({
+      ...input, note: 'Independent review', body: 'Report findings; do not modify implementation.',
+    }, { authorize }, db.sql);
+    const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(retry.request).toMatchObject({
+      version: 2, requestId: first.request.requestId,
+      note: 'Independent review', body: 'Report findings; do not modify implementation.',
+    });
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      summary: 'Independent review', instructions: 'Report findings; do not modify implementation.',
+    }));
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = jsonb_set(payload, '{_admissionRecovery,body}', '"forged instructions"')`;
+    const forged = deps();
+    await runAdmissionRecoveries(scope, forged, db.sql);
+    expect(forged.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('accepts legacy v1 signatures without allowing unsigned instructions to be attached', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const legacy = { ...first.request, version: 1 as const };
+    legacy.signature = createHmac('sha256', Buffer.alloc(32, 42)).update(JSON.stringify([
+      'admission-recovery-v1', scope.workspaceId, scope.harnessSlug, scope.workItemId,
+      legacy.requestId, legacy.caller, legacy.target, legacy.routineId, legacy.requestedAt,
+    ])).digest('hex');
+    await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_admissionRecovery}', ${db.sql.json(legacy)})`;
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+    await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_admissionRecovery}',
+      ${db.sql.json({ ...legacy, note: 'forged unsigned v1 instructions' })})`;
+    const forged = deps();
+    await runAdmissionRecoveries(scope, forged, db.sql);
+    expect(forged.dispatch).not.toHaveBeenCalled();
+    expect((await current()).payload._admissionRecovery.state).toBe('held');
+  });
+
   it('concurrent/repeated requests persist one identity and atomically accelerate the real routine', async () => {
     // First commit establishes the visible identity; racing retries must preserve it.
     const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
@@ -243,5 +285,31 @@ describe('original-item durable admission recovery', () => {
     authorize.mockRejectedValueOnce(new Error('policy store unavailable'));
     await expect(runAdmissionRecoveries(scope, deps(), db.sql)).rejects.toThrow('policy store unavailable');
     expect((await current()).payload._admissionRecovery.state).toBe('queued');
+  });
+
+  it.each(['before-claim', 'before-wake'])('holds and resumes the original request when caller is revoked %s', async (phase) => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps({ dispatch: vi.fn(async (args) => {
+      expect(args.beforeMutate).toBeTypeOf('function');
+      if (phase === 'before-wake') {
+        await db.sql`UPDATE harness_shared.work_items SET taken_by = 'reviewer' WHERE feature_id = ${scope.workItemId}`;
+      }
+      authorize.mockRejectedValue(new AdmissionRecoveryRefused('original caller revoked during dispatch'));
+      await args.beforeMutate!();
+      throw new Error('unreachable wake');
+    }) });
+    await runAdmissionRecoveries(scope, d, db.sql);
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'held', requestId: first.request.requestId, pickupConfirmed: false,
+      reason: 'original caller revoked during dispatch',
+    });
+    expect((await current()).taken_by).toBe(phase === 'before-wake' ? 'reviewer' : null);
+    authorize.mockResolvedValue(undefined);
+    const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    expect(retry.request.requestId).toBe(first.request.requestId);
+    const resumed = deps();
+    await runAdmissionRecoveries(scope, resumed, db.sql);
+    expect(resumed.screen).not.toHaveBeenCalled();
+    expect((await current()).payload._admissionRecovery.state).toBe('delivered');
   });
 });

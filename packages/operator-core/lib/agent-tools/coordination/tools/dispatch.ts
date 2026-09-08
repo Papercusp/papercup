@@ -778,6 +778,7 @@ export default defineTool({
         const result = await requestAdmissionRecovery({
           workspaceId: identity.workspaceId, harnessSlug: dispatchArgs.harness!,
           workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: target.ownerId,
+          note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
         });
         return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
       } catch (error) {

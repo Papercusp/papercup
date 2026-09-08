@@ -329,6 +329,10 @@ async function resolveDescendants(
     return { nodes: [], total: 0, omitted: [], omittedTruncated: false };
   }
 
+  // One past the admitted + disclosed bounds is an exhaustion sentinel. Without
+  // it, the 25th child plan disappeared behind a LIMIT 24 while fanOut claimed the
+  // 24-row sample was complete; the same exact-boundary lie affected item tails.
+  const fetchLimit = opts.cap + OMITTED_DESCENDANT_REF_CAP + 1;
   const childPlans: ContainmentNode[] = [];
   if (target.kind === 'goal') {
     const rows = await boundedPgReadTxn<PlanEdgeRow[]>(
@@ -338,7 +342,7 @@ async function resolveDescendants(
          WHERE workspace_id = ${ws} AND goal_id = ${target.ref}
            AND archived IS NOT TRUE
          ORDER BY updated_at DESC NULLS LAST
-         LIMIT ${opts.cap}`,
+         LIMIT ${fetchLimit}`,
       { client: sql },
     );
     for (const row of rows) {
@@ -360,7 +364,6 @@ async function resolveDescendants(
   const itemDepth = target.kind === 'goal' ? 2 : 1;
   // Fetch one page beyond the cap so `total` can report that MORE exist without
   // paying for the whole 126-item tail; the surplus becomes the disclosed refs.
-  const fetchLimit = opts.cap + OMITTED_DESCENDANT_REF_CAP;
   const rows = await boundedPgReadTxn<(ItemEdgeRow & { has_checkpoint: boolean })[]>(
     (tx) => tx`
       SELECT w.feature_id, w.harness_slug, w.source_plan_slug, w.goal_id, w.title,

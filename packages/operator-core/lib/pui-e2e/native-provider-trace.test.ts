@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { nativeProviderTraceOrigin } from './native-provider-trace';
+import { describe, expect, it, vi } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { createAdaptorServer } from '@hono/node-server';
+import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 
 describe('native provider trace resume', () => {
   const gateway = 'http://127.0.0.1:4321';
@@ -20,5 +23,45 @@ describe('native provider trace resume', () => {
   it('honors a regenerated provider route, including a different route on the same host', () => {
     const newGateway = 'http://127.0.0.1:5432/api/provider';
     expect(nativeProviderTraceOrigin(newGateway, proxy, gateway)).toBe(newGateway);
+  });
+
+  it('recognizes an already-disconnected client and preserves unrelated abort causes', () => {
+    const closed = new AbortController();
+    closed.abort('Client connection prematurely closed.');
+    expect(nativeProviderRequestSignal(closed.signal).reason).toMatchObject({ code: 'ERR_STREAM_PREMATURE_CLOSE' });
+    const unrelated = new AbortController();
+    const derived = nativeProviderRequestSignal(unrelated.signal);
+    const failure = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    unrelated.abort(failure);
+    expect(derived.reason).toBe(failure);
+  });
+
+  it('reports a real downstream abort as a cancelled stream instead of a server error', async () => {
+    const listen = (server: Server) => new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
+    });
+    const upstream = createServer((_req, response) => { response.writeHead(200); response.write('first chunk'); });
+    const upstreamPort = await listen(upstream);
+    const proxyServer = createAdaptorServer({ fetch: (request) => fetch(`http://127.0.0.1:${upstreamPort}`, {
+      signal: nativeProviderRequestSignal(request.signal),
+    }) }) as Server;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const proxyPort = await listen(proxyServer);
+      const abort = new AbortController();
+      const response = await fetch(`http://127.0.0.1:${proxyPort}`, { signal: abort.signal });
+      await response.body!.getReader().read();
+      abort.abort();
+      await vi.waitFor(() => expect(errors.mock.calls.length + info.mock.calls.length).toBeGreaterThan(0));
+      expect(errors).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith('The user aborted a request.');
+    } finally {
+      errors.mockRestore(); info.mockRestore();
+      await Promise.all([upstream, proxyServer].map((server) => new Promise<void>((resolve) => {
+        server.closeAllConnections(); server.close(() => resolve());
+      })));
+    }
   });
 });

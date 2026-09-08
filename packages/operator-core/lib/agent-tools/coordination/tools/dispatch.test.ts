@@ -66,13 +66,14 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
 
   it('derives caller/workspace from authenticated context and resolves the existing stable recipient', async () => {
     expect(dispatch.args.safeParse({ ...base, caller: 'spoofed', workspaceId: 'wrong' }).success).toBe(false);
-    const result = await call();
+    const result = await call({ ...base, body: 'Independent review only; no implementation' } as typeof base);
     expect(recoveryIO.target).toHaveBeenCalledWith({
       targetAgent: 'reviewer', workspaceId: 'ws-recovery', harness: 'papercusp',
     });
     expect(recoveryIO.request).toHaveBeenCalledWith({
       workspaceId: 'ws-recovery', harnessSlug: 'papercusp', workItemId: 'WI-original',
       caller: 'su-requester', target: 'su-reviewer',
+      note: base.note, body: 'Independent review only; no implementation',
     });
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
   });

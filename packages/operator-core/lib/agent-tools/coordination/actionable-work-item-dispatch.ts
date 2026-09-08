@@ -364,7 +364,11 @@ async function classifyOne(
 
 /** Assign only the current execution frontier. No wake occurs in this function. */
 export async function assignActionableWorkItems(
-  args: { workItemIds: readonly string[]; targetAgent: string; harness?: string; workspaceId?: string },
+  args: {
+    workItemIds: readonly string[]; targetAgent: string; harness?: string; workspaceId?: string;
+    /** Durable callers reauthorize their original request after readiness I/O. */
+    beforeMutate?: () => Promise<void>;
+  },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemAssignment> {
   const requested = [...new Set(args.workItemIds.map((id) => id.trim()).filter(Boolean))];
@@ -379,6 +383,9 @@ export async function assignActionableWorkItems(
 
   const claimResults = await Promise.all(
     toClaim.map(async ({ workItemId }) => {
+      // Authorization/read failures propagate to the durable caller, rather than
+      // being misclassified as an ordinary atomic claim refusal.
+      await args.beforeMutate?.();
       try {
         const claimed = await deps.claim(workItemId, args.targetAgent, {
           ...(args.harness ? { harness: args.harness } : {}),
@@ -546,6 +553,8 @@ export async function assignAndWakeActionableWorkItems(
     workspaceId?: string;
     harness?: string;
     summary?: string;
+    /** Authenticated durable caller's original instructions, carried in the wake payload. */
+    instructions?: string;
     source?: string;
     /**
      * Default true: a replay re-wakes work already retained by this stable
@@ -554,6 +563,8 @@ export async function assignAndWakeActionableWorkItems(
      * assignment should spend a second wake there.
      */
     wakeRetained?: boolean;
+    /** Recheck the original caller immediately before claim and before wake. */
+    beforeMutate?: () => Promise<void>;
   },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemDispatchResult> {
@@ -566,6 +577,7 @@ export async function assignAndWakeActionableWorkItems(
       targetAgent: args.targetAgent,
       ...(args.harness ? { harness: args.harness } : {}),
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      ...(args.beforeMutate ? { beforeMutate: args.beforeMutate } : {}),
     },
     deps,
   );
@@ -584,11 +596,13 @@ export async function assignAndWakeActionableWorkItems(
             : 'no currently actionable work-items; blocked/parked descendants remain unassigned and target was not woken',
     };
   }
+  await args.beforeMutate?.();
   const wake = await deps.wake([target.ownerId], {
     summary: args.summary ?? `Assigned ${wakeWorkItemIds.length} actionable plan-run work-item(s)`,
     payload: {
       kind: 'actionable-work-item-dispatch',
       workItemIds: wakeWorkItemIds,
+      ...(args.instructions !== undefined ? { instructions: args.instructions } : {}),
     },
     source: args.source ?? 'system:plan-run-direct-dispatch',
     ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
