@@ -594,6 +594,7 @@ describe('applyFleetControl', () => {
           cooldown: 0,
           remoteOrigin: 0,
           admissionPending: 0,
+          liveGateOps: 0,
           stopTheLine: 0,
           watchdogRecovery: 0,
         },

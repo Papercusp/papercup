@@ -271,7 +271,17 @@ export default defineTool({
       .union([z.string().max(40), z.array(z.string().max(40)).max(20)])
       .optional()
       .describe(
-        "WI-38339: ONE state, or an ARRAY of states (matches any of them). An empty array is NO filter, never 'match nothing'. For the dominant question — everything still open — prefer `notTerminal`, which cannot drift as the terminal spellings change.",
+        "WI-38339: ONE state, or an ARRAY of states (matches any of them). Alias: `states` (alias-group:state|states). An empty array is NO filter, never 'match nothing'. For the dominant question — everything still open — prefer `notTerminal`, which cannot drift as the terminal spellings change.",
+      ),
+    // EI-22638011562769666: neighboring work-item readers and claim tools use the
+    // plural spelling. Keep it as a schema-visible compatibility alias so callers do
+    // not get an invalid_args response merely for using that established vocabulary.
+    states: z
+      .array(z.string().max(40))
+      .max(20)
+      .optional()
+      .describe(
+        "Alias for the ARRAY form of `state` (alias-group:state|states) — matches any supplied state. Passing both names is rejected unless the caller uses only one spelling.",
       ),
     notTerminal: z
       .boolean()
@@ -410,6 +420,14 @@ export default defineTool({
       );
     }
     const sourcePlanSlug = args.sourcePlanSlug ?? args.plan;
+    // EI-22638011562769666: `states` is a compatibility alias for the array form
+    // of `state`. Reject both spellings rather than silently choosing one (or
+    // accidentally turning an alias into an undocumented intersection filter).
+    if (args.state !== undefined && args.states !== undefined) {
+      throw new Error(
+        "`state` and `states` are the SAME filter (alias-group:state|states) — pass only one. You passed both, so which one wins would be ambiguous.",
+      );
+    }
     // WI-42508: the result shaper runs AFTER the handler, so a trimmed/standard
     // response must choose a lean SQL projection BEFORE postgres-js materializes
     // rows.  No ctx tier is the UI/sync path and intentionally keeps the historical
@@ -444,7 +462,7 @@ export default defineTool({
     // the store keeps them as two fields, because every existing read site there casts
     // the single-valued `state`. Split once, here, so neither side carries a union.
     const stateOne = typeof args.state === "string" ? args.state : undefined;
-    const stateMany = Array.isArray(args.state) ? args.state : undefined;
+    const stateMany = Array.isArray(args.state) ? args.state : args.states;
     const selfOwnerId = (): string => resolveAgentIdentity(ctx).ownerId;
     const assignee =
       args.assignee === "self"

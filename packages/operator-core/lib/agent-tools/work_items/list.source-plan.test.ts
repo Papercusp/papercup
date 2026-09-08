@@ -62,3 +62,31 @@ describe('work_items:list plan → sourcePlanSlug alias (EI-21592729279587188)',
     expect(parsed.success).toBe(true);
   });
 });
+
+describe('work_items:list states → state alias (EI-22638011562769666)', () => {
+  it('accepts `states` as a declared, documented alias of the array form of state', () => {
+    expect(listTool.args.shape.states).toBeDefined();
+    const statesDesc = listTool.args.shape.states.description ?? '';
+    expect(statesDesc).toMatch(/alias.*`state`/i);
+    expect(statesDesc).toContain('alias-group:state|states');
+  });
+
+  it('parses the established plural spelling instead of rejecting it', () => {
+    const parsed = listTool.args.safeParse({ harness: 'papercusp', states: ['open', 'wip'] });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('advertises the alias on state so callers can discover either spelling', () => {
+    const stateDesc = listTool.args.shape.state.description ?? '';
+    expect(stateDesc).toContain('alias-group:state|states');
+  });
+
+  it('rejects both spellings rather than silently choosing a filter', async () => {
+    await expect(
+      (listTool.handler as (a: unknown, c: unknown) => Promise<unknown>)({
+        state: ['open'],
+        states: ['wip'],
+      }, {}),
+    ).rejects.toThrow(/SAME filter/i);
+  });
+});

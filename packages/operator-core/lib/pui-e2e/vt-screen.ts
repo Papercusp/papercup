@@ -182,3 +182,21 @@ export function screenContains(screen: string, needle: string): boolean {
     .join('\n');
   return normalized.includes(needle.replace(/\s+/g, ' ').trim());
 }
+
+/** Match an assistant bubble, never an echoed owner prompt. */
+export function screenHasAssistantReply(screen: string, needle: string | RegExp): boolean {
+  const rows = screen.split('\n');
+  const top = rows.findIndex((row) => row.startsWith('┌ Agent Chat'));
+  if (top < 0) return false;
+  const right = rows[top].indexOf('┐');
+  if (right < 2) return false;
+  const body = rows.slice(top + 1);
+  const bottom = body.findIndex((row) => row.startsWith('└'));
+  // The transcript's border defines its columns; content may itself contain
+  // pipes, and another pane may contain words that resemble an answer.
+  const lines = (bottom < 0 ? body : body.slice(0, bottom))
+    .filter((row) => row.startsWith('│'))
+    .map((row) => row.slice(1, right).trim());
+  return lines.some((line, index) => line === 'agent' && (typeof needle === 'string'
+    ? lines[index + 1]?.includes(needle) : needle.test(lines[index + 1] ?? '')));
+}

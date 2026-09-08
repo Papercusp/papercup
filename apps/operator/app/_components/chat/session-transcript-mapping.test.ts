@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { mapSessionTimeline, sessionTimelineToChatMessages } from './session-transcript-mapping';
+import {
+  mapSessionTimeline,
+  sessionTimelineToChatMessages as sessionTimelineToChatMessagesWithTurnIdentity,
+} from './session-transcript-mapping';
 import type { TimelineEntry } from '../../harness/AgentThinkingStream';
+
+function sessionTimelineToChatMessages(
+  ...args: Parameters<typeof sessionTimelineToChatMessagesWithTurnIdentity>
+) {
+  return sessionTimelineToChatMessagesWithTurnIdentity(...args).map(
+    ({ sessionTurn: _sessionTurn, ...message }) => message,
+  );
+}
 
 describe('sessionTimelineToChatMessages', () => {
   it('returns nothing for an empty timeline', () => {
@@ -12,6 +23,20 @@ describe('sessionTimelineToChatMessages', () => {
     expect(sessionTimelineToChatMessages(entries)).toEqual([
       { role: 'user', content: 'do the thing', id: 'prompt-0', ts: 't1' },
     ]);
+  });
+
+  it('stamps one shared owner-safe identity on the visible prompt and reply', () => {
+    const out = sessionTimelineToChatMessagesWithTurnIdentity([
+      { kind: 'prompt', text: 'do the thing', ts: 't1' },
+      { kind: 'text', text: 'Done.', ts: 't2' },
+    ]);
+    expect(out[0].sessionTurn).toEqual({
+      id: 'session-turn-0',
+      kind: 'owner',
+      preview: 'do the thing',
+      startedAt: 't1',
+    });
+    expect(out[1].sessionTurn).toBe(out[0].sessionTurn);
   });
 
   /**
@@ -99,6 +124,32 @@ describe('sessionTimelineToChatMessages', () => {
         { kind: 'prompt', text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\n', ts: 't1' },
       ];
       expect(sessionTimelineToChatMessages(entries)).toEqual([]);
+    });
+
+    it('keeps the machine body hidden while marking its visible reply as an automatic turn', () => {
+      const out = sessionTimelineToChatMessagesWithTurnIdentity([
+        {
+          kind: 'prompt',
+          text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\n[await-event] lock:grant:t-1 fired.',
+          ts: 't1',
+        },
+        { kind: 'text', text: 'The lock opened, so I continued.', ts: 't2' },
+      ]);
+      expect(out).toEqual([
+        {
+          role: 'assistant',
+          content: 'The lock opened, so I continued.',
+          id: 'turn-0',
+          ts: 't2',
+          sessionTurn: {
+            id: 'session-turn-0',
+            kind: 'automatic',
+            preview: 'Automatic continuation.',
+            startedAt: 't1',
+          },
+        },
+      ]);
+      expect(JSON.stringify(out)).not.toContain('[await-event] lock:grant:t-1 fired.');
     });
   });
 
@@ -440,8 +491,8 @@ describe('mapSessionTimeline — messageIndexForEntryIndex', () => {
       { kind: 'tool_use', toolName: 'grep', toolInput: { q: 'x' }, ts: 't2' },
       { kind: 'text', text: 'done', ts: 't3' },
     ];
-    expect(mapSessionTimeline(entries).messages).toEqual(sessionTimelineToChatMessages(entries));
+    expect(mapSessionTimeline(entries).messages).toEqual(sessionTimelineToChatMessagesWithTurnIdentity(entries));
     expect(mapSessionTimeline(entries, 'p-1').messages)
-      .toEqual(sessionTimelineToChatMessages(entries, 'p-1'));
+      .toEqual(sessionTimelineToChatMessagesWithTurnIdentity(entries, 'p-1'));
   });
 });
