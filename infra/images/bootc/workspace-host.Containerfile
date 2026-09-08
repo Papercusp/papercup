@@ -475,6 +475,13 @@ RUN bootc container lint
 # Executable files retain read/execute for all classes because embedded-postgres
 # checks all 0555 bits before starting. The release and its parent directories
 # remain inaccessible to identities without the runtime ACL.
+#
+# Podman 4.9/Buildah can omit metadata-only upperdir entries for hardlinked files
+# copied from a named context: chown/chmod read correctly inside this RUN, then
+# COMMIT falls through to the original lower-layer metadata. Resolve every alias,
+# snapshot the hardlinked paths before changing any link counts, and atomically
+# replace each with a same-directory fresh inode so the normalized metadata has a
+# durable upper-layer entry. The NUL-delimited snapshot keeps arbitrary paths safe.
 FROM workspace-host-os AS workspace-host-release
 ARG PAPERCUSP_SERVICE_GROUP=papercusp
 ARG PAPERCUSP_RELEASE_VERSION
@@ -492,6 +499,12 @@ RUN set -eux; \
     RELEASE_DIR="/opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}"; \
     find "$RELEASE_DIR" -mindepth 1 -print -quit | grep -q . \
       || { echo "FATAL: named papercusp-release build context is empty" >&2; exit 1; }; \
+    find "$RELEASE_DIR" -type f -exec stat -c '%i' -- {} + >/dev/null; \
+    HARDLINK_PATHS="$(mktemp)"; \
+    find "$RELEASE_DIR" -type f -links +1 -print0 > "$HARDLINK_PATHS"; \
+    xargs -0 -r sh -eu -c 'for path do fresh="$(mktemp --tmpdir="${path%/*}" .papercusp-fresh-inode.XXXXXX)"; cp --reflink=never --preserve=mode,timestamps -- "$path" "$fresh"; mv -f -- "$fresh" "$path"; done' sh < "$HARDLINK_PATHS"; \
+    rm -f "$HARDLINK_PATHS"; \
+    [ -z "$(find "$RELEASE_DIR" -type f -links +1 -print -quit)" ]; \
     chown -R "root:${PAPERCUSP_SERVICE_GROUP}" "$RELEASE_DIR"; \
     chmod -R o-rwx "$RELEASE_DIR"; \
     find "$RELEASE_DIR" -type d -exec chmod g+rx {} +; \

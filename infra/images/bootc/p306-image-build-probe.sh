@@ -22,6 +22,8 @@
 #     present and enabled;
 #   * the firewall ruleset PARSES, with a negative control proving the check can
 #     fail (a syntax check that cannot reject anything proves nothing).
+#   * a named release-context hardlink group commits as distinct normalized
+#     root:papercusp inodes, including paths containing spaces.
 #
 # DOES NOT ESTABLISH — do not read a pass here as any of these:
 #   * that `/opt` survives as image content on a BOOTED host. That is the open
@@ -335,7 +337,52 @@ else
        "it cannot detect an unprotected host, so its pass on a real host is worthless"
 fi
 
-sect "8. the frozen P-303 spike is untouched"
+sect "8. named release-context hardlinks survive COMMIT normalization"
+# Podman 4.9/Buildah can elide metadata-only upperdir entries for hardlinked
+# files copied from a named context. Exercise the real release target with a
+# small five-alias fixture: the source link count is the positive control, while
+# the committed image must contain five fresh 0:910/0640 inodes.
+RELEASE_PROBE_ROOT="$(mktemp -d /tmp/p306-release-hardlinks.XXXXXX)"
+trap 'rm -rf -- "$RELEASE_PROBE_ROOT"' EXIT
+RELEASE_PROBE_CONTEXT="$RELEASE_PROBE_ROOT/context"
+RELEASE_PROBE_LOG="$RELEASE_PROBE_ROOT/build.log"
+RELEASE_PROBE_TAG="${TAG}-release-hardlinks"
+install -d -m 0755 "$RELEASE_PROBE_CONTEXT/hardlink tree"
+printf '%s\n' 'named-context hardlink metadata sentinel' \
+  > "$RELEASE_PROBE_CONTEXT/hardlink tree/primary file"
+for alias in 'alias one' 'alias two' 'alias three' 'alias four'; do
+  ln "$RELEASE_PROBE_CONTEXT/hardlink tree/primary file" \
+     "$RELEASE_PROBE_CONTEXT/hardlink tree/$alias"
+done
+chown -R 1000:1000 "$RELEASE_PROBE_CONTEXT"
+chmod 0644 "$RELEASE_PROBE_CONTEXT/hardlink tree"/*
+if [[ "$(stat -c '%h' "$RELEASE_PROBE_CONTEXT/hardlink tree/primary file")" == "5" ]]; then
+  pass "release recurrence source contains one five-name hardlink group"
+else
+  fail "release recurrence source fixture is not hardlinked — committed-image guard is blind"
+fi
+if podman build \
+     -f "$HERE/workspace-host.Containerfile" \
+     -t "$RELEASE_PROBE_TAG" \
+     --target workspace-host-release \
+     --build-context "papercusp-release=$RELEASE_PROBE_CONTEXT" \
+     --build-arg PAPERCUSP_RELEASE_VERSION=p306-hardlink-probe \
+     "$HERE" >"$RELEASE_PROBE_LOG" 2>&1; then
+  pass "release target builds with named-context hardlinks"
+  release_file_count="$(podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
+    "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f -print | wc -l" 2>/dev/null)"
+  release_bad_count="$(podman run --rm --entrypoint /bin/bash "$RELEASE_PROBE_TAG" -c \
+    "find '/opt/papercusp/releases/p306-hardlink-probe/hardlink tree' -type f ! \\( -uid 0 -gid 910 -perm 0640 -links 1 \\) -print | wc -l" 2>/dev/null)"
+  if [[ "$release_file_count" == "5" && "$release_bad_count" == "0" ]]; then
+    pass "committed release hardlinks are five distinct 0:910/0640 inodes"
+  else
+    fail "committed release hardlink normalization failed: files=$release_file_count bad=$release_bad_count"
+  fi
+else
+  fail "release hardlink recurrence image FAILED to build — see $RELEASE_PROBE_LOG"
+fi
+
+sect "9. the frozen P-303 spike is untouched"
 # The spike artifacts booted on real GCP. The product image is written ALONGSIDE
 # them; an edit to them invalidates that proof.
 if grep -q "P-303 gate spike" "$HERE/Containerfile"; then
