@@ -191,9 +191,11 @@ vi.mock('../../plans/source', async (importOriginal) => ({
   getPlanRow: async () => (await readPlanBySlugMock.mock.results.at(-1)?.value)?.row ?? null,
 }));
 
+const acceptanceBarLifecycleMock = vi.hoisted(() => vi.fn(async () => ({ satisfied: true })));
+
 vi.mock('../../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../acceptance-bar-lifecycle-evaluator')>()),
-  readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+  readAndEvaluateAcceptanceBarLifecycle: (...args: unknown[]) => acceptanceBarLifecycleMock(...args),
 }));
 
 vi.mock('../../plans/plan-admission-gate', async (importOriginal) => ({
@@ -523,6 +525,8 @@ beforeEach(() => {
     reason: 'ready',
     message: 'exact-plan admission ready',
   });
+  acceptanceBarLifecycleMock.mockReset();
+  acceptanceBarLifecycleMock.mockResolvedValue({ satisfied: true });
   assembleRolePromptMock.mockReset();
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/tmp/fleet' } });
   resolveProjectDirMock.mockReset();
@@ -1355,6 +1359,63 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(readPlanBySlugMock).not.toHaveBeenCalled();
     expect(callOrder.slice(0, 3)).toEqual(['getFleet', 'getClaimSpec', 'createFleet']);
     expect(callOrder.lastIndexOf('getClaimSpec')).toBeGreaterThan(callOrder.indexOf('createFleet'));
+    expect(spawnHeadlessMock).toHaveBeenCalled();
+  });
+
+  it('does not re-enter the plan BAR start gate for an existing-fleet top-up with an explicit plan (EI-22682096290512373)', async () => {
+    const liveSpec = {
+      ...DEFAULT_CLAIM_SPEC,
+      specId: 'fleet-launch-bar-top-up-fleet-kinds',
+      revision: 39,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+    };
+    getFleetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'bar-top-up-fleet',
+      owner: 'owner-1',
+      leaderOwnerId: 'owner-1',
+      fleetType: 'single',
+    });
+    getClaimSpecMock.mockResolvedValue(liveSpec);
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'bar-top-up-fleet',
+      target: 1,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'max',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' }, fleetType: 'single' },
+      created: false,
+    });
+    acceptanceBarLifecycleMock.mockResolvedValueOnce({ satisfied: false });
+    readPlanBySlugMock.mockClear();
+
+    const res = await invokeLaunchHandler(
+      { name: 'BAR Top-up Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
+      {} as never,
+      null,
+    );
+    const payload = parseHandlerPayload(res);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.plan).toBe('my-plan');
+    expect(readPlanBySlugMock).toHaveBeenCalledWith('my-plan', {
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+    expect(acceptanceBarLifecycleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).toHaveBeenCalled();
   });
 
