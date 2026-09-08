@@ -19,7 +19,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -31,6 +31,7 @@ import type { SuRpcEngine } from '../su-session-rpc-engine';
 import type { SuSessionCommand, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { screenContains, VtScreen } from './vt-screen';
+import { redactSensitiveText } from '../sensitive-text';
 
 const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
@@ -715,6 +716,20 @@ beforeAll(async () => {
             queryKeys: url ? [...url.searchParams.keys()] : [],
             ownerMatches: url?.searchParams.get('client') === options.ownerId };
         });
+        const readNativeLogs = () => {
+          const logDir = path.resolve(options.env.PI_CODING_AGENT_DIR!, '..', 'logs');
+          if (!existsSync(logDir)) return [];
+          return readdirSync(logDir).filter((name) => name.endsWith('.log')).flatMap((name) =>
+            readFileSync(path.join(logDir, name), 'utf8').split('\n').filter(Boolean).flatMap((line) => {
+              try {
+                const entry = JSON.parse(line) as Record<string, unknown>;
+                if (!/mcp|provider|stream|request|timeout|error|warn/i.test(String(entry.message) + entry.level)) return [];
+                const selected = Object.fromEntries(['timestamp', 'level', 'pid', 'message', 'error',
+                  'name', 'path', 'provider', 'model', 'status', 'durationMs'].map((key) => [key, entry[key]]));
+                return [{ file: name, entry: redactSensitiveText(JSON.stringify(selected)).slice(0, 1_000) }];
+              } catch { return []; }
+            }).slice(-30));
+        };
         const peer = await startPeer({ ...options, onMessage(frame) {
           if (nativeFrameDiagnostics.length < 50) {
             nativeFrameDiagnostics.push({ type: frame.type, command: frame.command,
@@ -725,9 +740,11 @@ beforeAll(async () => {
           options.onMessage(frame);
         } });
         readOmpDiagnosticState = async () => {
-          const state = await peer.request({ type: 'get_state' }, 5_000);
-          return Object.fromEntries(['sessionId', 'sessionFile', 'isStreaming', 'isCompacting',
-            'messageCount', 'queuedMessageCount', 'contextUsage'].map((key) => [key, state[key]]));
+          const state = await peer.request({ type: 'get_state' }, 5_000)
+            .catch((error: Error) => ({ stateReadError: error.message }));
+          return { ...Object.fromEntries(['sessionId', 'sessionFile', 'isStreaming', 'isCompacting',
+            'messageCount', 'queuedMessageCount', 'contextUsage', 'stateReadError'].map((key) => [key, state[key]])),
+          nativeLogs: readNativeLogs() };
         };
         return { ...peer, async request(...args: Parameters<typeof peer.request>) {
           const result = await peer.request(...args);
@@ -737,6 +754,7 @@ beforeAll(async () => {
               pid: peer.pid(), agentHome: options.env.PI_CODING_AGENT_DIR,
               configDir: options.env.PI_CONFIG_DIR, keys: Object.keys(result),
               configuredServers, isStreaming: result.isStreaming, messageCount: result.messageCount,
+              nativeLogs: readNativeLogs(),
               model: { id: (result.model as { id?: string })?.id,
                 provider: (result.model as { provider?: string })?.provider }, promptType: typeof result.systemPrompt,
               promptParts: prompt.map((part) => {
