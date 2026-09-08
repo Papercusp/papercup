@@ -1179,6 +1179,11 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
     expect(recipe.args.slug).toBe('reconnect-plan');
     expect(recipe.args.specIds).toEqual(['SPEC-003-01']);
     expect(recipe.args.evidenceRefs).toEqual(['surface:reconnect']);
+    expect(recipe.args).toMatchObject({
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-v1',
+      replaySnapshot: true,
+    });
     expect(recipe.args.includeDraft).toBe(true);
   });
 
