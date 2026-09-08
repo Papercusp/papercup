@@ -54,6 +54,7 @@ import {
 } from './carry-fact-staleness';
 import { transientExecHandleWarning } from './su-cold-loop';
 import type { HydratableRef } from './agent-tools/coordination/ref-hydrate';
+import type { WorkItemCheckpointRef, WorkItemCheckpointWithMeta } from './work-item-checkpoint';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,8 @@ export interface CarryBriefHeldItem {
    *  long before a compaction means the turns since it will NOT carry). Null when
    *  no checkpoint, or when an injected test read supplies no meta. */
   checkpointUpdatedAtMs?: number | null;
+  /** The checkpoint store was unavailable; never render this as confirmed-empty. */
+  checkpointReadFailed?: boolean;
   /** Epoch ms of the work-item's last real progress (`work_items.last_progress_at`).
    *  Unlike checkpoint age, this is item-scoped evidence that work happened after
    *  the checkpoint. Optional for legacy/injected carry readers that did not load
@@ -463,6 +466,7 @@ export function renderHeldItemOwnershipWarning(
 export interface ReadHeldWorkItemsOpts {
   sql?: Sql;
   limit?: number;
+  getWorkItemCheckpointWithMetaFn?: (ref: WorkItemCheckpointRef) => Promise<WorkItemCheckpointWithMeta>;
   getWorkItemCheckpointFn?: (ref: {
     harness: string | null;
     workItemId: string;
@@ -544,7 +548,8 @@ export async function readHeldWorkItems(
   // write instant (getWorkItemCheckpointWithMeta) so the compaction gate can flag a
   // STALE checkpoint, not just a missing one. An injected test fn (string-only) keeps
   // the legacy shape — its meta stays null.
-  const getCheckpointWithMeta = opts.getWorkItemCheckpointFn
+  const getCheckpointWithMeta: (ref: WorkItemCheckpointRef) => Promise<WorkItemCheckpointWithMeta> =
+    opts.getWorkItemCheckpointWithMetaFn ?? (opts.getWorkItemCheckpointFn
     ? async (ref: { harness: string | null; workItemId: string; workspaceId?: string }) => ({
         checkpoint: await opts.getWorkItemCheckpointFn!(ref),
         updatedAtMs: null as number | null,
@@ -552,7 +557,7 @@ export async function readHeldWorkItems(
     : async (ref: { harness: string | null; workItemId: string; workspaceId?: string }) => {
         const { getWorkItemCheckpointWithMeta } = await import('./work-item-checkpoint');
         return getWorkItemCheckpointWithMeta(ref);
-      };
+      });
   const out: CarryBriefHeldItem[] = [];
   for (const h of held) {
     // EI-8813: reuse the SAME scope→harness resolution the write/read paths use
@@ -564,12 +569,14 @@ export async function readHeldWorkItems(
     const harness = harnessOfScope(h.scope ?? '');
     let checkpoint: string | null = null;
     let checkpointUpdatedAtMs: number | null = null;
+    let checkpointReadFailed = false;
     try {
       const meta = await getCheckpointWithMeta({ harness, workItemId: h.issue_id, workspaceId: ws });
-      checkpoint = meta.checkpoint;
-      checkpointUpdatedAtMs = meta.updatedAtMs;
+      checkpointReadFailed = meta.readFailed === true;
+      checkpoint = checkpointReadFailed ? null : meta.checkpoint;
+      checkpointUpdatedAtMs = checkpointReadFailed ? null : meta.updatedAtMs;
     } catch {
-      /* per-item best-effort */
+      checkpointReadFailed = true;
     }
     const holderProof =
       concreteHolderIdentity(h.taken_by) && concreteHolderIdentity(h.workspace_id)
@@ -582,6 +589,7 @@ export async function readHeldWorkItems(
       harness,
       checkpoint,
       checkpointUpdatedAtMs,
+      ...(checkpointReadFailed ? { checkpointReadFailed: true } : {}),
       ...(h.last_progress_at !== undefined ? { lastProgressAtMs: epochMs(h.last_progress_at) } : {}),
       ...(holderProof ? { holderProof } : {}),
       ...(h.source_plan_slug !== undefined ? { sourcePlanSlug: h.source_plan_slug } : {}),
@@ -1776,7 +1784,9 @@ export function renderCarryBriefColdExtras(
           (h.harness ? ` (resolve with harness:list { detail: 'full' } and match this slug before shelling out)` : '')
         : '';
       let ckpt: string;
-      if (!h.checkpoint) {
+      if (h.checkpointReadFailed) {
+        ckpt = `\n    checkpoint: UNKNOWN — store read failed; do not infer absence or overwrite. Re-read ${workItemFetchHint(h.id, h.harness)}`;
+      } else if (!h.checkpoint) {
         ckpt = '\n    (no checkpoint written — read the item via work_items:get before acting)';
       } else {
         const superseded =

@@ -24,7 +24,7 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { setWorkItemCheckpoint, getWorkItemCheckpoint, attestWorkItemCheckpointUnchanged } = await import(
+const { setWorkItemCheckpoint, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta, attestWorkItemCheckpointUnchanged } = await import(
   './work-item-checkpoint'
 );
 const { workItemScope, shortCarryHash, CARRY_NOTE_ATTESTATION_MAX_CHAIN } = await import('./carry-note');
@@ -109,6 +109,25 @@ async function rowCount(): Promise<number> {
 }
 
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
+  it('distinguishes a failed metadata read from absence and recovers the same stored checkpoint', async () => {
+    const ref = { harness: HARNESS, workItemId: 'WI-read-failure' };
+    expect(await getWorkItemCheckpointWithMeta(ref)).toEqual({ checkpoint: null, updatedAtMs: null });
+    await setWorkItemCheckpoint(ref, 'Next: preserve the independent review.');
+    const original = await getWorkItemCheckpointWithMeta(ref);
+    expect(original.checkpoint).toBe('Next: preserve the independent review.');
+    // Fault injection stays in the private test database. Restore in finally so
+    // neither a failed assertion nor the negative control poisons another case.
+    await db.sql`ALTER TABLE harness_shared.carry_notes RENAME TO carry_notes_unavailable`;
+    try {
+      expect(await getWorkItemCheckpointWithMeta(ref)).toEqual({
+        checkpoint: null, updatedAtMs: null, readFailed: true,
+      });
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.carry_notes_unavailable RENAME TO carry_notes`;
+    }
+    expect(await getWorkItemCheckpointWithMeta(ref)).toEqual(original);
+  });
+
   it('write → read round-trips', async () => {
     expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' }, 'phase 2 of 5; edited foo.ts')).toBe(
       'phase 2 of 5; edited foo.ts',

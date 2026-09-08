@@ -409,9 +409,10 @@ describe('work_items:get — checkpoint field', () => {
     expect(r.checkpointChecks).toEqual({ count: 10, cap: CARRY_NOTE_MAX_CHECKS, remaining: 2 });
   });
 
-  it('degrades to null (does not fail the read) when the checkpoint lookup throws', async () => {
+  it.each(['rejected', 'in-band'] as const)('degrades explicitly when the checkpoint lookup fails (%s)', async (failure) => {
     getWorkItem.mockResolvedValue({ id: 'WI-9', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
-    getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
+    if (failure === 'rejected') getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
+    else getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null, readFailed: true });
     const r = await one({ id: 'WI-9' });
     expect(r).toMatchObject({ ok: true, id: 'WI-9', checkpoint: null, checkpointAgeMs: null, checkpointUpdatedAtMs: null });
     expect(r.checkpointChecks).toBeNull();
@@ -420,6 +421,15 @@ describe('work_items:get — checkpoint field', () => {
     // successor) concluded in-flight state was lost during a mere PG blip. That is the exact
     // conclusion EI-7252 added this field to prevent, re-created by its own error path.
     expect(r.checkpointReadFailed).toBe(true);
+  });
+
+  it('checksOnly preserves an in-band metadata read failure as an unknown check ledger', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-9', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null, readFailed: true });
+    const r = await one({ id: 'WI-9', checksOnly: true });
+    expect(r).toMatchObject({
+      checkpointReadFailed: true, checkpointChecks: null, checkpointContentHash: null, checkpointBody: null,
+    });
   });
 
   it('does NOT mark checkpointReadFailed when the read succeeded and found nothing (WI-6737)', async () => {

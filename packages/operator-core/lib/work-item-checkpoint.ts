@@ -397,6 +397,9 @@ export interface WorkItemCheckpointWithMeta {
   checkpoint: string | null;
   /** Epoch ms of the checkpoint's last write (carry_notes.updated_ts), null when none. */
   updatedAtMs: number | null;
+  /** A failed store read is UNKNOWN, not evidence that no checkpoint was written.
+   * Optional for compatibility with injected/older readers. */
+  readFailed?: boolean;
 }
 
 /** Read a work-item's checkpoint WITH its write instant. Same scope-canonicalization
@@ -415,7 +418,7 @@ export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef):
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
     return { checkpoint: note, updatedAtMs: Number.isFinite(ts) ? ts : null };
   } catch {
-    return { checkpoint: null, updatedAtMs: null };
+    return { checkpoint: null, updatedAtMs: null, readFailed: true };
   }
 }
 

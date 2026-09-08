@@ -1736,6 +1736,24 @@ describe('owner directives in the brief (EI-11484)', () => {
 });
 
 describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)', () => {
+  it.each(['rejected', 'in-band'] as const)('preserves checkpoint uncertainty for a successor (%s)', async (failure) => {
+    const held = await readHeldWorkItems('su-abc', 'ws-test', {
+      sql: fakeIssuesSql([
+        { issue_id: 'WI-1', title: 't', body: 'b', scope: 'harness:papercusp', taken_by: 'su-abc', workspace_id: 'ws-test' },
+      ]),
+      getWorkItemCheckpointWithMetaFn: async () => {
+        if (failure === 'rejected') throw new Error('checkpoint store unavailable');
+        return { checkpoint: null, updatedAtMs: null, readFailed: true };
+      },
+    });
+    expect(held[0]).toMatchObject({ checkpoint: null, checkpointUpdatedAtMs: null, checkpointReadFailed: true });
+    const brief = await buildCarryBrief('su-abc', fullOpts({ readHeldWorkItemsFn: async () => held }));
+    const restored = JSON.parse(JSON.stringify(brief)) as CarryBrief;
+    const rendered = renderCarryBriefText(restored);
+    expect(rendered).toContain('checkpoint: UNKNOWN — store read failed');
+    expect(rendered).not.toContain('no checkpoint written');
+  });
+
   it('resolves a harness-scoped item to its concrete slug', async () => {
     const held = await readHeldWorkItems('su-abc', 'ws-test', {
       sql: fakeIssuesSql([
