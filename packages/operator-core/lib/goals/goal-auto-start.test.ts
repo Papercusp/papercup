@@ -66,11 +66,15 @@ const goalLaunchMocks = vi.hoisted(() => ({
     }),
   ),
 }));
+const goalHistoryMocks = vi.hoisted(() => ({ read: vi.fn() }));
 
 // The brief's own content is pinned in ../agent-tools/goals/start.test.ts;
 // mocking it here keeps this file off the whole tool-module graph.
 vi.mock('../agent-tools/goals/start', () => ({
   buildGoalKickoffBrief: (o: { goalId: string }) => goalLaunchMocks.buildBrief(o),
+}));
+vi.mock('../prior-attempt-context', () => ({
+  readGoalHistoryContext: (goalId: string) => goalHistoryMocks.read(goalId),
 }));
 vi.mock('../goal-launch-settings', async () => {
   // The shared bootstrap imports the complete goal write surface (create +
@@ -171,6 +175,11 @@ beforeEach(() => {
     (o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`,
   );
   goalLaunchMocks.resolve.mockResolvedValue({ effective: {}, refusal: null, goalBrief: null });
+  goalHistoryMocks.read.mockResolvedValue({
+    status: 'empty',
+    brief: null,
+    recovery: { tool: 'goals:get', args: { id: 'generated', detail: 'full' } },
+  });
   order.length = 0;
   sqlLog.length = 0;
   setModeCalls.length = 0;
@@ -208,6 +217,20 @@ describe('goal-auto-start — blocked-by edge wiring (P-004)', () => {
     await call();
 
     expect(goalLaunchMocks.buildBrief).toHaveBeenCalledWith(expect.objectContaining({ portfolio }));
+  });
+
+  it('threads the canonical goal-history projection into the automated first-turn brief', async () => {
+    const history = {
+      status: 'available',
+      brief: { fingerprint: 'automated-goal-history' },
+      recovery: { tool: 'goals:get', args: { id: 'generated', detail: 'full' } },
+    };
+    goalHistoryMocks.read.mockResolvedValue(history);
+
+    await call();
+
+    expect(goalHistoryMocks.read).toHaveBeenCalledTimes(1);
+    expect(goalLaunchMocks.buildBrief).toHaveBeenCalledWith(expect.objectContaining({ history }));
   });
 
   it('no blockedBy ⇒ no edge write and no readiness read — the pre-P-004 path unchanged', async () => {

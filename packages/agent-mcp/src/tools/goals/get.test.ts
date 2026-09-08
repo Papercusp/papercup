@@ -380,7 +380,13 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
         { id: 'g-2', title: 'Child A' },
         { id: 'g-3', title: 'Child B' },
       ],
-      history: { entries: [], truncated: false, limit: 100 },
+      history: {
+        entries: [],
+        truncated: false,
+        limit: 100,
+        omittedEntryIds: [],
+        omittedEntryIdsTruncated: false,
+      },
       historyContext: {
         status: 'available',
         brief: { fingerprint: 'goal-history-fingerprint' },

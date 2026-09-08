@@ -11,7 +11,12 @@
  */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
-import { readGoalHistory, type GoalHistoryEntry } from '@papercusp/agent-mcp/goal-history';
+import {
+  readGoalHistory,
+  readGoalHistoryEntriesByIds,
+  type GoalHistoryEntry,
+  type GoalHistoryRead,
+} from '@papercusp/agent-mcp/goal-history';
 import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
 import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
@@ -108,6 +113,22 @@ export interface PriorAttemptCompilation {
   byScope: Record<PriorAttemptScope, number>;
   byAuthority: Record<PriorAttemptAuthority, number>;
   fingerprint: string;
+  /** Sources omitted by an upstream bounded reader before normalization. */
+  upstreamOmission?: {
+    omittedRecords: number;
+    omittedByAuthority: Partial<Record<PriorAttemptAuthority, number>>;
+    omittedRefs: PriorAttemptOmittedRef[];
+    omittedRefsTruncated: boolean;
+  };
+  /** Goal-owned audit-page coverage, present only for a goal rollup. */
+  goalHistory?: {
+    admitted: number;
+    limit: number;
+    truncated: boolean;
+    omittedRecordsLowerBound: number;
+    omittedRefs: string[];
+    omittedRefsTruncated: boolean;
+  };
 }
 
 export interface PriorAttemptBriefRecord {
@@ -489,11 +510,17 @@ export function buildBoundedPriorAttemptBrief(
     authority: protectedRecords.map((record) => ({ authority: record.authority, rawRef: record.rawRef })),
     residue: residue.map((entry) => entry.rawRef),
   };
+  const upstream = compilation.upstreamOmission;
   const omitted = new Map<PriorAttemptAuthority, number>();
+  for (const [authority, count] of Object.entries(upstream?.omittedByAuthority ?? {})) {
+    if (count) omitted.set(authority as PriorAttemptAuthority, count);
+  }
   // P-017: identity of every dropped record, not just its tally.  Keyed by
   // rawRef because a record can be rejected twice (budget, then envelope
   // overflow) and must not be double-counted as two distinct omissions.
-  const omittedRefs = new Map<string, PriorAttemptOmittedRef>();
+  const omittedRefs = new Map<string, PriorAttemptOmittedRef>(
+    (upstream?.omittedRefs ?? []).map((entry) => [entry.rawRef, entry]),
+  );
   const dropRecord = (record: PriorAttemptRecord, reason: 'budget' | 'empty-at-depth' = 'budget') => {
     if (omittedRefs.has(record.rawRef)) return;
     omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
@@ -520,17 +547,17 @@ export function buildBoundedPriorAttemptBrief(
     rawRefs,
     protectedRefs,
     omission: {
-      omittedRecords: compilation.records.length - admitted,
+      omittedRecords: compilation.records.length - admitted + (upstream?.omittedRecords ?? 0),
       omittedByAuthority: {},
       // P-017: DELIBERATELY empty during admission. The ref list is metadata
       // ABOUT history already dropped, so it must never compete for bytes with
       // the history still being kept — it is refilled from the leftovers after
       // the content bound is enforced (see the refill pass below).
       omittedRefs: [] as PriorAttemptOmittedRef[],
-      omittedRefsTruncated: false,
+      omittedRefsTruncated: upstream?.omittedRefsTruncated ?? false,
       sourceCount: compilation.sourceCount,
       deduplicatedCount: compilation.deduplicatedCount,
-      truncated: admitted < compilation.records.length,
+      truncated: admitted < compilation.records.length || (upstream?.omittedRecords ?? 0) > 0,
     },
     estimatedTokens: 0,
     serializedChars: 0,
@@ -578,7 +605,7 @@ export function buildBoundedPriorAttemptBrief(
       dropRecord(record);
     }
   }
-  const omittedRecords = compilation.records.length - admitted;
+  const omittedRecords = compilation.records.length - admitted + (upstream?.omittedRecords ?? 0);
   const result: BoundedPriorAttemptBrief = {
     schemaVersion: 'prior-attempt-brief-v1',
     fingerprint: compilation.fingerprint,
@@ -591,7 +618,7 @@ export function buildBoundedPriorAttemptBrief(
       omittedRecords,
       omittedByAuthority: Object.fromEntries([...omitted].filter(([, count]) => count > 0)),
       omittedRefs: [],
-      omittedRefsTruncated: false,
+      omittedRefsTruncated: upstream?.omittedRefsTruncated ?? false,
       sourceCount: compilation.sourceCount,
       deduplicatedCount: compilation.deduplicatedCount,
       truncated: omittedRecords > 0,
@@ -765,7 +792,12 @@ interface CollectorDeps {
     workspaceId: string;
     goalId: string;
     limit?: number;
-  }) => Promise<{ entries: GoalHistoryEntry[]; truncated: boolean; limit: number }>;
+  }) => Promise<GoalHistoryRead>;
+  goalHistoryByIds?: (input: {
+    workspaceId: string;
+    goalId: string;
+    ids: readonly string[];
+  }) => Promise<GoalHistoryEntry[]>;
 }
 
 const DEFAULT_DEPS: CollectorDeps = {
@@ -782,6 +814,8 @@ const DEFAULT_DEPS: CollectorDeps = {
   priorWork: getClaimTimePriorWorkHint,
   goalHistory: ({ workspaceId, goalId, limit }) =>
     readGoalHistory(getOrgPg().sql, { workspaceId, goalId, limit }),
+  goalHistoryByIds: ({ workspaceId, goalId, ids }) =>
+    readGoalHistoryEntriesByIds(getOrgPg().sql, { workspaceId, goalId, ids }),
 };
 
 function goalHistoryText(entry: GoalHistoryEntry): string {
@@ -809,6 +843,19 @@ function goalHistoryText(entry: GoalHistoryEntry): string {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function goalHistorySource(goalId: string, entry: GoalHistoryEntry): PriorAttemptSource {
+  const text = goalHistoryText(entry);
+  return {
+    scope: 'goal-wide',
+    authority: retractionText(text) ? 'retraction' : 'comment',
+    rawRef: `goal:${goalId}#history:${entry.id}`,
+    at: entry.at,
+    actor: entry.author,
+    text,
+    depth: 0,
+  };
 }
 
 function planItemIdsOf(item: WorkItem): string[] {
@@ -903,8 +950,20 @@ export async function collectPriorAttempts(
     target.kind === 'goal' && workspaceId && deps.goalHistory
       ? deps
           .goalHistory({ workspaceId, goalId: target.ref, limit: options.maxThreadPosts ?? 25 })
-          .catch(() => failed('goal-history', { entries: [], truncated: false, limit: options.maxThreadPosts ?? 25 }))
-      : Promise.resolve({ entries: [], truncated: false, limit: options.maxThreadPosts ?? 25 }),
+          .catch(() => failed('goal-history', {
+            entries: [],
+            truncated: false,
+            limit: options.maxThreadPosts ?? 25,
+            omittedEntryIds: [],
+            omittedEntryIdsTruncated: false,
+          }))
+      : Promise.resolve({
+          entries: [],
+          truncated: false,
+          limit: options.maxThreadPosts ?? 25,
+          omittedEntryIds: [],
+          omittedEntryIdsTruncated: false,
+        }),
   ]);
   const derivedSpecIds = targetEdges.map((edge) => edge.specId);
   const fallbackSpecIds = planItemId
@@ -998,16 +1057,7 @@ export async function collectPriorAttempts(
     }
   }
   for (const entry of goalHistory.entries) {
-    const text = goalHistoryText(entry);
-    sources.push({
-      scope: 'goal-wide',
-      authority: retractionText(text) ? 'retraction' : 'comment',
-      rawRef: `goal:${target.ref}#history:${entry.id}`,
-      at: entry.at,
-      actor: entry.author,
-      text,
-      depth: 0,
-    });
+    sources.push(goalHistorySource(target.ref, entry));
   }
 
   // A goal read owns the history of its admitted child PLANS as well as their
@@ -1225,7 +1275,43 @@ export async function collectPriorAttempts(
       }
     }),
   );
-  return compilePriorAttempts(sources);
+  const compilation = compilePriorAttempts(sources);
+  if (target.kind !== 'goal' || !goalHistory.truncated) return compilation;
+  const omittedRefs = goalHistory.omittedEntryIds.map((id) => ({
+    authority: 'comment' as const,
+    scope: 'goal-wide' as const,
+    rawRef: `goal:${target.ref}#history:${id}`,
+    reason: 'budget' as const,
+  }));
+  const omittedRecordsLowerBound = omittedRefs.length + (goalHistory.omittedEntryIdsTruncated ? 1 : 0);
+  const omittedRawRefs = omittedRefs.map((entry) => entry.rawRef);
+  return {
+    ...compilation,
+    sourceCount: compilation.sourceCount + omittedRecordsLowerBound,
+    fingerprint: createHash('sha256')
+      .update(
+        [
+          compilation.fingerprint,
+          ...omittedRawRefs,
+          goalHistory.omittedEntryIdsTruncated ? '<goal-history-tail-truncated>' : '<goal-history-tail-complete>',
+        ].join('\n'),
+      )
+      .digest('hex'),
+    upstreamOmission: {
+      omittedRecords: omittedRecordsLowerBound,
+      omittedByAuthority: { comment: omittedRecordsLowerBound },
+      omittedRefs,
+      omittedRefsTruncated: goalHistory.omittedEntryIdsTruncated,
+    },
+    goalHistory: {
+      admitted: goalHistory.entries.length,
+      limit: goalHistory.limit,
+      truncated: true,
+      omittedRecordsLowerBound,
+      omittedRefs: omittedRawRefs,
+      omittedRefsTruncated: goalHistory.omittedEntryIdsTruncated,
+    },
+  };
 }
 
 function planPointer(opts: ClaimTimePriorAttemptOptions): { planSlug: string; planItemId: string } | null {
@@ -1322,6 +1408,7 @@ export type ContainmentRollupBrief = BoundedPriorAttemptBrief & {
   degradedSources: string[];
   omittedDescendants: ContainmentRef[];
   omittedDescendantsTruncated: boolean;
+  goalHistory?: NonNullable<PriorAttemptCompilation['goalHistory']>;
 };
 
 export async function getContainmentRollupBrief(
@@ -1377,6 +1464,7 @@ export async function getContainmentRollupBrief(
           degradedSources: [...degradedSources],
           omittedDescendants: tree.omittedDescendants.slice(0, 8),
           omittedDescendantsTruncated: tree.omittedDescendantsTruncated || tree.omittedDescendants.length > 8,
+          ...(compilation.goalHistory ? { goalHistory: compilation.goalHistory } : {}),
         };
       })(),
       new Promise<never>((_, reject) => {
@@ -1486,27 +1574,46 @@ export async function resolvePriorAttemptRefs(
     (pointer ? `plan-item:${pointer.planSlug}#${pointer.planItemId}` : null);
   if (!workItemId) return null;
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const compilation = await Promise.race([
-      collectPriorAttempts(
-        {
-          harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
-          planSlug: pointer?.planSlug ?? null,
-          planItemId: pointer?.planItemId ?? null,
-          workItemId,
-          ...(opts.target ? { target: opts.target, direction: 'down' as const, maxDescendants: 24 } : {}),
-          maxPlanWorkItems: 16,
-          maxThreadPosts: 12,
-        },
-        deps,
-      ),
+    const { compilation, candidateRecords } = await Promise.race([
+      (async () => {
+        const compilation = await collectPriorAttempts(
+          {
+            harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
+            planSlug: pointer?.planSlug ?? null,
+            planItemId: pointer?.planItemId ?? null,
+            workItemId,
+            ...(opts.target ? { target: opts.target, direction: 'down' as const, maxDescendants: 24 } : {}),
+            maxPlanWorkItems: 16,
+            // A goal brief is minted from a 25-row page. Recompile the same page so
+            // unchanged refs ranked 13–25 never become false `unresolved` results.
+            maxThreadPosts: opts.target?.kind === 'goal' ? 25 : 12,
+          },
+          deps,
+        );
+        let candidateRecords = compilation.records;
+        if (opts.target?.kind === 'goal' && deps.goalHistoryByIds) {
+          const prefix = `goal:${opts.target.ref}#history:`;
+          const ids = wanted.filter((ref) => ref.startsWith(prefix)).map((ref) => ref.slice(prefix.length));
+          const workspaceId = resolveConcreteWorkspaceId();
+          if (ids.length && workspaceId) {
+            const exact = await deps.goalHistoryByIds({ workspaceId, goalId: opts.target.ref, ids });
+            candidateRecords = compilePriorAttempts([
+              ...candidateRecords,
+              ...exact.map((entry) => goalHistorySource(opts.target!.ref, entry)),
+            ]).records;
+          }
+        }
+        return { compilation, candidateRecords };
+      })(),
       new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => reject(new Error('prior-attempt-resolve-timeout')), timeoutMs);
+        timer = setTimeout(() => reject(new Error('prior-attempt-resolve-timeout')), timeoutMs);
         timer.unref?.();
       }),
     ]);
     const want = new Set(wanted);
-    const records = compilation.records.filter((record) => want.has(record.rawRef));
+    const records = candidateRecords.filter((record) => want.has(record.rawRef));
     const found = new Set(records.map((record) => record.rawRef));
     return {
       schemaVersion: 'prior-attempt-refs-v1',
@@ -1516,6 +1623,8 @@ export async function resolvePriorAttemptRefs(
     };
   } catch {
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
