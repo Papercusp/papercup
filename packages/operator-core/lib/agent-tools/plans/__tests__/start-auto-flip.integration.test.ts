@@ -20,6 +20,9 @@ import type postgres from 'postgres';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { runWithWorkspace } from '../../../workspace-als';
 import type { PlanPgFixture } from './_pg-tool-fixture';
+import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../../scorecards';
+import { metadataClauseWrite } from '../coordination-metadata-fixtures';
+import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from '../spec-quality';
 
 // WI-5825: plans:start resolves its write key through resolvePlanScope — the SAME
 // authority its plan READ uses — not the ambient activeWorkspaceId(). Pin the resolver
@@ -62,7 +65,22 @@ const START_GATES = vi.hoisted(() => ({
   startable: vi.fn(),
   promotion: vi.fn(),
   prediction: vi.fn(),
+  listCards: vi.fn(),
+  afterQuality: vi.fn(),
 }));
+// Keep the real clause/class readers and quality evaluator. Only the unrelated
+// scorecard ledger is supplied; the hook models a policy change after preflight.
+vi.mock('../plan-spec-quality-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../plan-spec-quality-gate')>();
+  return {
+    ...actual,
+    evaluatePlanSpecQualityGate: async (input: Parameters<typeof actual.evaluatePlanSpecQualityGate>[0]) => {
+      const result = await actual.evaluatePlanSpecQualityGate(input, { listCards: START_GATES.listCards });
+      await START_GATES.afterQuality(result);
+      return result;
+    },
+  };
+});
 vi.mock('../plan-start-gate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../plan-start-gate')>();
   return {
@@ -240,6 +258,10 @@ beforeEach(async () => {
   START_GATES.promotion.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, workItems: [] });
   START_GATES.prediction.mockReset();
   START_GATES.prediction.mockResolvedValue(undefined);
+  START_GATES.listCards.mockReset();
+  START_GATES.listCards.mockResolvedValue([]);
+  START_GATES.afterQuality.mockReset();
+  START_GATES.afterQuality.mockResolvedValue(undefined);
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
@@ -296,6 +318,72 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
 });
 
 describe('plans:start — refused approval leaves no persisted start (P-002)', () => {
+  it('rejects the old exact card when the persisted class changes after preflight, then starts with new-class evidence', async () => {
+    await seedLegacyPlan('draft');
+    const content = `${planBody('draft')}\n## Phase\n- [ ] P-001: Submit an event\n`;
+    await admin`UPDATE harness_shared.harness_plans SET content = ${content}, content_hash = md5(${content})
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+    await admin`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
+      VALUES (${WS}, ${HARNESS}, ${SLUG}, 'P-001', 1, 'Submit an event', 'todo')`;
+    const rubricId = `${SLUG}-acceptance`;
+    const data = { kind: 'acceptance', subjectPlan: SLUG, subjectHarnessSlug: HARNESS,
+      classRef: 'plan-class-feature-ship', characteristic: 'plan-acceptance',
+      criteria: [], ratingScale: ['pass', 'fail', 'unknown'] };
+    await admin`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, template, template_data)
+      VALUES (${WS}, ${HARNESS}, ${rubricId}, '', md5(${rubricId}), ${rubricId},
+        'active', 'rubric', ${JSON.stringify(data)}::text::jsonb)`;
+    const { setSpecClause, listSpecClauses } = await import('../spec-clauses-store');
+    const clauses = await runWithWorkspace(WS, async () => {
+      expect(await setSpecClause(metadataClauseWrite({
+        harnessSlug: HARNESS, planSlug: SLUG, sourceValId: null, behaviorClass: 'boundary',
+      }))).toMatchObject({ status: 'created' });
+      return listSpecClauses({ harnessSlug: HARNESS, planSlug: SLUG });
+    });
+    const cardFor = (classRef: 'plan-class-feature-ship' | 'plan-class-bugfix'): ScorecardRow => {
+      const evaluation = evaluatePlanSpecQuality({
+        planSlug: SLUG, harnessSlug: HARNESS, planItemIds: ['P-001'], clauses, classRef,
+      });
+      expect(evaluation.verdict).toBe('pass');
+      return {
+        issueId: `EI-fixture-${classRef}`, createdAt: '2026-09-07T00:00:00Z', createdBy: 'independent-reviewer',
+        subject: evaluation.scorecardDraft.subject, rubricRef: SPEC_QUALITY_RUBRIC_REF,
+        ratings: evaluation.ratings, nKeys: Object.keys(evaluation.ratings).length,
+        missingKeys: [], extraKeys: [], rubricResolved: true, synthesized: false,
+        evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: evaluation.ratings }),
+        score10: 10, linkedItems: [],
+      };
+    };
+    const oldCard = cardFor('plan-class-feature-ship');
+    const newCard = cardFor('plan-class-bugfix');
+    expect(newCard.subject?.ref).not.toBe(oldCard.subject?.ref);
+    expect(newCard.evidenceFingerprint).not.toBe(oldCard.evidenceFingerprint);
+    START_GATES.listCards.mockResolvedValue([oldCard]);
+    START_GATES.afterQuality.mockImplementationOnce(async (verdict) => {
+      expect(verdict).toMatchObject({ satisfied: true, classRef: 'plan-class-feature-ship' });
+      await admin`UPDATE harness_shared.harness_plans
+        SET template_data = jsonb_set(template_data, '{classRef}', '"plan-class-bugfix"'::jsonb)
+        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${rubricId}`;
+    });
+    const before = await persistedStartState();
+    const refused = await runStart();
+    expect(refused.isError).toBe(true);
+    expect(refused.data).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
+    expect(START_GATES.afterQuality).toHaveBeenCalledTimes(2);
+    expect(START_GATES.afterQuality.mock.calls[1][0]).toMatchObject({
+      satisfied: false, classRef: 'plan-class-bugfix', code: 'spec_quality_scorecard_missing',
+    });
+    expect(await persistedStartState()).toEqual(before);
+    expect(START_GATES.promotion).not.toHaveBeenCalled();
+    expect(START_GATES.prediction).not.toHaveBeenCalled();
+
+    START_GATES.listCards.mockResolvedValue([newCard]);
+    const retry = await runStart();
+    expect(retry.isError, JSON.stringify(retry.data)).toBe(false);
+    expect(retry.data).toMatchObject({ status: 'started', autoApproved: true });
+    expect(START_GATES.promotion).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['draft', 'ready'] as const)('preserves the %s row when the locked admission recheck refuses, then retries the same plan', async (status) => {
     await seedLegacyPlan(status);
     const before = await persistedStartState();
