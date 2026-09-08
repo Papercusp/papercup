@@ -13,12 +13,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
 } from './application-names';
 
 const h = vi.hoisted(() => ({
+  guardBin: '/test/kopia-backup-guard.sh',
   adminUrl: { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' },
   spawnCalls: [] as Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }>,
   // Size returned by the mocked stat() of the temp dump — >=10KiB ⇒ success path.
@@ -77,7 +80,11 @@ vi.mock('node:child_process', () => ({
         const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write', errno: -32 });
         (child.stdin as unknown as EventEmitter).emit('error', err);
       }
-      child.emit('close', h.closeCodes[cmd] ?? 0);
+      // The guard process is the mocked boundary around pg_dump. Preserve the
+      // existing outcome controls so the assertions still exercise pg_dump's
+      // success/failure branches after adding the real cross-process wrapper.
+      const closeCodeKey = cmd === h.guardBin ? 'pg_dump' : cmd;
+      child.emit('close', h.closeCodes[closeCodeKey] ?? 0);
     });
     return child;
   }),
@@ -132,11 +139,21 @@ vi.mock('./config', () => ({
   backupHost: () => ({ getHarnessAdminUrl: () => h.adminUrl }),
 }));
 
-import { allocateDumpTempPath, requiredFreeBytes, runPreSnapshotHook } from './hook';
+import {
+  allocateDumpTempPath,
+  requiredFreeBytes,
+  resolveKopiaBackupGuard,
+  runPreSnapshotHook,
+  WORKSPACE_BACKUP_GUARD_LABEL,
+} from './hook';
 
 const ctx = { workspaceId: 'ws-1', workspaceRoot: '/work/ws-1' };
+const originalGuardBin = process.env.KOPIA_BACKUP_GUARD_BIN;
+const originalGuardActive = process.env.KOPIA_BACKUP_GUARD_ACTIVE;
 
 beforeEach(() => {
+  process.env.KOPIA_BACKUP_GUARD_BIN = h.guardBin;
+  delete process.env.KOPIA_BACKUP_GUARD_ACTIVE;
   h.adminUrl = { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' };
   h.spawnCalls = [];
   h.dumpSize = 16_384;
@@ -156,7 +173,14 @@ beforeEach(() => {
 });
 afterEach(() => vi.clearAllMocks());
 
-const pgDumpCall = () => h.spawnCalls.find((c) => c.cmd === 'pg_dump');
+afterEach(() => {
+  if (originalGuardBin === undefined) delete process.env.KOPIA_BACKUP_GUARD_BIN;
+  else process.env.KOPIA_BACKUP_GUARD_BIN = originalGuardBin;
+  if (originalGuardActive === undefined) delete process.env.KOPIA_BACKUP_GUARD_ACTIVE;
+  else process.env.KOPIA_BACKUP_GUARD_ACTIVE = originalGuardActive;
+});
+
+const pgDumpCall = () => h.spawnCalls.find((c) => c.cmd === 'pg_dump' || c.args.includes('pg_dump'));
 
 describe('cross-process dump transaction isolation', () => {
   it('allocates a distinct Kopia-ignored temp path for every dump attempt', () => {
@@ -207,6 +231,34 @@ describe('cross-process dump transaction isolation', () => {
 });
 
 describe('runPreSnapshotHook admin-URL → spawn args', () => {
+  it('runs pg_dump through the shared wait-mode backup guard', async () => {
+    await runPreSnapshotHook(ctx);
+    const c = pgDumpCall()!;
+    const pgDumpIndex = c.args.indexOf('pg_dump');
+
+    expect(c.cmd).toBe(h.guardBin);
+    expect(c.args.slice(0, pgDumpIndex)).toEqual([
+      '--mode', 'wait',
+      '--label', WORKSPACE_BACKUP_GUARD_LABEL,
+      '--',
+    ]);
+    expect(pgDumpIndex).toBeGreaterThan(-1);
+  });
+
+  it('uses the installed guard path by default and respects the shared override', () => {
+    const configured = process.env.KOPIA_BACKUP_GUARD_BIN;
+    delete process.env.KOPIA_BACKUP_GUARD_BIN;
+    expect(resolveKopiaBackupGuard()).toBe(join(homedir(), '.config', 'kopia', 'kopia-backup-guard.sh'));
+    process.env.KOPIA_BACKUP_GUARD_BIN = configured;
+    expect(resolveKopiaBackupGuard()).toBe(h.guardBin);
+  });
+
+  it('does not re-enter the wait-mode guard when already running inside it', async () => {
+    process.env.KOPIA_BACKUP_GUARD_ACTIVE = '1';
+    await runPreSnapshotHook(ctx);
+    expect(pgDumpCall()!.cmd).toBe('pg_dump');
+  });
+
   it('derives host/port/user from the admin URL into the pg_dump argv', async () => {
     h.adminUrl = { url: 'postgres://alice:pw@db.local:6789/x', source: 'file' };
     await runPreSnapshotHook(ctx);
@@ -255,7 +307,7 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     const dIdx = c.args.indexOf('-d');
     expect(dIdx).toBeGreaterThan(-1);
     expect(c.args[dIdx + 1]).toBe('paper/cusp');
-    expect(c.cmd).toBe('pg_dump');
+    expect(c.cmd).toBe(h.guardBin);
   });
 
   it('sets a connect timeout in the spawn env', async () => {

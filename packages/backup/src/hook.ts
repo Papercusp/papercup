@@ -30,6 +30,7 @@ import { mkdir, readdir, stat, statfs, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { createWriteStream, type Dirent } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 
 interface HookContext {
   workspaceId: string;
@@ -119,6 +120,30 @@ const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
 const PG_DUMP_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 const PG_DUMP_LOCK_WAIT_TIMEOUT_MS = 30_000;
 const GIB = 1024n * 1024n * 1024n;
+
+/**
+ * The host-level Postgres dump and the workspace hook share one database.
+ * Both must enter the same cross-process guard before pg_dump starts; the
+ * in-process `dumpQueue` below cannot coordinate with systemd's producer.
+ *
+ * Keep the override name aligned with the systemd scripts so tests and
+ * isolated deployments can point every producer at one guard instance. The
+ * installed symlink is the production default (the versioned script lives in
+ * apps/operator/scripts/systemd/).
+ */
+export const WORKSPACE_BACKUP_GUARD_LABEL = 'workspace-db-dump';
+const DEFAULT_BACKUP_GUARD_PATH = join(homedir(), '.config', 'kopia', 'kopia-backup-guard.sh');
+
+/**
+ * Resolve the shared backup guard at call time, rather than module load time,
+ * so an embedding host can configure its command before the first snapshot.
+ * A guard that is already active is inherited from the enclosing Kopia
+ * snapshot process; re-entering its wait-mode flock would deadlock the hook.
+ */
+export function resolveKopiaBackupGuard(): string | null {
+  if (process.env.KOPIA_BACKUP_GUARD_ACTIVE === '1') return null;
+  return process.env.KOPIA_BACKUP_GUARD_BIN?.trim() || DEFAULT_BACKUP_GUARD_PATH;
+}
 
 /** Stable application identity used by migration preflight and lock monitors
  * to distinguish the workspace's pg_dump transaction from ordinary readers. */
@@ -433,37 +458,43 @@ async function dumpPg(opts: {
       `-c lock_timeout=${PG_DUMP_LOCK_WAIT_TIMEOUT_MS}`,
     ].filter(Boolean).join(' '),
   };
+  const pgDumpArgs = [
+    '-h', opts.host,
+    '-p', String(opts.port),
+    '-U', opts.user,
+    '-w',
+    '-d', opts.database,
+    '--no-owner',
+    '--no-privileges',
+    '-n', 'harness_shared',
+    // Do not wait indefinitely behind a concurrent schema/table lock. The
+    // session-level lock_timeout above also covers locks acquired by the
+    // dump's own SQL, while this pg_dump flag gives its lock phase a clear
+    // diagnostic failure.
+    '--lock-wait-timeout=30s',
+    // Every extension the harness_shared schema actually depends on at
+    // DDL time must be dumped, not just `vector`. EI-13868: a restore
+    // drill found the dump omitted `pg_trgm`, so importing into a fresh
+    // DB failed 3x with "gin_trgm_ops does not exist for access method
+    // gin" the moment the trigram GIN index (594-memory-canonical-trgm-
+    // lexical.sql) tried to create — CREATE INDEX validates the operator
+    // class at DDL time, unlike a plpgsql function body's pgcrypto calls
+    // (000-baseline.sql: pgp_sym_encrypt/gen_salt), which aren't checked
+    // until called. Include `pgcrypto` too so those functions actually
+    // work post-restore instead of failing silently the first time
+    // they're invoked.
+    '-e', 'vector',
+    '-e', 'pg_trgm',
+    '-e', 'pgcrypto',
+    ...EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
+  ];
+  const guard = resolveKopiaBackupGuard();
+  const dumpCommand = guard ?? 'pg_dump';
+  const dumpArgs = guard
+    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--', 'pg_dump', ...pgDumpArgs]
+    : pgDumpArgs;
   return new Promise<PreSnapshotHookResult>((resolve) => {
-    const dump = spawn('pg_dump', [
-      '-h', opts.host,
-      '-p', String(opts.port),
-      '-U', opts.user,
-      '-w',
-      '-d', opts.database,
-      '--no-owner',
-      '--no-privileges',
-      '-n', 'harness_shared',
-      // Do not wait indefinitely behind a concurrent schema/table lock. The
-      // session-level lock_timeout above also covers locks acquired by the
-      // dump's own SQL, while this pg_dump flag gives its lock phase a clear
-      // diagnostic failure.
-      '--lock-wait-timeout=30s',
-      // Every extension the harness_shared schema actually depends on at
-      // DDL time must be dumped, not just `vector`. EI-13868: a restore
-      // drill found the dump omitted `pg_trgm`, so importing into a fresh
-      // DB failed 3x with "gin_trgm_ops does not exist for access method
-      // gin" the moment the trigram GIN index (594-memory-canonical-trgm-
-      // lexical.sql) tried to create — CREATE INDEX validates the operator
-      // class at DDL time, unlike a plpgsql function body's pgcrypto calls
-      // (000-baseline.sql: pgp_sym_encrypt/gen_salt), which aren't checked
-      // until called. Include `pgcrypto` too so those functions actually
-      // work post-restore instead of failing silently the first time
-      // they're invoked.
-      '-e', 'vector',
-      '-e', 'pg_trgm',
-      '-e', 'pgcrypto',
-      ...EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
-    ], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const dump = spawn(dumpCommand, dumpArgs, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
