@@ -1571,11 +1571,14 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
     // lost teardown re-created the half-terminal shape (ended_by='signal',
     // ended_at NULL) that the pre-pinned freshness guard then read as a live
     // binding — 409-ing the owner's own successor (row 18422, measured twice).
+    // Native startup can itself emit MCP presence before a keyed resumer is
+    // ready. Only that resumer may finalize its lease; generic activity must
+    // leave both the reservation and terminal evidence intact. Keep this on
+    // the UPDATE, so a concurrent acquire is rechecked under the row lock.
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
-             started_at = now(), shutdown_accepted_at = NULL,
-             resume_claim_key = NULL, resume_claimed_at = NULL
+             started_at = now(), shutdown_accepted_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
           WHERE coord_owner_id = ${coordOwnerId}
@@ -1583,6 +1586,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
           ORDER BY started_at DESC
           LIMIT 1
        )
+         AND resume_claim_key IS NULL
       RETURNING id
     `;
     return rows.length > 0;

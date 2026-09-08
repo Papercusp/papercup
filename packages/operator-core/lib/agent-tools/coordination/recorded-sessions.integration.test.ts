@@ -372,6 +372,22 @@ describe('explicit resume reservation lifecycle (lossless handoff)', () => {
 });
 
 describe('reactivateAdvSessionByOwner (non-exclusive genuine-activity repair)', () => {
+  it.each(['claude', 'omp', 'codex'])('%s startup activity preserves a keyed resume reservation', async (agent) => {
+    const owner = `s-owner-reserved-${agent}`;
+    await seedAdv({ coordOwnerId: owner, agent, ended: true });
+    const [row] = await admin`SELECT id, ended_at FROM harness_shared.adv_sessions WHERE coord_owner_id = ${owner}`;
+    const key = `pui-resume-${row.id}`;
+    expect(await acquireAdvSessionResume(row.id, key, 300)).toMatchObject({ acquired: true });
+
+    // MCP startup itself emits genuine presence before engine readiness. That
+    // activity must not steal the explicit launcher's single-writer lease.
+    expect(await reactivateAdvSessionByOwner(owner)).toBe(false);
+    const [reserved] = await admin`
+      SELECT ended_at, resume_claim_key FROM harness_shared.adv_sessions WHERE id = ${row.id}`;
+    expect(reserved).toMatchObject({ ended_at: row.ended_at, resume_claim_key: key });
+    expect(await finalizeAdvSessionResume(row.id, key)).toBe(true);
+  });
+
   it('lets concurrent repairs settle safely, then degrades to an already-live no-op', async () => {
     const owner = 's-owner-repair';
     await seedAdv({ coordOwnerId: owner, ended: true });
