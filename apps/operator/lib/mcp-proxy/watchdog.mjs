@@ -53,8 +53,21 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { MCP_PROXY_LOCAL_HEALTH_PATH, MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEADROOM_MS } from './budgets.mjs';
 import { samplePgBouncerPools, SAMPLE_LOG_FILE as POOL_SAMPLE_LOG_FILE, MIN_SAMPLE_INTERVAL_MS as POOL_SAMPLE_MIN_INTERVAL_MS } from './pgbouncer-pool-sample.mjs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { EXTERNAL_SCHEDULES } from '../../../../packages/operator-core/lib/schedule-descriptors.mjs';
+
+const execFileAsync = promisify(execFile);
+
+async function runCommand(command, args, options = {}) {
+  try {
+    const { stdout } = await execFileAsync(command, args, options);
+    return { err: null, stdout: String(stdout ?? '') };
+  } catch (error) {
+    return { err: error, stdout: String(error?.stdout ?? '') };
+  }
+}
 
 const PORT = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PORT) || 9071;
 const POLL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POLL_MS) || EXTERNAL_SCHEDULES.mcpProxyWatchdogPoll.defaultIntervalMs;
@@ -93,6 +106,51 @@ const RATE_WINDOW_MS = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_RATE_WIND
 const RATE_THRESHOLD = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_RATE_THRESHOLD) || 3;
 const MAX_RESTARTS_PER_HR = Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_MAX_RESTARTS_HR) || 6;
 const UNIT = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_UNIT || 'papercup-mcp-proxy';
+const INTEGRATION_ROOT =
+  process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() ||
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const PTOOL_SCRIPT =
+  process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PTOOL_SCRIPT ||
+  join(INTEGRATION_ROOT, 'apps/operator/scripts/ptool.mjs');
+
+/**
+ * The proxy process tsx-loads these runtime paths from the integration tree. Keep this
+ * list scoped to the proxy itself: the watchdog lives beside the proxy but changing the
+ * watchdog must not make it restart the proxy it is supervising. The service-health
+ * detector intentionally uses the broader directory for diagnosis; this narrower list
+ * is the activation safety boundary.
+ */
+export const MCP_PROXY_COMMITTED_HOT_PATHS = Object.freeze([
+  'apps/operator/lib/mcp-proxy',
+  'apps/operator/bin/mcp-proxy.ts',
+]);
+const MCP_PROXY_COMMITTED_HOT_PATH_SOURCE_PATHS = Object.freeze([
+  ':(glob)apps/operator/lib/mcp-proxy/**/*.ts',
+  ':(glob)apps/operator/lib/mcp-proxy/**/*.mjs',
+  ':(glob)apps/operator/lib/mcp-proxy/**/*.js',
+  'apps/operator/bin/mcp-proxy.ts',
+]);
+const MCP_PROXY_COMMITTED_HOT_PATH_TEST_EXCLUSIONS = Object.freeze([
+  ':(exclude,glob)**/*.test.ts',
+  ':(exclude,glob)**/*.test.tsx',
+  ':(exclude,glob)**/*.spec.ts',
+  ':(exclude,glob)**/*.spec.tsx',
+  ':(exclude,glob)**/__tests__/**',
+  ':(exclude)apps/operator/lib/mcp-proxy/watchdog.mjs',
+  ':(exclude)apps/operator/lib/mcp-proxy/watchdog.d.mts',
+]);
+const MCP_PROXY_DIRTY_PATH_EXCLUSIONS = Object.freeze([
+  ':(exclude)apps/operator/lib/mcp-proxy/watchdog.mjs',
+  ':(exclude)apps/operator/lib/mcp-proxy/watchdog.d.mts',
+  ':(exclude)apps/operator/lib/mcp-proxy/watchdog.test.ts',
+]);
+/** A git read + cgroup-free coordinated restart is much less frequent than liveness polling. */
+const HOT_PATH_ACTIVATION_CHECK_MS =
+  Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HOT_PATH_ACTIVATION_CHECK_MS) || 5 * 60_000;
+/** Let active proxy calls drain, but never use an unsafe override to kill a peer's call. */
+const HOT_PATH_RESTART_DRAIN_SEC =
+  Number(process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_HOT_PATH_RESTART_DRAIN_SEC) || 30;
+const HOT_PATH_PTOOL_TIMEOUT_MS = 30_000 + HOT_PATH_RESTART_DRAIN_SEC * 1_000;
 /** Durable, journald-INDEPENDENT decision log — see the bg-host / inference-gateway watchdogs'
  *  identical rationale (EI-2434: journald's stdout-socket capture was itself observed wedged). */
 const LOG_FILE = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_LOG || join(homedir(), '.papercusp', 'mcp-proxy-watchdog.log');
@@ -249,6 +307,243 @@ const log = (m) => {
     /* durable log unavailable (perm/disk) — console.log remains the fallback; never let logging crash the watchdog */
   }
 };
+
+/** Pure, fail-closed activation verdict for committed proxy code (EI-22647232817982385).
+ * A restart is allowed only when the current generation is known, a committed runtime
+ * change is newer than that generation, and the relevant working-tree paths are clean.
+ * Unknown evidence never becomes permission to restart. */
+export function evaluateMcpProxyHotPathActivation({
+  activeForSec,
+  latestCommitMs,
+  latestCommitHash,
+  nowMs,
+  dirtyEntries,
+}) {
+  if (activeForSec == null || !Number.isFinite(activeForSec) || activeForSec < 0) {
+    return { activate: false, code: 'generation_unknown' };
+  }
+  if (nowMs == null || !Number.isFinite(nowMs) || nowMs <= 0) {
+    return { activate: false, code: 'clock_unknown' };
+  }
+  if (
+    latestCommitMs == null ||
+    !Number.isFinite(latestCommitMs) ||
+    latestCommitMs <= 0 ||
+    typeof latestCommitHash !== 'string' ||
+    latestCommitHash.trim() === ''
+  ) {
+    return { activate: false, code: 'commit_unknown' };
+  }
+  if (latestCommitMs > nowMs) {
+    return { activate: false, code: 'commit_time_future' };
+  }
+  const bootMs = nowMs - activeForSec * 1000;
+  if (!Number.isFinite(bootMs) || bootMs < 0) {
+    return { activate: false, code: 'generation_unknown' };
+  }
+  if (latestCommitMs <= bootMs) {
+    return { activate: false, code: 'generation_current', bootMs, latestCommitMs, latestCommitHash };
+  }
+  if (!Array.isArray(dirtyEntries)) {
+    return { activate: false, code: 'cleanliness_unknown', bootMs, latestCommitMs, latestCommitHash };
+  }
+  if (dirtyEntries.length > 0) {
+    return {
+      activate: false,
+      code: 'hot_paths_dirty',
+      bootMs,
+      latestCommitMs,
+      latestCommitHash,
+      dirtyCount: dirtyEntries.length,
+      dirtySample: dirtyEntries.slice(0, 5),
+    };
+  }
+  return { activate: true, code: 'activate', bootMs, latestCommitMs, latestCommitHash };
+}
+
+/** Pure throttle/reentrancy guard for the activation read/restart path. */
+export function shouldCheckMcpProxyHotPathActivation({ inFlight, lastCheckMs, nowMs, intervalMs }) {
+  if (inFlight === true) return false;
+  if (![lastCheckMs, nowMs, intervalMs].every(Number.isFinite)) return false;
+  if (intervalMs < 0 || nowMs < lastCheckMs) return false;
+  return lastCheckMs === 0 || nowMs - lastCheckMs >= intervalMs;
+}
+
+/** Read committed proxy changes and current dirtiness. Every missing signal is returned as
+ * null/unknown so the caller can fail closed instead of manufacturing a clean tree. */
+export async function readMcpProxyHotPathState(deps = {}) {
+  const shImpl = deps.sh ?? runCommand;
+  let root = deps.root ?? process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() ?? null;
+  if (!root) {
+    const rootRead = await shImpl('git', ['-C', dirname(fileURLToPath(import.meta.url)), 'rev-parse', '--show-toplevel'], {
+      timeout: 3000,
+    });
+    if (rootRead.err || !String(rootRead.stdout).trim()) {
+      return { root: null, latestCommitMs: null, latestCommitHash: null, dirtyEntries: null, error: 'root_unknown' };
+    }
+    root = String(rootRead.stdout).trim();
+  }
+
+  const [commitRead, dirtyRead] = await Promise.all([
+    shImpl(
+      'git',
+      [
+        '-C',
+        root,
+        'log',
+        '-1',
+        '--format=%ct%x00%H',
+        '--',
+        ...MCP_PROXY_COMMITTED_HOT_PATH_SOURCE_PATHS,
+        ...MCP_PROXY_COMMITTED_HOT_PATH_TEST_EXCLUSIONS,
+      ],
+      { timeout: 3000, cwd: root, maxBuffer: 4 * 1024 * 1024 },
+    ),
+    shImpl(
+      'git',
+      ['-C', root, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...MCP_PROXY_COMMITTED_HOT_PATHS, ...MCP_PROXY_DIRTY_PATH_EXCLUSIONS],
+      { timeout: 3000, cwd: root, maxBuffer: 4 * 1024 * 1024 },
+    ),
+  ]);
+
+  let latestCommitMs = null;
+  let latestCommitHash = null;
+  if (!commitRead.err) {
+    const [epochSec, hash] = String(commitRead.stdout).trim().split('\0');
+    const parsedMs = Number(epochSec) * 1000;
+    if (Number.isFinite(parsedMs) && parsedMs > 0 && hash?.trim()) {
+      latestCommitMs = parsedMs;
+      latestCommitHash = hash.trim();
+    }
+  }
+  const dirtyEntries = dirtyRead.err
+    ? null
+    : String(dirtyRead.stdout)
+        .split('\0')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+  return {
+    root,
+    latestCommitMs,
+    latestCommitHash,
+    dirtyEntries,
+    error: commitRead.err ? 'commit_unknown' : dirtyRead.err ? 'cleanliness_unknown' : null,
+  };
+}
+
+async function mcpProxyActiveForSec(deps = {}) {
+  const readFile = deps.readFile ?? readFileSync;
+  const shImpl = deps.sh ?? runCommand;
+  let uptimeSec;
+  try {
+    uptimeSec = Number.parseFloat(String(readFile('/proc/uptime', 'utf8')).trim().split(/\s+/)[0]);
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(uptimeSec)) return null;
+  const result = await shImpl('systemctl', ['--user', 'show', UNIT, '-p', 'ActiveEnterTimestampMonotonic', '--value'], {
+    timeout: 3000,
+  });
+  if (result.err) return null;
+  const activeMonoUsec = Number(result.stdout.trim());
+  if (!Number.isFinite(activeMonoUsec) || activeMonoUsec <= 0) return null;
+  const activeForSec = uptimeSec - activeMonoUsec / 1_000_000;
+  return activeForSec >= 0 ? activeForSec : null;
+}
+
+function parsePtoolJson(stdout) {
+  const raw = String(stdout ?? '').trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    for (const line of raw.split('\n').reverse()) {
+      try {
+        return JSON.parse(line);
+      } catch {
+        /* launcher prelude — keep looking */
+      }
+    }
+    return null;
+  }
+}
+
+/** Invoke the existing coordinated restart surface; never bypass it with raw systemctl. */
+export async function requestMcpProxyHotPathRestart(latestCommitHash, deps = {}) {
+  const shImpl = deps.sh ?? runCommand;
+  const ptoolScript = deps.ptoolScript ?? PTOOL_SCRIPT;
+  const shortHash = String(latestCommitHash ?? 'unknown').slice(0, 12);
+  const args = {
+    target: 'mcp-proxy',
+    confirm: true,
+    authorize: true,
+    max_drain_sec: HOT_PATH_RESTART_DRAIN_SEC,
+    reason: `auto-activate committed mcp-proxy hot-path ${shortHash}; clean tree and known generation`,
+  };
+  const run = await shImpl(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
+    stdin: JSON.stringify(args),
+    timeout: HOT_PATH_PTOOL_TIMEOUT_MS,
+  });
+  if (run.err) return { ok: false, restarted: false, coalesced: false, code: 'ptool_failed', error: run.err.message };
+  const body = parsePtoolJson(run.stdout);
+  if (!body || body.ok !== true) {
+    return { ok: false, restarted: false, coalesced: false, code: body?.reason ?? 'ptool_result_unknown', body };
+  }
+  return {
+    ok: true,
+    restarted: body.restarted === true,
+    coalesced: body.coalesced === true,
+    code: body.restarted === true ? 'restarted' : body.coalesced === true ? 'coalesced' : 'no_restart',
+    body,
+  };
+}
+
+let hotPathActivationCheckInFlight = false;
+let lastHotPathActivationCheckMs = 0;
+let lastHotPathActivationDecisionKey = null;
+
+async function maybeActivateMcpProxyHotPathCode() {
+  const checkStartedAtMs = Date.now();
+  if (!shouldCheckMcpProxyHotPathActivation({
+    inFlight: hotPathActivationCheckInFlight,
+    lastCheckMs: lastHotPathActivationCheckMs,
+    nowMs: checkStartedAtMs,
+    intervalMs: HOT_PATH_ACTIVATION_CHECK_MS,
+  })) return { restartRequested: false, code: 'throttled_or_in_flight' };
+  hotPathActivationCheckInFlight = true;
+  lastHotPathActivationCheckMs = checkStartedAtMs;
+  try {
+    const [activeForSec, state] = await Promise.all([mcpProxyActiveForSec(), readMcpProxyHotPathState()]);
+    const verdict = evaluateMcpProxyHotPathActivation({
+      activeForSec,
+      latestCommitMs: state.latestCommitMs,
+      latestCommitHash: state.latestCommitHash,
+      nowMs: Date.now(),
+      dirtyEntries: state.dirtyEntries,
+    });
+    const decisionKey = `${state.latestCommitHash ?? 'unknown'}:${verdict.code}:${verdict.dirtyCount ?? ''}`;
+    if (verdict.code !== 'generation_current' && decisionKey !== lastHotPathActivationDecisionKey) {
+      lastHotPathActivationDecisionKey = decisionKey;
+      const dirty = verdict.dirtySample?.length ? ` dirty=${verdict.dirtySample.join(' | ')}` : '';
+      log(`committed mcp-proxy hot-path activation ${verdict.activate ? 'READY' : 'SUPPRESSED'} (${verdict.code}) commit=${state.latestCommitHash?.slice(0, 12) ?? 'UNKNOWN'}${dirty}`);
+    }
+    if (!verdict.activate) return { restartRequested: false, code: verdict.code };
+    const reason = `committed mcp-proxy hot-path ${state.latestCommitHash.slice(0, 12)} is newer than the running generation`;
+    if (!admitRestart(reason)) return { restartRequested: false, code: 'restart_suppressed' };
+    const outcome = await requestMcpProxyHotPathRestart(state.latestCommitHash);
+    log(
+      outcome.ok
+        ? `committed mcp-proxy hot-path activation via dev:restart: ${outcome.code} (commit ${state.latestCommitHash.slice(0, 12)})`
+        : `committed mcp-proxy hot-path activation REFUSED/FAILED by dev:restart (${outcome.code}) — monitoring continues`,
+    );
+    return { restartRequested: outcome.restarted === true, code: outcome.code };
+  } catch (error) {
+    log(`committed mcp-proxy hot-path activation probe FAILED CLOSED: ${error?.message ?? String(error)}`);
+    return { restartRequested: false, code: 'probe_failed' };
+  } finally {
+    hotPathActivationCheckInFlight = false;
+  }
+}
 
 /** Pure decision: given how long the proxy has been continuously unreachable, should we restart
  *  now? Exported so the threshold logic is unit-testable without a live poll loop / network. */
@@ -500,27 +795,36 @@ async function probeDataPlane(port) {
   }
 }
 
-function restart(reason) {
+function admitRestart(reason) {
   const now = Date.now();
   if (now - lastRestart < DEBOUNCE_MS) {
     log(`SUPPRESS (debounce ${Math.round((DEBOUNCE_MS - (now - lastRestart)) / 1000)}s left): ${reason}`);
-    return;
+    return false;
   }
   while (restartTimes.length && now - restartTimes[0] > 3_600_000) restartTimes.shift();
   if (restartTimes.length >= MAX_RESTARTS_PER_HR) {
     log(`CIRCUIT OPEN: ${restartTimes.length} restarts in the last hour >= cap ${MAX_RESTARTS_PER_HR} — NOT restarting (${reason}). Manual attention needed.`);
-    return;
+    return false;
   }
   lastRestart = now;
   restartTimes.push(now);
+  return true;
+}
+
+function restart(reason) {
+  if (!admitRestart(reason)) return false;
   log(`WEDGED -> restarting ${UNIT}: ${reason}`);
   execFile('systemctl', ['--user', 'restart', UNIT], (err) =>
     log(err ? `restart FAILED: ${err.message}` : 'restart issued OK'),
   );
   unreachableSince = 0;
+  return true;
 }
 
 async function poll() {
+  // Code drift is a separate, throttled lane. It runs in the existing watchdog cadence so
+  // there is no second unregistered timer, and it never delays the liveness probe.
+  void maybeActivateMcpProxyHotPathCode().catch((e) => log(`hot-path activation poll error: ${e.message}`));
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 5_000);
@@ -754,6 +1058,10 @@ function start() {
     `human escalation (EI-19415174699106397) — every CRITICAL verdict also fires coord:escalate ` +
       `(conditionKey-coalesced, best-effort, retried each throttle window) so a sustained outage ` +
       `pages a human instead of only appending to this log file`,
+  );
+  log(
+    `committed mcp-proxy hot-path activation (EI-22647232817982385) — checks every ${HOT_PATH_ACTIVATION_CHECK_MS}ms; ` +
+      `requires a newer committed clean runtime tree and uses coordinated dev:restart with a ${HOT_PATH_RESTART_DRAIN_SEC}s call drain`,
   );
   if (probeArgs.invalid) {
     // Loud at startup rather than once per 10min throttle window: every poll from here on is a

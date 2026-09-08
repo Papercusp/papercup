@@ -115,6 +115,31 @@ const openArgs = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('coord:handoff — open schema contract', () => {
+  it.each([
+    {},
+    { to: ['su-bee-1'] },
+    { summary: 'pick up the work' },
+    { to: ['su-bee-1'], summary: '' },
+    { accept_msg_id: '' },
+  ])('rejects incomplete opens before any handler side effects: %j', (args) => {
+    const parsed = handoff.args.safeParse(args);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual([
+        expect.objectContaining({ code: 'custom', message: expect.stringContaining('open-handoff requires to[], summary') }),
+      ]);
+    }
+  });
+
+  it.each([
+    { accept_msg_id: 'existing-handoff' },
+    { accept_msg_id: 'existing-handoff', summary: '', note: 'Accepted' },
+    { accept_msg_id: '', to: ['su-bee-1'], summary: 'open instead' },
+    { to: [], summary: 'existing empty recipient-array semantics' },
+  ])('preserves accept precedence and previously valid input semantics: %j', (args) => {
+    expect(handoff.args.safeParse(args).success).toBe(true);
+  });
+
   it('accepts ad-hoc opens without plan_slug while preserving the plan-scoped shape', () => {
     expect(
       handoff.args.safeParse({ to: ['su-bee-1'], summary: 'pick up the registry work' }).success,

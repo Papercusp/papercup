@@ -21,6 +21,9 @@ import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
 import { runFlushGate } from '../../../enforcement-gate-io';
 import { trackDetached } from '../../../detached-imports';
 
+const OPEN_HANDOFF_REQUIRED =
+  'open-handoff requires to[], summary; plan_slug is optional for ad-hoc handoffs';
+
 /**
  * WI-4165: inline the named plan-items' own bodies into a handoff's `body`
  * before it is written (deref-at-delivery, ref-hydrate.ts — the same
@@ -82,6 +85,15 @@ export default defineTool({
       .optional()
       .describe('WI-4165: plan-item ids (P-NNN) of `plan_slug` handed off with this note — each one\'s own body is inlined into the delivered `body`, bounded, so the receiver reads WHAT to pick up without re-fetching the plan.'),
     note: z.string().optional().describe('Free-form note when accepting.'),
+  }).superRefine((args, ctx) => {
+    // Match the handler's existing truthiness and accept precedence. In
+    // particular, accepting does not require any open-handoff fields.
+    if (!args.accept_msg_id && (!args.to || !args.summary)) {
+      ctx.addIssue({ code: 'custom', message: OPEN_HANDOFF_REQUIRED });
+    }
+  }).meta({
+    'x-papercusp-call-constraint':
+      `unless accept_msg_id is nonempty (accept takes precedence): ${OPEN_HANDOFF_REQUIRED}`,
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -128,7 +140,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'missing_fields',
-              detail: 'open-handoff requires to[], summary; plan_slug is optional for ad-hoc handoffs',
+              detail: OPEN_HANDOFF_REQUIRED,
             }),
           },
         ],
