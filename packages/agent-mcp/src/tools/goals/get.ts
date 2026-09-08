@@ -17,6 +17,10 @@ import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals
 import { readGoalPortfolioThroughput } from '@papercusp/operator-core/lib/goals/portfolio-throughput';
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { goalPackageUpdateInfo } from '@papercusp/operator-core/lib/goals/package-update';
+import {
+  readGoalHistoryContext,
+  resolvePriorAttemptRefs,
+} from '@papercusp/operator-core/lib/prior-attempt-context';
 import { readGoalReadiness } from './goal-deps';
 import { readGoalLastPause, readGoalPause } from './pause-record';
 import { readGoalHistory } from './history';
@@ -39,6 +43,7 @@ export default defineTool({
   args: z.object({
     id: z.string().min(1),
     detail: z.enum(['summary', 'full']).default('summary'),
+    priorAttemptRefs: z.array(z.string().min(1)).max(20).optional(),
   }),
   async handler(args, ctx) {
     const txDb = drizzle(ctx.tx);
@@ -153,6 +158,16 @@ export default defineTool({
       live: h.live,
       sessionState: h.sessionState,
     }));
+    const requestedHistoryRefs = args.priorAttemptRefs ?? [];
+    const explicitHistoryRead = requestedHistoryRefs.length > 0;
+    const historyContext =
+      args.detail === 'full' || explicitHistoryRead ? await readGoalHistoryContext(goal.id) : undefined;
+    const priorAttemptRecords = explicitHistoryRead
+      ? await resolvePriorAttemptRefs({
+          target: { kind: 'goal', ref: goal.id },
+          rawRefs: requestedHistoryRefs,
+        })
+      : undefined;
     if (args.detail === 'summary') {
       return {
         data: {
@@ -171,6 +186,8 @@ export default defineTool({
           // goals:apply-package-update, never automatic.
           packageUpdate: goalPackageUpdateInfo(metadata),
           portfolioThroughput,
+          ...(historyContext ? { historyContext } : {}),
+          ...(priorAttemptRecords ? { priorAttemptRecords } : {}),
         },
       };
     }
@@ -197,6 +214,8 @@ export default defineTool({
         holders: holderIdentities,
         children,
         history,
+        historyContext,
+        ...(priorAttemptRecords ? { priorAttemptRecords } : {}),
         pause,
         // The archived record of the last pause that has since been resumed —
         // "was this ever held, and by whom" survives the resume.

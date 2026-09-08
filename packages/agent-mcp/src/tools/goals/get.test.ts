@@ -23,6 +23,15 @@ let queriesBuilt = 0;
 const wherePredicates: unknown[] = [];
 let historyRows: unknown[] = [];
 let historyQueries = 0;
+const continuity = vi.hoisted(() => ({
+  read: vi.fn(),
+  resolve: vi.fn(),
+}));
+
+vi.mock('@papercusp/operator-core/lib/prior-attempt-context', () => ({
+  readGoalHistoryContext: (...args: unknown[]) => continuity.read(...args),
+  resolvePriorAttemptRefs: (...args: unknown[]) => continuity.resolve(...args),
+}));
 
 /**
  * The holder liveness `goals:get` sees (P-004). Mutable + reset per test, the
@@ -136,6 +145,17 @@ beforeEach(() => {
   holdersFixture = [];
   historyRows = [];
   historyQueries = 0;
+  continuity.read.mockReset().mockResolvedValue({
+    status: 'available',
+    brief: { fingerprint: 'goal-history-fingerprint' },
+    recovery: { tool: 'goals:get', args: { id: 'g-1', detail: 'full' } },
+  });
+  continuity.resolve.mockReset().mockResolvedValue({
+    schemaVersion: 'prior-attempt-refs-v1',
+    records: [],
+    unresolved: [],
+    fingerprint: 'goal-history-fingerprint',
+  });
 });
 
 /**
@@ -361,6 +381,11 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
         { id: 'g-3', title: 'Child B' },
       ],
       history: { entries: [], truncated: false, limit: 100 },
+      historyContext: {
+        status: 'available',
+        brief: { fingerprint: 'goal-history-fingerprint' },
+        recovery: { tool: 'goals:get', args: { id: 'g-1', detail: 'full' } },
+      },
       pause: null,
       lastPause: null,
       actionable: true,
@@ -369,6 +394,29 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
       // P-018 (WI-41129) — see the note on the summary assertion above.
       packageUpdate: null,
       portfolioThroughput: expect.objectContaining({ assessment: 'not-held', reason: 'not-held' }),
+    });
+  });
+
+  it('resolves omitted goal-history refs through the same canonical compiler', async () => {
+    fixtureQueue = [[GOAL_ROW()], []];
+    continuity.resolve.mockResolvedValue({
+      schemaVersion: 'prior-attempt-refs-v1',
+      records: [{ rawRef: 'WI-1#checkpoint', text: 'full descendant evidence' }],
+      unresolved: [],
+      fingerprint: 'goal-history-fingerprint',
+    });
+
+    const res = await tool.handler(
+      { id: 'g-1', detail: 'full', priorAttemptRefs: ['WI-1#checkpoint'] } as never,
+      CTX() as never,
+    );
+    expect(((res as { data: Record<string, unknown> }).data).priorAttemptRecords).toMatchObject({
+      records: [{ rawRef: 'WI-1#checkpoint', text: 'full descendant evidence' }],
+      unresolved: [],
+    });
+    expect(continuity.resolve).toHaveBeenCalledWith({
+      target: { kind: 'goal', ref: 'g-1' },
+      rawRefs: ['WI-1#checkpoint'],
     });
   });
 

@@ -60,6 +60,10 @@ import {
 } from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
+import {
+  readGoalHistoryContext,
+  type GoalHistoryContext,
+} from '../../prior-attempt-context';
 
 /**
  * The agent's FIRST TURN.
@@ -147,6 +151,8 @@ export function buildGoalKickoffBrief(opts: {
   budgetWindowSec?: number | null;
   /** P-012: server-composed live portfolio projection; omitted for legacy/tests. */
   portfolio?: GoalPortfolioBrief | null;
+  /** Fixed-budget goal-own + descendant continuity, newest authority first. */
+  history?: GoalHistoryContext | null;
   /** Injectable for tests; defaults to the moment the brief is written. */
   writtenAt?: Date;
 }): string {
@@ -190,6 +196,7 @@ export function buildGoalKickoffBrief(opts: {
       : 'CEILING — none declared. Flag before any large spend.',
     spendVisibility,
     ...(opts.portfolio ? ['', renderGoalPortfolioBrief(opts.portfolio)] : []),
+    ...(opts.history ? ['', renderGoalHistoryContext(opts.history)] : []),
     '',
     'Your mode contract governs how to run this, including the mandatory kickoff question.',
     'It arrives in your orient, under `modes[].contract`. If it is NOT there you are not',
@@ -199,6 +206,12 @@ export function buildGoalKickoffBrief(opts: {
   ]
     .filter((l) => l !== '')
     .join('\n');
+}
+
+export const GOAL_HISTORY_CONTEXT_HEADING = 'GOAL HISTORY — own and bounded descendant evidence';
+
+export function renderGoalHistoryContext(history: GoalHistoryContext): string {
+  return [GOAL_HISTORY_CONTEXT_HEADING, JSON.stringify(history)].join('\n');
 }
 
 function err(text: string) {
@@ -803,6 +816,7 @@ export default defineTool({
     // The brief rides the ENV, never a --kickoff= value: free-form text inside
     // the console greeting one-liner gets double-single-quoted and breaks the
     // shell. psu reads PAPERCUSP_KICKOFF_PROMPT as the fresh CLI's first turn.
+    const history = await readGoalHistoryContext(id);
     const env = {
       ...base.env,
       PAPERCUSP_KICKOFF_PROMPT: buildGoalKickoffBrief({
@@ -814,6 +828,7 @@ export default defineTool({
         standing: args.standing ?? false,
         budgetWindowSec: args.budgetWindowSec ?? null,
         portfolio: goalLaunch.goalBrief?.portfolio ?? null,
+        history,
       }),
     };
     const label = `goal · ${args.title.slice(0, 40)}`;

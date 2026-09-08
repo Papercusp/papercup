@@ -16,7 +16,12 @@ import {
   resolveGoalLaunchForGoal,
   type GoalLaunchResolution,
 } from '../../goal-launch-settings';
-import { buildGoalKickoffBrief } from '../../agent-tools/goals/start';
+import {
+  buildGoalKickoffBrief,
+  GOAL_HISTORY_CONTEXT_HEADING,
+  renderGoalHistoryContext,
+} from '../../agent-tools/goals/start';
+import { readGoalHistoryContext } from '../../prior-attempt-context';
 import { launchAgent, type LaunchAgentResult } from '../../launch-agent';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { setMode } from '../../modes/store';
@@ -64,6 +69,7 @@ export interface GoalHolderLaunchDeps {
     requested: Record<string, never>;
   }) => Promise<GoalLaunchResolution>;
   launch: (opts: Parameters<typeof launchAgent>[0]) => Promise<LaunchAgentResult>;
+  readHistory: typeof readGoalHistoryContext;
 }
 
 const GOAL_HOLDER_NEUTRALIZER: AgentIdentity = {
@@ -138,6 +144,7 @@ export async function neutralizeGoalHolderSession(
 const DEFAULT_DEPS: GoalHolderLaunchDeps = {
   resolveGoalLaunch: resolveGoalLaunchForGoal,
   launch: launchAgent,
+  readHistory: readGoalHistoryContext,
 };
 
 function required(value: string | null | undefined, name: string): string {
@@ -190,12 +197,18 @@ export async function launchGoalHolderSession(
   // goals:start/startGoalById without another DB read or another prompt copy.
   const explicitKickoff = input.kickoffPrompt?.trim();
   const portfolioBlock = resolved.goalBrief?.portfolio ? renderGoalPortfolioBrief(resolved.goalBrief.portfolio) : null;
+  const history = await deps.readHistory(goalId);
+  const historyBlock = renderGoalHistoryContext(history);
   const kickoffPrompt = explicitKickoff
-    ? portfolioBlock && !explicitKickoff.includes('GOAL PORTFOLIO SNAPSHOT —')
-      ? `${input.kickoffPrompt!}\n\n${portfolioBlock}`
-      : input.kickoffPrompt!
+    ? [
+        input.kickoffPrompt!,
+        portfolioBlock && !explicitKickoff.includes('GOAL PORTFOLIO SNAPSHOT —') ? portfolioBlock : null,
+        !explicitKickoff.includes(GOAL_HISTORY_CONTEXT_HEADING) ? historyBlock : null,
+      ]
+        .filter(Boolean)
+        .join('\n\n')
     : resolved.goalBrief
-      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief })
+      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief, history })
       : null;
   if (!kickoffPrompt) {
     throw new Error(

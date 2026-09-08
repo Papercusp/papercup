@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContainmentTree } from './containment-tree';
 import type { WorkItem } from './work-items';
+import type { GoalHistoryEntry } from '@papercusp/agent-mcp/goal-history';
 
 const reads = vi.hoisted(() => ({ tree: vi.fn(), thread: vi.fn() }));
 vi.mock('./containment-tree', async (original) => ({
@@ -15,6 +16,7 @@ vi.mock('./effort-thread', async (original) => ({
 import {
   collectPriorAttempts,
   getContainmentRollupBrief,
+  readGoalHistoryContext,
   readPlanHistoryContext,
   resolvePriorAttemptRefs,
 } from './prior-attempt-context';
@@ -65,6 +67,13 @@ function dependencies() {
     thread: vi.fn(async () => null),
     lifecycle: vi.fn(async () => null),
     priorWork: vi.fn(async () => null),
+    goalHistory: vi.fn(
+      async (): Promise<{ entries: GoalHistoryEntry[]; truncated: boolean; limit: number }> => ({
+        entries: [],
+        truncated: false,
+        limit: 100,
+      }),
+    ),
   };
 }
 beforeEach(() => {
@@ -169,5 +178,52 @@ describe('plan history production projection', () => {
       expect.objectContaining({ direction: 'up' }),
     );
     expect(deps.checkpoint).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('goal history production projection', () => {
+  it('delivers goal-owned audit history plus bounded plan/item descendants with goal recovery', async () => {
+    const goalTarget = { kind: 'goal' as const, ref: 'goal-history' };
+    reads.tree.mockResolvedValue({
+      root: { ...goalTarget, depth: 0 },
+      ancestors: [],
+      descendants: [
+        { kind: 'plan', ref: 'plan-child', harness: 'papercusp', depth: 1 },
+        { kind: 'work_item', ref: 'WI-1', harness: 'papercusp', depth: 2 },
+      ],
+      omittedDescendants: [{ kind: 'work_item', ref: 'WI-25', harness: 'papercusp' }],
+      omittedDescendantsTruncated: false,
+      fanOut: { admitted: 2, total: 25, cap: 24, truncated: true },
+      descended: true,
+    });
+    const deps = dependencies();
+    deps.goalHistory.mockResolvedValue({
+      entries: [
+        {
+          id: 'goal-history-1',
+          kind: 'amendment',
+          author: 'su-goal',
+          at: '2026-09-07T00:00:00Z',
+          reason: 'new evidence corrected the stop condition',
+          reasonSource: 'caller',
+          changes: [{ field: 'killCriterion', before: 'old', after: 'current' }],
+        },
+      ],
+      truncated: false,
+      limit: 100,
+    });
+
+    const history = await readGoalHistoryContext(goalTarget.ref, (opts) =>
+      getContainmentRollupBrief(opts, deps as never),
+    );
+    const serialized = JSON.stringify(history);
+    expect(history.status).toBe('available');
+    expect(serialized).toContain('new evidence corrected the stop condition');
+    expect(serialized).toContain('Keep the current correction');
+    expect(serialized).toContain('preserve the plan lesson');
+    expect(serialized).toContain('WI-1 repaired the original defect');
+    expect(history.brief?.fanOut).toMatchObject({ total: 25, truncated: true });
+    expect(reads.tree).toHaveBeenCalledWith(goalTarget, expect.objectContaining({ direction: 'down', maxDescendants: 24 }));
+    expect(history.recovery).toEqual({ tool: 'goals:get', args: { id: goalTarget.ref, detail: 'full' } });
   });
 });

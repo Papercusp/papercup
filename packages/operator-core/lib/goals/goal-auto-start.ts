@@ -48,6 +48,7 @@ import { resolveGoalLaunchForGoal } from '../goal-launch-settings';
 import { activeWorkspaceId } from '../workspace-registry';
 import { setMode } from '../modes/store';
 import { getOrgPg } from '@papercusp/db-org';
+import { readGoalHistoryContext } from '../prior-attempt-context';
 
 export interface AutoStartGoalInput {
   /** Workspace to file the goal under (default: the active workspace). */
@@ -299,6 +300,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   }
   command = injectLaunchedByArg(command, launchedBy).command;
 
+  const history = await readGoalHistoryContext(id);
   const env = {
     ...base.env,
     PAPERCUSP_KICKOFF_PROMPT: buildGoalKickoffBrief({
@@ -308,6 +310,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       budgetCents: input.budgetCents,
       body: input.body ?? null,
       portfolio: goalLaunch.goalBrief?.portfolio ?? null,
+      history,
     }),
   };
   const logDir = join(papercuspPathForWorkspace(workspaceId), 'fleet-logs');

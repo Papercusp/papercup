@@ -552,6 +552,26 @@ describe('the kickoff brief', () => {
     expect(brief).toContain('1. Delegate the next worklist item.');
   });
 
+  it('puts current goal authority before the bounded own/descendant history', () => {
+    const history = {
+      status: 'available',
+      brief: { fingerprint: 'goal-history-fingerprint', fanOut: { admitted: 2, total: 2, cap: 24, truncated: false } },
+      recovery: { tool: 'goals:get', args: { id: 'g-1', detail: 'full' } },
+    } as never;
+    const brief = buildGoalKickoffBrief({
+      goalId: 'g-1',
+      title: 'Ship safely',
+      killCriterion: 'the current stop condition',
+      history,
+    });
+
+    expect(brief).toContain('GOAL HISTORY — own and bounded descendant evidence');
+    expect(brief).toContain('goal-history-fingerprint');
+    expect(brief.indexOf('KILL THIS IF — the current stop condition')).toBeLessThan(
+      brief.indexOf('GOAL HISTORY — own and bounded descendant evidence'),
+    );
+  });
+
   it('states the outcome, the kill criterion, the ceiling and spend visibility boundary', () => {
     const brief = buildGoalKickoffBrief({
       goalId: 'ship-paid-app-3f9a1c',

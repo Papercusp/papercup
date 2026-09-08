@@ -10,6 +10,8 @@
  * authority or make the omitted source impossible to retrieve.
  */
 import { createHash } from 'node:crypto';
+import { getOrgPg } from '@papercusp/db-org';
+import { readGoalHistory, type GoalHistoryEntry } from '@papercusp/agent-mcp/goal-history';
 import { getPlanRow } from './agent-tools/plans/source';
 import { parsePlan } from './agent-tools/plans/parser';
 import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
@@ -758,6 +760,12 @@ interface CollectorDeps {
   journal?: typeof getWorkItemCheckpointJournal;
   lifecycle: typeof getWorkItemLifecycleHistory;
   priorWork: typeof getClaimTimePriorWorkHint;
+  /** Goal-owned amendments/evidence/writes from the existing audit-log projection. */
+  goalHistory?: (input: {
+    workspaceId: string;
+    goalId: string;
+    limit?: number;
+  }) => Promise<{ entries: GoalHistoryEntry[]; truncated: boolean; limit: number }>;
 }
 
 const DEFAULT_DEPS: CollectorDeps = {
@@ -772,7 +780,36 @@ const DEFAULT_DEPS: CollectorDeps = {
   journal: getWorkItemCheckpointJournal,
   lifecycle: getWorkItemLifecycleHistory,
   priorWork: getClaimTimePriorWorkHint,
+  goalHistory: ({ workspaceId, goalId, limit }) =>
+    readGoalHistory(getOrgPg().sql, { workspaceId, goalId, limit }),
 };
+
+function goalHistoryText(entry: GoalHistoryEntry): string {
+  if (entry.kind === 'amendment') {
+    return [
+      `Goal amendment: ${entry.reason ?? 'reason not recorded'}`,
+      entry.changes?.length ? `Changes: ${JSON.stringify(entry.changes)}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (entry.kind === 'write') {
+    return [
+      `Goal write (${entry.writeKind ?? 'unknown'} by ${entry.actorClass ?? 'unknown'}).`,
+      entry.detail,
+      entry.refs?.length ? `Refs: ${entry.refs.join(', ')}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+  return [
+    `Goal ${entry.kind}: ${entry.summary ?? ''}`,
+    entry.detail,
+    entry.refs?.length ? `Refs: ${entry.refs.join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
 function planItemIdsOf(item: WorkItem): string[] {
   if (item.sourcePlanItemIds?.length) return item.sourcePlanItemIds;
@@ -852,7 +889,7 @@ export async function collectPriorAttempts(
   const planItemId = options.planItemId ?? null;
   const planHarness = ancestorPlan?.harness ?? harness ?? null;
 
-  const [plan, currentItem, allSpecs, targetEdges] = await Promise.all([
+  const [plan, currentItem, allSpecs, targetEdges, goalHistory] = await Promise.all([
     planSlug
       ? deps.getPlan(planSlug, harness ? { harnessSlug: harness } : {}).catch(() => failed('plan', null))
       : Promise.resolve(null),
@@ -863,6 +900,11 @@ export async function collectPriorAttempts(
     planSlug
       ? deps.edges({ harnessSlug: harness, planSlug, workItemId: options.workItemId }).catch(() => [])
       : Promise.resolve([]),
+    target.kind === 'goal' && workspaceId && deps.goalHistory
+      ? deps
+          .goalHistory({ workspaceId, goalId: target.ref, limit: options.maxThreadPosts ?? 25 })
+          .catch(() => failed('goal-history', { entries: [], truncated: false, limit: options.maxThreadPosts ?? 25 }))
+      : Promise.resolve({ entries: [], truncated: false, limit: options.maxThreadPosts ?? 25 }),
   ]);
   const derivedSpecIds = targetEdges.map((edge) => edge.specId);
   const fallbackSpecIds = planItemId
@@ -955,6 +997,66 @@ export async function collectPriorAttempts(
       });
     }
   }
+  for (const entry of goalHistory.entries) {
+    const text = goalHistoryText(entry);
+    sources.push({
+      scope: 'goal-wide',
+      authority: retractionText(text) ? 'retraction' : 'comment',
+      rawRef: `goal:${target.ref}#history:${entry.id}`,
+      at: entry.at,
+      actor: entry.author,
+      text,
+      depth: 0,
+    });
+  }
+
+  // A goal read owns the history of its admitted child PLANS as well as their
+  // work items. The tree already selected/capped these nodes nearest-first; use
+  // exactly that population so plan history cannot bypass fan-out accounting.
+  // Each failed plan/thread leg is named through onReadFailure, preserving the
+  // distinction between an honestly empty child and an unreadable one.
+  await Promise.all(
+    (tree?.descendants ?? [])
+      .filter((node) => node.kind === 'plan')
+      .map(async (node) => {
+        const childHarness = node.harness ?? harness ?? null;
+        if (!childHarness) {
+          options.onReadFailure?.(`plan:${node.ref}:harness-unresolved`);
+          return;
+        }
+        const [childPlan, posts] = await Promise.all([
+          deps
+            .getPlan(node.ref, { harnessSlug: childHarness })
+            .catch(() => failed(`plan:${node.ref}`, null)),
+          readEffortThread(
+            { kind: 'plan', ref: node.ref, harness: childHarness },
+            options.maxThreadPosts ?? 25,
+            workspaceId || undefined,
+          ).catch(() => failed(`plan-thread:${node.ref}`, [])),
+        ]);
+        if (!childPlan) options.onReadFailure?.(`plan:${node.ref}:unavailable`);
+        for (const decision of childPlan ? parsePlan(childPlan.content).decisions : []) {
+          sources.push({
+            scope: 'goal-wide',
+            authority: 'plan-decision',
+            rawRef: `${node.ref}#${decision.id}`,
+            text: `${decision.title}\n${decision.body}`,
+            depth: node.depth,
+          });
+        }
+        for (const post of posts) {
+          sources.push({
+            scope: 'goal-wide',
+            authority: retractionText(post.body) ? 'retraction' : 'comment',
+            rawRef: `plan:${node.ref}#comment:${post.id}`,
+            at: post.created_ts,
+            actor: post.author_id,
+            text: post.body,
+            depth: node.depth,
+          });
+        }
+      }),
+  );
 
   // P-017's CAPTURE SURFACE, read back. A note attached at the plan or goal level
   // lives on that level's own thread; without these two reads the write side would
@@ -1307,6 +1409,23 @@ export async function readPlanHistoryContext(
 }
 
 export type PlanHistoryContext = Awaited<ReturnType<typeof readPlanHistoryContext>>;
+
+/** One fixed-budget production projection for a goal read or goal-holder brief. */
+export async function readGoalHistoryContext(
+  goalId: string,
+  read: typeof getContainmentRollupBrief = getContainmentRollupBrief,
+) {
+  const recovery = { tool: 'goals:get', args: { id: goalId, detail: 'full' } };
+  const brief = await read({
+    target: { kind: 'goal', ref: goalId },
+    budget: { maxChars: 6_000, maxRecords: 16, maxTextChars: 400 },
+    maxDescendants: 24,
+    timeoutMs: 2_500,
+  }).catch(() => null);
+  return { status: brief?.status ?? 'unknown', brief, recovery };
+}
+
+export type GoalHistoryContext = Awaited<ReturnType<typeof readGoalHistoryContext>>;
 
 export interface PriorAttemptRefResolution {
   schemaVersion: 'prior-attempt-refs-v1';

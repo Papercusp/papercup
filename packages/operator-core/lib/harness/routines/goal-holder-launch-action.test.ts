@@ -89,6 +89,14 @@ function deps(resolved: GoalLaunchResolution = resolution()): GoalHolderLaunchDe
   return {
     resolveGoalLaunch: vi.fn(async () => resolved),
     launch: vi.fn(async () => ({ ok: true, ownerId: 'su-new-holder' })),
+    readHistory: vi.fn(
+      async (goalId: string) =>
+        ({
+          status: 'available',
+          brief: { fingerprint: `history-for-${goalId}` },
+          recovery: { tool: 'goals:get', args: { id: goalId, detail: 'full' } },
+        }) as never,
+    ),
   };
 }
 
@@ -145,7 +153,10 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
       { workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1', kickoffPrompt: 'first-turn brief' },
       d,
     );
-    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ kickoffPrompt: 'first-turn brief' }));
+    const kickoff = d.launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
+    expect(kickoff).toContain('first-turn brief');
+    expect(kickoff).toContain('GOAL HISTORY — own and bounded descendant evidence');
+    expect(kickoff).toContain('history-for-goal-1');
   });
 
   it('appends the canonical portfolio to an explicit recovery kickoff exactly once', async () => {
