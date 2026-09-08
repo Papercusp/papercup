@@ -6,6 +6,7 @@ import type postgres from 'postgres';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import { runWithWorkspace } from '../../workspace-als';
 import { metadataClauseWrite, metadataInputSchema, metadataPlanSlug } from './coordination-metadata-fixtures';
+import { parsePlan } from './parser';
 
 const WS = 'coord-metadata-preflight-test';
 const A = 'metadata-a';
@@ -66,7 +67,10 @@ beforeEach(async () => {
 const inWorkspace = <T>(fn: () => T): T => runWithWorkspace(WS, fn);
 
 async function plan(harness: string, inputs: object = { harness: A, attempts: 1 }) {
-  const content = `---\ntitle: Metadata fixture\nslug: ${metadataPlanSlug}\nstatus: draft\n---\n\n## Phase\n- [ ] P-001: Submit an event\n`;
+  const content = `---\ntitle: Metadata fixture\nslug: ${metadataPlanSlug}\nstatus: draft\n---\n\n## Phase\n- **P-001** \`todo\` Submit an event\n`;
+  // Both the plan-body evaluator and persisted item reader must see the same
+  // positive control; a zero-item parse would make refusal assertions vacuous.
+  expect(parsePlan(content).items.map((item) => item.id)).toEqual(['P-001']);
   await h.sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, input_schema, template_data)
