@@ -3334,6 +3334,33 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f.endsWith(".sql.PENDING-CODE-DEPLOY")),
   },
   {
+    // WI-2141163 — P-003's real-Postgres queue recurrence suite was never reached by
+    // the local green-checkpoint: operator-core's ordinary task is unit-layer and the
+    // broad `test:integration` task is opt-in behind `--integration`, which the local
+    // gate does not pass. Keep the remedy focused to the queue contract rather than
+    // turning every affected run into the infeasible full integration sweep.
+    //
+    // The queue test imports `admission.ts` and `queue.ts`, builds its schema from the
+    // shared work-item fixture, and applies migration 986 directly. The superproject
+    // reports edits inside `libs/papercusp` as its bare gitlink, so both that shape and
+    // the explicit nested path are covered. No hostSuiteRatchet is declared: the unit
+    // suite deliberately excludes `*.integration.test.ts` and cannot replace this proof.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:resource-governor-queue",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/lib/resource-governor/admission.ts" ||
+      f === "packages/operator-core/lib/resource-governor/queue.ts" ||
+      f === "packages/operator-core/lib/resource-governor/queue.integration.test.ts" ||
+      f === "packages/operator-core/test/_pg-helpers.ts" ||
+      f === "packages/operator-core/test/_work-items-schema.ts" ||
+      f === "libs/papercusp" ||
+      f === `${MIGRATION_SQL_DIR}/986-resource-governor-work-item-queue-identity.sql`,
+  },
+  {
     // WI-4311 — the D-034 shape again, with the most delayed discovery of the set.
     // The canonical fix (WITH (FORCE) in makeDrop(), libs/test-config/src/pg-migrate.ts)
     // landed 2026-07-12, but four hand-rolled teardown sites kept the old
