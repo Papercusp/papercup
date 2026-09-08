@@ -113,6 +113,7 @@ export function startSuRpcEngine(
   let ready = false;
   let closed = false;
   let failureReported = false;
+  let ompReadinessFailure: string | undefined;
   let ownerTurnId = '';
   let nativeTurnId = '';
   let turnFinished: (() => void) | undefined;
@@ -356,30 +357,45 @@ export function startSuRpcEngine(
       if (!su || !Object.keys(object(su.tools)).length) throw new Error('Codex SU tools are not connected');
       actualModel = string(result.model);
     } else {
-      const state = await peer.request({ type: 'get_state' });
-      const id = string(state.sessionId);
-      if (!id || nativeId() && id !== nativeId()) throw new Error('OMP did not return the requested native identity');
-      const toolNames = Array.isArray(state.dumpTools) ? state.dumpTools.map((tool) => string(object(tool).name)) : [];
-      const promptParts = (Array.isArray(state.systemPrompt) ? state.systemPrompt : [])
-        .filter((part): part is string => typeof part === 'string');
-      // OMP's current runtime mounts connected MCP tools as xd:// devices;
-      // dumpTools lists only top-level tools. The separate generated mapping
-      // section comes from its live MCP route registry. OMP can join it into
-      // the base prompt string instead of returning a separate array entry.
-      const mountedRoutes = promptParts
-        .flatMap((part) => part.split(/^## MCP Tool Routes\r?$/m).slice(1))
-        .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/xd:\/\/[^`\s]+/g) ?? []);
-      const suRoute = mountedRoutes.some((route) => /papercusp[-_]su/i.test(route));
-      // The native route map is a bounded preview and can omit this server.
-      // OMP separately emits server instructions from MCPManager's connected
-      // registry after initialize, including each exact server name. Like
-      // Claude's connected status, this is positive native connection evidence.
-      const connectedServers = promptParts
-        .flatMap((part) => part.split(/^## MCP Server Instructions\r?$/m).slice(1))
-        .flatMap((section) => [...section.split(/^#{1,2} /m, 1)[0].matchAll(/^### ([^\r\n]+)\r?$/gm)]
-          .map((match) => match[1]));
-      if (!toolNames.some((name) => /papercusp/i.test(name)) && !suRoute && !connectedServers.includes('papercusp-su')) {
-        throw new Error(`OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'}; mounted: ${mountedRoutes.slice(0, 8).join(', ') || 'none'})`);
+      let state: RpcFrame;
+      let id = '';
+      let readinessDelayMs = 100;
+      // RPC readiness precedes OMP's asynchronous MCP inventory updates.
+      // Keep input closed until positive SU connection evidence arrives, using
+      // the existing startup deadline. RPC exposes this inventory in get_state.
+      while (true) {
+        state = await peer.request({ type: 'get_state' });
+        const observedId = string(state.sessionId), expectedId = id || nativeId();
+        if (!observedId || expectedId && observedId !== expectedId) throw new Error('OMP did not return the requested native identity');
+        id = observedId;
+        const toolNames = Array.isArray(state.dumpTools) ? state.dumpTools.map((tool) => string(object(tool).name)) : [];
+        const promptParts = (Array.isArray(state.systemPrompt) ? state.systemPrompt : [])
+          .filter((part): part is string => typeof part === 'string');
+        // OMP's current runtime mounts connected MCP tools as xd:// devices;
+        // dumpTools lists only top-level tools. The separate generated mapping
+        // section comes from its live MCP route registry. OMP can join it into
+        // the base prompt string instead of returning a separate array entry.
+        const mountedRoutes = promptParts
+          .flatMap((part) => part.split(/^## MCP Tool Routes\r?$/m).slice(1))
+          .flatMap((section) => section.split(/^#{1,2} /m, 1)[0].match(/xd:\/\/[^`\s]+/g) ?? []);
+        const suRoute = mountedRoutes.some((route) => /papercusp[-_]su/i.test(route));
+        // The native route map is a bounded preview and can omit this server.
+        // OMP separately emits server instructions from MCPManager's connected
+        // registry after initialize, including each exact server name. Like
+        // Claude's connected status, this is positive native connection evidence.
+        const connectedServers = promptParts
+          .flatMap((part) => part.split(/^## MCP Server Instructions\r?$/m).slice(1))
+          .flatMap((section) => [...section.split(/^#{1,2} /m, 1)[0].matchAll(/^### ([^\r\n]+)\r?$/gm)]
+            .map((match) => match[1]));
+        if (!toolNames.some((name) => /papercusp/i.test(name)) && !suRoute && !connectedServers.includes('papercusp-su')) {
+          ompReadinessFailure = `OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'}; mounted: ${mountedRoutes.slice(0, 8).join(', ') || 'none'})`;
+          await new Promise<void>((resolve) => setTimeout(resolve, readinessDelayMs));
+          readinessDelayMs = Math.min(readinessDelayMs * 2, 1_000);
+          if (closed) throw new Error('OMP startup was cancelled before its SU tools connected');
+          continue;
+        }
+        ompReadinessFailure = undefined;
+        break;
       }
       nativePath = string(state.sessionFile) || null;
       native = { ...native as OmpNativeSessionHandle, ompThreadId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
@@ -417,7 +433,7 @@ export function startSuRpcEngine(
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([starting, new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`${backend} initialization timed out`)), options.startupTimeoutMs ?? 45_000);
+    timer = setTimeout(() => reject(new Error(ompReadinessFailure ?? `${backend} initialization timed out`)), options.startupTimeoutMs ?? 45_000);
   })]).catch(async (error) => {
     reportRuntimeFailure(error);
     await close(); throw error;

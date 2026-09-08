@@ -88,6 +88,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     : { backend: 'omp' as const, source: 'adv_sessions' as const, ownerId: binding.ownerId, agentHome: '/configured/omp', ompThreadId: 'native-omp', exactResumeSupported: true, missingReason: null };
   const engine = startSuRpcEngine(boot, binding, {
     agentChatId: `chat-${backend}`, model: backend === 'codex' ? 'codex-model' : 'openai/omp-model',
+    startupTimeoutMs: 500,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
@@ -277,6 +278,34 @@ it('does not treat a launch-prompt mention of an OMP MCP path as a connected dev
     systemPrompt: ['Use xd://mcp__papercusp_su_tools_invoke after connecting your server.'],
   } : undefined });
   await expect(f.engine.ready).rejects.toThrow('OMP SU tools are not connected');
+});
+
+it('keeps OMP input closed until the native SU connection arrives after RPC readiness', async () => {
+  let connected = false;
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
+    sessionId: 'native-omp', sessionFile: '/configured/omp/session.jsonl',
+    model: { provider: 'openai', id: 'omp-model' }, dumpTools: [{ name: 'read' }],
+    systemPrompt: connected ? ['## MCP Server Instructions\n\n### papercusp-su\nConnected.'] : [],
+  } : undefined });
+  await vi.waitFor(() => expect(f.sent.some((frame) => frame.type === 'get_state')).toBe(true));
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+  await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn') as never).terminal)
+    .resolves.toMatchObject({ status: 'refused' });
+  expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
+  connected = true;
+  await f.engine.ready;
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+});
+
+it('refuses a different OMP native identity arriving with the delayed tool connection', async () => {
+  let requests = 0;
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
+    sessionId: ++requests === 1 ? 'native-omp' : 'another-session',
+    model: { provider: 'openai', id: 'omp-model' },
+    dumpTools: requests === 1 ? [] : [{ name: 'mcp__papercusp_su__coord_whoami' }],
+  } : undefined });
+  await expect(f.engine.ready).rejects.toThrow('OMP did not return the requested native identity');
+  expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
 });
 
 it.each(['papercusp-su', 'another-server'])('uses exact native connected-server evidence when the OMP map is bounded (%s)', async (server) => {
