@@ -12,9 +12,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   accumulateDf,
   foldDf,
+  foldDfAsync,
+  refreshCorpusTermDf,
   corpusTermDfLookup,
   resetCorpusTermDfCache,
   CORPUS_TERM_DF_CACHE_TTL_MS,
+  CORPUS_TERM_DF_FETCH_ROWS,
 } from './corpus-term-df';
 import { corpusQueryText } from './corpus-recall';
 
@@ -152,5 +155,96 @@ describe('corpusTermDfLookup — degrade paths that must never break the leg', (
     const after = await corpusTermDfLookup(sql, 'ws', t0 + CORPUS_TERM_DF_CACHE_TTL_MS + 1);
     expect(after).not.toBeNull();
     expect(after!('retrieval')).toBe(12);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WI-10000802 — the refresh must bound BYTES, not just rows.
+//
+// `LIMIT CORPUS_TERM_DF_SAMPLE_DOCS` (40k) caps DOCUMENTS, but nothing caps
+// their total size, so materialising the sample held ~100 MB of turn text
+// (measured 2026-09-08 against the live corpus; streaming holds ~2.8 MB). The
+// fold only ever needed the term Map, so holding the texts bought nothing.
+//
+// ⚠ These assert the STREAMING SHAPE, not a byte threshold — the corpus grows
+// and the column permits 20,000 chars per row, so the size that matters is
+// whatever it becomes. Do NOT relax them into "it fits today".
+// ─────────────────────────────────────────────────────────────────────────────
+describe('refreshCorpusTermDf — streams the sample instead of materialising it', () => {
+  /** A sql whose query object is DELIBERATELY not awaitable: it exposes only
+   *  `.cursor()`. Re-introducing `await sql\`…\`` therefore FAILS here rather
+   *  than passing quietly, which is the whole point of the guard. */
+  function cursorOnlySql(texts: string[], chunkCap = CORPUS_TERM_DF_FETCH_ROWS) {
+    const seen = { chunkSizes: [] as number[], peakChunk: 0, cursorCalls: 0, inserted: [] as unknown[] };
+    const query = {
+      cursor(n: number) {
+        seen.cursorCalls += 1;
+        seen.chunkSizes.push(n);
+        return (async function* () {
+          for (let i = 0; i < texts.length; i += Math.min(n, chunkCap)) {
+            const chunk = texts.slice(i, i + Math.min(n, chunkCap)).map((text) => ({ text }));
+            seen.peakChunk = Math.max(seen.peakChunk, chunk.length);
+            yield chunk;
+          }
+        })();
+      },
+    };
+    const tx = (..._a: unknown[]) => Promise.resolve([]);
+    const fn = (() => query) as unknown as Parameters<typeof refreshCorpusTermDf>[0];
+    (fn as unknown as { begin: (cb: (t: unknown) => Promise<unknown>) => Promise<unknown> }).begin = (cb) =>
+      Promise.resolve(cb(tx));
+    return { sql: fn, seen };
+  }
+
+  it('never holds more than one bounded chunk of texts at a time', async () => {
+    const texts = Array.from({ length: 4_500 }, (_, i) => `alpha beta document number ${i} retrieval corpus`);
+    const { sql, seen } = cursorOnlySql(texts);
+
+    const result = await refreshCorpusTermDf(sql, { workspaceId: 'ws-stream', minDf: 1 });
+
+    expect(seen.cursorCalls).toBe(1);
+    // The bound that actually caps memory — a chunk, not the 40k sample.
+    expect(seen.peakChunk).toBeLessThanOrEqual(CORPUS_TERM_DF_FETCH_ROWS);
+    expect(seen.chunkSizes[0]).toBeLessThanOrEqual(CORPUS_TERM_DF_FETCH_ROWS);
+    // …and every document still reached the fold: bounding bytes must not
+    // silently shrink the sample, which is the tempting wrong fix.
+    expect(result.ndocs).toBe(texts.length);
+  });
+
+  it('folds an empty corpus without wiping the existing table', async () => {
+    const { sql } = cursorOnlySql([]);
+    const result = await refreshCorpusTermDf(sql, { workspaceId: 'ws-empty', minDf: 1 });
+    expect(result.ndocs).toBe(0);
+    expect(result.stored).toBe(0);
+  });
+});
+
+describe('foldDfAsync — byte-bounded twin of foldDf', () => {
+  const texts = [
+    'retrieval corpus alpha beta',
+    'retrieval gamma corpus',
+    'alpha delta retrieval',
+    'epsilon',
+  ];
+
+  async function* stream(xs: string[]) {
+    for (const x of xs) yield x;
+  }
+
+  it('produces a table IDENTICAL to the synchronous fold', async () => {
+    for (const minDf of [1, 2, 3]) {
+      const sync = foldDf(texts, minDf);
+      const async_ = await foldDfAsync(stream(texts), minDf);
+
+      expect(async_.ndocs).toBe(sync.ndocs);
+      expect(async_.distinctSeen).toBe(sync.distinctSeen);
+      expect([...async_.df.entries()].sort()).toEqual([...sync.df.entries()].sort());
+    }
+  });
+
+  it('counts DOCUMENTS not occurrences, exactly as the sync fold does', async () => {
+    const r = await foldDfAsync(stream(['retrieval retrieval retrieval', 'retrieval']), 1);
+    expect(r.ndocs).toBe(2);
+    expect(r.df.get('retrieval')).toBe(2);
   });
 });

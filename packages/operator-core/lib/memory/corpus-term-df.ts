@@ -31,6 +31,16 @@ import { corpusTerms, CORPUS_QUERY_MIN_DF } from './corpus-recall';
  *  absolute counts do, and only the ORDER reaches the query. */
 export const CORPUS_TERM_DF_SAMPLE_DOCS = 40_000;
 
+/** Rows pulled per cursor chunk while folding the sample.
+ *
+ *  This is a BYTE bound wearing a row count: `CORPUS_TERM_DF_SAMPLE_DOCS` caps
+ *  how many documents are folded, but nothing caps their total size, so the
+ *  only thing bounding resident text is how many are in memory AT ONCE.
+ *  Measured 2026-09-08: 2.8 MB peak per chunk vs ~100 MB for the whole sample.
+ *  Raising it scales that peak linearly and buys nothing — the fold is
+ *  CPU-bound on tokenising, not on round-trips. */
+export const CORPUS_TERM_DF_FETCH_ROWS = 1_000;
+
 /** How long a loaded DF snapshot is served before a re-read. The corpus moves
  *  slowly relative to term RANK, so this is about bounding staleness, not
  *  freshness: a term's position among ~100 candidates does not turn over in an
@@ -55,6 +65,20 @@ export function accumulateDf(acc: Map<string, number>, text: string): void {
  * attests at least `minDf` times, because absence is the selector's filter
  * verdict. PURE.
  */
+/**
+ * Drop the hapax tail and report. Shared by `foldDf` and `foldDfAsync` so the
+ * sync and streaming folds cannot drift into producing different tables.
+ */
+function finishDf(
+  acc: Map<string, number>,
+  ndocs: number,
+  minDf: number,
+): { df: Map<string, number>; ndocs: number; distinctSeen: number } {
+  const distinctSeen = acc.size;
+  for (const [term, df] of acc) if (df < minDf) acc.delete(term);
+  return { df: acc, ndocs, distinctSeen };
+}
+
 export function foldDf(
   texts: Iterable<string>,
   minDf = CORPUS_QUERY_MIN_DF,
@@ -65,9 +89,38 @@ export function foldDf(
     accumulateDf(acc, text);
     ndocs += 1;
   }
-  const distinctSeen = acc.size;
-  for (const [term, df] of acc) if (df < minDf) acc.delete(term);
-  return { df: acc, ndocs, distinctSeen };
+  return finishDf(acc, ndocs, minDf);
+}
+
+/**
+ * Streaming twin of `foldDf` — identical result, bounded peak memory.
+ *
+ * WHY THIS EXISTS (WI-10000802): the refresh below samples 40,000 turns, so
+ * `LIMIT` bounds ROWS but NOT BYTES — nothing caps the total text pulled into
+ * memory at once. Measured 2026-09-08 against the live corpus: materialising
+ * the sample held ~100 MB (52.4 M chars, UTF-16); streaming it holds ~2.8 MB,
+ * a 35× reduction for an identical table. The fold never needed the texts (only
+ * the term Map), so the fix is to stop holding them, NOT to shrink the sample:
+ * a smaller `sampleDocs` would silently change the DF distribution the lexical
+ * leg reads.
+ *
+ * ⚠ The ~100 MB figure is what the corpus HOLDS today at a ~1,310-char mean;
+ * the column permits 20,000 chars, so the ceiling is ~16× higher and grows with
+ * the corpus. Do NOT restate that ceiling as an observation — an earlier pass on
+ * WI-10000801 did exactly that and mis-attributed a bg-host heap-OOM to this
+ * read. This read is bounded on its own merits; it is NOT a known OOM cause.
+ */
+export async function foldDfAsync(
+  texts: AsyncIterable<string>,
+  minDf = CORPUS_QUERY_MIN_DF,
+): Promise<{ df: Map<string, number>; ndocs: number; distinctSeen: number }> {
+  const acc = new Map<string, number>();
+  let ndocs = 0;
+  for await (const text of texts) {
+    accumulateDf(acc, text);
+    ndocs += 1;
+  }
+  return finishDf(acc, ndocs, minDf);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,19 +156,29 @@ export async function refreshCorpusTermDf(
 
   // The same corpus the leg retrieves from. Sampled deterministically per
   // workspace so two refreshes of an unchanged corpus agree.
-  const rows = (await sql`
+  //
+  // STREAMED, not materialised (WI-10000802). `LIMIT ${sampleDocs}` bounds ROWS;
+  // it does NOT bound BYTES, so collecting the array first held ~100 MB of turn
+  // text (measured 2026-09-08) inside the process that runs this routine. The
+  // cursor holds one chunk at a time (~2.8 MB measured) while the fold keeps
+  // only the term Map, so the query, the sample, the ordering seed and the
+  // resulting table are all UNCHANGED.
+  const query = sql`
     SELECT text
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
        AND length(text) BETWEEN 40 AND 20000
      ORDER BY md5(source_kind || session_id || turn_idx::text || ${workspaceId})
      LIMIT ${sampleDocs}
-  `) as unknown as Array<{ text: string }>;
+  `;
 
-  const { df, ndocs, distinctSeen } = foldDf(
-    rows.map((r) => r.text),
-    minDf,
-  );
+  async function* sampledTexts(): AsyncGenerator<string> {
+    for await (const chunk of query.cursor(CORPUS_TERM_DF_FETCH_ROWS)) {
+      for (const row of chunk as unknown as Array<{ text: string }>) yield row.text;
+    }
+  }
+
+  const { df, ndocs, distinctSeen } = await foldDfAsync(sampledTexts(), minDf);
 
   if (ndocs === 0) {
     // An empty corpus must not wipe a good table — the leg would silently fall
