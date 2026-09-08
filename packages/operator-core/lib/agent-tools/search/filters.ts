@@ -20,7 +20,12 @@
 import { z } from 'zod';
 import type { Sql } from 'postgres';
 import type { SearchFilters } from '@papercusp/search';
-import { parseSessionSelector } from '../sessions/_shared';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import {
+  parseSessionSelector,
+  refreshResolvedSessionBeforeRead,
+  SESSION_READ_REFRESH_TIMEOUT_MS,
+} from '../sessions/_shared';
 import type { SelfSession } from '../../search/self-session';
 
 /** Shared zod arg fragments for search:fulltext / search:semantic / sessions:search. */
@@ -161,7 +166,15 @@ export async function resolveSearchFilters(
   let selfSession: ResolvedSearchFilters['selfSession'];
   if (args.session === 'self') {
     const { resolveSelfSession } = await import('../../search/self-session');
-    selfSession = await resolveSelfSession(callerOwnerId);
+    const resolved = await withBoundedTimeout(
+      () => resolveSelfSession(callerOwnerId),
+      {
+        fallback: null,
+        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+        label: 'sessions:self resolve',
+      },
+    );
+    selfSession = resolved.value;
     // session:'self' recall must span the caller's WHOLE respawn chain, not a
     // single native session: a cold carry-respawn scatters the agent's history
     // across MANY transcripts (WI-5644). So owner-scope it — NEVER pin
@@ -184,15 +197,7 @@ export async function resolveSearchFilters(
       // Read-time freshness (D-002): force-tail the caller's CURRENT transcript
       // (resolveSelfSession now returns the newest/live one) so the last minutes
       // are indexed before we search. One file — bounded + cheap.
-      try {
-        const { ingestFileNow } = await import('../../search/session-ingest');
-        await ingestFileNow(selfSession.filePath, {
-          owner: callerOwnerId,
-          sessionId: selfSession.sessionId,
-        });
-      } catch {
-        /* fail-soft: the 2-min tick covers it */
-      }
+      await refreshResolvedSessionBeforeRead(selfSession, callerOwnerId, {}, 'sessions:self refresh');
     }
   }
 

@@ -1,5 +1,6 @@
 /**
- * P-014 runtime guard — symlink-normalization (WI-1341).
+ * P-014 runtime guard — checkout identity normalization (WI-1341,
+ * EI-22682015531897411).
  *
  * resolveHarnessPlansDir()'s P-014 guard compared `project.path` (the registry
  * path) against the detected repo root with STRING-ONLY `path.resolve`. The
@@ -9,11 +10,12 @@
  * path that resolves the home harness. The fix normalizes both sides with
  * `fs.realpathSync` (falling back to path.resolve for a not-yet-existing path).
  *
- * These tests pin the CONTRACT: a symlinked-but-identical path PASSES the guard,
- * while a genuinely different path STILL throws (the guard keeps its intent).
+ * These tests pin the CONTRACT: a symlinked or linked-worktree path PASSES the
+ * guard, while a genuinely different path STILL throws (the guard keeps its
+ * intent).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,6 +109,23 @@ describe('resolveHarnessPlansDir — P-014 guard symlink normalization', () => {
     await expect(resolveHarnessPlansDir(HOME)).resolves.toMatchObject({ harnessSlug: HOME });
 
     rmSync(link, { recursive: true, force: true });
+  });
+
+  it('does NOT throw when detection returns a linked staging worktree of the registry checkout', async () => {
+    const canonicalRoot = makeRepoRoot('p014-canonical-');
+    const stagingRoot = makeRepoRoot('p014-staging-');
+    const worktreeGitDir = join(canonicalRoot, '.git', 'worktrees', 'staging');
+    mkdirSync(worktreeGitDir, { recursive: true });
+    // Match Git's linked-worktree metadata: the checkout points to its private
+    // gitdir, whose commondir resolves back to the canonical .git directory.
+    writeFileSync(join(stagingRoot, '.git'), `gitdir: ${worktreeGitDir}\n`);
+    writeFileSync(join(worktreeGitDir, 'commondir'), '../..\n');
+    M.projectPath = canonicalRoot;
+    M.detected = stagingRoot;
+
+    const res = await resolveHarnessPlansDir(HOME);
+    expect(res.harnessSlug).toBe(HOME);
+    expect(res.plans.endsWith(join('apps', 'operator', 'docs', 'plans'))).toBe(true);
   });
 
   it('STILL throws P-014 on a genuine path mismatch (guard intent preserved)', async () => {

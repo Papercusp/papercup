@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { captureInvocationFriction, recoverInvocationFriction } from './invocation-friction';
-import { captureToolInvocationFriction, type CaptureDeps } from './capture-core';
+import { captureToolInvocationFriction, type CaptureDeps, type CaptureImprovementResult } from './capture-core';
 import type { EngineerIssue } from '../../issues-engineer';
 import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
 
@@ -38,7 +38,9 @@ async function seed(workspace = 'ws-a') {
       'loaded-build','{"frictionCapture":"pending","retained":"evidence"}') RETURNING id::text`;
   return { id: row.id, workspaceId: workspace };
 }
-const success = async () => ({ ok: true, created: false, issue: { id: 'EI-1' } as EngineerIssue });
+const success = async (): Promise<CaptureImprovementResult> => ({
+  ok: true, created: false, issue: { id: 'EI-1' } as EngineerIssue, possibleDuplicates: [],
+});
 
 describe('R7 private PostgreSQL delivery contract', () => {
   it('rolls back failure, recovers below-threshold invalid calls and preserves other metadata', async () => {
@@ -86,13 +88,13 @@ describe('R7 private PostgreSQL delivery contract', () => {
     const stored: EngineerIssue[] = [];
     const deps: CaptureDeps = {
       searchIssues: async () => [],
-      findIssuesByWatchdogKeys: async keys => stored.filter(row => keys.includes(String(row.payload?.watchdogKey))),
+      findIssuesByWatchdogKeys: async keys => stored.filter(row => keys.includes(String((row.payload as Record<string, unknown>)?.watchdogKey))),
       findIssuesByToolFailureClassKeys: async () => stored,
       recordIssueOccurrence: async () => null,
       createIssue: async input => {
         const id = `EI-${stored.length + 1}`;
         await db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,payload)
-          VALUES ('ws-a',${input.scope},${id},'change','open',${JSON.stringify(input.payload)}::jsonb)`;
+          VALUES ('ws-a',${input.scope ?? 'operator'},${id},'change','open',${db.sql.json(input.payload as never)})`;
         const row = { ...input, id, state: 'open', signalOrigin: 'organic' } as EngineerIssue;
         stored.push(row); return row;
       },
@@ -105,7 +107,13 @@ describe('R7 private PostgreSQL delivery contract', () => {
     }
     const persisted = await db.sql`SELECT payload FROM harness_shared.work_items ORDER BY feature_id`;
     expect(persisted).toHaveLength(2);
+    for (const row of persisted) expect(row.payload).toHaveProperty('watchdogKey', expect.any(String));
     expect(new Set(persisted.map(row => row.payload.watchdogKey)).size).toBe(2);
     for (const row of persisted) expect(row.payload.toolFailureProbation.state).toBe('probation');
+    // Prove the real arbiter can refuse, rather than merely reading two rows
+    // from a fixture whose JSON was accidentally encoded as a string.
+    await expect(db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,payload)
+      SELECT workspace_id,harness_slug,'EI-conflict',item_kind,status,payload FROM harness_shared.work_items LIMIT 1`)
+      .rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_watchdog_identity_uq' });
   });
 });

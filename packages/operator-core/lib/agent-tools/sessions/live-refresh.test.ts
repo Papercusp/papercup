@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   refreshLiveSessionsBeforeRead,
   refreshTargetSessionBeforeRead,
+  SESSION_READ_REFRESH_TIMEOUT_MS,
   SESSION_TARGET_REFRESH_TIMEOUT_MS,
 } from './_shared';
 
@@ -31,6 +32,27 @@ describe('refreshLiveSessionsBeforeRead', () => {
     });
 
     expect(result).toEqual({ attempted: 2, refreshed: 1 });
+  });
+
+  it('degrades a slow live resolve or ingest within the read budget', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const ingest = vi.fn(() => new Promise<never>(() => {}));
+      const pending = refreshLiveSessionsBeforeRead(vi.fn() as never, ['su-slow'], {
+        resolve: async () => ({ filePath: '/tmp/slow.jsonl', sessionId: 'slow' }),
+        ingest,
+      });
+
+      await vi.advanceTimersByTimeAsync(SESSION_READ_REFRESH_TIMEOUT_MS);
+
+      await expect(pending).resolves.toEqual({ attempted: 1, refreshed: 0 });
+      expect(ingest).toHaveBeenCalledWith('/tmp/slow.jsonl', { owner: 'su-slow', sessionId: 'slow' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sessions:live refresh'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('refreshes an active target session with its resolved owner and target id', async () => {

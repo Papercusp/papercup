@@ -1010,6 +1010,8 @@ import './capability/set-tier';
 import './release/deploy';
 // WI-1320 follow-up — the manual GATE-run lever (fire the green-checkpoint suite on demand):
 import './release/checkpoint-run';
+// EI-22696988206071153 — exact attempt/unit cancellation for a known-unsafe detached runner:
+import './release/checkpoint-cancel';
 // desktop-update-center-and-release-tooling P-5 Unit B — the LOCAL desktop-release cut + hand-off orchestrator:
 import './release/cut';
 

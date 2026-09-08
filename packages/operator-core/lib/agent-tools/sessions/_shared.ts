@@ -18,7 +18,10 @@ export const SESSION_TURN_REF_PREFIX = 'session_turn:';
  * itself is not cancellable, but a slow refresh must never hold the indexed
  * read (or its archive fallback) hostage.
  */
-export const SESSION_TARGET_REFRESH_TIMEOUT_MS = 5_000;
+export const SESSION_READ_REFRESH_TIMEOUT_MS = 5_000;
+// Compatibility name retained for callers/tests that specifically exercise
+// the explicit-target path.
+export const SESSION_TARGET_REFRESH_TIMEOUT_MS = SESSION_READ_REFRESH_TIMEOUT_MS;
 export type SessionSourceKind = (typeof SESSION_SOURCE_KINDS)[number];
 
 export interface SessionSelector {
@@ -109,6 +112,35 @@ interface TargetRefreshDeps {
   ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
 }
 
+interface ResolvedTranscript {
+  filePath: string;
+  sessionId: string;
+}
+
+/**
+ * Ingest one already-resolved transcript without allowing filesystem work to
+ * hold a sessions read past its transport budget. The ingest promise is not
+ * cancellable, so it may finish in the background; the caller proceeds with
+ * the indexed/archive view and records the degraded refresh via the receipt.
+ */
+export async function refreshResolvedSessionBeforeRead(
+  target: ResolvedTranscript,
+  owner: string,
+  deps: Pick<TargetRefreshDeps, 'ingest'> = {},
+  label = 'sessions:live refresh',
+): Promise<{ attempted: number; refreshed: number }> {
+  const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
+  const refresh = await withBoundedTimeout(
+    () => ingest(target.filePath, { owner, sessionId: target.sessionId }),
+    {
+      fallback: undefined,
+      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      label,
+    },
+  );
+  return { attempted: 1, refreshed: refresh.degraded ? 0 : 1 };
+}
+
 async function resolveTargetSessionTranscript(
   sourceKind: string,
   sessionId: string,
@@ -176,20 +208,23 @@ export async function refreshTargetSessionBeforeRead(
   if (!row?.agent || !row.owner) return { attempted: 0, refreshed: 0 };
 
   const resolve = deps.resolve ?? resolveTargetSessionTranscript;
-  const target = await resolve(row.agent, sessionId, row);
-  if (!target) return { attempted: 1, refreshed: 0 };
-
-  const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
-  const owner = row.owner;
-  const refresh = await withBoundedTimeout(
-    () => ingest(target.filePath, { owner, sessionId: target.sessionId }),
+  const resolved = await withBoundedTimeout(
+    () => resolve(row.agent!, sessionId, row),
     {
-      fallback: undefined,
-      timeoutMs: SESSION_TARGET_REFRESH_TIMEOUT_MS,
-      label: 'sessions:read target refresh',
+      fallback: null,
+      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      label: 'sessions:read target resolve',
     },
   );
-  return { attempted: 1, refreshed: refresh.degraded ? 0 : 1 };
+  const target = resolved.value;
+  if (!target) return { attempted: 1, refreshed: 0 };
+
+  return refreshResolvedSessionBeforeRead(
+    target,
+    row.owner,
+    { ingest: deps.ingest },
+    'sessions:read target refresh',
+  );
 }
 
 /**
@@ -206,29 +241,43 @@ export async function refreshLiveSessionsBeforeRead(
 ): Promise<{ attempted: number; refreshed: number }> {
   let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
   if (ownerIds.length === 0) {
-    const rows = await sql<Array<{ owner: string }>>`
-      SELECT DISTINCT coord_owner_id AS owner
-        FROM harness_shared.adv_sessions
-       WHERE ended_at IS NULL
-         AND agent = 'codex'
-         AND coord_owner_id IS NOT NULL
-       ORDER BY coord_owner_id
-       LIMIT 20`;
-    ownerIds = rows.map((row) => row.owner);
+    const ownerRead = await withBoundedTimeout(
+      sql<Array<{ owner: string }>>`
+        SELECT DISTINCT coord_owner_id AS owner
+          FROM harness_shared.adv_sessions
+         WHERE ended_at IS NULL
+           AND agent = 'codex'
+           AND coord_owner_id IS NOT NULL
+         ORDER BY coord_owner_id
+         LIMIT 20`,
+      {
+        fallback: [],
+        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+        label: 'sessions:live owner lookup',
+      },
+    );
+    ownerIds = ownerRead.value.map((row) => row.owner);
   }
   if (ownerIds.length === 0) return { attempted: 0, refreshed: 0 };
 
   const resolve = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
-  const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
   const results = await Promise.all(ownerIds.map(async (owner) => {
-    try {
-      const live = await resolve(owner);
-      if (!live) return false;
-      await ingest(live.filePath, { owner, sessionId: live.sessionId });
-      return true;
-    } catch {
-      return false;
-    }
+    const resolved = await withBoundedTimeout(
+      () => resolve(owner),
+      {
+        fallback: null,
+        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+        label: 'sessions:live resolve',
+      },
+    );
+    if (!resolved.value) return false;
+    const refreshed = await refreshResolvedSessionBeforeRead(
+      resolved.value,
+      owner,
+      { ingest: deps.ingest },
+      'sessions:live refresh',
+    );
+    return refreshed.refreshed > 0;
   }));
   return { attempted: ownerIds.length, refreshed: results.filter(Boolean).length };
 }

@@ -17,7 +17,7 @@
  */
 
 import * as fs from 'node:fs/promises';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem } from './parser';
 import type { PlanIndexItem, PlanIndexDecision } from './derive-index';
@@ -67,9 +67,58 @@ function realpathOrResolve(p: string): string {
   }
 }
 
+/**
+ * Return true when two distinct paths are the canonical checkout and one of its
+ * linked worktrees. The staging operator runs from `papercusp-staging`, while
+ * the harness registry intentionally names the canonical `papercusp` checkout;
+ * treating that supported topology as registry drift blocks fleet launches.
+ *
+ * This is deliberately narrower than accepting sibling paths by name: the
+ * detected path must carry Git's worktree pointer, its gitdir must live below
+ * the canonical repository's `.git/worktrees`, and its `commondir` must resolve
+ * to that canonical `.git` directory. Unrelated checkouts therefore continue
+ * to fail the P-014 guard.
+ */
+function isLinkedWorktreeOf(worktreePath: string, canonicalPath: string): boolean {
+  const canonicalRoot = realpathOrResolve(canonicalPath);
+  const worktreeRoot = realpathOrResolve(worktreePath);
+  if (canonicalRoot === worktreeRoot) return false;
+
+  try {
+    const dotGit = readFileSync(path.join(worktreeRoot, '.git'), 'utf8').trim();
+    const gitdir = /^gitdir:\s*(.+)$/.exec(dotGit)?.[1]?.trim();
+    if (!gitdir || /[\r\n]/.test(gitdir)) return false;
+
+    const gitDir = path.resolve(worktreeRoot, gitdir);
+    const commonDirText = readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    if (!commonDirText || /[\r\n]/.test(commonDirText)) return false;
+
+    const commonDir = realpathOrResolve(path.resolve(gitDir, commonDirText));
+    const canonicalGitDir = realpathOrResolve(path.join(canonicalRoot, '.git'));
+    const worktreeRelative = path.relative(commonDir, realpathOrResolve(gitDir));
+    return (
+      commonDir === canonicalGitDir &&
+      worktreeRelative !== '' &&
+      !worktreeRelative.startsWith('..' + path.sep) &&
+      !path.isAbsolute(worktreeRelative) &&
+      worktreeRelative.split(path.sep)[0] === 'worktrees'
+    );
+  } catch {
+    return false;
+  }
+}
+
+function samePapercupCheckout(left: string, right: string): boolean {
+  return (
+    realpathOrResolve(left) === realpathOrResolve(right) ||
+    isLinkedWorktreeOf(left, right) ||
+    isLinkedWorktreeOf(right, left)
+  );
+}
+
 function plansRelFor(harnessPath: string): string {
   const detected = detectPapercupRoot();
-  if (detected && realpathOrResolve(harnessPath) === realpathOrResolve(detected)) {
+  if (detected && samePapercupCheckout(harnessPath, detected)) {
     return PAPERCUP_PLANS_REL;
   }
   return DEFAULT_HARNESS_PLANS_REL;
@@ -642,12 +691,13 @@ export async function resolveHarnessPlansDir(
   }
   if (resolved === operatorHomeHarnessSlug()) {
     const detected = detectPapercupRoot();
-    // Compare realpath-normalized forms: the canonical checkout is reachable
-    // via a `papercup` → `papercusp` symlink, and string-only path.resolve
-    // treats the two identical dirs as a mismatch → the guard false-alarmed
-    // and broke fleet:launch-on-plan (WI-1341). realpathOrResolve collapses
-    // the symlink so a genuine registry mismatch still throws.
-    if (detected && realpathOrResolve(project.path) !== realpathOrResolve(detected)) {
+    // Compare checkout identities rather than only directory strings: the
+    // canonical checkout may be reached through a symlink, or the staging
+    // operator may run from a linked worktree. String-only path.resolve treats
+    // both supported topologies as mismatches, which false-alarms and breaks
+    // fleet:launch-on-plan (WI-1341 / EI-22682015531897411). The identity check
+    // still rejects a genuine registry mismatch.
+    if (detected && !samePapercupCheckout(project.path, detected)) {
       throw new Error(
         `P-014 runtime guard: papercup harness path '${project.path}' does not match ` +
           `detected repo root '${detected}'. The registry is out of sync.`,

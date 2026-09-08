@@ -612,7 +612,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.updateIssuePatch).not.toHaveBeenCalled();
     expect(d.created).toHaveLength(1);
     expect(d.created[0].payload).toMatchObject({ lane: 'observation', toolFailureProbation: { state: 'probation', reporters: ['su-b'] } });
-    if (dimension !== 'scope') expect(d.created[0].payload?.watchdogKey).not.toBe(normalized.classKey);
+    if (dimension !== 'scope') expect(d.created[0].payload).not.toHaveProperty('watchdogKey', normalized.classKey);
   });
 
   it('P-001 R-7 coalesces two same-reporter retries without creating or promoting another identity', async () => {
