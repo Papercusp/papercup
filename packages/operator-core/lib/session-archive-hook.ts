@@ -292,13 +292,15 @@ export async function runArchiveForAdvSession(
 export async function scheduleArchiveForAdvSession(
   advSessionId: number,
   opts?: { delayMs?: number },
-): Promise<void> {
+): Promise<{ stop(): Promise<void> } | null> {
   const enabled = await getFlag(FLAGS.SESSION_ARCHIVE_AT_END, 'system').catch(() => false);
-  if (!enabled) return;
+  if (!enabled) return null;
+  let running: Promise<unknown> | undefined;
   const t = setTimeout(() => {
-    void runArchiveForAdvSession(advSessionId).catch((e) =>
+    running = runArchiveForAdvSession(advSessionId).catch((e) =>
       console.warn(`[session-archive] adv ${advSessionId} pass failed: ${(e as Error)?.message ?? e}`),
     );
   }, opts?.delayMs ?? SETTLE_DELAY_MS);
   t.unref?.();
+  return { async stop() { clearTimeout(t); await running; } };
 }

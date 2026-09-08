@@ -1056,16 +1056,16 @@ export async function markAdvSessionEnded(
       // hygiene behind a short settle/liveness check so a genuine death cannot
       // strand file/resource locks or work-item claims until TTL, while a
       // carry/resume successor under the same owner remains protected.
-      void trackDetached(import('./session-end-lease-release-hook'))
-        .then((m) => m.scheduleSessionEndLeaseRelease(id))
+      void trackDetached(import('./session-end-lease-release-hook')
+        .then((m) => m.scheduleSessionEndLeaseRelease(id)))
         .catch((e) => console.warn(`[adv-sessions] lease-release hook unavailable: ${(e as Error)?.message ?? e}`));
       // End-of-session fast path (session-db-archive-retire-dirs-2026-07-10
       // P-004): archive-then-delete the session's files after a settle delay.
       // Dynamic import: no module cycle, and this hot end path stays free of
       // FS/zstd imports. Fire-and-forget — ending never blocks on archival;
       // a missed schedule is caught by the P-006 reconciler.
-      void trackDetached(import('./session-archive-hook'))
-        .then((m) => m.scheduleArchiveForAdvSession(id))
+      void trackDetached(import('./session-archive-hook')
+        .then((m) => m.scheduleArchiveForAdvSession(id)))
         .catch((e) => console.warn(`[adv-sessions] archive hook unavailable: ${(e as Error)?.message ?? e}`));
     }
     return r.length > 0;

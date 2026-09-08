@@ -284,17 +284,26 @@ export async function runSessionEndLeaseRelease(
   };
 }
 
+interface ScheduledLeaseCleanup {
+  stopped: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+  running?: Promise<void>;
+}
+
 function scheduleSessionEndLeaseReleaseAttempt(
   advSessionId: number,
   opts: SessionEndLeaseReleaseScheduleOptions,
   ownerLiveRetries: number,
+  job: ScheduledLeaseCleanup,
 ): void {
+  if (job.stopped) return;
   const delayMs =
     ownerLiveRetries === 0
       ? (opts.delayMs ?? SESSION_END_LEASE_RELEASE_DELAY_MS)
       : (opts.retryDelayMs ?? SESSION_END_LEASE_RELEASE_RETRY_DELAY_MS);
-  const timer = setTimeout(() => {
-    void runSessionEndLeaseRelease(advSessionId, opts.deps)
+  job.timer = setTimeout(() => {
+    job.timer = undefined;
+    job.running = runSessionEndLeaseRelease(advSessionId, opts.deps)
       .then((result) => {
         // Resume can reopen the SAME row before this delayed pass, or create
         // a successor row. Both are successful continuation, not cleanup
@@ -306,7 +315,7 @@ function scheduleSessionEndLeaseReleaseAttempt(
             opts.maxOwnerLiveRetries ?? SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES,
           );
           if (ownerLiveRetries < maxRetries) {
-            scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, ownerLiveRetries + 1);
+            scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, ownerLiveRetries + 1, job);
           } else {
             console.warn(
               `[session-end-lease-release] adv ${advSessionId} owner ${result.ownerId ?? 'unknown'} ` +
@@ -342,13 +351,21 @@ function scheduleSessionEndLeaseReleaseAttempt(
         );
       });
   }, delayMs);
-  timer.unref?.();
+  job.timer.unref?.();
 }
 
 /** Schedule the post-end pass without delaying the exiting parent/report. */
 export function scheduleSessionEndLeaseRelease(
   advSessionId: number,
   opts: SessionEndLeaseReleaseScheduleOptions = {},
-): void {
-  scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, 0);
+): { stop(): Promise<void> } {
+  const job: ScheduledLeaseCleanup = { stopped: false };
+  scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, 0, job);
+  return {
+    async stop() {
+      job.stopped = true;
+      clearTimeout(job.timer);
+      await job.running;
+    },
+  };
 }

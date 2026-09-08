@@ -359,7 +359,10 @@ export function startSuRpcEngine(
       const state = await peer.request({ type: 'get_state' });
       const id = string(state.sessionId);
       if (!id || nativeId() && id !== nativeId()) throw new Error('OMP did not return the requested native identity');
-      if (!Array.isArray(state.dumpTools) || !state.dumpTools.some((tool) => /papercusp/i.test(string(object(tool).name)))) throw new Error('OMP SU tools are not connected');
+      const toolNames = Array.isArray(state.dumpTools) ? state.dumpTools.map((tool) => string(object(tool).name)) : [];
+      if (!toolNames.some((name) => /papercusp/i.test(name))) {
+        throw new Error(`OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'})`);
+      }
       nativePath = string(state.sessionFile) || null;
       native = { ...native as OmpNativeSessionHandle, ompThreadId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };
       const linked = await setAdvSessionOmpThreadId(binding.advSessionId, id);

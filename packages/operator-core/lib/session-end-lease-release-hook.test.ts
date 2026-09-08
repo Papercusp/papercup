@@ -287,6 +287,31 @@ describe('partitionReapableTasks — the owner ruling, and proof the guard can f
 });
 
 describe('scheduleSessionEndLeaseRelease', () => {
+  it('stops before teardown and joins a running pass without scheduling another retry', async () => {
+    vi.useFakeTimers();
+    let resolveOwners!: (owners: ReadonlySet<string>) => void;
+    h.loadProtectedOwners.mockImplementation(() => new Promise((resolve) => { resolveOwners = resolve; }));
+    const job = scheduleSessionEndLeaseRelease(77, { delayMs: 25, retryDelayMs: 25, deps: deps() });
+    await vi.advanceTimersByTimeAsync(25);
+    let stopped = false;
+    const stopping = job.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    resolveOwners(new Set(['su-ended']));
+    await stopping;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.loadRow).toHaveBeenCalledTimes(1);
+    expect(h.releaseWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('can cancel a scheduled pass before it accesses its database', async () => {
+    vi.useFakeTimers();
+    const job = scheduleSessionEndLeaseRelease(77, { delayMs: 25, deps: deps() });
+    await job.stop();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.loadRow).not.toHaveBeenCalled();
+  });
+
   it('leaves a reopened session alone without reporting a cleanup failure', async () => {
     vi.useFakeTimers();
     h.loadRow.mockResolvedValue({ ...ENDED, endedAt: null });
