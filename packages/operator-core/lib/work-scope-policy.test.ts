@@ -38,6 +38,13 @@ beforeEach(() => {
 });
 
 describe('matchHarnessPattern', () => {
+  it('reads policy in the requested workspace without substituting the process default', async () => {
+    const { readPotControlPolicy } = await import('./pot-control-policy');
+    store.policy = { workScope: ENFORCE };
+    expect(await mod.readWorkScopePolicy('dispatch-workspace')).toMatchObject(ENFORCE);
+    expect(readPotControlPolicy).toHaveBeenLastCalledWith('dispatch-workspace');
+  });
+
   it('exact, root+sub glob, prefix glob, star', () => {
     expect(matchHarnessPattern('papercusp', 'papercusp')).toBe(true);
     expect(matchHarnessPattern('papercusp', 'papercusp-public-site')).toBe(false);

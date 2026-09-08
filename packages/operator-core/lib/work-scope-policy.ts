@@ -327,8 +327,8 @@ function escapeLike(s: string): string {
 }
 
 /** Async read for the tool / status surfaces (never for hot paths — use workScopePolicy()). */
-export async function readWorkScopePolicy(): Promise<WorkScopePolicy | null> {
-  const current = (await readPotControlPolicy()) as { workScope?: unknown };
+export async function readWorkScopePolicy(workspaceId?: string): Promise<WorkScopePolicy | null> {
+  const current = (await readPotControlPolicy(workspaceId)) as { workScope?: unknown };
   return coercePolicy(current.workScope);
 }
 

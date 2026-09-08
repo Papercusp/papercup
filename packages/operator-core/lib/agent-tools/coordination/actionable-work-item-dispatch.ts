@@ -153,7 +153,7 @@ export async function authorizeWorkItemDispatch(args: {
   workspaceId?: string;
 }): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   const { gateWorkScope, readWorkScopePolicy } = await import('../../work-scope-policy');
-  const policy = await readWorkScopePolicy();
+  const policy = await readWorkScopePolicy(args.workspaceId);
   const workspace = await gateWorkScope('coord:dispatch', {
     harness: args.harness, workItem: args.workItemId, actor: args.target,
   }, policy);
@@ -311,7 +311,7 @@ async function classifyOne(
   }
   try {
     const authority = await deps.authorize({
-      workItemId, target: targetAgent, harness: harness ?? workItem.harness,
+      workItemId, target: targetAgent, harness: harness ?? workItem.harness ?? undefined,
       ...(workspaceId ? { workspaceId } : {}),
     });
     if (!authority.allowed) return {

@@ -246,6 +246,7 @@ async function initiateMultipart(
   bundleSha256: string,
   sizeBytes: number,
   parts: MultipartPlanPart[],
+  operationId: string = crypto.randomUUID(),
 ): Promise<Response> {
   return api.request(
     `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart`,
@@ -256,6 +257,7 @@ async function initiateMultipart(
         'content-type': 'application/json',
         'x-artifact-sha256': bundleSha256,
         'x-artifact-size': String(sizeBytes),
+        'x-operation-id': operationId,
       },
       body: JSON.stringify({ parts }),
     },
@@ -430,6 +432,57 @@ describe('workspace-host artifact publication', () => {
       error: 'invalid_multipart_plan',
       errors: ['the final multipart part cannot exceed the regular part size'],
     });
+  });
+
+  it('reconciles a lost initiate response by caller operation id and rejects identity drift', async () => {
+    const bundle = new TextEncoder().encode('restart-safe multipart body');
+    const bundleSha256 = await sha256Hex(bundle);
+    const part: MultipartPlanPart = {
+      partNumber: 1,
+      sha256: bundleSha256,
+      sizeBytes: bundle.byteLength,
+    };
+    const operationId = crypto.randomUUID();
+    const { env, r2 } = authedEnv();
+
+    // The first response is deliberately discarded: from the client's view the
+    // provider may have accepted the mutation and the outcome is unknown.
+    const lost = await initiateMultipart(
+      env,
+      bundleSha256,
+      bundle.byteLength,
+      [part],
+      operationId,
+    );
+    expect(lost.status).toBe(201);
+    expect(r2.multipartUploads.size).toBe(1);
+
+    const reconciled = await initiateMultipart(
+      env,
+      bundleSha256,
+      bundle.byteLength,
+      [part],
+      operationId,
+    );
+    expect(reconciled.status).toBe(200);
+    expect(await reconciled.json()).toMatchObject({
+      uploadId: operationId,
+      operationId,
+      resumed: true,
+      deduped: false,
+    });
+    expect(r2.multipartUploads.size).toBe(1);
+
+    const drifted = await initiateMultipart(
+      env,
+      bundleSha256,
+      bundle.byteLength,
+      [{ ...part, sha256: 'f'.repeat(64) }],
+      operationId,
+    );
+    expect(drifted.status).toBe(409);
+    expect(await drifted.json()).toMatchObject({ error: 'multipart_operation_conflict' });
+    expect(r2.multipartUploads.size).toBe(1);
   });
 
   it('uploads a bounded multipart bundle with verified replay, incomplete, conflict, and finalize behavior', async () => {
