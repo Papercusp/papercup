@@ -1532,6 +1532,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed semantic disposition for scripts/lib/tracked-files.mjs: its `pending` directory-walk worklist in the filesystem fallback is consumed within one synchronous enumeration and is hard-bounded by FALLBACK_MAX_ENTRIES (it throws rather than continue past the bound), so it is finite traversal state, not a resident resource queue, and starts no independent resident work.",
   },
   {
+    path: "scripts/check-vacuous-negative-assertions.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/check-vacuous-negative-assertions.mjs: the Aho–Corasick `queue` is a finite trie-construction worklist consumed completely during one synchronous corpus scan; it is bounded by the static probe set for that invocation, retains no work across calls, and starts no independent resident work.",
+  },
+  {
     path: "scripts/vendor-gitnexus-patch.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
