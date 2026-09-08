@@ -1145,6 +1145,41 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain("agent's first turn");
   });
 
+  it('inherits the recorded Codex model and provenance on an exact resume', async () => {
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      agent: 'codex',
+      model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'inherited',
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the Codex recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(spawnedCommand()).toContain('--model=gpt-5.6-sol:xhigh --model-source=inherited');
+  });
+
+  it('selects the configured Codex default when an old resume has no recorded model', async () => {
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      agent: 'codex',
+      model: null,
+      modelSource: null,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the legacy Codex recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--model=gpt-5.6-sol:xhigh --model-source=configured-default');
+  });
+
   it('allows a successor to override the predecessor runtime and launch placement', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });

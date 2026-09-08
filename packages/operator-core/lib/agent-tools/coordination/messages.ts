@@ -661,7 +661,11 @@ export async function readInbox(
            AND surface = 'messages'
            ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
            AND jsonb_typeof(body->'to') = 'array'
-           AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+           -- Keep the native JSONB membership operator here: the partial
+           -- coord_event_log_msgs_to_gin index can answer the native operator,
+           -- while the semantically equivalent function-call spelling falls back to
+           -- a parallel sequential scan of the whole messages surface.
+           AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
          ORDER BY id DESC
          LIMIT ${INBOX_FAST_PATH_ROW_CAP}
       `;
@@ -860,8 +864,11 @@ export async function readInboxWindow(
     const paged = await pageCoordEventLogDesc({
       sinceBound,
       match: (sql) => sql`
+        -- Same GIN-backed spelling as the single-shot path above. The ts/id
+        -- keyset bounds reduce the candidate range; the native operator keeps recipient
+        -- membership indexable inside that range.
         AND jsonb_typeof(body->'to') = 'array'
-        AND (jsonb_exists(body->'to', ${ownerId}) OR jsonb_exists(body->'to', '*'))
+        AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
       `,
       satisfied: (raw) => enough(visible(raw)),
     });

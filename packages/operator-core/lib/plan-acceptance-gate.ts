@@ -71,6 +71,7 @@ import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReferenc
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
+import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 
 export type { CitationDeployment };
 
@@ -110,6 +111,8 @@ export type PlanAcceptanceGateCode =
   // codes are carried through from the census verbatim so the author is told which of the
   // two actually happened — re-prove a stale binding, or bind one that never existed.
   | 'spec_clause_unproven'
+  | 'design_evidence_unsatisfied'
+  | 'design_evidence_unavailable'
   /** Never accompanies a refusal (the census degrades to report-only), carried for the union's honesty. */
   | 'spec_coverage_unavailable';
 
@@ -847,6 +850,23 @@ export async function evaluatePlanAcceptanceGate(
           specCoverage,
         };
       }
+    }
+  }
+
+  // Re-read every design obligation at shipment. An earlier item completion or
+  // passing rubric is not current evidence for a changed source/build.
+  if (planHarnessSlug) {
+    try {
+      const outcomes = await planDesignEvidenceGate(planSlug, planHarnessSlug);
+      const blocked = outcomes.filter(outcome =>
+        (outcome.status === 'unsatisfied' || outcome.status === 'unavailable') && outcome.enforced);
+      if (blocked.length) return {
+        satisfied: false,
+        code: blocked.some(row => row.status === 'unsatisfied') ? 'design_evidence_unsatisfied' : 'design_evidence_unavailable',
+        message: blocked.map(row => row.status === 'not-applicable' ? '' : row.report).join('\n\n'),
+      };
+    } catch (error) {
+      return { satisfied: false, code: 'design_evidence_unavailable', message: `Design shipment proof could not be read: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
 

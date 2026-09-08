@@ -20,11 +20,13 @@ import {
 } from './enforceability';
 import type { FeatureScope, ReferenceStorePort } from './reference-store';
 import { getDesignEvidenceVerb, type GetDesignEvidenceResult, type VerbCaller, type VerbDeps } from './verbs';
+import { designAcceptanceRoot, readDesignAcceptance, type DesignAcceptanceResult } from './acceptance';
 
 export interface FeatureGateReference {
   readonly referenceId: string;
   /** Authoritative approval identity from the existing evidence read. */
   readonly reference?: GetDesignEvidenceResult['reference'];
+  readonly acceptance?: DesignAcceptanceResult;
   readonly verdict: DesignGateVerdict;
   /**
    * Whether this reference's verdict may REFUSE a completion, as opposed to
@@ -81,6 +83,9 @@ export interface FeatureGateDeps {
   /** The verb deps used to READ evidence, so the gate sees exactly what an agent sees. */
   readonly verbDeps: VerbDeps;
   readonly caller: VerbCaller;
+  /** Tests can supply their isolated harness tree; production resolves the registry. */
+  readonly acceptanceRoot?: string;
+  readonly readAcceptanceRun?: Parameters<typeof readDesignAcceptance>[0]['readRun'];
 }
 
 /**
@@ -125,9 +130,24 @@ export async function evaluateFeatureDesignGate(
         }`,
       );
     }
+    const approval = read.reference?.approval;
+    let acceptance: DesignAcceptanceResult | undefined;
+    if (approval?.acceptance && read.reference) {
+      try {
+        acceptance = await readDesignAcceptance({
+          root: deps.acceptanceRoot ?? await designAcceptanceRoot(scope.harnessSlug),
+          featureId: scope.featureId, referenceId,
+          revision: read.reference.activeRevision, contentSha256: read.reference.contentSha256, approval,
+          ...(deps.readAcceptanceRun ? { readRun: deps.readAcceptanceRun } : {}),
+        });
+      } catch {
+        acceptance = { satisfied: false, failures: [{ caseId: '*', reason: 'current-identity-unavailable' }] };
+      }
+    }
     references.push({
       referenceId,
       reference: read.reference,
+      ...(acceptance ? { acceptance } : {}),
       verdict: evaluateDesignGate(read),
       // Read from the reference's own ratification provenance, which the
       // completing agent cannot influence at completion time. Deriving it from
@@ -139,13 +159,13 @@ export async function evaluateFeatureDesignGate(
   const applicable = references.filter((r) => r.verdict.applicable);
   if (applicable.length === 0) return { applicable: false, references };
 
-  const blocking = applicable.filter((r) => r.verdict.applicable && !r.verdict.satisfied);
+  const blocking = applicable.filter((r) => r.verdict.applicable && (!r.verdict.satisfied || r.acceptance?.satisfied === false));
   return {
     applicable: true,
     satisfied: blocking.length === 0,
     references,
     blocking,
-    enforceableBlocking: blocking.filter((r) => r.enforceability.enforceable),
+    enforceableBlocking: blocking.filter((r) => r.enforceability.enforceable || r.acceptance?.satisfied === false),
     doesNotEstablish: DESIGN_GATE_DOES_NOT_ESTABLISH,
   };
 }
@@ -168,16 +188,19 @@ export function renderFeatureDesignGate(result: FeatureDesignGateResult): string
   }
   const bodies = result.blocking
     .map((r) => {
-      if (!(r.verdict.applicable && !r.verdict.satisfied)) return '';
+      const acceptance = r.acceptance?.failures.map(f =>
+        `design acceptance '${r.referenceId}' case '${f.caseId}': ${f.reason}`).join('\n');
+      if (!(r.verdict.applicable && !r.verdict.satisfied)) return acceptance ?? '';
       const refusal = renderDesignGateRefusal(r.verdict);
       // A reference that failed but will NOT block has to say so in the same
       // breath. Otherwise the two outcomes an operator most needs to tell apart
       // — "this was checked and enforced" and "this was checked and could not
       // be enforced" — render identically, and a gate that quietly stopped
       // enforcing looks exactly like a gate that passed.
-      return r.enforceability.enforceable
+      const pixels = r.enforceability.enforceable
         ? refusal
         : `${refusal}\n${describeEnforceability(r.enforceability)}`;
+      return [pixels, acceptance].filter(Boolean).join('\n');
     })
     .filter(Boolean);
   return bodies.join('\n\n');

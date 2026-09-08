@@ -242,6 +242,19 @@ describe('buildAgentLaunchCommand', () => {
     );
   });
 
+  it('emits the configured Codex default when a model-less resume names that authority', () => {
+    expect(
+      buildAgentLaunchCommand({
+        mode: 'resume',
+        resumeId: '22661',
+        agent: 'codex',
+        modelSource: 'configured-default',
+      }),
+    ).toBe(
+      'psu --no-picker --account=default --resume=22661 --model=gpt-5.6-sol:xhigh --model-source=configured-default',
+    );
+  });
+
   it('honors an explicit account', () => {
     expect(buildAgentLaunchCommand({ mode: 'resume', sessionId: 'sid-1', account: 'auto' })).toContain(
       '--account=auto',

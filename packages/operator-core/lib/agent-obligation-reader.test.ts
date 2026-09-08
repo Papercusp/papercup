@@ -233,7 +233,12 @@ describe('shared agent obligation reader', () => {
     });
     expect(state.obligations).toEqual(projectAgentTurnStartObligationBrief(read.agenda));
     expect(state.obligations?.projection.receipt.sink).toBe('turn-start');
-    expect(state.obligations?.projection.receipt.entriesOmitted).toBeGreaterThan(0);
+    expect(state.obligations?.projection.receipt.entriesOmitted).toBe(0);
+    expect(state.obligations?.projection.receipt.entriesDelivered).toBe(read.agenda.primary.length);
+    expect(state.obligations!.projection.text.length).toBeLessThanOrEqual(400);
+    for (const entry of read.agenda.primary) {
+      expect(state.obligations!.projection.text).toContain(entry.action?.summary ?? entry.clearsWhen.summary);
+    }
   });
 
   it('keeps partial source failure visibly degraded with provider-owned unknown rows', async () => {

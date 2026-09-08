@@ -17,6 +17,8 @@ import { FLAGS } from '@papercusp/flags';
 import { z } from 'zod';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { designReferenceBindingSchema } from '../../design-compare/ratification';
+import { designCompareDepsFor } from '../../design-compare/host-install';
+import { listAllWorkItemsForFileExport } from '../../work-items';
 import {
   DesignGateUnavailableError,
   evaluateFeatureDesignGate,
@@ -163,7 +165,7 @@ export async function designEvidenceCompletionGate(
           reason = 'approval-reference-replaced';
         }
         if (reason) {
-          failures.push({ featureId, referenceIds: [reference.referenceId], enforced });
+          failures.push({ featureId, referenceIds: [reference.referenceId], enforced: Boolean(approval?.acceptance) || enforced });
           reports.push(`design '${featureId}': ${reason} for '${reference.referenceId}'. Bind the implementing item to the exact approved revision and image hash; changing the image requires reviewed re-approval.`);
         }
       }
@@ -197,7 +199,7 @@ export async function designEvidenceCompletionGate(
       // The refusal is driven by that subset rather than by `blocking` so an
       // unenforceable reference can never suppress a calibrated failure beside it.
       failures.push({
-        enforced: enforced && result.enforceableBlocking.length > 0,
+        enforced: result.blocking.some(ref => ref.acceptance?.satisfied === false) || (enforced && result.enforceableBlocking.length > 0),
         featureId,
         referenceIds: result.blocking.map((b) => b.referenceId),
       });
@@ -228,6 +230,50 @@ export async function designEvidenceCompletionGate(
   if (unavailable.length) return { status: 'unavailable', enforced, report };
   if (reports.length) return { status: 'satisfied', report };
   return { status: 'not-applicable' };
+}
+
+/** Shipment re-evaluates every implementing item, including already completed
+ * ones, so a later source/build change cannot inherit an old completion pass.
+ * The existing work-item resolver includes both canonical and legacy plan edges.
+ */
+export async function planDesignEvidenceGate(planSlug: string, harnessSlug: string, deps?: {
+  listItems?: typeof listAllWorkItemsForFileExport;
+  evaluate?: DesignEvidenceGateDeps['evaluate'];
+  isEnabled?: () => Promise<boolean>;
+  isEnforcing?: () => Promise<boolean>;
+}): Promise<DesignEvidenceGateOutcome[]> {
+  const evaluate = deps?.evaluate ?? (async (featureId: string) => {
+    const verbDeps = await designCompareDepsFor(harnessSlug);
+    return evaluateFeatureDesignGate(
+      { harnessSlug, featureId }, { store: verbDeps.store, verbDeps, caller: { actorId: 'plan-acceptance-gate', role: 'shipment-gate' } },
+    );
+  });
+  const items = await (deps?.listItems ?? listAllWorkItemsForFileExport)({ harness: harnessSlug, sourcePlanSlug: planSlug, includeChildren: true });
+  const flags = { isEnabled: deps?.isEnabled, isEnforcing: deps?.isEnforcing };
+  const outcomes: DesignEvidenceGateOutcome[] = [];
+  for (const item of items) {
+    outcomes.push(await designEvidenceCompletionGate(designFeatureCandidates({ id: item.id, sourcePlanSlug: planSlug }), {
+      evaluate, ...flags,
+      requiredReferences: item.payload && typeof item.payload === 'object' ? (item.payload as Record<string, unknown>).designReferences : undefined,
+      workScope: { planSlug, planItemIds: item.sourcePlanItemIds },
+    }));
+  }
+  // An approved plan reference without ANY implementing item must still fail.
+  // With items present their individual checks above enforce each scoped binding.
+  if (!items.length) outcomes.push(await designEvidenceCompletionGate([planSlug], { evaluate, ...flags, workScope: { planSlug } }));
+  else {
+    const plan = await evaluate(planSlug);
+    for (const ref of plan.references) {
+      const approval = ref.reference?.approval;
+      if (!approval?.acceptance || approval.planSlug !== planSlug) continue;
+      for (const itemId of approval.planItemIds) {
+        if (items.some(item => item.sourcePlanItemIds?.includes(itemId))) continue;
+        outcomes.push({ status: 'unsatisfied', enforced: true, featureId: planSlug,
+          blockingReferenceIds: [ref.referenceId], report: `design '${ref.referenceId}': missing implementing work-item registration for ${planSlug}#${itemId}` });
+      }
+    }
+  }
+  return outcomes;
 }
 
 /**

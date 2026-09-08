@@ -42,6 +42,13 @@ export interface DesignApprovalScope {
   readonly planItemIds: readonly string[];
   readonly targetRoute: string;
   readonly adaptations?: readonly { readonly reason: string; readonly approvalRef: string }[];
+  /** Adopt the journey/state gate by pinning its reviewed contract bytes. */
+  readonly acceptance?: {
+    readonly schemaVersion: 1;
+    readonly contractPath: string;
+    readonly contractSha256: string;
+    readonly evidencePath: string;
+  };
 }
 
 export const designApprovalScopeSchema = z.object({
@@ -54,6 +61,12 @@ export const designApprovalScopeSchema = z.object({
   adaptations: z.array(z.object({
     reason: z.string().trim().min(1), approvalRef: z.string().trim().min(1),
   }).strict()).max(32).optional(),
+  acceptance: z.object({
+    schemaVersion: z.literal(1),
+    contractPath: z.string().trim().min(1),
+    contractSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    evidencePath: z.string().trim().min(1),
+  }).strict().optional(),
 }).strict();
 
 /** Stored in the existing work-item payload.designReferences array. */
@@ -201,6 +214,9 @@ export function validateRatification(
 
   if (previous?.approval && !candidate.approval) {
     errors.push({ code: 'approval-downgrade', message: 'a new reference revision cannot remove its adopted approval contract' });
+  }
+  if (previous?.approval?.acceptance && !candidate.approval?.acceptance) {
+    errors.push({ code: 'approval-downgrade', message: 'a replacement revision cannot remove its adopted journey/state acceptance contract' });
   }
   if (previous?.approval && candidate.approval?.approvalRef === previous.approval.approvalRef) {
     errors.push({ code: 'invalid-approval', message: 'a replacement reference revision requires a new approvalRef; the original approval cannot authorize replacement bytes or scope' });

@@ -72,6 +72,7 @@ import {
   restoreVisibleMayShutdown,
   verifyFreshLaunchStarted,
   verifyResumeStarted,
+  type CodexModelSource,
   waitForPtyHostGone,
   type FleetMemberDefaults,
   type FreshLaunchVerdict,
@@ -721,6 +722,8 @@ export default defineTool({
     let resumeId: string | null = null;
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
+    let resumeModel: string | null = null;
+    let resumeModelSource: CodexModelSource | null = null;
     let successorBrief: string | null = null;
     const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
     let fork = !!args.fork;
@@ -738,6 +741,14 @@ export default defineTool({
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
+      resumeModel = target.model;
+      // A legacy Codex launch may have recorded a model without the newer
+      // provenance flag, or no model at all. Preserve the recorded model as an
+      // inherited choice; when it is absent, make the configured-default
+      // authority explicit so psu never falls through to its native default.
+      if (target.agent === 'codex') {
+        resumeModelSource = target.modelSource ?? (target.model ? 'inherited' : 'configured-default');
+      }
       // EI-21725123573114023: an IN-PLACE resume whose resolved target carries no
       // coord owner id is structurally unverifiable, and BOTH safety rails below
       // are keyed on that id — so they disengage silently rather than failing:
@@ -1395,7 +1406,13 @@ export default defineTool({
               sessionId: resumeSessionId,
               resumeId,
               account: args.account ?? null,
-              model: args.model ?? null,
+              // Resume/fork does not pass --agent, but the command builder
+              // still needs the recorded backend to apply Codex's model
+              // policy. The target's model is the durable fallback when the
+              // caller did not explicitly override it.
+              agent: resumeAgent,
+              model: args.model ?? resumeModel,
+              modelSource: args.model ? 'explicit' : resumeModelSource,
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
               launchMode,
