@@ -755,6 +755,7 @@ describe('testing:run (integration)', () => {
       testNamePattern: 'suite > --focused test',
       workspaceId: 'papercusp-workspace',
       harnessSlug: 'papercusp',
+      timeoutMs: 900_000,
     });
 
     expect(request).toMatchObject({
@@ -762,6 +763,7 @@ describe('testing:run (integration)', () => {
       command: process.execPath,
       cwd: REPO_ROOT,
       filePath: 'packages/example.test.ts',
+      runtimeMaxSec: 900,
     });
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),

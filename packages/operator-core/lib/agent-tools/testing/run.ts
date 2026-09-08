@@ -187,6 +187,7 @@ export function buildDetachedTestRunRequest(opts: {
   testNamePattern?: string;
   workspaceId?: string;
   harnessSlug?: string;
+  timeoutMs?: number;
 }): SpawnRequest {
   // An explicit Vitest reporter replaces the reporters declared by the workspace config.
   // Detached recovery does not need the foreground JSON report, but it MUST retain the
@@ -208,6 +209,9 @@ export function buildDetachedTestRunRequest(opts: {
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
+    ...(opts.timeoutMs && opts.timeoutMs > 0
+      ? { runtimeMaxSec: Math.max(1, Math.ceil(opts.timeoutMs / 1000)) }
+      : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -1694,6 +1698,7 @@ export async function runTestFilesCore(opts: {
               ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
               ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
               ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+              timeoutMs,
             }),
           )
         : undefined;
