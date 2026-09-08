@@ -769,6 +769,7 @@ export default defineTool({
     if (dispatchArgs.resumeAdmission) {
       const identity = resolveAgentIdentity(ctx);
       const { requestAdmissionRecovery, AdmissionRecoveryRefused } = await import('../../../work-item-admission-recovery');
+      const { bindAdmissionAuthority, AdmissionAuthorityRefused } = await import('../../../work-item-admission-authority');
       const { resolveStableAgentTarget } = await import('../actionable-work-item-dispatch');
       try {
         if (!identity.workspaceId) throw new AdmissionRecoveryRefused('recovery requires a concrete caller workspace');
@@ -778,12 +779,12 @@ export default defineTool({
         const result = await requestAdmissionRecovery({
           workspaceId: identity.workspaceId, harnessSlug: dispatchArgs.harness!,
           workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: target.ownerId,
-          authority: (ctx as import('../../../work-item-admission-authority').AdmissionAuthorityContext).admissionRecoveryAuthority,
+          authority: bindAdmissionAuthority(ctx),
           note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
         });
         return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
       } catch (error) {
-        if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+        if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) throw error;
         return { content: [{ type: 'text' as const, text: JSON.stringify({
           ok: false, error: 'admission_recovery_refused', reason: error.message,
           workItemId: dispatchArgs.workItemIds![0], responsibleActor: identity.ownerId,

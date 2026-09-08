@@ -100,7 +100,13 @@ await import('./agent-tools/work_items/claim');
 await import('./agent-tools/work_items/pickup');
 const { inProcessCall } = await import('./agent-tools/_compound-dispatch');
 const { synthesizeDispatchPrincipal } = await import('./endpoint-route/routes/transport/role-principal-caps');
-const { admissionCredentialDigest } = await import('./work-item-admission-authority');
+const { admissionCredentialDigest, admissionReplayContext } = await import('./work-item-admission-authority');
+const originalContext = {
+  workspaceId: 'default', harnessSlug: 'original-harness', profile: 'engineer' as const,
+  runId: 'original-run', spawnId: 'original-spawn', parentSpawnId: 'original-parent',
+  chunkId: 'original-chunk', featureId: 'original-feature', planRunSessionId: null,
+  transport: 'mcp' as const,
+};
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 
 let db: FreshPgDb;
@@ -170,10 +176,44 @@ function request(id: string) {
     note: 'Review original work', body: 'Report findings; do not implement.',
     authority: {
       kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0,
+      context: originalContext,
       credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)),
     },
   });
 }
+
+describe('original authority context fidelity', () => {
+  it('retains original harness/run/chunk/spawn instead of substituting the item scope', async () => {
+    const ctx = await admissionReplayContext(db.sql, { ...scope, workItemId: 'WI-context' }, 'requester', {
+      kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0, context: originalContext,
+      credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)),
+    });
+    expect(ctx).toMatchObject({ ...originalContext, uiClientId: 'requester' });
+  });
+
+  it('refuses credential-only legacy bindings rather than inventing quota context', async () => {
+    await expect(admissionReplayContext(db.sql, { ...scope, workItemId: 'WI-context' }, 'requester', {
+      kind: 'superuser', role: 'operator', credentialSha256: admissionCredentialDigest(h.suToken),
+    })).rejects.toThrow('original dispatch context missing');
+  });
+
+  it('detects signed context tampering and repairs the same request through fresh authority', async () => {
+    const original = await create();
+    const first = await request(original.id);
+    await db.sql`UPDATE harness_shared.work_items SET payload =
+      jsonb_set(payload, '{_admissionRecovery,authority,context,runId}', '"tampered"')
+      WHERE feature_id = ${original.id}`;
+    await tick();
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      state: 'held', stage: 'authorize', reason: expect.stringContaining('provenance is invalid'),
+    });
+    expect(h.claim).not.toHaveBeenCalled();
+    const repair = await request(original.id);
+    expect(repair.request.requestId).toBe(first.request.requestId);
+    expect(repair.request.authority?.context).toEqual(originalContext);
+  });
+});
+
 function dispatch(args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) {
   return assignAndWakeActionableWorkItems(args, {
     observe: wi.observeWorkItem, claim: h.claim, authorize: authorizeWorkItemDispatch,
@@ -261,7 +301,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     const original = await create();
     await expect(requestAdmissionRecovery({
       ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
-      authority: { kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 1,
+      authority: { kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 1, context: originalContext,
         credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)) },
     })).rejects.toThrow('expired');
     await request(original.id);
@@ -280,7 +320,8 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     await db.sql`TRUNCATE harness_shared.system_principals`;
     await requestAdmissionRecovery({
       ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
-      authority: { kind: 'superuser', role: 'operator', credentialSha256: admissionCredentialDigest(h.suToken) },
+      authority: { kind: 'superuser', role: 'operator', context: originalContext,
+        credentialSha256: admissionCredentialDigest(h.suToken) },
     });
     h.suToken = 'test-only-rotated-bearer-not-a-real-credential';
     await tick();

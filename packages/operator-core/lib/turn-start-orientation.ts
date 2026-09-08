@@ -725,6 +725,11 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
     const omitted = state.obligations.projection.receipt.entriesOmitted;
     if (omitted > 0) {
       lines.push(`- obligations: +${omitted} omitted — ${state.obligations.detailRef}`);
+    } else if (projectedLines.length > 0) {
+      // An inner-complete projection can still lose its action at the outer
+      // budget. Keep recovery ahead of that action without claiming an omission
+      // that the final composer has not yet measured.
+      lines.push(`- obligations: ${state.obligations.detailRef}`);
     }
     lines.push(...projectedLines);
   }

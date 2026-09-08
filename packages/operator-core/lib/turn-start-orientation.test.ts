@@ -268,6 +268,35 @@ describe('turn-start-orientation — when it speaks', () => {
     expect(orientationUnchanged(a, b)).toBe(false);
   });
 
+  it('keeps recovery when only the outer envelope omits an obligation', () => {
+    const brief = obligationBrief();
+    brief.projection.text = `- [DUE] ${'load-bearing owner-report action '.repeat(10).trim()}`;
+    brief.projection.receipt.entriesAvailable = 1;
+    brief.projection.receipt.entriesDelivered = 1;
+    brief.projection.receipt.entriesOmitted = 0;
+    brief.projection.receipt.bodyTruncated = false;
+    const state: OrientationState = {
+      ...withWork,
+      loopArmed: false,
+      obligations: brief,
+      toolSurface: { hookCalls: 22, windowMinutes: 5 },
+      openAsks: { count: 4, oldestAgeMs: 90_000, oldestTo: 'su-peer-awaiting-review' },
+      neverDropFacts: ['guard-rail:current-owner-request-remains-open'],
+    };
+
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+
+    expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
+    expect(out).toContain('directed msg(s) awaiting YOUR reply');
+    expect(out).not.toContain(brief.projection.text);
+    expect(out).toContain(brief.detailRef);
+    const prior = fingerprintOrientation(
+      { ...state, obligations: obligationBrief('agenda-before') },
+      EPOCH,
+    );
+    expect(fingerprintDeliveredOrientation(state, EPOCH, prior, out).obligations).toBe('agenda-before');
+  });
+
   it('a withheld-fire state change re-emits while the loop remains armed', () => {
     const committed = fingerprintOrientation(withWork, EPOCH);
     expect(

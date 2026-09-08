@@ -1,23 +1,33 @@
 /** Transport-authenticated identity for original-item recovery. No saved grants or bearers. */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { lookupByMcpName, papercuspGateBypass, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { DEFAULT_DISPATCH_STACK, runDispatchStack, withReplacedStep } from '@papercusp/tooldef';
+import { preflightDispatchStack } from '@papercusp/tooldef';
 import { decodeOperatorSecretKey } from './operator-secret-key';
 import { readSuperuserToken } from './superuser-token';
 import { synthesizeDispatchPrincipal } from './endpoint-route/routes/transport/role-principal-caps';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 import type { AdmissionRecoveryScope } from './work-item-admission-recovery';
 
+const admissionContextSchema = z.object({
+  workspaceId: z.string().min(1), harnessSlug: z.string().min(1),
+  profile: z.enum(['engineer', 'power']),
+  runId: z.string().min(1), spawnId: z.string().min(1),
+  parentSpawnId: z.string().nullable(), chunkId: z.string().nullable(),
+  featureId: z.string().nullable(), planRunSessionId: z.string().nullable(),
+  transport: z.literal('mcp'),
+  codeMode: z.boolean().optional(),
+}).strict();
 export const admissionAuthoritySchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('superuser'), credentialSha256: z.string().regex(/^[a-f0-9]{64}$/),
-    role: z.string().min(1),
+    role: z.string().min(1), context: admissionContextSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal('signed-spawn'), credentialSha256: z.string().regex(/^[a-f0-9]{64}$/),
     role: z.string().min(1), expiresAtSec: z.number().finite().nonnegative(),
+    context: admissionContextSchema.optional(),
   }).strict(),
 ]);
 export type AdmissionRecoveryAuthority = z.infer<typeof admissionAuthoritySchema>;
@@ -27,6 +37,33 @@ export const admissionCredentialDigest = (bytes: string | Buffer): string =>
   createHash('sha256').update(bytes).digest('hex');
 
 export class AdmissionAuthorityRefused extends Error {}
+
+/** Called on the authenticated dispatch context, never on caller-supplied args. */
+export function bindAdmissionAuthority(
+  ctx: UnifiedToolContext & AdmissionAuthorityContext,
+): AdmissionRecoveryAuthority | undefined {
+  if (!ctx.admissionRecoveryAuthority) return undefined;
+  // A persisted activation/ownership snapshot is NOT a current kernel grant.
+  // Until a renewable source exists for those seats, refuse instead of silently
+  // dropping them (or promoting old snapshots into live authority).
+  if (ctx.kernelState || ctx.kernelOwnership || ctx.kernelBoundary || ctx.dispatchBoundary ||
+      ctx.requestedExecutionRevision || ctx.appliedExecutionRevision || ctx.reactionCause ||
+      ctx.telemetrySurface) {
+    throw new AdmissionAuthorityRefused('explicit kernel/reaction dispatch context is not renewable for admission recovery');
+  }
+  const bound = admissionAuthoritySchema.safeParse({
+    ...ctx.admissionRecoveryAuthority,
+    context: {
+      workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug,
+      profile: ctx.profile ?? 'engineer', runId: ctx.runId, spawnId: ctx.spawnId,
+      parentSpawnId: ctx.parentSpawnId ?? null, chunkId: ctx.chunkId ?? null,
+      featureId: ctx.featureId ?? null, planRunSessionId: ctx.planRunSessionId ?? null,
+      transport: ctx.transport, ...(ctx.codeMode !== undefined ? { codeMode: ctx.codeMode } : {}),
+    },
+  });
+  if (!bound.success) throw new AdmissionAuthorityRefused('original authenticated dispatch context is incomplete');
+  return bound.data;
+}
 
 /**
  * Renew the ORIGINAL authenticated credential, then rebuild CURRENT grants. A role
@@ -39,6 +76,10 @@ export async function admissionReplayContext(
   const parsed = admissionAuthoritySchema.safeParse(value);
   if (!parsed.success) throw new AdmissionAuthorityRefused('authenticated recovery binding missing; retry this same item through its authenticated dispatch door');
   const authority = parsed.data;
+  if (!authority.context) throw new AdmissionAuthorityRefused('original dispatch context missing; renew this same item through authenticated dispatch');
+  if (authority.context.workspaceId !== scope.workspaceId) {
+    throw new AdmissionAuthorityRefused('original dispatch workspace does not match the recovery workspace');
+  }
   const isSuperuser = authority.kind === 'superuser';
   if (isSuperuser) {
     const token = readSuperuserToken();
@@ -56,14 +97,13 @@ export async function admissionReplayContext(
     }
   }
   return {
-    workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, uiClientId: caller,
+    ...authority.context, uiClientId: caller,
     role: authority.role as UnifiedToolContext['role'], isSuperuser, sigVerifiedSpawn: !isSuperuser,
     principal: await synthesizeDispatchPrincipal(sql, {
       workspaceId: scope.workspaceId, role: authority.role, isSuperuser, sigVerifiedSpawn: !isSuperuser,
     }),
     // Recompute today's policy; never deserialize a stored bypass or capability list.
     gateBypass: papercuspGateBypass({ isSuperuser, isPowerUser: false, role: authority.role }),
-    transport: 'in_process', runId: `admission-authority:${randomUUID()}`,
     signal: new AbortController().signal, log: () => {}, emit: () => {}, progress: () => {},
   };
 }
@@ -79,9 +119,6 @@ export async function authorizeAdmissionReplay(
   // synthetic "permission tool" whose declarations can drift from the real tools.
   await import('./agent-tools/coordination/tools/dispatch');
   await import('./agent-tools/work_items/claim');
-  const stack = withReplacedStep(DEFAULT_DISPATCH_STACK, 'invoke', async () => ({
-    ok: true, result: { content: [] },
-  }));
   for (const [name, input] of [
     ['coord:dispatch', {
       to: request.target, harness: scope.harnessSlug, workItemIds: [scope.workItemId],
@@ -92,13 +129,11 @@ export async function authorizeAdmissionReplay(
   ] as const) {
     const tool = lookupByMcpName(name);
     if (!tool) throw new AdmissionAuthorityRefused(`canonical ${name} definition unavailable`);
+    if (ctx.profile === 'power' && tool.profile === 'engineer') {
+      throw new AdmissionAuthorityRefused(`${name}: tool_not_available_for_profile`);
+    }
     const verdict = await runWithWorkspaceIfConcrete(scope.workspaceId, () =>
-      runDispatchStack(tool, name, input, ctx, {
-        ...PROJECTED_DEPS,
-        // Preserve authorization auditing, but do not mint success telemetry,
-        // fire post-invoke reactions or mark a no-handler probe as real work.
-        onDispatchStart: undefined, recordInvocation: undefined, postInvoke: undefined,
-      }, stack));
-    if (!verdict.ok) throw new AdmissionAuthorityRefused(`${name}: ${verdict.error?.message ?? 'current authority denied'}`);
+      preflightDispatchStack(tool, name, input, ctx, PROJECTED_DEPS));
+    if (!verdict.allowed) throw new AdmissionAuthorityRefused(`${name}: ${verdict.error?.message ?? 'current authority denied'}`);
   }
 }

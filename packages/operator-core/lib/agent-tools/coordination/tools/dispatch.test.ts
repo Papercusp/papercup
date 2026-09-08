@@ -43,6 +43,8 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
   };
   const context = {
     uiClientId: 'su-requester', isSuperuser: true, workspaceId: 'ws-recovery',
+    harnessSlug: 'original-harness', profile: 'engineer', transport: 'mcp',
+    runId: 'original-run', spawnId: 'original-spawn', chunkId: 'original-chunk',
     admissionRecoveryAuthority: { kind: 'superuser', role: 'operator', credentialSha256: 'a'.repeat(64) },
   };
   const call = async (args = base, ctx = context) => {
@@ -76,7 +78,11 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     expect(recoveryIO.request).toHaveBeenCalledWith({
       workspaceId: 'ws-recovery', harnessSlug: 'papercusp', workItemId: 'WI-original',
       caller: 'su-requester', target: 'su-reviewer',
-      authority: context.admissionRecoveryAuthority,
+      authority: { ...context.admissionRecoveryAuthority, context: {
+        workspaceId: 'ws-recovery', harnessSlug: 'original-harness', profile: 'engineer',
+        transport: 'mcp', runId: 'original-run', spawnId: 'original-spawn', chunkId: 'original-chunk',
+        parentSpawnId: null, featureId: null, planRunSessionId: null,
+      } },
       note: base.note, body: 'Independent review only; no implementation',
     });
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });

@@ -29,13 +29,14 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
 import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import type { BuiltSpawnContext, McpCallResult } from '../routes/transport/_mcp-handler';
+import { bindAdmissionAuthority, admissionCredentialDigest } from '../../work-item-admission-authority';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -131,7 +132,7 @@ const h = vi.hoisted(() => {
     }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
-      async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
+      async (_u: unknown): Promise<{ ok: boolean; reason?: string; keySha256?: string }> => ({ ok: true }),
     ),
     logVerificationFailure: vi.fn(async (_rec: unknown): Promise<void> => {}),
     verifyAccessToken: vi.fn(
@@ -140,6 +141,7 @@ const h = vi.hoisted(() => {
     isValidSuperuserBearer: vi.fn(
       (bearer: string | null | undefined): boolean => bearer === 'test-su-bearer',
     ),
+    resolveBearer: vi.fn(async (_bearer: string | null): Promise<Principal | null> => null),
     /** SID→adv-row workspace fallback seam (psu-workspace-scoping fix). */
     workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
     /** Durable session-brief harness fallback seam for resumed SU sessions. */
@@ -281,6 +283,12 @@ vi.mock('../../superuser-token', async (importOriginal) => {
   // isLoopbackRequest stays REAL (pure header logic — part of the matrix).
   return { ...actual, isValidSuperuserBearer: h.isValidSuperuserBearer };
 });
+// PI authentication is the only additional external seam. The MCP context
+// builder, capability gate, real ask-choice handler and card correlator run.
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  resolveBearer: h.resolveBearer,
+}));
 vi.mock('../../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, workspaceForCoordOwner: h.workspaceForCoordOwner };
@@ -368,7 +376,7 @@ process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/gating-matrix-no-manifest.js
 delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
 const { __buildMcpToolContext_forTests } = await import('../routes/transport/_mcp-handler');
-const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool } =
+const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool, subscribeWorkspace, resolveCardResponse } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
 
@@ -709,6 +717,122 @@ async function callTool(
   )) as CallResult;
 }
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+describe('public Papercup PI card transport (EI-22679615443261276)', () => {
+  const principal: Principal = {
+    kind: 'pi', slug: 'pi:test-public-chat', workspaceId: 'ws-pi-card',
+    authMethod: 'bearer-token', trust: 'verified', capabilities: new Set(['chat:write']),
+  };
+  const cardInput = {
+    question: 'Two routes to a new app — which?',
+    options: JSON.stringify([
+      { id: 'template', label: 'From a template' },
+      { id: 'browse', label: 'Show me the templates' },
+    ]),
+  };
+  const piExtra = (workspace = principal.workspaceId) => extraFor(
+    `${MCP}?principal=pi&workspace=${workspace}&tools=chat%3Aask_choice`,
+    { authorization: 'Bearer test-pi-card-bearer' },
+  );
+
+  it('displays and answers an actual ask_choice through authenticated tools/call', async () => {
+    h.resolveBearer.mockResolvedValue(principal);
+    let correlationId: string | undefined;
+    let foreignAnswer: unknown;
+    let acceptedAnswer: unknown;
+    const off = subscribeWorkspace(principal.workspaceId, (frame) => {
+      const card = frame.snapshot.openCards?.[0];
+      if (!card || correlationId) return;
+      correlationId = card.correlationId;
+      foreignAnswer = resolveCardResponse({
+        correlationId, action: 'submit', payload: { picks: ['browse'] }, expectedWorkspaceId: 'another-workspace',
+      });
+      acceptedAnswer = resolveCardResponse({
+        correlationId, action: 'submit', payload: { picks: ['browse'] }, expectedWorkspaceId: principal.workspaceId,
+      });
+    });
+    try {
+      const result = await callTool('chat:ask_choice', cardInput, piExtra(), { format: 'json' });
+      expect(result.isError, textOf(result)).not.toBe(true);
+      expect(correlationId).toBeTruthy();
+      expect(foreignAnswer).toMatchObject({ ok: false, status: 404 });
+      expect(acceptedAnswer).toEqual({ ok: true });
+      expect(JSON.parse(textOf(result))).toMatchObject({
+        ok: true, picks: [{ option_id: 'browse', label: 'Show me the templates' }],
+      });
+      expect(h.resolveBearer).toHaveBeenCalledWith('test-pi-card-bearer');
+    } finally {
+      off();
+      if (correlationId) resolveCardResponse({ correlationId, action: 'cancel', expectedWorkspaceId: principal.workspaceId });
+    }
+  });
+
+  it('refuses invalid credentials and a workspace different from the authenticated principal', async () => {
+    const invalid = await callTool('chat:ask_choice', cardInput, piExtra());
+    expect(invalid.isError).toBe(true);
+    expect(textOf(invalid)).toContain('pi_principal_invalid_bearer');
+    h.resolveBearer.mockResolvedValue(principal);
+    const foreign = await callTool('chat:ask_choice', cardInput, piExtra('another-workspace'));
+    expect(foreign.isError).toBe(true);
+    expect(textOf(foreign)).toContain('pi_principal_workspace_mismatch');
+  });
+
+  it('keeps the independent chat:write capability gate', async () => {
+    h.resolveBearer.mockResolvedValue({ ...principal, capabilities: new Set() });
+    const result = await callTool('chat:ask_choice', cardInput, piExtra());
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('chat:write');
+  });
+});
+
+describe('authenticated admission binding through the real MCP handler', () => {
+  it('binds the resolved SU workspace and original ephemeral run, not a recovery UUID', async () => {
+    const result = await callTool('gatingtest:scoped', {}, superuserExtra('&workspace=ws-test&harness=papercup&sid=su-binding'));
+    expect(result.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    const ctx = seen[0]!.ctx;
+    expect(bindAdmissionAuthority(ctx)).toMatchObject({
+      kind: 'superuser', role: 'operator', credentialSha256: admissionCredentialDigest('test-su-bearer'),
+      context: { workspaceId: 'ws-test', harnessSlug: 'papercup', profile: 'engineer',
+        transport: 'mcp', runId: ctx.runId, spawnId: ctx.spawnId },
+    });
+  });
+
+  it('binds a verified signed spawn to its original run, chunk, feature and signer', async () => {
+    h.verifySpawnParams.mockResolvedValue({ ok: true, keySha256: 'a'.repeat(64) });
+    const result = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({
+      run: 'bound-run', spawn: 'bound-spawn', chunk: 'bound-chunk', feature: 'bound-feature',
+    })));
+    expect(result.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(bindAdmissionAuthority(seen[0]!.ctx)).toMatchObject({
+      kind: 'signed-spawn', role: 'scoper', credentialSha256: 'a'.repeat(64), expiresAtSec: 9999999999,
+      context: { runId: 'bound-run', spawnId: 'bound-spawn', chunkId: 'bound-chunk',
+        featureId: 'bound-feature', workspaceId: 'ws-test', transport: 'mcp' },
+    });
+  });
+
+  it('does not issue a renewable binding for an unsigned soft-allowed spawn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.verifySpawnParams.mockResolvedValue({ ok: false, reason: 'unsigned' });
+    try {
+      const result = await callTool('gatingtest:scoped', {}, extraFor(signedUrl({ sig: '', exp: '', spawn: 'admission-unsigned' })));
+      expect(result.isError).toBeUndefined();
+      expect(seen).toHaveLength(1);
+      expect(bindAdmissionAuthority(seen[0]!.ctx)).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('accepting UNSIGNED'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('retains an authenticated SU power-profile restriction', async () => {
+    const result = await callTool('gatingtest:scoped', {}, superuserExtra('&workspace=ws-test&profile=power'));
+    expect(result.isError).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(bindAdmissionAuthority(seen[0]!.ctx)?.context?.profile).toBe('power');
+  });
+});
 
 beforeEach(() => {
   vi.resetAllMocks(); // restores the vi.fn() originals, drops *Once queues
