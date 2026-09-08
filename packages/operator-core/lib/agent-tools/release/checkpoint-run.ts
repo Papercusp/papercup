@@ -66,6 +66,7 @@ import {
   ownershipContradicted,
 } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
 import { clampText, LIMITS, softText } from '../limits';
@@ -97,8 +98,7 @@ type SeeAlsoContext = { harnessSlug?: unknown };
 type CheckpointHandlerContext = { harnessSlug?: unknown; workspaceId?: unknown };
 
 function concreteCheckpointHarness(ctx: CheckpointHandlerContext): string {
-  const slug = typeof ctx.harnessSlug === 'string' ? ctx.harnessSlug.trim() : '';
-  return slug && slug !== '*' ? slug : operatorHomeHarnessSlug();
+  return resolveConcreteHarnessSlug(undefined, ctx) ?? operatorHomeHarnessSlug();
 }
 
 function concreteCheckpointWorkspace(ctx: CheckpointHandlerContext): string {
