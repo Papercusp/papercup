@@ -38,6 +38,7 @@ import {
   evaluateScorecardInstrumentContract,
   resolveScorecardReleaseGateBinding,
   scorecardRatingsClaimPass,
+  ratingVerdict,
   recordGradingAudit,
   scorecardEvidenceFingerprint,
   type ScorecardInstrumentSnapshot,
@@ -354,6 +355,25 @@ function validateSpecTestAdequacyBinding(
       error:
         `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires subject:{ kind:'plan', ref:'${expectedRef}' } ` +
         'matching rerunRecipe.selection (the evaluator-owned clause revision)',
+    };
+  }
+
+  // EI-22657636576670266: the evaluator deliberately returns freshness=unknown
+  // when current[] is omitted. A hand-edited or stale caller could nevertheless
+  // pair that recipe with a pass-like freshness rating, making an unmeasured
+  // proof look current in the persisted card. Refuse the contradiction before
+  // any rubric revision read, deduplication, checks, or ledger write. Use the
+  // shared rating vocabulary so aliases such as "healthy" cannot bypass it.
+  if (
+    parsedRecipe.data.current.supplied === false &&
+    ratingVerdict(args.ratings.freshness?.rating ?? '') === 'pass'
+  ) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot claim freshness='pass' when ` +
+        'rerunRecipe.current.supplied is false and derivation.unknownWhenMissing is true; ' +
+        "use freshness='unknown' or supply the evaluator's current fingerprints",
     };
   }
 
