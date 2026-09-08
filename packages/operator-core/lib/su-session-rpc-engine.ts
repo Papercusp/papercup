@@ -360,8 +360,15 @@ export function startSuRpcEngine(
       const id = string(state.sessionId);
       if (!id || nativeId() && id !== nativeId()) throw new Error('OMP did not return the requested native identity');
       const toolNames = Array.isArray(state.dumpTools) ? state.dumpTools.map((tool) => string(object(tool).name)) : [];
-      if (!toolNames.some((name) => /papercusp/i.test(name))) {
-        throw new Error(`OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'})`);
+      // OMP's current runtime mounts connected MCP tools as xd:// devices;
+      // dumpTools lists only top-level tools. The separate generated mapping
+      // block comes from its live MCP route registry, not the launch config.
+      const mountedRoutes = (Array.isArray(state.systemPrompt) ? state.systemPrompt : [])
+        .filter((part): part is string => typeof part === 'string' && part.startsWith('## MCP Tool Routes\n'))
+        .flatMap((part) => part.match(/xd:\/\/[^`\s]+/g) ?? []);
+      const suRoute = mountedRoutes.some((route) => /papercusp[-_]su/i.test(route));
+      if (!toolNames.some((name) => /papercusp/i.test(name)) && !suRoute) {
+        throw new Error(`OMP SU tools are not connected (available: ${toolNames.slice(0, 30).join(', ') || 'none'}; mounted: ${mountedRoutes.slice(0, 8).join(', ') || 'none'})`);
       }
       nativePath = string(state.sessionFile) || null;
       native = { ...native as OmpNativeSessionHandle, ompThreadId: id, exactResumeSupported: false, missingReason: 'Checking native persistence' };

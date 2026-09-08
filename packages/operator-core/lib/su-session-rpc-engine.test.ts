@@ -257,6 +257,16 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
   });
 });
 
+it('recognizes OMP connected MCP devices that are not top-level tools', async () => {
+  const f = fixture('omp', { request: async (frame) => frame.type === 'get_state' ? {
+    sessionId: 'native-omp', sessionFile: '/configured/omp/session.jsonl',
+    model: { provider: 'openai', id: 'omp-model' }, dumpTools: [{ name: 'read' }, { name: 'write' }],
+    systemPrompt: ['SU instructions', '## MCP Tool Routes\n\n- tools:invoke → `xd://mcp_papercusp-su_tools_invoke`'],
+  } : undefined });
+  await f.engine.ready;
+  expect(f.engine.adapter.host.snapshot().streamReady).toBe(true);
+});
+
 it('rejects a Codex approval from a different thread before opening a card', async () => {
   const f = fixture('codex'); await f.engine.ready;
   expect(() => f.emit({ id: 'wrong', method: 'item/commandExecution/requestApproval',
