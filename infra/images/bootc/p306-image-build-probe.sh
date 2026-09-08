@@ -51,7 +51,18 @@ echo "P306_IMAGE_BUILD_PROBE start $(date -u +%FT%TZ)"
 
 sect "1. build"
 if podman build -f "$HERE/workspace-host.Containerfile" -t "$TAG" "$HERE" >/tmp/p306-build.log 2>&1; then
-  pass "image builds ($(grep -c '^STEP' /tmp/p306-build.log) steps)"
+  build_steps="$(grep -Ec '^(\[[0-9]+/[0-9]+\][[:space:]]+)?STEP[[:space:]]' /tmp/p306-build.log || true)"
+  if (( build_steps > 0 )); then
+    pass "image builds ($build_steps steps)"
+  else
+    fail "image build emitted no recognizable STEP lines — build-progress instrument is blind"
+  fi
+  if grep -Eq 'scriptlet failed, exit status|Error in (PREIN|POSTIN|PREUN|POSTUN) scriptlet' \
+       /tmp/p306-build.log; then
+    fail "image build hid an RPM scriptlet failure behind exit 0 — see /tmp/p306-build.log"
+  else
+    pass "image build contains no RPM scriptlet failures"
+  fi
 else
   fail "image build FAILED — see /tmp/p306-build.log"
   echo "P306_IMAGE_BUILD_PROBE PROBE_RESULT=FAIL (build)"
@@ -217,18 +228,31 @@ for u in papercusp-host-prepare.service nftables.service dnf-automatic.timer \
 done
 # The guest agent activates OS Login dynamically from instance metadata on the
 # booted host, so the image cannot honestly assert the generated sshd/PAM text.
-# It can and must prove that the executable and PAM/NSS payload needed for that
-# activation survived the build, and that the Google repository cannot update
-# the immutable deployment behind bootc's back.
-for f in /usr/bin/google_authorized_keys \
-         /usr/lib64/security/pam_oslogin_login.so \
-         /usr/lib64/libnss_oslogin.so.2; do
-  if [[ "$(in_image "test -x $f && echo y")" == "y" ]]; then
-    pass "OS Login payload executable: $f"
+# It can and must prove that the helper executable and readable PAM/NSS shared
+# objects survived the build. Shared objects are mmap'd data and correctly ship
+# 0644 (the NSS entry is a symlink); requiring `-x` is a false failure.
+if [[ "$(in_image 'test -x /usr/bin/google_authorized_keys && echo y')" == "y" ]]; then
+  pass "OS Login helper executable: /usr/bin/google_authorized_keys"
+else
+  fail "OS Login helper missing or non-executable: /usr/bin/google_authorized_keys"
+fi
+for f in /usr/lib64/security/pam_oslogin_login.so /usr/lib64/libnss_oslogin.so.2; do
+  if [[ "$(in_image "test -r $f && echo y")" == "y" ]]; then
+    pass "OS Login shared object readable: $f"
   else
-    fail "OS Login payload missing or non-executable: $f"
+    fail "OS Login shared object missing or unreadable: $f"
   fi
 done
+# google-compute-engine's %post must be replaced with a target-kernel dracut
+# regeneration in the Containerfile: bare `dracut --force` selects the build
+# host's kernel. Inspect the COMMITTED image through a file-backed listing; a
+# `lsinitrd | grep -q` pipe under pipefail exits 141 after a successful early
+# match and turns the guard into a false failure.
+if [[ "$(in_image 'set -e; found=0; for modules_dir in /usr/lib/modules/*; do test -d "$modules_dir" || continue; found=$((found + 1)); listing=$(mktemp); lsinitrd "$modules_dir/initramfs.img" > "$listing" 2>/dev/null; grep -Fq "65-gce-disk-naming.rules" "$listing"; rm -f "$listing"; done; test "$found" -gt 0; echo y')" == "y" ]]; then
+  pass "every committed initramfs carries the GCE disk-naming rule"
+else
+  fail "a committed initramfs lacks the GCE disk-naming rule"
+fi
 if [[ -n "$(in_image "grep -Fx 'enabled=0' /etc/yum.repos.d/google-cloud.repo")" ]]; then
   pass "Google guest repository is build-only (enabled=0)"
 else

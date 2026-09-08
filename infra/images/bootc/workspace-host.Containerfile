@@ -95,6 +95,17 @@ ARG PAPERCUSP_AGENT_GROUP=papercusp-agent
 # must not mutate /usr behind bootc's back. The metapackage deliberately omits
 # google-osconfig-agent: OS Config is a separate VM Manager surface and is not
 # required for the guest-agent-owned OS Login path exercised here.
+#
+# Two build-host traps are load-bearing here:
+#   * google-compute-engine's %post runs bare `dracut --force`, which targets
+#     `uname -r` (the CONTAINER HOST kernel) rather than this image's kernel.
+#     Install its runtime dependencies with their normal scriptlets, suppress
+#     only that metapackage scriptlet, then regenerate every IMAGE initramfs
+#     explicitly and prove the GCE udev rule reached it.
+#   * Buildah 1.33 on the supported builder uses fuse-overlayfs and its layer
+#     diff loses in-place rewrites of the RPM SQLite DB and initramfs. The files
+#     look correct inside RUN, then revert after COMMIT. Replace both with fresh
+#     inodes in this same layer; the P-306 probe checks the committed image.
 RUN set -eux; \
     printf '%s\n' \
       '[google-compute-engine]' \
@@ -112,9 +123,13 @@ RUN set -eux; \
          acl \
          ca-certificates \
          curl \
-         google-compute-engine \
+         dracut \
+         google-compute-engine-oslogin \
+         google-guest-agent \
          jq \
+         nvme-cli \
          openssh-server \
+         rsyslog \
          sudo \
          shadow-utils \
          policycoreutils \
@@ -140,6 +155,28 @@ RUN set -eux; \
          lz4-libs      `# liblz4.so.1     <- liblz4-1` \
          zlib          `# libz.so.1       <- zlib1g` \
          libzstd       `# libzstd.so.1    <- libzstd1` \
+    && dnf -y install --setopt=install_weak_deps=False \
+         --setopt=tsflags=noscripts \
+         --enablerepo=google-compute-engine \
+         google-compute-engine \
+    && found_kernel=0 \
+    && for modules_dir in /usr/lib/modules/*; do \
+         test -d "$modules_dir" || continue; \
+         found_kernel=$((found_kernel + 1)); \
+         kernel_version="${modules_dir##*/}"; \
+         initramfs="$modules_dir/initramfs.img"; \
+         test -f "$initramfs"; \
+         rebuilt="$(mktemp /tmp/papercusp-initramfs.XXXXXX.img)"; \
+         listing="$(mktemp /tmp/papercusp-initramfs.XXXXXX.list)"; \
+         dracut --force "$rebuilt" "$kernel_version"; \
+         lsinitrd "$rebuilt" > "$listing"; \
+         grep -Fq '65-gce-disk-naming.rules' "$listing"; \
+         mode="$(stat -c %a "$initramfs")"; \
+         rm -f "$initramfs"; \
+         install -m "$mode" "$rebuilt" "$initramfs"; \
+         rm -f "$rebuilt" "$listing"; \
+       done \
+    && test "$found_kernel" -gt 0 \
     && rpm -q google-compute-engine google-compute-engine-oslogin google-guest-agent \
     && systemctl enable google-guest-agent.service google-oslogin-cache.timer \
     && dnf clean all \
@@ -151,7 +188,17 @@ RUN set -eux; \
     `# it shadows the host's own state. A dnf repo cache baked into /var/lib/dnf is` \
     `# the "looks present, is not deployed" class this port keeps running into.` \
     && rm -rf /var/cache/dnf /var/lib/dnf /var/log/dnf.* /var/log/hawkey.log \
-              /var/log/rhsm /var/lib/rhsm /run/rhsm /var/cache/ldconfig
+              /var/log/rhsm /var/lib/rhsm /run/rhsm /var/cache/ldconfig \
+    && test "$(rpm --eval '%{_dbpath}')" = /usr/share/rpm \
+    && python3 -c 'import sqlite3; db = sqlite3.connect("/usr/share/rpm/rpmdb.sqlite"); result = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(); db.close(); assert result[0] == 0, result' \
+    && cp --reflink=never /usr/share/rpm/rpmdb.sqlite /tmp/papercusp-rpmdb.sqlite \
+    && rm -f /usr/share/rpm/rpmdb.sqlite \
+              /usr/share/rpm/rpmdb.sqlite-shm \
+              /usr/share/rpm/rpmdb.sqlite-wal \
+    && install -m 0644 /tmp/papercusp-rpmdb.sqlite /usr/share/rpm/rpmdb.sqlite \
+    && rm -f /tmp/papercusp-rpmdb.sqlite \
+    && rpm -q minisign dnf-automatic alsa-lib libatomic \
+              google-compute-engine google-compute-engine-oslogin google-guest-agent
 
 # ── Layer 2: the three identities (D-043 / D-248 / D-251) ─────────────────────
 #
