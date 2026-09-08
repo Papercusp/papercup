@@ -1390,6 +1390,7 @@ function pendingNativeCards() {
 
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
+  const readiness: Array<Record<string, unknown>> = [];
   const descriptors = new Map<string, SuSessionDescriptor>();
   const diagnostics: Array<{ level: string; args: unknown[] }> = [];
   const responses: Array<{ path: string; status: number }> = [];
@@ -1410,13 +1411,17 @@ async function startOperatorProcess(port = 0) {
   });
   child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
     events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
-    path: string; status: number }) => {
+    path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string;
+    before?: unknown[]; after?: unknown[]; body?: unknown }) => {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
     if (message.type === 'host') events.push(...message.events ?? []);
     if (message.type === 'event' && message.event) events.push(message.event);
     if (message.type === 'diagnostic') diagnostics.push({ level: message.level, args: message.args });
     if (message.type === 'response') responses.push({ path: message.path, status: message.status });
+    if (message.type === 'readiness') readiness.push({ path: message.path, method: message.method,
+      requestedAt: message.requestedAt, respondedAt: message.respondedAt, status: message.status,
+      before: message.before, after: message.after, body: message.body });
   });
   const stop = async () => {
     if (child.connected) child.send({ type: 'stop' });
@@ -1435,7 +1440,7 @@ async function startOperatorProcess(port = 0) {
       expect(ready, output).toBeDefined();
     }, { timeout: 120_000, interval: 100 });
   } catch (error) { await stop().catch(() => {}); throw error; }
-  return { ...ready!, events, descriptors, diagnostics, responses, stop, output: () => output };
+  return { ...ready!, events, descriptors, diagnostics, responses, readiness, stop, output: () => output };
 }
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
@@ -1538,6 +1543,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       frames.history = resumedPane.screen();
       const resumedReply = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
       resumedPane.write('Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.');
+      frames.beforeSubmit = resumedPane.screen();
       resumedPane.enter(); await resumedPane.waitForReply(resumedReply);
       const resumed = second.descriptors.get(chatId!);
       expect(resumed).toMatchObject({ identity: saved!.identity, model: saved!.model, accountRoute: saved!.accountRoute,
@@ -1547,9 +1553,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         && event.phase === 'completed' && resumedReply.test(event.content ?? ''))).toBe(true);
       console.info('PUI_OPERATOR_PROCESS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, manifest,
         first: { pid: first.pid, instanceId: first.instanceId }, second: { pid: second.pid, instanceId: second.instanceId },
-        port: second.port, saved, resumed, frames, diagnostics: [...first.diagnostics, ...second.diagnostics] }));
+        port: second.port, saved, resumed, frames, readiness: second.readiness,
+        diagnostics: [...first.diagnostics, ...second.diagnostics] }));
     } catch (error) {
-      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: second.output(), diagnostics: second.diagnostics, screen: resumedPane.screen() }));
+      console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: second.output(), diagnostics: second.diagnostics,
+        frames, readiness: second.readiness, screen: resumedPane.screen() }));
       throw error;
     } finally { await resumedPane.stop(); await second.stop(); }
   }, 600_000);
