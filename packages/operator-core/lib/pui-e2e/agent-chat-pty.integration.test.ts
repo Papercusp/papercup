@@ -1435,8 +1435,8 @@ async function startOperatorProcess(port = 0) {
       requestedAt: message.requestedAt, respondedAt: message.respondedAt, status: message.status,
       before: message.before, after: message.after, body: message.body });
   });
-  const stop = async () => {
-    if (child.connected) child.send({ type: 'stop' });
+  const stop = async ({ endSessions = true }: { endSessions?: boolean } = {}) => {
+    if (child.connected) child.send({ type: endSessions ? 'stop' : 'restart' });
     let timer: ReturnType<typeof setTimeout>;
     try {
       const result = await Promise.race([exit, new Promise<never>((_resolve, reject) => {

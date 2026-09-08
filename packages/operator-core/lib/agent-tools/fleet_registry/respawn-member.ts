@@ -153,7 +153,15 @@ export function reconcileRespawnLaunchTransaction(args: {
   }
   const governor = {
     version: 1 as const,
-    probeOwnerIds: replacement(priorGovernor?.probeOwnerIds ?? transaction.requestedMemberIds),
+    // A legacy live member can be absent from the current transaction's probe cohort.
+    // Merely replacing ids would then leave its freshly launched replacement unprobed too,
+    // so no later governor tick could collect typed worker readiness for that seat. Every
+    // respawn is a new boot and must enter the probe cohort regardless of whether the drained
+    // identity was previously eligible for attestation.
+    probeOwnerIds: addMemberId(
+      replacement(priorGovernor?.probeOwnerIds ?? transaction.requestedMemberIds),
+      replacementOwnerId,
+    ),
     attestationAttempts: Object.fromEntries(
       Object.entries(priorGovernor?.attestationAttempts ?? {})
         .filter(([ownerId]) => ownerId !== drainedOwnerId && ownerId !== replacementOwnerId),

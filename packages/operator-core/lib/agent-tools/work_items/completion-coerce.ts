@@ -419,6 +419,16 @@ export function coerceCompletionShape(raw: unknown): unknown {
     out[f] = coerceBooleanFlag(out[f]);
   }
 
+  // EI-22691088505562531: `duplicateOf` is optional, but callers that materialize
+  // every optional completion field commonly send an empty string for a non-duplicate
+  // close. The record schema correctly rejects an explicitly supplied non-empty-id
+  // field with an empty value; at this input boundary, a blank identifier has the same
+  // meaning as omission. Remove only blank strings so real duplicate IDs retain their
+  // exact value and still go through the normal target-resolution/accountability path.
+  if (typeof out.duplicateOf === 'string' && out.duplicateOf.trim() === '') {
+    delete out.duplicateOf;
+  }
+
   // derive a summary if the caller omitted it (after array-coercion, so whatLanded[0] is safe).
   if (typeof out.summary !== 'string' || !out.summary.trim()) {
     const wl = out.whatLanded;

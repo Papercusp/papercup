@@ -3431,6 +3431,19 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it.each(['', '   '])(
+      'EI-22691088505562531: treats blank optional duplicateOf %j as omission',
+      (duplicateOf) => {
+        const out = coerceCompletionShape({ summary: 's', duplicateOf }) as Record<string, unknown>;
+        expect(out).not.toHaveProperty('duplicateOf');
+      },
+    );
+
+    it('EI-22691088505562531: preserves a non-empty duplicateOf target', () => {
+      const out = coerceCompletionShape({ summary: 's', duplicateOf: 'EI-survivor' }) as Record<string, unknown>;
+      expect(out.duplicateOf).toBe('EI-survivor');
+    });
+
     it.each(['none', 'None', 'NONE', 'n/a', 'N/A', 'na', 'nil', 'null', 'nothing', 'no files', 'no files changed', 'no changes', 'no change', '-', '  none  '])(
       'EI-22166136861574482: normalizes the no-code-change sentinel %j to an empty filesChanged array, not a fabricated path',
       (sentinel) => {
@@ -4096,6 +4109,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completion.whatLanded).toEqual(['one file']);
       expect(r.completion.tests).toBe('5 green; vitest');
     });
+
+    it.each(['', '   '])(
+      'EI-22691088505562531: blank optional duplicateOf does not reject a non-duplicate close (%j)',
+      async (duplicateOf) => {
+        const r = await one({
+          id: 'WI-9',
+          state: 'resolved',
+          completion: { summary: 's', duplicateOf },
+        });
+        expect(r.ok).toBe(true);
+        expect(r.completion).not.toHaveProperty('duplicateOf');
+        expect(resolveWorkItemRef).not.toHaveBeenCalled();
+        expect(linkWorkItem).not.toHaveBeenCalled();
+      },
+    );
 
     it('a FLAT completion (fields on args, no wrapper) now records instead of tripping the refine', async () => {
       const r = await one({ id: 'WI-9', state: 'resolved', summary: 'landed flat', whatLanded: ['x.ts'] });

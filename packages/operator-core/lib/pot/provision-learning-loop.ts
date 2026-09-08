@@ -167,6 +167,33 @@ async function scoutRoutineScope(workspaceId: string, potSlug: string): Promise<
   return workspaceBrainScopeKey(workspaceId, potSlug, await isWorkspaceCoordinationOn());
 }
 
+/** Add dormant Dream controls to new or existing pots without retuning any learning lane. */
+export async function ensurePotDreamLearningLoop(input: {
+  sql: Sql;
+  workspaceId: string;
+  potSlug: string;
+  dreamManualCron?: string;
+  dreamAutoCron?: string;
+}): Promise<void> {
+  const { sql, workspaceId, potSlug } = input;
+  if (!workspaceId.trim() || !potSlug.trim()) throw new Error('Dream setup requires a workspace and pot.');
+  const rows = [
+    { mode: 'manual', name: POT_DREAM_MANUAL_ROUTINE_NAME, cron: input.dreamManualCron ?? DEFAULT_POT_DREAM_MANUAL_CRON },
+    { mode: 'auto', name: POT_DREAM_AUTO_ROUTINE_NAME, cron: input.dreamAutoCron ?? staggeredPotScoutCron(`${potSlug}:dream`) },
+  ] as const;
+  for (const row of rows) {
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
+         payload_template, concurrency, catchup, active, next_fire_at)
+      VALUES (${potDreamRoutineId(potSlug, row.mode)}, ${potSlug}, ${workspaceId}, ${row.name}, 'cron',
+              ${JSON.stringify({ cron: row.cron })}::text::jsonb, ${DREAM_CYCLE_TARGET_ROLE},
+              ${JSON.stringify({ mode: row.mode })}::text::jsonb, 'skip', 'skip-old', false, now())
+      ON CONFLICT (install_slug, name) DO NOTHING`;
+  }
+  await registerLearningLoop(sql, { ...dreamRegistrationInput({ workspaceId, potSlug }), ifMissing: true });
+}
+
 /**
  * Provision the learning-loop records. Both writes are dark/inactive; the
  * returned undo removes the rows we created. When the Scout routine already
@@ -235,40 +262,10 @@ export async function provisionPotLearningLoop(
   // separate default-OFF setting; its action additionally self-gates on owner
   // steering + measured idle capacity. DREAM_CYCLE gates the surface, not the
   // rows' activation state.
-  const dreamRows = [
-    {
-      id: potDreamRoutineId(potSlug, 'manual'),
-      name: POT_DREAM_MANUAL_ROUTINE_NAME,
-      cron: input.dreamManualCron ?? DEFAULT_POT_DREAM_MANUAL_CRON,
-      mode: 'manual',
-    },
-    {
-      id: potDreamRoutineId(potSlug, 'auto'),
-      name: POT_DREAM_AUTO_ROUTINE_NAME,
-      cron: input.dreamAutoCron ?? staggeredPotScoutCron(`${potSlug}:dream`),
-      mode: 'auto',
-    },
-  ] as const;
-  for (const dream of dreamRows) {
-    await sql`
-      INSERT INTO harness_shared.routines
-        (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
-         payload_template, concurrency, catchup, active, next_fire_at)
-      VALUES (${dream.id}, ${potSlug}, ${workspaceId}, ${dream.name}, 'cron',
-              ${JSON.stringify({ cron: dream.cron })}::text::jsonb, ${DREAM_CYCLE_TARGET_ROLE},
-              ${JSON.stringify({ mode: dream.mode })}::text::jsonb,
-              'skip', 'skip-old', false, now())
-      ON CONFLICT (install_slug, name) DO UPDATE SET
-        target_role = EXCLUDED.target_role,
-        trigger_config = EXCLUDED.trigger_config,
-        payload_template = EXCLUDED.payload_template,
-        workspace_id = EXCLUDED.workspace_id,
-        updated_at = now()`;
-  }
+  await ensurePotDreamLearningLoop(input);
   const dreamManualRoutine = true;
   const dreamAutoRoutine = true;
 
-  await registerLearningLoop(sql, dreamRegistrationInput({ workspaceId, potSlug }));
   const dreamGovernorRegistrant = true;
 
   const undo = async (): Promise<void> => {
@@ -280,12 +277,12 @@ export async function provisionPotLearningLoop(
     } catch {
       /* ignore */
     }
-    for (const dream of dreamRows) {
-      if (existingDreamNames.has(dream.name)) continue;
+    for (const name of [POT_DREAM_MANUAL_ROUTINE_NAME, POT_DREAM_AUTO_ROUTINE_NAME]) {
+      if (existingDreamNames.has(name)) continue;
       try {
         await sql`
           DELETE FROM harness_shared.routines
-           WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug} AND name = ${dream.name}`;
+           WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug} AND name = ${name}`;
       } catch {
         /* ignore */
       }

@@ -202,6 +202,9 @@ export function validateRatification(
   if (previous?.approval && !candidate.approval) {
     errors.push({ code: 'approval-downgrade', message: 'a new reference revision cannot remove its adopted approval contract' });
   }
+  if (previous?.approval && candidate.approval?.approvalRef === previous.approval.approvalRef) {
+    errors.push({ code: 'invalid-approval', message: 'a replacement reference revision requires a new approvalRef; the original approval cannot authorize replacement bytes or scope' });
+  }
   if (candidate.approval !== undefined) {
     const approval = designApprovalScopeSchema.safeParse(candidate.approval);
     if (!approval.success) {

@@ -320,6 +320,29 @@ describe('respawn launch-transaction persistence', () => {
     expect(original.recovery.retryOwnerIds).toEqual([MEMBER]);
   });
 
+  it('enrolls a replacement when the drained legacy member was absent from the probe cohort', () => {
+    const original = launchTransaction({
+      governor: {
+        version: 1,
+        probeOwnerIds: [],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    const reconciled = reconcileRespawnLaunchTransaction({
+      transaction: original,
+      drainedOwnerId: MEMBER,
+      replacementOwnerId: 'su-respawn-legacy',
+      now: 3_000,
+    });
+
+    expect(reconciled.governor?.probeOwnerIds).toEqual(['su-respawn-legacy']);
+    expect(original.governor?.probeOwnerIds).toEqual([]);
+  });
+
   it('persists a verified replacement with the observed transaction revision', async () => {
     getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
 

@@ -716,7 +716,7 @@ export function projectAcceptanceBarContractSnapshot(
       severity: 'error',
       detail: rubricPin
         ? `subject plan pins acceptance rubric '${rubricPin}'` +
-          `${plan?.rubricRevision == null ? '' : `@${plan.rubricRevision}`}` +
+          `${plan?.rubricRevision == null ? '' : ` at revision ${plan.rubricRevision}`}` +
           ' but this read returned no rubric rows — the rubric could not be RESOLVED here, ' +
           'which is not evidence that none exists'
         : 'the acceptance-rubric read failed, so whether a rubric exists is UNKNOWN, not absent',

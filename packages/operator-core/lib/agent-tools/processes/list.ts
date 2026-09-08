@@ -169,10 +169,10 @@ export default defineTool({
   // removing one — the D-010 failure this gate exists to prevent (see WI-6464 and the exemption's
   // reason-class (ii)). Revisit the moment a SECOND surface derives the inventory independently.
   description:
-    'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, cumulative CPU time, sampled current CPU busy percentage, RSS/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
+    'Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative).',
   capability: 'intel:read',
   guidance: {
-    when: 'You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to "is my background job still alive" for anything started through managedSpawn.',
+    when: 'You want to know WHAT IS RUNNING AND WHY — who started a job, what a work-item costs, which task uses CPU or memory, whether anything bypassed the spawn chokepoint, or whether a managedSpawn job is still alive.',
     notWhen:
       "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
     chaining:

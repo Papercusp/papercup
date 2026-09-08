@@ -110,6 +110,68 @@ describe('boot-all — substrate orchestrator', () => {
       loadHarnessRegistryMock.mockResolvedValue({ projects: [] });
     }
   });
+
+  // WI-10000734 regression. Each getGitServingCapability MINTS a capability whose
+  // 30s lease starts at ITS OWN mint moment, but the whole batch is published only
+  // when the pass ends — so a SERIAL pass burns the lease of everything minted
+  // early. Measured on the live box: ~70 entries, ~94s pass, 43/43 capabilities
+  // expired on arrival, pot-git serving permanently unavailable, hive canonical and
+  // origin/staging frozen ~5h. Asserting OBSERVED CONCURRENCY (not elapsed time)
+  // keeps this deterministic: a wall-clock budget would flake on a loaded box, which
+  // is precisely the condition this test exists to survive.
+  it('WI-10000734: mints serving capabilities in PARALLEL (bounded), so the pass cannot outlive the 30s lease', async () => {
+    const hiveStore = await import('../../../hive-store');
+    const hive = vi.spyOn(hiveStore, 'getHiveBySlug').mockResolvedValue({ pubkeyBase64: 'stable-hive' } as Awaited<ReturnType<typeof hiveStore.getHiveBySlug>>);
+    const ENTRIES = 24;
+    const slugs = Array.from({ length: ENTRIES }, (_, i) => `repo-${String(i).padStart(2, '0')}`);
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: slugs.map(slug => ({ slug, hive_slug: 'home', path: `/${slug}` })),
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    for (const slug of slugs) {
+      const handle = fakeHandle('ws', slug);
+      handle.getGitServingCapability = async (request) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        try {
+          // A real timer, so every worker slot is occupied before any completes.
+          await new Promise(resolve => setTimeout(resolve, 5));
+          const now = Date.now();
+          return { status: 'ready', capability: { ...request, v: 1, runtimeId: 'home-owner',
+            identity: { devicePubkeyBase64: 'home-device', githubUserId: 42, keychainId: 'home-key' },
+            context: { ...request.scope, store_generation: 'sg2-1-' + 'a'.repeat(40) },
+            issuedAtMs: now, expiresAtMs: now + 30_000 } };
+        } finally {
+          inFlight -= 1;
+        }
+      };
+      _setHandleForTests('ws', slug, handle);
+    }
+
+    try {
+      const ads = await listGitServingCapabilities();
+
+      // The property that failed in production: mints must overlap.
+      expect(maxInFlight).toBeGreaterThan(1);
+      // ...and stay bounded, so restoring parallelism cannot stampede the keychain.
+      expect(maxInFlight).toBeLessThanOrEqual(8);
+      // Every entry still advertised, in registry order (mapWithConcurrency is
+      // order-preserving; a hand-rolled fan-out would silently scramble this).
+      expect(ads).toHaveLength(ENTRIES);
+      expect(ads.map(a => a.request.installSlug)).toEqual(slugs);
+      expect(ads.every(a => a.state.status === 'ready')).toBe(true);
+      // One hive read per DISTINCT pot home. The old `if (!hives.has(slug))` memo
+      // was only safe while the pass was serial; resolving up front must preserve
+      // the single-read property without a check-then-await race.
+      expect(hive).toHaveBeenCalledTimes(1);
+    } finally {
+      hive.mockRestore();
+      loadHarnessRegistryMock.mockResolvedValue({ projects: [] });
+    }
+  });
+
   it('getBootedHarness returns null when not booted', () => {
     expect(getBootedHarness('ws-1', 'papercup')).toBeNull();
   });

@@ -788,6 +788,8 @@ describe('BAR reporting-layer repairs (bar-reporting-layer-repairs-2026-09-07)',
       );
 
       expect(problem?.detail).toContain('acceptance-plan-a');
+      expect(problem?.detail).toContain('at revision 2');
+      expect(problem?.detail).not.toContain('acceptance-plan-a@2');
       expect(problem?.detail).toContain('not evidence that none exists');
     });
 

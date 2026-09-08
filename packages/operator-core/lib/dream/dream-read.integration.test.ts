@@ -6,6 +6,8 @@ import { createDreamCapabilityFixture } from '../../test/dream-capability-fixtur
 import { projectDreamDetail, readDreamDetail, readDreamHistory } from './dream-read';
 import { computeDreamMetrics, readDreamMetrics } from './dream-metrics';
 import type { DreamCapabilityRun } from './dream-run-provenance';
+import { readDreamControlSnapshot } from './dream-control';
+import { getLearningLoop, registerLearningLoop } from '../learning-governor/store';
 
 const scope = { workspaceId: 'dream-history-test', potSlug: 'pot-a', since: '2026-09-07T00:00:00Z', until: '2026-09-08T00:00:00Z' };
 describe('Analyze Dream history (real PostgreSQL)', () => {
@@ -29,6 +31,45 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
     if (fixture) await rm(fixture.root, { recursive: true, force: true });
     await db?.cleanup();
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+  });
+  it('adds missing dormant controls to an existing pot and preserves later custom settings and spend', async () => {
+    const existing = { workspaceId: scope.workspaceId, potSlug: 'existing-pot' };
+    await db.adminSql`
+      INSERT INTO harness_shared.routines (id, workspace_id, install_slug, name, trigger_kind, trigger_config,
+        target_role, payload_template, concurrency, catchup, active, next_fire_at)
+      VALUES ('existing-pot-scout', ${existing.workspaceId}, ${existing.potSlug}, 'scout-cycle', 'cron',
+        '{"cron":"0 */17 * * * *"}'::jsonb, 'system:scout-cycle', '{"custom":true}'::jsonb,
+        'skip', 'skip-old', true, now())`;
+    const read = () => readDreamControlSnapshot(db.adminSql, existing, {
+      flags: async () => ({ feature: true, governor: true }), sourceAvailable: async () => true,
+      autoEnabled: async () => false, rolling: async () => 0, latestCycle: async () => null,
+      budget: async () => ({ allow: (await getLearningLoop(db.adminSql, {
+        workspaceId: existing.workspaceId, loopId: `dream:${existing.potSlug}`,
+      }))?.enabled === true }),
+    });
+    const snapshot = await read();
+    expect(snapshot).toMatchObject({
+      manual: { available: true, active: false }, automatic: { available: true, enabled: false }, blocker: null,
+    });
+    await db.adminSql`UPDATE harness_shared.routines SET active = true,
+      trigger_config = '{"cron":"0 */11 * * * *"}'::jsonb,
+      payload_template = '{"mode":"manual","custom":"preserve"}'::jsonb,
+      metadata = '{"pause":{"reason":"owner record"}}'::jsonb
+      WHERE workspace_id = ${existing.workspaceId} AND install_slug = ${existing.potSlug}
+        AND name = 'dream-cycle-manual'`;
+    await registerLearningLoop(db.adminSql, {
+      workspaceId: existing.workspaceId, loopId: `dream:${existing.potSlug}`,
+      enabled: false, budgetUsd: 0.25, spentUsd: 0.19,
+    });
+    const rows = () => db.adminSql`SELECT name, active, trigger_config, payload_template, metadata, updated_at
+      FROM harness_shared.routines WHERE workspace_id = ${existing.workspaceId}
+        AND install_slug = ${existing.potSlug} ORDER BY name`;
+    const before = await rows();
+    const loopBefore = await getLearningLoop(db.adminSql, { workspaceId: existing.workspaceId, loopId: `dream:${existing.potSlug}` });
+    await Promise.all([read(), read()]);
+    expect(await rows()).toEqual(before);
+    expect(await getLearningLoop(db.adminSql, { workspaceId: existing.workspaceId, loopId: `dream:${existing.potSlug}` })).toEqual(loopBefore);
+    expect(before.map(row => row.name)).toEqual(['dream-cycle-auto', 'dream-cycle-manual', 'scout-cycle']);
   });
   it('pages every status through timestamp ties without leaking another scope or window', async () => {
     const first = await readDreamHistory(db.adminSql, scope);

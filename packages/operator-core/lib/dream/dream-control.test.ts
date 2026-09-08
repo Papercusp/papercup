@@ -7,6 +7,7 @@ const sql = {} as Sql;
 function reads(overrides: Partial<DreamControlReadDeps> = {}): DreamControlReadDeps {
   return {
     flags: async () => ({ feature: true, governor: true }),
+    ensureSetup: async () => {},
     routines: async () => ['manual', 'auto'].map((mode) => ({ name: `dream-cycle-${mode}`, active: false, next_fire_at: null, metadata: {} })),
     autoEnabled: async () => false,
     sourceAvailable: async () => true,
@@ -18,6 +19,29 @@ function reads(overrides: Partial<DreamControlReadDeps> = {}): DreamControlReadD
 }
 
 describe('Dream Learning control snapshot', () => {
+  it('prepares an existing pot before reading its routines and budget without opting into spending', async () => {
+    let prepared = false;
+    const snapshot = await readDreamControlSnapshot(sql, scope, reads({
+      ensureSetup: async () => { prepared = true; },
+      routines: async () => {
+        expect(prepared).toBe(true);
+        return ['manual', 'auto'].map(mode => ({ name: `dream-cycle-${mode}`, active: false, next_fire_at: null, metadata: {} }));
+      },
+      budget: async () => { expect(prepared).toBe(true); return { allow: true }; },
+    }));
+    expect(snapshot).toMatchObject({ manual: { active: false }, automatic: { enabled: false }, blocker: null });
+  });
+
+  it.each([{ feature: false, source: true }, { feature: true, source: false }])(
+    'does not materialize controls for a disabled feature or unregistered source (%j)', async ({ feature, source }) => {
+      const ensureSetup = vi.fn(async () => {});
+      await readDreamControlSnapshot(sql, scope, reads({
+        ensureSetup, flags: async () => ({ feature, governor: true }), sourceAvailable: async () => source,
+      }));
+      expect(ensureSetup).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps manual and automatic paused when neither has been opted into', async () => {
     expect(await readDreamControlSnapshot(sql, scope, reads())).toMatchObject({
       manual: { active: false }, automatic: { enabled: false }, lastCycle: null,

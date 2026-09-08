@@ -310,7 +310,7 @@ export interface McpProxyOptions {
   maxCriticalContinuationQueueWaitMs?: number;
   /**
    * EI-21669304707115602 — bounded FIFO waiters for pure `coord:send` batches. These
-   * handoffs have their own one-socket lane so they cannot sit behind a long completion or
+   * handoffs have their own bounded lane so they cannot sit behind a long completion or
    * checkpoint on the general continuation socket.
    */
   maxCoordSendQueue?: number;
@@ -372,7 +372,7 @@ export interface McpProxyOptions {
   */
   criticalContinuationAgent?: http.Agent;
   /**
-   * EI-21669304707115602 — injectable one-socket agent for pure `coord:send` handoffs. Caller
+   * EI-21669304707115602 — injectable agent for pure `coord:send` handoffs. Caller
    * owns an injected agent's lifecycle.
    */
   coordSendAgent?: http.Agent;
@@ -2856,13 +2856,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ? coordSendConcurrencyCeiling
             : watchdogSessionProbe
               ? 1
-            : criticalContinuation
-              ? criticalContinuationConcurrencyCeiling
-            : partitionedAdmission
-              ? standardReservedControlPlane
-                ? reservedControlPlaneCeiling
-                : ordinaryInFlightCeiling
-              : maxInFlight;
+              : criticalContinuation
+                ? criticalContinuationConcurrencyCeiling
+                : partitionedAdmission
+                  ? standardReservedControlPlane
+                    ? reservedControlPlaneCeiling
+                    : ordinaryInFlightCeiling
+                  : maxInFlight;
         const classInFlight = coordSend
           ? coordSendInFlight
           : criticalContinuation

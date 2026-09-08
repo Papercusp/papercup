@@ -5,7 +5,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { getOwnerSteering, idleActivityEnabled, setOwnerSteering } from '../owner-steering';
 import { governorCheck } from '../learning-governor/store';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
-import { POT_DREAM_MANUAL_ROUTINE_NAME, POT_DREAM_AUTO_ROUTINE_NAME } from '../pot/provision-learning-loop';
+import { POT_DREAM_MANUAL_ROUTINE_NAME, POT_DREAM_AUTO_ROUTINE_NAME, ensurePotDreamLearningLoop } from '../pot/provision-learning-loop';
 import { DEFAULT_DREAM_CYCLE_CONFIG } from './dream-config';
 import { dreamLoopId, DREAM_ROLLING_WINDOW_MS, sumDreamSpendSince } from './dream-governor';
 import type { DreamRunMode } from './dream-run-store';
@@ -97,6 +97,7 @@ export async function readLatestDreamCycle(sql: Sql, scope: Scope): Promise<Drea
 
 export interface DreamControlReadDeps {
   flags: () => Promise<{ feature: boolean; governor: boolean }>;
+  ensureSetup: () => Promise<void>;
   routines: () => Promise<DreamRoutineControlRow[]>;
   autoEnabled: () => Promise<boolean>;
   sourceAvailable: () => Promise<boolean>;
@@ -105,7 +106,7 @@ export interface DreamControlReadDeps {
   latestCycle: () => Promise<DreamCycleSummary | null>;
 }
 
-/** All reads are side-effect free. An unreadable source rejects, rather than reporting zero/off. */
+/** Materialize only missing, inactive controls for registered sources. Never arm or retune a lane. */
 export async function readDreamControlSnapshot(
   sql: Sql, scope: Scope, overrides: Partial<DreamControlReadDeps> = {},
 ): Promise<DreamControlSnapshot> {
@@ -116,6 +117,7 @@ export async function readDreamControlSnapshot(
       ]);
       return { feature, governor };
     },
+    ensureSetup: () => ensurePotDreamLearningLoop({ sql, ...scope }),
     routines: () => readDreamRoutineControls(sql, scope),
     autoEnabled: async () => idleActivityEnabled(await getOwnerSteering(scope.workspaceId, scope.potSlug, sql), 'dream'),
     sourceAvailable: async () => Boolean(resolveHarnessContentPath(await loadHarnessRegistry(scope.workspaceId), scope.potSlug)),
@@ -124,8 +126,10 @@ export async function readDreamControlSnapshot(
     latestCycle: () => readLatestDreamCycle(sql, scope),
     ...overrides,
   };
-  const [flags, routines, automatic, source, budget, rollingAccountedUsd, latest] = await Promise.all([
-    deps.flags(), deps.routines(), deps.autoEnabled(), deps.sourceAvailable(), deps.budget(), deps.rolling(), deps.latestCycle(),
+  const [flags, source] = await Promise.all([deps.flags(), deps.sourceAvailable()]);
+  if (flags.feature && source) await deps.ensureSetup();
+  const [routines, automatic, budget, rollingAccountedUsd, latest] = await Promise.all([
+    deps.routines(), deps.autoEnabled(), deps.budget(), deps.rolling(), deps.latestCycle(),
   ]);
   const manual = routines.find((row) => row.name === ROUTINE_NAMES.manual);
   const auto = routines.find((row) => row.name === ROUTINE_NAMES.auto);

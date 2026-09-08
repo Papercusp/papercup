@@ -99,6 +99,8 @@ function mapEvent(r: Row): LearningSpendEvent {
 export interface RegisterLearningLoopInput {
   workspaceId: string;
   loopId: string;
+  /** Seed a missing registrant without changing an existing owner's settings or spend. */
+  ifMissing?: boolean;
   /** The pot the loop learns FOR (P-004). Sets/overwrites when passed (null included); undefined preserves. */
   potSlug?: string | null;
   /** Defaults to loopId on first registration; preserved when omitted thereafter. */
@@ -120,6 +122,7 @@ export async function registerLearningLoop(
   q: RegisterLearningLoopInput,
 ): Promise<LearningLoopRegistration> {
   const existing = await getLearningLoop(sql, { workspaceId: q.workspaceId, loopId: q.loopId });
+  if (q.ifMissing && existing) return existing;
   const merged = {
     workspaceId: q.workspaceId,
     loopId: q.loopId,
@@ -143,8 +146,13 @@ export async function registerLearningLoop(
       display_name = EXCLUDED.display_name, budget_kind = EXCLUDED.budget_kind, budget_usd = EXCLUDED.budget_usd,
       spent_usd = EXCLUDED.spent_usd, priority = EXCLUDED.priority, enabled = EXCLUDED.enabled,
       enforcement = EXCLUDED.enforcement, meta = EXCLUDED.meta, updated_at = now()
+    WHERE ${!q.ifMissing}
     RETURNING *`) as Row[];
-  return mapLoop(rows[0]);
+  if (rows[0]) return mapLoop(rows[0]);
+  // Another creator may have won between the read and INSERT. Never overwrite it.
+  const concurrent = await getLearningLoop(sql, { workspaceId: q.workspaceId, loopId: q.loopId });
+  if (!concurrent) throw new Error('Learning loop disappeared during registration');
+  return concurrent;
 }
 
 export async function getLearningLoop(
