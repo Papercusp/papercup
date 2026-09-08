@@ -85,6 +85,7 @@ export interface ParsedBarMapping {
 
 export interface AcceptanceBarSeedBuildInput {
   planSlug: string;
+  subjectHarnessSlug?: string;
   planContent: string;
   actorId: string;
   declaredAt: string;
@@ -505,6 +506,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     ...(existing ?? {}),
     kind: 'acceptance' as const,
     subjectPlan: input.planSlug,
+    ...(input.subjectHarnessSlug ? { subjectHarnessSlug: input.subjectHarnessSlug } : {}),
     ...(classRef ? { classRef } : {}),
     characteristic: existing?.characteristic ?? 'plan-acceptance',
     criteria,
@@ -679,6 +681,13 @@ export async function seedAcceptanceBarsInTransaction(
        AND status IN ('active', 'ready')
        AND template_data->>'kind' = 'acceptance'
        AND template_data->>'subjectPlan' = ${input.planSlug}
+       AND (template_data->>'subjectHarnessSlug' = ${input.harnessSlug}
+         OR (template_data->>'subjectHarnessSlug' IS NULL AND (
+           SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${input.harnessSlug})
+             FROM harness_shared.harness_plans AS subject
+            WHERE subject.workspace_id = ${input.workspaceId}
+              AND subject.plan_slug = ${input.planSlug}
+         )))
      ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
      LIMIT 2`;
   if (rubrics.length > 1) {
@@ -732,6 +741,7 @@ export async function seedAcceptanceBarsInTransaction(
       : input.now.toISOString();
   let built = buildAcceptanceBarSeed({
     planSlug: input.planSlug,
+    subjectHarnessSlug: input.harnessSlug,
     planContent: input.planContent,
     actorId: input.actorId,
     declaredAt: seedInstant,
@@ -793,6 +803,7 @@ export async function seedAcceptanceBarsInTransaction(
   if (!rubricChanged && rubricRevision !== provisionalRevision) {
     built = buildAcceptanceBarSeed({
       planSlug: input.planSlug,
+      subjectHarnessSlug: input.harnessSlug,
       planContent: input.planContent,
       actorId: input.actorId,
       declaredAt:
