@@ -719,6 +719,14 @@ describe('plans:audit phase:activation', () => {
     }
     const queryTexts = unnestCalls.map(([strings]) => (strings as string[]).join('?'));
     expect(queryTexts.every((text) => !text.includes('(source_kind, session_id) IN'))).toBe(true);
+    // File-backed Codex/Claude/OMP transcripts live in the host-global `default`
+    // corpus even when the plan belongs to a concrete workspace. Both independent
+    // detector reads must therefore mirror the canonical session-consumer scope or a
+    // non-default plan reports 0 supplied turns and an unmeasured source span.
+    expect(queryTexts).toHaveLength(2);
+    expect(queryTexts.every((text) => (
+      text.includes("(turns.workspace_id = ? OR turns.workspace_id = 'default')")
+    ))).toBe(true);
   });
 
   it('an under-read read failure is REPORTED, never propagated — the audit is already recorded', async () => {

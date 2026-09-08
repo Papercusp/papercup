@@ -585,7 +585,7 @@ export default defineTool({
             >`
               SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker, turns.text
                 FROM harness_shared.session_turns AS turns
-               WHERE turns.workspace_id = ${workspaceId}
+               WHERE (turns.workspace_id = ${workspaceId} OR turns.workspace_id = 'default')
                  -- Keep the two columns paired with one unnest. sql.array() is
                  -- required here: binding a JS array directly expands it as a
                  -- comma-separated SQL fragment, which is invalid as one unnest
@@ -647,7 +647,7 @@ export default defineTool({
                 SELECT turns.source_kind, turns.session_id,
                        MIN(turns.turn_idx) AS min_turn, MAX(turns.turn_idx) AS max_turn
                   FROM harness_shared.session_turns AS turns
-                 WHERE turns.workspace_id = ${workspaceId}
+                 WHERE (turns.workspace_id = ${workspaceId} OR turns.workspace_id = 'default')
                    -- Keep the two key columns paired; a pair of independent ANY
                    -- predicates would admit cross-session combinations. Use
                    -- sql.array() so each array remains one SQL argument.
