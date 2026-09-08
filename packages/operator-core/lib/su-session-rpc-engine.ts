@@ -112,6 +112,7 @@ export function startSuRpcEngine(
   let peer: SuStdioPeer | undefined;
   let ready = false;
   let closed = false;
+  let failureReported = false;
   let ownerTurnId = '';
   let nativeTurnId = '';
   let turnFinished: (() => void) | undefined;
@@ -204,6 +205,14 @@ export function startSuRpcEngine(
     resumeHandle();
   }
   function emit(input: SuSessionEventInput<Backend>): void { host.emit(input); }
+  function reportRuntimeFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!failureReported) {
+      failureReported = true;
+      emit({ type: 'error', scope: 'transport', code: `${backend}_connection_failed`, message, recoverable: true });
+    }
+    if (!host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: false, reason: message });
+  }
   function transcript(key: string, channel: 'text' | 'reasoning', delta: string, completed = false): void {
     if (!ownerTurnId) return;
     if (!streams.has(key)) {
@@ -305,7 +314,10 @@ export function startSuRpcEngine(
         detail: { coordOwnerId: binding.ownerId, advSessionId: binding.advSessionId, transport: 'structured' } },
     });
     if (closed) { await peer.close(); throw new Error('Structured engine startup was cancelled'); }
-    done = peer.done.finally(async () => {
+    done = peer.done.catch((error: unknown) => {
+      if (!closed) reportRuntimeFailure(error);
+      throw error;
+    }).finally(async () => {
       ready = false; turnFinished?.();
       if (!host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: closed, reason: `${backend} connection closed` });
       await options.onExit?.();
@@ -363,7 +375,7 @@ export function startSuRpcEngine(
   const readyPromise = Promise.race([starting, new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(`${backend} initialization timed out`)), options.startupTimeoutMs ?? 45_000);
   })]).catch(async (error) => {
-    if (!host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
+    reportRuntimeFailure(error);
     await close(); throw error;
   }).finally(() => clearTimeout(timer));
   return { adapter, ready: readyPromise, get done() { return done; }, close, pid: () => peer?.pid() ?? null, nativeSession: resumeHandle };

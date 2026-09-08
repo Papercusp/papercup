@@ -43,7 +43,8 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     } };
   let transport!: SuStdioPeerOptions;
   let exit!: () => void;
-  const done = new Promise<void>((resolve) => { exit = resolve; });
+  let failExit!: (error: Error) => void;
+  const done = new Promise<void>((resolve, reject) => { exit = resolve; failExit = reject; });
   const sent: RpcFrame[] = [];
   const request = vi.fn(async (frame: RpcFrame) => {
     sent.push(frame);
@@ -77,7 +78,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
   });
   engines.push(engine);
-  return { engine, sent, request, close, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
+  return { engine, sent, request, close, failExit, transport: () => transport, emit: (frame: RpcFrame) => transport.onMessage(frame) };
 }
 
 function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: string = type) {
@@ -105,6 +106,25 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(f.engine.adapter.host.snapshot()).toMatchObject({ executorAttached: false, streamReady: false, terminal: true });
     expect(f.close).toHaveBeenCalledOnce();
     expect(f.sent.some((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toBe(false);
+  });
+
+  it('reports the original initialization failure before the terminal lifecycle event', async () => {
+    const f = fixture(backend, { request: async () => { throw new Error('native configuration is invalid'); } });
+    await expect(f.engine.ready).rejects.toThrow('native configuration is invalid');
+    const events = f.engine.adapter.host.recent.map(({ event }) => event);
+    const errorIndex = events.findIndex((event) => event.type === 'error' && event.message === 'native configuration is invalid');
+    expect(errorIndex).toBeGreaterThanOrEqual(0);
+    expect(events.findIndex((event) => event.type === 'lifecycle' && event.state === 'failed')).toBeGreaterThan(errorIndex);
+  });
+
+  it('preserves an unexpected native process failure through close reconciliation', async () => {
+    const f = fixture(backend); await f.engine.ready;
+    f.failExit(new Error('native process failed: invalid transport'));
+    await expect(f.engine.done).rejects.toThrow('invalid transport');
+    expect(f.engine.adapter.host.recent.map(({ event }) => event)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'error', message: 'native process failed: invalid transport' }),
+      expect.objectContaining({ type: 'lifecycle', state: 'failed', reason: 'native process failed: invalid transport' }),
+    ]));
   });
 
   it('correlates streaming replies and tools to the submitted owner turn', async () => {

@@ -7,6 +7,7 @@ import { startSupervisorBeat } from '../../../apps/operator/scripts/psu-launcher
 import { managedSpawn } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
+import { redactSensitiveText } from './sensitive-text';
 
 export type RpcFrame = Record<string, unknown>;
 export interface SuStdioPeer {
@@ -37,6 +38,19 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
   let closed = false;
   let exited = false;
   let buffer = '';
+  let stderr = '';
+  let stderrTruncated = false;
+  const diagnosticSecrets = Object.entries(options.env)
+    .filter(([key]) => /token|secret|password|credential|authorization|api.?key|database.?url|dsn/i.test(key))
+    .map(([, value]) => value);
+  function nativeFailure(message: string): Error {
+    // If the retained tail starts mid-line, discard that fragment before
+    // redaction so a clipped credential prefix cannot evade the shared guard.
+    const tail = stderrTruncated ? stderr.slice(stderr.indexOf('\n') < 0 ? stderr.length : stderr.indexOf('\n') + 1) : stderr;
+    const diagnostic = redactSensitiveText([message, tail.trim()].filter(Boolean).join('\n'), diagnosticSecrets)
+      .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [redacted]');
+    return new Error(diagnostic.slice(-3000));
+  }
   let heartbeat: ManagedHandle | undefined;
   let resolveExit!: () => void;
   let rejectExit!: (error: Error) => void;
@@ -82,15 +96,20 @@ export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuS
       } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); return; }
     }
   });
-  // Diagnostics must never fill stderr and block the protocol. User-facing
-  // errors come from the structured response, not an unredacted process log.
-  child.stderr.on('data', () => undefined);
+  // Startup can fail before a structured response exists. Retain a bounded
+  // tail and scrub it before it crosses the host's error/event boundary.
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+    if (stderr.length > 16_384) { stderr = stderr.slice(-16_384); stderrTruncated = true; }
+  });
   child.on('error', fail);
   child.once('close', (code, signal) => {
     exited = true; heartbeat?.stop();
-    rejectPending(new Error('Structured engine exited before acknowledging the request'));
+    const error = nativeFailure(`Structured engine exited (${signal ?? code ?? 'unknown'}) before acknowledging the request`);
+    rejectPending(error);
     if (closed || (code === 0 && !signal)) resolveExit();
-    else rejectExit(new Error(`Structured engine exited (${signal ?? code ?? 'unknown'})`));
+    else rejectExit(error);
   });
   if (child.pid) startSupervisorBeat(options.ownerId, {
     pid: child.pid, operatorUrl: options.env.PAPERCUSP_OPERATOR_URL,
