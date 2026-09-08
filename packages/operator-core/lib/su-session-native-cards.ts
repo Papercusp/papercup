@@ -1,7 +1,8 @@
 /** Translate native questions into the existing PUI card/response protocol.
  * The shared correlator validates the workspace and response exactly once. */
 import { z } from 'zod';
-import { cancelPendingCardsForRun, registerCard } from '@papercusp/agent-mcp';
+import { cancelPendingCardsForRun, registerCard, resolveCardResponse } from '@papercusp/agent-mcp';
+import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { SuSessionEventInput } from './su-session-host';
 import type { RpcFrame } from './su-session-stdio-peer';
 
@@ -16,24 +17,79 @@ export class SuNativeCards {
   cancel(): void { this.epoch++; cancelPendingCardsForRun(this.runId); }
 
   private async ask(turnId: string, prompt: string, choices?: string[]): Promise<string | null> {
+    const answers = await this.askAnswers(turnId, prompt, choices?.map((label) => ({ label })));
+    return answers?.[0] ?? null;
+  }
+
+  private async askAnswers(turnId: string, prompt: string,
+    choices?: Array<{ label: string; description?: string }>, multiSelect = false, signal?: AbortSignal): Promise<string[] | null> {
+    if (signal?.aborted) return null;
     const presentation = choices?.length
-      ? { kind: 'radio' as const, options: choices.map((label, index) => ({ id: String(index), label })) }
+      ? { kind: multiSelect ? 'checkbox' as const : 'radio' as const,
+        options: choices.map((choice, index) => ({ id: String(index), ...choice })) }
       : { kind: 'text' as const };
     const dataSchema = choices?.length
-      ? z.object({ picks: z.array(z.string()).length(1).refine((picks) => presentation.kind === 'radio'
-        && presentation.options.some((option) => option.id === picks[0]), 'Choose a displayed option') })
-      : z.object({ value: z.string() });
+      ? z.object({ picks: z.array(z.string()).min(1).max(multiSelect ? choices.length : 1).refine((picks) => presentation.kind !== 'text'
+        && new Set(picks).size === picks.length && picks.every((pick) => presentation.options.some((option) => option.id === pick)), 'Choose displayed options') })
+      : z.object({ value: z.string().min(1) });
     const card = registerCard({ workspaceId: this.workspaceId, runId: this.runId,
       spec: { prompt, dataSchema, presentation, allowDecline: true } });
+    const cancel = () => { resolveCardResponse({ correlationId: card.correlationId, action: 'cancel', expectedWorkspaceId: this.workspaceId }); };
+    signal?.addEventListener('abort', cancel, { once: true });
     this.emit({ type: 'card', phase: 'opened', turnId, card: {
       correlationId: card.correlationId, createdAt: Date.now(), prompt, fallbackText: prompt,
       presentation, allowDecline: true,
     } });
-    const response = await card.result;
+    const response = await card.result.finally(() => signal?.removeEventListener('abort', cancel));
     this.emit({ type: 'card', phase: 'closed', turnId, correlationId: card.correlationId,
       resolution: response.action === 'submit' ? 'submitted' : response.action === 'decline' ? 'declined' : 'cancelled' });
     if (response.action !== 'submit') return null;
-    return 'picks' in response.payload ? choices![Number(response.payload.picks[0])] : response.payload.value;
+    return 'picks' in response.payload ? response.payload.picks.map((pick) => choices![Number(pick)].label) : [response.payload.value];
+  }
+
+  async handleClaude(toolName: string, input: Record<string, unknown>, turnId: string,
+    options: Parameters<CanUseTool>[2]): ReturnType<CanUseTool> {
+    const epoch = this.epoch;
+    const deny = (message = 'The PUI response was declined or cancelled') => ({ behavior: 'deny' as const, message });
+    try {
+      if (options.signal.aborted) return deny();
+      if (toolName !== 'AskUserQuestion') {
+        const prompt = [options.title || `Allow ${toolName}?`, options.description, options.decisionReason,
+          JSON.stringify(input, null, 2)].filter(Boolean).join('\n');
+        const choice = await this.askAnswers(turnId, prompt, [{ label: 'Approve' }, { label: 'Decline' }], false, options.signal);
+        return epoch === this.epoch && !options.signal.aborted && choice?.[0] === 'Approve'
+          ? { behavior: 'allow', updatedInput: input } : deny();
+      }
+      const questions = z.array(z.object({
+        question: z.string().min(1), multiSelect: z.boolean().optional(),
+        options: z.array(z.object({ label: z.string().min(1), description: z.string().optional(), preview: z.string().optional() })).min(1),
+      })).min(1).max(4).parse(input.questions);
+      if (new Set(questions.map((question) => question.question)).size !== questions.length) {
+        throw new Error('Claude questions must have distinct prompts');
+      }
+      const answers: Record<string, string> = {};
+      for (const question of questions) {
+        if (epoch !== this.epoch || options.signal.aborted) return deny();
+        let other = 'Type a different answer';
+        while (question.options.some((option) => option.label === other)) other += '…';
+        const choices = question.options.map((option) => ({ label: option.label,
+          description: [option.description, option.preview].filter(Boolean).join('\n') }));
+        const picks = await this.askAnswers(turnId, question.question, [...choices, { label: other }], question.multiSelect, options.signal);
+        if (!picks || epoch !== this.epoch || options.signal.aborted) return deny();
+        const selected = picks.filter((pick) => pick !== other);
+        if (picks.includes(other)) {
+          const custom = await this.askAnswers(turnId, question.question, undefined, false, options.signal);
+          if (!custom || epoch !== this.epoch || options.signal.aborted) return deny();
+          selected.push(...custom);
+        }
+        answers[question.question] = selected.join(', ');
+      }
+      return { behavior: 'allow', updatedInput: { ...input, answers } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emit({ type: 'error', scope: 'command', code: 'native_question_failed', message, recoverable: true });
+      return deny(message);
+    }
   }
 
   /** True means this is a supported native request, now waiting for PUI input. */

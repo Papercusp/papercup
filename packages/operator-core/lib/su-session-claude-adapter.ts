@@ -96,6 +96,7 @@ export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDesc
   ready?: boolean;
   runtimeReady?: () => boolean;
   ownerTurnCorrelation?: 'command' | 'transport';
+  cardSource?: 'transcript' | 'transport';
 }
 
 export interface OpenClaudeSuSessionOptions extends CreateClaudeSuSessionAdapterOptions {
@@ -388,6 +389,7 @@ export class ClaudeSuSessionAdapter {
   private readonly unregister: (() => void) | null;
   private lastErrorKey: string | null = null;
   private readonly transportCorrelatesTurns: boolean;
+  private readonly transportHandlesCards: boolean;
   private streamingMessageId: string | null = null;
   private readonly textStreams = new Map<string, Map<number, ClaudeTextStream>>();
 
@@ -398,6 +400,7 @@ export class ClaudeSuSessionAdapter {
   ) {
     this.runtimeValue = runtime;
     this.transportCorrelatesTurns = options.ownerTurnCorrelation === 'transport';
+    this.transportHandlesCards = options.cardSource === 'transport';
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
@@ -604,7 +607,7 @@ export class ClaudeSuSessionAdapter {
           type: 'tool', phase: 'started', turnId, callId, name,
           input: asJsonValue(entry.toolInput),
         } as SuSessionEventInput<'claude'>);
-        if (name === 'AskUserQuestion') {
+        if (name === 'AskUserQuestion' && !this.transportHandlesCards) {
           const card = cardFromClaudeQuestion(callId, turnId, entry.toolInput);
           if (card) {
             this.cards.set(callId, { correlationId: callId, turnId });

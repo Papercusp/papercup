@@ -24,9 +24,13 @@ const SCRIPT = join(ROOT, 'infra/images/bootc/bake-cloud-images.sh');
 const HEALTH = join(ROOT, 'infra/images/bootc/p307-build-health.sh');
 const CONTAINERFILE = join(ROOT, 'infra/images/bootc/workspace-host.Containerfile');
 const HOST_PREPARE = join(ROOT, 'infra/images/bootc/papercusp-host-prepare.sh');
+const GOOGLE_OSLOGIN_TMPFILES = join(ROOT, 'infra/images/bootc/papercusp-google-oslogin.conf');
+const IMAGE_BUILD_PROBE = join(ROOT, 'infra/images/bootc/p306-image-build-probe.sh');
 const SOURCE = readFileSync(SCRIPT, 'utf8');
 const CONTAINERFILE_SOURCE = readFileSync(CONTAINERFILE, 'utf8');
 const HOST_PREPARE_SOURCE = readFileSync(HOST_PREPARE, 'utf8');
+const GOOGLE_OSLOGIN_TMPFILES_SOURCE = readFileSync(GOOGLE_OSLOGIN_TMPFILES, 'utf8');
+const IMAGE_BUILD_PROBE_SOURCE = readFileSync(IMAGE_BUILD_PROBE, 'utf8');
 const SNAPSHOT_MARKER = '# EI-22355025813361885 — freeze the entrypoint';
 
 function withoutSnapshotGuard(): string {
@@ -356,5 +360,18 @@ describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
     expect(CONTAINERFILE_SOURCE).toContain('COPY --from=papercusp-release / /opt/papercusp/releases/${PAPERCUSP_RELEASE_VERSION}/');
     expect(SOURCE).toContain('--target workspace-host-release');
     expect(HOST_PREPARE_SOURCE).toContain('setfacl -R -m "u:$AGENT_USER:rX" "$RUNTIME_ROOT/releases"');
+  });
+
+  it('recreates Google OS Login user state at boot instead of committing /var residue', () => {
+    expect(GOOGLE_OSLOGIN_TMPFILES_SOURCE).toContain('d /var/google-users.d 0755 root root - -');
+    expect(CONTAINERFILE_SOURCE).toContain(
+      'COPY papercusp-google-oslogin.conf /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf',
+    );
+    expect(CONTAINERFILE_SOURCE).toContain('/var/google-users.d');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('test ! -e /var/google-users.d');
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain(
+      'systemd-tmpfiles --create /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf',
+    );
+    expect(IMAGE_BUILD_PROBE_SOURCE).toContain('expected 755:0:0');
   });
 });

@@ -6,7 +6,19 @@ import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { bulkContent, runBulk } from '../_bulk';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
-import { SPEC_BEHAVIOR_CLASSES, SPEC_LIFECYCLE_STATUSES, setSpecClause } from './spec-clauses-store';
+import {
+  SPEC_BEHAVIOR_CLASSES,
+  SPEC_CAUSAL_PAIRING_MODES,
+  SPEC_LIFECYCLE_STATUSES,
+  SPEC_PROOF_OBLIGATION_ID_RE,
+  setSpecClause,
+} from './spec-clauses-store';
+
+const proofObligationIds = z
+  .array(z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE))
+  .min(1)
+  .max(100)
+  .refine((ids) => new Set(ids).size === ids.length, 'proof obligation ids must be unique');
 
 const specWriteSchema = z
   .object({
@@ -33,10 +45,14 @@ const specWriteSchema = z
       .object({
         observation: z.string().trim().min(1).max(4000),
         probeMethod: z.string().trim().min(1).max(4000).nullable().optional(),
+        requiredScenarios: proofObligationIds.nullable().optional(),
+        causalPairing: z.enum(SPEC_CAUSAL_PAIRING_MODES).nullable().optional(),
       })
       .nullable()
       .optional()
-      .describe('What you would SEE if this clause were violated, and how to produce it.'),
+      .describe(
+        'What you would SEE if this clause were violated, how to produce it, and optional immutable scenario/pair completeness obligations for the adequacy evaluator.',
+      ),
     acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
     sourceBar: z
       .object({

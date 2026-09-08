@@ -220,11 +220,10 @@ describe('first-class plan spec clauses', () => {
       evidencePlane: 'tree' as const,
     };
     const acceptanceRef = 'acceptance-reconnect-plan@4:R-1';
-    expect(
-      await store.setSpecClause(
-        clause({ lifecycleStatus: 'draft', acceptanceRef, sourceBar }),
-      ),
-    ).toMatchObject({ status: 'created', revision: 1 });
+    expect(await store.setSpecClause(clause({ lifecycleStatus: 'draft', acceptanceRef, sourceBar }))).toMatchObject({
+      status: 'created',
+      revision: 1,
+    });
 
     const parsed = setSpecsTool.args.parse({
       harness: HARNESS,
@@ -426,6 +425,8 @@ describe('D-016 clause falsifier', () => {
       falsifier: {
         observation: 'Event 42 appears a second time in the post-reconnect replay trace.',
         probeMethod: 'Reconnect after acking 42 and diff the delivered ids against the acked set.',
+        requiredScenarios: ['wrong-subject-exclusion', 'stale-vs-decision'],
+        causalPairing: 'one-to-one',
       },
       ...over,
     });
@@ -441,6 +442,8 @@ describe('D-016 clause falsifier', () => {
     expect(row.falsifier).toEqual({
       observation: 'Event 42 appears a second time in the post-reconnect replay trace.',
       probeMethod: 'Reconnect after acking 42 and diff the delivered ids against the acked set.',
+      requiredScenarios: ['stale-vs-decision', 'wrong-subject-exclusion'],
+      causalPairing: 'one-to-one',
     });
 
     // The read tool surfaces it too — a field only the store can see is not a contract.
@@ -463,7 +466,11 @@ describe('D-016 clause falsifier', () => {
           behavior: 'A lapsed lease is reclaimable by a second holder.',
           behaviorClass: 'concurrency',
           lifecycleStatus: 'active',
-          falsifier: { observation: 'A second acquire on a lapsed lease returns conflict.' },
+          falsifier: {
+            observation: 'A second acquire on a lapsed lease returns conflict.',
+            requiredScenarios: ['lease-expiry-reclaim'],
+            causalPairing: 'one-to-one',
+          },
         },
       } as never,
       CTX,
@@ -476,7 +483,11 @@ describe('D-016 clause falsifier', () => {
       specIds: ['SPEC-003-TOOL'],
     });
     // probeMethod omitted, not stored as an empty string: undeclared must read as undeclared.
-    expect(row.falsifier).toEqual({ observation: 'A second acquire on a lapsed lease returns conflict.' });
+    expect(row.falsifier).toEqual({
+      observation: 'A second acquire on a lapsed lease returns conflict.',
+      requiredScenarios: ['lease-expiry-reclaim'],
+      causalPairing: 'one-to-one',
+    });
   });
 
   it('appends a NEW revision when only the falsifier changes, and reports unchanged when it does not', async () => {
@@ -543,17 +554,19 @@ describe('D-016 clause falsifier', () => {
   });
 
   it('refuses a malformed declaration structurally instead of silently dropping it', async () => {
-    expect(
-      await store.setSpecClause(withFalsifier({ falsifier: { observation: '   ' } })),
-    ).toMatchObject({ status: 'falsifier_invalid', reason: 'observation_blank' });
+    expect(await store.setSpecClause(withFalsifier({ falsifier: { observation: '   ' } }))).toMatchObject({
+      status: 'falsifier_invalid',
+      reason: 'observation_blank',
+    });
 
     expect(
       await store.setSpecClause(withFalsifier({ falsifier: { observation: 'real', probeMethod: '  ' } })),
     ).toMatchObject({ status: 'falsifier_invalid', reason: 'probe_method_blank' });
 
-    expect(
-      await store.setSpecClause(withFalsifier({ falsifier: 'not an object' as never })),
-    ).toMatchObject({ status: 'falsifier_invalid', reason: 'not_an_object' });
+    expect(await store.setSpecClause(withFalsifier({ falsifier: 'not an object' as never }))).toMatchObject({
+      status: 'falsifier_invalid',
+      reason: 'not_an_object',
+    });
 
     // A refusal must not have written anything.
     expect(

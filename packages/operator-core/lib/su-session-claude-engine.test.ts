@@ -5,6 +5,7 @@ import { PassThrough } from 'node:stream';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
+import { resolveCardResponse } from '@papercusp/agent-mcp';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import { startClaudeSuEngine, type ClaudeEngineOptions, type ClaudeSuEngine } from './su-session-claude-engine';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
@@ -252,6 +253,53 @@ describe('structured Claude SU engine', () => {
     expect(await engine.adapter.host.startCommand(command(engine)).terminal).toMatchObject({
       status: 'refused', refusal: { code: 'engine_delivery_unknown', retryable: false },
     });
+  });
+
+  it('waits for a workspace-bound PUI answer before returning a Claude question result', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const input = { questions: [{ question: 'Which destination?', header: 'Destination', multiSelect: false,
+      options: [{ label: 'Here', description: 'Current directory' }, { label: 'There', description: 'Another directory' }] }],
+      answers: { 'Which destination?': 'forged answer' } };
+    p.output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+      { type: 'tool_use', id: 'native-question', name: 'AskUserQuestion', input },
+    ] } });
+    const answer = p.options()!.canUseTool!('AskUserQuestion', input, {
+      signal: new AbortController().signal, toolUseID: 'native-question', requestId: 'question-request',
+    });
+    let settled = false; void answer.then(() => { settled = true; });
+    await vi.waitFor(() => expect(engine.adapter.host.snapshot().openCards).toHaveLength(1));
+    const card = engine.adapter.host.snapshot().openCards[0];
+    expect(card.correlationId).not.toBe('native-question');
+    expect(settled).toBe(false);
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'wrong' }).ok).toBe(false);
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    await expect(answer).resolves.toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Which destination?': 'There' } } });
+    expect(engine.adapter.host.snapshot().openCards).toHaveLength(0);
+    expect(engine.adapter.host.recent.filter(({ event }) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('running');
+  });
+
+  it('returns a native denial when a PUI permission is declined and cancels questions on interrupt', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    const canUseTool = p.options()!.canUseTool!;
+    const permission = canUseTool('Bash', { command: 'touch approved.txt' }, {
+      signal: new AbortController().signal, toolUseID: 'permission', requestId: 'permission-request', title: 'Create approved.txt?',
+    });
+    await vi.waitFor(() => expect(engine.adapter.host.snapshot().openCards).toHaveLength(1));
+    const card = engine.adapter.host.snapshot().openCards[0];
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    await expect(permission).resolves.toMatchObject({ behavior: 'deny' });
+    const questions = canUseTool('AskUserQuestion', { questions: [
+      { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] },
+      { question: 'Second?', options: [{ label: 'Yes' }, { label: 'No' }] },
+    ] }, { signal: new AbortController().signal, toolUseID: 'questions', requestId: 'two-questions' });
+    await vi.waitFor(() => expect(engine.adapter.host.snapshot().openCards).toHaveLength(1));
+    await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    await expect(questions).resolves.toMatchObject({ behavior: 'deny' });
+    expect(engine.adapter.host.snapshot().openCards).toHaveLength(0);
+    expect(engine.adapter.host.recent.some(({ event }) => event.type === 'card' && event.phase === 'opened' && event.card.prompt === 'Second?')).toBe(false);
   });
 
   it('cleans up a disconnected SU tool connection before ready', async () => {

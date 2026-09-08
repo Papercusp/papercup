@@ -18,7 +18,8 @@ import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '
 import { probeScopeSupport } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
-import type { SuSessionHost } from './su-session-host';
+import type { SuSessionHost, SuSessionEventInput } from './su-session-host';
+import { SuNativeCards } from './su-session-native-cards';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>;
 export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
@@ -77,6 +78,7 @@ export function startClaudeSuEngine(
   let sdk: ClaudeEngineQuery;
   let inputTail = Promise.resolve();
   let activeInputUuid: string | undefined;
+  let activeOwnerTurnId: string | undefined;
   let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
@@ -84,7 +86,7 @@ export function startClaudeSuEngine(
     ok: false, code: 'engine_delivery_unknown', message, retryable: false,
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
-    ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport',
+    ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
     controls: {
       async ownerTurn({ content, turnId }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
@@ -97,6 +99,7 @@ export function startClaudeSuEngine(
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();
           adapter.correlateOwnerTurn(turnId);
+          activeOwnerTurnId = turnId;
           activeInputUuid = uuid;
           try {
             timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
@@ -105,6 +108,7 @@ export function startClaudeSuEngine(
             await finished.promise;
           } finally {
             activeInputUuid = undefined;
+            activeOwnerTurnId = undefined;
             finishActiveTurn = undefined;
           }
         }).catch((error: unknown) => receipt.resolve(unavailable(String(error))));
@@ -112,11 +116,17 @@ export function startClaudeSuEngine(
           return await receipt.promise;
         } finally { clearTimeout(timer); pending.delete(uuid); }
       },
-      async interrupt() { await sdk.interrupt(); return { ok: true }; },
+      async interrupt() { cards.cancel(); await sdk.interrupt(); return { ok: true }; },
       async resume() { return ready && !closed ? { ok: true } : unavailable('Reconnect the structured Claude runtime before resuming'); },
       async focus() { return { ok: true }; },
       async end() { await close(); return { ok: true }; },
     },
+  });
+  const cards = new SuNativeCards(boot.workspaceId, `pui-native:${binding.advSessionId}:${options.runtimeGeneration ?? 0}`, (event) => {
+    adapter.host.emit(event as SuSessionEventInput<'claude'>);
+    if (event.type === 'card' && !closed && !adapter.host.snapshot().terminal) {
+      adapter.host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running', 'Claude native question');
+    }
   });
   const model = splitModelSpec(options.model);
   const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
@@ -145,6 +155,10 @@ export function startClaudeSuEngine(
     settingSources: ['user', 'project', 'local'],
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
+    canUseTool(toolName, input, permission) {
+      if (closed || !activeOwnerTurnId) return Promise.resolve({ behavior: 'deny', message: 'Claude has no active PUI owner turn for this permission request' });
+      return cards.handleClaude(toolName, input, activeOwnerTurnId, permission);
+    },
     disallowedTools,
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort as Options['effort'] } : {}),
@@ -206,6 +220,7 @@ export function startClaudeSuEngine(
   async function close(): Promise<void> {
     if (!closed) {
       closed = true; ready = false;
+      cards.cancel();
       heartbeat?.stop();
       for (const receipt of pending.values()) receipt.resolve(unavailable('Claude connection closed before acknowledgement'));
       finishActiveTurn?.();
@@ -250,7 +265,7 @@ export function startClaudeSuEngine(
         if (!closed) {
           adapter.host.emit({ type: 'error', scope: 'transport', code: 'claude_stream_failed', message: cause.message, recoverable: true });
           adapter.reconcileRuntimeExit({ expected: false, reason: cause.message });
-          closed = true; ready = false; input.end(); sdk.close(); abortController.abort();
+          closed = true; ready = false; cards.cancel(); input.end(); sdk.close(); abortController.abort();
         }
       } finally {
         for (const receipt of pending.values()) receipt.resolve(unavailable('Claude stream ended before acknowledgement'));

@@ -44,3 +44,54 @@ describe('plans:bind-spec-evidence repo-files measurement contract', () => {
     },
   );
 });
+
+describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
+  it('accepts stable scenario and causal-pair ids on executable proof', () => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: {
+        adequacy: {
+          scenarioIds: ['stale-vs-decision', 'wrong-subject-exclusion'],
+          causalPairIds: ['missing-goal-history'],
+          executed: true,
+        },
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it.each([
+    { field: 'scenarioIds', value: ['valid-id', 'valid-id'], message: 'unique' },
+    { field: 'scenarioIds', value: ['Not Stable'], message: 'Invalid' },
+    { field: 'causalPairIds', value: [], message: 'too small' },
+  ])('rejects malformed or duplicate $field metadata', ({ field, value, message }) => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: { adequacy: { [field]: value } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.map((issue) => issue.path.join('.'))).toEqual(
+      expect.arrayContaining([expect.stringMatching(new RegExp(`^details\\.adequacy\\.${field}(?:\\.|$)`))]),
+    );
+    expect(parsed.error.issues.map((issue) => issue.message).join(' ')).toMatch(new RegExp(message, 'i'));
+  });
+
+  it('rejects causal-pair ids on non-executable fixture evidence', () => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      evidenceKind: 'fixture',
+      details: { adequacy: { causalPairIds: ['missing-goal-history'] } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ['details', 'adequacy', 'causalPairIds'],
+          message: expect.stringContaining('require executable'),
+        }),
+      ]),
+    );
+  });
+});

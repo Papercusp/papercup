@@ -21,6 +21,11 @@ export type SpecBehaviorClass = (typeof SPEC_BEHAVIOR_CLASSES)[number];
 export const SPEC_LIFECYCLE_STATUSES = ['draft', 'accepted', 'active', 'superseded', 'exempt', 'retired'] as const;
 export type SpecLifecycleStatus = (typeof SPEC_LIFECYCLE_STATUSES)[number];
 
+/** Stable ids shared by canonical spec obligations and immutable evidence bindings. */
+export const SPEC_PROOF_OBLIGATION_ID_RE = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
+export const SPEC_CAUSAL_PAIRING_MODES = ['one-to-one'] as const;
+export type SpecCausalPairingMode = (typeof SPEC_CAUSAL_PAIRING_MODES)[number];
+
 /**
  * D-016: the concrete observation that proves THIS clause violated.
  *
@@ -36,12 +41,18 @@ export interface SpecClauseFalsifier {
   observation: string;
   /** How to produce that observation: the probe, mutation, or input that elicits it. */
   probeMethod?: string;
+  /** Canonical acceptance scenarios every adequate proof cohort must execute successfully. */
+  requiredScenarios?: string[];
+  /** Require one immutable negative and one repaired recurrence binding per causal pair id. */
+  causalPairing?: SpecCausalPairingMode;
 }
 
 /** Write-side shape: JSON callers may spell an absent probeMethod as an explicit null. */
 export interface SpecClauseFalsifierWrite {
   observation: string;
   probeMethod?: string | null;
+  requiredScenarios?: string[] | null;
+  causalPairing?: SpecCausalPairingMode | null;
 }
 
 /** Immutable provenance/pin proving this clause is a projection of one canonical
@@ -151,7 +162,15 @@ function normalizedSet(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((v) => v.trim()).filter(Boolean))].sort();
 }
 
-export type FalsifierIssue = 'not_an_object' | 'observation_blank' | 'probe_method_blank';
+export type FalsifierIssue =
+  | 'not_an_object'
+  | 'observation_blank'
+  | 'probe_method_blank'
+  | 'required_scenarios_not_array'
+  | 'required_scenarios_empty'
+  | 'required_scenario_invalid'
+  | 'required_scenario_duplicate'
+  | 'causal_pairing_invalid';
 
 /**
  * Structured refusal for a MALFORMED declaration — never for an ABSENT one.
@@ -173,6 +192,23 @@ function falsifierIssueOf(value: SpecClauseWrite['falsifier']): FalsifierIssue |
   if (probe !== undefined && probe !== null && (typeof probe !== 'string' || !probe.trim())) {
     return 'probe_method_blank';
   }
+  const scenarios = value.requiredScenarios;
+  if (scenarios !== undefined && scenarios !== null) {
+    if (!Array.isArray(scenarios)) return 'required_scenarios_not_array';
+    if (scenarios.length === 0) return 'required_scenarios_empty';
+    const normalized = scenarios.map((scenario) => (typeof scenario === 'string' ? scenario.trim() : ''));
+    if (normalized.some((scenario) => !SPEC_PROOF_OBLIGATION_ID_RE.test(scenario))) {
+      return 'required_scenario_invalid';
+    }
+    if (new Set(normalized).size !== normalized.length) return 'required_scenario_duplicate';
+  }
+  if (
+    value.causalPairing !== undefined &&
+    value.causalPairing !== null &&
+    !SPEC_CAUSAL_PAIRING_MODES.includes(value.causalPairing)
+  ) {
+    return 'causal_pairing_invalid';
+  }
   return null;
 }
 
@@ -180,7 +216,13 @@ function normalizedFalsifier(value: SpecClauseWrite['falsifier']): SpecClauseFal
   if (falsifierIssueOf(value) !== null || !value) return null;
   const observation = value.observation.trim();
   const probeMethod = typeof value.probeMethod === 'string' ? value.probeMethod.trim() : '';
-  return probeMethod ? { observation, probeMethod } : { observation };
+  const requiredScenarios = normalizedSet(value.requiredScenarios ?? undefined);
+  return {
+    observation,
+    ...(probeMethod ? { probeMethod } : {}),
+    ...(requiredScenarios.length > 0 ? { requiredScenarios } : {}),
+    ...(value.causalPairing ? { causalPairing: value.causalPairing } : {}),
+  };
 }
 
 function barPinIssueOf(value: SpecClauseWrite['sourceBar']): string | null {
@@ -245,10 +287,7 @@ interface AliasIdentityRow {
   spec_id: string;
 }
 
-export type SpecClauseSql = <T = unknown>(
-  strings: TemplateStringsArray,
-  ...values: unknown[]
-) => Promise<T>;
+export type SpecClauseSql = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
 /** Existing-transaction seam used by activation seeding/amendment so rubric,
  * projection, audit, and subject-plan pins commit or roll back together. */
@@ -271,7 +310,7 @@ export async function setSpecClause(
   if (barPinIssue) {
     return { status: 'bar_pin_invalid', specId: input.specId, reason: barPinIssue };
   }
-  const scope = transaction ?? await resolvePlanScope({ harnessSlug: input.harnessSlug });
+  const scope = transaction ?? (await resolvePlanScope({ harnessSlug: input.harnessSlug }));
   const normalized = canonicalWrite(input);
   const falsifier = normalizedFalsifier(input.falsifier);
   const contentHash = specClauseContentHash(input);
@@ -545,9 +584,7 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
   const specIds = options.specIds ?? [];
   const valIds = options.sourceValIds ?? [];
   const itemIds = options.planItemIds ?? [];
-  const limit = options.limit == null
-    ? null
-    : Math.min(Math.max(Math.trunc(options.limit), 1), 5_000);
+  const limit = options.limit == null ? null : Math.min(Math.max(Math.trunc(options.limit), 1), 5_000);
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => tx<RevisionRow[]>`
@@ -618,8 +655,12 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
       acceptedAt: pgTimestampToIsoOrNull(r.accepted_at),
       acceptanceRef: r.acceptance_ref,
       sourceBar:
-        r.source_bar_key && r.source_bar_hash && r.source_bar_set_hash &&
-        r.source_rubric_slug && r.source_rubric_revision != null && r.evidence_plane
+        r.source_bar_key &&
+        r.source_bar_hash &&
+        r.source_bar_set_hash &&
+        r.source_rubric_slug &&
+        r.source_rubric_revision != null &&
+        r.evidence_plane
           ? {
               barKey: r.source_bar_key,
               barHash: r.source_bar_hash,

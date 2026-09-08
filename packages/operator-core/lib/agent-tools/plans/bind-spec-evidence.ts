@@ -13,8 +13,40 @@ import {
   repoFilesEvidenceMeasurementSchema,
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
+import { SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
 
 const fingerprint = z.string().trim().min(1).max(256);
+const proofCoverageIds = z
+  .array(z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE))
+  .min(1)
+  .max(100)
+  .refine((ids) => new Set(ids).size === ids.length, 'proof coverage ids must be unique');
+const adequacyBindingDetailsSchema = z
+  .object({
+    scenarioIds: proofCoverageIds.optional(),
+    causalPairIds: proofCoverageIds.optional(),
+  })
+  .passthrough();
+const bindingDetailsSchema = z.record(z.string(), z.unknown()).superRefine((details, ctx) => {
+  if (details.adequacy === undefined) return;
+  const parsed = adequacyBindingDetailsSchema.safeParse(details.adequacy);
+  if (parsed.success) return;
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adequacy', ...issue.path],
+      message: issue.message,
+    });
+  }
+});
+const CAUSAL_PAIR_EVIDENCE_KINDS = new Set([
+  'test',
+  'coverage-census',
+  'mutation',
+  'counterexample',
+  'check',
+  'operational',
+]);
 export const bindingSchema = z
   .object({
     workItemId: z.string().trim().min(1).max(200),
@@ -26,19 +58,21 @@ export const bindingSchema = z
     specRevision: z.number().int().positive().optional(),
     evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
     evidenceRef: z.string().trim().min(1).max(2000),
-    sourceFingerprint: fingerprint.optional().describe(
-      'Caller-declared fingerprint for opaque evidence. Pass this OR measurement, never both.',
-    ),
+    sourceFingerprint: fingerprint
+      .optional()
+      .describe('Caller-declared fingerprint for opaque evidence. Pass this OR measurement, never both.'),
     testFingerprint: fingerprint.nullable().optional(),
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
     environmentFingerprint: fingerprint.nullable().optional(),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
-    measurement: repoFilesEvidenceMeasurementSchema.optional().describe(
-      'Server-measured repository file sets. The binder stores the recipe and current source/test fingerprints; later reads recompute them from the canonical harness checkout.',
-    ),
-    details: z.record(z.string(), z.unknown()).optional(),
+    measurement: repoFilesEvidenceMeasurementSchema
+      .optional()
+      .describe(
+        'Server-measured repository file sets. The binder stores the recipe and current source/test fingerprints; later reads recompute them from the canonical harness checkout.',
+      ),
+    details: bindingDetailsSchema.optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })
   .refine((b) => Boolean(b.specId) !== Boolean(b.sourceValId), {
@@ -51,15 +85,29 @@ export const bindingSchema = z
     message: 'testFingerprint is server-computed when measurement is supplied',
   })
   .superRefine((binding, ctx) => {
-    if (!binding.measurement) return;
-    for (const field of ['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'] as const) {
-      if (binding[field] == null) continue;
+    if (binding.measurement) {
+      for (const field of ['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'] as const) {
+        if (binding[field] == null) continue;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message:
+            `repo-files measurement cannot independently refresh ${field}; omit it or pass null ` +
+            '(record non-repository facts in details.observations without making them a freshness dimension)',
+        });
+      }
+    }
+    const adequacy = adequacyBindingDetailsSchema.safeParse(binding.details?.adequacy);
+    if (
+      adequacy.success &&
+      adequacy.data.causalPairIds !== undefined &&
+      !CAUSAL_PAIR_EVIDENCE_KINDS.has(binding.evidenceKind)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: [field],
+        path: ['details', 'adequacy', 'causalPairIds'],
         message:
-          `repo-files measurement cannot independently refresh ${field}; omit it or pass null ` +
-          '(record non-repository facts in details.observations without making them a freshness dimension)',
+          'causalPairIds require executable test/check/coverage/operational proof or mutation/counterexample proof',
       });
     }
   });
@@ -139,7 +187,9 @@ export default defineTool({
           ? { ok: true as const, slug: reportedSlug, ...result }
           : { ok: false as const, slug: reportedSlug, error: result.status, ...result };
       },
-      { keyOf: (binding) => ({ slug: reportedSlug, workItemId: binding.workItemId, evidenceRef: binding.evidenceRef }) },
+      {
+        keyOf: (binding) => ({ slug: reportedSlug, workItemId: binding.workItemId, evidenceRef: binding.evidenceRef }),
+      },
     );
     return bulkContent(env);
   },
