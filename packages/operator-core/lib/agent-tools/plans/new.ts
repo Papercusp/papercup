@@ -398,13 +398,13 @@ export function findSimilarPlans(
 export default defineTool({
   name: 'plans:new',
   description:
-    'Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `content` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.',
+    'Create a plan in the plan STORE; never write a plan file. Pass `content` for the body or omit it for an empty starter. Slug uniqueness is lock-enforced. See /internal/docs/spec/plan-format.',
   guidance: {
-    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the body includes Requirements, author canonical `**R-N — Title.** outcome` records and a Design `### Bar-to-work map for this plan` table mapping every R-N to one or more P-NNN items with evidence plane `tree`, `deployed`, or `live`; plans:new validates this before writing. If the plan will be started, include substantive Requirements + the complete Design BAR map + canonical P-NNN item lines.',
+    when: 'Starting a plan: plans:new { slug, title, content }. Pass markdown with ## Requirements and ## Design; Requirements need canonical R-N rows plus a Design ### Bar-to-work map for this plan mapping each to P-NNN and evidence plane tree, deployed, or live. The tool validates this before writing. See /internal/docs/spec/plan-format.',
     notWhen:
-      'You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.',
+      'Editing an existing plan? Use plans:set-content / set-now / add-decision / add-item. Never create one by writing docs/plans/*.md; use this tool.',
     chaining:
-      'Author-in-one: plans:new { slug, title, content }. A Requirements section is a post-epoch acceptance-BAR source and must include the exact `### Bar-to-work map for this plan` table; plans:new refuses missing/malformed rows before persistence. For plans:start promotion, include substantive ## Requirements + the complete ## Design BAR map + canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new (empty starter) → plans:set-now → plans:add-item × N → plans:set-content with the complete spec. Then plans:start to promote items to work-items.',
+      'One-shot: plans:new { slug, title, content } writes the body. Include ### Bar-to-work map for this plan with | bar | implementing plan items | evidence plane | and canonical P-NNN item lines. A startable plan needs Requirements + complete BAR map + items, then plans:start. Incremental: plans:new → plans:set-now/add-item → plans:set-content → plans:start.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',

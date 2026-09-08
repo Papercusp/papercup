@@ -69,6 +69,7 @@ vi.mock('./pause-holds', () => ({
 import {
   applyFleetControl,
   classifyFleetControlInvoker,
+  FLEET_CONTROL_RESPONSE_TIMEOUT_MS,
   fleetControlCueText,
   windDownGoalFleet,
 } from './control-core';
@@ -784,9 +785,66 @@ describe('applyFleetControl', () => {
       const r = await applyFleetControl({} as never, 'backend', 'resume', 'incident cleared');
       expect(warn).toHaveBeenCalled();
       warn.mockRestore();
-      expect(r.ok).toBe(true); // the state IS lifted — the fire is the optional leg
+      expect(r.ok).toBe(false); // a resume is not successful while parked members may remain asleep
+      expect(r.error).toBe('resume_gate_not_confirmed');
+      expect(r.controlState).toBe('active'); // the durable state boundary remains the source of truth
+      expect(setControlM).toHaveBeenCalledTimes(1);
       expect(r.resumePath).toMatchObject({ gate: 'fleet:backend:resume', fired: false });
       expect(r.resumePath?.warning).toContain('were NOT woken');
+    });
+
+    it('confirms the gate before a slow post-saga can exhaust the receipt budget', async () => {
+      getFleetM.mockResolvedValue(
+        fleet({
+          leaderOwnerId: callerRef.ownerId,
+          controlState: 'winding-down',
+          controlResumeGate: 'fleet:backend:resume',
+        }),
+      );
+      let resolveHolds!: (value: { items: never[]; failed: never[] }) => void;
+      const holdsStarted = new Promise<void>((resolve) => {
+        clearPauseHoldsM.mockImplementation(
+          () =>
+            new Promise((resolveResult) => {
+              resolveHolds = resolveResult as typeof resolveHolds;
+              resolve();
+            }) as never,
+        );
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.useFakeTimers();
+      try {
+        const pending = applyFleetControl({} as never, 'backend', 'resume', 'incident cleared');
+        await holdsStarted;
+        // The gate is the receipt-critical leg and must have completed before the
+        // first optional post-saga leg begins, even though the saga itself is now
+        // deliberately wedged past the outer five-second response budget.
+        expect(emitAwaitedEventM).toHaveBeenCalledWith(
+          expect.objectContaining({ key: 'fleet:backend:resume' }),
+        );
+        expect(
+          Math.min(...emitAwaitedEventM.mock.invocationCallOrder),
+        ).toBeLessThan(Math.min(...clearPauseHoldsM.mock.invocationCallOrder));
+        expect(
+          Math.min(...setControlM.mock.invocationCallOrder),
+        ).toBeLessThan(Math.min(...emitAwaitedEventM.mock.invocationCallOrder));
+
+        await vi.advanceTimersByTimeAsync(FLEET_CONTROL_RESPONSE_TIMEOUT_MS + 1);
+        const r = await pending;
+        expect(r).toMatchObject({
+          ok: true,
+          controlState: 'active',
+          postControlPending: true,
+          postControlDegraded: true,
+          resumePath: { gate: 'fleet:backend:resume', fired: true, waiters: 2 },
+        });
+
+        resolveHolds({ items: [], failed: [] });
+        await Promise.resolve();
+      } finally {
+        warn.mockRestore();
+        vi.useRealTimers();
+      }
     });
 
     it('a resume on a legacy park (no declared gate) fires nothing and claims nothing', async () => {

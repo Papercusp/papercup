@@ -208,8 +208,6 @@ interface FleetControlPostSagaResult {
   cueMsgId: string | null;
   record?: AgentFleetRecord;
   degraded: boolean;
-  /** WI-2034563: on a resume, the outcome of firing the park's declared gate. */
-  resumeFire?: { gate: string; fired: boolean; waiters?: number; warning?: string };
 }
 
 /** The park directive a wind-down is publishing, threaded through the post-saga so
@@ -245,10 +243,11 @@ async function startBoundedOptional<T>(
 }
 
 /**
- * Best-effort work after the typed state flip. The response caller is bounded
- * by the outer `withBoundedTimeout` in `applyFleetControl`; this function keeps
- * dependent legs ordered in the background if one of the underlying promises
- * outlives an individual optional-leg budget.
+ * Best-effort work after the typed state flip. Resume-gate firing is deliberately
+ * not part of this saga: it is the receipt-critical step in `applyFleetControl`
+ * and must happen before any slow optional leg can consume the response budget.
+ * This function keeps the remaining dependent legs ordered in the background if
+ * one of the underlying promises outlives an individual optional-leg budget.
  */
 async function runFleetControlPostSaga(args: {
   action: FleetControlAction;
@@ -484,45 +483,6 @@ async function runFleetControlPostSaga(args: {
     cueMsgId = cueWork.result.value.cueMsgId;
   }
 
-  // ── WI-2034563: firing the park's declared gate IS the resume ──────────────
-  // A resume cue only reaches members that are still LIVE and listening. The
-  // members this work exists for are precisely the ones that are not: they ended
-  // their loops and parked on the gate, so a coord cue cannot reach them and only
-  // the emit can. `args.fleet` is the PRE-flip record, which is where the gate the
-  // park declared still lives (the flip itself clears it). Fail-soft with a named
-  // warning — the state is already lifted, and a member left parked on an unfired
-  // gate is a reportable fault, never a silent one.
-  let resumeFire: FleetControlPostSagaResult['resumeFire'];
-  const declaredGate =
-    args.action === 'resume' && !args.alreadyInState ? (args.fleet.controlResumeGate ?? '').trim() : '';
-  if (declaredGate) {
-    const fireWork = await startBoundedOptional(
-      async () => {
-        const { emitAwaitedEvent } = await import('../../events/await/engine');
-        return emitAwaitedEvent({
-          key: declaredGate,
-          workspaceId: args.workspaceId,
-          source: args.ownerId,
-          summary: `Fleet ${args.slug} RESUMED — the park declared this gate; pick your lane back up.`,
-          payload: { fleet: args.slug, controlState: 'active', by: args.ownerId, reason: effectiveReason },
-        });
-      },
-      { fallback: null, timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:resume:fireGate' },
-    );
-    if (fireWork.result.degraded) degraded = true;
-    const emitted = fireWork.result.value as { waiters?: number } | null;
-    resumeFire = emitted
-      ? { gate: declaredGate, fired: true, waiters: emitted.waiters ?? 0 }
-      : {
-          gate: declaredGate,
-          fired: false,
-          warning:
-            `The fleet is ACTIVE again, but firing its declared resume gate '${declaredGate}' did not ` +
-            'complete. Members parked on that key were NOT woken by this call and cannot be reached by ' +
-            `the resume cue either. Re-fire it: events:emit { event: '${declaredGate}', summary: 'fleet resumed' }.`,
-        };
-  }
-
   return {
     effectiveReason,
     ...(drainStamp ? { drainStamp } : {}),
@@ -530,8 +490,46 @@ async function runFleetControlPostSaga(args: {
     notified,
     cueMsgId,
     ...(record ? { record } : {}),
-    ...(resumeFire ? { resumeFire } : {}),
     degraded,
+  };
+}
+
+/**
+ * Fire the park's declared resume gate on the receipt-critical path. A resume
+ * must not report success while this emit is still pending: parked members are
+ * reachable only through this event, not through the live-member cue.
+ */
+async function fireFleetResumeGate(args: {
+  gate: string;
+  slug: string;
+  workspaceId: string;
+  ownerId: string;
+  reason: string | null;
+}): Promise<FleetControlResumePathReceipt> {
+  const fireWork = await withBoundedTimeout(
+    async () => {
+      const { emitAwaitedEvent } = await import('../../events/await/engine');
+      return emitAwaitedEvent({
+        key: args.gate,
+        workspaceId: args.workspaceId,
+        source: args.ownerId,
+        summary: `Fleet ${args.slug} RESUMED — the park declared this gate; pick your lane back up.`,
+        payload: { fleet: args.slug, controlState: 'active', by: args.ownerId, reason: args.reason },
+      });
+    },
+    { fallback: null, timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:resume:fireGate' },
+  );
+  const emitted = fireWork.value as { waiters?: number } | null;
+  if (emitted) {
+    return { gate: args.gate, fired: true, waiters: emitted.waiters ?? 0 };
+  }
+  return {
+    gate: args.gate,
+    fired: false,
+    warning:
+      `The fleet is ACTIVE, but firing its declared resume gate '${args.gate}' was not confirmed. ` +
+      'Members parked on that key were NOT woken by this call and cannot be reached by the resume cue ' +
+      `either. Re-fire it: events:emit { event: '${args.gate}', summary: 'fleet resumed' }.`,
   };
 }
 
@@ -648,11 +646,13 @@ export async function applyFleetControl(
     }
   }
 
-  // 2. PERSIST the typed state FIRST. Every drain stamp, hold, release, leader
-  // watch, roster, and cue operation below is optional and runs only after this
-  // durable boundary has landed.
+  // 2. PERSIST the typed state FIRST. Every optional leg runs only after this
+  // durable boundary has landed. Resume's declared gate is fired immediately
+  // after that boundary, before the slower optional saga, so a receipt cannot
+  // report success before parked members have a confirmed wake.
   const targetState = ACTION_TO_STATE[action];
   const alreadyInState = fleet.controlState === targetState;
+  let resumePath: FleetControlResumePathReceipt | undefined;
 
   // ── WI-2034563: mint + DECLARE the park's resume gate BEFORE persisting it ──
   // Declaring first is the honest order: the row must never advertise a key that
@@ -662,7 +662,6 @@ export async function applyFleetControl(
   // declaration fails we store NO gate and say so, rather than publishing a key that
   // silently behaves like an ordinary unlatched event.
   let park: FleetParkDirectivePlan | null = null;
-  let resumePath: FleetControlResumePathReceipt | undefined;
   if (action === 'wind-down') {
     const terminal = opts?.noResumePath === true;
     const expiresAt =
@@ -724,11 +723,23 @@ export async function applyFleetControl(
   if (!updated) {
     return {
       ok: false,
+      fleet: slug,
+      controlState: fleet.controlState,
+      ...(resumePath ? { resumePath } : {}),
       error: 'fleet_leadership_superseded',
       message: `Fleet '${slug}' changed leaders after this control action was authorized; re-orient before retrying.`,
     };
   }
   const record: AgentFleetRecord = updated;
+  if (action === 'resume' && !alreadyInState && (fleet.controlResumeGate ?? '').trim()) {
+    resumePath = await fireFleetResumeGate({
+      gate: (fleet.controlResumeGate ?? '').trim(),
+      slug,
+      workspaceId,
+      ownerId,
+      reason: reason ?? null,
+    });
+  }
   const post = await withBoundedTimeout(
     () =>
       runFleetControlPostSaga({
@@ -754,7 +765,7 @@ export async function applyFleetControl(
   const responseRecord = postResult?.record ?? record;
 
   return {
-    ok: true,
+    ok: resumePath?.fired === false ? false : true,
     fleet: slug,
     controlState: responseRecord.controlState,
     reason: responseRecord.controlReason,
@@ -765,29 +776,17 @@ export async function applyFleetControl(
     cueMsgId: postResult?.cueMsgId ?? null,
     ...(postResult?.drainStamp ? { drainStamp: postResult.drainStamp } : {}),
     ...(postResult?.pauseHolds ? { pauseHolds: postResult.pauseHolds } : {}),
-    // WI-2034563: the wind-down's declared path, or the resume's fire receipt. On a
-    // resume the fire outcome supersedes the (absent) declaration receipt; a
-    // post-saga that timed out before the fire reports the intent WITHOUT claiming
-    // it landed, because "the gate was fired" is exactly the claim a leader would
-    // otherwise act on while members stayed parked.
-    ...(postResult?.resumeFire
-      ? { resumePath: postResult.resumeFire as FleetControlResumePathReceipt }
-      : action === 'resume' && !alreadyInState && (fleet.controlResumeGate ?? '').trim()
-        ? {
-            resumePath: {
-              gate: (fleet.controlResumeGate ?? '').trim(),
-              fired: false,
-              warning:
-                'The fleet is ACTIVE again, but this call returned before its declared resume gate was ' +
-                'confirmed fired. Members parked on that key may still be asleep — re-fire it with ' +
-                'events:emit, or verify with events:status.',
-            } satisfies FleetControlResumePathReceipt,
-          }
-        : resumePath
-          ? { resumePath }
-          : {}),
+    ...(resumePath ? { resumePath } : {}),
     ...(post.degraded ? { postControlPending: true } : {}),
     ...(post.degraded || postResult?.degraded ? { postControlDegraded: true } : {}),
+    ...(resumePath?.fired === false
+      ? {
+          error: 'resume_gate_not_confirmed',
+          message:
+            'The fleet state is active, but its declared resume gate was not confirmed fired; ' +
+            're-fire the gate before treating parked members as resumed.',
+        }
+      : {}),
   };
 }
 

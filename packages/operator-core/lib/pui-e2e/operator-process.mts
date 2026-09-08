@@ -121,11 +121,11 @@ process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${port}`;
 send({ type: 'ready', pid: process.pid, instanceId, port });
 
 let stopping = false;
-async function stop(): Promise<void> {
+async function stop({ endSessions = true }: { endSessions?: boolean } = {}): Promise<void> {
   if (stopping) return;
   stopping = true;
   try {
-    for (const host of observed) {
+    for (const host of endSessions ? observed : []) {
       if (!host.snapshot().terminal) {
         const command = {
           schema: SU_SESSION_SCHEMA,
@@ -175,6 +175,7 @@ async function stop(): Promise<void> {
 }
 process.on('message', (message: { type?: string }) => {
   if (message.type === 'stop') void stop();
+  if (message.type === 'restart') void stop({ endSessions: false });
 });
 process.on('SIGTERM', () => {
   void stop();

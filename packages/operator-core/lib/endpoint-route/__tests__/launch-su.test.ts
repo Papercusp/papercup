@@ -305,30 +305,24 @@ afterEach(() => {
 
 describe('launch-su', () => {
   it('streams launch progress before slow preflight and preserves the final refusal', async () => {
-    let release!: () => void;
+    let release: (() => void) | undefined;
     floorMock.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           release = () => resolve({ ok: false, reason: 'fixture admission refusal' });
         }),
     );
-    let opened: Response | undefined;
-    const pending = callPost(
+    // The response must open while the preflight remains unresolved. Consuming
+    // its body starts that asynchronous work and carries the final result.
+    const opened = await callPost(
       { agent: 'codex', harness_slug: 'papercup', attached_engine: true, agent_chat_id: 'streamed-chat' },
       true,
-    ).then((response) => {
-      opened = response;
-      return response;
-    });
-    try {
-      await vi.advanceTimersByTimeAsync(31_000);
-      expect(opened, 'launch progress must precede the ordinary route watchdog').toBeDefined();
-      expect(opened!.headers.get('content-type')).toContain('text/event-stream');
-    } finally {
-      release();
-      await pending;
-    }
-    const wire = await opened!.text();
+    );
+    expect(opened.headers.get('content-type')).toContain('text/event-stream');
+    const wirePromise = opened.text();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    release!();
+    const wire = await wirePromise;
     expect(wire).toContain('event: launch-starting');
     expect(wire).toContain('event: launch-result');
     expect(wire).toContain('"httpStatus":429');

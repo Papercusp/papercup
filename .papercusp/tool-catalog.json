@@ -26390,7 +26390,9 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer",
+        "release-manager"
       ],
       "profile": "engineer",
       "guidance": {
