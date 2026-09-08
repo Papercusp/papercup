@@ -7,6 +7,8 @@ vi.mock('../pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
 import {
   beginQualificationTransaction,
   beginStoredQualification,
+  cancelStoredQualification,
+  reserveQualificationRunner,
   settleQualificationTransaction,
 } from './checkpoint-qualification-transaction';
 import {
@@ -306,5 +308,57 @@ describe('beginStoredQualification terminal repair-queue reconciliation', () => 
       transaction: { attemptId: 'attempt-1' },
       repairQueueReconciliation: { status: 'blocked', reason: 'cas-miss' },
     });
+  });
+
+  it('CASes cancellation by attempt and unit, stops before commit, and preserves repair_queue', async () => {
+    const begun = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1',
+      candidate: 'candidate-1',
+      nowMs: 100,
+    }).transaction;
+    const current = reserveQualificationRunner(begun, {
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      unit: 'papercup-green-checkpoint-manual-ge93sk.service',
+      leaseDurationMs: 1_000,
+      nowMs: 200,
+    }).transaction;
+    const queue = safeQueue();
+    const { statements } = transactionHarness({
+      qualificationTransaction: current,
+      repair_queue: queue,
+      unrelated: { preserved: true },
+    });
+    const stop = vi.fn(async () => ({ stopped: true }));
+
+    const result = await cancelStoredQualification(target, {
+      attemptId: 'attempt-1',
+      unit: 'papercup-green-checkpoint-manual-ge93sk.service',
+      nowMs: 300,
+    }, stop);
+
+    expect(result).toMatchObject({
+      status: 'updated',
+      transaction: {
+        phase: 'terminal',
+        outcome: { kind: 'code-inconclusive', reason: 'cancelled' },
+      },
+    });
+    expect(stop).toHaveBeenCalledTimes(1);
+    const update = statements.find((statement) => statement.text.includes('UPDATE harness_shared.routines'))!;
+    expect(update.text).toContain("metadata->?->>'attemptId' =");
+    expect(update.text).toContain("metadata->?->'currentPhysicalRunner'->>'unit' =");
+    expect(update.text).not.toContain("'repair_queue'");
+    // The queue is deliberately preserved by omission: cancellation updates only the
+    // qualification transaction, so it must not be passed as an UPDATE value at all.
+    expect(update.values).not.toContain(JSON.stringify(queue));
+
+    const refused = await cancelStoredQualification(target, {
+      attemptId: 'attempt-1',
+      unit: 'other-unit.service',
+      nowMs: 301,
+    }, stop);
+    expect(refused).toMatchObject({ status: 'conflict' });
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 });

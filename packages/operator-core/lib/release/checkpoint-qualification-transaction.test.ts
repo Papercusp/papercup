@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
+  cancelQualificationTransaction,
   classifyQualificationVerdict,
   parseCheckpointQualificationTransaction,
   projectCheckpointQualificationState,
@@ -159,6 +160,46 @@ describe('logical checkpoint qualification transaction', () => {
         consumedPhysicalRuns: [{ id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' } }],
       },
     });
+  });
+
+  it('cancels only the exact attempt/unit and settles a terminal code-inconclusive outcome', () => {
+    const running = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1',
+      runnerId: 'physical-1',
+      unit: 'papercup-green-checkpoint-manual-ge93sk.service',
+      leaseDurationMs: 1_000,
+      nowMs: 200,
+    }).transaction;
+
+    const cancelled = cancelQualificationTransaction(running, {
+      attemptId: 'attempt-1',
+      unit: 'papercup-green-checkpoint-manual-ge93sk.service',
+      nowMs: 300,
+    });
+    expect(cancelled).toMatchObject({
+      status: 'updated',
+      transaction: {
+        phase: 'terminal',
+        outcome: { kind: 'code-inconclusive', reason: 'cancelled' },
+        currentPhysicalRunner: null,
+        consumedPhysicalRuns: [{
+          id: 'physical-1',
+          endedAtMs: 300,
+          outcome: { kind: 'code-inconclusive', reason: 'cancelled' },
+        }],
+      },
+    });
+
+    expect(cancelQualificationTransaction(running, {
+      attemptId: 'attempt-1',
+      unit: 'another-checkpoint.service',
+      nowMs: 300,
+    })).toMatchObject({ status: 'conflict', transaction: running });
+    expect(cancelQualificationTransaction(running, {
+      attemptId: 'attempt-2',
+      unit: 'papercup-green-checkpoint-manual-ge93sk.service',
+      nowMs: 300,
+    })).toMatchObject({ status: 'conflict', transaction: running });
   });
 
   it('projects blocker events, elapsed phase durations, terminal action, and consumed runs', () => {

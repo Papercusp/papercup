@@ -210,6 +210,17 @@ export interface BeginQualificationInput {
   nowMs?: number;
 }
 
+export interface CancelQualificationInput {
+  /** The exact logical attempt the caller intends to stop. */
+  attemptId: string;
+  /** The exact systemd unit recorded on that attempt's physical runner. */
+  unit: string;
+  /** A durable, human-readable reason for the inconclusive terminal outcome. */
+  reason?: string;
+  evidenceRefs?: readonly string[];
+  nowMs?: number;
+}
+
 export type QualificationTransition =
   | { status: 'updated' | 'idempotent'; transaction: CheckpointQualificationTransaction }
   | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction };
@@ -786,6 +797,48 @@ export function settleQualificationTransaction(
   };
 }
 
+/**
+ * Deliberately cancel one known physical runner without turning an ordinary external
+ * SIGTERM into a retryable pre-suite wait. The caller must name both identities that
+ * make the destructive action safe: the logical attempt and the systemd unit recorded
+ * for its current runner. A terminal `code-inconclusive` result preserves the repair
+ * queue and prevents the producer's later signal/result callback from settling a newer
+ * attempt by accident.
+ */
+export function cancelQualificationTransaction(
+  current: CheckpointQualificationTransaction,
+  input: CancelQualificationInput,
+): QualificationTransition {
+  if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  const runner = current.currentPhysicalRunner;
+  if (!runner || runner.unit !== input.unit.trim()) return { status: 'conflict', transaction: current };
+  const nowMs = input.nowMs ?? Date.now();
+  const outcome: QualificationOutcome = {
+    kind: 'code-inconclusive',
+    reason: input.reason?.trim() || 'cancelled',
+  };
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      phase: 'terminal',
+      phaseEnteredAtMs: nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
+      outcome,
+      blockers: [],
+      currentPhysicalRunner: null,
+      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
+      evidenceRefs: uniqueStrings([
+        ...current.evidenceRefs,
+        ...(input.evidenceRefs ?? []),
+        `cancelled:${runner.id}`,
+      ]),
+    },
+  };
+}
+
 export type RepairQueueReconciliation = {
   status: 'none' | 'preserved' | 'retired' | 'blocked';
   reason:
@@ -805,6 +858,10 @@ export type RepairQueueReconciliation = {
 export type StoredQualificationMutation =
   | (QualificationTransition & { repairQueueReconciliation?: RepairQueueReconciliation })
   | { status: 'missing' | 'unreadable'; error?: string };
+
+export type StoredQualificationCancellation =
+  | StoredQualificationMutation
+  | { status: 'stop-failed'; transaction: CheckpointQualificationTransaction; error: string };
 
 /**
  * A terminal logical attempt may leave its pre-suite frozen candidate behind. Retire it
@@ -1134,4 +1191,68 @@ export function recordStoredQualificationVerdict(
       attemptId: input.attemptId ?? current.attemptId,
     });
   });
+}
+
+/**
+ * Stop and settle a runner while the qualification row is held FOR UPDATE. The exact
+ * attempt/unit predicates are repeated on the UPDATE as a row-level CAS, and the repair
+ * queue is intentionally absent from the SET clause: cancelling a verifier may abandon
+ * the physical run, but it must never retire or rewrite the frozen repair lineage.
+ */
+export async function cancelStoredQualification(
+  target: GateVerdictTarget,
+  input: CancelQualificationInput,
+  stop: () => Promise<{ stopped: boolean; reason?: string }> | { stopped: boolean; reason?: string },
+): Promise<StoredQualificationCancellation> {
+  try {
+    return await boundedOrgTxn<StoredQualificationCancellation>(async (tx) => {
+      const rows = await tx<{ metadata: Record<string, unknown> | null }[]>`
+        SELECT metadata
+          FROM harness_shared.routines
+         WHERE workspace_id = ${target.workspaceId}
+           AND install_slug = ${target.installSlug}
+           AND target_role = 'system:green-checkpoint'
+         FOR UPDATE`;
+      if (!rows[0]) return { status: 'missing' as const };
+      const metadata = rows[0].metadata ?? {};
+      const raw = metadata[CHECKPOINT_QUALIFICATION_METADATA_KEY];
+      const current = raw == null ? null : parseCheckpointQualificationTransaction(raw);
+      if (raw != null && !current) {
+        return { status: 'unreadable' as const, error: 'qualification transaction metadata is malformed' };
+      }
+      if (!current) return { status: 'unreadable' as const, error: 'missing attempt' };
+      const transition = cancelQualificationTransaction(current, input);
+      if (transition.status !== 'updated') return transition;
+
+      const stopped = await stop();
+      if (!stopped.stopped) {
+        return {
+          status: 'stop-failed' as const,
+          transaction: current,
+          error: stopped.reason?.trim() || 'systemd kill did not stop the exact checkpoint unit',
+        };
+      }
+
+      const updatedRows = await tx<{ metadata: Record<string, unknown> }[]>`
+        UPDATE harness_shared.routines
+           SET metadata = jsonb_set(
+                 COALESCE(metadata, '{}'::jsonb),
+                 '{${tx.unsafe(CHECKPOINT_QUALIFICATION_METADATA_KEY)}}',
+                 ${JSON.stringify(transition.transaction)}::text::jsonb,
+                 true
+               ),
+               updated_at = now()
+         WHERE workspace_id = ${target.workspaceId}
+           AND install_slug = ${target.installSlug}
+           AND target_role = 'system:green-checkpoint'
+           AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->>'attemptId' = ${input.attemptId}
+           AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->'currentPhysicalRunner'->>'unit' = ${input.unit.trim()}
+           AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} = ${JSON.stringify(raw)}::text::jsonb
+         RETURNING metadata`;
+      if (updatedRows.length === 0) return { status: 'conflict' as const, transaction: current };
+      return transition;
+    });
+  } catch (error) {
+    return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
+  }
 }
