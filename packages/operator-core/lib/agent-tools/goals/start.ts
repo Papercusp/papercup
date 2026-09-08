@@ -60,10 +60,7 @@ import {
 } from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
-import {
-  readGoalHistoryContext,
-  type GoalHistoryContext,
-} from '../../prior-attempt-context';
+import type { GoalHistoryContext } from '../../prior-attempt-context';
 
 /**
  * The agent's FIRST TURN.
@@ -816,6 +813,11 @@ export default defineTool({
     // The brief rides the ENV, never a --kickoff= value: free-form text inside
     // the console greeting one-liner gets double-single-quoted and breaks the
     // shell. psu reads PAPERCUSP_KICKOFF_PROMPT as the fresh CLI's first turn.
+    // The goal-history compiler owns the plan/source read graph. Loading it at
+    // module evaluation makes every unrelated goal/tool bootstrap inherit that
+    // graph and strands intentionally narrow plan-source mocks. Goal creation
+    // consumes it only here, immediately before the holder brief is rendered.
+    const { readGoalHistoryContext } = await import('../../prior-attempt-context');
     const history = await readGoalHistoryContext(id);
     const env = {
       ...base.env,

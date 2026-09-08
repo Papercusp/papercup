@@ -21,7 +21,7 @@ import {
   GOAL_HISTORY_CONTEXT_HEADING,
   renderGoalHistoryContext,
 } from '../../agent-tools/goals/start';
-import { readGoalHistoryContext } from '../../prior-attempt-context';
+import type { GoalHistoryContext } from '../../prior-attempt-context';
 import { launchAgent, type LaunchAgentResult } from '../../launch-agent';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { setMode } from '../../modes/store';
@@ -69,7 +69,7 @@ export interface GoalHolderLaunchDeps {
     requested: Record<string, never>;
   }) => Promise<GoalLaunchResolution>;
   launch: (opts: Parameters<typeof launchAgent>[0]) => Promise<LaunchAgentResult>;
-  readHistory: typeof readGoalHistoryContext;
+  readHistory: (goalId: string) => Promise<GoalHistoryContext>;
 }
 
 const GOAL_HOLDER_NEUTRALIZER: AgentIdentity = {
@@ -144,7 +144,12 @@ export async function neutralizeGoalHolderSession(
 const DEFAULT_DEPS: GoalHolderLaunchDeps = {
   resolveGoalLaunch: resolveGoalLaunchForGoal,
   launch: launchAgent,
-  readHistory: readGoalHistoryContext,
+  // Loading the history compiler eagerly pulls the complete plan/source read
+  // graph into every system-action bootstrap. Keep that graph behind the one
+  // recovery path that actually consumes it so narrow plan-source test doubles
+  // (and unrelated runtime boot) do not inherit this optional enrichment.
+  readHistory: async (goalId) =>
+    (await import('../../prior-attempt-context')).readGoalHistoryContext(goalId),
 };
 
 function required(value: string | null | undefined, name: string): string {

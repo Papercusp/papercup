@@ -17,10 +17,6 @@ import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals
 import { readGoalPortfolioThroughput } from '@papercusp/operator-core/lib/goals/portfolio-throughput';
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { goalPackageUpdateInfo } from '@papercusp/operator-core/lib/goals/package-update';
-import {
-  readGoalHistoryContext,
-  resolvePriorAttemptRefs,
-} from '@papercusp/operator-core/lib/prior-attempt-context';
 import { readGoalReadiness } from './goal-deps';
 import { readGoalLastPause, readGoalPause } from './pause-record';
 import { readGoalHistory } from './history';
@@ -160,10 +156,18 @@ export default defineTool({
     }));
     const requestedHistoryRefs = args.priorAttemptRefs ?? [];
     const explicitHistoryRead = requestedHistoryRefs.length > 0;
-    const historyContext =
-      args.detail === 'full' || explicitHistoryRead ? await readGoalHistoryContext(goal.id) : undefined;
+    // Keep the continuity compiler off the agent-MCP bootstrap graph. It owns
+    // plan/source readers, and eagerly importing it here makes every unrelated
+    // tool test inherit that graph (including tests with intentionally narrow
+    // plans/source mocks). A full or explicit drill-down is the only call path
+    // that consumes it, so load the module exactly at that production boundary.
+    const continuity =
+      args.detail === 'full' || explicitHistoryRead
+        ? await import('@papercusp/operator-core/lib/prior-attempt-context')
+        : null;
+    const historyContext = continuity ? await continuity.readGoalHistoryContext(goal.id) : undefined;
     const priorAttemptRecords = explicitHistoryRead
-      ? await resolvePriorAttemptRefs({
+      ? await continuity!.resolvePriorAttemptRefs({
           target: { kind: 'goal', ref: goal.id },
           rawRefs: requestedHistoryRefs,
         })
