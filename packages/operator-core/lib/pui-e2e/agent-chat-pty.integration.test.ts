@@ -31,7 +31,7 @@ import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-e
 import type { SuRpcEngine } from '../su-session-rpc-engine';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { screenContains, VtScreen } from './vt-screen';
+import { screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 
@@ -372,9 +372,7 @@ class PuiPane {
         // Match the rendered assistant bubble itself. History can scroll the
         // echoed owner request away (especially after a long interrupted reply),
         // and a context-dependent answer need not occur in the request at all.
-        const lines = this.screen().split('\n').map((line) => line.replace(/^│|│$/g, '').trim());
-        expect(lines.some((line, index) => line === 'agent' && (typeof needle === 'string'
-          ? lines[index + 1]?.includes(needle) : needle.test(lines[index + 1] ?? '')))).toBe(true);
+        expect(screenHasAssistantReply(this.screen(), needle)).toBe(true);
       }, { timeout: 120_000, interval: 100 });
     } catch (cause) {
       const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
