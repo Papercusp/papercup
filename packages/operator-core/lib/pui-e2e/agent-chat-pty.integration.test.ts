@@ -362,14 +362,15 @@ class PuiPane {
     );
   }
 
-  async waitForReply(needle: string): Promise<void> {
+  async waitForReply(needle: string | RegExp): Promise<void> {
     try {
       await vi.waitFor(() => {
         // Match the rendered assistant bubble itself. History can scroll the
         // echoed owner request away (especially after a long interrupted reply),
         // and a context-dependent answer need not occur in the request at all.
         const lines = this.screen().split('\n').map((line) => line.replace(/^│|│$/g, '').trim());
-        expect(lines.some((line, index) => line === 'agent' && lines[index + 1]?.includes(needle))).toBe(true);
+        expect(lines.some((line, index) => line === 'agent' && (typeof needle === 'string'
+          ? lines[index + 1]?.includes(needle) : needle.test(lines[index + 1] ?? '')))).toBe(true);
       }, { timeout: 120_000, interval: 100 });
     } catch (cause) {
       const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
@@ -503,6 +504,7 @@ let commandPosts: SuSessionCommand[] = [];
 let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
 let initializeWarnings: Array<Record<string, unknown>> = [];
 let optionalMemoryWarnings: string[] = [];
+let configurationWarnings: string[] = [];
 
 // Drop command frames only for deliberate acknowledgement-loss cases. All other
 // production SSE events still traverse the real HTTP connection to the PTY.
@@ -549,7 +551,7 @@ async function waitForSavedTurn(content: string): Promise<PersistedChat> {
   return waitForPersistedChat(db, (chat) => chat.transcript.some((turn) => turn.role === 'user' && turn.content === content));
 }
 
-async function waitForCorrelatedReply(prompt: string, reply: string): Promise<PersistedChat> {
+async function waitForCorrelatedReply(prompt: string, reply: string | RegExp): Promise<PersistedChat> {
   // The chat table stores accepted command receipts. Assistant text belongs to
   // the native transcript, exposed through the real adapter's SU event stream.
   const chat = await waitForPersistedChat(db, (candidate) => {
@@ -571,23 +573,36 @@ async function waitForCorrelatedReply(prompt: string, reply: string): Promise<Pe
   await vi.waitFor(() => expect(scriptedEngine.events).toEqual(expect.arrayContaining([
     expect.objectContaining({
       type: 'transcript', phase: 'completed', role: 'assistant', channel: 'text',
-      content: reply, turnId: command.turnId, session: command.target,
+      content: typeof reply === 'string' ? reply : expect.stringMatching(reply),
+      turnId: command.turnId, session: command.target,
     }),
   ])), { timeout: 120_000, interval: 100 });
   return chat;
 }
 
+async function finishTeardown(steps: Array<() => void | Promise<void>>): Promise<void> {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try { await step(); } catch (error) { errors.push(error); }
+  }
+  if (errors.length) throw new AggregateError(errors, 'PUI fixture teardown failed');
+}
+
 async function stopEngines(): Promise<void> {
-  for (const engine of scriptedEngine.engines.splice(0)) {
+  await finishTeardown(scriptedEngine.engines.splice(0).flatMap((engine) => {
     // The protocol peer has no native CLI lifecycle hook. Remove only its
     // bootstrap presence in this isolated DB before the real close/reaper runs.
     const owner = engine.adapter.host.descriptor().identity.ownerId;
-    if (!scriptedEngine.real) {
-      await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
-    }
-    await engine.close();
-    engine.adapter.dispose();
-  }
+    return [
+      async () => {
+        if (!scriptedEngine.real) {
+          await db.adminSql`DELETE FROM harness_shared.coord_presence WHERE owner_id = ${owner}`;
+        }
+      },
+      () => engine.close(),
+      () => engine.adapter.dispose(),
+    ];
+  }));
 }
 
 
@@ -663,6 +678,53 @@ beforeAll(async () => {
   const { scaffoldHarnessSchema } = await import('../scaffold-harness-schema');
   await scaffoldHarnessSchema(HARNESS);
   await putViewState('Plans');
+
+  if (scriptedEngine.real) {
+    const adv = await import('../adv-sessions');
+    const reactivate = adv.reactivateAdvSessionByOwner;
+    vi.spyOn(adv, 'reactivateAdvSessionByOwner').mockImplementation(async (ownerId) => {
+      const [before] = await db.adminSql`
+        SELECT id, resume_claim_key IS NOT NULL AS reserved
+          FROM harness_shared.adv_sessions WHERE coord_owner_id = ${ownerId}
+         ORDER BY started_at DESC LIMIT 1`;
+      const changed = await reactivate(ownerId);
+      if (before?.reserved) {
+        const [after] = await db.adminSql`
+          SELECT resume_claim_key IS NOT NULL AS reserved, ended_at IS NOT NULL AS ended
+            FROM harness_shared.adv_sessions WHERE id = ${before.id}`;
+        console.info('PUI_RESUME_ACTIVITY_DIAGNOSTIC', JSON.stringify({
+          advSessionId: before.id, ownerId, changed, before, after,
+        }));
+      }
+      return changed;
+    });
+    if (scriptedEngine.backend === 'omp') {
+      const stdio = await import('../su-session-stdio-peer');
+      const startPeer = stdio.startSuStdioPeer;
+      vi.spyOn(stdio, 'startSuStdioPeer').mockImplementation(async (options) => {
+        const peer = await startPeer(options);
+        return { ...peer, async request(...args: Parameters<typeof peer.request>) {
+          const result = await peer.request(...args);
+          if (args[0].type === 'get_state') {
+            const prompt = Array.isArray(result.systemPrompt) ? result.systemPrompt : [result.systemPrompt];
+            console.info('PUI_OMP_STATE_DIAGNOSTIC', JSON.stringify({
+              pid: peer.pid(), agentHome: options.env.PI_CODING_AGENT_DIR,
+              configDir: options.env.PI_CONFIG_DIR, keys: Object.keys(result),
+              model: { id: (result.model as { id?: string })?.id,
+                provider: (result.model as { provider?: string })?.provider }, promptType: typeof result.systemPrompt,
+              promptParts: prompt.map((part) => {
+                const text: string = typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : '';
+                return { type: typeof part, keys: typeof part === 'object' && part ? Object.keys(part) : [],
+                  headings: text.match(/^#{1,3} .+$/gm)?.filter((heading) => heading.includes('MCP')),
+                  routes: text.match(/xd:\/\/[^`\s]+/g)?.filter((route) => /papercusp[-_]su/i.test(route)).slice(0, 8) };
+              }),
+            }));
+          }
+          return result;
+        } };
+      });
+    }
+  }
 
   await startTimingProfile();
   const { app } = await import('../../../../apps/operator/bin/host-app');
@@ -763,21 +825,22 @@ beforeAll(async () => {
 }, 900_000);
 
 afterAll(async () => {
-  await stopEngines();
-  await close(operatorServer);
-  const { drainDetached } = await import('../detached-imports');
-  await drainDetached();
-  for (const job of maintenance.jobs.splice(0)) await job.stop();
-  const { stopInvalidationListener } = await import('../sync-sse');
-  await stopInvalidationListener();
-  const dbOrg = await import('@papercusp/db-org');
-  await dbOrg._resetForTests().catch(() => {});
-  await db?.cleanup();
-  for (const [key, value] of Object.entries(previousEnv ?? {})) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  rmSync(home, { recursive: true, force: true });
+  await finishTeardown([
+    stopEngines,
+    () => close(operatorServer),
+    async () => { const { drainDetached } = await import('../detached-imports'); await drainDetached(); },
+    async () => { await finishTeardown(maintenance.jobs.splice(0).map((job) => () => job.stop())); },
+    async () => { const { stopInvalidationListener } = await import('../sync-sse'); await stopInvalidationListener(); },
+    async () => { const dbOrg = await import('@papercusp/db-org'); await dbOrg._resetForTests(); },
+    async () => { await db?.cleanup(); },
+    () => {
+      for (const [key, value] of Object.entries(previousEnv ?? {})) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (home) rmSync(home, { recursive: true, force: true });
+    },
+  ]);
 }, 120_000);
 
 afterEach(stopEngines);
@@ -797,7 +860,19 @@ beforeEach(async () => {
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
   optionalMemoryWarnings = [];
+  configurationWarnings = [];
   if (scriptedEngine.real) {
+    const error = console.error.bind(console);
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      if (scriptedEngine.backend === 'omp' && args.length === 1 && typeof args[0] === 'string'
+        && /^psu: CONFIG ERROR — modelRoles\.default \(openrouter\/stealth\/ox-alpha\) is a RETIRED upstream model that 404s; rewriting this session's copy to [^\s]+\. Fix your global ~\/\.omp\/agent\/config\.yml\.$/.test(args[0])) {
+        // EI-21919040934117285: the real machine has this obsolete default.
+        // Exercise its existing session-only repair and preserve the warning
+        // in acceptance evidence. Never rewrite the user's global config.
+        configurationWarnings.push(args[0]);
+        console.info('PUI_CONFIG_REPAIR_DIAGNOSTIC', args[0]);
+      } else error(...args);
+    });
     const warn = console.warn.bind(console);
     vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
       if (args[0] === '[mcp-initialize-stage]') {
@@ -832,6 +907,24 @@ beforeEach(async () => {
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+  test('teardown retains a close failure and still disposes every tracked engine', async () => {
+    const failure = new Error('native close failed');
+    const first = {
+      close: vi.fn(async () => { throw failure; }),
+      adapter: { host: { descriptor: () => ({ identity: { ownerId: 'pui-cleanup-failure' } }) }, dispose: vi.fn() },
+    };
+    const second = {
+      close: vi.fn(async () => {}),
+      adapter: { host: { descriptor: () => ({ identity: { ownerId: 'pui-cleanup-success' } }) }, dispose: vi.fn() },
+    };
+    scriptedEngine.engines.push(first as unknown as ClaudeSuEngine, second as unknown as ClaudeSuEngine);
+    await expect(stopEngines()).rejects.toMatchObject({ errors: [failure] });
+    expect(first.adapter.dispose).toHaveBeenCalledOnce();
+    expect(second.close).toHaveBeenCalledOnce();
+    expect(second.adapter.dispose).toHaveBeenCalledOnce();
+    expect(scriptedEngine.engines).toHaveLength(0);
+  });
+
   test('a refused reconnect stays visible without submitting a new owner turn', async () => {
     const pane = new PuiPane(bin, operatorPort, home);
     let saved: PersistedChat;
@@ -1263,6 +1356,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       let resumedDescriptor;
       const resumePrompt = 'Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.';
       const resumedReply = `RESUMED:${greetingReply}`;
+      // Recall of the unknown marker is the assertion, not whether a model
+      // inserts whitespace after the label. The marker itself stays exact.
+      const resumedReplyPattern = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
       try {
         await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
         resumedPane.write('o');
@@ -1289,8 +1385,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           runtimeGeneration: savedDescriptor.runtimeGeneration + 1 });
         resumedPane.write(resumePrompt);
         resumedPane.enter();
-        const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReply);
-        await resumedPane.waitForReply(resumedReply);
+        const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReplyPattern);
+        await resumedPane.waitForReply(resumedReplyPattern);
         expect(resumedChat.id).toBe(firstChat.id);
         frames.resumed = resumedPane.screen();
       } catch (cause) {
@@ -1303,7 +1399,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         binary: bin, binarySha256, manifest, chatId: finalChat.id, identity, frames,
         greetingReply, fileResult, followupReply, resumedReply, resumedDescriptor, readStart, readEnd,
         commandTypes: commandPosts.map((command) => command.type), processes, traffic: sessionTraffic,
-        initializeWarnings, optionalMemoryWarnings,
+        initializeWarnings, optionalMemoryWarnings, configurationWarnings,
         assistantReplies: scriptedEngine.events.filter((event) => event.type === 'transcript'
           && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'),
       }));
