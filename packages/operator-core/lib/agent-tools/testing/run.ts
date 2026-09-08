@@ -84,6 +84,7 @@ import {
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
@@ -1915,21 +1916,22 @@ export default defineTool({
     // race and hand back an actionable next step. The clamp is a TRANSPORT concern, so it lives
     // here and not in runTestFilesCore (whose other callers budget for themselves).
     const timeoutMs = clampForegroundTimeoutMs(args.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const result = await runTestFilesCore({
       files,
       root: rootSelection.root,
       timeoutMs,
       signal: ctx.signal,
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
-      ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
+      ...(harnessSlug ? { harnessSlug } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
     const testRunIds =
-      ctx.workspaceId && ctx.workspaceId !== '*' && ctx.harnessSlug && ctx.harnessSlug !== '*'
+      ctx.workspaceId && ctx.workspaceId !== '*' && harnessSlug
         ? await findHarnessTestRunIds({
             workspaceId: ctx.workspaceId,
-            harnessSlug: ctx.harnessSlug,
+            harnessSlug,
             runGroupId: result.runId,
           })
         : null;
