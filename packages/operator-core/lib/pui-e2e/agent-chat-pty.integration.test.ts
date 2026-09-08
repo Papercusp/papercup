@@ -1391,6 +1391,7 @@ function pendingNativeCards() {
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
   const readiness: Array<Record<string, unknown>> = [];
+  const shutdownStages: string[] = [];
   const descriptors = new Map<string, SuSessionDescriptor>();
   const diagnostics: Array<{ level: string; args: unknown[] }> = [];
   const responses: Array<{ path: string; status: number }> = [];
@@ -1412,8 +1413,13 @@ async function startOperatorProcess(port = 0) {
   child.on('message', (message: { type: string; descriptor?: SuSessionDescriptor; event?: SuSessionEvent;
     events?: SuSessionEvent[]; pid: number; instanceId: string; port: number; level: string; args: unknown[];
     path: string; status: number; method?: string; requestedAt?: string; respondedAt?: string;
-    before?: unknown[]; after?: unknown[]; body?: unknown }) => {
+    before?: unknown[]; after?: unknown[]; body?: unknown; stage?: string }) => {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
+    if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
+      console.info('PUI_OPERATOR_PROCESS_STAGE', JSON.stringify({ type: message.type, stage: message.stage,
+        pid: message.pid, instanceId: message.instanceId, at: new Date().toISOString() }));
+      if (message.stage) shutdownStages.push(message.stage);
+    }
     if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
     if (message.type === 'host') events.push(...message.events ?? []);
     if (message.type === 'event' && message.event) events.push(message.event);
@@ -1440,7 +1446,7 @@ async function startOperatorProcess(port = 0) {
       expect(ready, output).toBeDefined();
     }, { timeout: 120_000, interval: 100 });
   } catch (error) { await stop().catch(() => {}); throw error; }
-  return { ...ready!, events, descriptors, diagnostics, responses, readiness, stop, output: () => output };
+  return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
@@ -1449,20 +1455,27 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   // can claim a positive Codex question result.
   test.skipIf(scriptedEngine.backend === 'codex')('answers an actual native question through an installed PUI card', async () => {
     const manifest = installedManifest();
-    const nonce = randomUUID();
-    const question = `PUI-QUESTION-${nonce}?`;
-    const expected = `PUI-ANSWER-${nonce}:Change`;
+    const question = 'Would you like to keep or change the draft title?';
+    const expected = 'You chose: Change.';
     const questionTool = { claude: 'AskUserQuestion', codex: 'request_user_input', omp: 'ask' }[scriptedEngine.backend];
     if (!questionTool) throw new Error(`No native question scenario for ${scriptedEngine.backend}`);
     const questionShape = scriptedEngine.backend === 'claude' ? 'Use multiSelect false.'
       : 'Use question id choice, with one selection allowed.';
-    const request = `Call your native ${questionTool} tool exactly once. Ask ${question} with header Choice and two options in order: Keep, Change. ${questionShape} Wait for my answer, then reply exactly PUI-ANSWER-${nonce}:<selected label>. Do not choose an answer yourself or use another question mechanism.`;
+    const request = `I want to try the choice dialog in this conversation. Please use ${questionTool} to ask me: ${question} Give me two choices, Keep and Change, under the header Choice. ${questionShape} Wait for me to choose. Then confirm my choice with the sentence "You chose: <selected label>."`;
     const pane = new PuiPane(bin, operatorPort, home);
     try {
       await openComposer(pane);
       pane.write(request); pane.enter();
       await waitForSavedTurn(request);
-      await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 120_000, interval: 100 });
+      const cardDeadline = Date.now() + 120_000;
+      while (pendingNativeCards().length === 0 && Date.now() < cardDeadline) {
+        const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
+        if (lifecycle && ['waiting-for-owner', 'failed', 'ended'].includes(lifecycle)) {
+          throw new Error(`The native turn reached ${lifecycle} without opening the requested question`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(pendingNativeCards()).toHaveLength(1);
       const engine = scriptedEngine.engines[0];
       const card = pendingNativeCards()[0];
       expect(card.prompt).toBe(question);
@@ -1526,6 +1539,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       console.info('PUI_OPERATOR_PROCESS_FAILURE', JSON.stringify({ output: first.output(), diagnostics: first.diagnostics, screen: pane.screen() }));
       throw error;
     } finally { await pane.stop(); await first.stop(); }
+    expect(first.shutdownStages).toContain('embedding-workers-stopped');
     // A process exit is observed before a NEW OS process binds the SAME port.
     // No in-memory host, registry, mock or JavaScript closure crosses this seam.
     await putViewState('Plans');
@@ -1541,6 +1555,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       resumedPane.write('l'); await resumedPane.waitFor('Conversation — Enter select'); resumedPane.enter();
       resumedPane.write('i'); await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
+      await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       const resumedReply = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
       resumedPane.write('Reply with RESUMED: followed immediately by the exact marker from my first greeting. Do not use tools.');
       frames.beforeSubmit = resumedPane.screen();
@@ -1560,6 +1575,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frames, readiness: second.readiness, screen: resumedPane.screen() }));
       throw error;
     } finally { await resumedPane.stop(); await second.stop(); }
+    expect(second.shutdownStages).toContain('embedding-workers-stopped');
   }, 600_000);
 
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
