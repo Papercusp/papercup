@@ -146,6 +146,7 @@ for f in /etc/containers/policy.json \
          /etc/containers/registries.d/papercusp-release.yaml \
          /etc/yum.repos.d/google-cloud.repo \
          /etc/nftables/papercusp-workspace-host.nft \
+         /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf \
          /usr/bin/google_authorized_keys \
          /usr/lib64/security/pam_oslogin_login.so \
          /usr/lib/sysusers.d/papercusp.conf \
@@ -252,6 +253,22 @@ if [[ "$(in_image 'set -e; found=0; for modules_dir in /usr/lib/modules/*; do te
   pass "every committed initramfs carries the GCE disk-naming rule"
 else
   fail "a committed initramfs lacks the GCE disk-naming rule"
+fi
+# google-compute-engine-oslogin's package script creates this directory while
+# the image is built, but /var is machine-local on a bootc host. Shipping that
+# residue is not a first-boot contract. Require the committed image to omit it,
+# then exercise the boot-time tmpfiles rule in a disposable container and check
+# the exact mode/owner it recreates.
+if [[ "$(in_image 'test ! -e /var/google-users.d && echo y')" == "y" ]]; then
+  pass "google-users.d is not committed as machine-local /var residue"
+else
+  fail "google-users.d is committed under /var — boot persistence is undefined"
+fi
+google_users_dir="$(in_image 'set -e; systemd-tmpfiles --create /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf; stat -c "%a:%u:%g" /var/google-users.d')"
+if [[ "$google_users_dir" == "755:0:0" ]]; then
+  pass "tmpfiles recreates google-users.d as 0755 root:root"
+else
+  fail "tmpfiles recreated google-users.d as '$google_users_dir', expected 755:0:0"
 fi
 if [[ -n "$(in_image "grep -Fx 'enabled=0' /etc/yum.repos.d/google-cloud.repo")" ]]; then
   pass "Google guest repository is build-only (enabled=0)"

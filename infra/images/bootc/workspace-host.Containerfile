@@ -106,6 +106,7 @@ ARG PAPERCUSP_AGENT_GROUP=papercusp-agent
 #     diff loses in-place rewrites of the RPM SQLite DB and initramfs. The files
 #     look correct inside RUN, then revert after COMMIT. Replace both with fresh
 #     inodes in this same layer; the P-306 probe checks the committed image.
+COPY papercusp-google-oslogin.conf /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf
 RUN set -eux; \
     printf '%s\n' \
       '[google-compute-engine]' \
@@ -187,7 +188,8 @@ RUN set -eux; \
     `# there is not image content in any useful sense — it is either discarded or` \
     `# it shadows the host's own state. A dnf repo cache baked into /var/lib/dnf is` \
     `# the "looks present, is not deployed" class this port keeps running into.` \
-    && rm -rf /var/cache/dnf /var/lib/dnf /var/log/dnf.* /var/log/hawkey.log \
+    && rm -rf /var/cache/dnf /var/lib/dnf /var/google-users.d \
+              /var/log/dnf.* /var/log/hawkey.log \
               /var/log/rhsm /var/lib/rhsm /run/rhsm /var/cache/ldconfig \
     && test "$(rpm --eval '%{_dbpath}')" = /usr/share/rpm \
     && python3 -c 'import sqlite3; db = sqlite3.connect("/usr/share/rpm/rpmdb.sqlite"); result = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(); db.close(); assert result[0] == 0, result' \
