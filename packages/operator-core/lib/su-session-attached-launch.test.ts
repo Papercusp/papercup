@@ -16,6 +16,7 @@ vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
 import { launchAttachedSuSession } from './su-session-attached-launch';
+import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
 const input = { agent: 'claude', agent_chat_id: 'chat', harness_slug: 'project', account: 'default', carry: 'warm' as const };
 const request = () => new Request('http://localhost/api/adv/sessions/launch-su', { headers: { authorization: 'Bearer fixture-principal' } });
@@ -149,5 +150,18 @@ describe('attached launch authority', () => {
       expect.objectContaining({ backend: agent, ownerId: 'su-engine', advSessionId: 18 }),
       expect.objectContaining({ accountRoute: 'default', carry: 'warm' }));
     await vi.waitFor(() => expect(mocks.pid).toHaveBeenCalledWith(18, 4321, `pui-structured-${agent}`));
+  });
+
+  it.each([
+    { model: undefined, expected: CODEX_SAFE_DEFAULT_MODEL, source: 'configured-default' },
+    { model: 'gpt-5.6-sol:high', expected: 'gpt-5.6-sol:high', source: 'explicit' },
+  ])('carries the visible Codex $source choice through headless bootstrap and execution', async ({ model, expected, source }) => {
+    mocks.bootstrap.mockImplementation(async () => Response.json({ ...boot, agent: 'codex', nativeSessionId: null,
+      envelopeEnv: { PAPERCUSP_SID: 'su-engine', CODEX_HOME: '/configured/codex' } }));
+    const response = await launchAttachedSuSession(request(), { ...input, agent: 'codex', model });
+    expect(response.status).toBe(200);
+    expect(await (mocks.bootstrap.mock.calls[0][0] as Request).json())
+      .toMatchObject({ model: expected, model_source: source, headless: true });
+    expect(mocks.rpc.mock.calls[0][2].model).toBe(expected);
   });
 });

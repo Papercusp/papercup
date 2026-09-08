@@ -14,6 +14,7 @@ import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 import type { NativeSessionHandle } from './native-session-handles';
 import { activeWorkspaceId } from './workspace-registry';
 import { prepareStructuredSuResume } from './su-session-resume';
+import { resolveCodexModelSelection } from './model-context-budget.mjs';
 
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
   starting: new Map<string, Promise<Record<string, unknown>>>(),
@@ -106,11 +107,19 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           : row ? nativeSessionHandleForAdvSession(row) : null };
     }
     const { bootstrapSu } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
+    // PUI owns the visible model picker. Its "server default" choice has the
+    // same authority as the PSU picker, even though the native engine has no
+    // terminal. Preserve that choice through the headless bootstrap boundary.
+    const codexSelection = input.agent === 'codex'
+      ? resolveCodexModelSelection(input.model, { source: input.model?.trim() ? 'explicit' : 'configured-default' })
+      : null;
+    const selectedModel = codexSelection?.model ?? input.model;
     // Preserve the request's authenticated principal. Bootstrap remains the one
     // authority for persona, scope, account, mode, membership and native identity.
     const response = await bootstrapSu.handler(new Request(request.url, {
       method: 'POST', headers: request.headers,
       body: JSON.stringify({ ...input, workspace: workspaceId, owner_id: `su-${randomUUID()}`,
+        model: selectedModel, ...(codexSelection ? { model_source: codexSelection.source } : {}),
         bootstrap_idempotency_key: `pui:${workspaceId}:${input.agent_chat_id}`,
         headless: true, auto: input.mode === 'auto', mode: input.mode === 'auto' ? null : input.mode,
       }),
@@ -140,7 +149,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       const bound = await bindSuSessionToAdvSession({ workspaceId, advSessionId: result.sessionId, agentChatId: input.agent_chat_id });
       if (bound.status !== 'bound' && bound.status !== 'already_bound') throw new Error('Could not bind the SU session to this conversation');
       const options = {
-        agentChatId: input.agent_chat_id, model: input.model, accountRoute: input.account,
+        agentChatId: input.agent_chat_id, model: selectedModel, accountRoute: input.account,
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
       };

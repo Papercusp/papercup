@@ -2703,6 +2703,21 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 /// the latest (0 = pinned to the newest). The in-flight assistant bubble shows a
 /// live `<say>` preview via `chat_tags::live_preview`.
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+    // Background reads may clear the global status error. Keep the actual
+    // refusal with the unsent turn so the owner can act on it before retrying.
+    let turn_error: Vec<String> = app
+        .su_pending_turn
+        .as_ref()
+        .filter(|_| !app.chat_streaming)
+        .and_then(|turn| turn.error.as_ref())
+        .map(|error| {
+            wrap_text(error, area.width.saturating_sub(2).max(1) as usize)
+                .into_iter()
+                .take(6)
+                .collect()
+        })
+        .unwrap_or_default();
+    let composer_h = 4 + turn_error.len() as u16;
     // Inline card (sentinel-tui-shared-backend-and-cards Phase 2a): when the
     // operator brain has an open `chat:ask_choice` card, reserve a bottom strip
     // for it (between the transcript and the composer) and render it there. The
@@ -2713,10 +2728,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         vec![
             Constraint::Min(1),
             Constraint::Length(card_h),
-            Constraint::Length(4),
+            Constraint::Length(composer_h),
         ]
     } else {
-        vec![Constraint::Min(1), Constraint::Length(4)]
+        vec![Constraint::Min(1), Constraint::Length(composer_h)]
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -3097,11 +3112,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         )
     };
-    let cpara = Paragraph::new(vec![
+    let mut composer_lines = vec![
         Line::from(Span::styled(app.agent_chat_selection_label(), Theme::dim())),
         Line::from(Span::styled(ctext, cstyle)),
-    ])
-    .block(
+    ];
+    composer_lines.extend(
+        turn_error
+            .into_iter()
+            .map(|error| Line::from(Span::styled(error, Theme::warn()))),
+    );
+    let cpara = Paragraph::new(composer_lines).block(
         Block::default()
             .borders(Borders::ALL)
             .title(Line::from(ctitle)),
@@ -6486,6 +6506,27 @@ mod tests {
         app.toast = Some(ui_notif("high", "Decide P-009", None));
         let text = render(&app, 90, 12);
         assert!(text.contains("N history"), "toast must advertise N: {text}");
+    }
+
+    #[test]
+    fn su_launch_refusal_stays_visible_with_the_draft_after_background_success() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Operator;
+        app.chat_composing = true;
+        app.chat_input = "keep this draft".into();
+        app.update(crate::event::Event::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        app.update(crate::event::Event::SuSessionError(
+            "Codex model is required. Select a model with Esc then m, and retry.".into(),
+        ));
+        app.last_error = None;
+        let text = render(&app, 100, 24);
+        assert!(text.contains("keep this draft"), "{text}");
+        assert!(text.contains("Codex model is required"), "{text}");
+        assert!(text.contains("Esc then m"), "{text}");
+        assert!(text.contains("Enter retries"), "{text}");
     }
 
     #[test]
