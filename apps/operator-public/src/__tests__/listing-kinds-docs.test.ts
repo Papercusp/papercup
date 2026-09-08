@@ -12,7 +12,9 @@ import { LISTING_KINDS, REVIEW_POLICY_KINDS } from '../db.ts';
 
 const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../README.md'), 'utf8');
 const listingSection = readme.slice(readme.indexOf('## Listing kinds'), readme.indexOf('\n## Endpoints'));
-const rows = [...listingSection.matchAll(/^\|\s*`([^`]+)`\s*\|([^\n]*)$/gm)];
+const rows = [...listingSection.matchAll(/^\|\s*`([^`]+)`\s*\|([^\n]*)$/gm)].filter(
+  (match) => match[1] !== 'listing_kind',
+);
 
 function rowFor(kind: string): string {
   const row = rows.find((match) => match[1] === kind);

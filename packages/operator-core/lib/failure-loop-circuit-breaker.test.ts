@@ -28,6 +28,57 @@ const success: DispatchProjectedResult = {
 
 afterEach(() => __resetFailureLoopCircuitBreakerForTests());
 
+describe('equivalent successful calls', () => {
+  const settled = (data: unknown): DispatchProjectedResult => ({ ok: true,
+    result: { content: [{ type: 'text', text: JSON.stringify(data) }] } });
+  const observe = (toolName: string, args: unknown, data: unknown, now = 1, ownerId = 'su-repeat') =>
+    observeFailureLoop({ toolName, args, result: settled(data), now, ownerId });
+
+  it.each(['tools:find', 'work_items:get'])('warns once for identical %s data without treating changing elapsed time as progress', tool => {
+    for (let i = 0; i < 3; i++) observe(tool, { id: 'WI-1' }, { state: 'open', elapsedMs: i }, i + 1);
+    expect(takePendingFailureLoopHint('su-repeat', 4)).toMatchObject({ kind: 'repetition', count: 3 });
+    expect(takePendingFailureLoopHint('su-repeat', 4)).toBeNull();
+    observe(tool, { id: 'WI-1' }, { state: 'open', elapsedMs: 99 }, 5);
+    expect(takePendingFailureLoopHint('su-repeat', 6)).toBeNull();
+  });
+
+  it('resets when the requested schema or returned status changes and isolates owners', () => {
+    observe('tools:find', { query: 'locks:acquire' }, { schema: 'a' });
+    observe('tools:find', { query: 'locks:release' }, { schema: 'b' }, 2);
+    observe('tools:find', { query: 'locks:release' }, { schema: 'b' }, 3, 'other');
+    expect(takePendingFailureLoopHint('su-repeat', 4)).toBeNull();
+    observe('work_items:get', { id: 'WI-1' }, { state: 'open' });
+    observe('work_items:get', { id: 'WI-1' }, { state: 'open' }, 2);
+    observe('work_items:get', { id: 'WI-1' }, { state: 'done' }, 3);
+    expect(takePendingFailureLoopHint('su-repeat', 4)).toBeNull();
+  });
+
+  it('requires measured test identity, ignores new run ids, and respects justified rechecks', () => {
+    const args = { files: ['test/a.ts'] };
+    for (let i = 0; i < 4; i++) observe('testing:run', args, { passed: 1, runId: String(i) }, i);
+    expect(takePendingFailureLoopHint('su-repeat', 5)).toBeNull();
+    for (let i = 0; i < 3; i++) observe('testing:run', args, { passed: 1, runId: String(i),
+      evidenceBundle: { verificationFingerprint: 'same-source-and-tests' } }, i + 10);
+    expect(takePendingFailureLoopHint('su-repeat', 14)).toMatchObject({ kind: 'repetition', category: 'test' });
+    observe('testing:run', { ...args, recheckReason: 'Confirm after environment repair' }, { passed: 1,
+      evidenceBundle: { verificationFingerprint: 'same-source-and-tests' } }, 15);
+    observe('testing:run', args, { passed: 1, evidenceBundle: { verificationFingerprint: 'changed-source' } }, 16);
+    expect(takePendingFailureLoopHint('su-repeat', 17)).toBeNull();
+  });
+
+  it('expires old equivalence and does not retain secrets or grade clipped data', () => {
+    for (let i = 0; i < 3; i++) observe('work_items:get', { id: 'WI-1', token: 'secret-value' }, { _partial: true, state: 'open' }, i);
+    expect(takePendingFailureLoopHint('su-repeat', 4)).toBeNull();
+    observe('work_items:get', { id: 'WI-1' }, { state: 'open' }, 5);
+    observe('work_items:get', { id: 'WI-1' }, { state: 'open' }, FAILURE_LOOP_WINDOW_MS + 6);
+    expect(takePendingFailureLoopHint('su-repeat', FAILURE_LOOP_WINDOW_MS + 7)).toBeNull();
+    for (let i = 0; i < 3; i++) observe('tools:find', { query: 'secret-value' }, { schema: 'secret-result' }, i + 20);
+    const hint = takePendingFailureLoopHint('su-repeat', 24);
+    expect(hint).not.toBeNull();
+    expect(JSON.stringify(hint)).not.toContain('secret');
+  });
+});
+
 describe('failure-loop circuit breaker', () => {
   it('fingerprints argument SHAPE, independent of object order and scalar values', () => {
     expect(argumentShapeFingerprint({ path: '/a', opts: { n: 1, force: true } })).toBe(

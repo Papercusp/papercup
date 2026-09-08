@@ -37,6 +37,7 @@ import {
   LEADER_BRIEF_READ_CONCURRENCY,
   LEADER_BRIEF_TOTAL_TIMEOUT_MS,
   leaderBriefLaneHealthUnavailable,
+  leaderBriefRosterDegradation,
   projectMember,
   projectFleetAdmissionBlockRead,
   prioritizeActionableMembers,
@@ -64,6 +65,19 @@ import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('leaderBriefRosterDegradation (EI-22734316557524020)', () => {
+  it('qualifies degraded roster legs so an empty fallback cannot read as a healthy fleet', () => {
+    expect(leaderBriefRosterDegradation(['presence', 'assignments'])).toEqual({
+      degraded: true,
+      degradedLegs: ['roster.presence', 'roster.assignments'],
+    });
+  });
+
+  it('omits degradation markers for a fully measured roster', () => {
+    expect(leaderBriefRosterDegradation([])).toEqual({});
+  });
+});
 
 describe('resolveLeaderBriefFleet — durable leadership is the omitted-fleet authority (EI-22022804992915961)', () => {
   const agent = {

@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import type { DispatchProjectedResult } from '@papercusp/agent-mcp';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 export const FAILURE_LOOP_THRESHOLD = 3;
 export const FAILURE_LOOP_WINDOW_MS = 10 * 60_000;
@@ -32,6 +33,8 @@ export interface FailureLoopHint {
   errorClass: string;
   count: number;
   detectedAt: number;
+  kind?: 'failure' | 'repetition';
+  category?: 'schema' | 'test' | 'status';
 }
 
 interface FailureState {
@@ -42,8 +45,61 @@ interface FailureState {
   lastHintAt: number | null;
 }
 
-const statesByOwner = new Map<string, Map<string, FailureState>>();
-const pendingByOwner = new Map<string, FailureLoopHint>();
+const { statesByOwner, pendingByOwner } = pinModuleState('@papercusp/operator-core.failure-loop', () => ({
+  statesByOwner: new Map<string, Map<string, FailureState>>(),
+  pendingByOwner: new Map<string, FailureLoopHint>(),
+}));
+
+const STATUS_TOOLS = new Set(['testing:run-status', 'testing:runs', 'loop:status', 'release:deploy', 'work_items:get']);
+const VOLATILE_FIELDS = new Set(['durationMs', 'elapsedMs', 'latencyMs', 'checkpointAgeMs', 'lastActiveSecAgo',
+  'observedAt', 'measuredAt', '_dataPlaneMayBeDegraded', '_projection', 'read']);
+
+/** Hash complete bounded values; never store arguments, outputs, secrets or clipped prefixes. */
+function valueFingerprint(value: unknown, omitVolatile: boolean): string | null {
+  try {
+    const normalize = (v: unknown, depth: number): unknown => {
+      if (depth > 20) throw new Error('depth');
+      if (Array.isArray(v)) return v.map(x => normalize(x, depth + 1));
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v)
+        .filter(([key]) => !omitVolatile || !VOLATILE_FIELDS.has(key)).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, normalize(nested, depth + 1)]));
+      return v;
+    };
+    const encoded = JSON.stringify(normalize(value, 0));
+    if (!encoded || encoded.length > 65_536) return null;
+    return createHash('sha256').update(encoded).digest('hex');
+  } catch { return null; }
+}
+
+function repetitionSignature(input: Parameters<typeof observeFailureLoop>[0]) {
+  const args = input.args as Record<string, unknown> | null;
+  const category = input.toolName === 'tools:find' || input.toolName === 'agent_tools:list' ? 'schema' as const
+    : input.toolName === 'testing:run' ? 'test' as const
+    : STATUS_TOOLS.has(input.toolName) && (input.toolName !== 'release:deploy' || args?.op === 'status') ? 'status' as const : null;
+  if (!category || typeof args?.recheckReason === 'string') return null;
+  const toolResult = input.result.result as { data?: unknown; content?: Array<{ type: string; text?: string }> } | undefined;
+  let data = toolResult?.data as Record<string, unknown> | undefined;
+  if (!data || typeof data !== 'object') {
+    for (const block of toolResult?.content ?? []) {
+      if (block.type !== 'text' || !block.text) continue;
+      try {
+        const parsed = JSON.parse(block.text);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) { data = parsed; break; }
+      } catch { /* Unstructured output cannot prove equivalence. */ }
+    }
+  }
+  if (!data || data._partial === true || data.state === 'incomplete' ||
+    (data._projection as { truncated?: boolean } | undefined)?.truncated) return null;
+  let comparable: unknown = data;
+  if (category === 'test') {
+    const fingerprint = (data.evidenceBundle as { verificationFingerprint?: unknown } | undefined)?.verificationFingerprint;
+    if (typeof fingerprint !== 'string') return null;
+    comparable = { fingerprint, passed: data.passed, failed: data.failed, skipped: data.skipped, byFile: data.byFile, error: data.error };
+  }
+  const argsHash = valueFingerprint(input.args, false);
+  const resultHash = valueFingerprint(comparable, true);
+  return argsHash && resultHash ? { category, fingerprint: `${argsHash}:${resultHash}` } : null;
+}
 
 /**
  * Canonical, bounded argument SHAPE — values are deliberately absent.
@@ -134,7 +190,9 @@ export function observeFailureLoop(input: {
 
   const now = input.now ?? Date.now();
   pruneState(now);
-  const errorClass = failureClassOf(input.result);
+  const failureClass = failureClassOf(input.result);
+  const repetition = failureClass === null ? repetitionSignature(input) : null;
+  const errorClass = failureClass ?? (repetition ? `unchanged-result:${repetition.category}` : null);
   const ownerStates = statesByOwner.get(ownerId);
 
   // A clean call proves this tool/owner streak has ended. A pending advisory
@@ -146,7 +204,7 @@ export function observeFailureLoop(input: {
     return null;
   }
 
-  const argsShape = argumentShapeFingerprint(input.args);
+  const argsShape = repetition?.fingerprint ?? argumentShapeFingerprint(input.args);
   const byTool = ownerStates ?? new Map<string, FailureState>();
   if (!ownerStates) statesByOwner.set(ownerId, byTool);
   const prior = byTool.get(toolName);
@@ -165,6 +223,8 @@ export function observeFailureLoop(input: {
         lastHintAt: null,
       };
 
+  if (!sameSignal && pendingByOwner.get(ownerId)?.toolName === toolName) pendingByOwner.delete(ownerId);
+
   state.failuresAt = state.failuresAt.filter((at) => now - at <= FAILURE_LOOP_WINDOW_MS);
   state.failuresAt.push(now);
   state.lastSeenAt = now;
@@ -181,6 +241,7 @@ export function observeFailureLoop(input: {
     errorClass,
     count: state.failuresAt.length,
     detectedAt: now,
+    ...(repetition ? { kind: 'repetition' as const, category: repetition.category } : {}),
   };
   // One mid-turn response can carry one actionable interruption. Prefer the
   // freshest signal when several tools cross the threshold in one batch.

@@ -15,7 +15,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { BundleAppManifest } from './bundle-app-manifest';
+import type { BundleAppManifest, BundleContentUnit } from './bundle-app-manifest';
 
 export interface FetchBundleManifestInput {
   /** The bundle repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -31,7 +31,8 @@ export interface FetchBundleManifestDeps {
   tmpDir: () => string;
 }
 
-const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
+const GITHUB_URL_RE =
+  /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
 
 /** A within-repo subdir ref must be relative, charset-safe, and contain no `..`/empty segment. */
 function isSafeListingRef(ref: string): boolean {
@@ -41,7 +42,10 @@ function isSafeListingRef(ref: string): boolean {
 }
 
 export class BundleManifestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
     super(message);
     this.name = 'BundleManifestError';
   }
@@ -58,10 +62,7 @@ function locateBundleFile(cloneDir: string, listingRef: string | undefined): str
     const f = join(dir, 'bundle.yaml');
     if (existsSync(f)) return f;
   }
-  throw new BundleManifestError(
-    'no bundle.yaml found in the bundle repo (checked listing_ref subdir + root)',
-    422,
-  );
+  throw new BundleManifestError('no bundle.yaml found in the bundle repo (checked listing_ref subdir + root)', 422);
 }
 
 function normStringArray(v: unknown, field: string): string[] | undefined {
@@ -72,6 +73,28 @@ function normStringArray(v: unknown, field: string): string[] | undefined {
   return v as string[];
 }
 
+function parseContentUnit(v: unknown, field: string): BundleContentUnit {
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) {
+    throw new BundleManifestError(`bundle.yaml "${field}" must contain mappings`, 422);
+  }
+  const unit = v as Record<string, unknown>;
+  const id = typeof unit.id === 'string' ? unit.id.trim() : '';
+  const githubUrl = typeof unit.githubUrl === 'string' ? unit.githubUrl.trim() : '';
+  if (!id || !githubUrl) {
+    throw new BundleManifestError(`bundle.yaml "${field}" entries need "id" and "githubUrl"`, 422);
+  }
+  const listingRef = typeof unit.listingRef === 'string' ? unit.listingRef.trim() : '';
+  return { id, githubUrl, ...(listingRef ? { listingRef } : {}) };
+}
+
+function parseContentUnits(v: unknown, field: string): BundleContentUnit[] | undefined {
+  if (v == null) return undefined;
+  if (!Array.isArray(v)) {
+    throw new BundleManifestError(`bundle.yaml "${field}" must be an array of mappings`, 422);
+  }
+  return v.map((unit) => parseContentUnit(unit, field));
+}
+
 /** Parse + shape-check raw YAML content into a `BundleAppManifest`. Exported
  *  standalone so a caller with the text already in hand (e.g. a future
  *  publish-time validator) can reuse the shape-check without cloning. */
@@ -80,10 +103,7 @@ export function parseBundleManifest(raw: string): BundleAppManifest {
   try {
     parsed = parseYaml(raw);
   } catch (e) {
-    throw new BundleManifestError(
-      `bundle.yaml failed to parse: ${e instanceof Error ? e.message : String(e)}`,
-      422,
-    );
+    throw new BundleManifestError(`bundle.yaml failed to parse: ${e instanceof Error ? e.message : String(e)}`, 422);
   }
   if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new BundleManifestError('bundle.yaml is not a mapping', 422);
@@ -94,29 +114,25 @@ export function parseBundleManifest(raw: string): BundleAppManifest {
 
   let blueprint: BundleAppManifest['blueprint'] = null;
   if (raw2.blueprint != null) {
-    if (typeof raw2.blueprint !== 'object' || Array.isArray(raw2.blueprint)) {
-      throw new BundleManifestError('bundle.yaml "blueprint" must be a mapping', 422);
-    }
-    const b = raw2.blueprint as Record<string, unknown>;
-    const id = typeof b.id === 'string' ? b.id.trim() : '';
-    const githubUrl = typeof b.githubUrl === 'string' ? b.githubUrl.trim() : '';
-    if (!id || !githubUrl) {
-      throw new BundleManifestError('bundle.yaml "blueprint" needs "id" and "githubUrl"', 422);
-    }
-    blueprint = {
-      id,
-      githubUrl,
-      ...(typeof b.listingRef === 'string' && b.listingRef ? { listingRef: b.listingRef } : {}),
-    };
+    blueprint = parseContentUnit(raw2.blueprint, 'blueprint');
   }
+
+  const blueprints = parseContentUnits(raw2.blueprints, 'blueprints');
+  const templates = parseContentUnits(raw2.templates, 'templates');
+  const rubrics = parseContentUnits(raw2.rubrics, 'rubrics');
 
   return {
     name,
     ...(typeof raw2.description === 'string' ? { description: raw2.description } : {}),
-    ...(normStringArray(raw2.datatypes, 'datatypes') ? { datatypes: normStringArray(raw2.datatypes, 'datatypes') } : {}),
+    ...(normStringArray(raw2.datatypes, 'datatypes')
+      ? { datatypes: normStringArray(raw2.datatypes, 'datatypes') }
+      : {}),
     ...(normStringArray(raw2.packs, 'packs') ? { packs: normStringArray(raw2.packs, 'packs') } : {}),
     ...(normStringArray(raw2.plugins, 'plugins') ? { plugins: normStringArray(raw2.plugins, 'plugins') } : {}),
     ...(blueprint ? { blueprint } : {}),
+    ...(blueprints ? { blueprints } : {}),
+    ...(templates ? { templates } : {}),
+    ...(rubrics ? { rubrics } : {}),
     // `surfaces` is a reserved no-op field (see bundle-app-manifest.ts header) —
     // passed through verbatim if declared, never validated/used.
     ...(Array.isArray(raw2.surfaces) ? { surfaces: raw2.surfaces } : {}),

@@ -3,8 +3,12 @@
  * (cupboard-app-distribution-2026-07-14 P-008).
  */
 import { describe, it, expect, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildPackCatalogView, type PackDescriptor } from '@papercusp/blueprint-distribution';
 import type { DerivedPackCatalog } from './pack-catalog';
+import { readBundleSource, writeBundleSource } from './bundle-app-install-io';
 import {
   planBundleAppInstall,
   installBundleApp,
@@ -17,10 +21,25 @@ import type { ResolveAndInstallResult } from './resolve-and-install';
 function makeCatalog(installedNames: string[], cupboardNames: string[]): DerivedPackCatalog {
   const packs: PackDescriptor[] = [
     ...installedNames.map(
-      (name): PackDescriptor => ({ name, tools: [], events: [], kind: 'plugin', hasRuntime: true, source: 'installed' }),
+      (name): PackDescriptor => ({
+        name,
+        tools: [],
+        events: [],
+        kind: 'plugin',
+        hasRuntime: true,
+        source: 'installed',
+      }),
     ),
     ...cupboardNames.map(
-      (name): PackDescriptor => ({ name, tools: [], events: [], kind: 'plugin', hasRuntime: false, source: 'cupboard', listingId: name }),
+      (name): PackDescriptor => ({
+        name,
+        tools: [],
+        events: [],
+        kind: 'plugin',
+        hasRuntime: false,
+        source: 'cupboard',
+        listingId: name,
+      }),
     ),
   ];
   return {
@@ -36,6 +55,8 @@ function makeHost(overrides: Partial<BundleHostState> = {}): BundleHostState {
     hasDatatype: vi.fn().mockResolvedValue(false),
     deriveCatalog: vi.fn().mockResolvedValue(makeCatalog([], [])),
     installedBlueprintSource: vi.fn().mockResolvedValue(null),
+    installedTemplateSource: vi.fn().mockResolvedValue(null),
+    installedRubricSource: vi.fn().mockResolvedValue(null),
     ...overrides,
   };
 }
@@ -80,6 +101,48 @@ describe('planBundleAppInstall', () => {
     expect(review.conflicts[0].detail).toContain('old-repo');
   });
 
+  it('classifies multiple blueprints, templates, and rubrics with source-aware duplicates', async () => {
+    const manifest: BundleAppManifest = {
+      name: 'content bundle',
+      blueprints: [
+        { id: 'bp.one', githubUrl: 'https://github.com/org/content', listingRef: 'blueprints/one' },
+        { id: 'bp.two', githubUrl: 'https://github.com/org/content', listingRef: 'blueprints/two' },
+      ],
+      templates: [{ id: 'tpl.one', githubUrl: 'https://github.com/org/content', listingRef: 'templates/one' }],
+      rubrics: [{ id: 'rubric.one', githubUrl: 'https://github.com/org/content', listingRef: 'rubrics/one' }],
+    };
+    const host = makeHost({
+      installedBlueprintSource: vi.fn(async (unit) =>
+        unit.id === 'bp.one' ? 'https://github.com/org/content#blueprints/one' : null,
+      ),
+      installedRubricSource: vi.fn().mockResolvedValue('https://github.com/org/elsewhere#rubrics/one'),
+    });
+    const review = await planBundleAppInstall(manifest, host);
+    expect(review.duplicates).toEqual([
+      expect.objectContaining({ kind: 'blueprint', ref: 'bp.one', status: 'duplicate' }),
+    ]);
+    expect(review.clean.map(({ kind, ref }) => `${kind}:${ref}`)).toEqual(['blueprint:bp.two', 'template:tpl.one']);
+    expect(review.conflicts).toEqual([
+      expect.objectContaining({ kind: 'rubric', ref: 'rubric.one', status: 'conflict' }),
+    ]);
+  });
+
+  it('blocks a manifest that declares the same content id from different sources', async () => {
+    const review = await planBundleAppInstall(
+      {
+        name: 'ambiguous',
+        templates: [
+          { id: 'tpl.one', githubUrl: 'https://github.com/org/one' },
+          { id: 'tpl.one', githubUrl: 'https://github.com/org/two' },
+        ],
+      },
+      makeHost(),
+    );
+    expect(review.conflicts).toEqual([
+      expect.objectContaining({ kind: 'template', ref: 'tpl.one', status: 'conflict' }),
+    ]);
+  });
+
   it('never classifies the reserved surfaces field (no installer exists for it)', async () => {
     const manifest: BundleAppManifest = { name: 'demo', surfaces: [{ anything: 'goes' }] };
     const host = makeHost();
@@ -91,19 +154,30 @@ describe('planBundleAppInstall', () => {
 });
 
 describe('installBundleApp', () => {
-  const okDeps: ResolveAndInstallResult = { ok: true, installed: [], stillMissing: { tools: [], packs: [], plugins: [], events: [] }, advisory: [], rounds: 0 };
+  const okDeps: ResolveAndInstallResult = {
+    ok: true,
+    installed: [],
+    stillMissing: { tools: [], packs: [], plugins: [], events: [] },
+    advisory: [],
+    rounds: 0,
+  };
 
   function makeInstallers(overrides: Partial<BundleAppInstallers> = {}): BundleAppInstallers {
     return {
       resolveAndInstallDeps: vi.fn().mockResolvedValue(okDeps),
       installDatatype: vi.fn().mockResolvedValue({ ok: true }),
       installBlueprint: vi.fn().mockResolvedValue({ ok: true }),
+      installTemplate: vi.fn().mockResolvedValue({ ok: true }),
+      installRubric: vi.fn().mockResolvedValue({ ok: true }),
       ...overrides,
     };
   }
 
   it('refuses to install anything when the review finds an unresolved conflict', async () => {
-    const manifest: BundleAppManifest = { name: 'demo', blueprint: { id: 'bp.demo', githubUrl: 'https://github.com/org/new' } };
+    const manifest: BundleAppManifest = {
+      name: 'demo',
+      blueprint: { id: 'bp.demo', githubUrl: 'https://github.com/org/new' },
+    };
     const host = makeHost({ installedBlueprintSource: vi.fn().mockResolvedValue('https://github.com/org/old') });
     const installers = makeInstallers();
     const res = await installBundleApp(manifest, host, installers);
@@ -111,6 +185,8 @@ describe('installBundleApp', () => {
     expect(installers.resolveAndInstallDeps).not.toHaveBeenCalled();
     expect(installers.installDatatype).not.toHaveBeenCalled();
     expect(installers.installBlueprint).not.toHaveBeenCalled();
+    expect(installers.installTemplate).not.toHaveBeenCalled();
+    expect(installers.installRubric).not.toHaveBeenCalled();
   });
 
   it('installs the clean set via the injected per-kind installers when there are no conflicts', async () => {
@@ -137,8 +213,40 @@ describe('installBundleApp', () => {
     expect(res.blueprint).toEqual({ id: 'bp.demo', ok: true });
   });
 
+  it('fans multiple content units out once each while keeping the legacy blueprint result', async () => {
+    const first = { id: 'bp.one', githubUrl: 'https://github.com/org/content', listingRef: 'blueprints/one' };
+    const second = { id: 'bp.two', githubUrl: 'https://github.com/org/content', listingRef: 'blueprints/two' };
+    const template = { id: 'tpl.one', githubUrl: 'https://github.com/org/content', listingRef: 'templates/one' };
+    const rubric = { id: 'rubric.one', githubUrl: 'https://github.com/org/content', listingRef: 'rubrics/one' };
+    const manifest: BundleAppManifest = {
+      name: 'content bundle',
+      blueprint: first,
+      blueprints: [first, second],
+      templates: [template],
+      rubrics: [rubric],
+    };
+    const installers = makeInstallers();
+    const res = await installBundleApp(manifest, makeHost(), installers);
+    expect(res.ok).toBe(true);
+    expect(installers.installBlueprint).toHaveBeenCalledTimes(2);
+    expect(installers.installBlueprint).toHaveBeenNthCalledWith(1, first);
+    expect(installers.installBlueprint).toHaveBeenNthCalledWith(2, second);
+    expect(installers.installTemplate).toHaveBeenCalledWith(template);
+    expect(installers.installRubric).toHaveBeenCalledWith(rubric);
+    expect(res.blueprint).toEqual({ id: 'bp.one', ok: true });
+    expect(res.blueprints).toEqual([
+      { id: 'bp.one', ok: true },
+      { id: 'bp.two', ok: true },
+    ]);
+    expect(res.templates).toEqual([{ id: 'tpl.one', ok: true }]);
+    expect(res.rubrics).toEqual([{ id: 'rubric.one', ok: true }]);
+  });
+
   it('proceeds when allowConflicts:true is explicitly set, and surfaces the review anyway', async () => {
-    const manifest: BundleAppManifest = { name: 'demo', blueprint: { id: 'bp.demo', githubUrl: 'https://github.com/org/new' } };
+    const manifest: BundleAppManifest = {
+      name: 'demo',
+      blueprint: { id: 'bp.demo', githubUrl: 'https://github.com/org/new' },
+    };
     const host = makeHost({ installedBlueprintSource: vi.fn().mockResolvedValue('https://github.com/org/old') });
     const installers = makeInstallers();
     const res = await installBundleApp(manifest, host, installers, { allowConflicts: true });
@@ -167,5 +275,33 @@ describe('installBundleApp', () => {
     const res = await installBundleApp(manifest, host, installers);
     expect(res.review.duplicates.map((c) => c.ref)).toEqual(['plugin-x']);
     expect(installers.resolveAndInstallDeps).toHaveBeenCalledWith({ packs: [], plugins: ['plugin-x'] });
+  });
+});
+
+describe('bundle content source provenance', () => {
+  it('distinguishes absent, unknown, and matching installed sources durably', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'bundle-source-'));
+    const installed = join(root, 'template.demo');
+    try {
+      expect(await readBundleSource(installed, 'template.yaml')).toBeNull();
+      await fs.mkdir(installed, { recursive: true });
+      await fs.writeFile(join(installed, 'template.yaml'), 'id: template.demo\n', 'utf8');
+      expect(await readBundleSource(installed, 'template.yaml')).toBe('unknown (not installed via a bundle app)');
+
+      const unit = {
+        id: 'template.demo',
+        githubUrl: 'https://github.com/org/content',
+        listingRef: 'templates/demo',
+      };
+      await writeBundleSource(installed, unit);
+      expect(await readBundleSource(installed, 'template.yaml')).toBe('https://github.com/org/content#templates/demo');
+      expect(JSON.parse(await fs.readFile(join(installed, '.papercusp-bundle-source.json'), 'utf8'))).toMatchObject({
+        source: 'https://github.com/org/content#templates/demo',
+        githubUrl: 'https://github.com/org/content',
+        listingRef: 'templates/demo',
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

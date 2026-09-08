@@ -38,11 +38,17 @@ import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import { gitCloneShallow, installCupboardUnitFromListing } from './install-io';
 import { fetchCupboardBlueprintIds } from './install-blueprint-io';
 import { installBlueprintFromCupboardCore, InstallBlueprintError } from './install-blueprint-core';
+import { installTemplateFromCupboard } from './install-template-io';
+import { userTemplatesDir } from './template-store';
+import { installRubricFromCupboard } from './install-rubric-io';
+import { userRubricsDir } from './rubric-store';
 import { fetchBundleManifest, BundleManifestError } from './bundle-manifest-io';
 import {
   planBundleAppInstall,
   installBundleApp,
+  bundleUnitSource,
   type BundleAppManifest,
+  type BundleContentUnit,
   type BundleHostState,
   type BundleAppInstallResult,
 } from './bundle-app-manifest';
@@ -96,12 +102,12 @@ async function resolveBundleAppListing(
 
 const BUNDLE_SOURCE_SIDECAR = '.papercusp-bundle-source.json';
 
-/** Read the bundle-install provenance sidecar for an installed blueprint id.
- *  `null` = the blueprint isn't installed, OR is installed with no sidecar
+/** Read the bundle-install provenance sidecar for an installed content dir.
+ *  `null` = the unit isn't installed; an installed unit with no sidecar
  *  (unknown provenance — the caller treats that as a conflict, never a
  *  same-source duplicate). */
-async function readBlueprintBundleSource(id: string): Promise<string | null> {
-  const dir = join(INSTALLED_BLUEPRINTS_DIR(), id);
+/** @internal Exported only for the provenance recurrence guard. */
+export async function readBundleSource(dir: string, manifestFile: string): Promise<string | null> {
   try {
     const raw = await fs.readFile(join(dir, BUNDLE_SOURCE_SIDECAR), 'utf8');
     const parsed = JSON.parse(raw) as { source?: unknown };
@@ -113,7 +119,7 @@ async function readBlueprintBundleSource(id: string): Promise<string | null> {
     // read as a real, non-matching source string so planBundleAppInstall calls
     // it a conflict rather than silently treating it as absent/clean).
     try {
-      await fs.access(join(dir, 'blueprint.yaml'));
+      await fs.access(join(dir, manifestFile));
       return 'unknown (not installed via a bundle app)';
     } catch {
       return null;
@@ -121,15 +127,18 @@ async function readBlueprintBundleSource(id: string): Promise<string | null> {
   }
 }
 
-async function writeBlueprintBundleSource(id: string, source: string): Promise<void> {
-  const dir = join(INSTALLED_BLUEPRINTS_DIR(), id);
+/** @internal Exported only for the provenance recurrence guard. */
+export async function writeBundleSource(dir: string, unit: BundleContentUnit): Promise<void> {
   await fs.writeFile(
     join(dir, BUNDLE_SOURCE_SIDECAR),
-    JSON.stringify({ source, installedAt: new Date().toISOString() }),
+    JSON.stringify({
+      source: bundleUnitSource(unit),
+      githubUrl: unit.githubUrl,
+      ...(unit.listingRef ? { listingRef: unit.listingRef } : {}),
+      installedAt: new Date().toISOString(),
+    }),
     'utf8',
-  ).catch(() => {
-    /* best-effort provenance — a write failure must not fail an otherwise-successful install */
-  });
+  );
 }
 
 /** Real `BundleHostState` — the live workspace's datatype registry + pack
@@ -139,7 +148,11 @@ function makeHostState(workspaceId: string): BundleHostState {
   return {
     hasDatatype: async (id) => (await getDatatype(sql, workspaceId, id)) != null,
     deriveCatalog: () => derivePackCatalog({}),
-    installedBlueprintSource: readBlueprintBundleSource,
+    installedBlueprintSource: (unit) => readBundleSource(join(INSTALLED_BLUEPRINTS_DIR(), unit.id), 'blueprint.yaml'),
+    installedTemplateSource: (unit) =>
+      readBundleSource(join(userTemplatesDir(), unit.listingRef ?? unit.id), 'template.yaml'),
+    installedRubricSource: (unit) =>
+      readBundleSource(join(userRubricsDir(), unit.listingRef ?? unit.id), 'rubric.json'),
   };
 }
 
@@ -159,7 +172,7 @@ function makeInstallers(workspaceId: string) {
       const res = await installPublishedDatatype(sql, id, workspaceId);
       return res.ok ? { ok: true as const } : { ok: false as const, error: res.reason };
     },
-    installBlueprint: async (blueprint: NonNullable<BundleAppManifest['blueprint']>) => {
+    installBlueprint: async (blueprint: BundleContentUnit) => {
       try {
         const res = await installBlueprintFromCupboardCore(
           { githubUrl: blueprint.githubUrl, listingRef: blueprint.listingRef },
@@ -171,7 +184,11 @@ function makeInstallers(workspaceId: string) {
             resolveHostSets: async () => {
               const catalog = await derivePackCatalog({});
               const cupboardBlueprints = await fetchCupboardBlueprintIds();
-              return { ...depHostSetsFromCatalog(catalog), cupboardBlueprints, cupboardReachable: catalog.cupboardReachable };
+              return {
+                ...depHostSetsFromCatalog(catalog),
+                cupboardBlueprints,
+                cupboardReachable: catalog.cupboardReachable,
+              };
             },
           },
         );
@@ -181,12 +198,56 @@ function makeInstallers(workspaceId: string) {
             error: `bundle declared blueprint id "${blueprint.id}" but the repo's blueprint.yaml declares "${res.id}"`,
           };
         }
-        await writeBlueprintBundleSource(res.id, blueprint.githubUrl);
+        await writeBundleSource(join(INSTALLED_BLUEPRINTS_DIR(), res.id), blueprint);
         return { ok: true as const };
       } catch (e) {
         if (e instanceof InstallBlueprintError) return { ok: false as const, error: e.message };
         return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
       }
+    },
+    installTemplate: async (template: BundleContentUnit) => {
+      const res = await installTemplateFromCupboard({
+        githubUrl: template.githubUrl,
+        listingRef: template.listingRef ?? template.id,
+      });
+      if (!res.ok) return { ok: false as const, error: res.error };
+      if (res.result.id !== template.id) {
+        return {
+          ok: false as const,
+          error: `bundle declared template id "${template.id}" but the installed template declares "${res.result.id}"`,
+        };
+      }
+      try {
+        await writeBundleSource(res.result.installedTo, template);
+        return { ok: true as const };
+      } catch (e) {
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    installRubric: async (rubric: BundleContentUnit) => {
+      const res = await installRubricFromCupboard({
+        githubUrl: rubric.githubUrl,
+        listingRef: rubric.listingRef ?? rubric.id,
+      });
+      if (!res.ok) return { ok: false as const, error: res.error };
+      if (res.result.rubricId !== rubric.id) {
+        return {
+          ok: false as const,
+          error: `bundle declared rubric id "${rubric.id}" but the installed rubric declares "${res.result.rubricId}"`,
+        };
+      }
+      try {
+        await writeBundleSource(res.result.installedTo, rubric);
+      } catch (e) {
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
+      if (!res.result.seeded) {
+        return {
+          ok: false as const,
+          error: `rubric "${rubric.id}" installed but did not seed${res.result.seedError ? `: ${res.result.seedError}` : ''}`,
+        };
+      }
+      return { ok: true as const };
     },
   };
 }
@@ -217,16 +278,28 @@ export async function installBundleAppFromCupboard(
     manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir: tmpdir });
   } catch (e) {
     if (e instanceof BundleManifestError) return { ok: false, status: e.status, error: e.message };
-    return { ok: false, status: 500, error: 'manifest fetch failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+    return {
+      ok: false,
+      status: 500,
+      error: 'manifest fetch failed',
+      detail: e instanceof Error ? e.message.slice(0, 300) : String(e),
+    };
   }
 
   try {
     const host = makeHostState(opts.workspaceId);
     const installers = makeInstallers(opts.workspaceId);
-    const result = await installBundleApp(manifest, host, installers, { allowConflicts: input.allowConflicts === true });
+    const result = await installBundleApp(manifest, host, installers, {
+      allowConflicts: input.allowConflicts === true,
+    });
     return { ok: true, manifest, result };
   } catch (e) {
-    return { ok: false, status: 500, error: 'install failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+    return {
+      ok: false,
+      status: 500,
+      error: 'install failed',
+      detail: e instanceof Error ? e.message.slice(0, 300) : String(e),
+    };
   }
 }
 
@@ -258,13 +331,23 @@ export async function reviewBundleAppFromCupboard(
     manifest = await fetchBundleManifest({ githubUrl, listingRef }, { cloneRepo: gitCloneShallow, tmpDir: tmpdir });
   } catch (e) {
     if (e instanceof BundleManifestError) return { ok: false, status: e.status, error: e.message };
-    return { ok: false, status: 500, error: 'manifest fetch failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+    return {
+      ok: false,
+      status: 500,
+      error: 'manifest fetch failed',
+      detail: e instanceof Error ? e.message.slice(0, 300) : String(e),
+    };
   }
 
   try {
     const review = await planBundleAppInstall(manifest, makeHostState(opts.workspaceId));
     return { ok: true, manifest, review };
   } catch (e) {
-    return { ok: false, status: 500, error: 'review failed', detail: e instanceof Error ? e.message.slice(0, 300) : String(e) };
+    return {
+      ok: false,
+      status: 500,
+      error: 'review failed',
+      detail: e instanceof Error ? e.message.slice(0, 300) : String(e),
+    };
   }
 }

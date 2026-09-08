@@ -14,7 +14,7 @@ import {
   META_ACCEPTANCE_RUBRIC_ID,
   type Rubric,
 } from './rubrics';
-import type { ScorecardRow } from './scorecards';
+import { settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards';
 
 export type AcceptanceRubricVettingState = 'not-required' | 'disabled' | 'unvetted' | 'vetted';
 
@@ -124,7 +124,7 @@ export async function getAcceptanceRubricVettingStatus(
     // independently audited pass is a settled attestation. Keep accepting
     // unstamped cards for pre-P-013 history; a pending or failed stamp must
     // never make an acceptance rubric appear vetted.
-    .filter((card) => !card.gradingAudit || card.gradingAudit.state === 'passed')
+    .filter((card) => settledGradingAuditIsCurrent(card))
     // WI-41477: either critique channel counts — a get_feedback consult, or the
     // review work-item a launched independent reviewer's comments land on.
     .filter((card) => Boolean(card.vetting?.consultId || card.vetting?.workItemId))

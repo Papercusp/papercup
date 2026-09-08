@@ -22,6 +22,15 @@ const insight = (slug: string, title: string, description = ''): InsightEntry =>
 });
 
 describe('failure-loop hints', () => {
+  it('delivers an actionable repetition warning without another runbook lookup', async () => {
+    const readInsights = vi.fn();
+    const text = await buildFailureLoopHintText({ ...hint, kind: 'repetition', category: 'test', toolName: 'testing:run' }, { readInsights });
+    expect(text).toContain('recheckReason');
+    expect(text).toContain('does not block execution');
+    expect(text.length).toBeLessThan(1_200);
+    expect(readInsights).not.toHaveBeenCalled();
+  });
+
   it('ranks runbooks against the tool and normalized error class', () => {
     const ranked = rankFailureLoopInsights(
       [

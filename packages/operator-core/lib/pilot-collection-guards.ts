@@ -13,7 +13,7 @@ import type {
   PilotParticipantDispatchReceipt,
   PilotParticipantRole,
 } from './pilot-participant-receipts.js';
-import type { ScorecardRow } from './scorecards.js';
+import { settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards.js';
 
 /** Frozen before reveal: one item, one independent grader, one opaque packet. */
 export interface PilotGradeBinding {
@@ -165,7 +165,9 @@ function scorecardQualityGap(card: ScorecardRow): PilotCollectionGuardGapCode | 
     return 'incomplete-scorecard';
   }
   if (card.provisional) return 'provisional-scorecard';
-  if (card.gradingAudit?.state !== 'passed') return 'scorecard-audit-not-passed';
+  if (card.gradingAudit?.state !== 'passed' || !settledGradingAuditIsCurrent(card)) {
+    return 'scorecard-audit-not-passed';
+  }
   return null;
 }
 

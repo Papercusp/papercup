@@ -119,6 +119,13 @@ function clampHint(text: string): string {
  * base intervention survives even when both knowledge sources are unavailable.
  */
 export async function buildFailureLoopHintText(hint: FailureLoopHint, deps: FailureLoopHintDeps = {}): Promise<string> {
+  if (hint.kind === 'repetition') {
+    return `⟦repeated-work⟧ ${hint.count} equivalent \`${hint.toolName}\` calls returned unchanged information. ` +
+      (hint.category === 'test' ? 'The declared source/test fingerprints also match. Reuse the saved evidence, or provide recheckReason when another run is necessary.'
+        : hint.category === 'schema' ? 'Reuse the schema already returned; read a different contract when the next action requires it.'
+        : 'Use the saved status or await the relevant change; another check is useful when new evidence or an expected transition justifies it.') +
+      ' This is an advisory; it does not block execution.';
+  }
   const [insights, recipes] = await Promise.all([
     (deps.readInsights ?? readInsights)().catch(() => []),
     (deps.searchRecipes ?? findRecipes)(hint).catch(() => []),

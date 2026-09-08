@@ -30,7 +30,14 @@ describe('embed sidecar pressure supervision contract', () => {
     expect(watchdog).toContain('.coalesced == 0');
     expect(watchdog).toContain('.inferred == 1');
     expect(watchdog).toContain('systemctl --user restart papercup-embed-sidecar.service');
-    expect(watchdog).not.toContain('/healthz');
+    expect(watchdog).toContain('http://127.0.0.1:3384/healthz');
+    expect(watchdog).toContain('.ok == true');
+    expect(watchdog).toContain('.workers.embedder.alive == true');
+    expect(watchdog).toContain('.queue.saturated == true');
+    expect(watchdog).toContain('.queue.depth > 0');
+    expect(watchdog).toContain('deferring restart');
+    expect(watchdog).toContain('embed worker probe failed — restarting papercup-embed-sidecar');
+    expect(watchdog).not.toContain("|| { echo 'embed worker probe failed — restarting");
   });
 
   it('keeps the JSON payload quoted through systemd and bash parsing', () => {

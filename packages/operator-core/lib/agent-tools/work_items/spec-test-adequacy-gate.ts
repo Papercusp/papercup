@@ -1,5 +1,5 @@
 /** Current, per-clause test-adequacy gate used before a work-item close is written. */
-import { listScorecards, type ScorecardRow } from '../../scorecards';
+import { listScorecards, settledGradingAuditIsCurrent, type ScorecardRow } from '../../scorecards';
 import {
   listSpecEvidence,
   listWorkItemSpecRevisionEdges,
@@ -176,8 +176,7 @@ function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): b
     card.missingKeys.length === 0 &&
     card.extraKeys.length === 0 &&
     card.provisional === undefined &&
-    card.gradingAudit?.state !== 'pending' &&
-    card.gradingAudit?.state !== 'failed' &&
+    settledGradingAuditIsCurrent(card) &&
     // The evaluator owns the criterion verdicts, while the independent grading audit
     // owns whether each evidence explanation is complete and re-runnable. Requiring the
     // entire scorecard fingerprint here coupled those two responsibilities: enriching a

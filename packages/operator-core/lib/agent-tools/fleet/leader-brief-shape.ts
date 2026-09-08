@@ -873,6 +873,13 @@ function buildProjection(
   campaignRecentRows: number,
 ): Dict {
   const out: Dict = { ok: data.ok === true };
+  if (data.degraded === true) {
+    out.degraded = true;
+    if (Array.isArray(data.degradedLegs)) {
+      out.degradedLegs = data.degradedLegs.slice(0, 6).map((entry) => clip(entry, 160) ?? entry);
+      if (data.degradedLegs.length > 6) out.degradedLegsTruncated = data.degradedLegs.length;
+    }
+  }
   const tightDecisionCore = caps.memberVerdicts === 0 && caps.members === 0;
   const decisionStringCap = tightDecisionCore ? 100 : 220;
   for (const key of ['self', 'notLeader', 'leadershipClaimed']) {
@@ -1055,6 +1062,13 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   }
   const emergency: Dict = {
     ok: source.ok === true,
+    ...(source.degraded === true ? { degraded: true } : {}),
+    ...(Array.isArray(source.degradedLegs)
+      ? {
+          degradedLegs: source.degradedLegs.slice(0, 6).map((entry) => clip(entry, 160) ?? entry),
+          ...(source.degradedLegs.length > 6 ? { degradedLegsTruncated: source.degradedLegs.length } : {}),
+        }
+      : {}),
     ...(source.planHistory !== undefined ? { planHistory: compactPlanHistory(source.planHistory, true) } : {}),
     ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt, 20, false) } : {}),
     ...(source.monitoringBlindAdvisory !== undefined

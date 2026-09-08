@@ -2004,6 +2004,15 @@ export interface FleetExecutionCollapseEvidence {
   windowMs: number;
 }
 
+/** Keep a partial canonical-roster read visibly distinct from a measured empty fleet. */
+export function leaderBriefRosterDegradation(degradedLegs: readonly string[]): {
+  degraded?: true;
+  degradedLegs?: string[];
+} {
+  const qualified = degradedLegs.filter(Boolean).map((leg) => `roster.${leg}`);
+  return qualified.length > 0 ? { degraded: true, degradedLegs: qualified } : {};
+}
+
 /**
  * WI-583276: detect a fleet-wide execution collapse that heartbeat/lifecycle
  * surfaces cannot see.  A claim is evidence of work the fleet owns; an exact
@@ -3364,6 +3373,8 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
+      degraded: z.boolean().optional(),
+      degradedLegs: z.array(z.string()).optional(),
       error: z.string().optional(),
       self: z.unknown().optional(),
       notLeader: z.unknown().optional(),
@@ -4802,6 +4813,7 @@ export async function buildLeaderBrief(
   return {
     data: {
       ok: true,
+      ...leaderBriefRosterDegradation(rosterResult.degradedLegs),
       ...(self ? { self } : {}),
       // P-004/D-096: the caller is acting on this fleet without holding its
       // leadership. Surfaced BEFORE the summary so it is not lost under the

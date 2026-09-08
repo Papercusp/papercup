@@ -370,6 +370,17 @@ describe('PROJECTED_DEPS.postInvoke — decision-ledger emit + never breaks its 
     });
   });
 
+  it('routes equivalent successful test results through the same production post-invoke delivery seam', () => {
+    const repeated = event();
+    repeated.toolName = 'testing:run';
+    repeated.args = { files: ['test/fixture.ts'] };
+    repeated.ctx = ctx({ principal: { slug: 'system:repeat-test', workspaceId: 'default', capabilities: new Set<string>() } }) as PostInvokeEvent['ctx'];
+    repeated.result = { ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ passed: 1,
+      evidenceBundle: { verificationFingerprint: 'measured-source-and-test' } }) }] } } as PostInvokeEvent['result'];
+    for (let i = 0; i < 3; i++) PROJECTED_DEPS.postInvoke!(repeated);
+    expect(takePendingFailureLoopHint('system:repeat-test')).toMatchObject({ kind: 'repetition', category: 'test', count: 3 });
+  });
+
   it('forwards the event to the installed reaction handler', () => {
     const seen: PostInvokeEvent[] = [];
     setReactionPostInvoke((e) => {

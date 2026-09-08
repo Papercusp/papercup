@@ -85,7 +85,8 @@ describe('test-time evidence continuity', () => {
     const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
     await finishTestEvidence(prepared, runId, detached, scope, { ok: false, runId, root: '/repo', error: 'timeout' }, d);
     const stored = d.bind.mock.calls[1][0];
-    d.list.mockResolvedValue([{ ...stored, id: 2 }]);
+    d.list.mockResolvedValue([{ ...stored, id: 2,
+      fingerprints: { sourceFingerprint: stored.sourceFingerprint, testFingerprint: stored.testFingerprint } }]);
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1', originRunId: runId, runId: detached }, scope, d);
     expect(bundle.rows[0]).toMatchObject({ testRunId: 42, phase: 'review-required', outcome: 'unknown' });
     expect(d.bind.mock.calls[2][0].details.adequacy.executed).toBe(false);

@@ -2288,75 +2288,21 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     });
   });
 
-  it('EI-20209536730887204: a delivered required wake confirms an ambiguous holder and prevents launch', async () => {
-    const launchSpy = mockLaunch();
-    const ownership = {
-      eventKey: 'gate-red-streak:papercusp',
-      workItem: 'WI-38026',
-      claimState: 'held',
-      unknown: null,
-      takenBy: 'su-ambiguous-holder',
-      takenAt: new Date().toISOString(),
-      lastProgressAt: new Date().toISOString(),
-      expiresAt: null,
-      holderSessionState: 'suspect',
-      duplicates: [],
-      thread: { recent: [], total: 0 },
-    };
-    vi.doMock('../../coord/gate-ownership', () => ({
-      readGateOwnership: vi.fn(async () => ownership),
-      shouldStandDownForLivePeer: vi.fn(() => false),
-      ownershipNeedsLivenessConfirmation: vi.fn(() => true),
-      ownershipContradicted: vi.fn(() => false),
-    }));
-    vi.doMock('../coordination/identity', () => ({
-      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
-    }));
-    const wakeRecipients = vi.fn(async () => ({
-      targets: ['su-ambiguous-holder'],
-      keys: ['coord:inbox-wake:su-ambiguous-holder'],
-      woken: 1,
-      pickupConfirmed: true,
-      staged: 0,
-      stagedTargets: [],
-      fanoutCapped: [],
-    }));
-    vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
-
-    const { default: tool } = await import('./checkpoint-run');
-    const metadata = vi.fn();
-    const ctx = {
-      log: vi.fn(),
-      signal: new AbortController().signal,
-      progress: vi.fn(),
-      role: 'operator',
-      uiClientId: 'su-caller',
-      workspaceId: 'papercusp-workspace',
-      metadata,
-    } as never;
-    const b = parse((await tool.handler({ reason: 'gate red' }, ctx)) as never);
-
-    expect(wakeRecipients).toHaveBeenCalledWith(
-      ['su-ambiguous-holder'],
-      expect.objectContaining({ source: 'release:checkpoint-run', workspaceId: 'papercusp-workspace' }),
-    );
-    expect(launchSpy).not.toHaveBeenCalled();
-    expect(b).toMatchObject({
-      ok: false,
-      launched: false,
-      reason: 'condition_claimed_liveness_confirmed',
-      wake_confirmed: true,
-      woken: 1,
-    });
-    expect(metadata).toHaveBeenCalledWith({
-      standDown: 'condition_claimed_liveness_confirmed',
-      standDownWorkItem: 'WI-38026',
-      standDownTakenBy: 'su-ambiguous-holder',
-      standDownHolderSessionState: 'suspect',
-      standDownWakeCount: 1,
-      fireReason: 'gate red',
-    });
-  });
+  // EI-22733985246154315 — the test that stood here ("a delivered required wake confirms an
+  // ambiguous holder and prevents launch") has been REMOVED, not ported, and must not come back.
+  //
+  // It mocked `wakeRecipients` returning a confirmed pickup to exercise a stand-down branch in
+  // checkpoint-run. No producer in the tree can return that value: a wake fan returns once the
+  // wake is ENQUEUED, before the target could take a turn, so every producer returns the literal
+  // false. The branch was therefore unreachable in production while this test kept it green —
+  // the mock was the only thing that could ever enter it. Both are now gone, and
+  // `WakeRecipientsResult.pickupConfirmed` is typed `false` so the comparison cannot return.
+  //
+  // The scenario itself is NOT untested: the sibling below drives the same ownership fixture
+  // through the path production actually takes (a queued-but-unconfirmed wake falling through to
+  // the shared force guard). Standing down for a genuinely live holder is `shouldStandDownForLivePeer`,
+  // which reads the liveness oracle instead of asking the wake to vouch for itself.
+  // The invariant is pinned by lib/doc-claims/wake-pickup-unconfirmable.test.ts.
 
   it('EI-21869737720630609: queued wake without pickup confirmation stays unconfirmed', async () => {
     const launchSpy = mockLaunch();

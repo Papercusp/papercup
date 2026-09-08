@@ -225,6 +225,39 @@ function largeBrief() {
 }
 
 describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
+  it('preserves degraded roster status beside a zero-member fallback', () => {
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeLeaderBrief(
+        {
+          ok: true,
+          degraded: true,
+          degradedLegs: ['roster.presence'],
+          summary: {
+            fleet: 'fleet-a',
+            members: 0,
+            degraded_roster_legs: ['presence'],
+          },
+        },
+        tier,
+      ) as Record<string, any>;
+      expect(out).toMatchObject({
+        ok: true,
+        degraded: true,
+        degradedLegs: ['roster.presence'],
+        summary: { members: 0 },
+      });
+    }
+  });
+
+  it('keeps degraded roster status in the emergency projection', () => {
+    const input = largeBrief() as Record<string, any>;
+    input.degraded = true;
+    input.degradedLegs = ['roster.presence'];
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, any>;
+    expect(out.leaderBriefProjection.emergency).toBe(true);
+    expect(out).toMatchObject({ degraded: true, degradedLegs: ['roster.presence'] });
+  });
+
   it('preserves an unavailable admission-block count as null through every bounded tier', () => {
     for (const tier of ['trimmed', 'standard'] as const) {
       const out = shapeLeaderBrief(

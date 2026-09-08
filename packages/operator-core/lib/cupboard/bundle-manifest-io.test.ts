@@ -36,6 +36,18 @@ const FULL_YAML = [
   'blueprint:',
   '  id: bp.demo',
   '  githubUrl: https://github.com/org/bp-repo',
+  'blueprints:',
+  '  - id: bp.extra',
+  '    githubUrl: https://github.com/org/content',
+  '    listingRef: blueprints/extra',
+  'templates:',
+  '  - id: template.demo',
+  '    githubUrl: https://github.com/org/content',
+  '    listingRef: templates/demo',
+  'rubrics:',
+  '  - id: rubric.demo',
+  '    githubUrl: https://github.com/org/content',
+  '    listingRef: rubrics/demo',
 ].join('\n');
 
 beforeEach(async () => {
@@ -57,6 +69,9 @@ describe('parseBundleManifest', () => {
       packs: ['pack-y'],
       plugins: ['plugin-x'],
       blueprint: { id: 'bp.demo', githubUrl: 'https://github.com/org/bp-repo' },
+      blueprints: [{ id: 'bp.extra', githubUrl: 'https://github.com/org/content', listingRef: 'blueprints/extra' }],
+      templates: [{ id: 'template.demo', githubUrl: 'https://github.com/org/content', listingRef: 'templates/demo' }],
+      rubrics: [{ id: 'rubric.demo', githubUrl: 'https://github.com/org/content', listingRef: 'rubrics/demo' }],
     });
   });
 
@@ -81,6 +96,11 @@ describe('parseBundleManifest', () => {
     expect(() => parseBundleManifest('name: x\nblueprint:\n  id: bp.demo')).toThrow(BundleManifestError);
   });
 
+  it.each(['blueprints', 'templates', 'rubrics'])('rejects malformed %s content units', (field) => {
+    expect(() => parseBundleManifest(`name: x\n${field}:\n  - id: missing-source`)).toThrow(BundleManifestError);
+    expect(() => parseBundleManifest(`name: x\n${field}: not-an-array`)).toThrow(BundleManifestError);
+  });
+
   it('passes through a reserved "surfaces" array untouched', () => {
     const m = parseBundleManifest('name: x\nsurfaces: [{ kind: panel }]');
     expect(m.surfaces).toEqual([{ kind: 'panel' }]);
@@ -99,10 +119,7 @@ describe('fetchBundleManifest', () => {
     await fs.writeFile(join(fixtureRepo, 'bundle.yaml'), 'name: root-bundle', 'utf8');
     await fs.mkdir(join(fixtureRepo, 'sub'), { recursive: true });
     await fs.writeFile(join(fixtureRepo, 'sub', 'bundle.yaml'), 'name: sub-bundle', 'utf8');
-    const m = await fetchBundleManifest(
-      { githubUrl: 'https://github.com/org/repo', listingRef: 'sub' },
-      makeDeps(),
-    );
+    const m = await fetchBundleManifest({ githubUrl: 'https://github.com/org/repo', listingRef: 'sub' }, makeDeps());
     expect(m.name).toBe('sub-bundle');
   });
 
@@ -116,23 +133,21 @@ describe('fetchBundleManifest', () => {
   });
 
   it('throws when no bundle.yaml exists anywhere', async () => {
-    await expect(
-      fetchBundleManifest({ githubUrl: 'https://github.com/org/repo' }, makeDeps()),
-    ).rejects.toThrow(BundleManifestError);
+    await expect(fetchBundleManifest({ githubUrl: 'https://github.com/org/repo' }, makeDeps())).rejects.toThrow(
+      BundleManifestError,
+    );
   });
 
   it('rejects a non-github url before cloning', async () => {
-    await expect(
-      fetchBundleManifest({ githubUrl: 'https://evil.example/repo' }, makeDeps()),
-    ).rejects.toThrow(BundleManifestError);
+    await expect(fetchBundleManifest({ githubUrl: 'https://evil.example/repo' }, makeDeps())).rejects.toThrow(
+      BundleManifestError,
+    );
   });
 
   it('cleans up the clone scratch dir even on failure', async () => {
     // no bundle.yaml written — locate throws — the finally must still rm cloneDir
     const before = await fs.readdir(root);
-    await expect(
-      fetchBundleManifest({ githubUrl: 'https://github.com/org/repo' }, makeDeps()),
-    ).rejects.toThrow();
+    await expect(fetchBundleManifest({ githubUrl: 'https://github.com/org/repo' }, makeDeps())).rejects.toThrow();
     const after = await fs.readdir(root);
     // only 'remote' (the fixture) should remain — the scratch clone dir is gone
     expect(after.filter((n) => n !== 'remote')).toEqual(before.filter((n) => n !== 'remote'));

@@ -1,0 +1,170 @@
+/** Test-time provenance uses existing immutable spec bindings, including pending executions. */
+import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { relative, resolve } from 'node:path';
+import {
+  bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot,
+  ADHOC_WORK_ITEM_SPEC_SCOPE, repoFilesEvidenceMeasurementSchema,
+  type BindSpecEvidenceInput, type RepoFilesEvidenceMeasurement,
+} from '../plans/spec-evidence-store';
+import { readHarnessTestRunEvidence } from '../../testing-run-store';
+import type { TestFilesCoreResult } from './run';
+import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
+
+const proofId = z.string().regex(SPEC_PROOF_OBLIGATION_ID_RE).max(200);
+const bindingSchema = z.object({
+  specId: z.string().min(1).max(200), specRevision: z.number().int().positive(),
+  testPath: z.string().min(1).max(500),
+  sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths,
+  testLayer: z.enum(['unit', 'integration', 'e2e']),
+  scenarioIds: z.array(proofId).min(1).max(100).optional(),
+  causalPairId: proofId.optional(),
+  counterexample: z.object({ test: z.string().min(1).max(500), messageIncludes: z.string().min(1).max(500) }).optional(),
+}).strict();
+export const testEvidenceSchema = z.object({
+  workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
+  bindings: z.array(bindingSchema).min(1).max(20),
+}).strict();
+export const recoverTestEvidenceSchema = z.object({
+  workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
+  originRunId: z.string().uuid(), runId: z.string().uuid(),
+}).strict();
+type Request = z.infer<typeof testEvidenceSchema>;
+type Recovery = z.infer<typeof recoverTestEvidenceSchema>;
+type Scope = { workspaceId: string; harnessSlug: string; actorId: string; root: string };
+type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][number]; measurement: RepoFilesEvidenceMeasurement };
+type Deps = {
+  bind: typeof bindSpecEvidence; measure: typeof measureRepoFilesEvidenceAtRoot;
+  ledger: typeof readHarnessTestRunEvidence; list: typeof listSpecEvidence;
+};
+const defaults: Deps = { bind: bindSpecEvidence, measure: measureRepoFilesEvidenceAtRoot,
+  ledger: readHarnessTestRunEvidence, list: listSpecEvidence };
+const refFor = (runId: string, index: number) => `test-run-group:${runId}:${index}`;
+const succeeded = (status: string) => status === 'created' || status === 'unchanged';
+
+export async function prepareTestEvidence(request: Request, runId: string, files: string[], scope: Scope, deps: Deps = defaults) {
+  const prepared: Prepared[] = [];
+  // Validate every path and measure before any registration or process launch.
+  const selected = new Set(files.map(file => resolve(scope.root, file)));
+  for (const [index, binding] of request.bindings.entries()) {
+    const absolute = resolve(scope.root, binding.testPath);
+    if (!selected.has(absolute)) throw new Error(`evidence_test_not_selected:${binding.testPath}`);
+    const testPath = relative(scope.root, absolute).replaceAll('\\', '/');
+    const measurement = repoFilesEvidenceMeasurementSchema.parse({ schemaVersion: 1, kind: 'repo-files',
+      sourcePaths: binding.sourcePaths, testPaths: [testPath] });
+    const fingerprints = await deps.measure(scope.root, measurement);
+    const normalized = { ...binding, testPath };
+    const input: BindSpecEvidenceInput = {
+      workItemId: request.workItemId, planSlug: request.planSlug,
+      harnessSlug: scope.harnessSlug, actorId: scope.actorId,
+      specId: binding.specId, specRevision: binding.specRevision,
+      evidenceKind: binding.counterexample ? 'counterexample' : 'test', evidenceRef: refFor(runId, index),
+      ...fingerprints,
+      details: { currentMeasurement: measurement,
+        testExecution: { schemaVersion: 1, phase: 'pending', runId, originRunId: runId, binding: normalized },
+        adequacy: { testLayer: binding.testLayer, outcome: 'pending', collected: false, executed: false,
+          ...(binding.scenarioIds ? { scenarioIds: binding.scenarioIds } : {}),
+          ...(binding.causalPairId ? { causalPairIds: [binding.causalPairId] } : {}) },
+      },
+    };
+    prepared.push({ input, binding: normalized, measurement });
+  }
+  for (const row of prepared) {
+    const receipt = await deps.bind(row.input);
+    if (!succeeded(receipt.status)) throw new Error(`evidence_registration_failed:${receipt.status}`);
+  }
+  return prepared;
+}
+
+export function testEvidenceOutcome(binding: Request['bindings'][number], result?: TestFilesCoreResult) {
+  if (!result || result.error) return { outcome: result?.error ?? 'unknown', collected: false, executed: false };
+  const counts = result.byFile[binding.testPath];
+  if (!counts) return { outcome: 'unknown', collected: false, executed: false };
+  const executed = !counts.collectionFailed && counts.passed + counts.failed > 0;
+  let outcome = counts.collectionFailed ? 'error' : counts.skipped > 0 ? 'skip' : counts.failed > 0 ? 'fail' : executed ? 'pass' : 'unknown';
+  if (binding.counterexample) {
+    const negative = binding.counterexample;
+    const exactFailure = result.failures.some(f => f.file === binding.testPath && f.test === negative.test && f.message.includes(negative.messageIncludes));
+    outcome = executed && counts.failed === 1 && counts.skipped === 0 && exactFailure ? 'killed' : 'fail';
+  }
+  return { outcome, collected: !counts.collectionFailed, executed, skipped: counts.skipped > 0 };
+}
+
+export async function finishTestEvidence(prepared: Prepared[], originRunId: string, runId: string, scope: Scope,
+  result?: TestFilesCoreResult, deps: Deps = defaults) {
+  const ledger = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId });
+  const rows = [];
+  for (const row of prepared) {
+    const matches = (ledger ?? []).filter(r => r.file_path === row.binding.testPath && r.finished_at !== null);
+    const run = matches.length === 1 ? matches[0] : undefined;
+    const measured = await deps.measure(scope.root, row.measurement).catch(() => null);
+    const sourceStable = measured !== null && measured.sourceFingerprint === row.input.sourceFingerprint && measured.testFingerprint === row.input.testFingerprint;
+    const priorExecution = row.input.details?.testExecution as { phase?: string; runId?: string } | undefined;
+    const priorProof = row.input.details?.adequacy as { outcome?: string } | undefined;
+    if (!result && run && priorExecution?.phase === 'settled' && priorExecution.runId === runId) {
+      rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
+        evidenceRef: row.input.evidenceRef, testRunId: run.id,
+        phase: sourceStable ? 'settled' : 'source-changed', outcome: priorProof?.outcome ?? 'unknown', bindingStatus: 'unchanged' });
+      continue;
+    }
+    const outcome = testEvidenceOutcome(row.binding, result);
+    // A recovered per-file status has no collection/skip counts. Preserve it as
+    // observation, never upgrade it to executable passing proof.
+    const phase = !run ? 'pending' : !sourceStable ? 'source-changed' : !result || result.error ? 'review-required' : 'settled';
+    const details = {
+      ...row.input.details,
+      testExecution: { schemaVersion: 1, phase, runId, originRunId, binding: row.binding,
+        sourceStable, ledgerStatus: run?.status ?? 'unknown', measuredOutcome: outcome.outcome,
+        ...(result?.error ? { resultError: result.error } : {}),
+      },
+      adequacy: { ...(row.input.details?.adequacy as object), ...outcome,
+        // Missing/ambiguous or contradictory ledger attribution cannot establish execution.
+        ...(!run || (outcome.outcome === 'pass' && run.status !== 'pass') || (outcome.outcome === 'killed' && run.status !== 'fail')
+          ? { outcome: 'unknown', executed: false } : {}),
+      },
+    };
+    const receipt = await deps.bind({ ...row.input, testRunId: run?.id ?? null, details });
+    rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
+      evidenceRef: row.input.evidenceRef, testRunId: run?.id ?? null, phase,
+      outcome: (details.adequacy as { outcome: string }).outcome, bindingStatus: receipt.status });
+  }
+  return { status: rows.every(r => succeeded(r.bindingStatus)) ? 'recorded' : 'incomplete',
+    verificationFingerprint: rows.every(r => r.phase === 'settled')
+      ? createHash('sha256').update(JSON.stringify(prepared.map(row => ({
+        source: row.input.sourceFingerprint, test: row.input.testFingerprint, measurement: row.measurement,
+      })))).digest('hex') : null,
+    acceptance: 'requires-review', rows: rows.slice(0, 6), total: rows.length, omitted: Math.max(0, rows.length - 6),
+    readRef: { tool: 'plans:get-spec-evidence', args: { harness: scope.harnessSlug,
+      slug: prepared[0]!.input.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
+      workItemIds: [prepared[0]!.input.workItemId], evidenceRefs: prepared.map(row => row.input.evidenceRef) } },
+    recovery: { tool: 'testing:run', args: { harness: scope.harnessSlug, recoverEvidence: {
+      workItemId: prepared[0]!.input.workItemId, planSlug: prepared[0]!.input.planSlug, originRunId, runId,
+    } } },
+  };
+}
+
+/** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */
+export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps: Deps = defaults) {
+  const evidence = await deps.list({ harnessSlug: scope.harnessSlug,
+    planSlugs: [recovery.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [recovery.workItemId],
+    evidenceRefs: Array.from({ length: 20 }, (_, index) => refFor(recovery.originRunId, index)), limit: 200 });
+  const latest = new Map<string, (typeof evidence)[number]>();
+  for (const row of [...evidence].sort((a, b) => b.id - a.id)) if (!latest.has(row.evidenceRef)) latest.set(row.evidenceRef, row);
+  const prepared: Prepared[] = [];
+  for (const row of latest.values()) {
+    const execution = row.details.testExecution as { schemaVersion?: number; runId?: string; originRunId?: string; binding?: unknown } | undefined;
+    if (execution?.schemaVersion !== 1 || execution.originRunId !== recovery.originRunId || execution.runId !== recovery.runId) continue;
+    const binding = bindingSchema.parse(execution.binding);
+    const measurement = repoFilesEvidenceMeasurementSchema.parse(row.details.currentMeasurement);
+    prepared.push({ binding, measurement, input: {
+      harnessSlug: scope.harnessSlug, actorId: scope.actorId,
+      planSlug: recovery.planSlug, workItemId: recovery.workItemId,
+      specId: row.specId, specRevision: row.specRevision,
+      evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
+      testRunId: row.testRunId, coverageEvidenceRef: row.coverageEvidenceRef, details: row.details,
+      sourceFingerprint: row.fingerprints.sourceFingerprint, testFingerprint: row.fingerprints.testFingerprint,
+    } });
+  }
+  if (prepared.length === 0) throw new Error('evidence_recovery_not_found');
+  return finishTestEvidence(prepared, recovery.originRunId, recovery.runId, scope, undefined, deps);
+}

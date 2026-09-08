@@ -4,7 +4,7 @@
  * (cupboard-app-distribution-2026-07-14 P-008).
  *
  * A bundle-app manifest names a composition of existing distributable units
- * (datatypes + plugins/packs + an optional blueprint) that "install" fans out
+ * (datatypes + plugins/packs + blueprints/templates/rubrics) that "install" fans out
  * to the SAME per-kind installers every other Cupboard kind already uses —
  * `resolveAndInstallDeps` for plugins/packs (resolve-and-install.ts, D-002:
  * no second install runtime), `installPublishedDatatype` for datatypes
@@ -44,6 +44,16 @@ import {
   type ResolveAndInstallResult,
 } from './resolve-and-install';
 
+/** A GitHub-backed, self-describing content unit composed into a bundle app. */
+export interface BundleContentUnit {
+  /** Stable content identity declared by blueprint.yaml/template.yaml/rubric.json. */
+  id: string;
+  /** Public mirror repository consumed by the existing per-kind Cupboard installer. */
+  githubUrl: string;
+  /** Optional within-repo content directory; templates/rubrics default this to `id`. */
+  listingRef?: string;
+}
+
 /** A bundle-app manifest — the composition a `delivery_type: 'bundle'` app listing names. */
 export interface BundleAppManifest {
   /** Human-facing bundle name (matches the listing title). */
@@ -55,8 +65,14 @@ export interface BundleAppManifest {
   packs?: string[];
   /** Distribution-unit plugin names (installed via `resolveAndInstallDeps`). */
   plugins?: string[];
-  /** At most one blueprint composed into the bundle (a bundle app installs its OWN harness shape). */
-  blueprint?: { id: string; githubUrl: string; listingRef?: string } | null;
+  /** Legacy singular blueprint spelling. Retained for existing bundle manifests. */
+  blueprint?: BundleContentUnit | null;
+  /** Blueprint content installed through the existing blueprint installer. */
+  blueprints?: BundleContentUnit[];
+  /** App templates installed into the persistent writable template layer. */
+  templates?: BundleContentUnit[];
+  /** Rubrics installed into the persistent writable rubric layer and seeded live. */
+  rubrics?: BundleContentUnit[];
   /**
    * Reserved for a future data-driven-surfaces primitive. No installer exists
    * for this axis yet (verified against the live codebase) — always ignored
@@ -67,11 +83,11 @@ export interface BundleAppManifest {
   surfaces?: unknown[];
 }
 
-export type BundleUnitKind = 'datatype' | 'pack' | 'plugin' | 'blueprint';
+export type BundleUnitKind = 'datatype' | 'pack' | 'plugin' | 'blueprint' | 'template' | 'rubric';
 
 export interface BundleUnitClassification {
   kind: BundleUnitKind;
-  /** The declared id/name (datatype id, pack/plugin unit name, or blueprint id). */
+  /** The declared id/name for this distributable unit. */
   ref: string;
   status: 'clean' | 'duplicate' | 'conflict';
   /** Present on `duplicate` (what's already there) / `conflict` (what collides). */
@@ -96,11 +112,43 @@ export interface BundleHostState {
    * manifest's `blueprint.githubUrl` is a genuine naming collision (conflict);
    * a matching source is a no-op duplicate.
    */
-  installedBlueprintSource: (id: string) => Promise<string | null>;
+  installedBlueprintSource: (unit: BundleContentUnit) => Promise<string | null>;
+  /** Recorded bundle source for an installed user-layer template, or null when absent. */
+  installedTemplateSource: (unit: BundleContentUnit) => Promise<string | null>;
+  /** Recorded bundle source for an installed user-layer rubric, or null when absent. */
+  installedRubricSource: (unit: BundleContentUnit) => Promise<string | null>;
 }
 
 function normalizeRefs(xs: string[] | undefined): string[] {
   return Array.from(new Set((xs ?? []).filter((x) => typeof x === 'string' && x.length > 0)));
+}
+
+/** Stable provenance key persisted beside installed bundle content. */
+export function bundleUnitSource(unit: BundleContentUnit): string {
+  const url = unit.githubUrl.trim();
+  const ref = unit.listingRef?.trim();
+  return ref ? `${url}#${ref}` : url;
+}
+
+function normalizeContentUnits(xs: BundleContentUnit[] | undefined): BundleContentUnit[] {
+  const out: BundleContentUnit[] = [];
+  const seen = new Set<string>();
+  for (const unit of xs ?? []) {
+    const id = unit.id.trim();
+    const githubUrl = unit.githubUrl.trim();
+    const listingRef = unit.listingRef?.trim();
+    if (!id || !githubUrl) continue;
+    const normalized = { id, githubUrl, ...(listingRef ? { listingRef } : {}) };
+    const key = `${id}\0${bundleUnitSource(normalized)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function manifestBlueprints(manifest: BundleAppManifest): BundleContentUnit[] {
+  return normalizeContentUnits([...(manifest.blueprint ? [manifest.blueprint] : []), ...(manifest.blueprints ?? [])]);
 }
 
 /**
@@ -152,22 +200,44 @@ export async function planBundleAppInstall(
     );
   }
 
-  if (manifest.blueprint) {
-    const { id, githubUrl } = manifest.blueprint;
-    const existingSource = await host.installedBlueprintSource(id);
-    if (existingSource == null) {
-      push({ kind: 'blueprint', ref: id, status: 'clean' });
-    } else if (existingSource === githubUrl) {
-      push({ kind: 'blueprint', ref: id, status: 'duplicate', detail: `already installed from ${existingSource}` });
-    } else {
-      push({
-        kind: 'blueprint',
-        ref: id,
-        status: 'conflict',
-        detail: `id "${id}" is already installed from a different source (${existingSource}); the bundle wants ${githubUrl}`,
-      });
+  const classifyContent = async (
+    kind: Extract<BundleUnitKind, 'blueprint' | 'template' | 'rubric'>,
+    units: BundleContentUnit[],
+    installedSource: (unit: BundleContentUnit) => Promise<string | null>,
+  ) => {
+    const manifestSources = new Map<string, string>();
+    for (const unit of units) {
+      const source = bundleUnitSource(unit);
+      const priorSource = manifestSources.get(unit.id);
+      if (priorSource != null && priorSource !== source) {
+        push({
+          kind,
+          ref: unit.id,
+          status: 'conflict',
+          detail: `the bundle declares id "${unit.id}" from two different sources (${priorSource} and ${source})`,
+        });
+        continue;
+      }
+      manifestSources.set(unit.id, source);
+      const existingSource = await installedSource(unit);
+      if (existingSource == null) {
+        push({ kind, ref: unit.id, status: 'clean' });
+      } else if (existingSource === source) {
+        push({ kind, ref: unit.id, status: 'duplicate', detail: `already installed from ${existingSource}` });
+      } else {
+        push({
+          kind,
+          ref: unit.id,
+          status: 'conflict',
+          detail: `id "${unit.id}" is already installed from a different source (${existingSource}); the bundle wants ${source}`,
+        });
+      }
     }
-  }
+  };
+
+  await classifyContent('blueprint', manifestBlueprints(manifest), host.installedBlueprintSource);
+  await classifyContent('template', normalizeContentUnits(manifest.templates), host.installedTemplateSource);
+  await classifyContent('rubric', normalizeContentUnits(manifest.rubrics), host.installedRubricSource);
 
   return { clean, duplicates, conflicts };
 }
@@ -178,8 +248,18 @@ export interface BundleAppInstallers {
   resolveAndInstallDeps: (declared: Partial<DepSet>) => Promise<ResolveAndInstallResult>;
   /** Install one approved global datatype into the workspace (idempotent). */
   installDatatype: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-  /** Install the manifest's blueprint (no-op / error if `manifest.blueprint` is unset). */
-  installBlueprint: (blueprint: NonNullable<BundleAppManifest['blueprint']>) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Install one blueprint through the existing Cupboard blueprint core. */
+  installBlueprint: (blueprint: BundleContentUnit) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Install one template through the existing Cupboard template path. */
+  installTemplate: (template: BundleContentUnit) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Install and seed one rubric through the existing Cupboard rubric path. */
+  installRubric: (rubric: BundleContentUnit) => Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
+export interface BundleContentInstallResult {
+  id: string;
+  ok: boolean;
+  error?: string;
 }
 
 export interface BundleAppInstallResult {
@@ -189,7 +269,11 @@ export interface BundleAppInstallResult {
   blockedByConflicts: boolean;
   deps: ResolveAndInstallResult | null;
   datatypes: { id: string; ok: boolean; error?: string }[];
+  /** Legacy single-result projection. New callers should read `blueprints`. */
   blueprint: { id: string; ok: boolean; error?: string } | null;
+  blueprints: BundleContentInstallResult[];
+  templates: BundleContentInstallResult[];
+  rubrics: BundleContentInstallResult[];
 }
 
 /**
@@ -208,7 +292,17 @@ export async function installBundleApp(
 ): Promise<BundleAppInstallResult> {
   const review = await planBundleAppInstall(manifest, host);
   if (review.conflicts.length > 0 && !opts.allowConflicts) {
-    return { ok: false, review, blockedByConflicts: true, deps: null, datatypes: [], blueprint: null };
+    return {
+      ok: false,
+      review,
+      blockedByConflicts: true,
+      deps: null,
+      datatypes: [],
+      blueprint: null,
+      blueprints: [],
+      templates: [],
+      rubrics: [],
+    };
   }
 
   const deps = await installers.resolveAndInstallDeps({
@@ -222,12 +316,28 @@ export async function installBundleApp(
     datatypes.push(res.ok ? { id, ok: true } : { id, ok: false, error: res.error });
   }
 
-  let blueprint: { id: string; ok: boolean; error?: string } | null = null;
-  if (manifest.blueprint) {
-    const res = await installers.installBlueprint(manifest.blueprint);
-    blueprint = res.ok ? { id: manifest.blueprint.id, ok: true } : { id: manifest.blueprint.id, ok: false, error: res.error };
-  }
+  const installContent = async (
+    units: BundleContentUnit[],
+    installer: (unit: BundleContentUnit) => Promise<{ ok: true } | { ok: false; error: string }>,
+  ): Promise<BundleContentInstallResult[]> => {
+    const installed: BundleContentInstallResult[] = [];
+    for (const unit of units) {
+      const res = await installer(unit);
+      installed.push(res.ok ? { id: unit.id, ok: true } : { id: unit.id, ok: false, error: res.error });
+    }
+    return installed;
+  };
 
-  const ok = deps.ok && datatypes.every((d) => d.ok) && (blueprint == null || blueprint.ok);
-  return { ok, review, blockedByConflicts: false, deps, datatypes, blueprint };
+  const blueprints = await installContent(manifestBlueprints(manifest), installers.installBlueprint);
+  const templates = await installContent(normalizeContentUnits(manifest.templates), installers.installTemplate);
+  const rubrics = await installContent(normalizeContentUnits(manifest.rubrics), installers.installRubric);
+  const blueprint = blueprints[0] ?? null;
+
+  const ok =
+    deps.ok &&
+    datatypes.every((d) => d.ok) &&
+    blueprints.every((unit) => unit.ok) &&
+    templates.every((unit) => unit.ok) &&
+    rubrics.every((unit) => unit.ok);
+  return { ok, review, blockedByConflicts: false, deps, datatypes, blueprint, blueprints, templates, rubrics };
 }
