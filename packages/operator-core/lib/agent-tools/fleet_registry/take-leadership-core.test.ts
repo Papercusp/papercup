@@ -17,6 +17,7 @@ const ensureFleetLeaderControl = vi.fn();
 const retireFleetLeaderWatches = vi.fn();
 const resolveFleetLeaderTransitionEventKeys = vi.fn();
 const clearOperatorCancelledAwaits = vi.fn();
+const getClaimSpecRecord = vi.fn();
 
 vi.mock('../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
@@ -39,6 +40,10 @@ vi.mock('./leader-control', () => ({
 }));
 vi.mock('../../events/await/store', () => ({
   clearOperatorCancelledAwaits: (...a: unknown[]) => clearOperatorCancelledAwaits(...a),
+}));
+vi.mock('../../scheduler/claim-spec-store', () => ({
+  fleetSpecBeeKey: (fleetSlug: string) => `fleet:${fleetSlug}`,
+  getClaimSpecRecord: (...a: unknown[]) => getClaimSpecRecord(...a),
 }));
 
 import { takeFleetLeadership } from './take-leadership-core';
@@ -78,9 +83,46 @@ beforeEach(() => {
     'fleet:context-critical:rocket',
   ]);
   clearOperatorCancelledAwaits.mockResolvedValue(0);
+  getClaimSpecRecord.mockResolvedValue({
+    source: 'fleet',
+    harnessSlug: 'papercusp',
+    fleetSlug: SLUG,
+    spec: {},
+    revision: 1,
+    updatedBy: 'test',
+    updatedAt: 'now',
+  });
 });
 
 describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', () => {
+  it('refuses before writing leadership when the fleet claim spec has no concrete harness binding', async () => {
+    getClaimSpecRecord.mockResolvedValueOnce({
+      source: 'default',
+      harnessSlug: null,
+      fleetSlug: SLUG,
+      spec: {},
+      revision: null,
+      updatedBy: null,
+      updatedAt: null,
+    });
+
+    await expect(takeFleetLeadership(WS, fleet({ leaderOwnerId: null }), identity, 'su-bob')).rejects.toMatchObject({
+      code: 'fleet_harness_binding_required',
+    });
+    expect(setFleetLeader).not.toHaveBeenCalled();
+    expect(heartbeatPresence).not.toHaveBeenCalled();
+    expect(setPresenceFleet).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the fleet claim-spec binding cannot be read', async () => {
+    getClaimSpecRecord.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(takeFleetLeadership(WS, fleet(), identity, 'su-bob')).rejects.toMatchObject({
+      code: 'fleet_harness_binding_unavailable',
+    });
+    expect(setFleetLeader).not.toHaveBeenCalled();
+  });
+
   it('installs the caller as leader + labels their presence; no prior leader → no demote/notify', async () => {
     const out = await takeFleetLeadership(WS, fleet({ leaderOwnerId: null }), identity, 'su-bob');
     expect(setFleetLeader).toHaveBeenCalledWith(WS, SLUG, 'su-bob', undefined, null);

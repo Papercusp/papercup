@@ -31,7 +31,10 @@ test.beforeAll(async () => {
     'apps/operator/app/cloud-workspaces/hosted-workspace-session.module.css',
     'apps/operator/app/harness/Button.tsx',
     'apps/operator/e2e/__fixtures__/desktop-render-matrix.tsx',
-    'apps/operator/e2e/__fixtures__/desktop-render-viewer.tsx',
+    'apps/operator/app/cloud-workspaces/HostedDesktopViewer.tsx',
+    'apps/operator/app/cloud-workspaces/hosted-desktop-viewer-protocol.ts',
+    'apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol.ts',
+    'apps/operator/e2e/__fixtures__/desktop-render-rfb.ts',
     'apps/operator/e2e/desktop-render-matrix.spec.ts',
   ];
   const sourceHash = createHash('sha256');
@@ -50,8 +53,8 @@ test.beforeAll(async () => {
       name: 'desktop-controlled-state-fixture',
       enforce: 'pre',
       resolveId(id, importer) {
-        if (id === './HostedDesktopViewer' && importer?.endsWith('/HostedDesktopWorkspace.tsx')) {
-          return path.join(root, 'apps/operator/e2e/__fixtures__/desktop-render-viewer.tsx');
+        if (id === '@novnc/novnc' && importer?.endsWith('/HostedDesktopViewer.tsx')) {
+          return path.join(root, 'apps/operator/e2e/__fixtures__/desktop-render-rfb.ts');
         }
       },
       configureServer(instance) {
@@ -102,7 +105,7 @@ for (const state of states) for (const [size, viewport] of Object.entries(sizes)
       throw new Error(`${String(error)}\nBrowser errors: ${pageErrors.join(' | ')}`);
     });
     await expect(page.getByRole('note')).toHaveText(`Controlled ${state} fixture · no real service connection`);
-    const labels = { ready: 'Controlled desktop image', empty: 'No desktops are available yet', loading: 'Finding your desktops…', disconnected: 'Connect your workspace', error: 'Desktops could not be loaded' };
+    const labels = { ready: 'connected · watch-only', empty: 'No desktops are available yet', loading: 'Finding your desktops…', disconnected: 'Connect your workspace', error: 'Desktops could not be loaded' };
     await expect(destination.getByText(labels[state], { exact: true })).toBeVisible();
     if (state === 'error') await expect(destination.getByRole('alert')).toContainText('Controlled roster error');
     const primary = destination.locator('[class*="desktopWorkspaceMain"]');
@@ -113,6 +116,12 @@ for (const state of states) for (const [size, viewport] of Object.entries(sizes)
     if (state === 'ready') {
       await expect(destination.getByRole('button', { name: 'Watch Display 1' })).toBeEnabled();
       await expect(destination.getByRole('button', { name: 'Take control', exact: true })).toBeEnabled();
+      // Exercise real viewer mode chrome with local transport only.
+      await destination.getByRole('button', { name: 'Take control', exact: true }).click();
+      await expect(destination.getByRole('button', { name: 'Release control', exact: true })).toBeEnabled();
+      await page.keyboard.press('Escape');
+      await expect(destination.getByRole('button', { name: 'Take control', exact: true })).toBeEnabled();
+      await expect(destination.getByText('connected · watch-only', { exact: true })).toBeVisible();
     } else await expect(destination.getByRole('button', { name: 'Take control', exact: true })).toHaveCount(0);
     const caseId = `${state}-${size}-${theme}`;
     const capturePath = output ? path.join(output, `${caseId}.png`) : testInfo.outputPath(`${caseId}.png`);
@@ -129,7 +138,7 @@ for (const state of states) for (const [size, viewport] of Object.entries(sizes)
       geometry: { container, primary: (await primary.boundingBox())!, secondary: (await secondary.boundingBox())! },
       controls: [{ name: 'Refresh desktop roster', visible: await refresh.isVisible(), enabled: await refresh.isEnabled() }],
       readyContentVisible: await destination.locator('[data-ready-fixture]').isVisible(),
-      placeholderVisible: await destination.locator('[class*="desktopWorkspaceEmpty"]').isVisible(), connectivity: 'not-exercised',
+      placeholderVisible: await destination.locator('[class*="desktopWorkspaceEmpty"], [class*="desktopPlaceholder"]').isVisible(), connectivity: 'not-exercised',
     };
     if (state === 'ready') for (const name of ['Watch Display 1', 'Take control']) {
       const control = destination.getByRole('button', { name, exact: true });
@@ -157,4 +166,29 @@ test('missing state, narrow capture and fixture connectivity cannot satisfy the 
   const inventedConnection = observations.map(row => ({ ...row, connectivity: 'connected' as const, connectivityEvidence: 'fixture-is-not-a-service' }));
   expect(withoutReviewFailure(inventedConnection).every(f => f.reason === 'fixture-connectivity-claim')).toBe(true);
   expect(withoutReviewFailure(inventedConnection)).toHaveLength(observations.length);
+});
+
+for (const state of states) test(`[desktop.state.${state}] omission control rejects this state independently`, () => {
+  const required = contract().cases.filter(row => row.environment.state === state);
+  expect(required).toHaveLength(4);
+  const failures = evaluateRenderMatrix(contract(), observations.filter(row => row.environment.state !== state)).failures;
+  expect(failures.filter(row => row.reason === 'missing-case-evidence').map(row => row.caseId).sort())
+    .toEqual(required.map(row => row.caseId).sort());
+});
+
+for (const [size, viewport] of Object.entries(sizes)) test(`[desktop.viewport.${size}] omission control rejects this viewport independently`, () => {
+  const required = contract().cases.filter(row => row.environment.viewport.width === viewport.width);
+  expect(required).toHaveLength(10);
+  const failures = evaluateRenderMatrix(contract(), observations.filter(row => row.environment.viewport.width !== viewport.width)).failures;
+  expect(failures.filter(row => row.reason === 'missing-case-evidence').map(row => row.caseId).sort())
+    .toEqual(required.map(row => row.caseId).sort());
+});
+
+test('ready placeholder and wrong destination remain blocking even with a complete matrix', () => {
+  const ready = observations.find(row => row.caseId === 'ready-desktop-light')!;
+  const replace = (row: RenderMatrixObservation) => observations.map(value => value.caseId === row.caseId ? row : value);
+  expect(evaluateRenderMatrix(contract(), replace({ ...ready, readyContentVisible: false, placeholderVisible: true })).failures)
+    .toContainEqual({ caseId: ready.caseId, reason: 'placeholder-is-not-ready' });
+  expect(evaluateRenderMatrix(contract(), replace({ ...ready, target: { ...ready.target, targetId: 'CloudWorkspaces' } })).failures)
+    .toContainEqual({ caseId: ready.caseId, reason: 'wrong-target' });
 });

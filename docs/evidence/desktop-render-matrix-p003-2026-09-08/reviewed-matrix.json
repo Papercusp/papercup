@@ -1,0 +1,1982 @@
+{
+  "contract": {
+    "schemaVersion": 1,
+    "reference": {
+      "schemaVersion": 1,
+      "featureId": "desktop-design-fidelity-repair-2026-09-08",
+      "referenceId": "desktop-option-b",
+      "revision": 1,
+      "contentSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663"
+    },
+    "cases": [
+      {
+        "caseId": "ready-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "ready-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "ready-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "ready-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "ready"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          },
+          {
+            "name": "Watch Display 1",
+            "enabled": true
+          },
+          {
+            "name": "Take control",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": true
+      },
+      {
+        "caseId": "empty-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "empty-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "empty-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "empty-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "empty"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "loading-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "loading"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "disconnected-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "disconnected"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": false
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-desktop-light",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-desktop-dark",
+        "environment": {
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "side-by-side",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-narrow-light",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "light",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      },
+      {
+        "caseId": "error-narrow-dark",
+        "environment": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "deviceScaleFactor": 1,
+          "browser": "chromium",
+          "theme": "dark",
+          "fontSet": "system",
+          "fixture": "desktop-controlled-v1",
+          "state": "error"
+        },
+        "target": {
+          "targetId": "HostedDesktopWorkspace",
+          "targetKind": "component",
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+        },
+        "evidenceKind": "fixture",
+        "layout": "stacked",
+        "controls": [
+          {
+            "name": "Refresh desktop roster",
+            "enabled": true
+          }
+        ],
+        "readyContentRequired": false
+      }
+    ]
+  },
+  "observations": [
+    {
+      "caseId": "ready-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-light.png",
+        "sha256": "e61d5f12111e2485a5fc35b877f91be9b985f2e2811b49f2658f503ffc0d1a01"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 674.1875,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 610.1875
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "e61d5f12111e2485a5fc35b877f91be9b985f2e2811b49f2658f503ffc0d1a01",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Actual workspace and viewer chrome with a local framebuffer. Large viewer and compact roster/activity preserve the approved hierarchy; real Take control/Release/Escape UI paths were exercised against synthetic transport. This proves controlled UI state, not remote input or video. Desktop layout keeps the roster beside a wider viewer. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "ready-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-dark.png",
+        "sha256": "255a684b796a88b59a4120f8a16b85f70088bd48f7d310def89623f1249ca991"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 674.1875,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 610.1875
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "255a684b796a88b59a4120f8a16b85f70088bd48f7d310def89623f1249ca991",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Actual workspace and viewer chrome with a local framebuffer. Large viewer and compact roster/activity preserve the approved hierarchy; real Take control/Release/Escape UI paths were exercised against synthetic transport. This proves controlled UI state, not remote input or video. Desktop layout keeps the roster beside a wider viewer. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "ready-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-narrow-light.png",
+        "sha256": "1711a745d1b7096466d56e9620dd098b6bd7b1ea9755b868ef1f2e6de2c43a55"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 1186.4375,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 170,
+          "width": 342,
+          "height": 716.25
+        },
+        "secondary": {
+          "x": 24,
+          "y": 902.25,
+          "width": 342,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "1711a745d1b7096466d56e9620dd098b6bd7b1ea9755b868ef1f2e6de2c43a55",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Actual workspace and viewer chrome with a local framebuffer. Large viewer and compact roster/activity preserve the approved hierarchy; real Take control/Release/Escape UI paths were exercised against synthetic transport. This proves controlled UI state, not remote input or video. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "ready-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "ready"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-narrow-dark.png",
+        "sha256": "87fe96eafd00e21b1be2165bdc242a8cc093422bfde194e6e605cf53d68eb1b1"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 1186.4375,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 170,
+          "width": 342,
+          "height": 716.25
+        },
+        "secondary": {
+          "x": 24,
+          "y": 902.25,
+          "width": 342,
+          "height": 355.1875
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Watch Display 1",
+          "visible": true,
+          "enabled": true
+        },
+        {
+          "name": "Take control",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": true,
+      "placeholderVisible": false,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "87fe96eafd00e21b1be2165bdc242a8cc093422bfde194e6e605cf53d68eb1b1",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Actual workspace and viewer chrome with a local framebuffer. Large viewer and compact roster/activity preserve the approved hierarchy; real Take control/Release/Escape UI paths were exercised against synthetic transport. This proves controlled UI state, not remote input or video. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "empty-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-desktop-light.png",
+        "sha256": "968a0b2c3d1058f0ddb96151eaec21c7ee61f590356d95e1938059dcd88b1770"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "968a0b2c3d1058f0ddb96151eaec21c7ee61f590356d95e1938059dcd88b1770",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Distinct empty-desktop message and empty roster/activity remain legible; refresh remains available in the controlled connected-but-empty fixture. Desktop layout keeps the roster beside a wider viewer. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "empty-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-desktop-dark.png",
+        "sha256": "6a5aa7193ca096b5c9c0c0d3a62427333947149d3195c4f5328e3ac72dafaa0c"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "6a5aa7193ca096b5c9c0c0d3a62427333947149d3195c4f5328e3ac72dafaa0c",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Distinct empty-desktop message and empty roster/activity remain legible; refresh remains available in the controlled connected-but-empty fixture. Desktop layout keeps the roster beside a wider viewer. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "empty-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-narrow-light.png",
+        "sha256": "fc2edba6b79f69b5c6e339fc47ec0c9be66a069a8d6d5dd00826f4254d6d6a41"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "fc2edba6b79f69b5c6e339fc47ec0c9be66a069a8d6d5dd00826f4254d6d6a41",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Distinct empty-desktop message and empty roster/activity remain legible; refresh remains available in the controlled connected-but-empty fixture. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "empty-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "empty"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/empty-narrow-dark.png",
+        "sha256": "07124df6099c69498436c03f39378fda76eba4e8800ec83543631cfbc64a4df0"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "07124df6099c69498436c03f39378fda76eba4e8800ec83543631cfbc64a4df0",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Distinct empty-desktop message and empty roster/activity remain legible; refresh remains available in the controlled connected-but-empty fixture. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "loading-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-desktop-light.png",
+        "sha256": "bd29a0b7264593b7576cb47f500b369a84efe5a29fd342d9555a29a078e5978a"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "bd29a0b7264593b7576cb47f500b369a84efe5a29fd342d9555a29a078e5978a",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Loading copy appears in both viewer area and roster, with refresh disabled; no ready framebuffer or takeover control is presented. Desktop layout keeps the roster beside a wider viewer. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "loading-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-desktop-dark.png",
+        "sha256": "66623900a9f18865a1e06de7e131a44e39d11472e0266e368f0a6fc4b691d46d"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "66623900a9f18865a1e06de7e131a44e39d11472e0266e368f0a6fc4b691d46d",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Loading copy appears in both viewer area and roster, with refresh disabled; no ready framebuffer or takeover control is presented. Desktop layout keeps the roster beside a wider viewer. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "loading-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-narrow-light.png",
+        "sha256": "433b5aa43f1511ac64b5004b054750d9d3350cea7befdddf499ad59466c45d7e"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "433b5aa43f1511ac64b5004b054750d9d3350cea7befdddf499ad59466c45d7e",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Loading copy appears in both viewer area and roster, with refresh disabled; no ready framebuffer or takeover control is presented. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "loading-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "loading"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/loading-narrow-dark.png",
+        "sha256": "5eb8430acf1fc60f74930056b153865d38571aa56e47bb19ad6baa4f0f2b2d3c"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "5eb8430acf1fc60f74930056b153865d38571aa56e47bb19ad6baa4f0f2b2d3c",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Loading copy appears in both viewer area and roster, with refresh disabled; no ready framebuffer or takeover control is presented. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "disconnected-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-desktop-light.png",
+        "sha256": "5093f4babbb6a01096ed2786e1d05f96d028fa57daede5626f73e9bb0b468ed2"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "5093f4babbb6a01096ed2786e1d05f96d028fa57daede5626f73e9bb0b468ed2",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Disconnected status and connect-workspace message remain explicit; refresh and takeover are unavailable. Desktop layout keeps the roster beside a wider viewer. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "disconnected-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-desktop-dark.png",
+        "sha256": "ac7781d9d261a6ef9a30cb9632eff803f445f285563b48310628778fc7b16fb0"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 504,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 135,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 135,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "ac7781d9d261a6ef9a30cb9632eff803f445f285563b48310628778fc7b16fb0",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Disconnected status and connect-workspace message remain explicit; refresh and takeover are unavailable. Desktop layout keeps the roster beside a wider viewer. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "disconnected-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-narrow-light.png",
+        "sha256": "b7b72be329356ff16c3c99a56d58172c6a4fcfec44dc7de57baf67ba28fc5ab1"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "b7b72be329356ff16c3c99a56d58172c6a4fcfec44dc7de57baf67ba28fc5ab1",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Disconnected status and connect-workspace message remain explicit; refresh and takeover are unavailable. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "disconnected-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "disconnected"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/disconnected-narrow-dark.png",
+        "sha256": "e0bbc4db591c61e0d62db320d3a584adf97ab5dfe5a76674d024b58608b992b0"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 90,
+          "width": 342,
+          "height": 704,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 189,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 505,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": false
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "e0bbc4db591c61e0d62db320d3a584adf97ab5dfe5a76674d024b58608b992b0",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Disconnected status and connect-workspace message remain explicit; refresh and takeover are unavailable. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "error-desktop-light",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-desktop-light.png",
+        "sha256": "5743299dd1e4c897c1e701d3378d8a3312286fa2518183bc5236949c7cb341da"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 548,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 179,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 179,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "5743299dd1e4c897c1e701d3378d8a3312286fa2518183bc5236949c7cb341da",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Roster failure is visibly distinguished by an alert and error message; retry remains available, with no ready framebuffer or takeover control. Desktop layout keeps the roster beside a wider viewer. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "error-desktop-dark",
+      "environment": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-desktop-dark.png",
+        "sha256": "bbeb62cada6c4a51eebeacfe4299e06b2e0b6278fd59addb94878621290cd3fd"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 1392,
+          "height": 548,
+          "clientWidth": 1392,
+          "scrollWidth": 1392
+        },
+        "primary": {
+          "x": 24,
+          "y": 179,
+          "width": 1106,
+          "height": 440
+        },
+        "secondary": {
+          "x": 1146,
+          "y": 179,
+          "width": 270,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "bbeb62cada6c4a51eebeacfe4299e06b2e0b6278fd59addb94878621290cd3fd",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Roster failure is visibly distinguished by an alert and error message; retry remains available, with no ready framebuffer or takeover control. Desktop layout keeps the roster beside a wider viewer. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "error-narrow-light",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "light",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-narrow-light.png",
+        "sha256": "eb9363f25cae35fb1e3ec28468231f9173720e85f601153614168511e59f043f"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 748,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 214,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 530,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "eb9363f25cae35fb1e3ec28468231f9173720e85f601153614168511e59f043f",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Roster failure is visibly distinguished by an alert and error message; retry remains available, with no ready framebuffer or takeover control. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. light fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    },
+    {
+      "caseId": "error-narrow-dark",
+      "environment": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "deviceScaleFactor": 1,
+        "browser": "chromium",
+        "theme": "dark",
+        "fontSet": "system",
+        "fixture": "desktop-controlled-v1",
+        "state": "error"
+      },
+      "target": {
+        "targetId": "HostedDesktopWorkspace",
+        "targetKind": "component",
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
+      },
+      "evidenceKind": "fixture",
+      "capture": {
+        "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/error-narrow-dark.png",
+        "sha256": "eb2c6a3d5d2a04b10a6334177f0ff87bd900af415b2a496ae060cfcdb7275097"
+      },
+      "geometry": {
+        "container": {
+          "x": 24,
+          "y": 71,
+          "width": 342,
+          "height": 748,
+          "clientWidth": 342,
+          "scrollWidth": 342
+        },
+        "primary": {
+          "x": 24,
+          "y": 214,
+          "width": 342,
+          "height": 300
+        },
+        "secondary": {
+          "x": 24,
+          "y": 530,
+          "width": 342,
+          "height": 289
+        }
+      },
+      "controls": [
+        {
+          "name": "Refresh desktop roster",
+          "visible": true,
+          "enabled": true
+        }
+      ],
+      "readyContentVisible": false,
+      "placeholderVisible": true,
+      "connectivity": "not-exercised",
+      "review": {
+        "referenceSha256": "606532c975779beb47eb0b1edda8f4ef61dc95d72071fec343774443a0b2d663",
+        "captureSha256": "eb2c6a3d5d2a04b10a6334177f0ff87bd900af415b2a496ae060cfcdb7275097",
+        "reviewer": "su-3fd66acf-912c-44b2-9e13-3edaebd910fb",
+        "reviewedAt": "2026-09-08T20:14:30.000Z",
+        "verdict": "pass",
+        "note": "Roster failure is visibly distinguished by an alert and error message; retry remains available, with no ready framebuffer or takeover control. Narrow layout stacks the roster below the viewer and wraps its toolbar without horizontal overflow. dark fixture tokens; structural review only, not a calibrated pixel comparison to the illustrative reference."
+      }
+    }
+  ],
+  "referencePath": "scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png",
+  "disclosure": "Controlled component and actual viewer states with local WebSocket/ticket/RFB fixtures; real shell entry and real-service state remain separately recorded in the P-002 journey evidence. No live cloud/video/input claim. Author visually inspected all 20 final captures against the original selected option-B image (19 unchanged on final rerun; ready desktop dark re-inspected). Pixel comparison is not claimed for different state, theme or fixture content.",
+  "realServiceEvidence": {
+    "path": "../desktop-design-journey-p002-2026-09-08.json",
+    "originalTestRunId": 17712295,
+    "repairedTestRunId": 17713845,
+    "observedState": "disconnected",
+    "review": "Original clean-entry capture shows Cloud Workspaces and lacks the Desktop workspace. Repaired real portal has the required large viewer placeholder and roster/activity at 1440, stacked/reachable at 390. Neither real capture is ready or connected.",
+    "originalImage": "../desktop-design-journey-p002-2026-09-08/original-clean.png",
+    "repairedImages": [
+      "../desktop-design-journey-p002-2026-09-08/repaired-desktop-option-b-1440.png",
+      "../desktop-design-journey-p002-2026-09-08/repaired-desktop-option-b-390-roster.png"
+    ]
+  }
+}

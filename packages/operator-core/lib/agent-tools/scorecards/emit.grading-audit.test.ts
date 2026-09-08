@@ -14,6 +14,7 @@ const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
 const gateEnabled = vi.fn();
 const dispatchPendingGradingAudits = vi.fn();
+const readRunningGeneration = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -47,7 +48,7 @@ vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...a: unknown[]) => captureImprovement(...a),
 }));
 vi.mock('../../scout/generation-watermark', () => ({
-  readRunningGeneration: async () => null,
+  readRunningGeneration: (...args: unknown[]) => readRunningGeneration(...args),
 }));
 // Collaborator mock, matching emit-evaluate.test.ts. emit.ts's acceptance branch
 // calls these identity helpers, which fall back to a REAL org-admin pool when no
@@ -98,6 +99,47 @@ const mkRubric = (rubricId: string, kind: string) => ({
 
 const RATINGS: ObservationRatings = { c1: { rating: 'pass', evidence: 're-ran the probe, held' } };
 const FAIL_RATINGS: ObservationRatings = { c1: { rating: 'fail', evidence: 'probe not re-runnable' } };
+const RE_RUN_FAIL_RATINGS: ObservationRatings = {
+  're-runnable-evidence': { rating: 'fail', evidence: 'probe not re-runnable' },
+};
+
+const RERUN_RECIPE = {
+  schemaVersion: 1 as const,
+  evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  classRef: 'plan-class-feature-ship' as const,
+  args: {
+    slug: 'reconnect-plan',
+    classRef: 'plan-class-feature-ship' as const,
+    specIds: ['SPEC-003-01'],
+    includeDraft: true as const,
+  },
+  selection: {
+    planSlug: 'reconnect-plan',
+    specId: 'SPEC-003-01',
+    specRevision: 1,
+    specFingerprint: 'sha256:spec-v1',
+    evidence: [{ evidenceKind: 'integration fixture', evidenceRef: 'surface:reconnect' }],
+  },
+  current: {
+    supplied: true,
+    fingerprints: [
+      {
+        evidenceKind: 'integration fixture',
+        evidenceRef: 'surface:reconnect',
+        sourceFingerprint: 'git:abc',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: 'sha256:fixture',
+        rubricFingerprint: 'sha256:rubric',
+        environmentFingerprint: 'node:24',
+      },
+    ],
+  },
+  derivation: {
+    kind: 'listSpecEvidence.currentness' as const,
+    classifier: 'classifySpecEvidenceCurrentness' as const,
+    unknownWhenMissing: true as const,
+  },
+};
 
 const GRADED_CARD = {
   id: 'EI-CARD',
@@ -115,6 +157,33 @@ const GRADED_CARD = {
   },
 };
 
+const replayableGradedCard = (deployedSha: string) => ({
+  ...GRADED_CARD,
+  payload: {
+    observation: {
+      ...GRADED_CARD.payload.observation,
+      rerunRecipe: RERUN_RECIPE,
+      gradedGeneration: {
+        deployedSha,
+        hostStartedAt: '2026-09-08T18:00:00.000Z',
+      },
+    },
+  },
+});
+
+const runningGeneration = (deployedSha: string) => ({
+  deployedSha,
+  hostStartedAt: '2026-09-08T19:00:00.000Z',
+  bootHeadSha: null,
+  scoutCodeHash: null,
+  staleHost: false,
+});
+
+const replayAuditRubric = () => ({
+  ...mkRubric('grading-integrity', 'standard'),
+  criteria: [{ key: 're-runnable-evidence', title: 'Re-runnable evidence', model: 'm', method: 'm', driftMarkers: 'd' }],
+});
+
 beforeEach(() => {
   getRubric.mockReset().mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
   listScorecards.mockReset().mockResolvedValue([]);
@@ -127,6 +196,7 @@ beforeEach(() => {
   });
   gateEnabled.mockReset().mockResolvedValue(true);
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
+  readRunningGeneration.mockReset().mockResolvedValue(null);
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
@@ -388,6 +458,51 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect((res as { error?: string }).error).toContain('recorded evidence source');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['older', false, 'auditor-build-older-than-graded-build'],
+    ['unknown', null, 'generation-ancestry-unknown'],
+  ] as const)('fails closed when the auditor generation is %s than the replayable graded card', async (_label, probeResult, reason) => {
+    const gradedSha = 'a'.repeat(40);
+    const auditorSha = 'b'.repeat(40);
+    getRubric.mockResolvedValue(replayAuditRubric());
+    getIssue.mockResolvedValue(replayableGradedCard(gradedSha));
+    readRunningGeneration.mockResolvedValue(runningGeneration(auditorSha));
+    const generationAncestry = vi.fn().mockReturnValue(probeResult);
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: RE_RUN_FAIL_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp', checkRoot: '/test/root' },
+      { generationAncestry },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_generation_incompatible' });
+    expect((res as { error?: string }).error).toContain(reason);
+    expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
+    expect(readRunningGeneration).toHaveBeenCalledOnce();
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('allows a descendant auditor generation to settle a failing replayable card', async () => {
+    const gradedSha = 'a'.repeat(40);
+    const auditorSha = 'b'.repeat(40);
+    getRubric.mockResolvedValue(replayAuditRubric());
+    getIssue.mockResolvedValue(replayableGradedCard(gradedSha));
+    readRunningGeneration.mockResolvedValue(runningGeneration(auditorSha));
+    const generationAncestry = vi.fn().mockReturnValue(true);
+
+    const res = await emitScorecard(
+      { ...auditArgs, ratings: RE_RUN_FAIL_RATINGS },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp', checkRoot: '/test/root' },
+      { generationAncestry },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
+    expect(readRunningGeneration).toHaveBeenCalledOnce();
+    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
   it('refuses without a scorecard subject, on a non-scorecard subject, and on an already-audited one', async () => {

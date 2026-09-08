@@ -26,7 +26,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -63,7 +63,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -100,7 +100,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -137,7 +137,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -174,7 +174,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -203,7 +203,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -232,7 +232,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -261,7 +261,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -290,7 +290,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -319,7 +319,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -348,7 +348,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -377,7 +377,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -406,7 +406,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -435,7 +435,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -464,7 +464,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -493,7 +493,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -522,7 +522,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -551,7 +551,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "side-by-side",
@@ -580,7 +580,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -609,7 +609,7 @@
         "target": {
           "targetId": "HostedDesktopWorkspace",
           "targetKind": "component",
-          "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+          "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
         },
         "evidenceKind": "fixture",
         "layout": "stacked",
@@ -641,7 +641,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -708,12 +708,12 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
         "path": "docs/evidence/desktop-render-matrix-p003-2026-09-08/ready-desktop-dark.png",
-        "sha256": "9bbf216040f76e353ad019d3b9de59ed4a32a271d0bac03dc7bd7223c266f9d2"
+        "sha256": "255a684b796a88b59a4120f8a16b85f70088bd48f7d310def89623f1249ca991"
       },
       "geometry": {
         "container": {
@@ -775,7 +775,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -842,7 +842,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -909,7 +909,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -966,7 +966,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1023,7 +1023,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1080,7 +1080,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1137,7 +1137,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1194,7 +1194,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1251,7 +1251,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1308,7 +1308,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1365,7 +1365,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1422,7 +1422,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1479,7 +1479,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1536,7 +1536,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1593,7 +1593,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1650,7 +1650,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1707,7 +1707,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {
@@ -1764,7 +1764,7 @@
       "target": {
         "targetId": "HostedDesktopWorkspace",
         "targetKind": "component",
-        "implementationRevision": "fixture:0db3bcbd72ebbd8dc691c58c62315fe2d0db897b:7dfa734e9440f0e6bb92661c53a56f4b271f371e54b4c01172e73fecfe1f09a9"
+        "implementationRevision": "fixture:46d9dd37d9fc76dbf84186c2a0aa1933e20c9baf:8cb06455b3c917118c0f5d254e4bec658feef4af075ba4477ce8ec27fa7b17de"
       },
       "evidenceKind": "fixture",
       "capture": {

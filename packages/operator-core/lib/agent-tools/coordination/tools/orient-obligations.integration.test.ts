@@ -5,6 +5,11 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_
 import { setMode } from '../../../modes/store';
 import * as obligationReader from '../../../agent-obligation-reader';
 import * as goalSettings from '../../../goal-launch-settings';
+import {
+  buildTurnStartOrientationBlock,
+  ORIENTATION_CURSOR_SURFACE,
+  type OrientationDeps,
+} from '../../../turn-start-orientation';
 import orientTool from './orient';
 // Production boot registers compound folds before serving coord:orient.
 import '../../fleet/assignments';
@@ -45,6 +50,7 @@ afterAll(async () => {
   if (!fx) return;
   await fx.admin`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
   await fx.admin`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS} AND owner_id = ${OWNER}`;
+  await fx.admin`DELETE FROM harness_shared.coord_read_cursors WHERE owner_id = ${OWNER}`;
   await fx.admin`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
   await fx.dispose();
 });
@@ -76,6 +82,70 @@ async function readOrientation() {
 }
 
 describe('GOAL-holder complete agenda recovery through coord:orient', () => {
+  it('keeps an omitted real agenda unseen until a full warm delivery and re-delivers after a cold boundary', async () => {
+    const read = vi.spyOn(obligationReader, 'readAgentObligationAgenda');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await readOrientation();
+    const canonical = await read.mock.results[0].value;
+    const brief = obligationReader.projectAgentTurnStartObligationBrief(canonical.agenda);
+    const actionLines = brief.projection.text.split('\n').filter(Boolean);
+    expect(actionLines.length, 'the real provider must produce an actionable agenda').toBeGreaterThan(0);
+    expect(brief.evaluations.some((entry) => entry.scope.goalId === GOAL)).toBe(true);
+    let epoch = 1;
+    // Unrelated orientation sources are stable; the agenda, projection, final
+    // composer and PostgreSQL cursor are the production path under test.
+    const deps: OrientationDeps = {
+      held: async () => [],
+      inbox: async () => ({ count: 3, newest: [] }),
+      announcedGates: async () => [],
+      openAsks: async () => null,
+      loopArmed: async () => true,
+      loopFireWithheld: async () => false,
+      improvementTriage: async () => null,
+      executableFrontier: async () => null,
+      obligations: async () => brief,
+      neverDropFacts: async () => [],
+      toolSurface: async () => null,
+      carryBlindWindow: async () => null,
+      contextEpoch: async () => epoch,
+    };
+    const deliver = (budgetChars: number) => buildTurnStartOrientationBlock({
+      ownerId: OWNER, workspaceId: WS, budgetChars, deps,
+    });
+    const cursor = async () => {
+      const rows = await fx.admin`
+        SELECT committed, pending FROM harness_shared.coord_read_cursors
+        WHERE owner_id = ${OWNER} AND surface = ${ORIENTATION_CURSOR_SURFACE}
+      `;
+      expect(rows).toHaveLength(1);
+      return rows[0];
+    };
+
+    expect(await deliver(40)).toBe('');
+    expect((await cursor()).pending).toBeNull();
+    const crowded = await deliver(200);
+    expect(crowded.length).toBeLessThanOrEqual(200);
+    expect(crowded).toContain(brief.detailRef);
+    expect(actionLines.some((line) => !crowded.includes(line))).toBe(true);
+    expect((await cursor()).pending.obligations).not.toBe(brief.sourceGeneration);
+
+    // Exercise the emitted recovery door in the same actual goal/owner scope.
+    const recovered = await readOrientation();
+    expect(recovered.obligations.evaluations.map((entry) => entry.id)).toEqual(
+      canonical.agenda.evaluations.map((entry: { id: string }) => entry.id),
+    );
+    expect(recovered.obligations.evaluations.some((entry) => entry.scope.goalId === GOAL)).toBe(true);
+    const warm = await deliver(2_000);
+    for (const line of actionLines) expect(warm).toContain(line);
+    expect((await cursor()).pending.obligations).toBe(brief.sourceGeneration);
+    expect(await deliver(2_000)).toBe('');
+    expect((await cursor()).committed.obligations).toBe(brief.sourceGeneration);
+    epoch += 1;
+    const cold = await deliver(2_000);
+    for (const line of actionLines) expect(cold).toContain(line);
+    expect(await deliver(2_000)).toBe('');
+  }, 90_000);
+
   it('returns the canonical full agenda from the production handler', async () => {
     // Observe the real read without replacing it. A second read can legitimately
     // have a different timeout/generation, so compare delivery to its own source.

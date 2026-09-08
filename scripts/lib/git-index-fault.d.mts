@@ -55,14 +55,17 @@ export function reportIndexFaultNotChecked(error: unknown, { guard, log }?: {
  * Wraps the entrypoint so a persistent index fault exits EXIT_NOT_CHECKED with the banner above
  * instead of crashing with a non-zero status the runner would read as a violation.
  *
+ * Handles a SYNC or an ASYNC `main` — an async one is guarded through its promise rejection,
+ * because a sync try/catch around it would silently protect nothing.
+ *
  * @template T
- * @param {() => T} main
+ * @param {() => T | Promise<T>} main
  * @param {{ guard?: string }} [options]
- * @returns {T}
+ * @returns {T | Promise<T>}
  */
-export function runGuardWithIndexFaultGuard<T>(main: () => T, { guard }?: {
+export function runGuardWithIndexFaultGuard<T>(main: () => T | Promise<T>, { guard }?: {
     guard?: string;
-}): T;
+}): T | Promise<T>;
 export { EXIT_NOT_CHECKED };
 /** Thrown when the index is still unreadable after every retry. */
 export class RepositoryIndexFaultError extends Error {

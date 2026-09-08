@@ -73,6 +73,43 @@ export interface TakeLeadershipOutcome {
 }
 
 /**
+ * A fleet leader's transport scope is inherited from the fleet claim-spec row.
+ * Refuse the handoff before writing registry/presence state when that row is
+ * absent, defaulted, or unbound: installing a leader that the next MCP call
+ * cannot scope strands the session behind `harness_scope_stale` with no recovery
+ * door (EI-22722766022314236).
+ */
+export async function assertFleetLeadershipHarnessBinding(
+  workspaceId: string,
+  fleetSlug: string,
+): Promise<void> {
+  try {
+    const { fleetSpecBeeKey, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+    const record = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
+    const harnessSlug = record.harnessSlug?.trim();
+    if (record.source === 'fleet' && harnessSlug && harnessSlug !== '*' && harnessSlug.toLowerCase() !== 'all') {
+      return;
+    }
+    throw Object.assign(
+      new Error(
+        `fleet '${fleetSlug}' has no concrete harness-bound claim spec; author one with scheduler:set_claim_spec before taking leadership`,
+      ),
+      { code: 'fleet_harness_binding_required' },
+    );
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'fleet_harness_binding_required') {
+      throw error;
+    }
+    throw Object.assign(
+      new Error(
+        `fleet '${fleetSlug}' claim-spec binding could not be verified; repair it with scheduler:set_claim_spec before taking leadership: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+      { code: 'fleet_harness_binding_unavailable' },
+    );
+  }
+}
+
+/**
  * P-009 (owner directive 2026-07-19): when a session ACQUIRES fleet leadership, re-seed its
  * soft compaction limit to the LEADER default (COMPACTION_LIMIT_DEFAULT_1M_CAP, 400k on a
  * [1m] session) — fixing a member launched at the leaner 300k member cap that, once promoted,
@@ -150,6 +187,10 @@ export async function takeFleetLeadership(
 ): Promise<TakeLeadershipOutcome> {
   const slug = fleet.fleetSlug;
   const previousLeader = fleet.leaderOwnerId; // may be null, or already === caller
+
+  // Validate the scope BEFORE the registry write. A successful leadership transfer
+  // without a concrete fleet binding makes every subsequent scoped request stale.
+  await assertFleetLeadershipHarnessBinding(workspaceId, slug);
 
   // 1. Registry: the caller becomes the sole leader (single-leader invariant, D-002).
   const installed = await setFleetLeader(workspaceId, slug, ownerId, undefined, previousLeader);

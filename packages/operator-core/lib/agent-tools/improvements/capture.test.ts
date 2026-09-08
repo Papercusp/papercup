@@ -409,6 +409,39 @@ describe('improvements:capture tool envelope', () => {
     );
   });
 
+  it('preserves an explicit conditionKey when toolFailure wording changes (EI-22722288208033107)', async () => {
+    const conditionKey = 'repeated-tool-error:sessions:read:structural:invalid-escape-string';
+    const failure = (message: string) => ({
+      toolName: 'sessions:read',
+      errorCode: 'invalid_args',
+      status: 'error',
+      message,
+      schemaRevision: '42',
+      fieldPath: 'tail',
+      runtimeVersion: 'codex-1.2.3',
+    });
+
+    await callTool({
+      kind: 'bug',
+      conditionKey,
+      toolFailure: failure('invalid escape string in the first report'),
+    });
+    await callTool({
+      kind: 'bug',
+      conditionKey,
+      toolFailure: failure('invalid escape string with revised context'),
+    });
+
+    expect(mockCapture.mock.calls.map(([input]) => input.watchdogKey)).toEqual([conditionKey, conditionKey]);
+    const firstProbation = (mockCapture.mock.calls[0]?.[0].payloadExtra as Record<string, unknown>)
+      ?.toolFailureProbation as Record<string, unknown>;
+    const secondProbation = (mockCapture.mock.calls[1]?.[0].payloadExtra as Record<string, unknown>)
+      ?.toolFailureProbation as Record<string, unknown>;
+    expect(firstProbation.watchdogKey).not.toBe(conditionKey);
+    expect(secondProbation.watchdogKey).not.toBe(conditionKey);
+    expect(secondProbation.watchdogKey).not.toBe(firstProbation.watchdogKey);
+  });
+
   it('derives bounded title/body text for the canonical toolFailure-only shorthand', async () => {
     await callTool({
       toolFailure: {

@@ -43,9 +43,11 @@ import {
   ratingVerdict,
   recordGradingAudit,
   scorecardEvidenceFingerprint,
+  parseGradedGeneration,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
+import { realGitProbe } from '../../release/judged-sha-containment';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
@@ -330,6 +332,38 @@ type SpecTestAdequacyReplayRow = {
 };
 
 type SpecTestAdequacyEvaluatorBuild = z.infer<typeof specTestAdequacyEvaluatorBuildSchema>;
+
+type GenerationAncestryProbe = (root: string, ancestor: string, descendant: string) => boolean | null;
+
+const GENERATION_SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
+
+function assessGenerationAncestry(
+  gradedSha: unknown,
+  auditorSha: unknown,
+  root: string,
+  probe: GenerationAncestryProbe,
+): { ok: true } | { ok: false; reason: string } {
+  if (
+    typeof gradedSha !== 'string' ||
+    !GENERATION_SHA_PATTERN.test(gradedSha.trim()) ||
+    typeof auditorSha !== 'string' ||
+    !GENERATION_SHA_PATTERN.test(auditorSha.trim())
+  ) {
+    return { ok: false, reason: 'generation-sha-missing-or-invalid' };
+  }
+  const graded = gradedSha.trim().toLowerCase();
+  const auditor = auditorSha.trim().toLowerCase();
+  // A short SHA is a valid identity when it is a prefix of the full form emitted by
+  // another process. Treat that as equality without asking git to resolve an ambiguous
+  // object; the ancestry probe remains reserved for distinct identities.
+  if (graded === auditor || graded.startsWith(auditor) || auditor.startsWith(graded)) return { ok: true };
+  const isAncestor = probe(root, gradedSha.trim(), auditorSha.trim());
+  if (isAncestor === true) return { ok: true };
+  return {
+    ok: false,
+    reason: isAncestor === false ? 'auditor-build-older-than-graded-build' : 'generation-ancestry-unknown',
+  };
+}
 
 function isSameEvaluatorBuild(a: SpecTestAdequacyEvaluatorBuild, b: SpecTestAdequacyEvaluatorBuild): boolean {
   return a.sha === b.sha && a.version === b.version;
@@ -718,6 +752,8 @@ export async function emitScorecard(
     resolveAuthorSessionState?: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>;
     /** Test seam for the bounded post-write pending-audit dispatcher. */
     dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
+    /** Tri-state git ancestry seam for replay-based grading-integrity audits. */
+    generationAncestry?: GenerationAncestryProbe;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -748,6 +784,15 @@ export async function emitScorecard(
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   try {
+    let runningGenerationRead = false;
+    let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = null;
+    const readCurrentGeneration = async () => {
+      if (!runningGenerationRead) {
+        runningGenerationRead = true;
+        runningGeneration = await readRunningGeneration().catch(() => null);
+      }
+      return runningGeneration;
+    };
     const specTestAdequacyReplayError = await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
     if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
@@ -1321,10 +1366,11 @@ export async function emitScorecard(
         };
       }
       const graded = await getIssue(args.subject.ref);
-      const gradedObservation =
+      const gradedRawObservation =
         graded?.payload && typeof graded.payload === 'object' && !Array.isArray(graded.payload)
-          ? asStructuredObservation((graded.payload as { observation?: unknown }).observation)
+          ? (graded.payload as { observation?: unknown }).observation
           : undefined;
+      const gradedObservation = asStructuredObservation(gradedRawObservation);
       if (!gradedObservation?.rubricRef || !gradedObservation.ratings) {
         return { ok: false as const, error: `audit subject '${args.subject.ref}' is not a scorecard` };
       }
@@ -1395,6 +1441,38 @@ export async function emitScorecard(
             `('${evidenceSourceMatch}') — a grading audit must come from an independent party, not the critic whose ` +
             'quotes form the graded evidence; use another auditor',
         };
+      }
+      // A grading-integrity FAIL on re-runnable-evidence is a claim about executing
+      // the target card's stored probe. An auditor on an older/diverged build can
+      // observe its own stale API and manufacture a failure that belongs to the
+      // deployment pipeline, not the card. Keep the target pending until a runtime
+      // whose generation is known to contain the graded card can audit it.
+      if (
+        gradedObservation.rerunRecipe &&
+        ratingVerdict(args.ratings['re-runnable-evidence']?.rating ?? '') === 'fail'
+      ) {
+        const rawGeneration =
+          gradedRawObservation && typeof gradedRawObservation === 'object' && !Array.isArray(gradedRawObservation)
+            ? (gradedRawObservation as { gradedGeneration?: unknown }).gradedGeneration
+            : undefined;
+        const gradedGeneration = parseGradedGeneration(rawGeneration);
+        const auditorGeneration = await readCurrentGeneration();
+        const generationCheck = assessGenerationAncestry(
+          gradedGeneration?.deployedSha,
+          auditorGeneration?.deployedSha,
+          input.checkRoot ?? resolveAgentWorkspaceRoot({}),
+          deps.generationAncestry ?? ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+        );
+        if (!generationCheck.ok) {
+          return {
+            ok: false as const,
+            code: 'grading_audit_generation_incompatible' as const,
+            error:
+              `grading-integrity audit for '${args.subject.ref}' cannot accept ` +
+              `re-runnable-evidence='fail': ${generationCheck.reason}; ` +
+              'the auditor must run on the same or a descendant build of the graded card; no audit card was persisted',
+          };
+        }
       }
       auditContext = { subjectIssueId: args.subject.ref, auditor: input.createdBy };
     }
@@ -1789,7 +1867,7 @@ export async function emitScorecard(
       }
     }
 
-    const gradedGeneration = await readRunningGeneration().catch(() => null);
+    const gradedGeneration = await readCurrentGeneration();
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',

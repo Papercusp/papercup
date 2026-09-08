@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 877,
+  "count": 878,
   "tools": [
     {
       "name": "ablation:report",
@@ -27684,6 +27684,45 @@
         "when": "You want to know whether Overwatch is actually emitting COMPLETE scorecards, not just whether it emitted anything — monitor-the-monitor. Did a complete pot-coordination-health scorecard land since the last wake (status fresh), or is it silently skipping (stale) / truncating to partials (partial-only)? Pass `since` = the last wake for a precise check.",
         "notWhen": "You want the scorecard ROWS + their ratings — scorecards:list. You want a criterion's rating TREND over time — rubrics:trend. You are FILING a scorecard — scorecards:emit.",
         "chaining": "scorecards:freshness { rubricRef: \"pot-coordination-health\", since } → status stale/partial-only ⇒ Overwatch missed or truncated → scorecards:list { rubricRef, since } to see what (if anything) it emitted, or check latestMissingKeys for which criteria were dropped."
+      }
+    },
+    {
+      "name": "scorecards:get",
+      "http": {
+        "path": "/api/agent-tools/scorecards/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read ONE rubric scorecard by issue id using an evidence-first projection. Returns the exact per-criterion `{key, rating, evidence}` strings plus minimal card identity and completeness fields; omits replay recipes, generation metadata, links, and other history-only payload. Use this before a grading-integrity audit so evidence is inline rather than hidden by a history-row projection or result-door spill.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer",
+        "judge"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.",
+        "notWhen": "You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.",
+        "chaining": "scorecards:get { issueId } → re-run every returned criteria[].evidence probe → scorecards:emit { rubricRef:\"grading-integrity\", subject:{kind:\"scorecard\",ref:issueId}, ratings } to settle the audit."
       }
     },
     {

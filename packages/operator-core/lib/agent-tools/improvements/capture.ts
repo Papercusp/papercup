@@ -1077,9 +1077,17 @@ export default defineTool({
       !args.checkDuplicatesOnly &&
       effectiveLane !== 'observation' &&
       (effectiveKind === 'change' || effectiveKind === 'feature');
-    const captureWatchdogKey = normalizedToolFailure
-      ? normalizedToolFailure.watchdogKey
-      : (args.conditionKey ?? (effectiveLane === 'observation' ? defaultScorecardConditionKey(observation) : undefined));
+    // A caller-supplied conditionKey is the stable correlation identity. Keep it
+    // ahead of the tool-failure message key: the latter intentionally includes a
+    // message fingerprint, so changing only the error wording must not fork one
+    // condition into multiple rows (EI-22722288208033107).
+    const captureWatchdogKey =
+      args.conditionKey ??
+      (normalizedToolFailure
+        ? normalizedToolFailure.watchdogKey
+        : effectiveLane === 'observation'
+          ? defaultScorecardConditionKey(observation)
+          : undefined);
     // work-queue-admission-and-bulk-dedup P-008: a successful unkeyed
     // observation filing is DONE from the caller's perspective. Whether the
     // server minted a row, HARD-folded onto a survivor, or SOFT-linked a fresh
