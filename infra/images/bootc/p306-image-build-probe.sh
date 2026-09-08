@@ -114,7 +114,8 @@ sect "4. packages — the substitutions and the SONAME providers"
 # ufw and unattended-upgrades are NOT-IN-REPOS; minisign is EPEL-only. Their
 # replacements are what the port claims, so assert the replacements are THERE
 # rather than that the originals are absent.
-for p in minisign nftables dnf-automatic zstd acl sudo openssh-server jq curl; do
+for p in minisign nftables dnf-automatic zstd acl sudo openssh-server jq curl \
+         google-compute-engine google-compute-engine-oslogin google-guest-agent; do
   if [[ -n "$(in_image "rpm -q --qf '%{NAME}' $p 2>/dev/null | grep -Fx $p")" ]]; then
     pass "installed: $p"
   else
@@ -132,7 +133,10 @@ done
 sect "5. shipped files and enabled units"
 for f in /etc/containers/policy.json \
          /etc/containers/registries.d/papercusp-release.yaml \
+         /etc/yum.repos.d/google-cloud.repo \
          /etc/nftables/papercusp-workspace-host.nft \
+         /usr/bin/google_authorized_keys \
+         /usr/lib64/security/pam_oslogin_login.so \
          /usr/lib/sysusers.d/papercusp.conf \
          /usr/libexec/papercusp/host-prepare.sh \
          /usr/lib/systemd/system/papercusp-host-prepare.service \
@@ -203,13 +207,33 @@ else
   fail "positive control FAILED: a policy with a planted '_comment' key was NOT rejected — the"\
        "loadability check above is blind, so its PASS carries no information"
 fi
-for u in papercusp-host-prepare.service nftables.service dnf-automatic.timer; do
+for u in papercusp-host-prepare.service nftables.service dnf-automatic.timer \
+         sshd.service google-guest-agent.service google-oslogin-cache.timer; do
   if [[ -n "$(in_image "systemctl is-enabled $u 2>/dev/null | grep -Fx enabled")" ]]; then
     pass "enabled: $u"
   else
     fail "NOT enabled: $u"
   fi
 done
+# The guest agent activates OS Login dynamically from instance metadata on the
+# booted host, so the image cannot honestly assert the generated sshd/PAM text.
+# It can and must prove that the executable and PAM/NSS payload needed for that
+# activation survived the build, and that the Google repository cannot update
+# the immutable deployment behind bootc's back.
+for f in /usr/bin/google_authorized_keys \
+         /usr/lib64/security/pam_oslogin_login.so \
+         /usr/lib64/libnss_oslogin.so.2; do
+  if [[ "$(in_image "test -x $f && echo y")" == "y" ]]; then
+    pass "OS Login payload executable: $f"
+  else
+    fail "OS Login payload missing or non-executable: $f"
+  fi
+done
+if [[ -n "$(in_image "grep -Fx 'enabled=0' /etc/yum.repos.d/google-cloud.repo")" ]]; then
+  pass "Google guest repository is build-only (enabled=0)"
+else
+  fail "Google guest repository is enabled at runtime — package mutation would bypass bootc"
+fi
 # The OS half of unattended upgrades belongs to `bootc upgrade`, not dnf: applying
 # package updates in place would write to a read-only /usr and desynchronize the
 # deployment from the image it claims to be.

@@ -80,12 +80,39 @@ ARG PAPERCUSP_AGENT_GROUP=papercusp-agent
 # `cosign` is deliberately NOT the substitute here: it is not in base repos or
 # EPEL (measured, RPM-EQUIVALENCE.md §G) — it is a Go binary used at BUILD time
 # by P-308, which is a different machine and a different trust question.
-RUN dnf -y install --setopt=install_weak_deps=False epel-release \
-    && dnf -y install --setopt=install_weak_deps=False \
+#
+# A raw bootc disk is a CUSTOM GCE image, not one of Google's managed CentOS
+# images. It therefore does not inherit the Compute Engine guest environment:
+# without the guest agent plus OS Login NSS/PAM modules, the VM reaches RUNNING
+# and sshd listens, but `enable-oslogin=TRUE` can never authenticate a user.
+# P-305 measured exactly that silent 15-minute failure. Install Google's
+# maintained EL9 metapackage into the one signed image so the capability also
+# survives bootc upgrade/rollback; patching only the rendered GCE disk would
+# disappear on the first signed switch and violate P-307's one-image seam.
+#
+# Keep the provider repository disabled at runtime. On an image-based host OS
+# packages advance only through a newly built, signed bootc image; dnf-automatic
+# must not mutate /usr behind bootc's back. The metapackage deliberately omits
+# google-osconfig-agent: OS Config is a separate VM Manager surface and is not
+# required for the guest-agent-owned OS Login path exercised here.
+RUN set -eux; \
+    printf '%s\n' \
+      '[google-compute-engine]' \
+      'name=Google Compute Engine' \
+      'baseurl=https://packages.cloud.google.com/yum/repos/google-compute-engine-el9-x86_64-stable' \
+      'enabled=0' \
+      'gpgcheck=1' \
+      'repo_gpgcheck=0' \
+      'gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg' \
+      > /etc/yum.repos.d/google-cloud.repo; \
+    dnf -y install --setopt=install_weak_deps=False epel-release; \
+    dnf -y install --setopt=install_weak_deps=False \
+         --enablerepo=google-compute-engine \
          `# system packages — WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES` \
          acl \
          ca-certificates \
          curl \
+         google-compute-engine \
          jq \
          openssh-server \
          sudo \
@@ -113,6 +140,8 @@ RUN dnf -y install --setopt=install_weak_deps=False epel-release \
          lz4-libs      `# liblz4.so.1     <- liblz4-1` \
          zlib          `# libz.so.1       <- zlib1g` \
          libzstd       `# libzstd.so.1    <- libzstd1` \
+    && rpm -q google-compute-engine google-compute-engine-oslogin google-guest-agent \
+    && systemctl enable google-guest-agent.service google-oslogin-cache.timer \
     && dnf clean all \
     `# Scrub dnf/subscription-manager residue from /var and /run.` \
     `# Not tidiness. bootc container lint fails three separate checks on it` \
