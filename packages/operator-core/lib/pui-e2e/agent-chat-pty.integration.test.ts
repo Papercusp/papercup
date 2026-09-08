@@ -539,9 +539,17 @@ function withoutCommandReceipts(response: Response): Response {
   })), { status: response.status, headers: response.headers });
 }
 
-async function openComposer(pane: PuiPane): Promise<void> {
-  await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+async function openAgentChat(pane: PuiPane): Promise<void> {
+  // The footer exists on every loaded tab. `o` is the global Agent Chat
+  // action; leave an automatically restored composer before invoking it.
+  await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+  pane.escape();
   pane.write('o');
+  await pane.waitFor('┌ Agent Chat');
+}
+
+async function openComposer(pane: PuiPane): Promise<void> {
+  await openAgentChat(pane);
   await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
   pane.escape();
   await pane.waitFor('i type · v speak');
@@ -1436,6 +1444,7 @@ async function startOperatorProcess(port = 0) {
       const result = await Promise.race([exit, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${output}`)), 60_000);
       })]);
+      console.info('PUI_OPERATOR_PROCESS_EXIT', JSON.stringify({ pid: child.pid, instanceId: ready?.instanceId, ...result }));
       expect(result, output).toEqual({ code: 0, signal: null });
     } finally { clearTimeout(timer!); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
   };
@@ -1548,9 +1557,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     try {
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
-      await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
-      resumedPane.write('o');
-      await resumedPane.waitFor(`pot ${HARNESS} · role operator · session new`);
+      await openAgentChat(resumedPane);
       resumedPane.escape(); await resumedPane.waitFor('i type · v speak');
       resumedPane.write('l'); await resumedPane.waitFor('Conversation — Enter select'); resumedPane.enter();
       resumedPane.write('i'); await resumedPane.waitForReply(greetingReply);
