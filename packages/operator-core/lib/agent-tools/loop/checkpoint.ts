@@ -1026,6 +1026,33 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
     if (args.read === true) {
       const current = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId });
+      // A null note is meaningful only after the carry-note reader successfully
+      // answered. The canonical reader returns `readFailed:true` when the store
+      // could not be queried; collapsing that sentinel into the normal empty-note
+      // envelope (`ok:true`, `note:null`, `length:0`) makes a transient data-plane
+      // failure indistinguishable from a confirmed clear and invites a successor
+      // to overwrite continuity that may still exist. Keep this read fail-closed
+      // and explicit, while preserving the write path's existing fail-open policy.
+      if (current.readFailed === true) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                read: true,
+                error: 'carry_note_read_failed',
+                message:
+                  'The carry-note store could not be read, so note:null is NOT a confirmed empty note. Retry the read after the data plane recovers; no carry-note content was changed.',
+                harness,
+                ownerId,
+                readFailed: true,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       const note = current.note;
       // WI-1826126: resolving a scope successfully is NOT evidence that it holds this
       // owner's newest note. carry_notes is keyed `loop:<harness>:<ownerId>`, so one

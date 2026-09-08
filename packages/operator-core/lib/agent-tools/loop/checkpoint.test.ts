@@ -1407,6 +1407,25 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
   });
 
+  it('read:true refuses to report an empty note when the carry-note store read failed', async () => {
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: null, updatedAtMs: null, readFailed: true });
+
+    const out = await call({ read: true, ownerId: 'su-caller', harness: 'papercusp' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      read: true,
+      error: 'carry_note_read_failed',
+      harness: 'papercusp',
+      ownerId: 'su-caller',
+      readFailed: true,
+    });
+    expect(String(body(out).message)).toContain('NOT a confirmed empty note');
+    expect(listLoopCarryNoteScopes).not.toHaveBeenCalled();
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+  });
+
   it('rejects an empty call (nothing to write) at the args boundary', () => {
     expect(() => parse({})).toThrow();
   });
