@@ -1925,6 +1925,23 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
       } } });
   });
 
+  it.each(["models.yml", "models.json"])("prepares OAuth request formatting in copied %s gateway registries", (file) => {
+    const registry = { providers: {
+      "papercusp-gateway": { api: "anthropic-messages", auth: "apiKey", apiKey: "papercusp-gateway",
+        models: [{ id: "claude-sonnet-4-6", maxTokens: 8192 }] },
+      anthropic: { api: "anthropic-messages", auth: "apiKey", apiKey: "DIRECT_KEY" },
+    } };
+    const source = file.endsWith(".json") ? JSON.stringify(registry) : stringifyYaml(registry);
+    writeFileSync(join(home, ".omp", "agent", file), source);
+    writeOmpSessionConfigDir("oauth", {}, home);
+    const copy = readFileSync(agentPath("oauth", file), "utf8");
+    const actual = file.endsWith(".json") ? JSON.parse(copy) : parseYaml(copy);
+    expect(actual).toEqual({ providers: { ...registry.providers,
+      "papercusp-gateway": { ...registry.providers["papercusp-gateway"], auth: "oauth" },
+    } });
+    expect(readFileSync(join(home, ".omp", "agent", file), "utf8")).toBe(source);
+  });
+
   // xai-oauth (and other modern OMP logins) live in agent.db auth_credentials —
   // not legacy auth.json. Without this symlink, psu→omp sessions boot with an
   // empty credential store and Grok vanishes from /model even though bare omp works.

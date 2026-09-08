@@ -121,7 +121,7 @@ import {
   codexGatewayConfigToml,
 } from "@papercusp/orchestrator/codex-gateway-config";
 import {
-  attributeOmpGatewayModelsConfig,
+  prepareOmpGatewayModelsConfig,
   ompGatewayModelsConfig,
   ompGatewayModelFromSpec,
 } from "@papercusp/orchestrator/omp-gateway-config";
@@ -4449,7 +4449,7 @@ export function writeOmpSessionConfigDir(
         typeof modelsYml === "string" &&
         modelsYml.trim()
       ) {
-        writeFileSync(join(dstAgent, f), attributeOmpGatewayModelsConfig(modelsYml, "yaml", clientId), { mode: 0o600 });
+        writeFileSync(join(dstAgent, f), prepareOmpGatewayModelsConfig(modelsYml, "yaml", clientId), { mode: 0o600 });
         continue;
       }
       if (!existsSync(s)) continue;
@@ -4481,7 +4481,7 @@ export function writeOmpSessionConfigDir(
         console.error(
           `psu: per-hop doors for ${clampBare}: maxTurn ${computeMaxTurnTokens(effectiveWindow)} → output door (max_tokens) ${effectiveMaxTokens} at effectiveWindow ${effectiveWindow}.`,
         );
-        writeFileSync(join(dstAgent, f), attributeOmpGatewayModelsConfig(text, "yaml", clientId), { mode: 0o600 });
+        writeFileSync(join(dstAgent, f), prepareOmpGatewayModelsConfig(text, "yaml", clientId), { mode: 0o600 });
         continue;
       }
       if (clampBare && f === "models.json" && effectiveWindow) {
@@ -4492,11 +4492,11 @@ export function writeOmpSessionConfigDir(
           clampBare,
           fields,
         );
-        writeFileSync(join(dstAgent, f), attributeOmpGatewayModelsConfig(text, "json", clientId), { mode: 0o600 });
+        writeFileSync(join(dstAgent, f), prepareOmpGatewayModelsConfig(text, "json", clientId), { mode: 0o600 });
         continue;
       }
       if (f === "models.yml" || f === "models.json") {
-        const text = attributeOmpGatewayModelsConfig(readFileSync(s, "utf8"), f === "models.json" ? "json" : "yaml", clientId);
+        const text = prepareOmpGatewayModelsConfig(readFileSync(s, "utf8"), f === "models.json" ? "json" : "yaml", clientId);
         writeFileSync(join(dstAgent, f), text, { mode: 0o600 });
         continue;
       }
