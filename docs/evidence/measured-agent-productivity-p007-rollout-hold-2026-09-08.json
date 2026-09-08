@@ -35,7 +35,7 @@
     {
       "id": "latency-uncertainty-preserved",
       "passed": true,
-      "evidence": "The immutable first_claimed_at writer is migration 1037. Only WI-10000387 and WI-10000634 have claim-start stamps, producing claim-to-close values 1,177,392 ms and 1,604,620 ms. Five of seven are NULL, so no cohort latency statistic is claimed; worked_by_history is explicitly not used as claim-start."
+      "evidence": "The immutable first_claimed_at writer is migration 1037. Only WI-10000387 and WI-10000634 have claim-start stamps, producing exact claim-to-close values 1,177,391.800 ms and 1,604,619.173 ms (nearest-ms values 1,177,392 and 1,604,619). Five of seven are NULL, so no cohort latency statistic is claimed; worked_by_history is explicitly not used as claim-start."
     },
     {
       "id": "usage-units-and-cost-source",
@@ -118,7 +118,8 @@
     "measure": "closed_ts minus immutable first_claimed_at",
     "usable": 2,
     "unknown": 5,
-    "valuesMs": [1177392, 1604620],
+    "exactValuesMs": [1177391.8, 1604619.173],
+    "roundedValuesMs": [1177392, 1604619],
     "cohortStatistic": "unknown",
     "retractedProxy": "worked_by_history"
   },
@@ -192,7 +193,8 @@
         "causalImprovementEstablished": false,
         "fixedTerminalCounts": [0, 7, 0],
         "latencyUsable": 2,
-        "latencyUnknown": 5
+        "latencyUnknown": 5,
+        "roundedLatencyValuesMs": [1177392, 1604619]
       }
     }
   },
