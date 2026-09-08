@@ -294,6 +294,23 @@ class PuiPane {
     return vt.text();
   }
 
+  failureEvidence(): Record<string, unknown> {
+    return {
+      screen: this.screen(),
+      traffic: sessionTraffic,
+      commands: commandPosts.map(({ type, commandId }) => ({ type, commandId })),
+      commandReplies,
+      engines: scriptedEngine.engines.map((engine) => {
+        const descriptor = engine.adapter.host.descriptor();
+        return { pid: engine.pid(), identity: descriptor.identity, lifecycle: descriptor.lifecycle,
+          diagnostics: engine.adapter.host.recent.map(({ event }) => event)
+            .filter((event) => event.type === 'error' || event.type === 'lifecycle' || event.type === 'command_result')
+            .slice(-20),
+        };
+      }),
+    };
+  }
+
   write(keys: string): void {
     this.pty.write(keys);
   }
@@ -1070,6 +1087,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(engine?.pid()).toBeGreaterThan(0);
       const identity = structuredClone(engine.adapter.host.descriptor().identity);
       expect(identity.backend).toBe(scriptedEngine.backend);
+      expect(identity.nativeSessionId).toBeTruthy();
+      expect(engine.nativeSession()).toMatchObject({ backend: scriptedEngine.backend, exactResumeSupported: true });
 
       pane.write(fileRequest);
       pane.enter();
@@ -1119,8 +1138,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(commandPosts.filter((command) => command.type === 'owner_turn').map((command) => command.content))
         .toEqual([greeting, fileRequest, longRequest, followup]);
       expect(commandReplies.every((reply) => reply.status === 202 && !reply.replayed)).toBe(true);
+      // RPC backends obtain their native identity asynchronously after the
+      // launch response. The real greeting above proves the later handshake
+      // and persisted native resume handle, independently of response timing.
       expect(sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su'))
-        .toEqual([expect.objectContaining({ count: 1, attachedEngine: true, transport: 'structured', nativeSessionPresent: true })]);
+        .toEqual([expect.objectContaining({ count: 1, attachedEngine: true, transport: 'structured' })]);
 
       // Inspect this launch's process family only, without printing argv or
       // touching an existing human/peer terminal. The real CLI has pipe stdio;
@@ -1177,6 +1199,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await resumedPane.waitForReply(resumedReply);
         expect(resumedChat.id).toBe(firstChat.id);
         frames.resumed = resumedPane.screen();
+      } catch (cause) {
+        console.info('PUI_INSTALLED_RESUME_FAILURE', JSON.stringify(resumedPane.failureEvidence()));
+        throw cause;
       } finally { await resumedPane.stop(); }
       expect(namedQueryRequests).not.toContain('network.board');
       expect(pipelineCellRequests).toEqual([]);
@@ -1188,6 +1213,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         assistantReplies: scriptedEngine.events.filter((event) => event.type === 'transcript'
           && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'),
       }));
+    } catch (cause) {
+      console.info('PUI_INSTALLED_REAL_ENGINE_FAILURE', JSON.stringify({
+        backend: scriptedEngine.backend, binary: bin, binarySha256, frames, ...pane.failureEvidence(),
+      }));
+      throw cause;
     } finally { await pane.stop().catch(() => {}); }
   }, 600_000);
 });
